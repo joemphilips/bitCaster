@@ -1,0 +1,28 @@
+# Node
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+
+# Vite
+*.local
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Rust / CDK (built locally)
+target/
+
+# OS
+.DS_Store
+Thumbs.db

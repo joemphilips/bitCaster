@@ -1,0 +1,11 @@
+[submodule "nuts"]
+	path = nuts
+	url = git@github.com:joemphilips/nuts.git
+	branch = nuts_for_prediction_markets
+[submodule "cdk"]
+	path = cdk
+	url = git@github.com:joemphilips/cdk.git
+	branch = bitCaster
+[submodule "bitCaster-design"]
+	path = bitCaster-design
+	url = git@github.com:joemphilips/bitCaster-design.git
