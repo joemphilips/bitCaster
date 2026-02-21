@@ -9,3 +9,6 @@
 [submodule "bitCaster-design"]
 	path = bitCaster-design
 	url = git@github.com:joemphilips/bitCaster-design.git
+[submodule "cashu.me"]
+	path = cashu.me
+	url = https://github.com/cashubtc/cashu.me
