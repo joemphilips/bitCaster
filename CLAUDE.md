@@ -22,11 +22,14 @@ cp bitCaster/.env.example bitCaster/.env
 
 Required variables:
 - `VITE_MINT_URL` — Cashu mint endpoint (default `http://localhost:3338`)
+- `VITE_SERVER_URL` — BitCaster.Server endpoint (default `http://localhost:5000`)
 - `VITE_ORACLE_PUBKEY` — (optional) hex pubkey for DLC oracle announcements
 
 ## Monorepo Layout
 
 ```
+AppHost/             .NET Aspire orchestrator (local dev: mint + server + frontend)
+BitCaster.Server/    Matching engine + real-time price feed (ASP.NET minimal API + SignalR)
 bitCaster/           React 19 + Vite PWA frontend
 bitCaster-doc/       Astro Starlight documentation site (GitHub Pages)
 bitCaster-design/    Design system, specs, and mockups
@@ -90,6 +93,43 @@ npm run preview      # preview production build
 - Sidebar auto-generated from `src/content/docs/` directory structure
 - Deployed to GitHub Pages via `.github/workflows/deploy-docs.yml` on push to `main`
 - Uses Starlight's CSS custom property system (`--sl-*`), not Tailwind
+
+## BitCaster.Server (Matching Engine)
+
+ASP.NET minimal API (`net10.0`) with SignalR. Two responsibilities only:
+
+1. **CLOB matching engine** — in-memory order books with price-time priority, direct + complementary matching
+2. **Real-time price feed** — SignalR hub broadcasting orderbook updates and trade executions
+
+```bash
+cd BitCaster.Server
+dotnet build                  # compile
+dotnet run                    # start server
+```
+
+Key files:
+- `Domain/OrderBook.cs` — in-memory order book per market (keyed by condition_id)
+- `Domain/MatchingEngine.cs` — pure static matching logic (direct + complementary paths)
+- `Hubs/MarketHub.cs` — SignalR hub at `/hubs/market` (join/leave market groups)
+- `Endpoints/OrderEndpoints.cs` — `POST /api/v1/orders`, `DELETE /api/v1/orders/{id}`
+- `Endpoints/BookEndpoints.cs` — `GET /api/v1/markets/{marketId}/orderbook`
+
+Order books are ephemeral (in-memory). The mint is the source of truth for token state.
+
+## Local Dev with Aspire
+
+The `AppHost/` directory contains a .NET Aspire orchestrator that starts cdk-mintd, BitCaster.Server, and the Vite frontend together.
+
+Prerequisites: .NET 10+ SDK, Docker, Node.js + npm
+
+```bash
+cd AppHost
+dotnet run
+```
+
+This builds cdk-mintd from `cdk/Dockerfile` (slow first run due to Nix), starts the mint on port 8085 with fakewallet, starts BitCaster.Server, runs `npm install` + `npm run dev` for the frontend, and opens the Aspire dashboard (typically `https://localhost:17225`).
+
+The frontend's Vite dev server proxies `/v1/*` requests to the mint. The `VITE_MINT_URL` and `VITE_SERVER_URL` env vars are set automatically by Aspire.
 
 ## Infrastructure
 

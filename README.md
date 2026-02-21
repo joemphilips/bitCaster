@@ -17,6 +17,8 @@ The relevant NUT specifications are in the `nuts/` submodule (branch `nuts_for_p
 | `NUT-CTF-split-merge.md` | Split one outcome token into multiple sub-outcomes |
 | `NUT-CTF-numeric.md` | Numeric range outcome tokens |
 
+Or checkout this [PR](https://github.com/cashubtc/nuts/pull/337)
+
 ---
 
 ## Monorepo Structure
@@ -27,6 +29,8 @@ bitCaster/
 ├── cdk/                submodule — Cashu Development Kit (joemphilips/cdk @ bitCaster)
 ├── bitCaster-design/   React design tool with product specs and UI mockups
 ├── bitCaster/          PWA frontend (React 19 + Vite + cashu-ts + NDK)
+├── BitCaster.Server/   Matching engine + real-time price feed (ASP.NET minimal API + SignalR)
+├── AppHost/            .NET Aspire orchestrator (local dev: mint + server + frontend)
 └── infrastructure/     Terraform for Azure (Container Apps, PostgreSQL, Static Web Apps)
 ```
 
@@ -42,6 +46,8 @@ bitCaster/
 | Terraform | ≥ 1.6 |
 | Azure CLI | ≥ 2.55 (for infra) |
 | Rust + cargo | latest stable (to build CDK locally) |
+| .NET SDK | ≥ 10.0 (for BitCaster.Server and Aspire) |
+| Docker | latest (for Aspire local dev) |
 
 ---
 
@@ -79,7 +85,32 @@ Build for production:
 npm run build                 # output in dist/
 ```
 
-### 3. CDK mint (local development)
+### 3. Matching Engine Server
+
+```bash
+cd BitCaster.Server
+dotnet run                    # → http://localhost:5000
+```
+
+The server provides:
+- **CLOB matching engine** — `POST /api/v1/orders`, `DELETE /api/v1/orders/{id}`
+- **Orderbook snapshots** — `GET /api/v1/markets/{marketId}/orderbook`
+- **Real-time price feed** — SignalR hub at `/hubs/market` (broadcasts `OrderBookUpdated` and `TradeExecuted`)
+
+Order books are in-memory and ephemeral — if the server restarts, users resubmit orders. The mint remains the source of truth for token state.
+
+### 4. Local Dev with Aspire (recommended)
+
+The easiest way to run everything together:
+
+```bash
+cd AppHost
+dotnet run
+```
+
+This starts cdk-mintd, BitCaster.Server, and the Vite frontend together. The Aspire dashboard (typically `https://localhost:17225`) shows all services.
+
+### 5. CDK mint (standalone)
 
 ```bash
 cd cdk
@@ -88,7 +119,7 @@ cargo run --bin cdk-mintd -- --help
 
 Refer to `cdk/README.md` for full configuration options.
 
-### 4. Infrastructure (Azure)
+### 6. Infrastructure (Azure)
 
 ```bash
 cd infrastructure
@@ -126,11 +157,16 @@ See `nuts/NUT-CTF.md` for the complete specification.
 
 ```
 User Browser (PWA)
-  │  cashu-ts  ←→  CDK mintd (Azure Container Apps)
-  │  NDK       ←→  Nostr relays (oracle announcements)
-  │  NWC       ←→  Lightning wallet (top-up)
+  │  cashu-ts   ←→  CDK mintd (Azure Container Apps)
+  │  NDK        ←→  Nostr relays (oracle announcements)
+  │  NWC        ←→  Lightning wallet (top-up)
+  │  SignalR    ←→  BitCaster.Server (matching engine + price feed)
+  │  REST       ←→  BitCaster.Server (order submission)
   │
   └─ Azure Static Web Apps (CDN)
+
+BitCaster.Server
+  └─ In-memory order books (ConcurrentDictionary per market)
 
 CDK mintd
   ├─ PostgreSQL Flexible Server (state)
