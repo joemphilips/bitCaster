@@ -1,0 +1,36 @@
+---
+title: bitCaster Docs
+description: Documentation for bitCaster — a prediction market powered by Cashu CTF tokens and DLC oracles.
+template: splash
+hero:
+  tagline: A prediction market powered by Cashu CTF tokens and DLC oracles on Nostr.
+  image:
+    file: ../../assets/hero-logo.svg
+  actions:
+    - text: Get Started
+      link: /user-guide/getting-started/overview/
+      icon: right-arrow
+    - text: Technical Reference
+      link: /technical/architecture/overview/
+      icon: open-book
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Explore
+
+<CardGrid stagger>
+	<Card title="User Guide" icon="open-book">
+		Learn how to set up your wallet, browse markets, and trade positions.
+	</Card>
+	<Card title="NUT-CTF Protocol" icon="document">
+		Understand the Conditional Timed Fungible token protocol that powers bitCaster.
+	</Card>
+	<Card title="API Reference" icon="setting">
+		Mint endpoints and integration details for developers.
+	</Card>
+	<Card title="DLC Oracle" icon="star">
+		How Nostr kind-88 oracle announcements drive market resolution.
+	</Card>
+</CardGrid>

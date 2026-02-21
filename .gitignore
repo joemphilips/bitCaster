@@ -23,6 +23,13 @@ override.tf.json
 # Rust / CDK (built locally)
 target/
 
+# .NET / Aspire
+bin/
+obj/
+
+# Astro
+bitCaster-doc/.astro/
+
 # OS
 .DS_Store
 Thumbs.db

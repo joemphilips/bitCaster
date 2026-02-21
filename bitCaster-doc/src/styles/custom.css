@@ -1,0 +1,39 @@
+/* bitCaster design tokens mapped to Starlight CSS custom properties */
+
+:root {
+	--sl-font: 'Inter', sans-serif;
+	--sl-font-mono: 'JetBrains Mono', monospace;
+
+	/* Accent color ramp — bitcoin orange #f7931a */
+	--sl-color-accent-low: #3d2506;
+	--sl-color-accent: #f7931a;
+	--sl-color-accent-high: #fcd9a8;
+
+	/* Gray ramp — slate scale (dark theme) */
+	--sl-color-gray-1: #e2e8f0;
+	--sl-color-gray-2: #cbd5e1;
+	--sl-color-gray-3: #94a3b8;
+	--sl-color-gray-4: #64748b;
+	--sl-color-gray-5: #475569;
+	--sl-color-gray-6: #1e293b;
+	--sl-color-gray-7: #0a0a0a;
+
+	--sl-color-black: #0a0a0a;
+}
+
+/* Light theme overrides — inverted slate scale */
+:root[data-theme='light'] {
+	--sl-color-accent-low: #fef3e2;
+	--sl-color-accent: #d97706;
+	--sl-color-accent-high: #6b3a0a;
+
+	--sl-color-gray-1: #1e293b;
+	--sl-color-gray-2: #334155;
+	--sl-color-gray-3: #475569;
+	--sl-color-gray-4: #94a3b8;
+	--sl-color-gray-5: #cbd5e1;
+	--sl-color-gray-6: #f1f5f9;
+	--sl-color-gray-7: #f8fafc;
+
+	--sl-color-black: #f8fafc;
+}
