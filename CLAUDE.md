@@ -28,6 +28,7 @@ Required variables:
 
 ```
 bitCaster/           React 19 + Vite PWA frontend
+bitCaster-doc/       Astro Starlight documentation site (GitHub Pages)
 bitCaster-design/    Design system, specs, and mockups
 infrastructure/      Terraform for Azure (Container Apps, PostgreSQL, Static Web Apps)
 nuts/                Cashu NUT specifications (submodule, branch: nuts_for_prediction_markets)
@@ -73,6 +74,22 @@ Reference `bitCaster-design/product/` for UI specs and mockups:
 - `product/sections/` — per-section specs, types, mock data, and screenshots
 - `product/shell/spec.md` — app shell layout
 - `product/product-overview.md` — product overview and roadmap
+
+## Documentation Site
+
+The `bitCaster-doc/` directory contains an Astro Starlight documentation site.
+
+```bash
+cd bitCaster-doc
+npm run dev          # Astro dev server
+npm run build        # static build to dist/
+npm run preview      # preview production build
+```
+
+- Themed with bitCaster design tokens (bitcoin orange `#f7931a`, slate neutrals, Inter + JetBrains Mono)
+- Sidebar auto-generated from `src/content/docs/` directory structure
+- Deployed to GitHub Pages via `.github/workflows/deploy-docs.yml` on push to `main`
+- Uses Starlight's CSS custom property system (`--sl-*`), not Tailwind
 
 ## Infrastructure
 
