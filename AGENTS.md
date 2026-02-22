@@ -49,16 +49,18 @@ infrastructure/      Terraform for Azure (Container Apps, PostgreSQL, Static Web
 nuts/                Cashu NUT specifications (submodule, branch: nuts_for_prediction_markets)
 cdk/                 Cashu Development Kit (submodule, branch: bitCaster at joemphilips/cdk)
 cashu.me/            Reference cashu wallet (no CTF feature)
+tests/E2E/           Playwright + Aspire E2E tests (xUnit)
 ```
 
 ## Local Dev
 
-`AppHost/` is the entry point for development — it launches the CDK mint, BitCaster.Server, and Vite frontend together via .NET Aspire. See `.claude/rules/aspire.md` for details.
+- `AppHost/` is the entry point for development — it launches the CDK mint, BitCaster.Server, and Vite frontend together via .NET Aspire. See `.claude/rules/aspire.md` for details.
+- Prefer TDD approach: When you create a plan. First have a happy path tests in `E2E` test project. And then, create unit tests for non-happy path. And then start implementation. Continue until the test passes.
 
 ### Before Committing
 
 1. **All tests pass** — run `dotnet test` from the repo root and ensure all unit and integration tests are green.
-2. **Codex review passes** — run `codex exec review`, fix any reported issues, and repeat until codex returns LGTM.
+2. **Codex review passes** — run `codex exec review --uncommitted`, fix any reported issues, and repeat until codex returns LGTM.
 
 ## Project-Specific Details
 
@@ -70,3 +72,4 @@ See `.claude/rules/` for details on each subproject:
 - `design.md` — Design system references
 - `aspire.md` — Local dev orchestration with .NET Aspire
 - `infrastructure.md` — Terraform / Azure deployment
+- `e2e-tests.md` — E2E testing with Playwright + Aspire
