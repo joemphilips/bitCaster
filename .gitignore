@@ -7,6 +7,7 @@ dist/
 
 # Vite
 *.local
+*.tsbuildinfo
 
 # Terraform
 **/.terraform/
