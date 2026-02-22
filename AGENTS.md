@@ -40,7 +40,6 @@ See `nuts/CTF.md` for the complete specification.
 ## Monorepo Layout
 
 ```
-AppHost/             .NET Aspire orchestrator (local dev: mint + server + frontend)
 BitCaster.Server/    Matching engine + real-time price feed (ASP.NET minimal API + SignalR)
 bitCaster/           React 19 + Vite PWA frontend
 bitCaster-doc/       Astro Starlight documentation site (GitHub Pages)
@@ -69,8 +68,6 @@ cd bitCaster && npm install && npm run dev
 
 The mint runs on port 8085, the server on port 5000, and the frontend on port 5173. The frontend's `.env` is pre-configured with these values.
 
-**Alternative:** `AppHost/` contains a .NET Aspire orchestrator that can start all services together. See `.claude/rules/aspire.md` for details.
-
 - Prefer TDD approach: When you create a plan. First have a happy path tests in `E2E` test project. And then, create unit tests for non-happy path. And then start implementation. Continue until the test passes.
 
 ### Before Committing
@@ -86,6 +83,5 @@ See `.claude/rules/` for details on each subproject:
 - `nut-ctf.md` — NUT-CTF protocol and specs
 - `doc-site.md` — Astro Starlight documentation site
 - `design.md` — Design system references
-- `aspire.md` — Local dev orchestration with .NET Aspire
 - `infrastructure.md` — Terraform / Azure deployment
 - `e2e-tests.md` — E2E testing with Playwright + docker-compose

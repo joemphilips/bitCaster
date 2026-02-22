@@ -30,7 +30,6 @@ bitCaster/
 ├── bitCaster-design/   React design tool with product specs and UI mockups
 ├── bitCaster/          PWA frontend (React 19 + Vite + cashu-ts + NDK)
 ├── BitCaster.Server/   Matching engine + real-time price feed (ASP.NET minimal API + SignalR)
-├── AppHost/            .NET Aspire orchestrator (local dev: mint + server + frontend)
 └── infrastructure/     Terraform for Azure (Container Apps, PostgreSQL, Static Web Apps)
 ```
 
@@ -46,8 +45,8 @@ bitCaster/
 | Terraform | ≥ 1.6 |
 | Azure CLI | ≥ 2.55 (for infra) |
 | Rust + cargo | latest stable (to build CDK locally) |
-| .NET SDK | ≥ 10.0 (for BitCaster.Server and Aspire) |
-| Docker | latest (for Aspire local dev) |
+| .NET SDK | ≥ 10.0 (for BitCaster.Server) |
+| Docker | latest (for mintd via docker-compose) |
 
 ---
 
@@ -99,16 +98,20 @@ The server provides:
 
 Order books are in-memory and ephemeral — if the server restarts, users resubmit orders. The mint remains the source of truth for token state.
 
-### 4. Local Dev with Aspire (recommended)
+### 4. Local Dev (all services)
 
-The easiest way to run everything together:
+Run all three services in separate terminals:
 
 ```bash
-cd AppHost
-dotnet run
-```
+# Terminal 1: Start mint
+docker compose up mintd
 
-This starts cdk-mintd, BitCaster.Server, and the Vite frontend together. The Aspire dashboard (typically `https://localhost:17225`) shows all services.
+# Terminal 2: Start server
+cd BitCaster.Server && dotnet run
+
+# Terminal 3: Start frontend
+cd bitCaster && npm install && npm run dev
+```
 
 ### 5. CDK mint (standalone)
 
