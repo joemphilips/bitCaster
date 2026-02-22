@@ -1,39 +1,78 @@
 using System.Diagnostics;
-using Aspire.Hosting;
-using Aspire.Hosting.ApplicationModel;
-using Aspire.Hosting.Testing;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
 
 namespace BitCaster.E2ETest;
 
 public class SettingsPageTests : IAsyncLifetime
 {
-    private DistributedApplication? _app;
     private IPlaywright? _playwright;
     private IBrowser? _browser;
     private Process? _viteProcess;
+    private Process? _serverProcess;
     private const int VitePort = 5173;
+    private const int MintPort = 8085;
+    private const int ServerPort = 5000;
+
+    private static string RepoRoot =>
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 
     public async Task InitializeAsync()
     {
-        // Build the Aspire app from the AppHost project
-        var builder = await DistributedApplicationTestingBuilder
-            .CreateAsync<Projects.AppHost>();
+        // 1. Start mintd via docker compose
+        var composeUp = Process.Start(new ProcessStartInfo
+        {
+            FileName = "docker",
+            Arguments = "compose up -d mintd",
+            WorkingDirectory = RepoRoot,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        });
+        if (composeUp is not null)
+            await composeUp.WaitForExitAsync();
 
-        _app = await builder.BuildAsync();
-        await _app.StartAsync();
+        // Poll until mintd is healthy
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        var mintUrl = $"http://localhost:{MintPort}/v1/info";
+        var deadline = DateTime.UtcNow.AddMinutes(15);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                var response = await httpClient.GetAsync(mintUrl);
+                if (response.IsSuccessStatusCode)
+                    break;
+            }
+            catch
+            {
+                // Not ready yet
+            }
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
 
-        // Wait for mintd (Docker container) — can take 10+ minutes on first build.
-        using var waitCts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-        await _app.ResourceNotifications
-            .WaitForResourceAsync("mintd", KnownResourceStates.Running, waitCts.Token);
+        // 2. Start BitCaster.Server
+        var serverDir = Path.Combine(RepoRoot, "BitCaster.Server");
+        _serverProcess = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                Arguments = "run --no-launch-profile",
+                WorkingDirectory = serverDir,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                Environment =
+                {
+                    ["ASPNETCORE_URLS"] = $"http://localhost:{ServerPort}",
+                    ["Mint__Url"] = $"http://localhost:{MintPort}",
+                },
+            }
+        };
+        _serverProcess.Start();
 
-        // AddViteApp's process doesn't reliably start in Aspire testing mode,
-        // so we launch the Vite dev server manually.
-        var frontendDir = Path.GetFullPath(
-            Path.Combine(_app.Services.GetRequiredService<Aspire.Hosting.DistributedApplicationOptions>().ProjectDirectory!, "..", "bitCaster"));
-
+        // 3. Start Vite dev server
+        var frontendDir = Path.Combine(RepoRoot, "bitCaster");
         _viteProcess = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -50,9 +89,8 @@ public class SettingsPageTests : IAsyncLifetime
 
         // Poll until the Vite dev server responds
         var frontendUrl = $"http://localhost:{VitePort}";
-        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        var deadline = DateTime.UtcNow.AddMinutes(2);
-        while (DateTime.UtcNow < deadline)
+        var viteDeadline = DateTime.UtcNow.AddMinutes(2);
+        while (DateTime.UtcNow < viteDeadline)
         {
             try
             {
@@ -67,7 +105,7 @@ public class SettingsPageTests : IAsyncLifetime
             await Task.Delay(TimeSpan.FromSeconds(2));
         }
 
-        // Launch Playwright headless Chromium
+        // 4. Launch Playwright headless Chromium
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
@@ -113,7 +151,23 @@ public class SettingsPageTests : IAsyncLifetime
             await _viteProcess.WaitForExitAsync();
         }
 
-        if (_app is not null)
-            await _app.DisposeAsync();
+        if (_serverProcess is not null && !_serverProcess.HasExited)
+        {
+            _serverProcess.Kill(entireProcessTree: true);
+            await _serverProcess.WaitForExitAsync();
+        }
+
+        // Tear down docker compose services
+        var composeDown = Process.Start(new ProcessStartInfo
+        {
+            FileName = "docker",
+            Arguments = "compose down",
+            WorkingDirectory = RepoRoot,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        });
+        if (composeDown is not null)
+            await composeDown.WaitForExitAsync();
     }
 }

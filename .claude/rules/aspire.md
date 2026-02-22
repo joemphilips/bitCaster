@@ -5,6 +5,8 @@ paths:
 
 # Local Dev with Aspire
 
+> **Note:** Aspire is optional. The recommended local dev approach uses `docker compose up mintd` at the repo root. See AGENTS.md for details.
+
 The `AppHost/` directory contains a .NET Aspire orchestrator that starts cdk-mintd, BitCaster.Server, and the Vite frontend together.
 
 Prerequisites: .NET 10+ SDK, Docker, Node.js + npm

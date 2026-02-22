@@ -49,12 +49,28 @@ infrastructure/      Terraform for Azure (Container Apps, PostgreSQL, Static Web
 nuts/                Cashu NUT specifications (submodule, branch: nuts_for_prediction_markets)
 cdk/                 Cashu Development Kit (submodule, branch: bitCaster at joemphilips/cdk)
 cashu.me/            Reference cashu wallet (no CTF feature)
-tests/E2E/           Playwright + Aspire E2E tests (xUnit)
+tests/E2E/           Playwright E2E tests (xUnit, docker-compose)
 ```
 
 ## Local Dev
 
-- `AppHost/` is the entry point for development — it launches the CDK mint, BitCaster.Server, and Vite frontend together via .NET Aspire. See `.claude/rules/aspire.md` for details.
+The recommended workflow uses `docker-compose.yml` at the repo root to run the mint, then launches the server and frontend separately:
+
+```bash
+# Terminal 1: Start mint
+docker compose up mintd
+
+# Terminal 2: Start server
+cd BitCaster.Server && dotnet run
+
+# Terminal 3: Start frontend
+cd bitCaster && npm install && npm run dev
+```
+
+The mint runs on port 8085, the server on port 5000, and the frontend on port 5173. The frontend's `.env` is pre-configured with these values.
+
+**Alternative:** `AppHost/` contains a .NET Aspire orchestrator that can start all services together. See `.claude/rules/aspire.md` for details.
+
 - Prefer TDD approach: When you create a plan. First have a happy path tests in `E2E` test project. And then, create unit tests for non-happy path. And then start implementation. Continue until the test passes.
 
 ### Before Committing
@@ -72,4 +88,4 @@ See `.claude/rules/` for details on each subproject:
 - `design.md` — Design system references
 - `aspire.md` — Local dev orchestration with .NET Aspire
 - `infrastructure.md` — Terraform / Azure deployment
-- `e2e-tests.md` — E2E testing with Playwright + Aspire
+- `e2e-tests.md` — E2E testing with Playwright + docker-compose
