@@ -33,3 +33,14 @@ No linter or formatter is configured — rely on `tsc --strict` for correctness.
 - `@cashu/cashu-ts` ^2.3.0 — CashuWallet, CashuMint, Proof types
 - `@nostr-dev-kit/ndk` ^2.11.0 — NDK singleton, NDKNip07Signer, NDKPrivateKeySigner
 - `@nostr-dev-kit/ndk-wallet` ^0.3.8 — NDKNWCWallet for NWC pairing
+
+## Environment Setup
+
+```bash
+cp bitCaster/.env.example bitCaster/.env
+```
+
+Required variables:
+- `VITE_MINT_URL` — Cashu mint endpoint (default `http://localhost:3338`)
+- `VITE_SERVER_URL` — BitCaster.Server endpoint (default `http://localhost:5000`)
+- `VITE_ORACLE_PUBKEY` — (optional) hex pubkey for DLC oracle announcements
