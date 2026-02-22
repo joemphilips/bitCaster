@@ -85,3 +85,25 @@ See `.claude/rules/` for details on each subproject:
 - `design.md` — Design system references
 - `infrastructure.md` — Terraform / Azure deployment
 - `e2e-tests.md` — E2E testing with Playwright + docker-compose
+
+## Competitive Landscape
+
+When reviewing features or writing docs, keep these differentiators in mind:
+
+| | **bitCaster** | **Predyx** | **Polymarket** |
+|---|---|---|---|
+| **Custody** | Custodial mint, but bearer tokens held client-side ([trust model](https://bitcoin.design/guide/how-it-works/ecash/introduction/)) | Server-side (traditional exchange model) | Non-custodial (on-chain settlement on Polygon) |
+| **Matching** | CLOB (central limit order book) | AMM (automated market maker) | Hybrid CLOB (off-chain matching, on-chain settlement) |
+| **Privacy** | High — ecash + Lightning leave no on-chain trace | Low — all data server-side | Low — all trades visible on Polygon |
+| **Market creation** | Open — anyone can create markets via Nostr + DLC oracle specs | Closed — platform-controlled | Closed — platform-controlled |
+| **Token overhead** | None (Bitcoin/Lightning only) | None | Requires USDC on Polygon; bridging costs |
+| **Specs** | Open (NUT-CTF, Nostr kind 88, DLC) | Proprietary | Partially open (CLOB API docs public, protocol on Polygon) |
+
+### Key Trade-offs
+- **AMM vs CLOB**: AMMs (Predyx) bootstrap liquidity without market makers but suffer wide spreads in large outcome spaces and numerical markets. CLOBs (bitCaster, Polymarket) offer tighter spreads but require active market makers.
+- **On-chain vs ecash**: Polymarket's on-chain settlement provides full auditability but incurs gas costs, bridging friction, and public transaction history. bitCaster's ecash model trades on-chain auditability for instant settlement, zero gas, and strong privacy.
+
+Related services:
+- Predyx: https://beta.predyx.com/
+- Polymarket: https://polymarket.com
+- Polymarket CLOB docs: https://docs.polymarket.com/developers/CLOB/introduction

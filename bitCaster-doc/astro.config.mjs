@@ -71,6 +71,7 @@ export default defineConfig({
 						},
 					],
 				},
+				{ label: 'FAQ', link: '/faq/' },
 			],
 		}),
 	],
