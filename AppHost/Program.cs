@@ -9,7 +9,7 @@ var mintd = builder.AddDockerfile("mintd", "../cdk")
     .WithEnvironment("CDK_MINTD_LISTEN_PORT", "8085")
     .WithEnvironment("CDK_MINTD_DATABASE", "sqlite")
     .WithEnvironment("CDK_MINTD_CACHE_BACKEND", "memory")
-    .WithEnvironment("CDK_MINTD_MNEMONIC", "");
+    .WithEnvironment("CDK_MINTD_MNEMONIC", "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
 
 var mintEndpoint = mintd.GetEndpoint("mint-api");
 

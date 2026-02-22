@@ -55,6 +55,11 @@ cashu.me/            Reference cashu wallet (no CTF feature)
 
 `AppHost/` is the entry point for development — it launches the CDK mint, BitCaster.Server, and Vite frontend together via .NET Aspire. See `.claude/rules/aspire.md` for details.
 
+### Before Committing
+
+1. **All tests pass** — run `dotnet test` from the repo root and ensure all unit and integration tests are green.
+2. **Codex review passes** — run `codex exec review`, fix any reported issues, and repeat until codex returns LGTM.
+
 ## Project-Specific Details
 
 See `.claude/rules/` for details on each subproject:

@@ -60,4 +60,14 @@ export default defineConfig({
       "@": "/src",
     },
   },
+  server: {
+    port: parseInt(process.env.PORT || "5173"),
+    host: true,
+    proxy: {
+      "/v1": {
+        target: process.env.services__mintd__mint_api__0 ?? "http://localhost:8085",
+        changeOrigin: true,
+      },
+    },
+  },
 });
