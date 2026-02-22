@@ -89,9 +89,11 @@ public class SettingsPageTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        // Click the Settings nav link
-        var settingsLink = page.GetByRole(AriaRole.Link, new() { Name = "Settings" });
-        await settingsLink.ClickAsync();
+        // Open the user menu dropdown, then click Settings
+        var userMenuButton = page.GetByRole(AriaRole.Button, new() { Name = "Anon" });
+        await userMenuButton.ClickAsync();
+        var settingsButton = page.GetByRole(AriaRole.Button, new() { Name = "Settings" });
+        await settingsButton.ClickAsync();
 
         // Assert the Settings heading is visible
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Settings" });
