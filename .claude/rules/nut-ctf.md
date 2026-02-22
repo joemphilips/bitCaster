@@ -1,3 +1,9 @@
+---
+paths:
+  - "nuts/**/*"
+  - "cdk/**/*"
+---
+
 # NUT-CTF Protocol
 
 bitCaster uses Conditional Timed Fungible (CTF) tokens — Cashu proofs whose keysets are bound to a `condition_id` (32-byte hex derived by the mint from an oracle announcement).

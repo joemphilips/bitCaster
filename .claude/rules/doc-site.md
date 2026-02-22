@@ -1,3 +1,8 @@
+---
+paths:
+  - "bitCaster-doc/**/*"
+---
+
 # Documentation Site (bitCaster-doc)
 
 Astro Starlight documentation site.

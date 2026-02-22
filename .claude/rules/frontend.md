@@ -1,3 +1,8 @@
+---
+paths:
+  - "bitCaster/**/*"
+---
+
 # bitCaster Frontend (React PWA)
 
 ## Build & Dev

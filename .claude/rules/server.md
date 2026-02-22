@@ -1,3 +1,8 @@
+---
+paths:
+  - "BitCaster.Server/**/*"
+---
+
 # BitCaster.Server (Matching Engine)
 
 ASP.NET minimal API (`net10.0`) with SignalR. Two responsibilities only:

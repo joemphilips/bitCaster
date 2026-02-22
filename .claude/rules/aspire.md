@@ -1,3 +1,8 @@
+---
+paths:
+  - "AppHost/**/*"
+---
+
 # Local Dev with Aspire
 
 The `AppHost/` directory contains a .NET Aspire orchestrator that starts cdk-mintd, BitCaster.Server, and the Vite frontend together.

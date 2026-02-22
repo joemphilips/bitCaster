@@ -1,3 +1,8 @@
+---
+paths:
+  - "bitCaster-design/**/*"
+---
+
 # Design System
 
 Reference `bitCaster-design/product/` for UI specs and mockups:

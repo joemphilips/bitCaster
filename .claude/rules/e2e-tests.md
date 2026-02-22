@@ -1,3 +1,8 @@
+---
+paths:
+  - "tests/E2E/**/*"
+---
+
 # E2E Tests
 
 End-to-end tests live in `tests/E2E/` and use **Playwright** for browser automation with **.NET Aspire Testing** for service orchestration and **xUnit** as the test runner.
