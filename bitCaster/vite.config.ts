@@ -68,6 +68,10 @@ export default defineConfig({
         target: process.env.services__mintd__mint_api__0 ?? "http://localhost:8085",
         changeOrigin: true,
       },
+      "/api": {
+        target: "http://localhost:5000",
+        changeOrigin: true,
+      },
     },
   },
 });
