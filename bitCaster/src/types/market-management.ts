@@ -5,9 +5,7 @@
 export interface DashboardStats {
   activeMarketsCount: number
   resolvedMarketsCount: number
-  pendingMarketsCount: number
-  rejectedMarketsCount: number
-  cancelledMarketsCount: number
+  refundedMarketsCount: number
   totalVolumeSats: number
   totalFeesEarnedSats: number
   totalFeesClaimedSats: number
@@ -36,7 +34,7 @@ export interface CurrentOdds {
 // Creator Market Types
 // =============================================================================
 
-export type MarketStatus = 'pending' | 'approved' | 'rejected' | 'resolved' | 'cancelled'
+export type MarketStatus = 'active' | 'resolved' | 'refunded'
 export type MarketType = 'yesno' | 'categorical'
 
 interface BaseCreatorMarket {
@@ -56,13 +54,9 @@ interface BaseCreatorMarket {
   feesClaimedSats: number
   answerUrls: string[]
   // Optional status-specific dates
-  approvedDate?: string
-  rejectedDate?: string
-  rejectionReason?: string
   resolvedDate?: string
   winningOutcomeId?: string
-  cancelledDate?: string
-  cancellationReason?: string
+  refundedDate?: string
   refundedSats?: number
 }
 
@@ -261,7 +255,7 @@ export interface MarketCreationProps {
   /** Called when user submits a new market (triggers MarketCreated event) */
   onCreateMarket?: (wizardData: WizardDraft) => void
 
-  /** Called when user cancels a pending or active market (triggers MarketCancelled event) */
+  /** Called when user cancels an active market */
   onCancelMarket?: (marketId: string) => void
 
   /** Called when user claims fees from a resolved market (triggers CreatorFeeClaimed event) */

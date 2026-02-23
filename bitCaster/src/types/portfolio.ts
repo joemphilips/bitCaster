@@ -96,7 +96,7 @@ export interface ActivityItem {
 // Created Market Types
 // =============================================================================
 
-export type CreatedMarketStatus = 'pending' | 'approved' | 'rejected' | 'resolved' | 'cancelled'
+export type CreatedMarketStatus = 'active' | 'resolved' | 'refunded'
 
 export interface CreatedMarket {
   id: string
@@ -104,11 +104,8 @@ export interface CreatedMarket {
   imageUrl: string
   status: CreatedMarketStatus
   createdDate: string
-  approvedDate?: string
-  rejectedDate?: string
-  rejectionReason?: string
   resolvedDate?: string
-  cancelledDate?: string
+  refundedDate?: string
   volume: number
   creatorFeesEarned: number
   creatorFeePercent: number

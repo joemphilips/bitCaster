@@ -131,7 +131,7 @@ interface BaseMarketDetail {
   traderCount: number
   closingDate: string
   createdDate: string
-  approvedDate: string
+  activeSince: string
   likeCount: number
   isLiked: boolean
   creator: MarketCreator
