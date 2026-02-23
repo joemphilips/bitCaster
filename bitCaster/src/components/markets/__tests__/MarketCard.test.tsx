@@ -67,28 +67,26 @@ describe('MarketCard', () => {
     expect(screen.getByText('Team C')).toBeInTheDocument()
   })
 
-  it('opens trading overlay when Buy YES is clicked', async () => {
+  it('calls onViewMarket when Buy YES is clicked', async () => {
     const user = userEvent.setup()
+    const onViewMarket = vi.fn()
 
-    render(<MarketCard market={yesNoMarket} />)
+    render(<MarketCard market={yesNoMarket} onViewMarket={onViewMarket} />)
 
     await user.click(screen.getByText('Buy YES'))
 
-    // Trading overlay should show amount input and BUY button
-    expect(screen.getByRole('spinbutton')).toBeInTheDocument()
-    expect(screen.getByText(/^BUY/)).toBeInTheDocument()
+    expect(onViewMarket).toHaveBeenCalledWith('mkt-1')
   })
 
-  it('calls onBuyYes with marketId and amount on confirm', async () => {
+  it('calls onViewMarket when Buy NO is clicked', async () => {
     const user = userEvent.setup()
-    const onBuyYes = vi.fn()
+    const onViewMarket = vi.fn()
 
-    render(<MarketCard market={yesNoMarket} onBuyYes={onBuyYes} />)
+    render(<MarketCard market={yesNoMarket} onViewMarket={onViewMarket} />)
 
-    await user.click(screen.getByText('Buy YES'))
-    await user.click(screen.getByText(/^BUY/))
+    await user.click(screen.getByText('Buy NO'))
 
-    expect(onBuyYes).toHaveBeenCalledWith('mkt-1', 1000)
+    expect(onViewMarket).toHaveBeenCalledWith('mkt-1')
   })
 
   it('calls onViewMarket when card body is clicked', async () => {

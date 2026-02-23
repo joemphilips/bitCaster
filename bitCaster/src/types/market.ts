@@ -120,18 +120,6 @@ export interface FilterState {
 }
 
 // =============================================================================
-// Trade Mode Types
-// =============================================================================
-
-export interface TradeState {
-  marketId: string
-  outcomeId?: string // For categorical markets
-  side: 'yes' | 'no'
-  amount: number
-  predictedOdds: number
-}
-
-// =============================================================================
 // Component Props
 // =============================================================================
 
@@ -166,39 +154,11 @@ export interface MarketDiscoveryProps {
   /** Called when user changes closing date filter */
   onClosingDateChange?: (days?: number) => void
 
-  /** Called when user clicks Buy Yes on a yes/no market (triggers Bought event) */
-  onBuyYes?: (marketId: string, amount: number) => void
-
-  /** Called when user clicks Buy No on a yes/no market (triggers Bought event) */
-  onBuyNo?: (marketId: string, amount: number) => void
-
-  /** Called when user buys Yes on a specific outcome in a categorical market */
-  onBuyOutcomeYes?: (marketId: string, outcomeId: string, amount: number) => void
-
-  /** Called when user buys No on a specific outcome in a categorical market */
-  onBuyOutcomeNo?: (marketId: string, outcomeId: string, amount: number) => void
-
   /** Called when user navigates to market detail page */
   onViewMarket?: (marketId: string) => void
 
   /** Called when user scrolls to bottom and more markets should be loaded */
   onLoadMore?: () => void
-
-  /** Called when user buys a 2D Yes/No combo (e.g., Yes/Yes, Yes/No, etc.) */
-  onBuy2DYesNoCombo?: (
-    marketId: string,
-    baseOutcome: 'yes' | 'no',
-    secondaryOutcome: 'yes' | 'no',
-    amount: number
-  ) => void
-
-  /** Called when user buys a 2D categorical combo (categorical base + Yes/No secondary) */
-  onBuy2DCategoricalCombo?: (
-    marketId: string,
-    baseOutcomeId: string,
-    secondaryOutcome: 'yes' | 'no',
-    amount: number
-  ) => void
 
   /** Called when user clicks on a secondary market from expanded list */
   onViewSecondaryMarket?: (baseMarketId: string, secondaryMarketId: string) => void

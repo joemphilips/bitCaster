@@ -15,14 +15,8 @@ export function MarketDiscovery({
   onMarketTypeChange,
   onVolumeRangeChange,
   onClosingDateChange,
-  onBuyYes,
-  onBuyNo,
-  onBuyOutcomeYes,
-  onBuyOutcomeNo,
   onViewMarket,
   onLoadMore,
-  onBuy2DYesNoCombo,
-  onBuy2DCategoricalCombo,
   onViewSecondaryMarket,
 }: MarketDiscoveryProps) {
   const observerTarget = useRef<HTMLDivElement>(null)
@@ -134,12 +128,6 @@ export function MarketDiscovery({
                 key={market.id}
                 market={market}
                 secondaryMarketInfos={getSecondaryMarketInfos(market)}
-                onBuyYes={onBuyYes}
-                onBuyNo={onBuyNo}
-                onBuyOutcomeYes={onBuyOutcomeYes}
-                onBuyOutcomeNo={onBuyOutcomeNo}
-                onBuy2DYesNoCombo={onBuy2DYesNoCombo}
-                onBuy2DCategoricalCombo={onBuy2DCategoricalCombo}
                 onViewMarket={onViewMarket}
                 onViewSecondaryMarket={onViewSecondaryMarket}
               />

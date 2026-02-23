@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 import { MarketDiscovery } from '@/components/markets'
-import { fetchMarkets, filterMarkets, submitOrder } from '@/lib/markets'
+import { fetchMarkets, filterMarkets } from '@/lib/markets'
 import { getSampleMarkets, getSampleMetaTags, getSampleCategoryTags } from '@/lib/sample-markets'
 import type { Market, MarketType, VolumeRange, FilterState } from '@/types/market'
 
@@ -56,50 +56,6 @@ export function MarketsPage() {
     setFilter((prev) => ({ ...prev, closingInDays: days }))
   }, [])
 
-  const handleBuyYes = useCallback((marketId: string, amount: number) => {
-    submitOrder({
-      MarketId: marketId,
-      OutcomeId: 'yes',
-      Side: 'buy',
-      Type: 'market',
-      AmountSats: amount,
-      UserId: 'anon',
-    }).catch(console.error)
-  }, [])
-
-  const handleBuyNo = useCallback((marketId: string, amount: number) => {
-    submitOrder({
-      MarketId: marketId,
-      OutcomeId: 'no',
-      Side: 'buy',
-      Type: 'market',
-      AmountSats: amount,
-      UserId: 'anon',
-    }).catch(console.error)
-  }, [])
-
-  const handleBuyOutcomeYes = useCallback((marketId: string, outcomeId: string, amount: number) => {
-    submitOrder({
-      MarketId: marketId,
-      OutcomeId: outcomeId,
-      Side: 'buy',
-      Type: 'market',
-      AmountSats: amount,
-      UserId: 'anon',
-    }).catch(console.error)
-  }, [])
-
-  const handleBuyOutcomeNo = useCallback((marketId: string, outcomeId: string, amount: number) => {
-    submitOrder({
-      MarketId: marketId,
-      OutcomeId: outcomeId,
-      Side: 'buy',
-      Type: 'market',
-      AmountSats: amount,
-      UserId: 'anon',
-    }).catch(console.error)
-  }, [])
-
   const handleViewMarket = useCallback((marketId: string) => {
     navigate(`/markets/${marketId}`)
   }, [navigate])
@@ -107,34 +63,6 @@ export function MarketsPage() {
   const handleLoadMore = useCallback(() => {
     // No-op for M2 — all data loaded at once
   }, [])
-
-  const handle2DYesNoCombo = useCallback(
-    (marketId: string, baseOutcome: 'yes' | 'no', secondaryOutcome: 'yes' | 'no', amount: number) => {
-      submitOrder({
-        MarketId: marketId,
-        OutcomeId: `${baseOutcome}-${secondaryOutcome}`,
-        Side: 'buy',
-        Type: 'market',
-        AmountSats: amount,
-        UserId: 'anon',
-      }).catch(console.error)
-    },
-    []
-  )
-
-  const handle2DCategoricalCombo = useCallback(
-    (marketId: string, baseOutcomeId: string, secondaryOutcome: 'yes' | 'no', amount: number) => {
-      submitOrder({
-        MarketId: marketId,
-        OutcomeId: `${baseOutcomeId}-${secondaryOutcome}`,
-        Side: 'buy',
-        Type: 'market',
-        AmountSats: amount,
-        UserId: 'anon',
-      }).catch(console.error)
-    },
-    []
-  )
 
   const handleViewSecondaryMarket = useCallback(
     (_baseMarketId: string, secondaryMarketId: string) => {
@@ -161,14 +89,8 @@ export function MarketsPage() {
       onMarketTypeChange={handleMarketTypeChange}
       onVolumeRangeChange={handleVolumeRangeChange}
       onClosingDateChange={handleClosingDateChange}
-      onBuyYes={handleBuyYes}
-      onBuyNo={handleBuyNo}
-      onBuyOutcomeYes={handleBuyOutcomeYes}
-      onBuyOutcomeNo={handleBuyOutcomeNo}
       onViewMarket={handleViewMarket}
       onLoadMore={handleLoadMore}
-      onBuy2DYesNoCombo={handle2DYesNoCombo}
-      onBuy2DCategoricalCombo={handle2DCategoricalCombo}
       onViewSecondaryMarket={handleViewSecondaryMarket}
     />
   )

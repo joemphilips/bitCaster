@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Users, Droplet, X, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
+import { Users, Droplet, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
 import { formatBtc } from '@/lib/format'
 import type {
   Market,
@@ -17,26 +17,9 @@ interface SecondaryMarketInfo {
 interface MarketCardProps {
   market: Market
   secondaryMarketInfos?: SecondaryMarketInfo[]
-  onBuyYes?: (marketId: string, amount: number) => void
-  onBuyNo?: (marketId: string, amount: number) => void
-  onBuyOutcomeYes?: (marketId: string, outcomeId: string, amount: number) => void
-  onBuyOutcomeNo?: (marketId: string, outcomeId: string, amount: number) => void
-  onBuy2DYesNoCombo?: (marketId: string, baseOutcome: 'yes' | 'no', secondaryOutcome: 'yes' | 'no', amount: number) => void
-  onBuy2DCategoricalCombo?: (marketId: string, baseOutcomeId: string, secondaryOutcome: 'yes' | 'no', amount: number) => void
   onViewMarket?: (marketId: string) => void
   onViewSecondaryMarket?: (baseMarketId: string, secondaryMarketId: string) => void
   onLike?: (marketId: string) => void
-}
-
-interface TradeState {
-  side: 'yes' | 'no'
-  outcomeId?: string
-  outcomeLabel?: string
-  is2DCombo?: boolean
-  baseOutcome?: 'yes' | 'no'
-  secondaryOutcome?: 'yes' | 'no'
-  baseOutcomeId?: string
-  baseOutcomeLabel?: string
 }
 
 function CategoricalOutcomes({
@@ -386,19 +369,10 @@ function SecondaryMarketsExpander({
 export function MarketCard({
   market,
   secondaryMarketInfos,
-  onBuyYes,
-  onBuyNo,
-  onBuyOutcomeYes,
-  onBuyOutcomeNo,
-  onBuy2DYesNoCombo,
-  onBuy2DCategoricalCombo,
   onViewMarket,
   onViewSecondaryMarket,
   onLike,
 }: MarketCardProps) {
-  const [isTrading, setIsTrading] = useState(false)
-  const [tradeState, setTradeState] = useState<TradeState | null>(null)
-  const [amount, setAmount] = useState(1000)
   const [isSecondaryExpanded, setIsSecondaryExpanded] = useState(false)
 
   const handleCardClick = (e: React.MouseEvent) => {
@@ -407,40 +381,9 @@ export function MarketCard({
     onViewMarket?.(market.id)
   }
 
-  const handleYesNoClick = (e: React.MouseEvent, side: 'yes' | 'no') => {
+  const handleBuyClick = (e: React.MouseEvent) => {
     e.stopPropagation()
-    setTradeState({ side })
-    setIsTrading(true)
-  }
-
-  const handleOutcomeClick = (
-    outcomeId: string,
-    label: string,
-    side: 'yes' | 'no'
-  ) => {
-    setTradeState({ side, outcomeId, outcomeLabel: label })
-    setIsTrading(true)
-  }
-
-  const handle2DYesNoClick = (baseOutcome: 'yes' | 'no', secondaryOutcome: 'yes' | 'no') => {
-    setTradeState({
-      side: baseOutcome,
-      is2DCombo: true,
-      baseOutcome,
-      secondaryOutcome,
-    })
-    setIsTrading(true)
-  }
-
-  const handle2DCategoricalClick = (baseOutcomeId: string, baseOutcomeLabel: string, secondaryOutcome: 'yes' | 'no') => {
-    setTradeState({
-      side: secondaryOutcome,
-      is2DCombo: true,
-      baseOutcomeId,
-      baseOutcomeLabel,
-      secondaryOutcome,
-    })
-    setIsTrading(true)
+    onViewMarket?.(market.id)
   }
 
   const handleToggleSecondary = (e: React.MouseEvent) => {
@@ -453,89 +396,9 @@ export function MarketCard({
     onViewSecondaryMarket?.(market.id, secondaryId)
   }
 
-  const handleConfirmBuy = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!tradeState) return
-
-    if (market.type === 'yesno') {
-      if (tradeState.side === 'yes') {
-        onBuyYes?.(market.id, amount)
-      } else {
-        onBuyNo?.(market.id, amount)
-      }
-    } else if (market.type === 'categorical' && tradeState.outcomeId) {
-      if (tradeState.side === 'yes') {
-        onBuyOutcomeYes?.(market.id, tradeState.outcomeId, amount)
-      } else {
-        onBuyOutcomeNo?.(market.id, tradeState.outcomeId, amount)
-      }
-    } else if (market.type === 'twodimensional' && tradeState.is2DCombo) {
-      const twoDMarket = market as TwoDimensionalMarket
-      if (twoDMarket.baseMarketType === 'yesno' && twoDMarket.secondaryType === 'yesno') {
-        if (tradeState.baseOutcome && tradeState.secondaryOutcome) {
-          onBuy2DYesNoCombo?.(market.id, tradeState.baseOutcome, tradeState.secondaryOutcome, amount)
-        }
-      } else if (twoDMarket.baseMarketType === 'categorical' && twoDMarket.secondaryType === 'yesno') {
-        if (tradeState.baseOutcomeId && tradeState.secondaryOutcome) {
-          onBuy2DCategoricalCombo?.(market.id, tradeState.baseOutcomeId, tradeState.secondaryOutcome, amount)
-        }
-      }
-    }
-    setIsTrading(false)
-    setTradeState(null)
-    setAmount(1000)
-  }
-
-  const handleCancelTrade = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    setIsTrading(false)
-    setTradeState(null)
-    setAmount(1000)
-  }
-
   const handleLike = (e: React.MouseEvent) => {
     e.stopPropagation()
     onLike?.(market.id)
-  }
-
-  const getPredictedOdds = (currentOdd: number, buyAmount: number) => {
-    const shift = (buyAmount / 10000) * 0.5
-    return Math.min(99.9, Math.max(0.1, currentOdd + shift))
-  }
-
-  const getCurrentOdds = (): number => {
-    if (!tradeState) return 50
-
-    if (market.type === 'yesno') {
-      const yesNoMarket = market as YesNoMarket
-      return tradeState.side === 'yes'
-        ? yesNoMarket.currentOdds.yes
-        : yesNoMarket.currentOdds.no
-    }
-
-    if (market.type === 'categorical' && tradeState.outcomeId) {
-      const categoricalMarket = market as CategoricalMarket
-      const outcome = categoricalMarket.outcomes.find(
-        (o) => o.id === tradeState.outcomeId
-      )
-      return tradeState.side === 'yes'
-        ? outcome?.odds || 50
-        : 100 - (outcome?.odds || 50)
-    }
-
-    if (market.type === 'twodimensional' && tradeState.is2DCombo) {
-      const twoDMarket = market as TwoDimensionalMarket
-      if (twoDMarket.compositeOdds && tradeState.baseOutcome && tradeState.secondaryOutcome) {
-        const key = `${tradeState.baseOutcome}${tradeState.secondaryOutcome.charAt(0).toUpperCase() + tradeState.secondaryOutcome.slice(1)}` as keyof typeof twoDMarket.compositeOdds
-        return twoDMarket.compositeOdds[key]
-      }
-      if (twoDMarket.categoricalCompositeOdds && tradeState.baseOutcomeId && tradeState.secondaryOutcome) {
-        const outcomeOdds = twoDMarket.categoricalCompositeOdds[tradeState.baseOutcomeId]
-        return outcomeOdds?.[tradeState.secondaryOutcome] || 50
-      }
-    }
-
-    return 50
   }
 
   const renderNormalView = () => {
@@ -552,13 +415,13 @@ export function MarketCard({
 
           <div className="grid grid-cols-2 gap-2 flex-shrink-0">
             <button
-              onClick={(e) => handleYesNoClick(e, 'yes')}
+              onClick={handleBuyClick}
               className="py-2.5 bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-md"
             >
               Buy YES
             </button>
             <button
-              onClick={(e) => handleYesNoClick(e, 'no')}
+              onClick={handleBuyClick}
               className="py-2.5 bg-rose-600 hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-md"
             >
               Buy NO
@@ -571,8 +434,8 @@ export function MarketCard({
       return (
         <CategoricalOutcomes
           outcomes={categoricalMarket.outcomes}
-          onYesClick={(id, label) => handleOutcomeClick(id, label, 'yes')}
-          onNoClick={(id, label) => handleOutcomeClick(id, label, 'no')}
+          onYesClick={() => onViewMarket?.(market.id)}
+          onNoClick={() => onViewMarket?.(market.id)}
         />
       )
     } else if (market.type === 'twodimensional') {
@@ -582,7 +445,7 @@ export function MarketCard({
         return (
           <TwoDimensionalYesNoGrid
             market={twoDMarket}
-            onCellClick={handle2DYesNoClick}
+            onCellClick={() => onViewMarket?.(market.id)}
           />
         )
       }
@@ -591,7 +454,7 @@ export function MarketCard({
         return (
           <TwoDimensionalCategoricalGrid
             market={twoDMarket}
-            onCellClick={handle2DCategoricalClick}
+            onCellClick={() => onViewMarket?.(market.id)}
           />
         )
       }
@@ -617,98 +480,6 @@ export function MarketCard({
     }
   }
 
-  const renderTradingView = () => {
-    if (!tradeState) return null
-
-    const currentOdds = getCurrentOdds()
-    const predictedOdd = getPredictedOdds(currentOdds, amount)
-
-    let tradeLabel = tradeState.side.toUpperCase()
-    if (tradeState.outcomeLabel) {
-      tradeLabel = `${tradeState.side.toUpperCase()} on "${tradeState.outcomeLabel}"`
-    }
-    if (tradeState.is2DCombo) {
-      if (tradeState.baseOutcome && tradeState.secondaryOutcome) {
-        tradeLabel = `${tradeState.baseOutcome.toUpperCase()}/${tradeState.secondaryOutcome.toUpperCase()}`
-      } else if (tradeState.baseOutcomeLabel && tradeState.secondaryOutcome) {
-        tradeLabel = `${tradeState.baseOutcomeLabel} + ${tradeState.secondaryOutcome.toUpperCase()}`
-      }
-    }
-
-    return (
-      <div className="flex flex-col h-full animate-in fade-in-0 duration-200">
-        <button
-          onClick={handleCancelTrade}
-          className="absolute top-4 right-4 p-1.5 bg-slate-200/90 hover:bg-slate-300/90 dark:bg-slate-700/90 dark:hover:bg-slate-600/90 rounded-full transition-colors z-10"
-        >
-          <X className="w-4 h-4 text-slate-700 dark:text-slate-300" />
-        </button>
-
-        <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 line-clamp-2 mb-4 pr-8">
-          {market.title}
-        </h3>
-
-        <div
-          className={`rounded-lg p-4 text-center ${
-            tradeState.side === 'yes'
-              ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 dark:from-emerald-500 dark:to-emerald-400'
-              : 'bg-gradient-to-r from-rose-600 to-rose-500 dark:from-rose-500 dark:to-rose-400'
-          } text-white`}
-        >
-          <div className="text-xs font-medium opacity-90 mb-1">
-            Predicted odds after purchase
-          </div>
-          <div className="text-3xl font-bold">{predictedOdd.toFixed(1)}%</div>
-          <div className="text-xs font-medium opacity-75 mt-1">{tradeLabel}</div>
-        </div>
-
-        <div className="space-y-2 mt-4 flex-1">
-          <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
-            Amount (B)
-          </label>
-          <input
-            type="number"
-            value={amount}
-            onChange={(e) => setAmount(parseInt(e.target.value) || 0)}
-            onClick={(e) => e.stopPropagation()}
-            className="w-full px-4 py-2.5 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg text-slate-900 dark:text-slate-100 font-mono font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
-            min="0"
-            step="100"
-          />
-          <div className="flex gap-2">
-            {[500, 1000, 5000, 10000].map((preset) => (
-              <button
-                key={preset}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setAmount(preset)
-                }}
-                className={`flex-1 py-1.5 rounded text-xs font-medium transition-colors ${
-                  amount === preset
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300'
-                }`}
-              >
-                {preset >= 1000 ? `${preset / 1000}K` : preset}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <button
-          onClick={handleConfirmBuy}
-          className={`w-full py-3 rounded-lg font-bold text-sm text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg mt-4 ${
-            tradeState.side === 'yes'
-              ? 'bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600'
-              : 'bg-rose-600 hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600'
-          }`}
-        >
-          BUY B{amount.toLocaleString()}
-        </button>
-      </div>
-    )
-  }
-
   const secondaryCount = secondaryMarketInfos?.length || 0
   const expandedHeight = isSecondaryExpanded ? 280 + (secondaryCount * 44) : 280
 
@@ -719,11 +490,7 @@ export function MarketCard({
     <div
       onClick={handleCardClick}
       style={{ height: `${expandedHeight}px` }}
-      className={`group relative bg-white dark:bg-slate-900 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 transition-all duration-300 flex flex-col ${
-        isTrading
-          ? 'shadow-2xl ring-2 ring-blue-500'
-          : 'shadow-md hover:shadow-xl hover:scale-[1.01] cursor-pointer'
-      }`}
+      className="group relative bg-white dark:bg-slate-900 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 transition-all duration-300 flex flex-col shadow-md hover:shadow-xl hover:scale-[1.01] cursor-pointer"
     >
       <div className="flex items-start gap-3 p-4 pb-2 flex-shrink-0">
         <div className="relative w-12 h-12 flex-shrink-0 rounded-lg overflow-hidden bg-gradient-to-br from-slate-200 to-slate-300 dark:from-slate-800 dark:to-slate-700">
@@ -794,12 +561,6 @@ export function MarketCard({
           </button>
         </div>
       </div>
-
-      {isTrading && (
-        <div className="absolute inset-0 bg-white dark:bg-slate-900 z-20 p-6 flex flex-col rounded-xl">
-          {renderTradingView()}
-        </div>
-      )}
     </div>
   )
 }
