@@ -57,7 +57,7 @@ interface BaseMarket {
   traderCount: number
   closingDate: string
   createdDate: string
-  approvedDate: string
+  activeSince: string
   creatorFeePercent: number
   likeCount: number
   isLiked: boolean
