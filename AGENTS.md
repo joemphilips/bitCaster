@@ -27,6 +27,15 @@ CDK mintd
   └─ Key Vault (mint keys)
 ```
 
+## Design Principle — Open Protocol First
+
+Every feature should be an **open protocol defined in a NUT** and implemented in **CDK**, not a custom endpoint in BitCaster.Server.
+
+- The frontend talks directly to the mint for all protocol-level operations (e.g. market discovery via `/v1/conditions`, minting CTF tokens, settlement).
+- **BitCaster.Server exists only for the matching engine** (order book + real-time price feed via SignalR) — functionality that is inherently centralised and cannot be expressed as an open spec.
+- When adding a new feature, ask: *"Can this be a NUT endpoint on the mint?"* — if yes, it belongs in `nuts/` + `cdk/`, not in BitCaster.Server.
+- All information should be stored in users side as much as possible
+
 ## NUT-CTF Protocol Summary
 
 1. **Oracle announces** an event outcome as a Nostr event (kind 88)
