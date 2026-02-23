@@ -2,13 +2,13 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 import { MarketDiscovery } from '@/components/markets'
 import { fetchMarkets, filterMarkets } from '@/lib/markets'
-import { getSampleMarkets, getSampleMetaTags, getSampleCategoryTags } from '@/lib/sample-markets'
 import type { Market, MarketType, VolumeRange, FilterState } from '@/types/market'
 
 export function MarketsPage() {
   const navigate = useNavigate()
   const [markets, setMarkets] = useState<Market[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
   const [filter, setFilter] = useState<FilterState>({
     searchQuery: '',
@@ -17,23 +17,24 @@ export function MarketsPage() {
     volumeRange: {},
   })
 
-  useEffect(() => {
-    let cancelled = false
+  const loadMarkets = useCallback(() => {
     setLoading(true)
+    setError(null)
     fetchMarkets()
       .then((result) => {
-        if (cancelled) return
-        setMarkets(result.length > 0 ? result : getSampleMarkets())
+        setMarkets(result)
       })
       .catch(() => {
-        if (cancelled) return
-        setMarkets(getSampleMarkets())
+        setError('Failed to load markets. Please check that the mint is running.')
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        setLoading(false)
       })
-    return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    loadMarkets()
+  }, [loadMarkets])
 
   const filteredMarkets = useMemo(
     () => filterMarkets(markets, { ...filter, selectedTag }),
@@ -79,10 +80,24 @@ export function MarketsPage() {
     )
   }
 
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
+        <div className="text-red-400">{error}</div>
+        <button
+          onClick={loadMarkets}
+          className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
   return (
     <MarketDiscovery
-      metaTags={getSampleMetaTags()}
-      categoryTags={getSampleCategoryTags()}
+      metaTags={[]}
+      categoryTags={[]}
       markets={filteredMarkets}
       selectedTag={selectedTag}
       onTagSelect={handleTagSelect}
