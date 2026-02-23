@@ -50,7 +50,20 @@ public class MarketDiscoveryTests : IAsyncLifetime
             await Task.Delay(TimeSpan.FromSeconds(2));
         }
 
-        // 2. Start BitCaster.Server
+        // 2. Seed conditions into the mint
+        var seedProcess = Process.Start(new ProcessStartInfo
+        {
+            FileName = "docker",
+            Arguments = "compose run --rm seed",
+            WorkingDirectory = RepoRoot,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        });
+        if (seedProcess is not null)
+            await seedProcess.WaitForExitAsync();
+
+        // 3. Start BitCaster.Server
         var serverDir = Path.Combine(RepoRoot, "BitCaster.Server");
         _serverProcess = new Process
         {
@@ -71,7 +84,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         };
         _serverProcess.Start();
 
-        // 3. Start Vite dev server
+        // 4. Start Vite dev server
         var frontendDir = Path.Combine(RepoRoot, "bitCaster");
         _viteProcess = new Process
         {
@@ -105,7 +118,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
             await Task.Delay(TimeSpan.FromSeconds(2));
         }
 
-        // 4. Launch Playwright headless Chromium
+        // 5. Launch Playwright headless Chromium
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
@@ -114,7 +127,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task NavigateToMarkets_ShowsMarketCards()
+    public async Task NavigateToMarkets_ShowsSeededMarketCards()
     {
         Assert.NotNull(_browser);
 
@@ -125,13 +138,15 @@ public class MarketDiscoveryTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        // Market cards should be visible (sample data fallback if mint has no conditions)
-        var heading = page.GetByText("Will Bitcoin reach $100,000");
-        await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        // Seeded market cards should be visible
+        var btcMarket = page.GetByText("Will Bitcoin reach $100K");
+        await Assertions.Expect(btcMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
-        // Should also see Buy YES buttons
-        var buyYesButton = page.GetByRole(AriaRole.Button, new() { Name = "Buy YES" }).First;
-        await Assertions.Expect(buyYesButton).ToBeVisibleAsync();
+        var nbaMarket = page.GetByText("2026 NBA Championship Winner");
+        await Assertions.Expect(nbaMarket).ToBeVisibleAsync();
+
+        var fedMarket = page.GetByText("Fed Q1 2026 Rate Decision");
+        await Assertions.Expect(fedMarket).ToBeVisibleAsync();
     }
 
     [Fact]
@@ -160,26 +175,30 @@ public class MarketDiscoveryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task TagBar_ClickTag_FiltersView()
+    public async Task MintUnavailable_ShowsErrorState()
     {
         Assert.NotNull(_browser);
 
+        // This test verifies the error state when mint is down.
+        // We navigate with a broken proxy to simulate unavailability.
         var page = await _browser.NewPageAsync();
+
+        // Block the mint API to simulate failure
+        await page.RouteAsync("**/v1/conditions", route => route.AbortAsync());
+
         await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
         });
 
-        // Wait for tags to be visible
-        var trendingTag = page.GetByRole(AriaRole.Button, new() { Name = "Trending" });
-        await Assertions.Expect(trendingTag).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        // Should show error message
+        var errorText = page.GetByText("Failed to load markets");
+        await Assertions.Expect(errorText).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
-        // Click the Trending tag
-        await trendingTag.ClickAsync();
-
-        // The tag should become visually selected (verify it's still visible after click)
-        await Assertions.Expect(trendingTag).ToBeVisibleAsync();
+        // Should show retry button
+        var retryButton = page.GetByRole(AriaRole.Button, new() { Name = "Retry" });
+        await Assertions.Expect(retryButton).ToBeVisibleAsync();
     }
 
     public async Task DisposeAsync()

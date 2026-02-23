@@ -19,6 +19,10 @@ npm run preview      # preview production build
 
 No linter or formatter is configured — rely on `tsc --strict` for correctness.
 
+## No Dummy/Test Data in Production Code
+
+Never embed hardcoded sample or dummy data in the frontend source. The frontend must always fetch real data from the CDK mint (`GET /v1/conditions`). When the mint is unavailable or has no conditions, show an error state or empty state — never fall back to fake data. Test/seed data belongs in `tools/seed-conditions/` and is injected via docker-compose.
+
 ## Coding Conventions
 
 - **TypeScript strict mode** — `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch` are all enabled

@@ -48,6 +48,7 @@ infrastructure/      Terraform for Azure (Container Apps, PostgreSQL, Static Web
 nuts/                Cashu NUT specifications (submodule, branch: nuts_for_prediction_markets)
 cdk/                 Cashu Development Kit (submodule, branch: bitCaster at joemphilips/cdk)
 cashu.me/            Reference cashu wallet (no CTF feature)
+tools/               Dev tooling (seed scripts, etc.) — NOT inside cdk/
 tests/E2E/           Playwright E2E tests (xUnit, docker-compose)
 ```
 
@@ -69,6 +70,14 @@ cd bitCaster && npm install && npm run dev
 The mint runs on port 8085, the server on port 5000, and the frontend on port 5173. The frontend's `.env` is pre-configured with these values.
 
 - Prefer TDD approach: When you create a plan. First have a happy path tests in `E2E` test project. And then, create unit tests for non-happy path. And then start implementation. Continue until the test passes.
+
+### Data Seeding
+
+Test/seed data must **never** live in production frontend code. The frontend should show an honest empty or error state when the mint has no data.
+
+- Seed data is injected into the CDK mint at startup via `tools/seed-conditions/` (a standalone Rust binary that calls the mint's REST API)
+- The `seed` service in `docker-compose.yml` runs after `mintd` is healthy
+- To add or change seed markets, edit `tools/seed-conditions/src/main.rs`
 
 ### Before Committing
 
