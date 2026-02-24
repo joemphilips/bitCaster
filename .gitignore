@@ -34,3 +34,5 @@ bitCaster-doc/.astro/
 # OS
 .DS_Store
 Thumbs.db
+
+*.zip
