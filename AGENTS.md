@@ -91,7 +91,7 @@ Test/seed data must **never** live in production frontend code. The frontend sho
 ### Before Committing
 
 1. **All tests pass** — run `dotnet test` from the repo root and ensure all unit and integration tests are green.
-2. **Codex review passes** — run `codex exec review --uncommitted`, fix any reported issues, and repeat until codex returns LGTM.
+2. **Codex review passes** — run `codex exec review --uncommitted`, fix any reported issues, and repeat until codex returns LGTM. This is not necessary when you edit bitCaster-design.
 
 ## Project-Specific Details
 
