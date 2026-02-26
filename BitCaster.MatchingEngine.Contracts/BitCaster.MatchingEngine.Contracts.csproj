@@ -4,4 +4,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+
+  <!-- Embed OpenAPI + AsyncAPI specs in the NuGet package -->
+  <ItemGroup>
+    <None Include="specs\openapi.yaml" Pack="true" PackagePath="specs\" />
+    <None Include="specs\asyncapi.yaml" Pack="true" PackagePath="specs\" />
+  </ItemGroup>
+
+  <!-- Generate C# DTOs from OpenAPI spec before compile -->
+  <Target Name="NSwagGenerate" BeforeTargets="CoreCompile" Inputs="specs/openapi.yaml;nswag.json" Outputs="Generated/ApiContracts.g.cs">
+    <Exec Command="dotnet nswag run nswag.json" WorkingDirectory="$(MSBuildProjectDirectory)" />
+  </Target>
 </Project>

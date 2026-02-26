@@ -143,24 +143,18 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
   return result
 }
 
-// Order submission
+// Order submission — types from generated OpenAPI spec
 
-export interface SubmitOrderParams {
-  MarketId: string
-  OutcomeId: string
-  Side: 'buy' | 'sell'
-  Type: 'market' | 'limit'
-  Price?: number
-  AmountSats: number
-  UserId: string
-}
+import type { components } from '@/generated/api'
 
-export interface SubmitOrderResponse {
-  orderId: string
-  status: string
-}
+export type SubmitOrderRequest = components['schemas']['SubmitOrderRequest']
+export type SubmitOrderResponse = components['schemas']['SubmitOrderResponse']
+export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
+export type OutcomeSnapshot = components['schemas']['OutcomeSnapshot']
+export type LevelDto = components['schemas']['LevelDto']
+export type Fill = components['schemas']['Fill']
 
-export async function submitOrder(params: SubmitOrderParams): Promise<SubmitOrderResponse> {
+export async function submitOrder(params: SubmitOrderRequest): Promise<SubmitOrderResponse> {
   const response = await fetch('/api/v1/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

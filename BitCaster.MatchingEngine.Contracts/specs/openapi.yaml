@@ -1,0 +1,245 @@
+openapi: 3.1.0
+info:
+  title: BitCaster Matching Engine API
+  description: REST API for the BitCaster prediction market matching engine.
+  version: 0.1.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:5000
+    description: Local development
+
+paths:
+  /api/v1/orders:
+    post:
+      operationId: submitOrder
+      summary: Submit a new order
+      description: Submit a limit or market order to the matching engine.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitOrderRequest'
+      responses:
+        '200':
+          description: Order accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmitOrderResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                type: string
+
+  /api/v1/orders/{id}:
+    delete:
+      operationId: cancelOrder
+      summary: Cancel an existing order
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Order cancelled
+        '404':
+          description: Order not found
+
+  /api/v1/markets/{marketId}/orderbook:
+    get:
+      operationId: getOrderBook
+      summary: Get the current order book snapshot
+      parameters:
+        - name: marketId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current order book
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderBookSnapshot'
+
+components:
+  schemas:
+    Sats:
+      type: integer
+      format: int64
+      minimum: 0
+      description: A non-negative amount of satoshis.
+
+    Probability:
+      type: integer
+      minimum: 1
+      maximum: 99
+      description: A probability price representing a percentage chance [1, 99].
+
+    OrderSide:
+      type: string
+      enum:
+        - Buy
+        - Sell
+      description: Direction of an order relative to the outcome token.
+
+    OrderType:
+      type: string
+      enum:
+        - Limit
+        - Market
+      description: Execution semantics of an order.
+
+    MatchPath:
+      type: string
+      enum:
+        - Direct
+        - Complementary
+      description: How two orders were matched together.
+
+    Fill:
+      type: object
+      required:
+        - id
+        - takerOrderId
+        - makerOrderId
+        - amountSats
+        - executionPrice
+        - path
+        - filledAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique fill identifier.
+        takerOrderId:
+          type: string
+          format: uuid
+          description: The incoming (aggressor) order that triggered this fill.
+        makerOrderId:
+          type: string
+          format: uuid
+          description: The resting order that was matched against.
+        amountSats:
+          $ref: '#/components/schemas/Sats'
+        executionPrice:
+          $ref: '#/components/schemas/Probability'
+        path:
+          $ref: '#/components/schemas/MatchPath'
+        filledAt:
+          type: string
+          format: date-time
+          description: Timestamp when this fill was executed.
+
+    SubmitOrderRequest:
+      type: object
+      required:
+        - marketId
+        - outcomeId
+        - side
+        - type
+        - amountSats
+        - userId
+      properties:
+        marketId:
+          type: string
+          description: The condition_id of the target market.
+        outcomeId:
+          type: string
+          description: The outcome to trade (e.g. "YES", "NO").
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        type:
+          $ref: '#/components/schemas/OrderType'
+        price:
+          oneOf:
+            - $ref: '#/components/schemas/Probability'
+            - type: 'null'
+          description: Probability price in [1,99]. Required for limit orders, ignored for market orders.
+        amountSats:
+          $ref: '#/components/schemas/Sats'
+        userId:
+          type: string
+          description: Opaque user identifier (e.g. Nostr pubkey hex).
+
+    SubmitOrderResponse:
+      type: object
+      required:
+        - orderId
+        - status
+        - remainingAmountSats
+        - fills
+      properties:
+        orderId:
+          type: string
+          format: uuid
+          description: The unique identifier assigned to this order.
+        status:
+          type: string
+          description: >
+            One of: "filled", "partially_filled", "resting", "cancelled".
+        remainingAmountSats:
+          $ref: '#/components/schemas/Sats'
+        fills:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fill'
+          description: List of fills produced by this order. Empty if no matches.
+
+    LevelDto:
+      type: object
+      required:
+        - price
+        - amount
+      properties:
+        price:
+          $ref: '#/components/schemas/Probability'
+        amount:
+          $ref: '#/components/schemas/Sats'
+      description: A single price level in the order book depth.
+
+    OutcomeSnapshot:
+      type: object
+      required:
+        - bids
+        - asks
+      properties:
+        bids:
+          type: array
+          items:
+            $ref: '#/components/schemas/LevelDto'
+          description: Buy-side levels sorted by price descending (best bid first).
+        asks:
+          type: array
+          items:
+            $ref: '#/components/schemas/LevelDto'
+          description: Sell-side levels sorted by price ascending (best ask first).
+        spread:
+          oneOf:
+            - type: integer
+            - type: 'null'
+          description: Difference between best ask and best bid. Null if either side is empty.
+
+    OrderBookSnapshot:
+      type: object
+      required:
+        - marketId
+        - outcomes
+      properties:
+        marketId:
+          type: string
+          description: The condition_id of the market.
+        outcomes:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OutcomeSnapshot'
+          description: Per-outcome depth data, keyed by outcome ID (e.g. "YES", "NO").

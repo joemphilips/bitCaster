@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using BitCaster.MatchingEngine.Contracts;
 using BitCaster.MatchingEngine.Contracts.Domain;
 
 namespace BitCaster.InMemoryMatchingEngine;
@@ -63,21 +64,26 @@ public class InMemoryOrderBookManager
                     .Where(o => o.Side == OrderSide.Buy && o.Type == OrderType.Limit)
                     .OrderByDescending(o => o.Price)
                     .ThenBy(o => o.PlacedAt)
-                    .Select(o => new LevelDto(o.Price!.Value, o.RemainingAmountSats))
-                    .ToArray();
+                    .Select(o => new LevelDto(
+                        amount: o.RemainingAmountSats.Value,
+                        price: o.Price!.Value.Value))
+                    .ToList();
 
                 var asks = group
                     .Where(o => o.Side == OrderSide.Sell && o.Type == OrderType.Limit)
                     .OrderBy(o => o.Price)
                     .ThenBy(o => o.PlacedAt)
-                    .Select(o => new LevelDto(o.Price!.Value, o.RemainingAmountSats))
-                    .ToArray();
+                    .Select(o => new LevelDto(
+                        amount: o.RemainingAmountSats.Value,
+                        price: o.Price!.Value.Value))
+                    .ToList();
 
-                var spread = bids.Length > 0 && asks.Length > 0
+                var spread = bids.Count > 0 && asks.Count > 0
                     ? asks[0].Price - bids[0].Price
                     : (int?)null;
 
-                outcomes[group.Key] = new OutcomeSnapshot(bids, asks, spread);
+                outcomes[group.Key] = new OutcomeSnapshot(
+                    asks: asks, bids: bids, spread: spread);
             }
 
             return new OrderBookSnapshot(marketId, outcomes);

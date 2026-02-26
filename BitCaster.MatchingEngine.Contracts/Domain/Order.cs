@@ -2,6 +2,7 @@ namespace BitCaster.MatchingEngine.Contracts.Domain;
 
 /// <summary>
 /// A resting or incoming order on the matching engine's order book.
+/// This is an internal domain type — not part of the REST API wire format.
 /// </summary>
 /// <param name="Id">Unique identifier assigned by the matching engine.</param>
 /// <param name="MarketId">The condition_id of the market this order targets.</param>
@@ -30,20 +31,10 @@ public record Order(
     public Sats RemainingAmountSats { get; set; } = AmountSats;
 }
 
-/// <summary>Direction of an order relative to the outcome token.</summary>
-public enum OrderSide
-{
-    /// <summary>Buying outcome tokens (long the outcome).</summary>
-    Buy,
-    /// <summary>Selling outcome tokens (short the outcome).</summary>
-    Sell
-}
-
-/// <summary>Execution semantics of an order.</summary>
-public enum OrderType
-{
-    /// <summary>Rests on the book at the specified price until filled or cancelled.</summary>
-    Limit,
-    /// <summary>Executes immediately at best available price; unfilled remainder is cancelled.</summary>
-    Market
-}
+/// <summary>
+/// Result of attempting to match an incoming order against the book.
+/// Internal type — not part of the REST API.
+/// </summary>
+/// <param name="Fills">Zero or more fills produced by the match attempt.</param>
+/// <param name="RemainingSats">Unfilled satoshi amount after all matches.</param>
+public record MatchResult(List<Fill> Fills, Sats RemainingSats);

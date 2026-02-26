@@ -1,5 +1,6 @@
+using BitCaster.MatchingEngine.Contracts;
 using BitCaster.MatchingEngine.Contracts.Domain;
-using BitCaster.MatchingEngine.Contracts.Endpoints;
+using BitCaster.MatchingEngine.Contracts.Hubs;
 using BitCaster.InMemoryMatchingEngine.Hubs;
 using Microsoft.AspNetCore.SignalR;
 
@@ -12,12 +13,12 @@ public static class OrderEndpoints
         app.MapPost("/api/v1/orders", async (
             SubmitOrderRequest req,
             InMemoryOrderBookManager bookManager,
-            IHubContext<MarketHub> hubContext) =>
+            IHubContext<MarketHub, IMarketHubClient> hubContext) =>
         {
             if (req.Type == OrderType.Limit && req.Price is null)
                 return Results.BadRequest("Limit orders require a price.");
 
-            if (req.AmountSats <= Sats.Zero)
+            if (req.AmountSats <= 0)
                 return Results.BadRequest("AmountSats must be positive.");
 
             var order = new Order(
@@ -26,31 +27,31 @@ public static class OrderEndpoints
                 req.OutcomeId,
                 req.Side,
                 req.Type,
-                req.Price,
-                req.AmountSats,
+                req.Price is not null ? new Probability(req.Price.Value) : null,
+                new Sats(req.AmountSats),
                 req.UserId,
                 DateTimeOffset.UtcNow);
 
             bookManager.AddOrder(order);
 
             await hubContext.Clients.Group(req.MarketId)
-                .SendAsync("OrderBookUpdated", bookManager.GetSnapshot(req.MarketId));
+                .OrderBookUpdated(bookManager.GetSnapshot(req.MarketId));
 
             return Results.Ok(new SubmitOrderResponse(
-                order.Id, "resting", order.AmountSats, new List<Fill>()));
+                new List<Fill>(), order.Id, order.AmountSats.Value, "resting"));
         });
 
         app.MapDelete("/api/v1/orders/{id:guid}", async (
             Guid id,
             InMemoryOrderBookManager bookManager,
-            IHubContext<MarketHub> hubContext) =>
+            IHubContext<MarketHub, IMarketHubClient> hubContext) =>
         {
             var marketId = bookManager.GetMarketIdForOrder(id);
             if (marketId is null || !bookManager.CancelOrder(id))
                 return Results.NotFound();
 
             await hubContext.Clients.Group(marketId)
-                .SendAsync("OrderBookUpdated", bookManager.GetSnapshot(marketId));
+                .OrderBookUpdated(bookManager.GetSnapshot(marketId));
 
             return Results.Ok();
         });

@@ -1,8 +1,9 @@
+using BitCaster.MatchingEngine.Contracts.Hubs;
 using Microsoft.AspNetCore.SignalR;
 
 namespace BitCaster.InMemoryMatchingEngine.Hubs;
 
-public class MarketHub : Hub
+public class MarketHub : Hub<IMarketHubClient>
 {
     private readonly InMemoryOrderBookManager _bookManager;
 
@@ -11,7 +12,7 @@ public class MarketHub : Hub
     public async Task JoinMarket(string marketId)
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, marketId);
-        await Clients.Caller.SendAsync("OrderBookUpdated", _bookManager.GetSnapshot(marketId));
+        await Clients.Caller.OrderBookUpdated(_bookManager.GetSnapshot(marketId));
     }
 
     public async Task LeaveMarket(string marketId)

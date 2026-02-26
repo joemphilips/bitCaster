@@ -1,0 +1,153 @@
+asyncapi: 3.0.0
+info:
+  title: BitCaster Market Hub
+  description: SignalR hub for real-time order book updates.
+  version: 0.1.0
+  license:
+    name: MIT
+
+servers:
+  development:
+    host: localhost:5000
+    pathname: /hubs/market
+    protocol: signalr
+    description: Local development SignalR hub
+
+channels:
+  joinMarket:
+    address: JoinMarket
+    messages:
+      joinMarketRequest:
+        $ref: '#/components/messages/JoinMarketRequest'
+    description: Client joins a market group to receive order book updates.
+
+  leaveMarket:
+    address: LeaveMarket
+    messages:
+      leaveMarketRequest:
+        $ref: '#/components/messages/LeaveMarketRequest'
+    description: Client leaves a market group.
+
+  orderBookUpdated:
+    address: OrderBookUpdated
+    messages:
+      orderBookUpdatedMessage:
+        $ref: '#/components/messages/OrderBookUpdatedMessage'
+    description: Server pushes an updated order book snapshot to the market group.
+
+operations:
+  joinMarket:
+    action: send
+    channel:
+      $ref: '#/channels/joinMarket'
+    summary: Join a market group
+    description: >
+      Client invokes JoinMarket with a marketId. The server adds the connection
+      to the market's SignalR group and immediately replies with the current
+      OrderBookSnapshot via the OrderBookUpdated channel.
+    messages:
+      - $ref: '#/channels/joinMarket/messages/joinMarketRequest'
+
+  leaveMarket:
+    action: send
+    channel:
+      $ref: '#/channels/leaveMarket'
+    summary: Leave a market group
+    description: Client invokes LeaveMarket to stop receiving updates for a market.
+    messages:
+      - $ref: '#/channels/leaveMarket/messages/leaveMarketRequest'
+
+  orderBookUpdated:
+    action: receive
+    channel:
+      $ref: '#/channels/orderBookUpdated'
+    summary: Receive order book update
+    description: >
+      Server pushes an OrderBookSnapshot to all clients in the market group
+      whenever the order book changes (new order, cancellation, fill).
+    messages:
+      - $ref: '#/channels/orderBookUpdated/messages/orderBookUpdatedMessage'
+
+components:
+  messages:
+    JoinMarketRequest:
+      payload:
+        type: object
+        required:
+          - marketId
+        properties:
+          marketId:
+            type: string
+            description: The condition_id of the market to join.
+
+    LeaveMarketRequest:
+      payload:
+        type: object
+        required:
+          - marketId
+        properties:
+          marketId:
+            type: string
+            description: The condition_id of the market to leave.
+
+    OrderBookUpdatedMessage:
+      payload:
+        $ref: '#/components/schemas/OrderBookSnapshot'
+
+  schemas:
+    Sats:
+      type: integer
+      format: int64
+      minimum: 0
+      description: A non-negative amount of satoshis.
+
+    Probability:
+      type: integer
+      minimum: 1
+      maximum: 99
+      description: A probability price representing a percentage chance [1, 99].
+
+    LevelDto:
+      type: object
+      required:
+        - price
+        - amount
+      properties:
+        price:
+          $ref: '#/components/schemas/Probability'
+        amount:
+          $ref: '#/components/schemas/Sats'
+
+    OutcomeSnapshot:
+      type: object
+      required:
+        - bids
+        - asks
+      properties:
+        bids:
+          type: array
+          items:
+            $ref: '#/components/schemas/LevelDto'
+        asks:
+          type: array
+          items:
+            $ref: '#/components/schemas/LevelDto'
+        spread:
+          type:
+            - integer
+            - 'null'
+
+    OrderBookSnapshot:
+      type: object
+      required:
+        - marketId
+        - outcomes
+      properties:
+        marketId:
+          type: string
+          description: The condition_id of the market.
+        outcomes:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OutcomeSnapshot'
+          description: Per-outcome depth data, keyed by outcome ID.

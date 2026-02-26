@@ -1,0 +1,29 @@
+{
+  "runtime": "Net100",
+  "documentGenerator": {
+    "fromDocument": {
+      "url": "specs/openapi.yaml",
+      "output": null
+    }
+  },
+  "codeGenerators": {
+    "openApiToCSharpClient": {
+      "generateClientClasses": false,
+      "generateClientInterfaces": false,
+      "generateDtoTypes": true,
+      "generateOptionalParameters": false,
+      "generateDefaultValues": true,
+      "generateDataAnnotations": false,
+      "generateOptionalPropertiesAsNullable": true,
+      "namespace": "BitCaster.MatchingEngine.Contracts",
+      "classStyle": "Record",
+      "jsonLibrary": "SystemTextJson",
+      "dateType": "System.DateTimeOffset",
+      "dateTimeType": "System.DateTimeOffset",
+      "arrayType": "System.Collections.Generic.List",
+      "dictionaryType": "System.Collections.Generic.Dictionary",
+      "excludedTypeNames": ["Sats", "Probability"],
+      "output": "Generated/ApiContracts.g.cs"
+    }
+  }
+}
