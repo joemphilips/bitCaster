@@ -59,6 +59,7 @@ cdk/                 Cashu Development Kit (submodule, branch: bitCaster at joem
 cashu.me/            Reference cashu wallet (no CTF feature)
 tools/               Dev tooling (seed scripts, etc.) — NOT inside cdk/
 tests/E2E/           Playwright E2E tests (xUnit, docker-compose)
+plans/               Implementation plan documents that has been used by coding agents
 ```
 
 ## Local Dev
