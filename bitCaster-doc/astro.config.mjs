@@ -6,7 +6,7 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
 	output: 'static',
 	site: 'https://joemphilips.github.io',
-	base: process.env.BASE_URL ?? '/bitCaster-doc',
+	base: process.env.BASE_URL || '/bitCaster-doc',
 	integrations: [
 		starlight({
 			title: 'bitCaster Docs',
@@ -48,6 +48,10 @@ export default defineConfig({
 							label: 'Settings',
 							autogenerate: { directory: 'user-guide/settings' },
 						},
+						{
+							label: 'Protocol',
+							autogenerate: { directory: 'user-guide/protocol' },
+						},
 					],
 				},
 				{
@@ -68,6 +72,10 @@ export default defineConfig({
 						{
 							label: 'DLC Oracle',
 							autogenerate: { directory: 'technical/dlc-oracle' },
+						},
+						{
+							label: 'Protocol',
+							autogenerate: { directory: 'technical/protocol' },
 						},
 					],
 				},

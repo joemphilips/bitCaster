@@ -3,8 +3,8 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "dev": "astro dev",
-    "start": "astro dev",
+    "dev": "BASE_URL=/ astro dev",
+    "start": "BASE_URL=/ astro dev",
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro"
