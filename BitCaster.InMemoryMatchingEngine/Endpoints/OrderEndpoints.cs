@@ -14,10 +14,10 @@ public static class OrderEndpoints
             InMemoryOrderBookManager bookManager,
             IHubContext<MarketHub> hubContext) =>
         {
-            if (req.Type == OrderType.Limit && (req.Price is null or < 1 or > 99))
-                return Results.BadRequest("Limit orders require a price between 1 and 99.");
+            if (req.Type == OrderType.Limit && req.Price is null)
+                return Results.BadRequest("Limit orders require a price.");
 
-            if (req.AmountSats <= 0)
+            if (req.AmountSats <= Sats.Zero)
                 return Results.BadRequest("AmountSats must be positive.");
 
             var order = new Order(
