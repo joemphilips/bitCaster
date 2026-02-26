@@ -29,7 +29,7 @@ dotnet test tests/E2E/
 ## How It Works
 
 1. Test setup runs `docker compose up -d mintd` and polls `http://localhost:8085/v1/info` until healthy (15-min timeout for first build)
-2. `dotnet run` launches BitCaster.Server as a child process on port 5000
+2. `dotnet run` launches BitCaster.InMemoryMatchingEngine as a child process on port 5000
 3. `npx vite` launches the frontend dev server on port 5173
 4. Playwright launches headless Chromium and navigates to the frontend
 5. Tests use Playwright's locator API (accessibility queries preferred)

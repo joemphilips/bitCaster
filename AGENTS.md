@@ -14,12 +14,12 @@ User Browser (PWA)
   │  cashu-ts   ←→  CDK mintd (Azure Container Apps)
   │  NDK        ←→  Nostr relays (oracle announcements)
   │  NWC        ←→  Lightning wallet (top-up)
-  │  SignalR    ←→  BitCaster.Server (matching engine + price feed)
-  │  REST       ←→  BitCaster.Server (order submission)
+  │  SignalR    ←→  Matching Engine (matching engine + price feed)
+  │  REST       ←→  Matching Engine (order submission)
   │
   └─ Azure Static Web Apps (CDN)
 
-BitCaster.Server
+Matching Engine (private repo: bitCaster-matching-engine)
   └─ In-memory order books (ConcurrentDictionary per market)
 
 CDK mintd
@@ -29,11 +29,11 @@ CDK mintd
 
 ## Design Principle — Open Protocol First
 
-Every feature should be an **open protocol defined in a NUT** and implemented in **CDK**, not a custom endpoint in BitCaster.Server.
+Every feature should be an **open protocol defined in a NUT** and implemented in **CDK**, not a custom endpoint in the matching engine.
 
 - The frontend talks directly to the mint for all protocol-level operations (e.g. market discovery via `/v1/conditions`, minting CTF tokens, settlement).
-- **BitCaster.Server exists only for the matching engine** (order book + real-time price feed via SignalR) — functionality that is inherently centralised and cannot be expressed as an open spec.
-- When adding a new feature, ask: *"Can this be a NUT endpoint on the mint?"* — if yes, it belongs in `nuts/` + `cdk/`, not in BitCaster.Server.
+- **The matching engine exists only for the order book** (order book + real-time price feed via SignalR) — functionality that is inherently centralised and cannot be expressed as an open spec. The real implementation lives in a **private repo** (`bitCaster-matching-engine`); this monorepo contains only shared contracts and a mock server for development/testing.
+- When adding a new feature, ask: *"Can this be a NUT endpoint on the mint?"* — if yes, it belongs in `nuts/` + `cdk/`, not in the matching engine.
 - All information should be stored in users side as much as possible
 
 ## NUT-CTF Protocol Summary
@@ -49,7 +49,8 @@ See `nuts/CTF.md` for the complete specification.
 ## Monorepo Layout
 
 ```
-BitCaster.Server/    Matching engine + real-time price feed (ASP.NET minimal API + SignalR)
+BitCaster.MatchingEngine.Contracts/ Shared API contract types (DTOs, enums, request/response records)
+BitCaster.InMemoryMatchingEngine/   In-memory matching engine for dev/testing (stores orders, no matching)
 bitCaster/           React 19 + Vite PWA frontend
 bitCaster-doc/       Astro Starlight documentation site (GitHub Pages)
 bitCaster-design/    Design system, specs, and mockups
@@ -62,6 +63,8 @@ tests/E2E/           Playwright E2E tests (xUnit, docker-compose)
 plans/               Implementation plan documents that has been used by coding agents
 ```
 
+> **Note:** The real CLOB matching engine lives in a **private repo** at `~/working/src/cashu/bitCaster-matching-engine`. It references `BitCaster.MatchingEngine.Contracts` via git submodule.
+
 ## Local Dev
 
 The recommended workflow uses `docker-compose.yml` at the repo root to run the mint, then launches the server and frontend separately:
@@ -70,8 +73,8 @@ The recommended workflow uses `docker-compose.yml` at the repo root to run the m
 # Terminal 1: Start mint
 docker compose up mintd
 
-# Terminal 2: Start server
-cd BitCaster.Server && dotnet run
+# Terminal 2: Start in-memory matching engine
+cd BitCaster.InMemoryMatchingEngine && dotnet run
 
 # Terminal 3: Start frontend
 cd bitCaster && npm install && npm run dev
@@ -92,13 +95,12 @@ Test/seed data must **never** live in production frontend code. The frontend sho
 ### Before Committing
 
 1. **All tests pass** — run `dotnet test` from the repo root and ensure all unit and integration tests are green.
-2. **Codex review passes** — run `codex exec review --uncommitted`, fix any reported issues, and repeat until codex returns LGTM. This is not necessary when you edit bitCaster-design.
 
 ## Project-Specific Details
 
 See `.claude/rules/` for details on each subproject:
 - `frontend.md` — React PWA build commands, coding conventions, env setup, key files & libraries
-- `server.md` — BitCaster.Server matching engine & SignalR hub
+- `server.md` — BitCaster.MatchingEngine.Contracts + InMemoryMatchingEngine (contract/mock split)
 - `nut-ctf.md` — NUT-CTF protocol and specs
 - `doc-site.md` — Astro Starlight documentation site
 - `design.md` — Design system references

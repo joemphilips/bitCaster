@@ -50,8 +50,8 @@ public class SettingsPageTests : IAsyncLifetime
             await Task.Delay(TimeSpan.FromSeconds(2));
         }
 
-        // 2. Start BitCaster.Server
-        var serverDir = Path.Combine(RepoRoot, "BitCaster.Server");
+        // 2. Start BitCaster.InMemoryMatchingEngine
+        var serverDir = Path.Combine(RepoRoot, "BitCaster.InMemoryMatchingEngine");
         _serverProcess = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -65,7 +65,6 @@ public class SettingsPageTests : IAsyncLifetime
                 Environment =
                 {
                     ["ASPNETCORE_URLS"] = $"http://localhost:{ServerPort}",
-                    ["Mint__Url"] = $"http://localhost:{MintPort}",
                 },
             }
         };

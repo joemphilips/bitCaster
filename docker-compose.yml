@@ -31,12 +31,11 @@ services:
   server:
     build:
       context: .
-      dockerfile: BitCaster.Server/Dockerfile
+      dockerfile: BitCaster.InMemoryMatchingEngine/Dockerfile
     ports:
       - "5000:5000"
     environment:
       ASPNETCORE_URLS: "http://+:5000"
-      Mint__Url: "http://mintd:8085"
     depends_on:
       mintd:
         condition: service_healthy

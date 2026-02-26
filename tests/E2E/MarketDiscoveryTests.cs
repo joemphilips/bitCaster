@@ -63,8 +63,8 @@ public class MarketDiscoveryTests : IAsyncLifetime
         if (seedProcess is not null)
             await seedProcess.WaitForExitAsync();
 
-        // 3. Start BitCaster.Server
-        var serverDir = Path.Combine(RepoRoot, "BitCaster.Server");
+        // 3. Start BitCaster.InMemoryMatchingEngine
+        var serverDir = Path.Combine(RepoRoot, "BitCaster.InMemoryMatchingEngine");
         _serverProcess = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -78,7 +78,6 @@ public class MarketDiscoveryTests : IAsyncLifetime
                 Environment =
                 {
                     ["ASPNETCORE_URLS"] = $"http://localhost:{ServerPort}",
-                    ["Mint__Url"] = $"http://localhost:{MintPort}",
                 },
             }
         };

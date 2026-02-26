@@ -1,4 +1,4 @@
-namespace BitCaster.Server.Domain;
+namespace BitCaster.MatchingEngine.Contracts.Domain;
 
 public record Order(
     Guid Id,

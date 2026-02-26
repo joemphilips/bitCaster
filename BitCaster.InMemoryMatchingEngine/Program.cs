@@ -1,11 +1,11 @@
-using BitCaster.Server.Domain;
-using BitCaster.Server.Endpoints;
-using BitCaster.Server.Hubs;
+using BitCaster.InMemoryMatchingEngine;
+using BitCaster.InMemoryMatchingEngine.Endpoints;
+using BitCaster.InMemoryMatchingEngine.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSignalR();
-builder.Services.AddSingleton<OrderBookManager>();
+builder.Services.AddSingleton<InMemoryOrderBookManager>();
 
 var app = builder.Build();
 
