@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.Playwright;
 
 namespace BitCaster.E2ETest;
@@ -7,117 +6,19 @@ public class MarketDiscoveryTests : IAsyncLifetime
 {
     private IPlaywright? _playwright;
     private IBrowser? _browser;
-    private Process? _viteProcess;
-    private Process? _serverProcess;
     private const int VitePort = 5173;
     private const int MintPort = 8085;
     private const int ServerPort = 5000;
 
-    private static string RepoRoot =>
-        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
-
     public async Task InitializeAsync()
     {
-        // 1. Start mintd via docker compose
-        var composeUp = Process.Start(new ProcessStartInfo
-        {
-            FileName = "docker",
-            Arguments = "compose up -d mintd",
-            WorkingDirectory = RepoRoot,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        });
-        if (composeUp is not null)
-            await composeUp.WaitForExitAsync();
-
-        // Poll until mintd is healthy
+        // Verify all external services are reachable before launching Playwright
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        var mintUrl = $"http://localhost:{MintPort}/v1/info";
-        var deadline = DateTime.UtcNow.AddMinutes(15);
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                var response = await httpClient.GetAsync(mintUrl);
-                if (response.IsSuccessStatusCode)
-                    break;
-            }
-            catch
-            {
-                // Not ready yet
-            }
-            await Task.Delay(TimeSpan.FromSeconds(2));
-        }
+        await WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint (port 8085)");
+        await WaitForService(httpClient, $"http://localhost:{ServerPort}/health", "Matching Engine (port 5000)");
+        await WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend (port 5173)");
 
-        // 2. Seed conditions into the mint
-        var seedProcess = Process.Start(new ProcessStartInfo
-        {
-            FileName = "docker",
-            Arguments = "compose run --rm seed",
-            WorkingDirectory = RepoRoot,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        });
-        if (seedProcess is not null)
-            await seedProcess.WaitForExitAsync();
-
-        // 3. Start BitCaster.InMemoryMatchingEngine
-        var serverDir = Path.Combine(RepoRoot, "BitCaster.InMemoryMatchingEngine");
-        _serverProcess = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "dotnet",
-                Arguments = "run --no-launch-profile",
-                WorkingDirectory = serverDir,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                Environment =
-                {
-                    ["ASPNETCORE_URLS"] = $"http://localhost:{ServerPort}",
-                },
-            }
-        };
-        _serverProcess.Start();
-
-        // 4. Start Vite dev server
-        var frontendDir = Path.Combine(RepoRoot, "bitCaster");
-        _viteProcess = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "npx",
-                Arguments = $"vite --port {VitePort} --strictPort",
-                WorkingDirectory = frontendDir,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            }
-        };
-        _viteProcess.Start();
-
-        // Poll until the Vite dev server responds
-        var frontendUrl = $"http://localhost:{VitePort}";
-        var viteDeadline = DateTime.UtcNow.AddMinutes(2);
-        while (DateTime.UtcNow < viteDeadline)
-        {
-            try
-            {
-                var response = await httpClient.GetAsync(frontendUrl);
-                if (response.IsSuccessStatusCode)
-                    break;
-            }
-            catch
-            {
-                // Not ready yet
-            }
-            await Task.Delay(TimeSpan.FromSeconds(2));
-        }
-
-        // 5. Launch Playwright headless Chromium
+        // Launch Playwright headless Chromium
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
@@ -206,30 +107,28 @@ public class MarketDiscoveryTests : IAsyncLifetime
             await _browser.CloseAsync();
 
         _playwright?.Dispose();
+    }
 
-        if (_viteProcess is not null && !_viteProcess.HasExited)
+    private static async Task WaitForService(HttpClient httpClient, string url, string serviceName)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
         {
-            _viteProcess.Kill(entireProcessTree: true);
-            await _viteProcess.WaitForExitAsync();
+            try
+            {
+                var response = await httpClient.GetAsync(url);
+                if (response.IsSuccessStatusCode)
+                    return;
+            }
+            catch
+            {
+                // Not ready yet
+            }
+            await Task.Delay(TimeSpan.FromSeconds(1));
         }
 
-        if (_serverProcess is not null && !_serverProcess.HasExited)
-        {
-            _serverProcess.Kill(entireProcessTree: true);
-            await _serverProcess.WaitForExitAsync();
-        }
-
-        // Tear down docker compose services
-        var composeDown = Process.Start(new ProcessStartInfo
-        {
-            FileName = "docker",
-            Arguments = "compose down",
-            WorkingDirectory = RepoRoot,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        });
-        if (composeDown is not null)
-            await composeDown.WaitForExitAsync();
+        throw new InvalidOperationException(
+            $"{serviceName} is not reachable at {url}. " +
+            "Start all services before running E2E tests. See AGENTS.md for the 3-terminal workflow.");
     }
 }

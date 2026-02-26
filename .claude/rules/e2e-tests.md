@@ -5,7 +5,25 @@ paths:
 
 # E2E Tests
 
-End-to-end tests live in `tests/E2E/` and use **Playwright** for browser automation with **docker-compose** for service orchestration and **xUnit** as the test runner.
+End-to-end tests live in `tests/E2E/` and use **Playwright** for browser automation and **xUnit** as the test runner. Tests assume all services are already running externally.
+
+## Prerequisites
+
+Start all services before running tests (3 terminals + seed):
+
+```bash
+# Terminal 1: Start mint
+docker compose up mintd
+
+# Terminal 2: Start in-memory matching engine
+cd BitCaster.InMemoryMatchingEngine && dotnet run
+
+# Terminal 3: Start frontend
+cd bitCaster && npm install && npm run dev
+
+# One-off: Seed test data into the mint
+docker compose run --rm seed
+```
 
 ## Running Tests
 
@@ -15,35 +33,34 @@ dotnet test
 
 # Run only E2E tests
 dotnet test tests/E2E/
-
-# First run is slow (~15 min) because Docker builds the cdk-mintd image via Nix
 ```
+
+Tests will poll for service availability (30-second timeout) and fail with a clear error message if any service is unreachable.
 
 ## Stack
 
 - `Microsoft.Playwright` v1.57.0 — headless Chromium browser automation
-- `docker-compose` — starts the mintd container (with healthcheck)
 - `xunit` v2.9.3 — test framework with `IAsyncLifetime` for async setup/teardown
-- Long-running test timeout: **1200 seconds** (configured in `xunit.runner.json`)
+- Long-running test timeout: **120 seconds** (configured in `xunit.runner.json`)
 
 ## How It Works
 
-1. Test setup runs `docker compose up -d mintd` and polls `http://localhost:8085/v1/info` until healthy (15-min timeout for first build)
-2. `dotnet run` launches BitCaster.InMemoryMatchingEngine as a child process on port 5000
-3. `npx vite` launches the frontend dev server on port 5173
-4. Playwright launches headless Chromium and navigates to the frontend
-5. Tests use Playwright's locator API (accessibility queries preferred)
-6. Teardown kills child processes and runs `docker compose down`
+1. `InitializeAsync` polls mint (port 8085), matching engine (port 5000), and frontend (port 5173) until all respond (30-second timeout)
+2. Playwright launches headless Chromium and navigates to the frontend
+3. Tests use Playwright's locator API (accessibility queries preferred)
+4. `DisposeAsync` closes the Playwright browser — no processes to tear down
 
 ## Key Files
 
 - `tests/E2E/BitCaster.E2ETest.csproj` — project file with dependencies
-- `tests/E2E/SettingsPageTests.cs` — test class with docker-compose + Playwright setup
+- `tests/E2E/SettingsPageTests.cs` — settings page tests
+- `tests/E2E/MarketDiscoveryTests.cs` — market discovery and trading overlay tests
 - `tests/E2E/xunit.runner.json` — xUnit config (long-running test threshold)
 - `docker-compose.yml` — mintd service definition (repo root)
 
 ## Writing New Tests
 
-- Add test methods to `SettingsPageTests.cs` or create new test classes following the same `IAsyncLifetime` pattern
+- Add test methods to existing test classes or create new ones following the same `IAsyncLifetime` pattern
 - Use `Page.GetByRole()` and accessibility-based locators over CSS selectors
-- The `Page` and `Browser` instances are shared across tests in a class via `InitializeAsync`/`DisposeAsync`
+- The `Browser` instance is shared across tests in a class via `InitializeAsync`/`DisposeAsync`
+- New test classes should include the same `WaitForService` health-check pattern in `InitializeAsync`
