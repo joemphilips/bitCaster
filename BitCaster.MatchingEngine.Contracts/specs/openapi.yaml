@@ -11,11 +11,18 @@ servers:
     description: Local development
 
 paths:
-  /api/v1/orders:
+  /api/v1/{marketId}/orders:
     post:
       operationId: submitOrder
       summary: Submit a new order
       description: Submit a limit or market order to the matching engine.
+      parameters:
+        - name: marketId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The condition_id of the target market.
       requestBody:
         required: true
         content:
@@ -36,24 +43,31 @@ paths:
               schema:
                 type: string
 
-  /api/v1/orders/{id}:
+  /api/v1/{marketId}/orders/{orderId}:
     delete:
       operationId: cancelOrder
       summary: Cancel an existing order
       parameters:
-        - name: id
+        - name: marketId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The condition_id of the target market.
+        - name: orderId
           in: path
           required: true
           schema:
             type: string
             format: uuid
+          description: The unique identifier of the order to cancel.
       responses:
         '200':
           description: Order cancelled
         '404':
           description: Order not found
 
-  /api/v1/markets/{marketId}/orderbook:
+  /api/v1/{marketId}/orderbook:
     get:
       operationId: getOrderBook
       summary: Get the current order book snapshot
@@ -63,6 +77,7 @@ paths:
           required: true
           schema:
             type: string
+          description: The condition_id of the target market.
       responses:
         '200':
           description: Current order book
@@ -143,16 +158,12 @@ components:
     SubmitOrderRequest:
       type: object
       required:
-        - marketId
         - outcomeId
         - side
         - type
         - amountSats
         - userId
       properties:
-        marketId:
-          type: string
-          description: The condition_id of the target market.
         outcomeId:
           type: string
           description: The outcome to trade (e.g. "YES", "NO").
