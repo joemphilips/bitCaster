@@ -50,7 +50,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ClickBuyYes_OpensTradingOverlay()
+    public async Task ClickBuyYes_NavigatesToMarketDetail()
     {
         Assert.NotNull(_browser);
 
@@ -66,12 +66,11 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await Assertions.Expect(buyYesButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await buyYesButton.ClickAsync();
 
-        // Trading overlay should appear with amount input and BUY button
-        var amountInput = page.GetByRole(AriaRole.Spinbutton);
-        await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        // Should navigate to market detail page
+        await Assertions.Expect(page).ToHaveURLAsync(new System.Text.RegularExpressions.Regex(@"/markets/[a-f0-9]+"), new() { Timeout = 5_000 });
 
-        var confirmButton = page.GetByRole(AriaRole.Button, new() { NameRegex = new("^BUY") });
-        await Assertions.Expect(confirmButton).ToBeVisibleAsync();
+        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Market Detail" });
+        await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
     [Fact]
