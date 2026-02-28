@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/api/v1/orders": {
+    "/api/v1/{marketId}/orders": {
         parameters: {
             query?: never;
             header?: never;
@@ -24,7 +24,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/orders/{id}": {
+    "/api/v1/{marketId}/orders/{orderId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -41,7 +41,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/markets/{marketId}/orderbook": {
+    "/api/v1/{marketId}/orderbook": {
         parameters: {
             query?: never;
             header?: never;
@@ -110,10 +110,6 @@ export interface components {
             filledAt: string;
         };
         SubmitOrderRequest: {
-            /** @description The condition_id of the target market. */
-            marketId: string;
-            /** @description The outcome to trade (e.g. "YES", "NO"). */
-            outcomeId: string;
             side: components["schemas"]["OrderSide"];
             type: components["schemas"]["OrderType"];
             /** @description Probability price in [1,99]. Required for limit orders, ignored for market orders. */
@@ -139,21 +135,15 @@ export interface components {
             price: components["schemas"]["Probability"];
             amount: components["schemas"]["Sats"];
         };
-        OutcomeSnapshot: {
+        OrderBookSnapshot: {
+            /** @description The market ID in the format "{conditionId}-{outcomeName}". */
+            marketId: string;
             /** @description Buy-side levels sorted by price descending (best bid first). */
             bids: components["schemas"]["LevelDto"][];
             /** @description Sell-side levels sorted by price ascending (best ask first). */
             asks: components["schemas"]["LevelDto"][];
             /** @description Difference between best ask and best bid. Null if either side is empty. */
             spread?: number | null;
-        };
-        OrderBookSnapshot: {
-            /** @description The condition_id of the market. */
-            marketId: string;
-            /** @description Per-outcome depth data, keyed by outcome ID (e.g. "YES", "NO"). */
-            outcomes: {
-                [key: string]: components["schemas"]["OutcomeSnapshot"];
-            };
         };
     };
     responses: never;
@@ -168,7 +158,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -202,7 +195,10 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                id: string;
+                /** @description The market ID in the format "{conditionId}-{outcomeName}". */
+                marketId: string;
+                /** @description The unique identifier of the order to cancel. */
+                orderId: string;
             };
             cookie?: never;
         };
@@ -229,6 +225,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description The market ID in the format "{conditionId}-{outcomeName}". */
                 marketId: string;
             };
             cookie?: never;

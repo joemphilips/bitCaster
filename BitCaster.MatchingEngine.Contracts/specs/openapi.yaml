@@ -22,7 +22,10 @@ paths:
           required: true
           schema:
             type: string
-          description: The condition_id of the target market.
+          description: >
+            The market to trade on, in the format "{conditionId}-{outcomeName}"
+            (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own
+            independent binary order book. A marketId containing "|" is invalid.
       requestBody:
         required: true
         content:
@@ -53,7 +56,8 @@ paths:
           required: true
           schema:
             type: string
-          description: The condition_id of the target market.
+          description: >
+            The market ID in the format "{conditionId}-{outcomeName}".
         - name: orderId
           in: path
           required: true
@@ -77,7 +81,8 @@ paths:
           required: true
           schema:
             type: string
-          description: The condition_id of the target market.
+          description: >
+            The market ID in the format "{conditionId}-{outcomeName}".
       responses:
         '200':
           description: Current order book
@@ -158,15 +163,11 @@ components:
     SubmitOrderRequest:
       type: object
       required:
-        - outcomeId
         - side
         - type
         - amountSats
         - userId
       properties:
-        outcomeId:
-          type: string
-          description: The outcome to trade (e.g. "YES", "NO").
         side:
           $ref: '#/components/schemas/OrderSide'
         type:
@@ -218,12 +219,17 @@ components:
           $ref: '#/components/schemas/Sats'
       description: A single price level in the order book depth.
 
-    OutcomeSnapshot:
+    OrderBookSnapshot:
       type: object
       required:
+        - marketId
         - bids
         - asks
       properties:
+        marketId:
+          type: string
+          description: >
+            The market ID in the format "{conditionId}-{outcomeName}".
         bids:
           type: array
           items:
@@ -239,18 +245,3 @@ components:
             - type: integer
             - type: 'null'
           description: Difference between best ask and best bid. Null if either side is empty.
-
-    OrderBookSnapshot:
-      type: object
-      required:
-        - marketId
-        - outcomes
-      properties:
-        marketId:
-          type: string
-          description: The condition_id of the market.
-        outcomes:
-          type: object
-          additionalProperties:
-            $ref: '#/components/schemas/OutcomeSnapshot'
-          description: Per-outcome depth data, keyed by outcome ID (e.g. "YES", "NO").

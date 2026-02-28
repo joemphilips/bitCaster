@@ -78,7 +78,8 @@ components:
         properties:
           marketId:
             type: string
-            description: The condition_id of the market to join.
+            description: >
+              The market ID in the format "{conditionId}-{outcomeName}".
 
     LeaveMarketRequest:
       payload:
@@ -88,7 +89,8 @@ components:
         properties:
           marketId:
             type: string
-            description: The condition_id of the market to leave.
+            description: >
+              The market ID in the format "{conditionId}-{outcomeName}".
 
     OrderBookUpdatedMessage:
       payload:
@@ -118,36 +120,29 @@ components:
         amount:
           $ref: '#/components/schemas/Sats'
 
-    OutcomeSnapshot:
-      type: object
-      required:
-        - bids
-        - asks
-      properties:
-        bids:
-          type: array
-          items:
-            $ref: '#/components/schemas/LevelDto'
-        asks:
-          type: array
-          items:
-            $ref: '#/components/schemas/LevelDto'
-        spread:
-          type:
-            - integer
-            - 'null'
-
     OrderBookSnapshot:
       type: object
       required:
         - marketId
-        - outcomes
+        - bids
+        - asks
       properties:
         marketId:
           type: string
-          description: The condition_id of the market.
-        outcomes:
-          type: object
-          additionalProperties:
-            $ref: '#/components/schemas/OutcomeSnapshot'
-          description: Per-outcome depth data, keyed by outcome ID.
+          description: >
+            The market ID in the format "{conditionId}-{outcomeName}".
+        bids:
+          type: array
+          items:
+            $ref: '#/components/schemas/LevelDto'
+          description: Buy-side levels sorted by price descending (best bid first).
+        asks:
+          type: array
+          items:
+            $ref: '#/components/schemas/LevelDto'
+          description: Sell-side levels sorted by price ascending (best ask first).
+        spread:
+          type:
+            - integer
+            - 'null'
+          description: Difference between best ask and best bid. Null if either side is empty.

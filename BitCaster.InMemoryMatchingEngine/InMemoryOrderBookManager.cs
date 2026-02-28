@@ -53,40 +53,31 @@ public class InMemoryOrderBookManager
         lock (_lock)
         {
             if (!_orders.TryGetValue(marketId, out var orders))
-                return new OrderBookSnapshot(marketId, new());
+                return new OrderBookSnapshot(new List<LevelDto>(), new List<LevelDto>(), marketId, null);
 
-            var outcomes = new Dictionary<string, OutcomeSnapshot>();
-            var grouped = orders.GroupBy(o => o.OutcomeId);
+            var bids = orders
+                .Where(o => o.Side == OrderSide.Buy && o.Type == OrderType.Limit)
+                .OrderByDescending(o => o.Price)
+                .ThenBy(o => o.PlacedAt)
+                .Select(o => new LevelDto(
+                    amount: o.RemainingAmountSats.Value,
+                    price: o.Price!.Value.Value))
+                .ToList();
 
-            foreach (var group in grouped)
-            {
-                var bids = group
-                    .Where(o => o.Side == OrderSide.Buy && o.Type == OrderType.Limit)
-                    .OrderByDescending(o => o.Price)
-                    .ThenBy(o => o.PlacedAt)
-                    .Select(o => new LevelDto(
-                        amount: o.RemainingAmountSats.Value,
-                        price: o.Price!.Value.Value))
-                    .ToList();
+            var asks = orders
+                .Where(o => o.Side == OrderSide.Sell && o.Type == OrderType.Limit)
+                .OrderBy(o => o.Price)
+                .ThenBy(o => o.PlacedAt)
+                .Select(o => new LevelDto(
+                    amount: o.RemainingAmountSats.Value,
+                    price: o.Price!.Value.Value))
+                .ToList();
 
-                var asks = group
-                    .Where(o => o.Side == OrderSide.Sell && o.Type == OrderType.Limit)
-                    .OrderBy(o => o.Price)
-                    .ThenBy(o => o.PlacedAt)
-                    .Select(o => new LevelDto(
-                        amount: o.RemainingAmountSats.Value,
-                        price: o.Price!.Value.Value))
-                    .ToList();
+            var spread = bids.Count > 0 && asks.Count > 0
+                ? asks[0].Price - bids[0].Price
+                : (int?)null;
 
-                var spread = bids.Count > 0 && asks.Count > 0
-                    ? asks[0].Price - bids[0].Price
-                    : (int?)null;
-
-                outcomes[group.Key] = new OutcomeSnapshot(
-                    asks: asks, bids: bids, spread: spread);
-            }
-
-            return new OrderBookSnapshot(marketId, outcomes);
+            return new OrderBookSnapshot(asks, bids, marketId, spread);
         }
     }
 

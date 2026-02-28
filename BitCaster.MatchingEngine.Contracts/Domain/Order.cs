@@ -5,8 +5,7 @@ namespace BitCaster.MatchingEngine.Contracts.Domain;
 /// This is an internal domain type — not part of the REST API wire format.
 /// </summary>
 /// <param name="Id">Unique identifier assigned by the matching engine.</param>
-/// <param name="MarketId">The condition_id of the market this order targets.</param>
-/// <param name="OutcomeId">The outcome within the market (e.g. "YES", "NO").</param>
+/// <param name="MarketId">The market ID in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice").</param>
 /// <param name="Side">Whether this is a buy or sell order.</param>
 /// <param name="Type">Limit (rests on book) or market (immediate-or-cancel).</param>
 /// <param name="Price">Probability price in [1,99]. Null for market orders.</param>
@@ -16,7 +15,6 @@ namespace BitCaster.MatchingEngine.Contracts.Domain;
 public record Order(
     Guid Id,
     string MarketId,
-    string OutcomeId,
     OrderSide Side,
     OrderType Type,
     Probability? Price,

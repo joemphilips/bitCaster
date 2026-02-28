@@ -150,7 +150,6 @@ import type { components } from '@/generated/api'
 export type SubmitOrderRequest = components['schemas']['SubmitOrderRequest']
 export type SubmitOrderResponse = components['schemas']['SubmitOrderResponse']
 export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
-export type OutcomeSnapshot = components['schemas']['OutcomeSnapshot']
 export type LevelDto = components['schemas']['LevelDto']
 export type Fill = components['schemas']['Fill']
 

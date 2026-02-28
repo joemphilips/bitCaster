@@ -135,28 +135,14 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(long @amountSats, string @marketId, string @outcomeId, int? @price, OrderSide @side, OrderType @type, string @userId)
+        public SubmitOrderRequest(long @amountSats, int? @price, OrderSide @side, OrderType @type, string @userId)
         {
-            this.MarketId = @marketId;
-            this.OutcomeId = @outcomeId;
             this.Side = @side;
             this.Type = @type;
             this.Price = @price;
             this.AmountSats = @amountSats;
             this.UserId = @userId;
         }
-
-        /// <summary>
-        /// The condition_id of the target market.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
-        public string MarketId { get; }
-
-        /// <summary>
-        /// The outcome to trade (e.g. "YES", "NO").
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
-        public string OutcomeId { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
         [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
@@ -268,15 +254,23 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class OutcomeSnapshot
+    public partial class OrderBookSnapshot
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OutcomeSnapshot(System.Collections.Generic.List<LevelDto> @asks, System.Collections.Generic.List<LevelDto> @bids, int? @spread)
+        public OrderBookSnapshot(System.Collections.Generic.List<LevelDto> @asks, System.Collections.Generic.List<LevelDto> @bids, string @marketId, int? @spread)
         {
+            this.MarketId = @marketId;
             this.Bids = @bids;
             this.Asks = @asks;
             this.Spread = @spread;
         }
+
+        /// <summary>
+        /// The market ID in the format "{conditionId}-{outcomeName}".
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
 
         /// <summary>
         /// Buy-side levels sorted by price descending (best bid first).
@@ -295,39 +289,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("spread")]
         public int? Spread { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class OrderBookSnapshot
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public OrderBookSnapshot(string @marketId, System.Collections.Generic.Dictionary<string, OutcomeSnapshot> @outcomes)
-        {
-            this.MarketId = @marketId;
-            this.Outcomes = @outcomes;
-        }
-
-        /// <summary>
-        /// The condition_id of the market.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
-        public string MarketId { get; }
-
-        /// <summary>
-        /// Per-outcome depth data, keyed by outcome ID (e.g. "YES", "NO").
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
-        public System.Collections.Generic.Dictionary<string, OutcomeSnapshot> Outcomes { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
