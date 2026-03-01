@@ -69,6 +69,18 @@ export interface Position {
   status: PositionStatus
   closedDate?: string
   acquiredDate: string
+  mintUrl: string
+}
+
+// =============================================================================
+// Fund Types (base ecash assets)
+// =============================================================================
+
+export interface Fund {
+  id: string
+  unit: 'sats' | 'usd'
+  amount: number
+  mintUrl: string
 }
 
 // =============================================================================
@@ -140,6 +152,9 @@ export interface PortfolioProps {
   /** Activity feed (deposits, withdrawals, trades, payouts, fees) */
   activity: ActivityItem[]
 
+  /** Base ecash fund balances */
+  funds: Fund[]
+
   /** Markets created by the user */
   createdMarkets: CreatedMarket[]
 
@@ -181,6 +196,9 @@ export interface PortfolioProps {
 
   /** Called when user claims payout from a winning position */
   onClaimPayout?: (positionId: string) => void
+
+  /** Called when user clicks to view a fund */
+  onViewFund?: (fundId: string) => void
 
   /** Called when user opens Settings */
   onOpenSettings?: () => void
