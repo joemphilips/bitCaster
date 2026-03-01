@@ -28,7 +28,10 @@ public class WalletSetupTests : IAsyncLifetime
     private async Task<IPage> NewPwaPageAsync()
     {
         Assert.NotNull(_browser);
-        var context = await _browser.NewContextAsync();
+        var context = await _browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ServiceWorkers = ServiceWorkerPolicy.Block,
+        });
         var page = await context.NewPageAsync();
         // Override matchMedia for display-mode: standalone
         await page.AddInitScriptAsync(@"
@@ -52,7 +55,10 @@ public class WalletSetupTests : IAsyncLifetime
     private async Task<IPage> NewBrowserPageAsync()
     {
         Assert.NotNull(_browser);
-        var context = await _browser.NewContextAsync();
+        var context = await _browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ServiceWorkers = ServiceWorkerPolicy.Block,
+        });
         var page = await context.NewPageAsync();
         // Override matchMedia so display-mode: standalone returns false
         await page.AddInitScriptAsync(@"
@@ -354,7 +360,11 @@ public class WalletSetupTests : IAsyncLifetime
     public async Task SetupComplete_NoRedirectToSetup()
     {
         Assert.NotNull(_browser);
-        var page = await _browser.NewPageAsync();
+        var context = await _browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ServiceWorkers = ServiceWorkerPolicy.Block,
+        });
+        var page = await context.NewPageAsync();
 
         // Set setupComplete in localStorage before navigating
         await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions

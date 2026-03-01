@@ -26,6 +26,18 @@ public class MarketDiscoveryTests : IAsyncLifetime
         });
     }
 
+    /// <summary>
+    /// Create a new browser context with service workers blocked for test isolation.
+    /// </summary>
+    private async Task<IBrowserContext> NewIsolatedContextAsync()
+    {
+        Assert.NotNull(_browser);
+        return await _browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ServiceWorkers = ServiceWorkerPolicy.Block,
+        });
+    }
+
     private async Task SetupComplete(IPage page)
     {
         // Navigate once to set localStorage, then reload
@@ -51,9 +63,8 @@ public class MarketDiscoveryTests : IAsyncLifetime
     [Fact]
     public async Task NavigateToMarkets_ShowsSeededMarketCards()
     {
-        Assert.NotNull(_browser);
-
-        var page = await _browser.NewPageAsync();
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
         await SetupComplete(page);
         await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
         {
@@ -75,9 +86,8 @@ public class MarketDiscoveryTests : IAsyncLifetime
     [Fact]
     public async Task ClickBuyYes_NavigatesToMarketDetail()
     {
-        Assert.NotNull(_browser);
-
-        var page = await _browser.NewPageAsync();
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
         await SetupComplete(page);
         await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
         {
@@ -100,11 +110,10 @@ public class MarketDiscoveryTests : IAsyncLifetime
     [Fact]
     public async Task MintUnavailable_ShowsErrorState()
     {
-        Assert.NotNull(_browser);
-
+        await using var context = await NewIsolatedContextAsync();
         // This test verifies the error state when mint is down.
         // We navigate with a broken proxy to simulate unavailability.
-        var page = await _browser.NewPageAsync();
+        var page = await context.NewPageAsync();
         await SetupComplete(page);
 
         // Block the mint API to simulate failure

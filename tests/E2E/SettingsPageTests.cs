@@ -26,6 +26,18 @@ public class SettingsPageTests : IAsyncLifetime
         });
     }
 
+    /// <summary>
+    /// Create a new browser context with service workers blocked for test isolation.
+    /// </summary>
+    private async Task<IBrowserContext> NewIsolatedContextAsync()
+    {
+        Assert.NotNull(_browser);
+        return await _browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ServiceWorkers = ServiceWorkerPolicy.Block,
+        });
+    }
+
     private async Task SetupComplete(IPage page)
     {
         await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
@@ -50,11 +62,10 @@ public class SettingsPageTests : IAsyncLifetime
     [Fact]
     public async Task NavigateToSettings_ShowsSettingsHeading()
     {
-        Assert.NotNull(_browser);
-
         var frontendUrl = $"http://localhost:{VitePort}";
 
-        var page = await _browser.NewPageAsync();
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
         await SetupComplete(page);
         await page.GotoAsync(frontendUrl, new PageGotoOptions
         {

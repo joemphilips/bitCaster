@@ -23,9 +23,21 @@ public class DepositWithdrawTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Create a new browser context with service workers blocked for test isolation.
+    /// </summary>
+    private async Task<IBrowserContext> NewIsolatedContextAsync()
+    {
+        Assert.NotNull(_browser);
+        return await _browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ServiceWorkers = ServiceWorkerPolicy.Block,
+        });
+    }
+
+    /// <summary>
     /// Inject localStorage so wallet is set up with a configured mint.
     /// The mint URL points directly to localhost:8085 where mintd runs.
-    /// Also unregisters PWA service workers to ensure the dev server's latest code is used.
+    /// Service workers are blocked at the context level, so no manual unregistration needed.
     /// </summary>
     private async Task SetupCompleteWithMint(IPage page)
     {
@@ -34,13 +46,6 @@ public class DepositWithdrawTests : IAsyncLifetime
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
         });
-
-        // Unregister service workers to avoid stale cached content
-        await page.EvaluateAsync(@"
-            navigator.serviceWorker.getRegistrations().then(regs =>
-                Promise.all(regs.map(r => r.unregister()))
-            )
-        ");
 
         await page.EvaluateAsync(@"
             localStorage.setItem('bitcaster-wallet', JSON.stringify({
@@ -72,8 +77,8 @@ public class DepositWithdrawTests : IAsyncLifetime
     [Fact]
     public async Task DepositLightning_CreatesInvoiceAndShowsQR()
     {
-        Assert.NotNull(_browser);
-        var page = await _browser.NewPageAsync();
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
         await SetupCompleteWithMint(page);
         await NavigateToPortfolio(page);
 
@@ -114,8 +119,8 @@ public class DepositWithdrawTests : IAsyncLifetime
     [Fact]
     public async Task WithdrawSendEcash_GeneratesToken()
     {
-        Assert.NotNull(_browser);
-        var page = await _browser.NewPageAsync();
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
         await SetupCompleteWithMint(page);
 
         // First deposit some sats so we have a balance to withdraw
@@ -151,8 +156,8 @@ public class DepositWithdrawTests : IAsyncLifetime
     [Fact]
     public async Task MethodChooser_NavigationAndClose()
     {
-        Assert.NotNull(_browser);
-        var page = await _browser.NewPageAsync();
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
         await SetupCompleteWithMint(page);
         await NavigateToPortfolio(page);
 
