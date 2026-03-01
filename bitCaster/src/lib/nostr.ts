@@ -78,7 +78,8 @@ export async function connectNwcWallet(
   pairingCode: string
 ): Promise<NDKNWCWallet> {
   const ndk = getNdk();
-  const wallet = new NDKNWCWallet(ndk, { pairingCode, timeout: 30_000 });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- NDK version mismatch between ndk and ndk-wallet
+  const wallet = new NDKNWCWallet(ndk as any, { pairingCode, timeout: 30_000 });
 
   ndk.wallet = wallet;
 
@@ -100,14 +101,14 @@ export async function connectNwcWallet(
  * DLC oracle announcement event kind.
  * Follows the convention used by DLC Oracle implementations on Nostr.
  */
-export const KIND_DLC_ANNOUNCEMENT = 88;
+export const KIND_DLC_ANNOUNCEMENT = 88 as const;
 
 /** Filter for DLC oracle announcements published by a specific oracle pubkey. */
 export function oracleAnnouncementFilter(
   oraclePubkey: string
 ): NDKFilter {
   return {
-    kinds: [KIND_DLC_ANNOUNCEMENT],
+    kinds: [KIND_DLC_ANNOUNCEMENT as number],
     authors: [oraclePubkey],
   };
 }

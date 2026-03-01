@@ -26,6 +26,27 @@ public class SettingsPageTests : IAsyncLifetime
         });
     }
 
+    private async Task SetupComplete(IPage page)
+    {
+        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 30_000,
+        });
+        await page.EvaluateAsync(@"
+            localStorage.setItem('bitcaster-wallet', JSON.stringify({
+                state: {
+                    mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+                    setupComplete: true,
+                    mints: [],
+                    activeMintUrl: 'http://localhost:3338',
+                    keysetCounters: {}
+                },
+                version: 0
+            }));
+        ");
+    }
+
     [Fact]
     public async Task NavigateToSettings_ShowsSettingsHeading()
     {
@@ -34,6 +55,7 @@ public class SettingsPageTests : IAsyncLifetime
         var frontendUrl = $"http://localhost:{VitePort}";
 
         var page = await _browser.NewPageAsync();
+        await SetupComplete(page);
         await page.GotoAsync(frontendUrl, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,

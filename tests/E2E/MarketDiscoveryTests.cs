@@ -26,12 +26,35 @@ public class MarketDiscoveryTests : IAsyncLifetime
         });
     }
 
+    private async Task SetupComplete(IPage page)
+    {
+        // Navigate once to set localStorage, then reload
+        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 30_000,
+        });
+        await page.EvaluateAsync(@"
+            localStorage.setItem('bitcaster-wallet', JSON.stringify({
+                state: {
+                    mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+                    setupComplete: true,
+                    mints: [],
+                    activeMintUrl: 'http://localhost:3338',
+                    keysetCounters: {}
+                },
+                version: 0
+            }));
+        ");
+    }
+
     [Fact]
     public async Task NavigateToMarkets_ShowsSeededMarketCards()
     {
         Assert.NotNull(_browser);
 
         var page = await _browser.NewPageAsync();
+        await SetupComplete(page);
         await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
@@ -55,6 +78,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         Assert.NotNull(_browser);
 
         var page = await _browser.NewPageAsync();
+        await SetupComplete(page);
         await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
@@ -81,6 +105,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         // This test verifies the error state when mint is down.
         // We navigate with a broken proxy to simulate unavailability.
         var page = await _browser.NewPageAsync();
+        await SetupComplete(page);
 
         // Block the mint API to simulate failure
         await page.RouteAsync("**/v1/conditions", route => route.AbortAsync());

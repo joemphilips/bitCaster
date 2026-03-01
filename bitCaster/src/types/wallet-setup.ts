@@ -18,6 +18,19 @@ export interface MintConnectionTest {
 }
 
 // =============================================================================
+// Background Data Loading Types
+// =============================================================================
+
+export type DataLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed'
+
+export interface BackgroundDataLoad {
+  mintUrl: string
+  status: DataLoadStatus
+  conditionsLoaded: number
+  errorMessage?: string
+}
+
+// =============================================================================
 // Component Props
 // =============================================================================
 
@@ -42,6 +55,9 @@ export interface WalletSetupProps {
 
   /** Mint connection tests */
   mintConnections: MintConnectionTest[]
+
+  /** Background data loading state */
+  backgroundDataLoad?: BackgroundDataLoad
 
   /** Called when user clicks Next on the welcome landing */
   onWelcomeNext?: () => void

@@ -18,6 +18,7 @@ import {
   type MeltQuoteResponse,
   type Token,
 } from "@cashu/cashu-ts";
+import { useWalletStore } from "@/stores/wallet";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -26,7 +27,7 @@ import {
 const DEFAULT_MINT_URL = import.meta.env.VITE_MINT_URL ?? "http://localhost:3338";
 
 // ---------------------------------------------------------------------------
-// Singleton wallet
+// Singleton wallet — delegates to wallet store when available
 // ---------------------------------------------------------------------------
 
 let _wallet: CashuWallet | null = null;
@@ -34,6 +35,13 @@ let _mintUrl: string = DEFAULT_MINT_URL;
 
 /** Return the shared CashuWallet, initialising it lazily. */
 export async function getWallet(mintUrl?: string): Promise<CashuWallet> {
+  // If the wallet store has a mnemonic, delegate to it for deterministic secrets
+  const store = useWalletStore.getState();
+  if (store.mnemonic) {
+    return store.getWallet(mintUrl);
+  }
+
+  // Fallback for pre-setup usage
   const url = mintUrl ?? _mintUrl;
 
   if (!_wallet || mintUrl !== _mintUrl) {

@@ -3,6 +3,10 @@ WORKDIR /app
 COPY bitCaster/package.json bitCaster/package-lock.json* ./
 RUN npm ci
 COPY bitCaster/ .
+ARG VITE_MINT_URL=http://localhost:8085
+ARG VITE_SERVER_URL=http://localhost:5000
+ENV VITE_MINT_URL=$VITE_MINT_URL
+ENV VITE_SERVER_URL=$VITE_SERVER_URL
 RUN npm run build
 
 FROM nginx:alpine
