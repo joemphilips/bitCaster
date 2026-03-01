@@ -1,12 +1,15 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { Portfolio } from '@/components/portfolio'
+import { DepositWithdrawOverlay } from '@/components/deposit-withdraw/DepositWithdrawOverlay'
 import { usePortfolioState } from './usePortfolioState'
 import type { PLTimeSelector } from '@/types/portfolio'
+import type { DepositWithdrawMode } from '@/types/deposit-withdraw'
 
 export function PortfolioPage() {
   const navigate = useNavigate()
   const state = usePortfolioState()
+  const [overlayMode, setOverlayMode] = useState<DepositWithdrawMode | null>(null)
 
   const handleGetStarted = useCallback(() => {
     navigate('/setup')
@@ -28,12 +31,12 @@ export function PortfolioPage() {
   )
 
   const handleDeposit = useCallback(() => {
-    navigate('/deposit')
-  }, [navigate])
+    setOverlayMode('deposit')
+  }, [])
 
   const handleWithdraw = useCallback(() => {
-    navigate('/withdraw')
-  }, [navigate])
+    setOverlayMode('withdraw')
+  }, [])
 
   const handleSellPosition = useCallback(
     (positionId: string) => {
@@ -74,28 +77,36 @@ export function PortfolioPage() {
   }, [navigate])
 
   return (
-    <Portfolio
-      walletState={state.walletState}
-      baseCurrency={state.baseCurrency}
-      selectedTimeRange={state.selectedTimeRange}
-      profile={state.profile}
-      plChartData={state.plChartData}
-      stats={state.stats}
-      positions={state.positions}
-      funds={state.funds}
-      activity={state.activity}
-      createdMarkets={state.createdMarkets}
-      positionsTab={state.positionsTab}
-      onGetStarted={handleGetStarted}
-      onAvatarUpload={handleAvatarUpload}
-      onTimeRangeChange={handleTimeRangeChange}
-      onDeposit={handleDeposit}
-      onWithdraw={handleWithdraw}
-      onSellPosition={handleSellPosition}
-      onViewPosition={handleViewPosition}
-      onViewMarket={handleViewMarket}
-      onPositionsTabChange={handlePositionsTabChange}
-      onOpenSettings={handleOpenSettings}
-    />
+    <>
+      <Portfolio
+        walletState={state.walletState}
+        baseCurrency={state.baseCurrency}
+        selectedTimeRange={state.selectedTimeRange}
+        profile={state.profile}
+        plChartData={state.plChartData}
+        stats={state.stats}
+        positions={state.positions}
+        funds={state.funds}
+        activity={state.activity}
+        createdMarkets={state.createdMarkets}
+        positionsTab={state.positionsTab}
+        onGetStarted={handleGetStarted}
+        onAvatarUpload={handleAvatarUpload}
+        onTimeRangeChange={handleTimeRangeChange}
+        onDeposit={handleDeposit}
+        onWithdraw={handleWithdraw}
+        onSellPosition={handleSellPosition}
+        onViewPosition={handleViewPosition}
+        onViewMarket={handleViewMarket}
+        onPositionsTabChange={handlePositionsTabChange}
+        onOpenSettings={handleOpenSettings}
+      />
+      {overlayMode && (
+        <DepositWithdrawOverlay
+          mode={overlayMode}
+          onClose={() => setOverlayMode(null)}
+        />
+      )}
+    </>
   )
 }

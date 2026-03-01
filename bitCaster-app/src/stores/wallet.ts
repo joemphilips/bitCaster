@@ -1,8 +1,9 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { CashuMint, CashuWallet, type MintKeys, type MintKeyset } from '@cashu/cashu-ts'
+import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
-import { getProofs, type StoredProof } from './proof-db'
+import { db, getProofs, type StoredProof } from './proof-db'
 import type { MintConnectionTestStatus } from '@/types/wallet-setup'
 
 export interface StoredMint {
@@ -150,9 +151,14 @@ export const useWalletStore = create<WalletState>()(
   )
 )
 
-export function useBalance(): number {
-  // Reactive balance from proofs — placeholder for now, will be connected to Dexie liveQuery
-  return 0
+export function useBalance(mintUrl?: string): number {
+  const balance = useLiveQuery(async () => {
+    const proofs = mintUrl
+      ? await db.proofs.where('mintUrl').equals(mintUrl).toArray()
+      : await db.proofs.toArray()
+    return proofs.reduce((sum, p) => sum + p.amount, 0)
+  }, [mintUrl], 0)
+  return balance ?? 0
 }
 
 export async function getBalance(mintUrl?: string): Promise<number> {

@@ -16,6 +16,7 @@ import {
   type Proof,
   type MintQuoteResponse,
   type MeltQuoteResponse,
+  type PartialMintQuoteResponse,
   type Token,
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
@@ -60,18 +61,20 @@ export async function getWallet(mintUrl?: string): Promise<CashuWallet> {
 
 /** Request a Lightning invoice to fund the wallet. */
 export async function createMintQuote(
-  amountSats: number
+  amountSats: number,
+  mintUrl?: string
 ): Promise<MintQuoteResponse> {
-  const wallet = await getWallet();
+  const wallet = await getWallet(mintUrl);
   return wallet.createMintQuote(amountSats);
 }
 
 /** Mint proofs after the invoice in `quote` has been paid. */
 export async function mintProofs(
   amountSats: number,
-  quote: MintQuoteResponse
+  quote: MintQuoteResponse,
+  mintUrl?: string
 ): Promise<Proof[]> {
-  const wallet = await getWallet();
+  const wallet = await getWallet(mintUrl);
   return wallet.mintProofs(amountSats, quote.quote);
 }
 
@@ -87,8 +90,8 @@ export function decodeToken(tokenStr: string): Token {
 }
 
 /** Receive a cashu token string and return the redeemed proofs. */
-export async function receiveToken(tokenStr: string): Promise<Proof[]> {
-  const wallet = await getWallet();
+export async function receiveToken(tokenStr: string, mintUrl?: string): Promise<Proof[]> {
+  const wallet = await getWallet(mintUrl);
   return wallet.receive(tokenStr);
 }
 
@@ -98,31 +101,88 @@ export async function receiveToken(tokenStr: string): Promise<Proof[]> {
  */
 export async function sendProofs(
   amountSats: number,
-  proofs: Proof[]
+  proofs: Proof[],
+  mintUrl?: string
 ): Promise<{ keep: Proof[]; send: Proof[] }> {
-  const wallet = await getWallet();
+  const wallet = await getWallet(mintUrl);
   return wallet.send(amountSats, proofs);
 }
 
 /** Create a melt quote for a Lightning invoice. */
 export async function createMeltQuote(
-  invoice: string
+  invoice: string,
+  mintUrl?: string
 ): Promise<MeltQuoteResponse> {
-  const wallet = await getWallet();
+  const wallet = await getWallet(mintUrl);
   return wallet.createMeltQuote(invoice);
 }
 
 /** Melt proofs to pay a Lightning invoice. */
 export async function meltProofs(
   quote: MeltQuoteResponse,
-  proofs: Proof[]
+  proofs: Proof[],
+  mintUrl?: string
 ): Promise<{ paid: boolean; change: Proof[] }> {
-  const wallet = await getWallet();
+  const wallet = await getWallet(mintUrl);
   const response = await wallet.meltProofs(quote, proofs);
   return {
     paid: response.quote.state === "PAID",
     change: response.change ?? [],
   };
+}
+
+/** Check the status of a mint quote. */
+export async function checkMintQuote(
+  quoteId: string,
+  mintUrl?: string
+): Promise<PartialMintQuoteResponse> {
+  const wallet = await getWallet(mintUrl);
+  return wallet.checkMintQuote(quoteId);
+}
+
+/**
+ * Subscribe to mint quote payment via WebSocket (NUT-17), with polling fallback.
+ * Returns an unsubscribe function for cleanup.
+ */
+export async function waitForMintQuotePaid(
+  quoteId: string,
+  onPaid: (quote: PartialMintQuoteResponse) => void,
+  onError?: (error: Error) => void,
+  mintUrl?: string
+): Promise<() => void> {
+  const wallet = await getWallet(mintUrl);
+
+  // Try WebSocket first (NUT-17)
+  try {
+    const unsub = await wallet.onMintQuotePaid(
+      quoteId,
+      (response) => onPaid(response),
+      (error) => onError?.(error as Error)
+    );
+    return unsub;
+  } catch {
+    // Fallback to polling if NUT-17 is not supported
+    let cancelled = false;
+    const poll = async () => {
+      while (!cancelled) {
+        await new Promise((r) => setTimeout(r, 5000));
+        if (cancelled) break;
+        try {
+          const quote = await wallet.checkMintQuote(quoteId);
+          if (quote.state === "PAID") {
+            onPaid(quote);
+            break;
+          }
+        } catch (e) {
+          onError?.(e as Error);
+        }
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
