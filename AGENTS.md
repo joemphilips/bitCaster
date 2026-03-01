@@ -51,7 +51,7 @@ See `nuts/CTF.md` for the complete specification.
 ```
 BitCaster.MatchingEngine.Contracts/ Shared API contract types (DTOs, enums, request/response records)
 BitCaster.InMemoryMatchingEngine/   In-memory matching engine for dev/testing (stores orders, no matching)
-bitCaster/           React 19 + Vite PWA frontend
+bitCaster-app/       React 19 + Vite PWA frontend
 bitCaster-doc/       Astro Starlight documentation site (GitHub Pages)
 bitCaster-design/    Design system, specs, and mockups
 infrastructure/      Terraform for Azure (Container Apps, PostgreSQL, Static Web Apps)
@@ -77,7 +77,7 @@ docker compose up mintd
 cd BitCaster.InMemoryMatchingEngine && dotnet run
 
 # Terminal 3: Start frontend
-cd bitCaster && npm install && npm run dev
+cd bitCaster-app && npm install && npm run dev
 ```
 
 The mint runs on port 8085, the server on port 5000, and the frontend on port 5173. The frontend's `.env` is pre-configured with these values.

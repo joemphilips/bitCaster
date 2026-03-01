@@ -141,7 +141,7 @@ Add `tests/E2E/WalletSetupTests.cs` with these test cases:
 
 Create test files before implementation:
 
-#### `bitCaster/src/stores/__tests__/wallet-store.test.ts`
+#### `bitCaster-app/src/stores/__tests__/wallet-store.test.ts`
 Tests for the zustand store (pure logic, no UI):
 - `generateMnemonic()` produces 12 valid BIP-39 English words
 - `recoverFromMnemonic(words)` accepts valid phrase, rejects invalid
@@ -153,14 +153,14 @@ Tests for the zustand store (pure logic, no UI):
 - `balance` computed from proof amounts
 - State persists to localStorage (use zustand persist mock)
 
-#### `bitCaster/src/lib/__tests__/bip39.test.ts`
+#### `bitCaster-app/src/lib/__tests__/bip39.test.ts`
 Tests for BIP-39 validation helper:
 - `validateWord(word)` returns true for valid English BIP-39 words
 - `validateWord("zzzzzzz")` returns false
 - `validateMnemonic(words)` validates full 12-word phrase (checksum)
 - `generateMnemonic()` returns 12 valid words
 
-#### `bitCaster/src/pages/__tests__/WalletSetupPage.test.tsx`
+#### `bitCaster-app/src/pages/__tests__/WalletSetupPage.test.tsx`
 Tests for the page-level orchestration (render + store integration):
 - Renders `WalletSetup` component with correct props from store
 - `onWelcomeNext` advances step 1→2
@@ -174,14 +174,14 @@ Tests for the page-level orchestration (render + store integration):
 - "Now Loading" page shows motto text and spinner, auto-navigates to `/markets` when data arrives
 - Back navigation decrements step
 
-#### `bitCaster/src/components/wallet-setup/__tests__/SeedInput.test.tsx`
+#### `bitCaster-app/src/components/wallet-setup/__tests__/SeedInput.test.tsx`
 - Pasting 12-word phrase fills all fields
 - Pasting fewer than 12 words fills only available fields
 - Invalid BIP-39 word shows error styling (after we add validation)
 - "Recover Wallet" button disabled until all 12 fields are valid BIP-39 words
 - "Recover Wallet" button disabled when all 12 words are valid BIP-39 words individually but fail checksum as a phrase
 
-#### `bitCaster/src/components/wallet-setup/__tests__/SeedVerification.test.tsx`
+#### `bitCaster-app/src/components/wallet-setup/__tests__/SeedVerification.test.tsx`
 - Initially shows only "Enter word #3" with a single input field
 - "Next" button disabled when input is empty
 - Wrong word shows inline error, "Next" stays disabled
@@ -190,14 +190,14 @@ Tests for the page-level orchestration (render + store integration):
 - Correct word #12 → button shows "Continue" → click calls `onVerificationComplete`
 - Back button returns to previous verification sub-step (or back to SeedDisplay if on first)
 
-#### `bitCaster/src/components/wallet-setup/__tests__/PwaConfirmation.test.tsx`
+#### `bitCaster-app/src/components/wallet-setup/__tests__/PwaConfirmation.test.tsx`
 - "Continue" button disabled when `isPwa` is false
 - "Continue" button enabled when `isPwa` is true
 - Shows install instructions when not PWA
 
 ### Phase 2: Wallet Store (`useWalletStore`)
 
-Create `bitCaster/src/stores/wallet.ts`:
+Create `bitCaster-app/src/stores/wallet.ts`:
 
 ```
 State:
@@ -234,7 +234,7 @@ interface StoredMint {
 
 **Persistence:** Use `zustand/middleware` `persist` with `localStorage` partialize (exclude transient connection statuses).
 
-**Proof storage:** Create `bitCaster/src/stores/proof-db.ts` using Dexie:
+**Proof storage:** Create `bitCaster-app/src/stores/proof-db.ts` using Dexie:
 ```ts
 class BitcasterDB extends Dexie {
   proofs!: Table<WalletProof>
@@ -251,7 +251,7 @@ Expose reactive proof access via `dexie`'s `liveQuery` or a thin hook `useProofs
 
 ### Phase 3: BIP-39 Helpers
 
-Create `bitCaster/src/lib/bip39.ts`:
+Create `bitCaster-app/src/lib/bip39.ts`:
 
 ```ts
 import { generateMnemonic, validateMnemonic, mnemonicToSeedSync } from '@scure/bip39'
@@ -323,7 +323,7 @@ function AppRoutes() {
 
 ### Phase 6: Copy Design Components
 
-Copy the 8 wallet-setup components from `bitCaster-design/product-plan/sections/wallet-setup/components/` to `bitCaster/src/components/wallet-setup/`:
+Copy the 8 wallet-setup components from `bitCaster-design/product-plan/sections/wallet-setup/components/` to `bitCaster-app/src/components/wallet-setup/`:
 
 - `WalletSetup.tsx`
 - `WelcomeLanding.tsx`
@@ -506,8 +506,8 @@ const user = { name: 'Anon', balance }
 
 ### Phase 10: Run Tests & Fix
 
-1. Run `cd bitCaster && npm run test` — all unit tests must pass
-2. Run `cd bitCaster && npm run typecheck` — no type errors
+1. Run `cd bitCaster-app && npm run test` — all unit tests must pass
+2. Run `cd bitCaster-app && npm run typecheck` — no type errors
 3. Run `codex exec review --uncommitted` fix it if there is any problem. And go back to step 1
 4. Run `docker compose up mintd` + servers, then `dotnet test tests/E2E/` — E2E tests must pass
 5. Fix any failures
@@ -520,28 +520,28 @@ const user = { name: 'Anon', balance }
 ### New Files
 | File | Purpose |
 |------|---------|
-| `bitCaster/src/stores/wallet.ts` | Zustand wallet store (mnemonic, mints, setup state) |
-| `bitCaster/src/stores/proof-db.ts` | Dexie IndexedDB schema for proof storage |
-| `bitCaster/src/lib/bip39.ts` | BIP-39 helpers (generate, validate, toSeed) |
-| `bitCaster/src/components/wallet-setup/*.tsx` | 8 components copied from design system |
-| `bitCaster/src/components/wallet-setup/SeedVerification.tsx` | New component: sequential verification of words #3, #7, #12 (one at a time) |
-| `bitCaster/src/components/wallet-setup/NowLoadingPage.tsx` | Full-screen loading page with motto + spinner (shown after first-time setup) |
-| `bitCaster/src/stores/__tests__/wallet-store.test.ts` | Store unit tests |
-| `bitCaster/src/lib/__tests__/bip39.test.ts` | BIP-39 helper tests |
-| `bitCaster/src/pages/__tests__/WalletSetupPage.test.tsx` | Page integration tests |
-| `bitCaster/src/components/wallet-setup/__tests__/SeedInput.test.tsx` | SeedInput component tests |
-| `bitCaster/src/components/wallet-setup/__tests__/SeedVerification.test.tsx` | SeedVerification component tests |
-| `bitCaster/src/components/wallet-setup/__tests__/PwaConfirmation.test.tsx` | PwaConfirmation gate tests |
+| `bitCaster-app/src/stores/wallet.ts` | Zustand wallet store (mnemonic, mints, setup state) |
+| `bitCaster-app/src/stores/proof-db.ts` | Dexie IndexedDB schema for proof storage |
+| `bitCaster-app/src/lib/bip39.ts` | BIP-39 helpers (generate, validate, toSeed) |
+| `bitCaster-app/src/components/wallet-setup/*.tsx` | 8 components copied from design system |
+| `bitCaster-app/src/components/wallet-setup/SeedVerification.tsx` | New component: sequential verification of words #3, #7, #12 (one at a time) |
+| `bitCaster-app/src/components/wallet-setup/NowLoadingPage.tsx` | Full-screen loading page with motto + spinner (shown after first-time setup) |
+| `bitCaster-app/src/stores/__tests__/wallet-store.test.ts` | Store unit tests |
+| `bitCaster-app/src/lib/__tests__/bip39.test.ts` | BIP-39 helper tests |
+| `bitCaster-app/src/pages/__tests__/WalletSetupPage.test.tsx` | Page integration tests |
+| `bitCaster-app/src/components/wallet-setup/__tests__/SeedInput.test.tsx` | SeedInput component tests |
+| `bitCaster-app/src/components/wallet-setup/__tests__/SeedVerification.test.tsx` | SeedVerification component tests |
+| `bitCaster-app/src/components/wallet-setup/__tests__/PwaConfirmation.test.tsx` | PwaConfirmation gate tests |
 | `tests/E2E/WalletSetupTests.cs` | E2E test class (7 tests) |
 
 ### Modified Files
 | File | Change |
 |------|--------|
-| `bitCaster/package.json` | Add `@scure/bip39`, `zustand`, `dexie` |
-| `bitCaster/src/App.tsx` | Extract `/setup` route outside AppShell; add auto-redirect; use real balance |
-| `bitCaster/src/pages/WalletSetupPage.tsx` | Replace stub with real orchestration page |
-| `bitCaster/src/lib/cashu.ts` | Use `bip39seed` from wallet store instead of bare singleton |
-| `bitCaster/src/types/wallet-setup.ts` | Add `BackgroundDataLoad` type if not present (used by design components) |
+| `bitCaster-app/package.json` | Add `@scure/bip39`, `zustand`, `dexie` |
+| `bitCaster-app/src/App.tsx` | Extract `/setup` route outside AppShell; add auto-redirect; use real balance |
+| `bitCaster-app/src/pages/WalletSetupPage.tsx` | Replace stub with real orchestration page |
+| `bitCaster-app/src/lib/cashu.ts` | Use `bip39seed` from wallet store instead of bare singleton |
+| `bitCaster-app/src/types/wallet-setup.ts` | Add `BackgroundDataLoad` type if not present (used by design components) |
 
 ### Unchanged Files
 All existing market-related pages, components, and tests remain untouched.

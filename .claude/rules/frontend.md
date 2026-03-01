@@ -1,16 +1,16 @@
 ---
 paths:
-  - "bitCaster/**/*"
+  - "bitCaster-app/**/*"
 ---
 
 # bitCaster Frontend (React PWA)
 
 ## Build & Dev
 
-All commands run from `bitCaster/`:
+All commands run from `bitCaster-app/`:
 
 ```bash
-cd bitCaster
+cd bitCaster-app
 npm run dev          # Vite dev server
 npm run build        # tsc -b && vite build
 npm run typecheck    # tsc --noEmit (use this to verify changes)
@@ -33,9 +33,9 @@ Never embed hardcoded sample or dummy data in the frontend source. The frontend 
 
 ## Key Files
 
-- `bitCaster/src/lib/cashu.ts` — CashuWallet and CashuMint singleton setup
-- `bitCaster/src/lib/nostr.ts` — NDK singleton, NIP-07 signer, NDKNWCWallet (NWC pairing)
-- `bitCaster/src/App.tsx` — root component and routing
+- `bitCaster-app/src/lib/cashu.ts` — CashuWallet and CashuMint singleton setup
+- `bitCaster-app/src/lib/nostr.ts` — NDK singleton, NIP-07 signer, NDKNWCWallet (NWC pairing)
+- `bitCaster-app/src/App.tsx` — root component and routing
 
 ## Key Libraries
 
@@ -46,7 +46,7 @@ Never embed hardcoded sample or dummy data in the frontend source. The frontend 
 ## Environment Setup
 
 ```bash
-cp bitCaster/.env.example bitCaster/.env
+cp bitCaster-app/.env.example bitCaster-app/.env
 ```
 
 Required variables:

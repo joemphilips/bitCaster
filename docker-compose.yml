@@ -43,7 +43,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: bitCaster/Dockerfile
+      dockerfile: bitCaster-app/Dockerfile
     ports:
       - "5173:80"
     depends_on:

@@ -19,7 +19,7 @@ docker compose up mintd
 cd BitCaster.InMemoryMatchingEngine && dotnet run
 
 # Terminal 3: Start frontend
-cd bitCaster && npm install && npm run dev
+cd bitCaster-app && npm install && npm run dev
 
 # One-off: Seed test data into the mint
 docker compose run --rm seed

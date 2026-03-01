@@ -28,7 +28,7 @@ bitCaster/
 ├── nuts/               submodule — NUT specs (joemphilips/nuts @ nuts_for_prediction_markets)
 ├── cdk/                submodule — Cashu Development Kit (joemphilips/cdk @ bitCaster)
 ├── bitCaster-design/   React design tool with product specs and UI mockups
-├── bitCaster/          PWA frontend (React 19 + Vite + cashu-ts + NDK)
+├── bitCaster-app/      PWA frontend (React 19 + Vite + cashu-ts + NDK)
 ├── BitCaster.Server/   Matching engine + real-time price feed (ASP.NET minimal API + SignalR)
 └── infrastructure/     Terraform for Azure (Container Apps, PostgreSQL, Static Web Apps)
 ```
@@ -72,7 +72,7 @@ git submodule update --init --recursive
 ### 2. Frontend (PWA)
 
 ```bash
-cd bitCaster
+cd bitCaster-app
 cp .env.example .env          # set VITE_MINT_URL to your mint
 npm install
 npm run dev                   # → http://localhost:5173
@@ -110,7 +110,7 @@ docker compose up mintd
 cd BitCaster.Server && dotnet run
 
 # Terminal 3: Start frontend
-cd bitCaster && npm install && npm run dev
+cd bitCaster-app && npm install && npm run dev
 ```
 
 ### 5. CDK mint (standalone)
@@ -140,7 +140,7 @@ override it to use your own built image.
 ## Design System
 
 UI mockups and product specifications live in `bitCaster-design/` (branch `bitCaster`).
-The frontend in `bitCaster/` consumes the same design tokens (Tailwind palette, typography).
+The frontend in `bitCaster-app/` consumes the same design tokens (Tailwind palette, typography).
 
 ---
 
@@ -181,6 +181,6 @@ CDK mintd
 ## Contributing
 
 1. Fork the repo and create a feature branch
-2. Run `npm run typecheck` in `bitCaster/` before opening a PR
+2. Run `npm run typecheck` in `bitCaster-app/` before opening a PR
 3. For mint changes, run the CDK test suite: `cargo test -p cdk`
 4. Infrastructure changes require `terraform validate` to pass
