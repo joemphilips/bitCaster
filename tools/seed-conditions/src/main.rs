@@ -1,4 +1,4 @@
-use cashu::nuts::nut28::test_helpers::{create_test_announcement, create_test_oracle};
+use cashu::nuts::nut_ctf::test_helpers::{create_test_announcement, create_test_oracle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
