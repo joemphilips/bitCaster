@@ -95,6 +95,9 @@ export interface SettingsProps {
   /** All settings state */
   settings: SettingsState
 
+  /** Wallet seed phrase (mnemonic) to display in the seed backup section */
+  seedPhrase?: string
+
   /** Called when user toggles a category group */
   onCategoryToggle?: (category: SettingsCategory) => void
 
