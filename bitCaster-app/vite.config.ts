@@ -69,7 +69,7 @@ export default defineConfig({
         changeOrigin: true,
       },
       "/api": {
-        target: "http://localhost:5000",
+        target: process.env.services__apiservice__http__0 ?? "http://localhost:5000",
         changeOrigin: true,
       },
     },
