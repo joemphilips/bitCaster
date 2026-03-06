@@ -29,9 +29,10 @@ export function WalletSetupPage() {
 
   const seedWords = mnemonic ? mnemonic.split(' ') : []
 
-  // PWA detection
-  const [isPwa, setIsPwa] = useState(false)
+  // PWA detection — skip in dev mode
+  const [isPwa, setIsPwa] = useState(import.meta.env.DEV)
   useEffect(() => {
+    if (import.meta.env.DEV) return // already true
     const mq = window.matchMedia('(display-mode: standalone)')
     setIsPwa(mq.matches || (navigator as unknown as { standalone?: boolean }).standalone === true)
     const handler = (e: MediaQueryListEvent) => setIsPwa(e.matches)

@@ -196,7 +196,7 @@ public class WalletSetupTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task PwaNotInstalled_BlocksStep2()
+    public async Task PwaNotInstalled_InDevMode_DoesNotBlockStep2()
     {
         var page = await NewBrowserPageAsync();
 
@@ -211,9 +211,9 @@ public class WalletSetupTests : IAsyncLifetime
         await Assertions.Expect(nextBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await nextBtn.ClickAsync();
 
-        // Step 2 (PWA): "Next →" should be disabled
+        // Step 2 (PWA): In dev mode, "Next →" should be enabled despite not being in PWA mode
         var pwaNextBtn = page.GetByRole(AriaRole.Button, new() { Name = "Next →" });
-        await Assertions.Expect(pwaNextBtn).ToBeDisabledAsync(new() { Timeout = 5_000 });
+        await Assertions.Expect(pwaNextBtn).ToBeEnabledAsync(new() { Timeout = 5_000 });
     }
 
     [Fact]
