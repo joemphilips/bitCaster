@@ -134,6 +134,7 @@ interface BaseMarketDetail {
   activeSince: string
   likeCount: number
   isLiked: boolean
+  baseUnit: string // e.g. "sats", "USD"
   creator: MarketCreator
   resolution: ResolutionDetails
   priceHistory: PriceHistory
@@ -156,6 +157,17 @@ export interface CategoricalMarketDetail extends BaseMarketDetail {
   outcomeOrderBooks: Record<string, OrderBook>
 }
 
+// Numeric market detail (NUT-CTF-numeric: HI/LO token pair with proportional payout)
+export interface NumericMarketDetail extends BaseMarketDetail {
+  type: 'numeric'
+  loBound: number       // Lower bound of the outcome range
+  hiBound: number       // Upper bound of the outcome range
+  precision: number     // Decimal places for display
+  unit: string          // Display unit (e.g. "USD", "BTC")
+  currentPrice: number  // Implied price: loBound + (hiPrice / 100) * (hiBound - loBound)
+  attestedValue?: number // Set when resolved — the oracle-attested value
+}
+
 export interface TwoDimensionalMarketDetail extends BaseMarketDetail {
   type: 'twodimensional'
   baseMarketId: string
@@ -174,7 +186,7 @@ export interface TwoDimensionalMarketDetail extends BaseMarketDetail {
   cellOrderBooks: Record<string, OrderBook>
 }
 
-export type MarketDetail = YesNoMarketDetail | CategoricalMarketDetail | TwoDimensionalMarketDetail
+export type MarketDetail = YesNoMarketDetail | CategoricalMarketDetail | NumericMarketDetail | TwoDimensionalMarketDetail
 
 // =============================================================================
 // Fixed Dimension Types (for 2D conditional probability chart)
@@ -187,13 +199,32 @@ export type FixedDimension = {
 }
 
 // =============================================================================
+// Trade Side & Order Type
+// =============================================================================
+
+export type TradeSide = 'buy' | 'sell'
+export type OrderType = 'market' | 'limit'
+
+export interface LimitOrderPreview {
+  limitPrice: number        // in market's base unit (e.g. sats)
+  amount: number            // sats
+  sharesIfFilled: number    // amount * 10000 / limitPrice (assumes 10000 sats per full share)
+  creatorFee: number
+  platformFee: number
+  totalCost: number
+}
+
+// =============================================================================
 // Trade State Types
 // =============================================================================
 
 export interface TradeSelection {
-  side: 'yes' | 'no'
+  side: 'yes' | 'no' | 'hi' | 'lo'
   outcomeId?: string // For categorical
   cellId?: string // For 2D (e.g., "yes-yes", "outcome1-no")
+  tradeSide?: TradeSide
+  orderType?: OrderType
+  limitPrice?: number
 }
 
 export interface TradePreview {
@@ -282,4 +313,28 @@ export interface MarketDetailProps {
 
   /** Currently fixed dimension for conditional probability chart */
   fixedDimension?: FixedDimension | null
+
+  /** Current buy/sell trade side */
+  tradeSide: TradeSide
+
+  /** Called when user toggles between buy and sell */
+  onTradeSideChange?: (side: TradeSide) => void
+
+  /** Current order type (market or limit) */
+  orderType: OrderType
+
+  /** Called when user toggles between market and limit order */
+  onOrderTypeChange?: (type: OrderType) => void
+
+  /** Preview for limit orders (null if not applicable) */
+  limitOrderPreview?: LimitOrderPreview | null
+
+  /** Current limit price (in market's base unit) */
+  limitPrice?: number
+
+  /** Called when user changes limit price */
+  onLimitPriceChange?: (price: number) => void
+
+  /** Number of shares the user currently holds (for sell percentage calculation) */
+  userHoldings?: number
 }

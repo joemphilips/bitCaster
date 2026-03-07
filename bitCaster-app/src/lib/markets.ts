@@ -1,4 +1,9 @@
 import type { Market, FilterState } from '@/types/market'
+import type {
+  MarketDetail,
+  OrderBook,
+  Order,
+} from '@/types/market-detail'
 
 // CDK mint response types
 
@@ -153,8 +158,117 @@ export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
 export type LevelDto = components['schemas']['LevelDto']
 export type Fill = components['schemas']['Fill']
 
-export async function submitOrder(params: SubmitOrderRequest): Promise<SubmitOrderResponse> {
-  const response = await fetch('/api/v1/orders', {
+// =============================================================================
+// Market Detail Data Fetching
+// =============================================================================
+
+function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
+  const firstPartition = c.partitions[0]
+  const outcomes = firstPartition?.partition ?? []
+  const now = new Date().toISOString()
+
+  const isYesNo =
+    outcomes.length === 2 &&
+    outcomes[0].toLowerCase() === 'yes' &&
+    outcomes[1].toLowerCase() === 'no'
+
+  const isResolved = c.attestation.status === 'attested'
+
+  const base = {
+    id: c.condition_id,
+    title: c.description,
+    imageUrl: undefined,
+    categoryTags: [],
+    volume: 0,
+    liquidity: 0,
+    traderCount: 0,
+    closingDate: now,
+    createdDate: now,
+    activeSince: now,
+    likeCount: 0,
+    isLiked: false,
+    baseUnit: 'sats',
+    creator: {
+      id: 'unknown',
+      name: 'Unknown',
+      totalMarketsCreated: 0,
+      feePercent: 0,
+    },
+    resolution: {
+      criteria: c.description,
+      source: 'oracle' as const,
+      resolutionDate: now,
+      status: isResolved ? 'resolved' as const : 'open' as const,
+      finalOutcome: c.attestation.winning_outcome ?? undefined,
+    },
+    priceHistory: { data: [], timeframe: '7d' as const },
+    orderBook: { bids: [], asks: [], spread: 0 },
+    recentTrades: [],
+    comments: [],
+    relatedMarkets: [],
+  }
+
+  if (isYesNo) {
+    return {
+      ...base,
+      type: 'yesno',
+      currentOdds: { yes: 50, no: 50 },
+    }
+  }
+
+  return {
+    ...base,
+    type: 'categorical',
+    outcomes: outcomes.map((label, i) => ({
+      id: `outcome-${i}`,
+      label,
+      odds: 100 / outcomes.length,
+    })),
+    outcomePriceHistories: {},
+    outcomeOrderBooks: {},
+  }
+}
+
+export async function fetchMarketDetail(conditionId: string): Promise<MarketDetail> {
+  const conditions = await fetchConditions()
+  const condition = conditions.find((c) => c.condition_id === conditionId)
+  if (!condition) {
+    throw new Error(`Condition not found: ${conditionId}`)
+  }
+  return mapConditionToMarketDetail(condition)
+}
+
+function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
+  let cumulativeBid = 0
+  const bids: Order[] = snapshot.bids.map((level) => {
+    cumulativeBid += level.amount
+    return { price: level.price, amount: level.amount, total: cumulativeBid }
+  })
+
+  let cumulativeAsk = 0
+  const asks: Order[] = snapshot.asks.map((level) => {
+    cumulativeAsk += level.amount
+    return { price: level.price, amount: level.amount, total: cumulativeAsk }
+  })
+
+  return {
+    bids,
+    asks,
+    spread: snapshot.spread ?? 0,
+  }
+}
+
+export async function fetchOrderBook(marketId: string): Promise<OrderBook> {
+  const response = await fetch(`/api/v1/${marketId}/orderbook`)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch order book: ${response.status}`)
+  }
+  const snapshot: OrderBookSnapshot = await response.json()
+  return mapSnapshotToOrderBook(snapshot)
+}
+
+export async function submitOrder(marketId: string, params: SubmitOrderRequest): Promise<SubmitOrderResponse> {
+  const response = await fetch(`/api/v1/${marketId}/orders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),

@@ -63,6 +63,7 @@ export default defineConfig({
   server: {
     port: parseInt(process.env.PORT || "5173"),
     host: true,
+    allowedHosts: "all",
     proxy: {
       "/v1": {
         target: process.env.services__mintd__mint_api__0 ?? "http://localhost:8085",
