@@ -5,7 +5,7 @@ import { DepositWithdraw } from '../DepositWithdraw'
 import type { DepositWithdrawProps } from '@/types/deposit-withdraw'
 
 const baseMints = [
-  { id: 'mint-1', name: 'Test Mint', url: 'http://localhost:3338', balanceSats: 5000 },
+  { id: 'mint-1', name: 'Test Mint', url: 'http://localhost:8085', balanceSats: 5000 },
 ]
 
 function renderDepositWithdraw(overrides: Partial<DepositWithdrawProps> = {}) {

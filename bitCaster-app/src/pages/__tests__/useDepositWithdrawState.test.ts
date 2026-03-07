@@ -8,7 +8,7 @@ vi.mock('@/lib/cashu', () => ({
   createMintQuote: vi.fn(),
   mintProofs: vi.fn(),
   encodeToken: vi.fn().mockReturnValue('cashuAtoken123'),
-  decodeToken: vi.fn().mockReturnValue({ mint: 'http://localhost:3338', proofs: [] }),
+  decodeToken: vi.fn().mockReturnValue({ mint: 'http://localhost:8085', proofs: [] }),
   receiveToken: vi.fn().mockResolvedValue([]),
   sendProofs: vi.fn().mockResolvedValue({ keep: [], send: [{ secret: 's1', amount: 100 }] }),
   createMeltQuote: vi.fn(),
@@ -19,22 +19,22 @@ vi.mock('@/lib/cashu', () => ({
 // Mock proof-db
 vi.mock('@/stores/proof-db', () => ({
   db: { proofs: { toArray: vi.fn().mockResolvedValue([]), where: vi.fn().mockReturnThis(), equals: vi.fn().mockReturnThis() } },
-  getProofs: vi.fn().mockResolvedValue([{ secret: 's1', amount: 100, mintUrl: 'http://localhost:3338', id: 'id1', C: 'C1' }]),
+  getProofs: vi.fn().mockResolvedValue([{ secret: 's1', amount: 100, mintUrl: 'http://localhost:8085', id: 'id1', C: 'C1' }]),
   addProofs: vi.fn().mockResolvedValue(undefined),
   removeProofs: vi.fn().mockResolvedValue(undefined),
 }))
 
 // Mock dexie-react-hooks — useLiveQuery returns balances keyed by mint URL
 vi.mock('dexie-react-hooks', () => ({
-  useLiveQuery: vi.fn().mockReturnValue({ 'http://localhost:3338': 5000 }),
+  useLiveQuery: vi.fn().mockReturnValue({ 'http://localhost:8085': 5000 }),
 }))
 
 beforeEach(() => {
   useWalletStore.setState({
     mnemonic: 'test words here abandon abandon abandon abandon abandon abandon abandon abandon abandon',
     setupComplete: true,
-    mints: [{ url: 'http://localhost:3338', info: { name: 'Test Mint' } }],
-    activeMintUrl: 'http://localhost:3338',
+    mints: [{ url: 'http://localhost:8085', info: { name: 'Test Mint' } }],
+    activeMintUrl: 'http://localhost:8085',
     keysetCounters: {},
     mintConnectionStatuses: {},
   })
@@ -60,7 +60,7 @@ describe('useDepositWithdrawState', () => {
     it('populates mints from wallet store', () => {
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
       expect(result.current.mints).toHaveLength(1)
-      expect(result.current.mints[0].url).toBe('http://localhost:3338')
+      expect(result.current.mints[0].url).toBe('http://localhost:8085')
     })
   })
 

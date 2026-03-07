@@ -25,7 +25,7 @@ import { useWalletStore } from "@/stores/wallet";
 // Default mint (can be overridden at runtime)
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MINT_URL = import.meta.env.VITE_MINT_URL ?? "http://localhost:3338";
+const DEFAULT_MINT_URL = import.meta.env.VITE_MINT_URL ?? "http://localhost:8085";
 
 // ---------------------------------------------------------------------------
 // Singleton wallet — delegates to wallet store when available

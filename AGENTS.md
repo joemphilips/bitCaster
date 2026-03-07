@@ -63,7 +63,7 @@ tests/E2E/           Playwright E2E tests (xUnit, docker-compose)
 plans/               Implementation plan documents that has been used by coding agents
 ```
 
-> **Note:** The real CLOB matching engine lives in a **private repo** at `~/working/src/cashu/bitCaster-matching-engine`. It references `BitCaster.MatchingEngine.Contracts` via git submodule.
+> **Note:** The real CLOB matching engine lives in a **private repo** at `https://github.com/joemphilips/bitCaster-matching-engine` or in one level above directory. It references `BitCaster.MatchingEngine.Contracts` via git submodule.
 
 ## Local Dev
 

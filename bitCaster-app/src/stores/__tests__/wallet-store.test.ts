@@ -8,7 +8,7 @@ beforeEach(() => {
     mnemonic: '',
     setupComplete: false,
     mints: [],
-    activeMintUrl: 'http://localhost:3338',
+    activeMintUrl: 'http://localhost:8085',
     keysetCounters: {},
     mintConnectionStatuses: {},
   })
@@ -55,9 +55,9 @@ describe('useWalletStore', () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
         new Response('{}', { status: 200 })
       )
-      const status = await useWalletStore.getState().testMintConnection('http://localhost:3338')
+      const status = await useWalletStore.getState().testMintConnection('http://localhost:8085')
       expect(status).toBe('connected')
-      expect(useWalletStore.getState().mintConnectionStatuses['http://localhost:3338']).toBe('connected')
+      expect(useWalletStore.getState().mintConnectionStatuses['http://localhost:8085']).toBe('connected')
       vi.restoreAllMocks()
     })
 
@@ -73,10 +73,10 @@ describe('useWalletStore', () => {
   describe('removeMint', () => {
     it('cannot remove the last mint', () => {
       useWalletStore.setState({
-        mints: [{ url: 'http://localhost:3338' }],
-        activeMintUrl: 'http://localhost:3338',
+        mints: [{ url: 'http://localhost:8085' }],
+        activeMintUrl: 'http://localhost:8085',
       })
-      useWalletStore.getState().removeMint('http://localhost:3338')
+      useWalletStore.getState().removeMint('http://localhost:8085')
       expect(useWalletStore.getState().mints).toHaveLength(1)
     })
 

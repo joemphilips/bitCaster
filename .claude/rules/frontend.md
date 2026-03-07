@@ -19,6 +19,10 @@ npm run preview      # preview production build
 
 No linter or formatter is configured — rely on `tsc --strict` for correctness.
 
+## Testing
+
+When you need to manually verify the UI behavior, consider using `playwright-cli` or adding a e2e test.
+
 ## No Dummy/Test Data in Production Code
 
 Never embed hardcoded sample or dummy data in the frontend source. The frontend must always fetch real data from the CDK mint (`GET /v1/conditions`). When the mint is unavailable or has no conditions, show an error state or empty state — never fall back to fake data. Test/seed data belongs in `tools/seed-conditions/` and is injected via docker-compose.
@@ -50,6 +54,6 @@ cp bitCaster-app/.env.example bitCaster-app/.env
 ```
 
 Required variables:
-- `VITE_MINT_URL` — Cashu mint endpoint (default `http://localhost:3338`)
+- `VITE_MINT_URL` — Cashu mint endpoint (default `http://localhost:8085`)
 - `VITE_SERVER_URL` — BitCaster.Server endpoint (default `http://localhost:5000`)
 - `VITE_ORACLE_PUBKEY` — (optional) hex pubkey for DLC oracle announcements

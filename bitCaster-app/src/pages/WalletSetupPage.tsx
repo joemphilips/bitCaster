@@ -83,7 +83,7 @@ export function WalletSetupPage() {
   useEffect(() => {
     if (currentStep === 5 && mintConnections.length === 0 && !mintAutoAdded.current) {
       mintAutoAdded.current = true
-      const defaultUrl = import.meta.env.VITE_MINT_URL ?? 'http://localhost:3338'
+      const defaultUrl = import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085'
       handleAddMint(defaultUrl)
     }
   }, [currentStep, mintConnections.length])

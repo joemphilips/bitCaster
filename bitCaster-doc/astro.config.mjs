@@ -33,24 +33,8 @@ export default defineConfig({
 							autogenerate: { directory: 'user-guide/getting-started' },
 						},
 						{
-							label: 'Markets',
-							autogenerate: { directory: 'user-guide/markets' },
-						},
-						{
-							label: 'Portfolio',
-							autogenerate: { directory: 'user-guide/portfolio' },
-						},
-						{
-							label: 'Market Creation',
-							autogenerate: { directory: 'user-guide/market-creation' },
-						},
-						{
-							label: 'Settings',
-							autogenerate: { directory: 'user-guide/settings' },
-						},
-						{
-							label: 'Protocol',
-							autogenerate: { directory: 'user-guide/protocol' },
+							label: 'Core Concepts',
+							autogenerate: { directory: 'user-guide/core-concepts' },
 						},
 					],
 				},
