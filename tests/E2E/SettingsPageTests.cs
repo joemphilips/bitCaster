@@ -15,7 +15,7 @@ public class SettingsPageTests : IAsyncLifetime
         // Verify all external services are reachable before launching Playwright
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint (port 8085)");
-        await WaitForService(httpClient, $"http://localhost:{ServerPort}/health", "Matching Engine (port 5000)");
+        await WaitForService(httpClient, $"http://localhost:{ServerPort}/alive", "Matching Engine (port 5000)");
         await WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend (port 5173)");
 
         // Launch Playwright headless Chromium
