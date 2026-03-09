@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: 10.0.x
+
+jobs:
+  dotnet-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - run: dotnet build BitCaster.MatchingEngine.Contracts/
+      - run: dotnet build BitCaster.InMemoryMatchingEngine/
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: bitCaster-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run test
+
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: cd bitCaster-doc && npm ci && npm run build
+
+  e2e-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [dotnet-build, frontend]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Check if CDK has changes
+        id: cdk-check
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if git diff --name-only "$BASE"..HEAD -- cdk/ | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build mintd image (CDK changed)
+        if: steps.cdk-check.outputs.changed == 'true'
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build mintd
+
+      - name: Start services
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+
+      - name: Wait for services
+        run: |
+          wait_for() {
+            local url=$1 label=$2
+            echo "Waiting for $label..."
+            for i in $(seq 1 60); do
+              curl -sf "$url" && return
+              sleep 5
+            done
+            echo "$label not ready"
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
+            exit 1
+          }
+          wait_for http://localhost:8085/v1/info "mint"
+          wait_for http://localhost:5000/alive "server"
+          wait_for http://localhost:5173 "frontend"
+
+      - name: Build E2E tests and install Playwright
+        run: |
+          dotnet build tests/E2E/
+          pwsh tests/E2E/bin/Debug/*/playwright.ps1 install chromium
+
+      - name: Run E2E tests
+        run: dotnet test tests/E2E/ --no-build -- RunConfiguration.MaxCpuCount=$(($(nproc) - 1))
+
+      - name: Dump docker compose logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs

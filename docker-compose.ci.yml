@@ -1,0 +1,9 @@
+services:
+  mintd:
+    image: joemphilips/cdk-mintd
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/8085"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s

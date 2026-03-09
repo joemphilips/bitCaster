@@ -96,6 +96,17 @@ Test/seed data must **never** live in production frontend code. The frontend sho
 
 1. **All tests pass** — run `dotnet test` from the repo root and ensure all unit and integration tests are green.
 
+## Branch Completion Workflow
+
+When work on a branch is complete, follow these steps in order before publishing a PR:
+
+1. **Run /simplify** — invoke the simplify skill to review changed code for reuse, quality, and efficiency. Commit any improvements.
+2. **Run frontend tests** — `cd bitCaster-app && npm run test`
+3. **Run .NET build** — `dotnet build BitCaster.MatchingEngine.Contracts/ && dotnet build BitCaster.InMemoryMatchingEngine/`
+4. **Run E2E tests** — Start services with `docker compose up -d`, wait for mint (`curl localhost:8085/v1/info`), server (`curl localhost:5000/alive`), and frontend (`curl localhost:5173`) to be healthy, then run `dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7`.
+5. **Create a draft PR** — `gh pr create --draft`. Monitor CI. If CI fails, fix issues, push, and iterate until green.
+6. **Publish the PR** — `gh pr ready` to mark the draft as ready for review.
+
 ## Project-Specific Details
 
 See `.claude/rules/` for details on each subproject:
