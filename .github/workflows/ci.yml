@@ -103,7 +103,7 @@ jobs:
             exit 1
           }
           wait_for http://localhost:8085/v1/info "mint"
-          wait_for http://localhost:5000/alive "server"
+          wait_for http://localhost:5000/health "server"
           wait_for http://localhost:5173 "frontend"
 
       - name: Build E2E tests and install Playwright
