@@ -23,6 +23,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
+      - run: dotnet tool restore
       - run: dotnet build BitCaster.MatchingEngine.Contracts/
       - run: dotnet build BitCaster.InMemoryMatchingEngine/
 
@@ -107,6 +108,7 @@ jobs:
 
       - name: Build E2E tests and install Playwright
         run: |
+          dotnet tool restore
           dotnet build tests/E2E/
           pwsh tests/E2E/bin/Debug/*/playwright.ps1 install chromium
 
