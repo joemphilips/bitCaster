@@ -1,5 +1,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
+COPY dotnet-tools.json ./.config/dotnet-tools.json
+RUN dotnet tool restore
 COPY BitCaster.MatchingEngine.Contracts/ BitCaster.MatchingEngine.Contracts/
 COPY BitCaster.InMemoryMatchingEngine/ BitCaster.InMemoryMatchingEngine/
 RUN dotnet publish BitCaster.InMemoryMatchingEngine -c Release -o /app
