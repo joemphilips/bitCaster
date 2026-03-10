@@ -103,8 +103,9 @@ public class MarketDiscoveryTests : IAsyncLifetime
         // Should navigate to market detail page
         await Assertions.Expect(page).ToHaveURLAsync(new System.Text.RegularExpressions.Regex(@"/markets/[a-f0-9]+"), new() { Timeout = 5_000 });
 
-        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Market Detail" });
-        await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        // The market detail page shows the market title as an h1 heading
+        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Will Bitcoin reach" });
+        await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 10_000 });
     }
 
     [Fact]

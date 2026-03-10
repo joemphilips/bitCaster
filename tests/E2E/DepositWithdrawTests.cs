@@ -82,6 +82,12 @@ public class DepositWithdrawTests : IAsyncLifetime
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
+
+        // Capture JS console messages and errors for diagnostics
+        var consoleMessages = new System.Collections.Generic.List<string>();
+        page.Console += (_, msg) => consoleMessages.Add($"[{msg.Type}] {msg.Text}");
+        page.PageError += (_, error) => consoleMessages.Add($"[PAGE_ERROR] {error}");
+
         await SetupCompleteWithMint(page);
         await NavigateToPortfolio(page);
 
@@ -112,7 +118,21 @@ public class DepositWithdrawTests : IAsyncLifetime
         // Invoice display should appear with a bolt11 string (starts with lnbc or lntb)
         // Wait for the invoice to appear — the mint may take a moment
         var invoiceText = page.Locator("text=/ln(bc|tb)/i");
-        await Assertions.Expect(invoiceText.First).ToBeVisibleAsync(new() { Timeout = 15_000 });
+        try
+        {
+            await Assertions.Expect(invoiceText.First).ToBeVisibleAsync(new() { Timeout = 15_000 });
+        }
+        catch
+        {
+            // Dump diagnostics on failure
+            var errorBanner = await page.Locator(".bg-red-900").TextContentAsync();
+            var bodyText = await page.Locator("body").InnerTextAsync();
+            throw new Exception(
+                $"Invoice not found.\n" +
+                $"Error banner: {errorBanner}\n" +
+                $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
+                $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
+        }
 
         // With fakewallet, the quote is auto-paid, so we should see "Payment received!"
         var paymentReceived = page.GetByText("Payment received!");
