@@ -124,12 +124,18 @@ public class DepositWithdrawTests : IAsyncLifetime
         }
         catch
         {
-            // Dump diagnostics on failure
-            var errorBanner = await page.Locator(".bg-red-900").TextContentAsync();
-            var bodyText = await page.Locator("body").InnerTextAsync();
+            // Dump diagnostics on failure — use short timeouts to avoid hanging
+            string? errorBanner = null;
+            try { errorBanner = await page.Locator(".bg-red-900").TextContentAsync(new() { Timeout = 1_000 }); }
+            catch { /* no error banner visible */ }
+
+            var bodyText = await page.Locator("body").InnerTextAsync(new() { Timeout = 5_000 });
+            var url = page.Url;
+
             throw new Exception(
                 $"Invoice not found.\n" +
-                $"Error banner: {errorBanner}\n" +
+                $"URL: {url}\n" +
+                $"Error banner: {errorBanner ?? "(none)"}\n" +
                 $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
                 $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
         }
