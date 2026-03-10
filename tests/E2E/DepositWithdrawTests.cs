@@ -47,18 +47,21 @@ public class DepositWithdrawTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        await page.EvaluateAsync(@"
-            localStorage.setItem('bitcaster-wallet', JSON.stringify({
-                state: {
+        // Use the frontend URL as mint URL so cashu-ts requests go through
+        // the nginx/Vite proxy (/v1/ → mintd). This avoids cross-origin issues
+        // in Docker where the browser is on localhost:5173 but mint is on localhost:8085.
+        await page.EvaluateAsync($@"
+            localStorage.setItem('bitcaster-wallet', JSON.stringify({{
+                state: {{
                     mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
                     setupComplete: true,
-                    mints: [{ url: 'http://localhost:8085', info: { name: 'Test Mint' } }],
-                    activeMintUrl: 'http://localhost:8085',
-                    keysetCounters: {},
-                    mintConnectionStatuses: {}
-                },
+                    mints: [{{ url: 'http://localhost:{VitePort}', info: {{ name: 'Test Mint' }} }}],
+                    activeMintUrl: 'http://localhost:{VitePort}',
+                    keysetCounters: {{}},
+                    mintConnectionStatuses: {{}}
+                }},
                 version: 0
-            }));
+            }}));
         ");
     }
 

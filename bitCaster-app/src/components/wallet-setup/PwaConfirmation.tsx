@@ -81,7 +81,7 @@ export function PwaConfirmation({ isPwa, backgroundDataLoad, onPwaNext, onBack }
 
       {!isPwa && (
         <p className="text-xs text-amber-400 max-w-sm mb-4">
-          Install as app to continue. The button below will be enabled once you open bitCaster as a PWA.
+          For the best experience, install bitCaster as a PWA before continuing.
         </p>
       )}
 
@@ -125,8 +125,7 @@ export function PwaConfirmation({ isPwa, backgroundDataLoad, onPwaNext, onBack }
         </button>
         <button
           onClick={() => onPwaNext?.()}
-          disabled={!isPwa}
-          className="px-8 py-2.5 rounded-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold text-sm transition-colors"
+          className="px-8 py-2.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm transition-colors"
         >
           Next &rarr;
         </button>
