@@ -9,8 +9,8 @@
  */
 
 import {
-  CashuMint,
-  CashuWallet,
+  Mint as CashuMint,
+  Wallet as CashuWallet,
   getEncodedTokenV4,
   getDecodedToken,
   type Proof,
@@ -154,10 +154,10 @@ export async function waitForMintQuotePaid(
 
   // Try WebSocket first (NUT-17)
   try {
-    const unsub = await wallet.onMintQuotePaid(
+    const unsub = await wallet.on.mintQuotePaid(
       quoteId,
-      (response) => onPaid(response),
-      (error) => onError?.(error as Error)
+      (response: PartialMintQuoteResponse) => onPaid(response),
+      (error: Error) => onError?.(error)
     );
     return unsub;
   } catch {

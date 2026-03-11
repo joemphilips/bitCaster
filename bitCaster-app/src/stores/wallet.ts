@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { CashuMint, CashuWallet, type MintKeys, type MintKeyset } from '@cashu/cashu-ts'
+import { Mint as CashuMint, Wallet as CashuWallet, type MintKeys, type MintKeyset } from '@cashu/cashu-ts'
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
 import { db, getProofs, type StoredProof } from './proof-db'
