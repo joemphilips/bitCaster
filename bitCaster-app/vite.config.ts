@@ -1,3 +1,4 @@
+import path from "path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
@@ -56,9 +57,10 @@ export default defineConfig({
     }),
   ],
   resolve: {
-    alias: {
-      "@": "/src",
-    },
+    alias: [
+      { find: "@", replacement: "/src" },
+      { find: /^@cashu\/cashu-ts$/, replacement: path.resolve(__dirname, "src/lib/cashu-ts-compat.ts") },
+    ],
   },
   server: {
     port: parseInt(process.env.PORT || "5173"),
