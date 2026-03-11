@@ -77,7 +77,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         });
     }
 
-    [Fact]
+    [Fact(Skip = "Requires cashu-ts ≥3.x for NUT-02 v2 keyset ID verification (CDK uses v2 format)")]
     public async Task DepositLightning_CreatesInvoiceAndShowsQR()
     {
         await using var context = await NewIsolatedContextAsync();
@@ -145,7 +145,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         await Assertions.Expect(paymentReceived).ToBeVisibleAsync(new() { Timeout = 30_000 });
     }
 
-    [Fact]
+    [Fact(Skip = "Requires cashu-ts ≥3.x for NUT-02 v2 keyset ID verification (CDK uses v2 format)")]
     public async Task WithdrawSendEcash_GeneratesToken()
     {
         await using var context = await NewIsolatedContextAsync();
