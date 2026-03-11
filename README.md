@@ -178,6 +178,12 @@ CDK mintd
 
 ---
 
+## Documentation
+
+Full documentation is available at **https://joemphilips.github.io/bitCaster/**
+
+---
+
 ## Contributing
 
 1. Fork the repo and create a feature branch

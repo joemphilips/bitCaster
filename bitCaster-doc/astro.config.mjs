@@ -6,7 +6,7 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
 	output: 'static',
 	site: 'https://joemphilips.github.io',
-	base: process.env.BASE_URL || '/bitCaster-doc',
+	base: process.env.BASE_URL || '/bitCaster',
 	integrations: [
 		starlight({
 			title: 'bitCaster Docs',
