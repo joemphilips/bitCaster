@@ -9,6 +9,38 @@ public class DepositWithdrawTests : IAsyncLifetime
     private const int VitePort = 5173;
     private const int MintPort = 8085;
 
+    /// <summary>
+    /// Attach console and page error capture to a page, returning the shared message list.
+    /// </summary>
+    private static List<string> AttachConsoleCapture(IPage page)
+    {
+        var messages = new List<string>();
+        page.Console += (_, msg) => messages.Add($"[{msg.Type}] {msg.Text}");
+        page.PageError += (_, error) => messages.Add($"[PAGE_ERROR] {error}");
+        return messages;
+    }
+
+    /// <summary>
+    /// Build a diagnostic exception with page state for CI debugging.
+    /// </summary>
+    private static async Task<Exception> BuildDiagnosticExceptionAsync(
+        IPage page, IReadOnlyList<string> consoleMessages, string context)
+    {
+        string? errorBanner = null;
+        try { errorBanner = await page.Locator(".bg-red-900").TextContentAsync(new() { Timeout = 1_000 }); }
+        catch { /* no error banner visible */ }
+
+        var bodyText = await page.Locator("body").InnerTextAsync(new() { Timeout = 5_000 });
+        var url = page.Url;
+
+        return new Exception(
+            $"{context}\n" +
+            $"URL: {url}\n" +
+            $"Error banner: {errorBanner ?? "(none)"}\n" +
+            $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
+            $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
+    }
+
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
@@ -87,10 +119,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
 
-        // Capture JS console messages and errors for diagnostics
-        var consoleMessages = new System.Collections.Generic.List<string>();
-        page.Console += (_, msg) => consoleMessages.Add($"[{msg.Type}] {msg.Text}");
-        page.PageError += (_, error) => consoleMessages.Add($"[PAGE_ERROR] {error}");
+        var consoleMessages = AttachConsoleCapture(page);
 
         // Use a unique mnemonic to avoid "Blinded Message is already signed" collisions
         // when multiple deposit tests run against the same mint
@@ -130,20 +159,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         }
         catch
         {
-            // Dump diagnostics on failure — use short timeouts to avoid hanging
-            string? errorBanner = null;
-            try { errorBanner = await page.Locator(".bg-red-900").TextContentAsync(new() { Timeout = 1_000 }); }
-            catch { /* no error banner visible */ }
-
-            var bodyText = await page.Locator("body").InnerTextAsync(new() { Timeout = 5_000 });
-            var url = page.Url;
-
-            throw new Exception(
-                $"Invoice not found.\n" +
-                $"URL: {url}\n" +
-                $"Error banner: {errorBanner ?? "(none)"}\n" +
-                $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
-                $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages, "Invoice not found.");
         }
 
         // With fakewallet, the quote is auto-paid, so we should see "Payment received!"
@@ -157,10 +173,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
 
-        // Capture JS console messages for diagnostics on failure
-        var consoleMessages = new System.Collections.Generic.List<string>();
-        page.Console += (_, msg) => consoleMessages.Add($"[{msg.Type}] {msg.Text}");
-        page.PageError += (_, error) => consoleMessages.Add($"[PAGE_ERROR] {error}");
+        var consoleMessages = AttachConsoleCapture(page);
 
         // Use a unique mnemonic to avoid "Blinded Message is already signed" collisions
         await SetupCompleteWithMint(page, "legal winner thank year wave sausage worth useful legal winner thank yellow");
@@ -169,7 +182,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         // DepositViaMint ends on the portfolio page, so no need to navigate again.
         // Navigating again would cause a full page reload, resetting the in-memory
         // cashu-ts keyset counter to 0 and triggering "Blinded Message is already signed".
-        await DepositViaMint(page, 500);
+        await DepositViaMint(page, 500, consoleMessages);
 
         // After deposit, wait for network activity and React re-renders to settle
         await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
@@ -204,19 +217,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         }
         catch
         {
-            string? errorBanner = null;
-            try { errorBanner = await page.Locator(".bg-red-900").TextContentAsync(new() { Timeout = 1_000 }); }
-            catch { /* no error banner visible */ }
-
-            var bodyText = await page.Locator("body").InnerTextAsync(new() { Timeout = 5_000 });
-            var url = page.Url;
-
-            throw new Exception(
-                $"WithdrawSendEcash: Cashu token not found.\n" +
-                $"URL: {url}\n" +
-                $"Error banner: {errorBanner ?? "(none)"}\n" +
-                $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
-                $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages, "WithdrawSendEcash: Cashu token not found.");
         }
     }
 
@@ -259,12 +260,9 @@ public class DepositWithdrawTests : IAsyncLifetime
     /// Helper: deposit sats into the wallet by going through the deposit-lightning flow.
     /// Uses fakewallet's auto-pay to complete the mint quote instantly.
     /// </summary>
-    private async Task DepositViaMint(IPage page, int amountSats)
+    private async Task DepositViaMint(IPage page, int amountSats, List<string>? consoleMessages = null)
     {
-        // Capture JS console messages for diagnostics on failure
-        var consoleMessages = new System.Collections.Generic.List<string>();
-        page.Console += (_, msg) => consoleMessages.Add($"[{msg.Type}] {msg.Text}");
-        page.PageError += (_, error) => consoleMessages.Add($"[PAGE_ERROR] {error}");
+        consoleMessages ??= AttachConsoleCapture(page);
 
         await NavigateToPortfolio(page);
 
@@ -300,19 +298,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         }
         catch
         {
-            string? errorBanner = null;
-            try { errorBanner = await page.Locator(".bg-red-900").TextContentAsync(new() { Timeout = 1_000 }); }
-            catch { /* no error banner visible */ }
-
-            var bodyText = await page.Locator("body").InnerTextAsync(new() { Timeout = 5_000 });
-            var url = page.Url;
-
-            throw new Exception(
-                $"DepositViaMint({amountSats}): Payment not received.\n" +
-                $"URL: {url}\n" +
-                $"Error banner: {errorBanner ?? "(none)"}\n" +
-                $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
-                $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages, $"DepositViaMint({amountSats}): Payment not received.");
         }
 
         // Close the invoice display overlay — click the X button inside the overlay
