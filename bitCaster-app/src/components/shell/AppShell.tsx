@@ -30,7 +30,7 @@ export function AppShell({
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 relative">
       {/* Brand Motto Background Image */}
       <div
-        className="fixed inset-0 pointer-events-none select-none overflow-hidden opacity-[0.02]"
+        className="fixed inset-0 pointer-events-none select-none overflow-hidden opacity-[0.02] -z-10"
         style={{
           backgroundImage: 'url(/brand_motto.png)',
           backgroundSize: 'cover',
@@ -87,7 +87,7 @@ export function AppShell({
       </header>
 
       {/* Main Content */}
-      <main className="relative z-10 pb-20 md:pb-0">{children}</main>
+      <main className="relative pb-20 md:pb-0">{children}</main>
 
       {/* Mobile Bottom Navigation Bar */}
       <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 md:hidden">

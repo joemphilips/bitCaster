@@ -67,6 +67,9 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Check if CDK has changes
         id: cdk-check
@@ -86,29 +89,43 @@ jobs:
         if: steps.cdk-check.outputs.changed == 'true'
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build mintd
 
-      - name: Start services
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+      # Only start mintd + seed via Docker (dependency services).
+      # Server and frontend run natively to match the local dev workflow.
+      - name: Start mint
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mintd seed
 
-      - name: Wait for services
+      - name: Wait for mint
         run: |
-          wait_for() {
-            local url=$1 label=$2
-            echo "Waiting for $label..."
-            for i in $(seq 1 60); do
-              curl -sf "$url" && return
-              sleep 5
-            done
-            echo "$label not ready"
-            docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
-            exit 1
-          }
-          wait_for http://localhost:8085/v1/info "mint"
-          wait_for http://localhost:5000/health "server"
-          wait_for http://localhost:5173 "frontend"
+          echo "Waiting for mint..."
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8085/v1/info && exit 0
+            sleep 5
+          done
+          echo "Mint not ready"
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
+          exit 1
+
+      - name: Start server
+        run: |
+          dotnet tool restore
+          dotnet run --project BitCaster.InMemoryMatchingEngine/ &
+          echo "Waiting for server..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5000/health && break
+            sleep 2
+          done
+
+      - name: Start frontend
+        run: |
+          cd bitCaster-app && npm ci && npx vite --host &
+          echo "Waiting for frontend..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5173 && break
+            sleep 2
+          done
 
       - name: Build E2E tests and install Playwright
         run: |
-          dotnet tool restore
           dotnet build tests/E2E/
           pwsh tests/E2E/bin/Debug/*/playwright.ps1 install chromium
 
@@ -117,4 +134,4 @@ jobs:
 
       - name: Dump docker compose logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs mintd

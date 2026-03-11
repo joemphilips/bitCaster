@@ -39,8 +39,12 @@ public class DepositWithdrawTests : IAsyncLifetime
     /// The mint URL points directly to localhost:8085 where mintd runs.
     /// Service workers are blocked at the context level, so no manual unregistration needed.
     /// </summary>
-    private async Task SetupCompleteWithMint(IPage page)
+    private const string DefaultMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    private async Task SetupCompleteWithMint(IPage page, string? mnemonic = null)
     {
+        mnemonic ??= DefaultMnemonic;
+
         await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -53,7 +57,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         await page.EvaluateAsync($@"
             localStorage.setItem('bitcaster-wallet', JSON.stringify({{
                 state: {{
-                    mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+                    mnemonic: '{mnemonic}',
                     setupComplete: true,
                     mints: [{{ url: 'http://localhost:{VitePort}', info: {{ name: 'Test Mint' }} }}],
                     activeMintUrl: 'http://localhost:{VitePort}',
@@ -88,7 +92,9 @@ public class DepositWithdrawTests : IAsyncLifetime
         page.Console += (_, msg) => consoleMessages.Add($"[{msg.Type}] {msg.Text}");
         page.PageError += (_, error) => consoleMessages.Add($"[PAGE_ERROR] {error}");
 
-        await SetupCompleteWithMint(page);
+        // Use a unique mnemonic to avoid "Blinded Message is already signed" collisions
+        // when multiple deposit tests run against the same mint
+        await SetupCompleteWithMint(page, "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong");
         await NavigateToPortfolio(page);
 
         // Click Deposit button
@@ -150,25 +156,38 @@ public class DepositWithdrawTests : IAsyncLifetime
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
-        await SetupCompleteWithMint(page);
 
-        // First deposit some sats so we have a balance to withdraw
+        // Capture JS console messages for diagnostics on failure
+        var consoleMessages = new System.Collections.Generic.List<string>();
+        page.Console += (_, msg) => consoleMessages.Add($"[{msg.Type}] {msg.Text}");
+        page.PageError += (_, error) => consoleMessages.Add($"[PAGE_ERROR] {error}");
+
+        // Use a unique mnemonic to avoid "Blinded Message is already signed" collisions
+        await SetupCompleteWithMint(page, "legal winner thank year wave sausage worth useful legal winner thank yellow");
+
+        // First deposit some sats so we have a balance to withdraw.
+        // DepositViaMint ends on the portfolio page, so no need to navigate again.
+        // Navigating again would cause a full page reload, resetting the in-memory
+        // cashu-ts keyset counter to 0 and triggering "Blinded Message is already signed".
         await DepositViaMint(page, 500);
 
-        await NavigateToPortfolio(page);
+        // After deposit, wait for network activity and React re-renders to settle
+        await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
 
         // Click Withdraw button
         var withdrawBtn = page.GetByRole(AriaRole.Button, new() { Name = "Withdraw" });
         await Assertions.Expect(withdrawBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await withdrawBtn.ClickAsync();
 
-        // Select Ecash
+        // Select Ecash — wait for method chooser to appear
         var ecashOption = page.GetByText("Ecash");
         await Assertions.Expect(ecashOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await ecashOption.ClickAsync();
 
-        // Enter amount "100" via numpad (Exact=true to avoid matching time range buttons)
-        await page.GetByRole(AriaRole.Button, new() { Name = "1", Exact = true }).ClickAsync();
+        // Wait for numpad to appear, then enter amount "100"
+        var numpad1 = page.GetByRole(AriaRole.Button, new() { Name = "1", Exact = true });
+        await Assertions.Expect(numpad1).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await numpad1.ClickAsync();
         await page.GetByRole(AriaRole.Button, new() { Name = "0", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Button, new() { Name = "0", Exact = true }).ClickAsync();
 
@@ -179,7 +198,26 @@ public class DepositWithdrawTests : IAsyncLifetime
 
         // Token display should appear with a cashu token
         var tokenText = page.Locator("text=/cashu/i");
-        await Assertions.Expect(tokenText.First).ToBeVisibleAsync(new() { Timeout = 15_000 });
+        try
+        {
+            await Assertions.Expect(tokenText.First).ToBeVisibleAsync(new() { Timeout = 15_000 });
+        }
+        catch
+        {
+            string? errorBanner = null;
+            try { errorBanner = await page.Locator(".bg-red-900").TextContentAsync(new() { Timeout = 1_000 }); }
+            catch { /* no error banner visible */ }
+
+            var bodyText = await page.Locator("body").InnerTextAsync(new() { Timeout = 5_000 });
+            var url = page.Url;
+
+            throw new Exception(
+                $"WithdrawSendEcash: Cashu token not found.\n" +
+                $"URL: {url}\n" +
+                $"Error banner: {errorBanner ?? "(none)"}\n" +
+                $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
+                $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
+        }
     }
 
     [Fact]
@@ -223,17 +261,28 @@ public class DepositWithdrawTests : IAsyncLifetime
     /// </summary>
     private async Task DepositViaMint(IPage page, int amountSats)
     {
+        // Capture JS console messages for diagnostics on failure
+        var consoleMessages = new System.Collections.Generic.List<string>();
+        page.Console += (_, msg) => consoleMessages.Add($"[{msg.Type}] {msg.Text}");
+        page.PageError += (_, error) => consoleMessages.Add($"[PAGE_ERROR] {error}");
+
         await NavigateToPortfolio(page);
 
         var depositBtn = page.GetByRole(AriaRole.Button, new() { Name = "Deposit" });
         await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await depositBtn.ClickAsync();
 
-        // Select Lightning
-        await page.GetByText("Lightning").ClickAsync();
+        // Wait for method chooser, then select Lightning
+        var lightningOption = page.GetByText("Lightning");
+        await Assertions.Expect(lightningOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await lightningOption.ClickAsync();
 
-        // Enter amount digit by digit (Exact=true to avoid matching time range buttons like "1D")
-        foreach (var digit in amountSats.ToString())
+        // Enter amount digit by digit — wait for numpad to be visible first
+        var digits = amountSats.ToString();
+        var firstDigitBtn = page.GetByRole(AriaRole.Button, new() { Name = digits[0].ToString(), Exact = true });
+        await Assertions.Expect(firstDigitBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await firstDigitBtn.ClickAsync();
+        foreach (var digit in digits[1..])
         {
             await page.GetByRole(AriaRole.Button, new() { Name = digit.ToString(), Exact = true }).ClickAsync();
         }
@@ -245,14 +294,33 @@ public class DepositWithdrawTests : IAsyncLifetime
 
         // Wait for auto-payment via fakewallet
         var paymentReceived = page.GetByText("Payment received!");
-        await Assertions.Expect(paymentReceived).ToBeVisibleAsync(new() { Timeout = 30_000 });
+        try
+        {
+            await Assertions.Expect(paymentReceived).ToBeVisibleAsync(new() { Timeout = 30_000 });
+        }
+        catch
+        {
+            string? errorBanner = null;
+            try { errorBanner = await page.Locator(".bg-red-900").TextContentAsync(new() { Timeout = 1_000 }); }
+            catch { /* no error banner visible */ }
 
-        // Close the invoice display
-        var closeButtons = await page.GetByRole(AriaRole.Button).AllAsync();
-        await closeButtons[0].ClickAsync();
+            var bodyText = await page.Locator("body").InnerTextAsync(new() { Timeout = 5_000 });
+            var url = page.Url;
+
+            throw new Exception(
+                $"DepositViaMint({amountSats}): Payment not received.\n" +
+                $"URL: {url}\n" +
+                $"Error banner: {errorBanner ?? "(none)"}\n" +
+                $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
+                $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
+        }
+
+        // Close the invoice display overlay — click the X button inside the overlay
+        var overlayCloseBtn = page.Locator(".fixed button").First;
+        await overlayCloseBtn.ClickAsync(new() { Timeout = 5_000 });
 
         // Wait for overlay to close
-        await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
     }
 
     public async Task DisposeAsync()
