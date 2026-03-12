@@ -29,8 +29,7 @@ bitCaster/
 ├── cdk/                submodule — Cashu Development Kit (joemphilips/cdk @ bitCaster)
 ├── bitCaster-design/   React design tool with product specs and UI mockups
 ├── bitCaster-app/      PWA frontend (React 19 + Vite + cashu-ts + NDK)
-├── BitCaster.Server/   Matching engine + real-time price feed (ASP.NET minimal API + SignalR)
-└── infrastructure/     Terraform for Azure (Container Apps, PostgreSQL, Static Web Apps)
+└── BitCaster.Server/   Matching engine + real-time price feed (ASP.NET minimal API + SignalR)
 ```
 
 ---
@@ -42,8 +41,6 @@ bitCaster/
 | git | ≥ 2.28 |
 | Node.js | ≥ 22 (LTS) |
 | pnpm / npm | ≥ 9 |
-| Terraform | ≥ 1.6 |
-| Azure CLI | ≥ 2.55 (for infra) |
 | Rust + cargo | latest stable (to build CDK locally) |
 | .NET SDK | ≥ 10.0 (for BitCaster.Server) |
 | Docker | latest (for mintd via docker-compose) |
@@ -122,21 +119,6 @@ cargo run --bin cdk-mintd -- --help
 
 Refer to `cdk/README.md` for full configuration options.
 
-### 6. Infrastructure (Azure)
-
-```bash
-cd infrastructure
-terraform init
-terraform plan -out=tfplan
-terraform apply tfplan
-```
-
-You will need an Azure subscription and `az login` before running Terraform.
-The `mint_image` variable defaults to `ghcr.io/cashubtc/cdk-mintd:latest`;
-override it to use your own built image.
-
----
-
 ## Design System
 
 UI mockups and product specifications live in `bitCaster-design/` (branch `bitCaster`).
@@ -189,4 +171,4 @@ Full documentation is available at **https://joemphilips.github.io/bitCaster/**
 1. Fork the repo and create a feature branch
 2. Run `npm run typecheck` in `bitCaster-app/` before opening a PR
 3. For mint changes, run the CDK test suite: `cargo test -p cdk`
-4. Infrastructure changes require `terraform validate` to pass
+4. For CDK changes, run `cargo test -p cdk`

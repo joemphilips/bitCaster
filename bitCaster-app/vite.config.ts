@@ -75,6 +75,11 @@ export default defineConfig({
         target: process.env.services__apiservice__http__0 ?? "http://localhost:5000",
         changeOrigin: true,
       },
+      "/hubs": {
+        target: "http://localhost:5000",
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
 });
