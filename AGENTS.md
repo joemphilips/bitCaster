@@ -54,7 +54,6 @@ BitCaster.InMemoryMatchingEngine/   In-memory matching engine for dev/testing (s
 bitCaster-app/       React 19 + Vite PWA frontend
 bitCaster-doc/       Astro Starlight documentation site (GitHub Pages)
 bitCaster-design/    Design system, specs, and mockups
-infrastructure/      Terraform for Azure (Container Apps, PostgreSQL, Static Web Apps)
 nuts/                Cashu NUT specifications (submodule, branch: nuts_for_prediction_markets)
 cdk/                 Cashu Development Kit (submodule, branch: bitCaster at joemphilips/cdk)
 cashu.me/            Reference cashu wallet (no CTF feature)
@@ -115,7 +114,6 @@ See `.claude/rules/` for details on each subproject:
 - `nut-ctf.md` — NUT-CTF protocol and specs
 - `doc-site.md` — Astro Starlight documentation site
 - `design.md` — Design system references
-- `infrastructure.md` — Terraform / Azure deployment
 - `e2e-tests.md` — E2E testing with Playwright + docker-compose
 
 ## Competitive Landscape
