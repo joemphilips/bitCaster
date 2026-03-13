@@ -93,7 +93,7 @@ Test/seed data must **never** live in production frontend code. The frontend sho
 
 ### Before Committing
 
-1. **All tests pass** — run `dotnet test` from the repo root and ensure all unit and integration tests are green.
+1. **All tests pass** — follow the Branch Completion Workflow below.
 
 ## Branch Completion Workflow
 
