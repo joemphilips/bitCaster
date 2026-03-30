@@ -1,0 +1,36 @@
+---
+title: bitCaster ドキュメント
+description: bitCaster のドキュメント — Cashu CTFトークンとDLCオラクルによる予測市場。
+template: splash
+hero:
+  tagline: Cashu CTFトークンとDLCオラクルを使用した、Nostr上の予測市場。
+  image:
+    file: ../../../assets/hero-logo.svg
+  actions:
+    - text: はじめに
+      link: ./user-guide/getting-started/overview/
+      icon: right-arrow
+    - text: 技術リファレンス
+      link: ./technical/architecture/overview/
+      icon: open-book
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## 探索する
+
+<CardGrid stagger>
+	<Card title="ユーザーガイド" icon="open-book">
+		ウォレットの設定、マーケットの閲覧、ポジションの取引方法を学びます。
+	</Card>
+	<Card title="NUT-CTFプロトコル" icon="document">
+		bitCasterを支えるConditional Timed Fungibleトークンプロトコルを理解します。
+	</Card>
+	<Card title="APIリファレンス" icon="setting">
+		開発者向けのミントエンドポイントと統合の詳細。
+	</Card>
+	<Card title="DLCオラクル" icon="star">
+		Nostr kind-88オラクルアナウンスメントがマーケット決済をどのように駆動するか。
+	</Card>
+</CardGrid>

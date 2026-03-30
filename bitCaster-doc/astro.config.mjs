@@ -9,7 +9,20 @@ export default defineConfig({
 	base: process.env.BASE_URL || '/bitCaster',
 	integrations: [
 		starlight({
-			title: 'bitCaster Docs',
+			title: {
+				en: 'bitCaster Docs',
+				ja: 'bitCaster ドキュメント',
+			},
+			defaultLocale: 'root',
+			locales: {
+				root: {
+					label: 'English',
+					lang: 'en',
+				},
+				ja: {
+					label: '日本語',
+				},
+			},
 			logo: {
 				src: './public/logo.svg',
 			},
@@ -27,43 +40,56 @@ export default defineConfig({
 			sidebar: [
 				{
 					label: 'User Guide',
+					translations: { ja: 'ユーザーガイド' },
 					items: [
 						{
 							label: 'Getting Started',
+							translations: { ja: 'はじめに' },
 							autogenerate: { directory: 'user-guide/getting-started' },
 						},
 						{
 							label: 'Core Concepts',
+							translations: { ja: '基本コンセプト' },
 							autogenerate: { directory: 'user-guide/core-concepts' },
 						},
 					],
 				},
 				{
 					label: 'Technical',
+					translations: { ja: '技術ドキュメント' },
 					items: [
 						{
 							label: 'Architecture',
+							translations: { ja: 'アーキテクチャ' },
 							autogenerate: { directory: 'technical/architecture' },
 						},
 						{
 							label: 'NUT-CTF Protocol',
+							translations: { ja: 'NUT-CTFプロトコル' },
 							autogenerate: { directory: 'technical/nut-ctf' },
 						},
 						{
 							label: 'API',
+							translations: { ja: 'API' },
 							autogenerate: { directory: 'technical/api' },
 						},
 						{
 							label: 'DLC Oracle',
+							translations: { ja: 'DLCオラクル' },
 							autogenerate: { directory: 'technical/dlc-oracle' },
 						},
 						{
 							label: 'Protocol',
+							translations: { ja: 'プロトコル' },
 							autogenerate: { directory: 'technical/protocol' },
 						},
 					],
 				},
-				{ label: 'FAQ', link: '/faq/' },
+				{
+					label: 'FAQ',
+					translations: { ja: 'よくある質問' },
+					link: '/faq/',
+				},
 			],
 		}),
 	],
