@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { MarketDetail } from '@/components/market-detail'
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from '@/lib/markets'
+import { useWalletStore } from '@/stores/wallet'
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -16,6 +17,7 @@ import type {
 export function MarketDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const setupComplete = useWalletStore((s) => s.setupComplete)
 
   // Data state
   const [market, setMarket] = useState<MarketDetailType | null>(null)
@@ -173,6 +175,7 @@ export function MarketDetailPage() {
       onOrderTypeChange={setOrderType}
       onLimitPriceChange={setLimitPrice}
       onRelatedMarketClick={handleRelatedMarketClick}
+      walletReady={setupComplete}
     />
   )
 }

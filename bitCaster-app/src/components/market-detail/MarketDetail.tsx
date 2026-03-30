@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { MarketDetailProps } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
 import { MarketHeader } from './MarketHeader'
@@ -7,6 +8,7 @@ import { ResolutionInfo } from './ResolutionInfo'
 import { ActivityFeed } from './ActivityFeed'
 import { RelatedMarkets } from './RelatedMarkets'
 import { CommentSection } from './CommentSection'
+import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 
 function formatNumericPrice(value: number, unit: string): string {
   if (unit === 'USD') return `$${value.toLocaleString()}`
@@ -72,7 +74,9 @@ export function MarketDetail({
   onOrderTypeChange,
   onLimitPriceChange,
   userHoldings,
+  walletReady = true,
 }: MarketDetailProps) {
+  const [showWalletModal, setShowWalletModal] = useState(false)
   // Get outcomes for categorical markets
   const outcomes = market.type === 'categorical' ? market.outcomes : undefined
 
@@ -129,6 +133,7 @@ export function MarketDetail({
                   onOrderTypeChange={onOrderTypeChange}
                   onLimitPriceChange={onLimitPriceChange}
                   userHoldings={userHoldings}
+                  walletReady={walletReady}
                 />
               </div>
             )}
@@ -194,6 +199,7 @@ export function MarketDetail({
                   onOrderTypeChange={onOrderTypeChange}
                   onLimitPriceChange={onLimitPriceChange}
                   userHoldings={userHoldings}
+                  walletReady={walletReady}
                 />
               </div>
             </div>
@@ -222,26 +228,46 @@ export function MarketDetail({
                 Cancel
               </button>
               <button
-                onClick={onTradeConfirm}
-                disabled={!tradeAmount || tradeAmount <= 0}
-                className="px-6 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white font-semibold transition-colors disabled:cursor-not-allowed"
+                onClick={() => {
+                  if (!walletReady) {
+                    setShowWalletModal(true)
+                    return
+                  }
+                  onTradeConfirm?.()
+                }}
+                disabled={walletReady && (!tradeAmount || tradeAmount <= 0)}
+                className={`px-6 py-2 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
+                  !walletReady
+                    ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'
+                    : 'bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white'
+                }`}
               >
-                Confirm
+                {walletReady ? 'Confirm' : 'Create Wallet'}
               </button>
             </div>
           ) : (
             <button
               onClick={() => {
+                if (!walletReady) {
+                  setShowWalletModal(true)
+                  return
+                }
                 const panel = document.querySelector('[data-trading-panel]')
                 panel?.scrollIntoView({ behavior: 'smooth' })
               }}
-              className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold transition-colors"
+              className={`w-full py-3 rounded-xl font-semibold transition-colors ${
+                !walletReady
+                  ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'
+                  : 'bg-blue-600 hover:bg-blue-700 text-white'
+              }`}
             >
-              Trade
+              {walletReady ? 'Trade' : 'Create Wallet to Trade'}
             </button>
           )}
         </div>
       )}
+
+      {showWalletModal && <WalletRequiredModal onClose={() => setShowWalletModal(false)} />}
     </div>
   )
 }

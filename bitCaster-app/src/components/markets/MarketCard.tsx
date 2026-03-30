@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Users, Droplet, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
 import { formatBtc } from '@/lib/format'
+import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import type {
   Market,
   YesNoMarket,
@@ -20,6 +21,7 @@ interface MarketCardProps {
   onViewMarket?: (marketId: string) => void
   onViewSecondaryMarket?: (baseMarketId: string, secondaryMarketId: string) => void
   onLike?: (marketId: string) => void
+  walletReady?: boolean
 }
 
 function CategoricalOutcomes({
@@ -372,8 +374,10 @@ export function MarketCard({
   onViewMarket,
   onViewSecondaryMarket,
   onLike,
+  walletReady = true,
 }: MarketCardProps) {
   const [isSecondaryExpanded, setIsSecondaryExpanded] = useState(false)
+  const [showWalletModal, setShowWalletModal] = useState(false)
 
   const handleCardClick = (e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('button')) return
@@ -383,6 +387,10 @@ export function MarketCard({
 
   const handleBuyClick = (e: React.MouseEvent) => {
     e.stopPropagation()
+    if (!walletReady) {
+      setShowWalletModal(true)
+      return
+    }
     onViewMarket?.(market.id)
   }
 
@@ -561,6 +569,8 @@ export function MarketCard({
           </button>
         </div>
       </div>
+
+      {showWalletModal && <WalletRequiredModal onClose={() => setShowWalletModal(false)} />}
     </div>
   )
 }
