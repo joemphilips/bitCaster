@@ -164,8 +164,8 @@ public class WalletSetupTests : IAsyncLifetime
     {
         var page = await NewPwaPageAsync();
 
-        // Navigate to / → expect redirect to /setup
-        await page.GotoAsync($"http://localhost:{VitePort}/", new PageGotoOptions
+        // Navigate directly to /setup
+        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

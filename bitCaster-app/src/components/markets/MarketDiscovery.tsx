@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { TagBar } from './TagBar'
 import { FilterControls } from './FilterControls'
 import { MarketCard } from './MarketCard'
+import { useWalletStore } from '@/stores/wallet'
 import type { MarketDiscoveryProps, MarketType, VolumeRange, Market } from '@/types/market'
 
 export function MarketDiscovery({
@@ -19,6 +20,7 @@ export function MarketDiscovery({
   onLoadMore,
   onViewSecondaryMarket,
 }: MarketDiscoveryProps) {
+  const walletReady = useWalletStore((s) => s.setupComplete)
   const observerTarget = useRef<HTMLDivElement>(null)
   const [filtersVisible, setFiltersVisible] = useState(false)
   const [selectedMarketTypes, setSelectedMarketTypes] = useState<MarketType[]>([])
@@ -130,6 +132,7 @@ export function MarketDiscovery({
                 secondaryMarketInfos={getSecondaryMarketInfos(market)}
                 onViewMarket={onViewMarket}
                 onViewSecondaryMarket={onViewSecondaryMarket}
+                walletReady={walletReady}
               />
             ))}
           </div>

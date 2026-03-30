@@ -109,6 +109,111 @@ public class MarketDiscoveryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NewUser_SeesMarketsWithoutWalletSetup()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        // No SetupComplete — fresh user with no wallet
+        await page.GotoAsync($"http://localhost:{VitePort}/", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        // Should NOT be redirected to /setup — should see markets
+        await Assertions.Expect(page).Not.ToHaveURLAsync(new System.Text.RegularExpressions.Regex(@"/setup"));
+
+        // Market cards should be visible
+        var btcMarket = page.GetByText("Will Bitcoin reach $100K");
+        await Assertions.Expect(btcMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
+    }
+
+    [Fact]
+    public async Task NewUser_ClickBuyYes_ShowsWalletRequiredModal()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        // No wallet setup
+        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        // Click Buy YES on a market card
+        var buyYesButton = page.GetByRole(AriaRole.Button, new() { Name = "Buy YES" }).First;
+        await Assertions.Expect(buyYesButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await buyYesButton.ClickAsync();
+
+        // Should show wallet required modal
+        var modalHeading = page.GetByText("Wallet Required");
+        await Assertions.Expect(modalHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
+
+        var createButton = page.GetByRole(AriaRole.Button, new() { Name = "Create Wallet" });
+        await Assertions.Expect(createButton).ToBeVisibleAsync();
+    }
+
+    [Fact]
+    public async Task NewUser_WalletModal_CreateButton_NavigatesToSetup()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        // Trigger wallet required modal via Buy YES
+        var buyYesButton = page.GetByRole(AriaRole.Button, new() { Name = "Buy YES" }).First;
+        await Assertions.Expect(buyYesButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await buyYesButton.ClickAsync();
+
+        // Click "Create Wallet" in the modal
+        var createButton = page.GetByRole(AriaRole.Button, new() { Name = "Create Wallet" });
+        await Assertions.Expect(createButton).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await createButton.ClickAsync();
+
+        // Should navigate to /setup
+        await Assertions.Expect(page).ToHaveURLAsync(new System.Text.RegularExpressions.Regex(@"/setup"), new() { Timeout = 5_000 });
+    }
+
+    [Fact]
+    public async Task NewUser_CanBrowseMarketDetail()
+    {
+        Assert.NotNull(_browser);
+        // Use mobile viewport so the sticky bottom trade bar is visible
+        await using var context = await _browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ServiceWorkers = ServiceWorkerPolicy.Block,
+            ViewportSize = new ViewportSize { Width = 390, Height = 844 },
+        });
+        var page = await context.NewPageAsync();
+        // No wallet setup
+        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        // Click on a market card (not the Buy button) to navigate to detail
+        var btcMarket = page.GetByText("Will Bitcoin reach $100K").First;
+        await Assertions.Expect(btcMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await btcMarket.ClickAsync();
+
+        // Should navigate to market detail
+        await Assertions.Expect(page).ToHaveURLAsync(new System.Text.RegularExpressions.Regex(@"/markets/[a-f0-9]+"), new() { Timeout = 5_000 });
+
+        // Market heading should be visible
+        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Will Bitcoin reach" });
+        await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 10_000 });
+
+        // Mobile sticky bar should show wallet CTA
+        var walletCta = page.GetByText("Create Wallet to Trade");
+        await Assertions.Expect(walletCta).ToBeVisibleAsync(new() { Timeout = 5_000 });
+    }
+
+    [Fact]
     public async Task MintUnavailable_ShowsErrorState()
     {
         await using var context = await NewIsolatedContextAsync();

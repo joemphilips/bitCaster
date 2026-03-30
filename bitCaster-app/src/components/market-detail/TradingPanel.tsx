@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { X, ChevronUp, ChevronDown } from 'lucide-react'
+import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import type {
   MarketDetail,
   TradeSelection,
@@ -31,6 +32,7 @@ interface TradingPanelProps {
   onTradeSideChange?: (side: TradeSide) => void
   onOrderTypeChange?: (type: OrderType) => void
   onLimitPriceChange?: (price: number) => void
+  walletReady?: boolean
 }
 
 const QUICK_AMOUNTS = [100, 500, 1000, 5000]
@@ -465,14 +467,17 @@ export function TradingPanel({
   onTradeSideChange,
   onOrderTypeChange,
   onLimitPriceChange,
+  walletReady = true,
 }: TradingPanelProps) {
   const [tradeComment, setTradeComment] = useState('')
+  const [showWalletModal, setShowWalletModal] = useState(false)
   const isSell = tradeSide === 'sell'
   const isLimit = orderType === 'limit'
   const baseUnit = market.baseUnit ?? 'sats'
 
   // Build confirm button text
   const getConfirmText = () => {
+    if (!walletReady) return 'Create Wallet to Trade'
     if (!tradeAmount || tradeAmount <= 0) return 'Enter amount'
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
     const amountLabel = formatBtc(tradeAmount)
@@ -665,19 +670,29 @@ export function TradingPanel({
           {/* Confirm Button */}
           <button
             onClick={() => {
+              if (!walletReady) {
+                setShowWalletModal(true)
+                return
+              }
               onTradeConfirm?.()
               if (tradeComment.trim()) {
                 onCommentPost?.(tradeComment.trim())
                 setTradeComment('')
               }
             }}
-            disabled={!tradeAmount || tradeAmount <= 0}
-            className="w-full py-3 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white"
+            disabled={walletReady && (!tradeAmount || tradeAmount <= 0)}
+            className={`w-full py-3 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
+              !walletReady
+                ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'
+                : 'bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white'
+            }`}
           >
             {getConfirmText()}
           </button>
         </div>
       )}
+
+      {showWalletModal && <WalletRequiredModal onClose={() => setShowWalletModal(false)} />}
     </div>
   )
 }

@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
 import { AppShell } from "@/components/shell";
 import { MarketsPage } from "@/pages/MarketsPage";
@@ -8,19 +7,10 @@ import { CreatorPage } from "@/pages/CreatorPage";
 import { MarketCreationPage } from "@/pages/MarketCreationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { WalletSetupPage } from "@/pages/WalletSetupPage";
-import { useWalletStore } from "@/stores/wallet";
 
 function AppRoutes() {
   const navigate = useNavigate();
   const location = useLocation();
-  const setupComplete = useWalletStore((s) => s.setupComplete);
-
-  // Auto-redirect to /setup if wallet not configured
-  useEffect(() => {
-    if (!setupComplete && location.pathname !== "/setup") {
-      navigate("/setup", { replace: true });
-    }
-  }, [setupComplete, location.pathname, navigate]);
 
   // /setup renders without AppShell
   if (location.pathname === "/setup") {
