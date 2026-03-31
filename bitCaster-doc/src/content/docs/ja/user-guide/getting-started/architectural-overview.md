@@ -14,7 +14,9 @@ bitCasterは、オープンプロトコルで通信する4つの独立したサ�
 
 ## Cashuミント
 
-ミントはシステムの中核です。通常のsatsと特定のマーケット結果にロックされた条件付きトークンの両方を含むecashトークンを発行します。イベントが解決されると、ミントは自動的に決済を行います：勝利トークンはsatsに償還可能になり、敗北トークンは期限切れになります。
+ミントはシステムの中核です。
+通常のecashトークンと特定のマーケット結果にロックされた条件付きecashトークンの両方を発行します。
+イベントが解決されると、ミントは自動的に決済を行います：勝利トークンはsatsに償還可能になり、敗北トークンは期限切れになります。
 
 ミントは[CDK](https://github.com/cashubtc/cdk)（Cashu Development Kit）に予測市場用の[NUT-CTF](https://github.com/joemphilips/nuts/blob/nuts_for_prediction_markets/CTF.md)拡張を加えて動作します。
 

@@ -14,7 +14,9 @@ Each user runs their own instance of the app in their browser. All users connect
 
 ## Cashu Mint
 
-The mint is the core of the system. It issues ecash tokens — both regular sats and conditional tokens locked to specific market outcomes. When an event resolves, the mint settles automatically: winning tokens become redeemable for sats, and losing tokens expire.
+The mint is the core of the system.
+It issues both regular ecash tokens and conditional ecash tokens locked to specific market outcomes.
+When an event resolves, the mint settles automatically: winning tokens become redeemable for sats, and losing tokens expire.
 
 The mint runs [CDK](https://github.com/cashubtc/cdk) (Cashu Development Kit) with the [NUT-CTF](https://github.com/joemphilips/nuts/blob/nuts_for_prediction_markets/CTF.md) extension for prediction markets.
 

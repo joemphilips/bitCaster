@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-# Atomic Swaps
+# How Token Exchange Works
 
 When you trade on bitCaster, the matching engine pairs your order with another participant. How the trade actually settles depends on the type of match:
 
@@ -20,7 +20,7 @@ An atomic swap guarantees that **either both sides of the trade complete, or nei
 
 - You never send your tokens hoping the other party will send theirs.
 - If anything goes wrong (the other party disappears, a network issue occurs), your tokens are automatically returned to you after a short timeout.
-- The matching engine relays encrypted messages between the two parties but **never holds custody** of any funds.
+- The matching engine relays encrypted messages between the two parties but **never holds custody** of any funds.[^1]
 
 ## How it works (simplified)
 
@@ -35,3 +35,5 @@ The entire process happens in seconds and requires no on-chain transactions — 
 ## Further reading
 
 For the full cryptographic protocol, see the [technical specification](/technical/protocol/atomic-swap/).
+
+[^1]: There is an exception to this: when a market creator supplies initial liquidity, they may deposit assets with the matching engine to bootstrap early trading activity.
