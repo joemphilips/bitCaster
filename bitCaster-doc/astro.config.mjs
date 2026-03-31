@@ -64,21 +64,6 @@ export default defineConfig({
 							autogenerate: { directory: 'technical/architecture' },
 						},
 						{
-							label: 'NUT-CTF Protocol',
-							translations: { ja: 'NUT-CTFプロトコル' },
-							autogenerate: { directory: 'technical/nut-ctf' },
-						},
-						{
-							label: 'API',
-							translations: { ja: 'API' },
-							autogenerate: { directory: 'technical/api' },
-						},
-						{
-							label: 'DLC Oracle',
-							translations: { ja: 'DLCオラクル' },
-							autogenerate: { directory: 'technical/dlc-oracle' },
-						},
-						{
 							label: 'Protocol',
 							translations: { ja: 'プロトコル' },
 							autogenerate: { directory: 'technical/protocol' },
