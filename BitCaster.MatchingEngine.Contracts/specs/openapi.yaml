@@ -2,13 +2,13 @@ openapi: 3.1.0
 info:
   title: BitCaster Matching Engine API
   description: REST API for the BitCaster prediction market matching engine.
-  version: 0.1.0
+  version: 0.2.0
   license:
     name: MIT
 
 servers:
-  - url: http://localhost:5000
-    description: Local development
+  - url: http://localhost:5001
+    description: Local development (via Aspire AppHost)
 
 paths:
   /api/v1/{marketId}/orders:
@@ -17,15 +17,7 @@ paths:
       summary: Submit a new order
       description: Submit a limit or market order to the matching engine.
       parameters:
-        - name: marketId
-          in: path
-          required: true
-          schema:
-            type: string
-          description: >
-            The market to trade on, in the format "{conditionId}-{outcomeName}"
-            (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own
-            independent binary order book. A marketId containing "|" is invalid.
+        - $ref: '#/components/parameters/MarketId'
       requestBody:
         required: true
         content:
@@ -51,13 +43,7 @@ paths:
       operationId: cancelOrder
       summary: Cancel an existing order
       parameters:
-        - name: marketId
-          in: path
-          required: true
-          schema:
-            type: string
-          description: >
-            The market ID in the format "{conditionId}-{outcomeName}".
+        - $ref: '#/components/parameters/MarketId'
         - name: orderId
           in: path
           required: true
@@ -76,13 +62,7 @@ paths:
       operationId: getOrderBook
       summary: Get the current order book snapshot
       parameters:
-        - name: marketId
-          in: path
-          required: true
-          schema:
-            type: string
-          description: >
-            The market ID in the format "{conditionId}-{outcomeName}".
+        - $ref: '#/components/parameters/MarketId'
       responses:
         '200':
           description: Current order book
@@ -91,7 +71,100 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrderBookSnapshot'
 
+  /api/v1/{marketId}/liquidity:
+    post:
+      operationId: registerLiquidity
+      summary: Register CPMM initial liquidity
+      description: >
+        Creates a CPMM (Constant Product Market Maker) pool for the given market
+        and places limit orders on the CLOB to bootstrap liquidity.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterLiquidityRequest'
+      responses:
+        '200':
+          description: Liquidity registered and orders placed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterLiquidityResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                type: string
+        '409':
+          description: CPMM pool already exists for this market
+          content:
+            application/json:
+              schema:
+                type: string
+
+    get:
+      operationId: getLiquidity
+      summary: Get CPMM pool state
+      description: Returns the current state of the CPMM liquidity pool for a market.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+      responses:
+        '200':
+          description: Current pool state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiquidityStateResponse'
+        '404':
+          description: No CPMM pool for this market
+
+    delete:
+      operationId: withdrawLiquidity
+      summary: Withdraw CPMM liquidity
+      description: >
+        Cancels all active CPMM orders and withdraws the liquidity pool.
+        Only the original provider can withdraw.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+        - name: providerId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The provider ID that originally registered the liquidity.
+      responses:
+        '200':
+          description: Liquidity withdrawn
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WithdrawLiquidityResponse'
+        '400':
+          description: Authorization error (not the pool provider)
+          content:
+            application/json:
+              schema:
+                type: string
+        '404':
+          description: No CPMM pool for this market
+
 components:
+  parameters:
+    MarketId:
+      name: marketId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: >
+        The market to trade on, in the format "{conditionId}-{outcomeName}"
+        (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own
+        independent binary order book. A marketId containing "|" is invalid.
+
   schemas:
     Sats:
       type: integer
@@ -118,6 +191,17 @@ components:
         - Limit
         - Market
       description: Execution semantics of an order.
+
+    TimeInForce:
+      type: string
+      enum:
+        - GTC
+        - FOK
+        - FAK
+      description: >
+        Time-in-force policy. GTC = Good-Till-Cancel (rests on book),
+        FOK = Fill-Or-Kill (reject if not fully filled),
+        FAK = Fill-And-Kill (cancel remaining after partial fill).
 
     MatchPath:
       type: string
@@ -163,25 +247,27 @@ components:
     SubmitOrderRequest:
       type: object
       required:
+        - outcomeId
         - side
-        - type
+        - price
         - amountSats
         - userId
       properties:
+        outcomeId:
+          type: string
+          description: The outcome to trade (e.g. "Alice", "YES").
         side:
           $ref: '#/components/schemas/OrderSide'
-        type:
-          $ref: '#/components/schemas/OrderType'
         price:
-          oneOf:
-            - $ref: '#/components/schemas/Probability'
-            - type: 'null'
-          description: Probability price in [1,99]. Required for limit orders, ignored for market orders.
+          $ref: '#/components/schemas/Probability'
         amountSats:
           $ref: '#/components/schemas/Sats'
         userId:
           type: string
           description: Opaque user identifier (e.g. Nostr pubkey hex).
+        timeInForce:
+          $ref: '#/components/schemas/TimeInForce'
+          default: GTC
 
     SubmitOrderResponse:
       type: object
@@ -245,3 +331,124 @@ components:
             - type: integer
             - type: 'null'
           description: Difference between best ask and best bid. Null if either side is empty.
+
+    RegisterLiquidityRequest:
+      type: object
+      required:
+        - liquiditySats
+        - providerId
+      properties:
+        liquiditySats:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Total liquidity to deposit in satoshis.
+        providerId:
+          type: string
+          description: Identifier of the liquidity provider.
+        initialProbability:
+          type: integer
+          minimum: 1
+          maximum: 99
+          default: 50
+          description: Initial implied probability for the market [1, 99].
+
+    RegisterLiquidityResponse:
+      type: object
+      required:
+        - marketId
+        - reserveA
+        - reserveB
+        - impliedProbability
+        - ordersPlaced
+      properties:
+        marketId:
+          type: string
+        reserveA:
+          type: integer
+          format: int64
+          description: Reserve for outcome A (YES/HI) after pool creation.
+        reserveB:
+          type: integer
+          format: int64
+          description: Reserve for outcome B (NO/LO) after pool creation.
+        impliedProbability:
+          type: integer
+          minimum: 1
+          maximum: 99
+          description: Implied probability derived from reserves.
+        ordersPlaced:
+          type: array
+          items:
+            $ref: '#/components/schemas/LiquidityOrderDto'
+          description: List of limit orders placed on the CLOB.
+
+    LiquidityOrderDto:
+      type: object
+      required:
+        - orderId
+        - outcomeId
+        - side
+        - price
+        - amountSats
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        outcomeId:
+          type: string
+        side:
+          type: string
+        price:
+          type: integer
+          minimum: 1
+          maximum: 99
+        amountSats:
+          type: integer
+          format: int64
+
+    LiquidityStateResponse:
+      type: object
+      required:
+        - marketId
+        - reserveA
+        - reserveB
+        - impliedProbability
+        - totalLiquiditySats
+        - activeOrders
+      properties:
+        marketId:
+          type: string
+        reserveA:
+          type: integer
+          format: int64
+        reserveB:
+          type: integer
+          format: int64
+        impliedProbability:
+          type: integer
+          minimum: 1
+          maximum: 99
+        totalLiquiditySats:
+          type: integer
+          format: int64
+        activeOrders:
+          type: integer
+          description: Number of active CPMM orders on the CLOB.
+
+    WithdrawLiquidityResponse:
+      type: object
+      required:
+        - cancelledOrders
+        - remainingReserveA
+        - remainingReserveB
+      properties:
+        cancelledOrders:
+          type: integer
+          description: Number of CPMM orders cancelled from the CLOB.
+        remainingReserveA:
+          type: integer
+          format: int64
+        remainingReserveB:
+          type: integer
+          format: int64
