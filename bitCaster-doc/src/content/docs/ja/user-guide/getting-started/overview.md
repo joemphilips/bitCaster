@@ -11,6 +11,8 @@ bitCasterは[Bitcoin](https://bitcoin.org/)と[Cashu](https://cashu.space/)上�
 
 中核となる部分は完全にオープン仕様でオープンソースです。サーバーサイドにユーザー情報は保存されません。トークンはあなたのものです。ブラウザにローカル保存され、LightningまたはCashuを通じて即座に決済されます。
 
+Cashu自体の概要については[Bitcoin Design の解説](https://bitcoin.design/guide/how-it-works/ecash/introduction/)を参照してください
+
 ## できること
 
 ### あらゆるものを、あらゆる方法で取引
@@ -40,7 +42,7 @@ bitCaster ではオラクルによる不正ができる限り不可能となる�
 
 イベントが解決されると、勝利トークンは全額（各100 sats）で償還可能になり、敗北トークンは無価値になります。この際、誰がどのトークンをどれだけ持っているかの情報は、トークン発行主体を含め誰にもわからないようになっています
 
-## デフォルトでセルフカストディ
+## 資産データはユーザー自身が管理[^1]
 
 トークンの実態は単なる署名データです。サーバーではなく、ユーザーのローカルストレージに存在します。
 
@@ -62,3 +64,5 @@ bitCaster ではオラクルによる不正ができる限り不可能となる�
 ## はじめよう
 
 試してみませんか？[bitCasterアプリ](https://bitcaster.io)にアクセスして取引を始めましょう。
+
+[^1]: ecashのトークンは厳密にはセルフカストディではない点に注意してください。https://iscashucustodial.com/ または https://bitcoin.design/guide/how-it-works/ecash/introduction/ を参照

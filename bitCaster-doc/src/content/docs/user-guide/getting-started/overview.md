@@ -11,6 +11,8 @@ bitCaster is a prediction market platform built on [Bitcoin](https://bitcoin.org
 
 At its core, it is fully open-spec and open-source. No user information is stored on the server side. Your tokens are yours — stored locally in your browser, settled instantly over Lightning or Cashu.
 
+For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https://bitcoin.design/guide/how-it-works/ecash/introduction/).
+
 ## What you can do
 
 ### Trade anything, any way you wish
@@ -38,7 +40,7 @@ Every market outcome has a corresponding token. The price of a token reflects th
 
 When the event resolves, winning tokens are redeemable for their full value (100 sats each), and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
 
-## Self-custody by default
+## Your assets, your responsibility[^1]
 
 Your tokens are just signed data. They live in your browser's local storage, not on a server.
 
@@ -59,3 +61,5 @@ In return, like any other cryptocurrency wallet, you are responsible for managin
 ## Getting started
 
 Ready to try it? Head to the [bitCaster app](https://bitcaster.io) to start trading.
+
+[^1]: Note that ecash tokens are not strictly self-custodial. See https://iscashucustodial.com/ or https://bitcoin.design/guide/how-it-works/ecash/introduction/ for details.
