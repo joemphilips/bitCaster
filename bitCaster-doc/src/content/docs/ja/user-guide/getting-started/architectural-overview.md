@@ -7,23 +7,7 @@ sidebar:
 
 bitCasterは、オープンプロトコルで通信する4つの独立したサービスで構成されています。
 
-```
-                     ┌──────────────┐
-                     │    Oracle    │
-                     │   (DLC)     │
-                     └──────┬───────┘
-                            │ Nostr Protocol
-                            │
-  ┌───────────┐    ┌────────▼────────┐    ┌───────────┐
-  │ bitCaster │◄──►│                 │◄──►│ bitCaster │
-  │ App (PWA) │    │   Cashu Mint   │    │ App (PWA) │
-  └─────┬─────┘    └────────────────┘    └─────┬─────┘
-        │                                      │
-        │          ┌────────────────┐           │
-        └─────────►│   Matching    │◄──────────┘
-                   │   Engine      │
-                   └────────────────┘
-```
+![Architecture diagram showing Oracle, Cashu Mint, bitCaster App, and Matching Engine](../../../../../assets/architecture.svg)
 
 
 各ユーザーはブラウザでアプリの独自インスタンスを実行します。すべてのユーザーは同じ共有インフラストラクチャに接続します。

@@ -7,23 +7,7 @@ sidebar:
 
 bitCaster is composed of four independent services that communicate over open protocols.
 
-```
-                     ┌──────────────┐
-                     │    Oracle    │
-                     │   (DLC)     │
-                     └──────┬───────┘
-                            │ Nostr Protocol
-                            │
-  ┌───────────┐    ┌────────▼────────┐    ┌───────────┐
-  │ bitCaster │◄──►│                 │◄──►│ bitCaster │
-  │ App (PWA) │    │   Cashu Mint   │    │ App (PWA) │
-  └─────┬─────┘    └────────────────┘    └─────┬─────┘
-        │                                      │
-        │          ┌────────────────┐           │
-        └─────────►│   Matching    │◄──────────┘
-                   │   Engine      │
-                   └────────────────┘
-```
+![Architecture diagram showing Oracle, Cashu Mint, bitCaster App, and Matching Engine](../../../../assets/architecture.svg)
 
 
 Each user runs their own instance of the app in their browser. All users connect to the same shared infrastructure.
