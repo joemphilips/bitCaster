@@ -19,3 +19,4 @@ npm run preview      # preview production build
 - Deployed to GitHub Pages via `.github/workflows/deploy-docs.yml` on push to `main`
 - Uses Starlight's CSS custom property system (`--sl-*`), not Tailwind
 - **i18n**: Supports English (root locale) and Japanese (`ja/`). Whenever content is updated in one language, all other languages must be updated to stay in sync. English content lives at `src/content/docs/`, Japanese at `src/content/docs/ja/`. Sidebar group labels are translated in `astro.config.mjs` via `translations` properties.
+- Try not to leave the "Smell" of the AI-generated document, e.g. list of items with emphasized headline.

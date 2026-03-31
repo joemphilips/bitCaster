@@ -1,13 +1,13 @@
 ---
 title: "Ecash"
-description: "What ecash is, why bitCaster chose Cashu, and why a blockchain-based DEX is unnecessary for prediction markets."
+description: "What ecash is, why bitCaster chose Cashu, and why a blockchain is unnecessary for prediction markets."
 sidebar:
   order: 0
 ---
 
 # Ecash
 
-bitCaster positions are **ecash tokens** — digital bearer instruments that work like physical cash, but on the internet. This page explains what that means, why it matters, and why it's a better fit for prediction markets than a blockchain.
+What bitCaster positions actually are is simply **ecash tokens**. This page explains what that means, why it matters, and why it's a better fit for prediction markets than a blockchain.
 
 ## What is ecash?
 
@@ -22,11 +22,11 @@ In bitCaster, the mint issues ecash tokens denominated in bitcoin (sats). When y
 
 ## Why Cashu?
 
-**Cashu** is the specific ecash protocol bitCaster uses. Several properties make it a natural fit:
+bitCaster uses [**Cashu**](https://cashu.space/) as its ecash protocol for the following reasons:
 
 - **Open specification** — Cashu is defined by a set of public specs called [NUTs](https://github.com/cashubtc/nuts) (Notation, Usage, and Terminology). Anyone can implement a mint or wallet, and the protocol evolves through community review.
-- **Simple protocol** — the core cryptography (blind signatures over secp256k1) is straightforward to understand, audit, and extend. bitCaster's conditional token extension (NUT-CTF) builds directly on this foundation.
-- **Native Bitcoin/Lightning integration** — Cashu mints hold reserves in bitcoin and accept deposits/withdrawals over Lightning. There is no bridging, no wrapped tokens, no separate chain to manage.
+- **Simple protocol** — the cryptographic protocol (blind signatures over secp256k1) is straightforward to understand, audit, and extend. bitCaster's conditional token extension (NUT-CTF) builds directly on this foundation.
+- **Native Bitcoin/Lightning integration** — Cashu mints hold reserves in bitcoin and accept deposits/withdrawals over Lightning. No bridging, wrapped tokens, or separate chain management needed.
 - **Community-driven development** — multiple independent teams build Cashu wallets, mints, and libraries, reducing single points of failure in the ecosystem.
 
 ## Why not a blockchain?
@@ -35,8 +35,8 @@ A common question: why not run the exchange on a blockchain, like Polymarket doe
 
 The key insight is that **a prediction market exchange is already centralized**. Someone has to run the order book and match trades. Putting that activity on-chain doesn't remove the centralization — it just adds overhead:
 
-- **Privacy degrades.** On a public blockchain, every trade is visible to everyone. Polymarket participants' positions, timing, and trading patterns are all on-chain for anyone to analyze. Ecash gives you the opposite — the mint itself can't link your trades together, let alone outside observers.
-- **Scalability suffers.** On-chain settlement means gas fees, block confirmation times, and throughput limits. During high-activity events, these costs spike. Ecash settlement is instant and free.
+- **Privacy degrades.** On a public blockchain, every trade is visible to everyone. Polymarket participants' positions, timing, and trading patterns are all on-chain for anyone to analyze. Ecash gives you the opposite — the mint itself doesn't even know who holds which tokens, let alone outside observers.
+- **Scalability suffers.** On-chain settlement means gas fees, block confirmation times, and throughput limits. During high-activity events, these costs spike. Ecash settlement is instant and costs next to nothing.
 - **Friction increases.** Polymarket requires USDC on Polygon, which means bridging assets from other chains, managing gas tokens, and dealing with blockchain-specific UX (wallet approvals, transaction signing, failed transactions). With ecash over Lightning, you deposit sats and start trading.
 
 Blockchains excel at **censorship resistance** and **public verifiability** — properties that matter for decentralized finance. But a prediction market exchange doesn't need public verifiability of every trade, and censorship resistance at the matching layer is impossible anyway (the matching engine can always refuse orders). What users actually want is **privacy**, **speed**, and **low fees** — exactly what ecash provides.

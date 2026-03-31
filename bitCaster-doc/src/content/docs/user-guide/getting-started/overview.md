@@ -7,39 +7,44 @@ sidebar:
 
 ## What is bitCaster?
 
-bitCaster is a prediction market platform built on [Bitcoin](https://bitcoin.org/) and [Cashu](https://cashu.space/). You buy and sell tokens that represent outcomes of real-world events — elections, sports, weather, anything. If your prediction is correct, your tokens are worth their full face value. If not, they expire worthless.
+bitCaster is a prediction market platform built on [Bitcoin](https://bitcoin.org/) and [Cashu](https://cashu.space/). You buy and sell tokens that represent outcomes of real-world events — elections, sports, weather, anything. If your prediction is correct, the price of your tokens rises; if not, it falls.
 
-Everything is fully open-spec and open-source. No user information is stored on the server side. Your tokens are yours — stored locally in your browser, settled instantly over Lightning or Cashu.
+At its core, it is fully open-spec and open-source. No user information is stored on the server side. Your tokens are yours — stored locally in your browser, settled instantly over Lightning or Cashu.
 
 ## What you can do
 
 ### Trade anything, any way you wish
 
-Browse existing markets or place limit orders at any price. Markets can be binary (Yes/No), categorical (multiple outcomes), or even two-dimensional. You trade using Bitcoin via Lightning — no bridging, no gas fees, no stablecoins needed.
+Browse existing markets or place limit orders at any price. Markets can be binary (Yes/No), categorical (multiple outcomes), or even two-dimensional. You trade using Bitcoin via Lightning.
 
 ### Create your own market
 
-Anyone can propose a new market. Define the question, the possible outcomes, and the resolution criteria. There is no gatekeeper deciding which markets are allowed.
+Anyone can freely create a new market. Define the question, the possible outcomes, and the resolution criteria.
+There is no gatekeeper deciding which markets are allowed.
 
 ### Become an oracle
 
-Oracles are the people (or organizations) who answer real-world questions: *"Did Team X win?"*, *"Was the temperature above 30°C?"*. Anyone can run an oracle and attest to event outcomes. The protocol ensures that oracles are accountable and their attestations are cryptographically verifiable.
+In prediction markets, the value of a token depends on what actually happens in the real world. An oracle is the referee that determines that real-world outcome — which can sometimes be ambiguous.
+Anyone can become an oracle. The oracle is designated when a market is created and cannot be changed afterward.
+bitCaster's protocol is designed to make oracle fraud as difficult as possible. See [Resolution](../../core-concepts/resolution/) for details.
 
 ### Become a token issuer
 
-Run your own Cashu mint to issue prediction market tokens. The mint software is open-source, and the protocol specification is public. Multiple independent mints can coexist, each serving different communities or markets.
+Any user can run their own Cashu mint to issue prediction market tokens. The mint software is open-source, and the protocol specification is public. Multiple independent mints can coexist, each serving different communities or markets.
 
 ## How it works
 
-Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is — a token trading at 70 sats means the market thinks there's roughly a 70% chance of that outcome.
+Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. For example, a token trading at 70 sats means the market thinks there's roughly a 70% chance of that outcome.
 
-When the event resolves, winning tokens are redeemable for their full value (100 sats each), and losing tokens become worthless. Settlement is automatic and cryptographic — no one needs to trust a central authority to pay out.
+When the event resolves, winning tokens are redeemable for their full value (100 sats each), and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
 
 ## Self-custody by default
 
-Your tokens are **bearer instruments** — like digital cash. They live in your browser, not on a server. There is no account to create, no password to remember, and no personal information to hand over.
+Your tokens are just signed data. They live in your browser's local storage, not on a server.
 
-If you clear your browser data, your tokens are gone — just like losing a physical wallet. Back up your token data to keep it safe.
+This means the server holds as little user information as possible. There is no account to create, no password to remember, and no personal information to hand over.
+
+In return, like any other cryptocurrency wallet, you are responsible for managing your own keys. Back up your 12-word mnemonic and keep it safe.
 
 ## Why Bitcoin & ecash?
 
