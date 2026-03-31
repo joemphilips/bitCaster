@@ -87,9 +87,10 @@ The mint runs on port 8085, the server on port 5000, and the frontend on port 51
 
 Test/seed data must **never** live in production frontend code. The frontend should show an honest empty or error state when the mint has no data.
 
-- Seed data is injected into the CDK mint at startup via `tools/seed-conditions/` (a standalone Rust binary that calls the mint's REST API)
+- Seed data is injected into the CDK mint at startup via `tools/seed-conditions/seed.sh` (a bash script using `curl` + `jq` that calls the mint's REST API)
 - The `seed` service in `docker-compose.yml` runs after `mintd` is healthy
-- To add or change seed markets, edit `tools/seed-conditions/src/main.rs`
+- To add or change seed markets, edit `tools/seed-conditions/seed.sh`
+- The announcement hex values are pre-computed from deterministic CDK test helpers (hardcoded oracle keys, no randomness)
 
 ### Before Committing
 

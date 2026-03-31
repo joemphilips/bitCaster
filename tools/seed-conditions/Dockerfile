@@ -1,17 +1,5 @@
-FROM rust:1.88-bookworm AS builder
-
-WORKDIR /build
-
-# Copy CDK source (needed as path dependency)
-COPY cdk/ cdk/
-
-# Copy seed tool
-COPY tools/seed-conditions/ tools/seed-conditions/
-
-WORKDIR /build/tools/seed-conditions
-RUN cargo build --release
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /build/tools/seed-conditions/target/release/seed-conditions /usr/local/bin/seed-conditions
-ENTRYPOINT ["seed-conditions"]
+FROM alpine:3.21
+RUN apk add --no-cache curl jq bash
+COPY tools/seed-conditions/seed.sh /usr/local/bin/seed.sh
+RUN chmod +x /usr/local/bin/seed.sh
+ENTRYPOINT ["seed.sh"]
