@@ -162,7 +162,7 @@ CDK mintd
 
 ## Documentation
 
-Full documentation is available at **https://joemphilips.github.io/bitCaster/**
+Full documentation is available at **https://bitcasterdoc.com/**
 
 ---
 

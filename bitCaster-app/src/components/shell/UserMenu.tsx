@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { User, LogOut, ChevronDown, Wallet, Sparkles, Settings } from 'lucide-react'
+import { User, LogOut, ChevronDown, Wallet, Sparkles, Settings, BookOpen, ExternalLink } from 'lucide-react'
 import { formatBalance } from '@/lib/format'
 
 interface UserMenuProps {
@@ -57,6 +57,12 @@ export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenu
               className="w-full px-4 py-3 text-left text-sm text-slate-300 hover:bg-slate-700 flex items-center space-x-2">
               <Settings className="w-4 h-4" /><span>Settings</span>
             </button>
+            <div className="border-t border-slate-200 dark:border-slate-700" />
+            <a href="https://bitcasterdoc.com/" target="_blank" rel="noopener noreferrer"
+              onClick={() => setIsOpen(false)}
+              className="w-full px-4 py-3 text-left text-sm text-slate-300 hover:bg-slate-700 flex items-center space-x-2">
+              <BookOpen className="w-4 h-4" /><span>Docs</span><ExternalLink className="w-3 h-3 ml-auto text-slate-500" />
+            </a>
             <div className="border-t border-slate-200 dark:border-slate-700" />
             <button onClick={() => { setIsOpen(false); onLogout?.() }}
               className="w-full px-4 py-3 text-left text-sm text-slate-300 hover:bg-slate-700 flex items-center space-x-2">
