@@ -71,6 +71,11 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'Comparison',
+					translations: { ja: '類似プラットフォームとの比較' },
+					link: '/comparison/',
+				},
+				{
 					label: 'FAQ',
 					translations: { ja: 'よくある質問' },
 					link: '/faq/',
