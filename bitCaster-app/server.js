@@ -12,13 +12,13 @@ const MINT_URL = process.env.MINT_URL;
 const BACKEND_URL = process.env.BACKEND_URL;
 
 if (MINT_URL) {
-  app.use('/v1', createProxyMiddleware({ target: MINT_URL, changeOrigin: true }));
+  app.use(createProxyMiddleware({ target: MINT_URL, changeOrigin: true, pathFilter: '/v1/**' }));
   console.log(`/v1/* -> ${MINT_URL}`);
 }
 
 if (BACKEND_URL) {
-  app.use('/api', createProxyMiddleware({ target: BACKEND_URL, changeOrigin: true }));
-  app.use('/hubs', createProxyMiddleware({ target: BACKEND_URL, changeOrigin: true, ws: true }));
+  app.use(createProxyMiddleware({ target: BACKEND_URL, changeOrigin: true, pathFilter: '/api/**' }));
+  app.use(createProxyMiddleware({ target: BACKEND_URL, changeOrigin: true, pathFilter: '/hubs/**', ws: true }));
   console.log(`/api/* -> ${BACKEND_URL}`);
   console.log(`/hubs/* -> ${BACKEND_URL} (ws)`);
 }
