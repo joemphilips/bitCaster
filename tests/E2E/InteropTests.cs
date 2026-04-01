@@ -18,38 +18,12 @@ public class InteropTests : IAsyncLifetime
     private const int MintPort = 8085;
     private const int CashuMePort = 3000;
 
-    private static List<string> AttachConsoleCapture(IPage page)
-    {
-        var messages = new List<string>();
-        page.Console += (_, msg) => messages.Add($"[{msg.Type}] {msg.Text}");
-        page.PageError += (_, error) => messages.Add($"[PAGE_ERROR] {error}");
-        return messages;
-    }
-
-    private static async Task<Exception> BuildDiagnosticExceptionAsync(
-        IPage page, IReadOnlyList<string> consoleMessages, string context)
-    {
-        string? errorBanner = null;
-        try { errorBanner = await page.Locator(".bg-red-900").TextContentAsync(new() { Timeout = 1_000 }); }
-        catch { /* no error banner visible */ }
-
-        var bodyText = await page.Locator("body").InnerTextAsync(new() { Timeout = 5_000 });
-        var url = page.Url;
-
-        return new Exception(
-            $"{context}\n" +
-            $"URL: {url}\n" +
-            $"Error banner: {errorBanner ?? "(none)"}\n" +
-            $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
-            $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
-    }
-
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        await WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint");
-        await WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend");
-        await WaitForService(httpClient, $"http://localhost:{CashuMePort}", "cashu.me");
+        await TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint");
+        await TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend");
+        await TestHelpers.WaitForService(httpClient, $"http://localhost:{CashuMePort}", "cashu.me");
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -175,7 +149,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 "Lightning option not found in cashu.me ReceiveDialog");
         }
         await lightningOption.ClickAsync();
@@ -197,7 +171,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 "Create Invoice button not found in cashu.me");
         }
         await createInvoiceBtn.ClickAsync();
@@ -212,7 +186,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 $"cashu.me Lightning invoice ({amountSats} sats) was not paid by fakewallet.");
         }
 
@@ -247,7 +221,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 "Ecash option not found in cashu.me SendDialog");
         }
         await ecashOption.ClickAsync();
@@ -273,7 +247,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 "Copy button not found after cashu.me Send Ecash. Token may not have been generated.");
         }
 
@@ -294,7 +268,7 @@ public class InteropTests : IAsyncLifetime
         // Setup cashu.me
         await using var cashuMeCtx = await NewIsolatedContextAsync();
         var cashuMePage = await cashuMeCtx.NewPageAsync();
-        var cashuMeConsole = AttachConsoleCapture(cashuMePage);
+        var cashuMeConsole = TestHelpers.AttachConsoleCapture(cashuMePage);
         await SetupCashuMe(cashuMePage, MnemonicCashuMe1);
 
         // Fund cashu.me via Lightning (fakewallet auto-pays)
@@ -306,7 +280,7 @@ public class InteropTests : IAsyncLifetime
         // Setup bitCaster
         await using var bitCasterCtx = await NewIsolatedContextAsync();
         var bitCasterPage = await bitCasterCtx.NewPageAsync();
-        var bitCasterConsole = AttachConsoleCapture(bitCasterPage);
+        var bitCasterConsole = TestHelpers.AttachConsoleCapture(bitCasterPage);
         await SetupBitCasterWallet(bitCasterPage, MnemonicInterop1);
 
         // Navigate to bitCaster portfolio
@@ -340,7 +314,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(bitCasterPage, bitCasterConsole,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(bitCasterPage, bitCasterConsole,
                 "Deposit Ecash overlay did not close after pasting cashu.me token. Likely receiveToken failed.");
         }
 
@@ -424,7 +398,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 $"BitCaster Lightning deposit ({amountSats} sats) was not paid by fakewallet.");
         }
 
@@ -471,7 +445,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 "BitCaster Send Ecash: token display not shown.");
         }
 
@@ -511,7 +485,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 "Ecash option not found in cashu.me ReceiveDialog");
         }
         await ecashOption.ClickAsync();
@@ -524,7 +498,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 "Paste option not found in cashu.me ReceiveEcashDrawer");
         }
         await pasteOption.ClickAsync();
@@ -538,7 +512,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 "Receive button not found in cashu.me ReceiveTokenDialog after pasting token.");
         }
         await confirmReceiveBtn.Last.ClickAsync();
@@ -552,7 +526,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 "cashu.me did not show 'Received' notification after receiving bitCaster token.");
         }
 
@@ -567,7 +541,7 @@ public class InteropTests : IAsyncLifetime
         // Setup bitCaster and fund via Lightning
         await using var bitCasterCtx = await NewIsolatedContextAsync();
         var bitCasterPage = await bitCasterCtx.NewPageAsync();
-        var bitCasterConsole = AttachConsoleCapture(bitCasterPage);
+        var bitCasterConsole = TestHelpers.AttachConsoleCapture(bitCasterPage);
         await SetupBitCasterWallet(bitCasterPage, MnemonicInterop2);
         await BitCasterDepositViaLightning(bitCasterPage, 500, bitCasterConsole);
 
@@ -580,7 +554,7 @@ public class InteropTests : IAsyncLifetime
         // Setup cashu.me and receive the token
         await using var cashuMeCtx = await NewIsolatedContextAsync();
         var cashuMePage = await cashuMeCtx.NewPageAsync();
-        var cashuMeConsole = AttachConsoleCapture(cashuMePage);
+        var cashuMeConsole = TestHelpers.AttachConsoleCapture(cashuMePage);
         await SetupCashuMe(cashuMePage, MnemonicCashuMe2);
 
         await CashuMeReceiveEcashToken(cashuMePage, bitCasterToken, cashuMeConsole);
@@ -593,7 +567,7 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(cashuMePage, cashuMeConsole,
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(cashuMePage, cashuMeConsole,
                 "cashu.me did not show expected balance of 100 sats after receiving bitCaster token.");
         }
     }
@@ -606,26 +580,4 @@ public class InteropTests : IAsyncLifetime
         _playwright?.Dispose();
     }
 
-    private static async Task WaitForService(HttpClient httpClient, string url, string serviceName)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                var response = await httpClient.GetAsync(url);
-                if (response.IsSuccessStatusCode)
-                    return;
-            }
-            catch
-            {
-                // Not ready yet
-            }
-            await Task.Delay(TimeSpan.FromSeconds(1));
-        }
-
-        throw new InvalidOperationException(
-            $"{serviceName} is not reachable at {url}. " +
-            "Start all services before running E2E tests. See AGENTS.md for the 3-terminal workflow.");
-    }
 }

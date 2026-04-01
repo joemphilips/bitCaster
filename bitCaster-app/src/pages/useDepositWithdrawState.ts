@@ -337,11 +337,6 @@ export function useDepositWithdrawState(
     setCurrentView('scanner')
   }, [currentView])
 
-  const onScanQR = useCallback(() => {
-    scanReturnViewRef.current = currentView
-    setCurrentView('scanner')
-  }, [currentView])
-
   const onScanResult = useCallback(async (data: string) => {
     setError(null)
     const trimmed = data.trim()
@@ -507,7 +502,7 @@ export function useDepositWithdrawState(
     onPaste,
     onScan,
     onRequest,
-    onScanQR,
+    onScanQR: onScan,
     onScanResult,
     onLightningInputChange,
     onConfirmMelt,

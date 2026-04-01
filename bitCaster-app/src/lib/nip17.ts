@@ -164,7 +164,13 @@ export async function sendNip17DM(
   ndkEvent.id = wrapEvent.id;
   ndkEvent.sig = wrapEvent.sig;
 
-  await ndkEvent.publish();
+  try {
+    await ndkEvent.publish();
+  } finally {
+    for (const relay of ndk.pool.relays.values()) {
+      relay.disconnect();
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -229,5 +235,8 @@ export async function subscribeNip17DMs(
 
   return () => {
     sub.stop();
+    for (const relay of ndk.pool.relays.values()) {
+      relay.disconnect();
+    }
   };
 }
