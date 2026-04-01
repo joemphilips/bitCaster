@@ -5,8 +5,8 @@ import starlight from '@astrojs/starlight';
 // https://astro.build/config
 export default defineConfig({
 	output: 'static',
-	site: 'https://joemphilips.github.io',
-	base: process.env.BASE_URL || '/bitCaster',
+	site: 'https://bitcasterdoc.com',
+	base: process.env.BASE_URL || '/',
 	integrations: [
 		starlight({
 			title: {

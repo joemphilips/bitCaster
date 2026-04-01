@@ -37,7 +37,7 @@ jobs:
       - name: Build
         working-directory: bitCaster-doc
         env:
-          BASE_URL: /bitCaster
+          BASE_URL: /
         run: npm run build
 
       - name: Upload artifact
