@@ -21,12 +21,14 @@ import { NDKNWCWallet } from "@nostr-dev-kit/ndk-wallet";
 // Singleton NDK instance
 // ---------------------------------------------------------------------------
 
-const DEFAULT_RELAYS = [
-  "wss://relay.damus.io",
-  "wss://nos.lol",
-  "wss://relay.nostr.band",
-  "wss://nostr.bitcoiner.social",
-];
+export const DEFAULT_RELAYS: string[] = import.meta.env.VITE_NOSTR_RELAYS
+  ? (import.meta.env.VITE_NOSTR_RELAYS as string).split(",").map((r: string) => r.trim())
+  : [
+      "wss://relay.damus.io",
+      "wss://nos.lol",
+      "wss://relay.nostr.band",
+      "wss://nostr.bitcoiner.social",
+    ];
 
 let _ndk: NDK | null = null;
 

@@ -39,3 +39,18 @@ services:
     depends_on:
       mintd:
         condition: service_healthy
+
+  cashu-me:
+    build: ./cashu.me
+    ports:
+      - "3000:80"
+    depends_on:
+      mintd:
+        condition: service_healthy
+
+  nostr-relay:
+    image: scsibug/nostr-rs-relay
+    ports:
+      - "7777:8080"
+    environment:
+      RUST_LOG: info

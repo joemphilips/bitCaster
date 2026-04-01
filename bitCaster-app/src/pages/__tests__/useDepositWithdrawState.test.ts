@@ -29,6 +29,17 @@ vi.mock('dexie-react-hooks', () => ({
   useLiveQuery: vi.fn().mockReturnValue({ 'http://localhost:8085': 5000 }),
 }))
 
+// Mock nip17 — we don't want real Nostr calls
+vi.mock('@/lib/nip17', () => ({
+  deriveNostrKeyPair: vi.fn().mockReturnValue({
+    privateKey: new Uint8Array(32),
+    privateKeyHex: '0'.repeat(64),
+    publicKey: '1'.repeat(64),
+  }),
+  getNostrNprofile: vi.fn().mockReturnValue('nprofile1test'),
+  subscribeNip17DMs: vi.fn().mockReturnValue(() => {}),
+}))
+
 beforeEach(() => {
   useWalletStore.setState({
     mnemonic: 'test words here abandon abandon abandon abandon abandon abandon abandon abandon abandon',
@@ -150,13 +161,23 @@ describe('useDepositWithdrawState', () => {
       expect(result.current.currentView).toBe('chooser')
     })
 
-    it('clears error on back', () => {
+    it('returns from scanner to the previous view', () => {
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
-      // Trigger scan to set an error
+      act(() => result.current.onSelectMethod('ecash'))
+      expect(result.current.currentView).toBe('deposit-ecash')
       act(() => result.current.onScan())
-      expect(result.current.error).not.toBeNull()
+      expect(result.current.currentView).toBe('scanner')
       act(() => result.current.onBack())
-      expect(result.current.error).toBeNull()
+      expect(result.current.currentView).toBe('deposit-ecash')
+    })
+
+    it('returns from payment request to deposit-ecash', async () => {
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      await act(async () => { await result.current.onRequest() })
+      expect(result.current.currentView).toBe('payment-request-display')
+      act(() => result.current.onBack())
+      expect(result.current.currentView).toBe('deposit-ecash')
     })
   })
 
@@ -169,23 +190,37 @@ describe('useDepositWithdrawState', () => {
     })
   })
 
-  describe('deferred features', () => {
-    it('onScan sets "coming soon" error', () => {
+  describe('scan feature', () => {
+    it('onScan navigates to scanner view', () => {
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
       act(() => result.current.onScan())
-      expect(result.current.error).toMatch(/coming soon/i)
+      expect(result.current.currentView).toBe('scanner')
     })
 
-    it('onScanQR sets "coming soon" error', () => {
-      const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
+    it('onScanQR navigates to scanner view', () => {
+      const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
+      act(() => result.current.onSelectMethod('lightning'))
       act(() => result.current.onScanQR())
-      expect(result.current.error).toMatch(/coming soon/i)
+      expect(result.current.currentView).toBe('scanner')
     })
 
-    it('onRequest sets "coming soon" error', () => {
+    it('onScanResult with unknown data sets error', async () => {
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
-      act(() => result.current.onRequest())
-      expect(result.current.error).toMatch(/coming soon/i)
+      act(() => result.current.onSelectMethod('ecash'))
+      act(() => result.current.onScan())
+      await act(async () => { await result.current.onScanResult('random-text') })
+      expect(result.current.error).toMatch(/unrecognized/i)
+    })
+  })
+
+  describe('request feature', () => {
+    it('onRequest creates payment request and shows display', async () => {
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
+      await act(async () => { await result.current.onRequest() })
+      expect(result.current.currentView).toBe('payment-request-display')
+      expect(result.current.paymentRequestEncoded).toBeTruthy()
+      expect(result.current.paymentRequestStatus).toBe('waiting')
     })
   })
 

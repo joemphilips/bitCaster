@@ -4,6 +4,8 @@ import { DepositWithdraw } from './DepositWithdraw'
 import { InvoiceDisplay } from './InvoiceDisplay'
 import { TokenDisplay } from './TokenDisplay'
 import { MeltConfirmation } from './MeltConfirmation'
+import { QrScannerView } from './QrScanner'
+import { PaymentRequestDisplay } from './PaymentRequestDisplay'
 
 interface DepositWithdrawOverlayProps {
   mode: DepositWithdrawMode
@@ -19,6 +21,32 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
       {state.error}
     </div>
   ) : null
+
+  if (state.currentView === 'scanner') {
+    return (
+      <>
+        {errorBanner}
+        <QrScannerView
+          onDecode={state.onScanResult}
+          onClose={state.onBack}
+        />
+      </>
+    )
+  }
+
+  if (state.currentView === 'payment-request-display' && state.paymentRequestEncoded) {
+    return (
+      <>
+        {errorBanner}
+        <PaymentRequestDisplay
+          paymentRequestEncoded={state.paymentRequestEncoded}
+          status={state.paymentRequestStatus}
+          amountSats={state.amountSats}
+          onClose={state.onClose}
+        />
+      </>
+    )
+  }
 
   if (state.currentView === 'invoice-display' && state.bolt11) {
     return (

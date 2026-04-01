@@ -85,14 +85,32 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Check if cashu.me has changes
+        id: cashu-me-check
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if git diff --name-only "$BASE"..HEAD -- cashu.me/ | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build mintd image (CDK changed)
         if: steps.cdk-check.outputs.changed == 'true'
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build mintd
 
-      # Only start mintd + seed via Docker (dependency services).
+      - name: Build cashu-me image (cashu.me changed)
+        if: steps.cashu-me-check.outputs.changed == 'true'
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build cashu-me
+
+      # Start dependency services via Docker.
       # Server and frontend run natively to match the local dev workflow.
-      - name: Start mint
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mintd seed
+      - name: Start mint and interop services
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mintd seed cashu-me nostr-relay
 
       - name: Wait for mint
         run: |
@@ -104,6 +122,19 @@ jobs:
           echo "Mint not ready"
           docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
           exit 1
+
+      - name: Wait for cashu.me and nostr-relay
+        run: |
+          echo "Waiting for cashu.me..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000 && break
+            sleep 2
+          done
+          echo "Waiting for nostr-relay..."
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:7777 && break
+            sleep 2
+          done
 
       - name: Start server
         run: |
@@ -138,4 +169,4 @@ jobs:
 
       - name: Dump docker compose logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs mintd
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs mintd cashu-me nostr-relay

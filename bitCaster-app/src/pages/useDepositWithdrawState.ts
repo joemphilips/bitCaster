@@ -6,6 +6,11 @@ import type {
   MintInfo,
 } from '@/types/deposit-withdraw'
 import type { MeltQuoteResponse } from '@cashu/cashu-ts'
+import {
+  PaymentRequest,
+  PaymentRequestTransportType,
+  type PaymentRequestPayload,
+} from '@cashu/cashu-ts'
 import { useWalletStore } from '@/stores/wallet'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/stores/proof-db'
@@ -26,12 +31,19 @@ import {
   removeProofs,
   type StoredProof,
 } from '@/stores/proof-db'
+import {
+  deriveNostrKeyPair,
+  getNostrNprofile,
+  subscribeNip17DMs,
+} from '@/lib/nip17'
 
 export type ExtendedView =
   | DepositWithdrawView
   | 'invoice-display'
   | 'token-display'
   | 'melt-confirm'
+  | 'scanner'
+  | 'payment-request-display'
 
 export interface DepositWithdrawState {
   mode: DepositWithdrawMode
@@ -53,6 +65,10 @@ export interface DepositWithdrawState {
   meltQuote: MeltQuoteResponse | null
   meltIsPaying: boolean
 
+  // Payment request state
+  paymentRequestEncoded: string | null
+  paymentRequestStatus: 'waiting' | 'received'
+
   // Handlers
   onSelectMethod: (method: MethodType) => void
   onNumpadPress: (key: string) => void
@@ -64,6 +80,7 @@ export interface DepositWithdrawState {
   onScan: () => void
   onRequest: () => void
   onScanQR: () => void
+  onScanResult: (data: string) => void
   onLightningInputChange: (value: string) => void
   onConfirmMelt: () => void
   onBack: () => void
@@ -111,14 +128,23 @@ export function useDepositWithdrawState(
   const [meltQuote, setMeltQuote] = useState<MeltQuoteResponse | null>(null)
   const [meltIsPaying, setMeltIsPaying] = useState(false)
 
+  // Payment request state
+  const [paymentRequestEncoded, setPaymentRequestEncoded] = useState<string | null>(null)
+  const [paymentRequestStatus, setPaymentRequestStatus] = useState<'waiting' | 'received'>('waiting')
+
+  // Track which view opened the scanner so we can process results correctly
+  const scanReturnViewRef = useRef<ExtendedView>('deposit-ecash')
+
   // Track the quote for cleanup
   const mintQuoteRef = useRef<{ quote: string; request: string } | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
+  const nip17UnsubRef = useRef<(() => void) | null>(null)
 
-  // Cleanup WebSocket/polling on unmount
+  // Cleanup WebSocket/polling and NIP-17 subscription on unmount
   useEffect(() => {
     return () => {
       unsubRef.current?.()
+      nip17UnsubRef.current?.()
     }
   }, [])
 
@@ -203,7 +229,7 @@ export function useDepositWithdrawState(
       // Detect if it's an ecash token or a lightning invoice
       if (currentView === 'deposit-ecash') {
         setIsLoading(true)
-        const decoded = decodeToken(text)
+        const decoded = await decodeToken(text)
         const proofs = await receiveToken(text, decoded.mint)
         const mintUrl = decoded.mint
         const stored: StoredProof[] = proofs.map((p) => ({
@@ -307,27 +333,144 @@ export function useDepositWithdrawState(
   }, [meltQuote, selectedMintId, onDismiss])
 
   const onScan = useCallback(() => {
-    // Camera scanning deferred for now
-    setError('Camera scanning coming soon')
-  }, [])
+    scanReturnViewRef.current = currentView
+    setCurrentView('scanner')
+  }, [currentView])
 
-  const onRequest = useCallback(() => {
-    // Request flow deferred for now
-    setError('Request coming soon')
-  }, [])
+  const onScanResult = useCallback(async (data: string) => {
+    setError(null)
+    const trimmed = data.trim()
 
-  const onScanQR = useCallback(() => {
-    // Camera scanning deferred for now
-    setError('Camera scanning coming soon')
-  }, [])
+    // Detect cashu token
+    if (trimmed.toLowerCase().startsWith('cashu')) {
+      setIsLoading(true)
+      try {
+        const decoded = await decodeToken(trimmed)
+        const proofs = await receiveToken(trimmed, decoded.mint)
+        const stored: StoredProof[] = proofs.map((p) => ({
+          ...p,
+          mintUrl: decoded.mint,
+        }))
+        await addProofs(stored)
+        onDismiss()
+      } catch (e) {
+        setError((e as Error).message)
+        setCurrentView(scanReturnViewRef.current)
+      } finally {
+        setIsLoading(false)
+      }
+      return
+    }
+
+    // Detect bolt11 invoice
+    if (trimmed.toLowerCase().startsWith('lnbc') || trimmed.toLowerCase().startsWith('lntb')) {
+      setIsLoading(true)
+      try {
+        const quote = await createMeltQuote(trimmed, selectedMintId)
+        setMeltQuote(quote)
+        setLightningInput(trimmed)
+        setCurrentView('melt-confirm')
+      } catch (e) {
+        setError((e as Error).message)
+        setCurrentView(scanReturnViewRef.current)
+      } finally {
+        setIsLoading(false)
+      }
+      return
+    }
+
+    // Detect payment request
+    if (trimmed.toLowerCase().startsWith('creq')) {
+      // TODO: handle paying a scanned payment request
+      setError('Paying payment requests from scan is not yet supported')
+      setCurrentView(scanReturnViewRef.current)
+      return
+    }
+
+    // Unknown format
+    setError('Unrecognized QR code format')
+    setCurrentView(scanReturnViewRef.current)
+  }, [selectedMintId, onDismiss])
+
+  const onRequest = useCallback(async () => {
+    setError(null)
+
+    const mnemonic = useWalletStore.getState().mnemonic
+    if (!mnemonic) {
+      setError('Wallet not set up')
+      return
+    }
+
+    try {
+      const keyPair = deriveNostrKeyPair(mnemonic)
+      const nprofile = getNostrNprofile(keyPair.publicKey)
+
+      const transport = [{
+        type: PaymentRequestTransportType.NOSTR,
+        target: nprofile,
+        tags: [['n', '17']],
+      }]
+
+      const pr = new PaymentRequest(
+        transport,
+        undefined, // auto-generate ID
+        undefined, // no amount
+        'sat',
+        [selectedMintId],
+        undefined, // no description
+      )
+      const encoded = pr.toEncodedRequest()
+
+      setPaymentRequestEncoded(encoded)
+      setPaymentRequestStatus('waiting')
+      setCurrentView('payment-request-display')
+
+      // Subscribe to NIP-17 DMs for incoming payment
+      nip17UnsubRef.current?.()
+      const unsub = await subscribeNip17DMs(
+        keyPair.privateKeyHex,
+        keyPair.publicKey,
+        async (content: string) => {
+          try {
+            const payload = JSON.parse(content) as PaymentRequestPayload
+            if (payload.proofs && payload.mint) {
+              // Receive the proofs from the payment
+              const token = encodeToken(payload.proofs, payload.mint)
+              const receivedProofs = await receiveToken(token, payload.mint)
+              const stored: StoredProof[] = receivedProofs.map((p) => ({
+                ...p,
+                mintUrl: payload.mint,
+              }))
+              await addProofs(stored)
+              setPaymentRequestStatus('received')
+            }
+          } catch {
+            // Ignore messages that aren't payment payloads
+          }
+        }
+      )
+      nip17UnsubRef.current = unsub
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }, [selectedMintId])
 
   const onBack = useCallback(() => {
-    setCurrentView('chooser')
+    if (currentView === 'scanner') {
+      setCurrentView(scanReturnViewRef.current)
+    } else if (currentView === 'payment-request-display') {
+      nip17UnsubRef.current?.()
+      nip17UnsubRef.current = null
+      setCurrentView('deposit-ecash')
+    } else {
+      setCurrentView('chooser')
+    }
     setError(null)
-  }, [])
+  }, [currentView])
 
   const onClose = useCallback(() => {
     unsubRef.current?.()
+    nip17UnsubRef.current?.()
     onDismiss()
   }, [onDismiss])
 
@@ -348,6 +491,8 @@ export function useDepositWithdrawState(
     ecashToken,
     meltQuote,
     meltIsPaying,
+    paymentRequestEncoded,
+    paymentRequestStatus,
     onSelectMethod,
     onNumpadPress,
     onMintChange,
@@ -357,7 +502,8 @@ export function useDepositWithdrawState(
     onPaste,
     onScan,
     onRequest,
-    onScanQR,
+    onScanQR: onScan,
+    onScanResult,
     onLightningInputChange,
     onConfirmMelt,
     onBack,
