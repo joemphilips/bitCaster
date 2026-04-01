@@ -4,12 +4,8 @@ namespace BitCaster.E2ETest;
 
 /// <summary>
 /// E2E interoperability tests between bitCaster and cashu.me wallets.
-/// Tests ecash token exchange from cashu.me → bitCaster.
-///
-/// Note: bitCaster→cashu.me token exchange is currently blocked by a cashu-ts version
-/// incompatibility. bitCaster uses cashu-ts v3 (v1 keyset IDs), cashu.me uses v2
-/// which can't decode v1 keyset IDs without pre-loaded mint keysets. This will be
-/// resolved when cashu.me upgrades to cashu-ts v3.
+/// Tests bidirectional ecash token exchange: cashu.me ↔ bitCaster.
+/// Both wallets use cashu-ts v3 with v1 keyset IDs.
 ///
 /// Requires: mintd (8085), frontend (5173), cashu.me (3000).
 /// </summary>
@@ -80,7 +76,9 @@ public class InteropTests : IAsyncLifetime
     // Unique mnemonics per test — must NOT overlap with DepositWithdrawTests
     // =========================================================================
     private const string MnemonicInterop1 = "seat balcony leader corn dragon vehicle report car book wear ring bus";
+    private const string MnemonicInterop2 = "garment patch opera solar cruel page economy climb among pizza ecology abuse";
     private const string MnemonicCashuMe1 = "tray fluid rubber caught pause keen slice caution similar access beef attitude";
+    private const string MnemonicCashuMe2 = "shaft firm spray night guard army brown tip caution diary leaf model";
 
     // =========================================================================
     // bitCaster helpers
@@ -382,6 +380,222 @@ public class InteropTests : IAsyncLifetime
         var consoleLog = string.Join("\n", bitCasterConsole.TakeLast(20));
         Assert.True(dbInfo.Contains("\"balance\":100"),
             $"Expected balance 100 in IndexedDB. DB info: {dbInfo}\nConsole:\n{consoleLog}");
+    }
+
+    /// <summary>
+    /// Deposit sats into bitCaster via Lightning (fakewallet auto-pays).
+    /// Navigates to portfolio, creates invoice, waits for payment, closes overlay.
+    /// </summary>
+    private async Task BitCasterDepositViaLightning(IPage page, int amountSats, List<string> consoleMessages)
+    {
+        await page.GotoAsync($"http://localhost:{VitePort}/portfolio", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var depositBtn = page.GetByRole(AriaRole.Button, new() { Name = "Deposit" });
+        await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await depositBtn.ClickAsync();
+
+        var lightningOption = page.GetByText("Lightning");
+        await Assertions.Expect(lightningOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await lightningOption.ClickAsync();
+
+        // Enter amount digit by digit
+        var digits = amountSats.ToString();
+        var firstDigitBtn = page.GetByRole(AriaRole.Button, new() { Name = digits[0].ToString(), Exact = true });
+        await Assertions.Expect(firstDigitBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await firstDigitBtn.ClickAsync();
+        foreach (var digit in digits[1..])
+        {
+            await page.GetByRole(AriaRole.Button, new() { Name = digit.ToString(), Exact = true }).ClickAsync();
+        }
+
+        var createBtn = page.GetByRole(AriaRole.Button, new() { Name = "Create Invoice" });
+        await Assertions.Expect(createBtn).ToBeEnabledAsync(new() { Timeout = 5_000 });
+        await createBtn.ClickAsync();
+
+        // Wait for auto-payment via fakewallet
+        var paymentReceived = page.GetByText("Payment received!");
+        try
+        {
+            await Assertions.Expect(paymentReceived).ToBeVisibleAsync(new() { Timeout = 30_000 });
+        }
+        catch
+        {
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+                $"BitCaster Lightning deposit ({amountSats} sats) was not paid by fakewallet.");
+        }
+
+        // Close the invoice display overlay
+        var overlayCloseBtn = page.Locator(".fixed button").First;
+        await overlayCloseBtn.ClickAsync(new() { Timeout = 5_000 });
+        await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
+    }
+
+    /// <summary>
+    /// Withdraw ecash token from bitCaster via Send Ecash flow.
+    /// Returns the cashu token string.
+    /// </summary>
+    private async Task<string> BitCasterSendEcashToken(IPage page, int amountSats, List<string> consoleMessages)
+    {
+        var withdrawBtn = page.GetByRole(AriaRole.Button, new() { Name = "Withdraw" });
+        await Assertions.Expect(withdrawBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await withdrawBtn.ClickAsync();
+
+        var ecashOption = page.GetByText("Ecash");
+        await Assertions.Expect(ecashOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await ecashOption.ClickAsync();
+
+        // Enter amount via numpad
+        var digits = amountSats.ToString();
+        var firstDigitBtn = page.GetByRole(AriaRole.Button, new() { Name = digits[0].ToString(), Exact = true });
+        await Assertions.Expect(firstDigitBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await firstDigitBtn.ClickAsync();
+        foreach (var digit in digits[1..])
+        {
+            await page.GetByRole(AriaRole.Button, new() { Name = digit.ToString(), Exact = true }).ClickAsync();
+        }
+
+        // Click SEND
+        var sendBtn = page.GetByRole(AriaRole.Button, new() { Name = "Send" });
+        await Assertions.Expect(sendBtn).ToBeEnabledAsync(new() { Timeout = 5_000 });
+        await sendBtn.ClickAsync();
+
+        // Wait for token display — the "Send Ecash" heading appears with the QR code
+        var sendEcashHeading = page.GetByText("Send Ecash");
+        try
+        {
+            await Assertions.Expect(sendEcashHeading).ToBeVisibleAsync(new() { Timeout = 15_000 });
+        }
+        catch
+        {
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "BitCaster Send Ecash: token display not shown.");
+        }
+
+        // Extract token text directly from the truncated display element
+        var token = await page.Locator(".font-mono.truncate").TextContentAsync(new() { Timeout = 5_000 });
+        Assert.NotNull(token);
+        Assert.StartsWith("cashu", token, StringComparison.OrdinalIgnoreCase);
+        return token;
+    }
+
+    /// <summary>
+    /// Receive an ecash token in cashu.me by pasting it.
+    /// Flow: RECEIVE → Ecash → Paste (auto-reads clipboard) → Receive button.
+    /// </summary>
+    private async Task CashuMeReceiveEcashToken(IPage page, string token, List<string> consoleMessages)
+    {
+        // Navigate to wallet page
+        await page.GotoAsync($"http://localhost:{CashuMePort}", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        // Write token to clipboard before clicking Paste (cashu.me auto-reads clipboard)
+        await page.EvaluateAsync("text => navigator.clipboard.writeText(text)", token);
+
+        // Click RECEIVE button
+        var receiveBtn = page.GetByText("RECEIVE");
+        await Assertions.Expect(receiveBtn.First).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await receiveBtn.First.ClickAsync();
+
+        // Click Ecash option
+        var ecashOption = page.Locator(".action-row").GetByText("Ecash");
+        try
+        {
+            await Assertions.Expect(ecashOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        }
+        catch
+        {
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "Ecash option not found in cashu.me ReceiveDialog");
+        }
+        await ecashOption.ClickAsync();
+
+        // The Paste button in ReceiveEcashDrawer auto-reads clipboard and opens ReceiveTokenDialog
+        var pasteOption = page.Locator(".action-row").GetByText("Paste");
+        try
+        {
+            await Assertions.Expect(pasteOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        }
+        catch
+        {
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "Paste option not found in cashu.me ReceiveEcashDrawer");
+        }
+        await pasteOption.ClickAsync();
+
+        // ReceiveTokenDialog should appear with the token decoded.
+        // Wait for the "Receive" button to be clickable, then click it.
+        var confirmReceiveBtn = page.GetByRole(AriaRole.Button, new() { Name = "Receive", Exact = true });
+        try
+        {
+            await Assertions.Expect(confirmReceiveBtn.Last).ToBeVisibleAsync(new() { Timeout = 15_000 });
+        }
+        catch
+        {
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "Receive button not found in cashu.me ReceiveTokenDialog after pasting token.");
+        }
+        await confirmReceiveBtn.Last.ClickAsync();
+
+        // Wait for the receive to complete — dialog closes and balance updates
+        // Look for the "Received" success notification or balance update
+        var receivedOrBalance = page.Locator("text=/Received|received/");
+        try
+        {
+            await Assertions.Expect(receivedOrBalance.First).ToBeVisibleAsync(new() { Timeout = 30_000 });
+        }
+        catch
+        {
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "cashu.me did not show 'Received' notification after receiving bitCaster token.");
+        }
+
+        // Close any open dialog
+        await page.Keyboard.PressAsync("Escape");
+        await page.WaitForTimeoutAsync(1000);
+    }
+
+    [Fact]
+    public async Task TokenExchange_BitCasterToCashuMe()
+    {
+        // Setup bitCaster and fund via Lightning
+        await using var bitCasterCtx = await NewIsolatedContextAsync();
+        var bitCasterPage = await bitCasterCtx.NewPageAsync();
+        var bitCasterConsole = AttachConsoleCapture(bitCasterPage);
+        await SetupBitCasterWallet(bitCasterPage, MnemonicInterop2);
+        await BitCasterDepositViaLightning(bitCasterPage, 500, bitCasterConsole);
+
+        // Wait for network to settle after deposit
+        await bitCasterPage.WaitForLoadStateAsync(LoadState.NetworkIdle);
+
+        // Generate ecash token from bitCaster
+        var bitCasterToken = await BitCasterSendEcashToken(bitCasterPage, 100, bitCasterConsole);
+
+        // Setup cashu.me and receive the token
+        await using var cashuMeCtx = await NewIsolatedContextAsync();
+        var cashuMePage = await cashuMeCtx.NewPageAsync();
+        var cashuMeConsole = AttachConsoleCapture(cashuMePage);
+        await SetupCashuMe(cashuMePage, MnemonicCashuMe2);
+
+        await CashuMeReceiveEcashToken(cashuMePage, bitCasterToken, cashuMeConsole);
+
+        // Verify cashu.me balance shows 100 sats
+        var balanceText = cashuMePage.Locator("text=/100/");
+        try
+        {
+            await Assertions.Expect(balanceText.First).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        }
+        catch
+        {
+            throw await BuildDiagnosticExceptionAsync(cashuMePage, cashuMeConsole,
+                "cashu.me did not show expected balance of 100 sats after receiving bitCaster token.");
+        }
     }
 
     public async Task DisposeAsync()
