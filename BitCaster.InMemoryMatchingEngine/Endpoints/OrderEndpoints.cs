@@ -16,9 +16,6 @@ public static class OrderEndpoints
             InMemoryOrderBookManager bookManager,
             IHubContext<MarketHub, IMarketHubClient> hubContext) =>
         {
-            if (req.Type == OrderType.Limit && req.Price is null)
-                return Results.BadRequest("Limit orders require a price.");
-
             if (req.AmountSats <= 0)
                 return Results.BadRequest("AmountSats must be positive.");
 
@@ -29,8 +26,8 @@ public static class OrderEndpoints
                 Guid.NewGuid(),
                 marketId,
                 req.Side,
-                req.Type,
-                req.Price is not null ? new Probability(req.Price.Value) : null,
+                OrderType.Limit,
+                new Probability(req.Price),
                 new Sats(req.AmountSats),
                 req.UserId,
                 DateTimeOffset.UtcNow);

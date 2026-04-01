@@ -57,6 +57,25 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
+    /// Time-in-force policy. GTC = Good-Till-Cancel (rests on book), FOK = Fill-Or-Kill (reject if not fully filled), FAK = Fill-And-Kill (cancel remaining after partial fill).
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum TimeInForce
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"GTC")]
+        GTC = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"FOK")]
+        FOK = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"FAK")]
+        FAK = 2,
+
+    }
+
+    /// <summary>
     /// How two orders were matched together.
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -135,28 +154,28 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(long @amountSats, int? @price, OrderSide @side, OrderType @type, string @userId)
+        public SubmitOrderRequest(long @amountSats, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce, string @userId)
         {
+            this.OutcomeId = @outcomeId;
             this.Side = @side;
-            this.Type = @type;
             this.Price = @price;
             this.AmountSats = @amountSats;
             this.UserId = @userId;
+            this.TimeInForce = @timeInForce;
         }
+
+        /// <summary>
+        /// The outcome to trade (e.g. "Alice", "YES").
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
         [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
         public OrderSide Side { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("type")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderType>))]
-        public OrderType Type { get; }
-
-        /// <summary>
-        /// Probability price in [1,99]. Required for limit orders, ignored for market orders.
-        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("price")]
-        public int? Price { get; }
+        public int Price { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
@@ -166,6 +185,10 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("userId")]
         public string UserId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TimeInForce>))]
+        public TimeInForce? TimeInForce { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -289,6 +312,216 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("spread")]
         public int? Spread { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RegisterLiquidityRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RegisterLiquidityRequest(int? @initialProbability, long @liquiditySats, string @providerId)
+        {
+            this.LiquiditySats = @liquiditySats;
+            this.ProviderId = @providerId;
+            this.InitialProbability = @initialProbability;
+        }
+
+        /// <summary>
+        /// Total liquidity to deposit in satoshis.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
+        public long LiquiditySats { get; }
+
+        /// <summary>
+        /// Identifier of the liquidity provider.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("providerId")]
+        public string ProviderId { get; }
+
+        /// <summary>
+        /// Initial implied probability for the market [1, 99].
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("initialProbability")]
+        public int? InitialProbability { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RegisterLiquidityResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RegisterLiquidityResponse(int @impliedProbability, string @marketId, System.Collections.Generic.List<LiquidityOrderDto> @ordersPlaced, long @reserveA, long @reserveB)
+        {
+            this.MarketId = @marketId;
+            this.ReserveA = @reserveA;
+            this.ReserveB = @reserveB;
+            this.ImpliedProbability = @impliedProbability;
+            this.OrdersPlaced = @ordersPlaced;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// Reserve for outcome A (YES/HI) after pool creation.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("reserveA")]
+        public long ReserveA { get; }
+
+        /// <summary>
+        /// Reserve for outcome B (NO/LO) after pool creation.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("reserveB")]
+        public long ReserveB { get; }
+
+        /// <summary>
+        /// Implied probability derived from reserves.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("impliedProbability")]
+        public int ImpliedProbability { get; }
+
+        /// <summary>
+        /// List of limit orders placed on the CLOB.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("ordersPlaced")]
+        public System.Collections.Generic.List<LiquidityOrderDto> OrdersPlaced { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class LiquidityOrderDto
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public LiquidityOrderDto(long @amountSats, System.Guid @orderId, string @outcomeId, int @price, string @side)
+        {
+            this.OrderId = @orderId;
+            this.OutcomeId = @outcomeId;
+            this.Side = @side;
+            this.Price = @price;
+            this.AmountSats = @amountSats;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid OrderId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        public string Side { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int Price { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class LiquidityStateResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public LiquidityStateResponse(int @activeOrders, int @impliedProbability, string @marketId, long @reserveA, long @reserveB, long @totalLiquiditySats)
+        {
+            this.MarketId = @marketId;
+            this.ReserveA = @reserveA;
+            this.ReserveB = @reserveB;
+            this.ImpliedProbability = @impliedProbability;
+            this.TotalLiquiditySats = @totalLiquiditySats;
+            this.ActiveOrders = @activeOrders;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("reserveA")]
+        public long ReserveA { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("reserveB")]
+        public long ReserveB { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("impliedProbability")]
+        public int ImpliedProbability { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySats")]
+        public long TotalLiquiditySats { get; }
+
+        /// <summary>
+        /// Number of active CPMM orders on the CLOB.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("activeOrders")]
+        public int ActiveOrders { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class WithdrawLiquidityResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public WithdrawLiquidityResponse(int @cancelledOrders, long @remainingReserveA, long @remainingReserveB)
+        {
+            this.CancelledOrders = @cancelledOrders;
+            this.RemainingReserveA = @remainingReserveA;
+            this.RemainingReserveB = @remainingReserveB;
+        }
+
+        /// <summary>
+        /// Number of CPMM orders cancelled from the CLOB.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("cancelledOrders")]
+        public int CancelledOrders { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("remainingReserveA")]
+        public long RemainingReserveA { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("remainingReserveB")]
+        public long RemainingReserveB { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 

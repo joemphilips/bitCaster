@@ -84,9 +84,21 @@ export function encodeToken(proofs: Proof[], mintUrl?: string): string {
   return getEncodedTokenV4(token);
 }
 
-/** Decode a cashu token string into proofs. */
-export function decodeToken(tokenStr: string): Token {
-  return getDecodedToken(tokenStr);
+/** Decode a cashu token string into proofs.
+ *  Fetches mint keyset IDs to expand v1 short keyset IDs when needed. */
+export async function decodeToken(tokenStr: string): Promise<Token> {
+  // First try without keysets (works for v0 keyset IDs and full-length IDs)
+  try {
+    return getDecodedToken(tokenStr);
+  } catch {
+    // v1 short keyset IDs need expansion — fetch from the active mint
+    const store = useWalletStore.getState();
+    const mintUrl = store.activeMintUrl ?? _mintUrl;
+    const mint = new CashuMint(mintUrl);
+    const { keysets } = await mint.getKeySets();
+    const keysetIds = keysets.map(k => k.id);
+    return getDecodedToken(tokenStr, keysetIds);
+  }
 }
 
 /** Receive a cashu token string and return the redeemed proofs. */
