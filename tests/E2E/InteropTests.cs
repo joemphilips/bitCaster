@@ -234,9 +234,17 @@ public class InteropTests : IAsyncLifetime
             await digitBtn.ClickAsync();
         }
 
-        // Click "Send" to create the ecash token
+        // Click "Send" to create the ecash token — wait for enabled (balance must load first)
         var confirmSendBtn = page.Locator(".q-dialog").GetByRole(AriaRole.Button, new() { Name = "Send" });
-        await Assertions.Expect(confirmSendBtn.Last).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        try
+        {
+            await Assertions.Expect(confirmSendBtn.Last).ToBeEnabledAsync(new() { Timeout = 15_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "Send button not enabled in cashu.me SendTokenDialog. Balance may not have loaded.");
+        }
         await confirmSendBtn.Last.ClickAsync();
 
         // Wait for token to be generated — look for "Copy" button which appears with the token
@@ -504,18 +512,20 @@ public class InteropTests : IAsyncLifetime
         await pasteOption.ClickAsync();
 
         // ReceiveTokenDialog should appear with the token decoded.
-        // Wait for the "Receive" button to be clickable, then click it.
-        var confirmReceiveBtn = page.GetByRole(AriaRole.Button, new() { Name = "Receive", Exact = true });
+        // Button text may be "Receive", "Receive (known mint)", or "Receive (adding mint)".
+        // Scope to the dialog to avoid matching the main wallet's RECEIVE button.
+        var confirmReceiveBtn = page.Locator(".q-dialog").GetByRole(AriaRole.Button, new() { NameRegex = new System.Text.RegularExpressions.Regex("^Receive") });
         try
         {
-            await Assertions.Expect(confirmReceiveBtn.Last).ToBeVisibleAsync(new() { Timeout = 15_000 });
+            await Assertions.Expect(confirmReceiveBtn.Last).ToBeEnabledAsync(new() { Timeout = 15_000 });
         }
         catch
         {
             throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
-                "Receive button not found in cashu.me ReceiveTokenDialog after pasting token.");
+                "Receive button not found/enabled in cashu.me ReceiveTokenDialog after pasting token.");
         }
-        await confirmReceiveBtn.Last.ClickAsync();
+        // Force click to bypass Quasar scroll-container pointer interception
+        await confirmReceiveBtn.Last.ClickAsync(new() { Force = true });
 
         // Wait for the receive to complete — dialog closes and balance updates
         // Look for the "Received" success notification or balance update
