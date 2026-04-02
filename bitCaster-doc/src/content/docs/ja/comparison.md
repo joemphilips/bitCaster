@@ -14,6 +14,9 @@ bitCasterは根本的に異なるアプローチを取っています：
 - **オラクルの外注** — Predyx ではオラクルはマーケット作成者です。bitCaster ではオラクルはDLCのオラクルです。したがってその仕組みを利用する形で誰でもマーケットを作成でき、その際にオラクルを外部の主体に任せることができます。
 - **オープンな仕様** — bitCasterはオープンプロトコル（[NUT-CTF](../technical/nut-ctf/core-ctf/)、Nostr kind 88、DLC）上に構築されています。Predyxは独自システムを使用しています。
 
+トレードオフ: Predyxは完全なカストディアルシステムで、bitCasterはDEXの一種です。したがって、すべてのDEXに特有のUX面での課題があります。
+例えば、Atomic Swap のオーバーヘッドがあるため、bitCasterでは理論上Predyxに比べて取引には数秒のラグが生じます。
+
 ## bitCasterとPolymarketの比較
 
 [Polymarket](https://polymarket.com)は取引量で最大の予測市場です。[ハイブリッドCLOB](https://docs.polymarket.com/developers/CLOB/introduction)を使用して**Polygon上でオンチェーン決済**を行っています。注文はオフチェーンでマッチングされますが、スマートコントラクトを通じてオンチェーンで決済されます。
