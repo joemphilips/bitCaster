@@ -25,9 +25,7 @@ bitCasterは清算に既存の[DLC（Discreet Log Contract）](https://www.dci.m
 
 bitCaster では、既存のブロックチェーンベースのDEXとは異なるアプローチをとっています。
 
-Polymarketのようなプラットフォームは、結果に異議を唱えてトークン保有者の投票で最終的に決定するUMAのオプティミスティックオラクルに依存しています。このアプローチには根本的な問題があります：
-
-> Note: Add a link to UMA optimistic oracle explanation
+Polymarketのようなプラットフォームは、結果に異議を唱えてトークン保有者の投票で最終的に決定する[UMAのオプティミスティックオラクル](https://docs.uma.xyz/protocol-overview/how-does-umas-oracle-work)に依存しています。このアプローチには根本的な問題があります：
 
 - **紛争と投票は「オラクル問題」を解決せず、曖昧にする** 明確に特定された当事者が現実を証明する代わりに、責任が分散された多層的なガバナンスプロセスが得られます。
 - **共謀リスク** — UMAトークン保有者が共謀すれば、結果を操作できます。腐敗のコストは十分な議決権を取得するコストに過ぎません。

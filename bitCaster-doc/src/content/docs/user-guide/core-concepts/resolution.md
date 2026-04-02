@@ -25,7 +25,7 @@ In the context of prediction markets, the [oracle problem](https://chain.link/ed
 
 bitCaster takes a different approach from existing blockchain-based DEXs.
 
-Platforms like Polymarket rely on UMA's optimistic oracle, where outcomes can be disputed and ultimately decided by a token-holder vote. This approach has fundamental problems:
+Platforms like Polymarket rely on [UMA's optimistic oracle](https://docs.uma.xyz/protocol-overview/how-does-umas-oracle-work), where outcomes can be disputed and ultimately decided by a token-holder vote. This approach has fundamental problems:
 
 - **Dispute-and-voting doesn't solve the "Oracle Problem" — it obfuscates it.** Instead of a clearly identified party attesting to reality, you get a multi-layered governance process where responsibility is diffused.
 - **Collusion risk** — if UMA token holders collude, they can steer outcomes. The cost of corruption is just the cost of acquiring enough voting power.

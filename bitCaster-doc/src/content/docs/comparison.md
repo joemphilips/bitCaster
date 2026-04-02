@@ -11,7 +11,7 @@ bitCaster takes a fundamentally different approach:
 - **Bearer tokens via ecash** — Your positions are [Cashu conditional tokens (CTF)](./technical/nut-ctf/core-ctf/) held as bearer tokens in your browser. The mint cannot see your balance, link your transactions, or freeze individual accounts. However, ecash is still a [custodial model](https://bitcoin.design/guide/how-it-works/ecash/introduction/) — the mint holds the underlying Bitcoin reserves, so you are trusting the mint operator not to abscond with funds or inflate the token supply. The key difference from Predyx is that ecash custody comes with strong privacy (blinded signatures prevent the mint from tracking users) and no accounts or KYC.
 - **CLOB matching** — bitCaster uses a central limit order book, which offers tighter spreads when market makers are active.
 - **Privacy** — ecash tokens and Lightning leave no public transaction trace. Predyx, as a server-side platform, has full visibility into user activity.
-- **Open market creation** — Anyone can create a market by publishing a [DLC oracle announcement](./technical/dlc-oracle/nostr-kind-88/) on [Nostr](https://nostr.com/). Predyx markets are controlled by the platform.
+- **Oracle outsourcing** — In Predyx, the oracle is the market creator. In bitCaster, the oracle is a [DLC oracle](./technical/dlc-oracle/nostr-kind-88/). This means anyone can create a market while delegating the oracle role to an external entity.
 - **Open specs** — bitCaster is built on open protocols ([NUT-CTF](./technical/nut-ctf/core-ctf/), Nostr kind 88, DLC). Predyx uses a proprietary system.
 
 ## How does bitCaster compare to Polymarket?
