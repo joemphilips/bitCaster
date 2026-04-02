@@ -4,7 +4,7 @@ title: Comparison to Similar Platforms
 
 ## How does bitCaster compare to Predyx?
 
-[Predyx](https://beta.predyx.com/) is a prediction market that uses a traditional **server-side custody** model — your funds sit on their platform, much like a centralized exchange. It relies on an **AMM (automated market maker)** to set prices, which bootstraps liquidity without requiring dedicated market makers but tends to produce wider spreads, especially in markets with many outcomes.
+[Predyx](https://beta.predyx.com/) is a Bitcoin-native prediction market, but not a DEX — it uses a traditional **server-side custody** model where your funds sit on their platform, much like a centralized exchange. It relies on an **AMM (automated market maker)** to set prices, which bootstraps liquidity without requiring dedicated market makers but tends to produce wider spreads, especially in markets with many outcomes.
 
 bitCaster takes a fundamentally different approach:
 
