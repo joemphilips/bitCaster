@@ -14,6 +14,8 @@ bitCaster takes a fundamentally different approach:
 - **Oracle outsourcing** — In Predyx, the oracle is the market creator. In bitCaster, the oracle is a [DLC oracle](./technical/dlc-oracle/nostr-kind-88/). This means anyone can create a market while delegating the oracle role to an external entity.
 - **Open specs** — bitCaster is built on open protocols ([NUT-CTF](./technical/nut-ctf/core-ctf/), Nostr kind 88, DLC). Predyx uses a proprietary system.
 
+The trade-off: Predyx is a fully custodial system, while bitCaster is a kind of DEX. This comes with UX challenges common to all DEXs. For example, due to the overhead of atomic swaps, trades on bitCaster theoretically incur a few seconds of latency compared to Predyx.
+
 ## How does bitCaster compare to Polymarket?
 
 [Polymarket](https://polymarket.com) is the largest prediction market by volume. It settles trades **on-chain on Polygon** using a [hybrid CLOB](https://docs.polymarket.com/developers/CLOB/introduction) — orders are matched off-chain but settled on-chain via smart contracts.
