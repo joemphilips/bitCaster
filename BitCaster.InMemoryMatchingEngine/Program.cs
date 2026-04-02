@@ -14,5 +14,6 @@ app.MapHealthChecks("/health");
 app.MapHub<MarketHub>("/hubs/market");
 app.MapOrderEndpoints();
 app.MapBookEndpoints();
+app.MapMetadataEndpoints();
 
 app.Run();

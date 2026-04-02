@@ -58,6 +58,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/{marketId}/liquidity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get CPMM pool state
+         * @description Returns the current state of the CPMM liquidity pool for a market.
+         */
+        get: operations["getLiquidity"];
+        put?: never;
+        /**
+         * Register CPMM initial liquidity
+         * @description Creates a CPMM (Constant Product Market Maker) pool for the given market and places limit orders on the CLOB to bootstrap liquidity.
+         */
+        post: operations["registerLiquidity"];
+        /**
+         * Withdraw CPMM liquidity
+         * @description Cancels all active CPMM orders and withdraws the liquidity pool. Only the original provider can withdraw.
+         */
+        delete: operations["withdrawLiquidity"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/{marketId}/metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get market metadata
+         * @description Returns aggregated metadata for a market including trading volume, trade count, unique trader count, liquidity, and like count.
+         */
+        get: operations["getMarketMetadata"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/{marketId}/like": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Toggle market like
+         * @description Toggles the like state for a user on a market. If the user has already liked the market, the like is removed.
+         */
+        post: operations["toggleMarketLike"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -79,6 +147,11 @@ export interface components {
          * @enum {string}
          */
         OrderType: "Limit" | "Market";
+        /**
+         * @description Time-in-force policy. GTC = Good-Till-Cancel (rests on book), FOK = Fill-Or-Kill (reject if not fully filled), FAK = Fill-And-Kill (cancel remaining after partial fill).
+         * @enum {string}
+         */
+        TimeInForce: "GTC" | "FOK" | "FAK";
         /**
          * @description How two orders were matched together.
          * @enum {string}
@@ -110,13 +183,15 @@ export interface components {
             filledAt: string;
         };
         SubmitOrderRequest: {
+            /** @description The outcome to trade (e.g. "Alice", "YES"). */
+            outcomeId: string;
             side: components["schemas"]["OrderSide"];
-            type: components["schemas"]["OrderType"];
-            /** @description Probability price in [1,99]. Required for limit orders, ignored for market orders. */
-            price?: components["schemas"]["Probability"] | null;
+            price: components["schemas"]["Probability"];
             amountSats: components["schemas"]["Sats"];
             /** @description Opaque user identifier (e.g. Nostr pubkey hex). */
             userId: string;
+            /** @default GTC */
+            timeInForce: components["schemas"]["TimeInForce"];
         };
         SubmitOrderResponse: {
             /**
@@ -145,9 +220,104 @@ export interface components {
             /** @description Difference between best ask and best bid. Null if either side is empty. */
             spread?: number | null;
         };
+        RegisterLiquidityRequest: {
+            /**
+             * Format: int64
+             * @description Total liquidity to deposit in satoshis.
+             */
+            liquiditySats: number;
+            /** @description Identifier of the liquidity provider. */
+            providerId: string;
+            /**
+             * @description Initial implied probability for the market [1, 99].
+             * @default 50
+             */
+            initialProbability: number;
+        };
+        RegisterLiquidityResponse: {
+            marketId: string;
+            /**
+             * Format: int64
+             * @description Reserve for outcome A (YES/HI) after pool creation.
+             */
+            reserveA: number;
+            /**
+             * Format: int64
+             * @description Reserve for outcome B (NO/LO) after pool creation.
+             */
+            reserveB: number;
+            /** @description Implied probability derived from reserves. */
+            impliedProbability: number;
+            /** @description List of limit orders placed on the CLOB. */
+            ordersPlaced: components["schemas"]["LiquidityOrderDto"][];
+        };
+        LiquidityOrderDto: {
+            /** Format: uuid */
+            orderId: string;
+            outcomeId: string;
+            side: string;
+            price: number;
+            /** Format: int64 */
+            amountSats: number;
+        };
+        LiquidityStateResponse: {
+            marketId: string;
+            /** Format: int64 */
+            reserveA: number;
+            /** Format: int64 */
+            reserveB: number;
+            impliedProbability: number;
+            /** Format: int64 */
+            totalLiquiditySats: number;
+            /** @description Number of active CPMM orders on the CLOB. */
+            activeOrders: number;
+        };
+        WithdrawLiquidityResponse: {
+            /** @description Number of CPMM orders cancelled from the CLOB. */
+            cancelledOrders: number;
+            /** Format: int64 */
+            remainingReserveA: number;
+            /** Format: int64 */
+            remainingReserveB: number;
+        };
+        MarketMetadataSnapshot: {
+            /** @description The market ID. */
+            marketId: string;
+            /**
+             * Format: int64
+             * @description Total trading volume in satoshis across all fills.
+             */
+            totalVolumeSats: number;
+            /** @description Total number of fills (trades) executed. */
+            totalTrades: number;
+            /** @description Number of unique user IDs that have submitted orders. */
+            uniqueTraderCount: number;
+            /**
+             * Format: int64
+             * @description Total CPMM liquidity deposited in satoshis.
+             */
+            totalLiquiditySats: number;
+            /** @description Number of users who have liked this market. */
+            likeCount: number;
+            /** @description Whether the requesting user has liked this market. */
+            isLiked: boolean;
+        };
+        ToggleLikeRequest: {
+            /** @description The user toggling the like. */
+            userId: string;
+        };
+        ToggleLikeResponse: {
+            /** @description Updated total like count for the market. */
+            likeCount: number;
+            /** @description Whether the user now likes the market. */
+            isLiked: boolean;
+        };
     };
     responses: never;
-    parameters: never;
+    parameters: {
+        /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+        MarketId: string;
+    };
     requestBodies: never;
     headers: never;
     pathItems: never;
@@ -160,7 +330,7 @@ export interface operations {
             header?: never;
             path: {
                 /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
-                marketId: string;
+                marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
         };
@@ -195,8 +365,8 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market ID in the format "{conditionId}-{outcomeName}". */
-                marketId: string;
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: components["parameters"]["MarketId"];
                 /** @description The unique identifier of the order to cancel. */
                 orderId: string;
             };
@@ -225,8 +395,8 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market ID in the format "{conditionId}-{outcomeName}". */
-                marketId: string;
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
         };
@@ -239,6 +409,176 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OrderBookSnapshot"];
+                };
+            };
+        };
+    };
+    getLiquidity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: components["parameters"]["MarketId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current pool state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiquidityStateResponse"];
+                };
+            };
+            /** @description No CPMM pool for this market */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    registerLiquidity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: components["parameters"]["MarketId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterLiquidityRequest"];
+            };
+        };
+        responses: {
+            /** @description Liquidity registered and orders placed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisterLiquidityResponse"];
+                };
+            };
+            /** @description Validation error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+            /** @description CPMM pool already exists for this market */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+        };
+    };
+    withdrawLiquidity: {
+        parameters: {
+            query: {
+                /** @description The provider ID that originally registered the liquidity. */
+                providerId: string;
+            };
+            header?: never;
+            path: {
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: components["parameters"]["MarketId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Liquidity withdrawn */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WithdrawLiquidityResponse"];
+                };
+            };
+            /** @description Authorization error (not the pool provider) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+            /** @description No CPMM pool for this market */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getMarketMetadata: {
+        parameters: {
+            query?: {
+                /** @description Optional user ID to check if the user has liked this market. */
+                userId?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: components["parameters"]["MarketId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Market metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketMetadataSnapshot"];
+                };
+            };
+        };
+    };
+    toggleMarketLike: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: components["parameters"]["MarketId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToggleLikeRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated like state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToggleLikeResponse"];
                 };
             };
         };

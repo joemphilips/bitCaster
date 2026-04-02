@@ -102,11 +102,43 @@ export function mapConditionToMarket(c: ConditionInfo): Market {
   }
 }
 
+export async function fetchMarketMetadata(marketId: string): Promise<MarketMetadataSnapshot | null> {
+  try {
+    const response = await fetch(`/api/v1/${marketId}/metadata`)
+    if (!response.ok) return null
+    return await response.json()
+  } catch {
+    return null
+  }
+}
+
+function applyMetadata<T extends { volume: number; liquidity: number; traderCount: number; likeCount: number; isLiked: boolean }>(
+  base: T,
+  meta: MarketMetadataSnapshot,
+): T {
+  return {
+    ...base,
+    volume: meta.totalVolumeSats,
+    liquidity: meta.totalLiquiditySats,
+    traderCount: meta.uniqueTraderCount,
+    likeCount: meta.likeCount,
+    isLiked: meta.isLiked,
+  }
+}
+
 export async function fetchMarkets(): Promise<Market[]> {
   const conditions = await fetchConditions()
-  return conditions
+  const markets = conditions
     .filter((c) => c.attestation.status === 'pending')
     .map(mapConditionToMarket)
+
+  const enriched = await Promise.all(
+    markets.map(async (m) => {
+      const meta = await fetchMarketMetadata(m.id)
+      return meta ? applyMetadata(m, meta) : m
+    })
+  )
+  return enriched
 }
 
 export function filterMarkets(markets: Market[], filter: FilterState): Market[] {
@@ -148,7 +180,7 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
   return result
 }
 
-// Order submission — types from generated OpenAPI spec
+// Types from generated OpenAPI spec
 
 import type { components } from '@/generated/api'
 
@@ -157,6 +189,8 @@ export type SubmitOrderResponse = components['schemas']['SubmitOrderResponse']
 export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
 export type LevelDto = components['schemas']['LevelDto']
 export type Fill = components['schemas']['Fill']
+export type MarketMetadataSnapshot = components['schemas']['MarketMetadataSnapshot']
+export type ToggleLikeResponse = components['schemas']['ToggleLikeResponse']
 
 // =============================================================================
 // Market Detail Data Fetching
@@ -235,7 +269,9 @@ export async function fetchMarketDetail(conditionId: string): Promise<MarketDeta
   if (!condition) {
     throw new Error(`Condition not found: ${conditionId}`)
   }
-  return mapConditionToMarketDetail(condition)
+  const detail = mapConditionToMarketDetail(condition)
+  const meta = await fetchMarketMetadata(conditionId)
+  return meta ? applyMetadata(detail, meta) : detail
 }
 
 function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {

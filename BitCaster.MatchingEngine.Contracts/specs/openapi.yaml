@@ -152,6 +152,52 @@ paths:
         '404':
           description: No CPMM pool for this market
 
+  /api/v1/{marketId}/metadata:
+    get:
+      operationId: getMarketMetadata
+      summary: Get market metadata
+      description: >
+        Returns aggregated metadata for a market including trading volume,
+        trade count, unique trader count, liquidity, and like count.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+        - name: userId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional user ID to check if the user has liked this market.
+      responses:
+        '200':
+          description: Market metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketMetadataSnapshot'
+
+  /api/v1/{marketId}/like:
+    post:
+      operationId: toggleMarketLike
+      summary: Toggle market like
+      description: >
+        Toggles the like state for a user on a market. If the user has
+        already liked the market, the like is removed.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleLikeRequest'
+      responses:
+        '200':
+          description: Updated like state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToggleLikeResponse'
+
 components:
   parameters:
     MarketId:
@@ -452,3 +498,60 @@ components:
         remainingReserveB:
           type: integer
           format: int64
+
+    MarketMetadataSnapshot:
+      type: object
+      required:
+        - marketId
+        - totalVolumeSats
+        - totalTrades
+        - uniqueTraderCount
+        - totalLiquiditySats
+        - likeCount
+        - isLiked
+      properties:
+        marketId:
+          type: string
+          description: The market ID.
+        totalVolumeSats:
+          type: integer
+          format: int64
+          description: Total trading volume in satoshis across all fills.
+        totalTrades:
+          type: integer
+          description: Total number of fills (trades) executed.
+        uniqueTraderCount:
+          type: integer
+          description: Number of unique user IDs that have submitted orders.
+        totalLiquiditySats:
+          type: integer
+          format: int64
+          description: Total CPMM liquidity deposited in satoshis.
+        likeCount:
+          type: integer
+          description: Number of users who have liked this market.
+        isLiked:
+          type: boolean
+          description: Whether the requesting user has liked this market.
+
+    ToggleLikeRequest:
+      type: object
+      required:
+        - userId
+      properties:
+        userId:
+          type: string
+          description: The user toggling the like.
+
+    ToggleLikeResponse:
+      type: object
+      required:
+        - likeCount
+        - isLiked
+      properties:
+        likeCount:
+          type: integer
+          description: Updated total like count for the market.
+        isLiked:
+          type: boolean
+          description: Whether the user now likes the market.

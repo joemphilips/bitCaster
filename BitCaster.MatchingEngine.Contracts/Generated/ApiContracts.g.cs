@@ -534,6 +534,133 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketMetadataSnapshot
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketMetadataSnapshot(bool @isLiked, int @likeCount, string @marketId, long @totalLiquiditySats, int @totalTrades, long @totalVolumeSats, int @uniqueTraderCount)
+        {
+            this.MarketId = @marketId;
+            this.TotalVolumeSats = @totalVolumeSats;
+            this.TotalTrades = @totalTrades;
+            this.UniqueTraderCount = @uniqueTraderCount;
+            this.TotalLiquiditySats = @totalLiquiditySats;
+            this.LikeCount = @likeCount;
+            this.IsLiked = @isLiked;
+        }
+
+        /// <summary>
+        /// The market ID.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// Total trading volume in satoshis across all fills.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("totalVolumeSats")]
+        public long TotalVolumeSats { get; }
+
+        /// <summary>
+        /// Total number of fills (trades) executed.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("totalTrades")]
+        public int TotalTrades { get; }
+
+        /// <summary>
+        /// Number of unique user IDs that have submitted orders.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("uniqueTraderCount")]
+        public int UniqueTraderCount { get; }
+
+        /// <summary>
+        /// Total CPMM liquidity deposited in satoshis.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySats")]
+        public long TotalLiquiditySats { get; }
+
+        /// <summary>
+        /// Number of users who have liked this market.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("likeCount")]
+        public int LikeCount { get; }
+
+        /// <summary>
+        /// Whether the requesting user has liked this market.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("isLiked")]
+        public bool IsLiked { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ToggleLikeRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ToggleLikeRequest(string @userId)
+        {
+            this.UserId = @userId;
+        }
+
+        /// <summary>
+        /// The user toggling the like.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("userId")]
+        public string UserId { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ToggleLikeResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ToggleLikeResponse(bool @isLiked, int @likeCount)
+        {
+            this.LikeCount = @likeCount;
+            this.IsLiked = @isLiked;
+        }
+
+        /// <summary>
+        /// Updated total like count for the market.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("likeCount")]
+        public int LikeCount { get; }
+
+        /// <summary>
+        /// Whether the user now likes the market.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("isLiked")]
+        public bool IsLiked { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
 
 
     [System.CodeDom.Compiler.GeneratedCode("NSwag", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
