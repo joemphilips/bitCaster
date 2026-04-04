@@ -4,7 +4,7 @@ import { MarketDiscovery } from '@/components/markets'
 import { fetchMarkets, filterMarkets, toggleMarketLike } from '@/lib/markets'
 import { useWalletStore } from '@/stores/wallet'
 import { deriveNostrKeyPair } from '@/lib/nip17'
-import type { Market, MarketType, VolumeRange, FilterState } from '@/types/market'
+import type { Market, MarketType, VolumeRange, FilterState, CategoryTag, MetaTag } from '@/types/market'
 
 export function MarketsPage() {
   const navigate = useNavigate()
@@ -38,6 +38,34 @@ export function MarketsPage() {
   useEffect(() => {
     loadMarkets()
   }, [loadMarkets])
+
+  const derivedCategoryTags = useMemo<CategoryTag[]>(() => {
+    const counts = new Map<string, number>()
+    for (const m of markets) {
+      for (const tagId of m.categoryTags) {
+        counts.set(tagId, (counts.get(tagId) ?? 0) + 1)
+      }
+    }
+    return Array.from(counts.entries()).map(([id, count]) => ({
+      id,
+      label: id,
+      marketCount: count,
+    }))
+  }, [markets])
+
+  const derivedMetaTags = useMemo<MetaTag[]>(() => {
+    const seen = new Set<string>()
+    const result: MetaTag[] = []
+    for (const m of markets) {
+      for (const tagId of m.metaTags) {
+        if (!seen.has(tagId)) {
+          seen.add(tagId)
+          result.push({ id: tagId, label: tagId, description: '' })
+        }
+      }
+    }
+    return result
+  }, [markets])
 
   const filteredMarkets = useMemo(
     () => filterMarkets(markets, { ...filter, selectedTag }),
@@ -131,8 +159,8 @@ export function MarketsPage() {
 
   return (
     <MarketDiscovery
-      metaTags={[]}
-      categoryTags={[]}
+      metaTags={derivedMetaTags}
+      categoryTags={derivedCategoryTags}
       markets={filteredMarkets}
       selectedTag={selectedTag}
       onTagSelect={handleTagSelect}

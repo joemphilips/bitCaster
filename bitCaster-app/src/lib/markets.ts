@@ -22,12 +22,31 @@ export interface AttestationState {
 
 export interface ConditionInfo {
   condition_id: string
-  description: string
+  tags?: string[][]              // NIP-88 tag array (new spec)
+  description?: string           // Legacy field (pre-tags CDK)
   threshold: number
   announcements: string[]
   partitions: PartitionInfoEntry[]
   attestation: AttestationState
   condition_type?: string // "enum" (default, omitted) or "numeric"
+}
+
+export function getTagValue(tags: string[][], key: string): string | undefined {
+  const tag = tags.find((t) => t.length >= 2 && t[0] === key)
+  return tag?.[1]
+}
+
+export function getTagValues(tags: string[][], key: string): string[] {
+  const tag = tags.find((t) => t.length >= 2 && t[0] === key)
+  return tag ? tag.slice(1) : []
+}
+
+const KNOWN_TAG_KEYS = new Set(['description', 'n'])
+
+export function extractCategoryTagIds(tags: string[][]): string[] {
+  return tags
+    .filter((t) => t.length >= 2 && !KNOWN_TAG_KEYS.has(t[0]))
+    .map((t) => t[1])
 }
 
 interface ConditionsResponse {
@@ -54,15 +73,19 @@ export function mapConditionToMarket(c: ConditionInfo): Market {
     outcomes[1].toLowerCase() === 'no'
 
   const now = new Date().toISOString()
+  const tags = c.tags ?? []
+  const title = getTagValue(tags, 'description') ?? c.description ?? 'Untitled Market'
+  const categoryTags = extractCategoryTagIds(tags)
+  const metaTags = getTagValues(tags, 'n')
 
   if (isYesNo) {
     return {
       id: c.condition_id,
-      title: c.description,
+      title,
       type: 'yesno',
       imageUrl: '',
-      categoryTags: [],
-      metaTags: [],
+      categoryTags,
+      metaTags,
       currentOdds: { yes: 50, no: 50 },
       volume: 0,
       liquidity: 0,
@@ -79,11 +102,11 @@ export function mapConditionToMarket(c: ConditionInfo): Market {
 
   return {
     id: c.condition_id,
-    title: c.description,
+    title,
     type: 'categorical',
     imageUrl: '',
-    categoryTags: [],
-    metaTags: [],
+    categoryTags,
+    metaTags,
     outcomes: outcomes.map((label, i) => ({
       id: `outcome-${i}`,
       label,
@@ -219,12 +242,18 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     outcomes[1].toLowerCase() === 'no'
 
   const isResolved = c.attestation.status === 'attested'
+  const tags = c.tags ?? []
+  const title = getTagValue(tags, 'description') ?? c.description ?? 'Untitled Market'
 
   const base = {
     id: c.condition_id,
-    title: c.description,
+    title,
     imageUrl: undefined,
-    categoryTags: [],
+    categoryTags: extractCategoryTagIds(tags).map((id) => ({
+      id,
+      label: id,
+      marketCount: 0,
+    })),
     volume: 0,
     liquidity: 0,
     traderCount: 0,
@@ -241,7 +270,7 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
       feePercent: 0,
     },
     resolution: {
-      criteria: c.description,
+      criteria: title,
       source: 'oracle' as const,
       resolutionDate: now,
       status: isResolved ? 'resolved' as const : 'open' as const,

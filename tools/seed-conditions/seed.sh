@@ -26,7 +26,8 @@ done
 seed_market() {
   local description="$1"
   local hex_tlv="$2"
-  shift 2
+  local ticker="$3"
+  shift 3
   local outcomes=("$@")
 
   echo "Seeding: ${description}"
@@ -36,7 +37,8 @@ seed_market() {
   cond_body=$(jq -n \
     --arg desc "$description" \
     --arg tlv "$hex_tlv" \
-    '{threshold: 1, description: $desc, announcements: [$tlv], condition_type: "enum"}')
+    --arg ticker "$ticker" \
+    '{threshold: 1, tags: [["description", $desc], ["n", $ticker]], announcements: [$tlv], condition_type: "enum"}')
 
   local cond_resp
   cond_resp=$(curl -sf -X POST "${MINT_URL}/v1/conditions" \
@@ -74,18 +76,21 @@ seed_market() {
 seed_market \
   'Will Bitcoin reach $100K before end of 2026?' \
   "fdd824a517648481d14e3c891b30a5b21e5bda619f2017bafec63d906f3ff380cf240dc40da5dfd5b48d17f0553fdef558c2ddda30c4f0da5a08cc5e0654b94ce54d08984f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aafdd822410001466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27000f4240fdd80609000203596573024e6f0d6274632d3130306b2d32303236" \
+  "BTC" \
   "Yes" "No"
 
 # Market 2: 2026 NBA Championship Winner
 seed_market \
   "2026 NBA Championship Winner" \
   "fdd824c3e457064a261ea646e4b9c31e6a65035636f57adf475a62498e839719f35d927557ff66513e63d5cc2e4cc674f8cafebe5a5c582f68a79c62e5d60f3e99957fd44f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aafdd8225f0001466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27000f4240fdd806260005064c616b6572730743656c746963730857617272696f7273054275636b73054f746865720e6e62612d6368616d702d32303236" \
+  "NBA" \
   "Lakers" "Celtics" "Warriors" "Bucks" "Other"
 
 # Market 3: Fed Q1 2026 Rate Decision
 seed_market \
   "Fed Q1 2026 Rate Decision" \
   "fdd824c28b020c8cc3e6aa77ba6f5cf6b4469edf4776341a36f5331ae16ac00d22e78fa3fd93fbff5de286c70e37ec2901bf377059c9584794a185aa7af509652f9328e84f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aafdd8225e0001466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27000f4240fdd8062300040b4375742035302b206270730a4375742032352062707304486f6c640448696b65106665642d726174652d71312d32303236" \
+  "FED" \
   "Cut 50+ bps" "Cut 25 bps" "Hold" "Hike"
 
 echo "Seeding complete."

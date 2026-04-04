@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { mapConditionToMarket, filterMarkets } from '../markets'
+import { mapConditionToMarket, filterMarkets, getTagValue, getTagValues, extractCategoryTagIds } from '../markets'
 import type { ConditionInfo } from '../markets'
 import type { FilterState } from '@/types/market'
 
 const yesNoCondition: ConditionInfo = {
   condition_id: 'abc123',
-  description: 'Will BTC hit 100K?',
+  tags: [['description', 'Will BTC hit 100K?'], ['n', 'BTC']],
   threshold: 1,
   announcements: ['ann1'],
   partitions: [
@@ -21,7 +21,7 @@ const yesNoCondition: ConditionInfo = {
 
 const categoricalCondition: ConditionInfo = {
   condition_id: 'def456',
-  description: 'Who wins the election?',
+  tags: [['description', 'Who wins the election?']],
   threshold: 1,
   announcements: ['ann2'],
   partitions: [
@@ -66,8 +66,57 @@ describe('mapConditionToMarket', () => {
     expect(market.liquidity).toBe(0)
     expect(market.traderCount).toBe(0)
     expect(market.categoryTags).toEqual([])
-    expect(market.metaTags).toEqual([])
+    expect(market.metaTags).toEqual(['BTC'])
     expect(market.imageUrl).toBe('')
+  })
+
+  it('falls back to "Untitled Market" when description tag is missing', () => {
+    const c: ConditionInfo = {
+      ...yesNoCondition,
+      tags: [['n', 'ETH']],
+    }
+    const market = mapConditionToMarket(c)
+    expect(market.title).toBe('Untitled Market')
+  })
+
+  it('handles empty tags array gracefully', () => {
+    const c: ConditionInfo = {
+      ...yesNoCondition,
+      tags: [],
+    }
+    const market = mapConditionToMarket(c)
+    expect(market.title).toBe('Untitled Market')
+    expect(market.categoryTags).toEqual([])
+    expect(market.metaTags).toEqual([])
+  })
+
+  it('extracts category tags from non-standard tag keys', () => {
+    const c: ConditionInfo = {
+      ...yesNoCondition,
+      tags: [['description', 'Test'], ['category', 'crypto']],
+    }
+    const market = mapConditionToMarket(c)
+    expect(market.categoryTags).toContain('crypto')
+  })
+})
+
+describe('tag helpers', () => {
+  it('getTagValue returns first value for key', () => {
+    const tags = [['description', 'hello'], ['n', 'BTC']]
+    expect(getTagValue(tags, 'description')).toBe('hello')
+    expect(getTagValue(tags, 'n')).toBe('BTC')
+    expect(getTagValue(tags, 'missing')).toBeUndefined()
+  })
+
+  it('getTagValues returns all values after key', () => {
+    const tags = [['n', 'BTC', 'ETH']]
+    expect(getTagValues(tags, 'n')).toEqual(['BTC', 'ETH'])
+    expect(getTagValues(tags, 'missing')).toEqual([])
+  })
+
+  it('extractCategoryTagIds excludes known keys', () => {
+    const tags = [['description', 'x'], ['n', 'BTC'], ['category', 'crypto'], ['sport', 'NBA']]
+    expect(extractCategoryTagIds(tags)).toEqual(['crypto', 'NBA'])
   })
 })
 
