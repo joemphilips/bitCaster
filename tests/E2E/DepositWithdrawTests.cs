@@ -9,43 +9,12 @@ public class DepositWithdrawTests : IAsyncLifetime
     private const int VitePort = 5173;
     private const int MintPort = 8085;
 
-    /// <summary>
-    /// Attach console and page error capture to a page, returning the shared message list.
-    /// </summary>
-    private static List<string> AttachConsoleCapture(IPage page)
-    {
-        var messages = new List<string>();
-        page.Console += (_, msg) => messages.Add($"[{msg.Type}] {msg.Text}");
-        page.PageError += (_, error) => messages.Add($"[PAGE_ERROR] {error}");
-        return messages;
-    }
-
-    /// <summary>
-    /// Build a diagnostic exception with page state for CI debugging.
-    /// </summary>
-    private static async Task<Exception> BuildDiagnosticExceptionAsync(
-        IPage page, IReadOnlyList<string> consoleMessages, string context)
-    {
-        string? errorBanner = null;
-        try { errorBanner = await page.Locator(".bg-red-900").TextContentAsync(new() { Timeout = 1_000 }); }
-        catch { /* no error banner visible */ }
-
-        var bodyText = await page.Locator("body").InnerTextAsync(new() { Timeout = 5_000 });
-        var url = page.Url;
-
-        return new Exception(
-            $"{context}\n" +
-            $"URL: {url}\n" +
-            $"Error banner: {errorBanner ?? "(none)"}\n" +
-            $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
-            $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
-    }
-
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        await WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint (port 8085)");
-        await WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend (port 5173)");
+        await Task.WhenAll(
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -71,11 +40,9 @@ public class DepositWithdrawTests : IAsyncLifetime
     /// The mint URL points directly to localhost:8085 where mintd runs.
     /// Service workers are blocked at the context level, so no manual unregistration needed.
     /// </summary>
-    private const string DefaultMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-
     private async Task SetupCompleteWithMint(IPage page, string? mnemonic = null)
     {
-        mnemonic ??= DefaultMnemonic;
+        mnemonic ??= TestMnemonics.Get();
 
         await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
         {
@@ -119,11 +86,9 @@ public class DepositWithdrawTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
 
-        var consoleMessages = AttachConsoleCapture(page);
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
 
-        // Use a unique mnemonic to avoid "Blinded Message is already signed" collisions
-        // when multiple deposit tests run against the same mint
-        await SetupCompleteWithMint(page, "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong");
+        await SetupCompleteWithMint(page);
         await NavigateToPortfolio(page);
 
         // Click Deposit button
@@ -159,7 +124,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages, "Invoice not found.");
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages, "Invoice not found.");
         }
 
         // With fakewallet, the quote is auto-paid, so we should see "Payment received!"
@@ -173,10 +138,9 @@ public class DepositWithdrawTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
 
-        var consoleMessages = AttachConsoleCapture(page);
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
 
-        // Use a unique mnemonic to avoid "Blinded Message is already signed" collisions
-        await SetupCompleteWithMint(page, "legal winner thank year wave sausage worth useful legal winner thank yellow");
+        await SetupCompleteWithMint(page);
 
         // First deposit some sats so we have a balance to withdraw.
         // DepositViaMint ends on the portfolio page, so no need to navigate again.
@@ -217,7 +181,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages, "WithdrawSendEcash: Cashu token not found.");
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages, "WithdrawSendEcash: Cashu token not found.");
         }
     }
 
@@ -262,7 +226,7 @@ public class DepositWithdrawTests : IAsyncLifetime
     /// </summary>
     private async Task DepositViaMint(IPage page, int amountSats, List<string>? consoleMessages = null)
     {
-        consoleMessages ??= AttachConsoleCapture(page);
+        consoleMessages ??= TestHelpers.AttachConsoleCapture(page);
 
         await NavigateToPortfolio(page);
 
@@ -298,7 +262,7 @@ public class DepositWithdrawTests : IAsyncLifetime
         }
         catch
         {
-            throw await BuildDiagnosticExceptionAsync(page, consoleMessages, $"DepositViaMint({amountSats}): Payment not received.");
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages, $"DepositViaMint({amountSats}): Payment not received.");
         }
 
         // Close the invoice display overlay — click the X button inside the overlay
@@ -317,26 +281,4 @@ public class DepositWithdrawTests : IAsyncLifetime
         _playwright?.Dispose();
     }
 
-    private static async Task WaitForService(HttpClient httpClient, string url, string serviceName)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                var response = await httpClient.GetAsync(url);
-                if (response.IsSuccessStatusCode)
-                    return;
-            }
-            catch
-            {
-                // Not ready yet
-            }
-            await Task.Delay(TimeSpan.FromSeconds(1));
-        }
-
-        throw new InvalidOperationException(
-            $"{serviceName} is not reachable at {url}. " +
-            "Start all services before running E2E tests. See AGENTS.md for the 3-terminal workflow.");
-    }
 }

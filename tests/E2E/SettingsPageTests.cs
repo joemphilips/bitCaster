@@ -14,9 +14,10 @@ public class SettingsPageTests : IAsyncLifetime
     {
         // Verify all external services are reachable before launching Playwright
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        await WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint (port 8085)");
-        await WaitForService(httpClient, $"http://localhost:{ServerPort}/health", "Matching Engine (port 5000)");
-        await WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend (port 5173)");
+        await Task.WhenAll(
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{ServerPort}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"));
 
         // Launch Playwright headless Chromium
         _playwright = await Playwright.CreateAsync();
@@ -38,26 +39,8 @@ public class SettingsPageTests : IAsyncLifetime
         });
     }
 
-    private async Task SetupComplete(IPage page)
-    {
-        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded,
-            Timeout = 30_000,
-        });
-        await page.EvaluateAsync(@"
-            localStorage.setItem('bitcaster-wallet', JSON.stringify({
-                state: {
-                    mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
-                    setupComplete: true,
-                    mints: [],
-                    activeMintUrl: 'http://localhost:3338',
-                    keysetCounters: {}
-                },
-                version: 0
-            }));
-        ");
-    }
+    private async Task SetupComplete(IPage page) =>
+        await TestHelpers.SetupComplete(page, VitePort);
 
     [Fact]
     public async Task NavigateToSettings_ShowsSettingsHeading()
@@ -92,26 +75,4 @@ public class SettingsPageTests : IAsyncLifetime
         _playwright?.Dispose();
     }
 
-    private static async Task WaitForService(HttpClient httpClient, string url, string serviceName)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                var response = await httpClient.GetAsync(url);
-                if (response.IsSuccessStatusCode)
-                    return;
-            }
-            catch
-            {
-                // Not ready yet
-            }
-            await Task.Delay(TimeSpan.FromSeconds(1));
-        }
-
-        throw new InvalidOperationException(
-            $"{serviceName} is not reachable at {url}. " +
-            "Start all services before running E2E tests. See AGENTS.md for the 3-terminal workflow.");
-    }
 }

@@ -123,18 +123,27 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
           exit 1
 
-      - name: Wait for cashu.me and nostr-relay
+      - name: Wait for cashu.me
         run: |
           echo "Waiting for cashu.me..."
           for i in $(seq 1 30); do
-            curl -sf http://localhost:3000 && break
+            curl -sf http://localhost:3000 && exit 0
             sleep 2
           done
+          echo "cashu.me not ready"
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs cashu-me
+          exit 1
+
+      - name: Wait for nostr-relay
+        run: |
           echo "Waiting for nostr-relay..."
           for i in $(seq 1 15); do
-            curl -sf http://localhost:7777 && break
+            curl -sf http://localhost:7777 && exit 0
             sleep 2
           done
+          echo "nostr-relay not ready"
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs nostr-relay
+          exit 1
 
       - name: Start server
         run: |

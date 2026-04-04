@@ -21,9 +21,10 @@ public class InteropTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        await TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint");
-        await TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend");
-        await TestHelpers.WaitForService(httpClient, $"http://localhost:{CashuMePort}", "cashu.me");
+        await Task.WhenAll(
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{CashuMePort}", "cashu.me"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -45,14 +46,6 @@ public class InteropTests : IAsyncLifetime
             new() { Origin = $"http://localhost:{CashuMePort}" });
         return ctx;
     }
-
-    // =========================================================================
-    // Unique mnemonics per test — must NOT overlap with DepositWithdrawTests
-    // =========================================================================
-    private const string MnemonicInterop1 = "seat balcony leader corn dragon vehicle report car book wear ring bus";
-    private const string MnemonicInterop2 = "garment patch opera solar cruel page economy climb among pizza ecology abuse";
-    private const string MnemonicCashuMe1 = "tray fluid rubber caught pause keen slice caution similar access beef attitude";
-    private const string MnemonicCashuMe2 = "shaft firm spray night guard army brown tip caution diary leaf model";
 
     // =========================================================================
     // bitCaster helpers
@@ -273,11 +266,13 @@ public class InteropTests : IAsyncLifetime
     [Fact]
     public async Task TokenExchange_CashuMeToBitCaster()
     {
+        var (cashuMeMnemonic, bitCasterMnemonic) = TestMnemonics.GetPair();
+
         // Setup cashu.me
         await using var cashuMeCtx = await NewIsolatedContextAsync();
         var cashuMePage = await cashuMeCtx.NewPageAsync();
         var cashuMeConsole = TestHelpers.AttachConsoleCapture(cashuMePage);
-        await SetupCashuMe(cashuMePage, MnemonicCashuMe1);
+        await SetupCashuMe(cashuMePage, cashuMeMnemonic);
 
         // Fund cashu.me via Lightning (fakewallet auto-pays)
         await CashuMeDepositViaLightning(cashuMePage, 200, cashuMeConsole);
@@ -289,7 +284,7 @@ public class InteropTests : IAsyncLifetime
         await using var bitCasterCtx = await NewIsolatedContextAsync();
         var bitCasterPage = await bitCasterCtx.NewPageAsync();
         var bitCasterConsole = TestHelpers.AttachConsoleCapture(bitCasterPage);
-        await SetupBitCasterWallet(bitCasterPage, MnemonicInterop1);
+        await SetupBitCasterWallet(bitCasterPage, bitCasterMnemonic);
 
         // Navigate to bitCaster portfolio
         await bitCasterPage.GotoAsync($"http://localhost:{VitePort}/portfolio", new PageGotoOptions
@@ -548,11 +543,13 @@ public class InteropTests : IAsyncLifetime
     [Fact]
     public async Task TokenExchange_BitCasterToCashuMe()
     {
+        var (bitCasterMnemonic, cashuMeMnemonic) = TestMnemonics.GetPair();
+
         // Setup bitCaster and fund via Lightning
         await using var bitCasterCtx = await NewIsolatedContextAsync();
         var bitCasterPage = await bitCasterCtx.NewPageAsync();
         var bitCasterConsole = TestHelpers.AttachConsoleCapture(bitCasterPage);
-        await SetupBitCasterWallet(bitCasterPage, MnemonicInterop2);
+        await SetupBitCasterWallet(bitCasterPage, bitCasterMnemonic);
         await BitCasterDepositViaLightning(bitCasterPage, 500, bitCasterConsole);
 
         // Wait for network to settle after deposit
@@ -565,7 +562,7 @@ public class InteropTests : IAsyncLifetime
         await using var cashuMeCtx = await NewIsolatedContextAsync();
         var cashuMePage = await cashuMeCtx.NewPageAsync();
         var cashuMeConsole = TestHelpers.AttachConsoleCapture(cashuMePage);
-        await SetupCashuMe(cashuMePage, MnemonicCashuMe2);
+        await SetupCashuMe(cashuMePage, cashuMeMnemonic);
 
         await CashuMeReceiveEcashToken(cashuMePage, bitCasterToken, cashuMeConsole);
 

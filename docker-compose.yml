@@ -47,6 +47,12 @@ services:
     depends_on:
       mintd:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   nostr-relay:
     image: scsibug/nostr-rs-relay

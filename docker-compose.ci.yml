@@ -10,3 +10,9 @@ services:
 
   cashu-me:
     image: joemphilips/cashu-me
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s

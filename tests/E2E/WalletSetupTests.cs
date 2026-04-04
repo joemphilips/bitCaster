@@ -12,8 +12,9 @@ public class WalletSetupTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        await WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint (port 8085)");
-        await WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend (port 5173)");
+        await Task.WhenAll(
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -266,8 +267,7 @@ public class WalletSetupTests : IAsyncLifetime
 
         // Step 4 (Seed Input): fill each word individually
         await Assertions.Expect(page.GetByText("Enter Your Seed Phrase")).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        var words = new[] { "abandon", "abandon", "abandon", "abandon", "abandon", "abandon",
-                            "abandon", "abandon", "abandon", "abandon", "abandon", "about" };
+        var words = TestMnemonics.Get().Split(' ');
         await FillSeedWordsAsync(page, words);
 
         // "Recover Wallet" button should be enabled (valid checksum)
@@ -367,22 +367,23 @@ public class WalletSetupTests : IAsyncLifetime
         var page = await context.NewPageAsync();
 
         // Set setupComplete in localStorage before navigating
+        var mnemonic = TestMnemonics.Get();
         await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
         });
-        await page.EvaluateAsync(@"
-            localStorage.setItem('bitcaster-wallet', JSON.stringify({
-                state: {
-                    mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+        await page.EvaluateAsync($@"
+            localStorage.setItem('bitcaster-wallet', JSON.stringify({{
+                state: {{
+                    mnemonic: '{mnemonic}',
                     setupComplete: true,
                     mints: [],
                     activeMintUrl: 'http://localhost:3338',
-                    keysetCounters: {}
-                },
+                    keysetCounters: {{}}
+                }},
                 version: 0
-            }));
+            }}));
         ");
 
         // Navigate to /markets
@@ -404,26 +405,4 @@ public class WalletSetupTests : IAsyncLifetime
         _playwright?.Dispose();
     }
 
-    private static async Task WaitForService(HttpClient httpClient, string url, string serviceName)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                var response = await httpClient.GetAsync(url);
-                if (response.IsSuccessStatusCode)
-                    return;
-            }
-            catch
-            {
-                // Not ready yet
-            }
-            await Task.Delay(TimeSpan.FromSeconds(1));
-        }
-
-        throw new InvalidOperationException(
-            $"{serviceName} is not reachable at {url}. " +
-            "Start all services before running E2E tests. See AGENTS.md for the 3-terminal workflow.");
-    }
 }
