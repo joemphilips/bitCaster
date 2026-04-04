@@ -7,9 +7,9 @@ sidebar:
 
 # Creating Markets
 
-On most prediction market platforms, only the operator decides which markets exist. bitCaster works differently — anyone can create a market on any topic, at any time. All you need is an oracle announcement for the event and enough sats to seed initial liquidity.
+On most prediction market platforms, only the operator decides which markets exist. bitCaster works differently — anyone can create a market on any topic, at any time. All you need is an oracle who will attest to the event's outcome and enough sats to seed initial liquidity.
 
-Creating a market means defining what the event is, who will attest to its outcome, and putting up the capital that lets traders start trading immediately.
+Creating a market means defining what the event is, who will attest to its outcome (the oracle), and putting up the capital that lets traders start trading immediately.
 
 ## Choosing an Oracle
 
@@ -17,9 +17,9 @@ Every bitCaster market is tied to at least one **oracle announcement** — a sig
 
 If the event you want to bet on already has an oracle announcement — say, a well-known DLC oracle that publishes Bitcoin price attestations daily — you can simply select it and move on.
 
-In practice, though, most interesting markets are about novel events that no existing oracle has announced yet. "Will Company X ship feature Y by Q3?" or "Will it rain in Tokyo on July 1st?" — these are questions no one has committed to attesting. In that case, the market creator becomes the oracle as well. You configure your own oracle keys and publish the announcement yourself, committing to attest the outcome when the event resolves.
+In practice, though, most interesting markets are about novel events that no existing oracle has announced yet. "Will Company X ship feature Y by Q3?" or "Will it rain in Tokyo on July 1st?" — these are questions that usually no one has committed to attesting. In that case, the market creator becomes the oracle as well. You configure your own oracle keys and publish the announcement yourself, committing to attest the outcome when the event resolves.
 
-This dual role — creator and oracle — is common in early-stage markets. It carries an obvious trust requirement: traders must believe the oracle will attest honestly. The [Resolution](/user-guide/core-concepts/resolution/) page explains how DLC's cryptographic structure (leaked private keys on contradictory attestations, transparent public keys) keeps oracles accountable, but the fundamental choice of whom to trust remains with each trader.
+Prediction markets always involve trusting an oracle. The fundamental choice of whom to trust remains with each trader.
 
 ## Initial Liquidity
 
