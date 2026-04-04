@@ -109,11 +109,12 @@ export function MarketDetailPage() {
       await submitOrder(
         `${market.id}-${outcomeName}`,
         {
+          outcomeId: outcomeName,
           side: tradeSide === 'buy' ? 'Buy' : 'Sell',
-          type: orderType === 'limit' ? 'Limit' : 'Market',
-          price: orderType === 'limit' ? limitPrice : null,
+          price: orderType === 'limit' ? limitPrice : 0,
           amountSats: tradeAmount,
           userId: 'anonymous',
+          timeInForce: 'GTC',
         }
       )
       // Reset after successful trade
