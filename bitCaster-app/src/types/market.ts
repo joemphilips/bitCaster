@@ -162,4 +162,7 @@ export interface MarketDiscoveryProps {
 
   /** Called when user clicks on a secondary market from expanded list */
   onViewSecondaryMarket?: (baseMarketId: string, secondaryMarketId: string) => void
+
+  /** Called when user likes/unlikes a market */
+  onLike?: (marketId: string) => void
 }

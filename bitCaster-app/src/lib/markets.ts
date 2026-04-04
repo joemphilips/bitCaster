@@ -192,6 +192,18 @@ export type Fill = components['schemas']['Fill']
 export type MarketMetadataSnapshot = components['schemas']['MarketMetadataSnapshot']
 export type ToggleLikeResponse = components['schemas']['ToggleLikeResponse']
 
+export async function toggleMarketLike(marketId: string, userId: string): Promise<ToggleLikeResponse> {
+  const response = await fetch(`/api/v1/${marketId}/like`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId }),
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to toggle like: ${response.status}`)
+  }
+  return response.json()
+}
+
 // =============================================================================
 // Market Detail Data Fetching
 // =============================================================================

@@ -176,6 +176,93 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         await Assertions.Expect(traderCount.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
+    [Fact]
+    public async Task LikeButton_TogglesOnClick()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupComplete(page);
+
+        // Intercept metadata — start with isLiked=false, likeCount=3
+        await page.RouteAsync("**/api/v1/*/metadata", async route =>
+        {
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    marketId = "test",
+                    totalVolumeSats = 10000,
+                    totalTrades = 5,
+                    uniqueTraderCount = 10,
+                    totalLiquiditySats = 50000,
+                    likeCount = 3,
+                    isLiked = false,
+                }),
+            });
+        });
+
+        // Track like API calls
+        var likeCalls = new List<string>();
+        await page.RouteAsync("**/api/v1/*/like", async route =>
+        {
+            var request = route.Request;
+            var body = request.PostData ?? "";
+            likeCalls.Add(body);
+
+            // First call: like (3 → 4)
+            // Second call: unlike (4 → 3)
+            var isFirstCall = likeCalls.Count == 1;
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    likeCount = isFirstCall ? 4 : 3,
+                    isLiked = isFirstCall,
+                }),
+            });
+        });
+
+        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        // Wait for market cards to render
+        var btcMarket = page.GetByText("Will Bitcoin reach $100K");
+        await Assertions.Expect(btcMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
+
+        // Verify initial like count is 3 and heart is not filled (not rose-500)
+        var likeButtons = page.GetByTitle("Like");
+        var firstLikeButton = likeButtons.First;
+        await Assertions.Expect(firstLikeButton).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await Assertions.Expect(firstLikeButton).ToContainTextAsync("3");
+
+        // Verify the heart SVG is not filled initially
+        var heartIcon = firstLikeButton.Locator("svg");
+        await Assertions.Expect(heartIcon).ToHaveAttributeAsync("fill", "none");
+
+        // Click the like button
+        await firstLikeButton.ClickAsync();
+
+        // Verify the API was called with a userId in the body
+        Assert.Single(likeCalls);
+        Assert.Contains("userId", likeCalls[0]);
+
+        // Verify the like count updated to 4 and heart is filled
+        await Assertions.Expect(firstLikeButton).ToContainTextAsync("4", new() { Timeout = 5_000 });
+        await Assertions.Expect(heartIcon).ToHaveAttributeAsync("fill", "currentColor", new() { Timeout = 5_000 });
+
+        // Click again to unlike
+        await firstLikeButton.ClickAsync();
+
+        // Verify toggled back to 3 and heart is unfilled
+        await Assertions.Expect(firstLikeButton).ToContainTextAsync("3", new() { Timeout = 5_000 });
+        await Assertions.Expect(heartIcon).ToHaveAttributeAsync("fill", "none", new() { Timeout = 5_000 });
+    }
+
     public async Task DisposeAsync()
     {
         if (_browser is not null)
