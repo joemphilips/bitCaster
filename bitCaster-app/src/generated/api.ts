@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/v1/markets/{conditionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register a new market on the matching engine
+         * @description Validates the condition exists in the mint, creates empty order books with CPMM pools for each outcome, and optionally stores a thumbnail.
+         */
+        post: operations["createMarket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/{marketId}/orders": {
         parameters: {
             query?: never;
@@ -71,16 +91,8 @@ export interface paths {
          */
         get: operations["getLiquidity"];
         put?: never;
-        /**
-         * Register CPMM initial liquidity
-         * @description Creates a CPMM (Constant Product Market Maker) pool for the given market and places limit orders on the CLOB to bootstrap liquidity.
-         */
-        post: operations["registerLiquidity"];
-        /**
-         * Withdraw CPMM liquidity
-         * @description Cancels all active CPMM orders and withdraws the liquidity pool. Only the original provider can withdraw.
-         */
-        delete: operations["withdrawLiquidity"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -116,11 +128,7 @@ export interface paths {
         /** Get the thumbnail image for a condition */
         get: operations["getThumbnail"];
         put?: never;
-        /**
-         * Upload a thumbnail image for a condition
-         * @description Uploads a thumbnail image (JPEG/PNG/WebP, max 5 MB) for a condition. Overwrites any existing thumbnail.
-         */
-        post: operations["uploadThumbnail"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -241,45 +249,36 @@ export interface components {
             /** @description Difference between best ask and best bid. Null if either side is empty. */
             spread?: number | null;
         };
-        RegisterLiquidityRequest: {
+        CreateMarketOutcome: {
+            /** @description Outcome label (e.g. "Yes", "Alice"). */
+            name: string;
+            /** @description Initial implied probability for this outcome [1, 99]. */
+            probability: number;
+        };
+        /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. */
+        CreateMarketRequest: {
+            /** @description Human-readable market title. */
+            title: string;
+            /** @description Detailed market description. */
+            description: string;
+            /** @description The outcomes for the market (at least 2). */
+            outcomes: components["schemas"]["CreateMarketOutcome"][];
             /**
              * Format: int64
-             * @description Total liquidity to deposit in satoshis.
+             * @description Initial liquidity to seed across outcome CPMM pools (in sats).
+             * @default 0
              */
             liquiditySats: number;
-            /** @description Identifier of the liquidity provider. */
-            providerId: string;
-            /**
-             * @description Initial implied probability for the market [1, 99].
-             * @default 50
-             */
-            initialProbability: number;
+            /** @description Optional category tags for the market. */
+            categoryTags?: string[];
         };
-        RegisterLiquidityResponse: {
-            marketId: string;
-            /**
-             * Format: int64
-             * @description Reserve for outcome A (YES/HI) after pool creation.
-             */
-            reserveA: number;
-            /**
-             * Format: int64
-             * @description Reserve for outcome B (NO/LO) after pool creation.
-             */
-            reserveB: number;
-            /** @description Implied probability derived from reserves. */
-            impliedProbability: number;
-            /** @description List of limit orders placed on the CLOB. */
-            ordersPlaced: components["schemas"]["LiquidityOrderDto"][];
-        };
-        LiquidityOrderDto: {
-            /** Format: uuid */
-            orderId: string;
-            outcomeId: string;
-            side: string;
-            price: number;
-            /** Format: int64 */
-            amountSats: number;
+        CreateMarketResponse: {
+            /** @description The condition ID this market was registered for. */
+            conditionId: string;
+            /** @description List of per-outcome market IDs created (format: "{conditionId}-{outcomeName}"). */
+            marketsCreated: string[];
+            /** @description URL to the uploaded thumbnail, or null if none was provided. */
+            thumbnailUrl?: string | null;
         };
         LiquidityStateResponse: {
             marketId: string;
@@ -292,14 +291,6 @@ export interface components {
             totalLiquiditySats: number;
             /** @description Number of active CPMM orders on the CLOB. */
             activeOrders: number;
-        };
-        WithdrawLiquidityResponse: {
-            /** @description Number of CPMM orders cancelled from the CLOB. */
-            cancelledOrders: number;
-            /** Format: int64 */
-            remainingReserveA: number;
-            /** Format: int64 */
-            remainingReserveB: number;
         };
         MarketMetadataSnapshot: {
             /** @description The market ID. */
@@ -333,12 +324,6 @@ export interface components {
             /** @description Whether the user now likes the market. */
             isLiked: boolean;
         };
-        UploadThumbnailResponse: {
-            /** @description The condition ID the thumbnail was uploaded for. */
-            conditionId: string;
-            /** @description URL to retrieve the uploaded thumbnail. */
-            thumbnailUrl: string;
-        };
     };
     responses: never;
     parameters: {
@@ -353,6 +338,59 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    createMarket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, liquidity, and category tags. */
+                    metadata: string;
+                    /**
+                     * Format: binary
+                     * @description Optional thumbnail image (JPEG, PNG, or WebP, max 5 MB).
+                     */
+                    thumbnail?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Market created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateMarketResponse"];
+                };
+            };
+            /** @description Validation error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+            /** @description Market already exists for this condition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+        };
+    };
     submitOrder: {
         parameters: {
             query?: never;
@@ -472,93 +510,6 @@ export interface operations {
             };
         };
     };
-    registerLiquidity: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RegisterLiquidityRequest"];
-            };
-        };
-        responses: {
-            /** @description Liquidity registered and orders placed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RegisterLiquidityResponse"];
-                };
-            };
-            /** @description Validation error */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-            /** @description CPMM pool already exists for this market */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-        };
-    };
-    withdrawLiquidity: {
-        parameters: {
-            query: {
-                /** @description The provider ID that originally registered the liquidity. */
-                providerId: string;
-            };
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Liquidity withdrawn */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WithdrawLiquidityResponse"];
-                };
-            };
-            /** @description Authorization error (not the pool provider) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-            /** @description No CPMM pool for this market */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     getMarketMetadata: {
         parameters: {
             query?: {
@@ -612,48 +563,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    uploadThumbnail: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": {
-                    /**
-                     * Format: binary
-                     * @description The image file (JPEG, PNG, or WebP).
-                     */
-                    file: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Thumbnail uploaded */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UploadThumbnailResponse"];
-                };
-            };
-            /** @description Invalid file (too large, wrong type, etc.) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
             };
         };
     };

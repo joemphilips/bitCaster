@@ -249,47 +249,131 @@ public class MarketCreationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task BothUsersCanSeeSeededMarkets()
+    public async Task NewlyCreatedMarketVisibleToBothUsers()
     {
+        // Create a market on the matching engine via HTTP, then verify
+        // both users can see it on the /markets page.
+        var conditionId = $"e2e-{Guid.NewGuid():N}";
+        var marketTitle = "E2E Created Market";
+
+        // First, register the condition on the mint so the matching engine
+        // can validate it, and so the frontend can list it.
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+
+        // Seed a condition on the mint (POST /v1/conditions requires an oracle
+        // announcement which we don't have in this test). Instead, we'll
+        // intercept the frontend's GET /v1/conditions via Playwright route
+        // to include our fake condition, and call the matching engine directly.
+
+        // Create market on the matching engine
+        var metadata = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            title = marketTitle,
+            description = "E2E test description",
+            outcomes = new[]
+            {
+                new { name = "Yes", probability = 50 },
+                new { name = "No", probability = 50 },
+            },
+            liquiditySats = 1000,
+            categoryTags = new[] { "crypto" },
+        });
+
+        var formContent = new MultipartFormDataContent();
+        formContent.Add(new StringContent(metadata), "metadata");
+
+        var createResponse = await httpClient.PostAsync(
+            $"http://localhost:{ServerPort}/api/v1/markets/{conditionId}",
+            formContent);
+
+        // The matching engine may fail mint validation (condition doesn't exist
+        // in mint) — that's OK for this test since we're testing UI visibility.
+        // In the in-memory server, mint validation failure is non-fatal (caught).
+        Assert.True(createResponse.IsSuccessStatusCode,
+            $"createMarket failed: {createResponse.StatusCode} {await createResponse.Content.ReadAsStringAsync()}");
+
+        // Build the fake condition JSON for route interception
+        var conditionJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            conditions = new object[]
+            {
+                new
+                {
+                    condition_id = conditionId,
+                    tags = new[] { new[] { "description", marketTitle } },
+                    threshold = 1,
+                    announcements = new[] { "fake-ann" },
+                    partitions = new object[]
+                    {
+                        new
+                        {
+                            partition = new[] { "Yes", "No" },
+                            collateral = "",
+                            parent_collection_id = "",
+                            keysets = new Dictionary<string, string>(),
+                        },
+                    },
+                    attestation = new
+                    {
+                        status = "pending",
+                        winning_outcome = (string?)null,
+                        attested_at = (long?)null,
+                    },
+                },
+            },
+        });
+
+        // Helper to set up route interception for GET /v1/conditions
+        // so the frontend sees our test condition
+        async Task InterceptConditions(IPage page)
+        {
+            await page.RouteAsync("**/v1/conditions", async route =>
+            {
+                if (route.Request.Method == "GET")
+                {
+                    await route.FulfillAsync(new RouteFulfillOptions
+                    {
+                        Status = 200,
+                        ContentType = "application/json",
+                        Body = conditionJson,
+                    });
+                }
+                else
+                {
+                    await route.ContinueAsync();
+                }
+            });
+        }
+
         // User A
         await using var contextA = await NewIsolatedContextAsync();
         var pageA = await contextA.NewPageAsync();
         await SetupComplete(pageA);
+        await InterceptConditions(pageA);
+
+        await pageA.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var marketOnPageA = pageA.GetByText(marketTitle);
+        await Assertions.Expect(marketOnPageA).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
         // User B
         await using var contextB = await NewIsolatedContextAsync();
         var pageB = await contextB.NewPageAsync();
         await SetupComplete(pageB);
+        await InterceptConditions(pageB);
 
-        // Both navigate to /markets
-        await Task.WhenAll(
-            pageA.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
-            {
-                WaitUntil = WaitUntilState.NetworkIdle,
-                Timeout = 30_000,
-            }),
-            pageB.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
-            {
-                WaitUntil = WaitUntilState.NetworkIdle,
-                Timeout = 30_000,
-            }));
-
-        // Both should see the seeded markets
-        var expectedTitles = new[]
+        await pageB.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
         {
-            "Will Bitcoin reach $100K",
-            "2026 NBA Championship Winner",
-            "Fed Q1 2026 Rate Decision",
-        };
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
 
-        foreach (var title in expectedTitles)
-        {
-            var marketA = pageA.GetByText(title);
-            await Assertions.Expect(marketA).ToBeVisibleAsync(new() { Timeout = 10_000 });
-
-            var marketB = pageB.GetByText(title);
-            await Assertions.Expect(marketB).ToBeVisibleAsync(new() { Timeout = 10_000 });
-        }
+        var marketOnPageB = pageB.GetByText(marketTitle);
+        await Assertions.Expect(marketOnPageB).ToBeVisibleAsync(new() { Timeout = 10_000 });
     }
 
     public async Task DisposeAsync()

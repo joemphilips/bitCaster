@@ -219,9 +219,8 @@ export type LevelDto = components['schemas']['LevelDto']
 export type Fill = components['schemas']['Fill']
 export type MarketMetadataSnapshot = components['schemas']['MarketMetadataSnapshot']
 export type ToggleLikeResponse = components['schemas']['ToggleLikeResponse']
-export type RegisterLiquidityRequest = components['schemas']['RegisterLiquidityRequest']
-export type RegisterLiquidityResponse = components['schemas']['RegisterLiquidityResponse']
-export type UploadThumbnailResponse = components['schemas']['UploadThumbnailResponse']
+export type CreateMarketRequest = components['schemas']['CreateMarketRequest']
+export type CreateMarketResponse = components['schemas']['CreateMarketResponse']
 
 export async function toggleMarketLike(marketId: string, userId: string): Promise<ToggleLikeResponse> {
   const response = await fetch(`/api/v1/${marketId}/like`, {
@@ -416,33 +415,22 @@ export async function registerPartition(
   return response.json()
 }
 
-export async function uploadThumbnail(
+export async function createMarket(
   conditionId: string,
-  file: File,
-): Promise<UploadThumbnailResponse> {
+  params: CreateMarketRequest,
+  thumbnailFile?: File | null,
+): Promise<CreateMarketResponse> {
   const formData = new FormData()
-  formData.append('file', file)
-  const response = await fetch(`/api/v1/${conditionId}/thumbnail`, {
+  formData.append('metadata', JSON.stringify(params))
+  if (thumbnailFile) {
+    formData.append('thumbnail', thumbnailFile)
+  }
+  const response = await fetch(`/api/v1/markets/${conditionId}`, {
     method: 'POST',
     body: formData,
   })
   if (!response.ok) {
-    throw new Error(`Failed to upload thumbnail: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function registerLiquidity(
-  marketId: string,
-  params: RegisterLiquidityRequest,
-): Promise<RegisterLiquidityResponse> {
-  const response = await fetch(`/api/v1/${marketId}/liquidity`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-  if (!response.ok) {
-    throw new Error(`Failed to register liquidity: ${response.status}`)
+    throw new Error(`Failed to create market: ${response.status}`)
   }
   return response.json()
 }

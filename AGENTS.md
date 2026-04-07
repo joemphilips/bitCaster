@@ -29,12 +29,10 @@ CDK mintd
 
 ## Design Principle — Open Protocol First
 
-Every feature should be an **open protocol defined in a NUT** and implemented in **CDK**, not a custom endpoint in the matching engine.
+Every communication should be defined as an open protocol
 
-- The frontend talks directly to the mint for all protocol-level operations (e.g. market discovery via `/v1/conditions`, minting CTF tokens, settlement).
-- **The matching engine exists only for the order book** (order book + real-time price feed via SignalR) — functionality that is inherently centralised and cannot be expressed as an open spec. The real implementation lives in a **private repo** (`bitCaster-matching-engine`); this monorepo contains only shared contracts and a mock server for development/testing.
-- When adding a new feature, ask: *"Can this be a NUT endpoint on the mint?"* — if yes, it belongs in `nuts/` + `cdk/`, not in the matching engine.
-- All information should be stored in users side as much as possible
+- bitCaster-app <-> cdk ... defined in nuts/
+- bitCaster-app <-> matching engine ... defined in yaml specs under BitCaster.MatchingEngine.Contracts/specs/
 
 ## NUT-CTF Protocol Summary
 
@@ -70,12 +68,9 @@ The recommended workflow uses `docker-compose.yml` at the repo root to run the m
 
 ```bash
 # Terminal 1: Start mint
-docker compose up mintd
+docker compose up mintd server
 
-# Terminal 2: Start in-memory matching engine
-cd BitCaster.InMemoryMatchingEngine && dotnet run
-
-# Terminal 3: Start frontend
+# Terminal 2: Start frontend
 cd bitCaster-app && npm install && npm run dev
 ```
 

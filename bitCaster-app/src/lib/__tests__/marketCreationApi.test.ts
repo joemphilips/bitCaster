@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { registerCondition, registerPartition, MintError } from '../markets'
+import { registerCondition, registerPartition, createMarket, MintError } from '../markets'
 
 const originalFetch = globalThis.fetch
 
@@ -144,5 +144,50 @@ describe('registerPartition', () => {
       expect((e as MintError).code).toBe(0)
       expect((e as MintError).detail).toMatch(/Failed to register partition: 500/)
     }
+  })
+})
+
+const createMarketParams = {
+  title: 'Test Market',
+  description: 'Test description',
+  outcomes: [
+    { name: 'Yes', probability: 50 },
+    { name: 'No', probability: 50 },
+  ],
+  liquiditySats: 10000,
+  categoryTags: ['crypto'],
+}
+
+describe('createMarket', () => {
+  it('returns response on success', async () => {
+    const body = { conditionId: 'cond-123', marketsCreated: ['cond-123-Yes', 'cond-123-No'], thumbnailUrl: null }
+    mockFetchSuccess(body)
+    const result = await createMarket('cond-123', createMarketParams)
+    expect(result.conditionId).toBe('cond-123')
+    expect(result.marketsCreated).toEqual(['cond-123-Yes', 'cond-123-No'])
+  })
+
+  it('sends metadata as form data', async () => {
+    mockFetchSuccess({ conditionId: 'cond-123', marketsCreated: [], thumbnailUrl: null })
+    await createMarket('cond-123', createMarketParams)
+
+    const call = vi.mocked(globalThis.fetch).mock.calls[0]
+    expect(call[0]).toBe('/api/v1/markets/cond-123')
+    expect(call[1]?.method).toBe('POST')
+    expect(call[1]?.body).toBeInstanceOf(FormData)
+  })
+
+  it('throws on validation error (400)', async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response('At least 2 outcomes required', { status: 400 }),
+    )
+    await expect(createMarket('cond-123', createMarketParams)).rejects.toThrow('Failed to create market: 400')
+  })
+
+  it('throws on conflict (409)', async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response('Market already exists', { status: 409 }),
+    )
+    await expect(createMarket('cond-123', createMarketParams)).rejects.toThrow('Failed to create market: 409')
   })
 })

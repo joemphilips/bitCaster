@@ -325,33 +325,84 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class RegisterLiquidityRequest
+    public partial class CreateMarketOutcome
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RegisterLiquidityRequest(int? @initialProbability, long @liquiditySats, string @providerId)
+        public CreateMarketOutcome(string @name, int @probability)
         {
-            this.LiquiditySats = @liquiditySats;
-            this.ProviderId = @providerId;
-            this.InitialProbability = @initialProbability;
+            this.Name = @name;
+            this.Probability = @probability;
         }
 
         /// <summary>
-        /// Total liquidity to deposit in satoshis.
+        /// Outcome label (e.g. "Yes", "Alice").
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("name")]
+        public string Name { get; }
+
+        /// <summary>
+        /// Initial implied probability for this outcome [1, 99].
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("probability")]
+        public int Probability { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    /// <summary>
+    /// JSON payload embedded in the multipart `metadata` field of the createMarket endpoint.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class CreateMarketRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, string @title)
+        {
+            this.Title = @title;
+            this.Description = @description;
+            this.Outcomes = @outcomes;
+            this.LiquiditySats = @liquiditySats;
+            this.CategoryTags = @categoryTags;
+        }
+
+        /// <summary>
+        /// Human-readable market title.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("title")]
+        public string Title { get; }
+
+        /// <summary>
+        /// Detailed market description.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("description")]
+        public string Description { get; }
+
+        /// <summary>
+        /// The outcomes for the market (at least 2).
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
+        public System.Collections.Generic.List<CreateMarketOutcome> Outcomes { get; }
+
+        /// <summary>
+        /// Initial liquidity to seed across outcome CPMM pools (in sats).
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
-        public long LiquiditySats { get; }
+        public long? LiquiditySats { get; }
 
         /// <summary>
-        /// Identifier of the liquidity provider.
+        /// Optional category tags for the market.
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("providerId")]
-        public string ProviderId { get; }
-
-        /// <summary>
-        /// Initial implied probability for the market [1, 99].
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("initialProbability")]
-        public int? InitialProbability { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("categoryTags")]
+        public System.Collections.Generic.List<string> CategoryTags { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -365,83 +416,34 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class RegisterLiquidityResponse
+    public partial class CreateMarketResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RegisterLiquidityResponse(int @impliedProbability, string @marketId, System.Collections.Generic.List<LiquidityOrderDto> @ordersPlaced, long @reserveA, long @reserveB)
+        public CreateMarketResponse(string @conditionId, System.Collections.Generic.List<string> @marketsCreated, string @thumbnailUrl)
         {
-            this.MarketId = @marketId;
-            this.ReserveA = @reserveA;
-            this.ReserveB = @reserveB;
-            this.ImpliedProbability = @impliedProbability;
-            this.OrdersPlaced = @ordersPlaced;
+            this.ConditionId = @conditionId;
+            this.MarketsCreated = @marketsCreated;
+            this.ThumbnailUrl = @thumbnailUrl;
         }
 
-        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
-        public string MarketId { get; }
+        /// <summary>
+        /// The condition ID this market was registered for.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
+        public string ConditionId { get; }
 
         /// <summary>
-        /// Reserve for outcome A (YES/HI) after pool creation.
+        /// List of per-outcome market IDs created (format: "{conditionId}-{outcomeName}").
+        /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("reserveA")]
-        public long ReserveA { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("marketsCreated")]
+        public System.Collections.Generic.List<string> MarketsCreated { get; }
 
         /// <summary>
-        /// Reserve for outcome B (NO/LO) after pool creation.
+        /// URL to the uploaded thumbnail, or null if none was provided.
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("reserveB")]
-        public long ReserveB { get; }
-
-        /// <summary>
-        /// Implied probability derived from reserves.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("impliedProbability")]
-        public int ImpliedProbability { get; }
-
-        /// <summary>
-        /// List of limit orders placed on the CLOB.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("ordersPlaced")]
-        public System.Collections.Generic.List<LiquidityOrderDto> OrdersPlaced { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class LiquidityOrderDto
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public LiquidityOrderDto(long @amountSats, System.Guid @orderId, string @outcomeId, int @price, string @side)
-        {
-            this.OrderId = @orderId;
-            this.OutcomeId = @outcomeId;
-            this.Side = @side;
-            this.Price = @price;
-            this.AmountSats = @amountSats;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
-        public System.Guid OrderId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
-        public string OutcomeId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("side")]
-        public string Side { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("price")]
-        public int Price { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("thumbnailUrl")]
+        public string ThumbnailUrl { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -488,40 +490,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeOrders")]
         public int ActiveOrders { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class WithdrawLiquidityResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public WithdrawLiquidityResponse(int @cancelledOrders, long @remainingReserveA, long @remainingReserveB)
-        {
-            this.CancelledOrders = @cancelledOrders;
-            this.RemainingReserveA = @remainingReserveA;
-            this.RemainingReserveB = @remainingReserveB;
-        }
-
-        /// <summary>
-        /// Number of CPMM orders cancelled from the CLOB.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("cancelledOrders")]
-        public int CancelledOrders { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("remainingReserveA")]
-        public long RemainingReserveA { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("remainingReserveB")]
-        public long RemainingReserveB { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -649,39 +617,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("isLiked")]
         public bool IsLiked { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class UploadThumbnailResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public UploadThumbnailResponse(string @conditionId, string @thumbnailUrl)
-        {
-            this.ConditionId = @conditionId;
-            this.ThumbnailUrl = @thumbnailUrl;
-        }
-
-        /// <summary>
-        /// The condition ID the thumbnail was uploaded for.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
-        public string ConditionId { get; }
-
-        /// <summary>
-        /// URL to retrieve the uploaded thumbnail.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("thumbnailUrl")]
-        public string ThumbnailUrl { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 

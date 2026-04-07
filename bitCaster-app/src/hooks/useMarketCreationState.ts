@@ -13,8 +13,7 @@ import { fetchOracleAnnouncements } from '@/lib/oracle'
 import {
   registerCondition,
   registerPartition,
-  uploadThumbnail,
-  registerLiquidity,
+  createMarket,
 } from '@/lib/markets'
 
 const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
@@ -343,35 +342,21 @@ export function useMarketCreationState() {
       const outcomes = draft.stepOutcomes?.outcomes?.map((o) => o.label) ?? announcement.outcomes
       await registerPartition(condition_id, outcomes)
 
-      // 3. Upload thumbnail (non-fatal)
-      if (thumbnailFile) {
-        try {
-          await uploadThumbnail(condition_id, thumbnailFile)
-        } catch {
-          // Thumbnail upload failure is non-fatal
-        }
-      }
-
-      // 4. Register liquidity for each outcome market (non-fatal)
-      const liquiditySats = draft.stepInitialLiquidity?.liquiditySats ?? 0
-      if (liquiditySats > 0) {
-        const perOutcomeLiquidity = Math.floor(liquiditySats / outcomes.length)
-        for (const outcomeName of outcomes) {
-          const marketId = `${condition_id}-${outcomeName}`
-          const probability = draft.stepOutcomes?.outcomes?.find(
-            (o) => o.label === outcomeName
-          )?.probability
-          try {
-            await registerLiquidity(marketId, {
-              liquiditySats: perOutcomeLiquidity,
-              providerId: 'creator',
-              initialProbability: probability ?? 50,
-            })
-          } catch {
-            // Liquidity registration failure is non-fatal
-          }
-        }
-      }
+      // 3. Create market on matching engine (includes thumbnail + CPMM pools)
+      await createMarket(
+        condition_id,
+        {
+          title,
+          description: draft.stepReviewAndCreate?.description ?? '',
+          outcomes: outcomes.map((name) => ({
+            name,
+            probability: draft.stepOutcomes?.outcomes?.find((o) => o.label === name)?.probability ?? 50,
+          })),
+          liquiditySats: draft.stepInitialLiquidity?.liquiditySats ?? 0,
+          categoryTags,
+        },
+        thumbnailFile,
+      )
 
       navigate(`/markets/${condition_id}`)
     } catch (err) {

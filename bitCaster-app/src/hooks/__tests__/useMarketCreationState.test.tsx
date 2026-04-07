@@ -8,14 +8,12 @@ const {
   mockNavigate,
   mockRegisterCondition,
   mockRegisterPartition,
-  mockUploadThumbnail,
-  mockRegisterLiquidity,
+  mockCreateMarket,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockRegisterCondition: vi.fn(),
   mockRegisterPartition: vi.fn(),
-  mockUploadThumbnail: vi.fn(),
-  mockRegisterLiquidity: vi.fn(),
+  mockCreateMarket: vi.fn(),
 }))
 
 vi.mock('react-router', async () => {
@@ -26,8 +24,7 @@ vi.mock('react-router', async () => {
 vi.mock('@/lib/markets', () => ({
   registerCondition: (...args: unknown[]) => mockRegisterCondition(...args),
   registerPartition: (...args: unknown[]) => mockRegisterPartition(...args),
-  uploadThumbnail: (...args: unknown[]) => mockUploadThumbnail(...args),
-  registerLiquidity: (...args: unknown[]) => mockRegisterLiquidity(...args),
+  createMarket: (...args: unknown[]) => mockCreateMarket(...args),
   MintError: class MintError extends Error {
     constructor(public readonly code: number, public readonly detail: string) {
       super(detail)
@@ -61,8 +58,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockRegisterCondition.mockResolvedValue({ condition_id: 'test-cond-id' })
   mockRegisterPartition.mockResolvedValue({ keysets: { Yes: 'ks1', No: 'ks2' } })
-  mockUploadThumbnail.mockResolvedValue({})
-  mockRegisterLiquidity.mockResolvedValue({ marketId: 'test-cond-id-Yes', reserveA: 500, reserveB: 500, impliedProbability: 50, ordersPlaced: [] })
+  mockCreateMarket.mockResolvedValue({ conditionId: 'test-cond-id', marketsCreated: ['test-cond-id-Yes', 'test-cond-id-No'], thumbnailUrl: null })
 
   // Configure Nostr so oracle announcements are fetched
   useSettingsStore.setState({ nostrSignerMode: 'nip07' })
@@ -101,7 +97,7 @@ async function setupDraftForSubmission() {
 }
 
 describe('useMarketCreationState – onCreateMarket', () => {
-  it('calls registerCondition then registerPartition in order on success', async () => {
+  it('calls registerCondition, registerPartition, then createMarket in order', async () => {
     const result = await setupDraftForSubmission()
     const callOrder: string[] = []
     mockRegisterCondition.mockImplementation(async () => {
@@ -112,12 +108,17 @@ describe('useMarketCreationState – onCreateMarket', () => {
       callOrder.push('partition')
       return { keysets: { Yes: 'ks1', No: 'ks2' } }
     })
+    mockCreateMarket.mockImplementation(async () => {
+      callOrder.push('createMarket')
+      return { conditionId: 'test-cond-id', marketsCreated: [], thumbnailUrl: null }
+    })
 
     await act(async () => { await result.current.onCreateMarket() })
 
-    expect(callOrder).toEqual(['condition', 'partition'])
+    expect(callOrder).toEqual(['condition', 'partition', 'createMarket'])
     expect(mockRegisterCondition).toHaveBeenCalledOnce()
     expect(mockRegisterPartition).toHaveBeenCalledWith('test-cond-id', ['Yes', 'No'])
+    expect(mockCreateMarket).toHaveBeenCalledOnce()
   })
 
   it('stops and sets error if registerCondition fails', async () => {
@@ -128,6 +129,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     expect(result.current.submitError).toBe('Mint rejected')
     expect(mockRegisterPartition).not.toHaveBeenCalled()
+    expect(mockCreateMarket).not.toHaveBeenCalled()
     expect(mockNavigate).not.toHaveBeenCalled()
   })
 
@@ -138,29 +140,18 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.submitError).toBe('Partition failed')
-    expect(mockUploadThumbnail).not.toHaveBeenCalled()
+    expect(mockCreateMarket).not.toHaveBeenCalled()
     expect(mockNavigate).not.toHaveBeenCalled()
   })
 
-  it('treats thumbnail upload failure as non-fatal', async () => {
+  it('stops and sets error if createMarket fails', async () => {
     const result = await setupDraftForSubmission()
-    mockUploadThumbnail.mockRejectedValueOnce(new Error('Upload failed'))
+    mockCreateMarket.mockRejectedValueOnce(new Error('Market creation failed'))
 
     await act(async () => { await result.current.onCreateMarket() })
 
-    // Liquidity should still be called and navigation should happen
-    expect(mockRegisterLiquidity).toHaveBeenCalled()
-    expect(mockNavigate).toHaveBeenCalledWith('/markets/test-cond-id')
-  })
-
-  it('treats liquidity registration failure as non-fatal', async () => {
-    const result = await setupDraftForSubmission()
-    mockRegisterLiquidity.mockRejectedValue(new Error('Liquidity failed'))
-
-    await act(async () => { await result.current.onCreateMarket() })
-
-    expect(mockNavigate).toHaveBeenCalledWith('/markets/test-cond-id')
-    expect(result.current.submitError).toBeNull()
+    expect(result.current.submitError).toBe('Market creation failed')
+    expect(mockNavigate).not.toHaveBeenCalled()
   })
 
   it('navigates to /markets/{condition_id} on full success', async () => {
@@ -168,6 +159,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     await act(async () => { await result.current.onCreateMarket() })
 
+    expect(mockCreateMarket).toHaveBeenCalledOnce()
     expect(mockNavigate).toHaveBeenCalledWith('/markets/test-cond-id')
   })
 })

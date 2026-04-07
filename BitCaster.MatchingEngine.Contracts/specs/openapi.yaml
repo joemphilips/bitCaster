@@ -11,6 +11,53 @@ servers:
     description: Local development (via Aspire AppHost)
 
 paths:
+  /api/v1/markets/{conditionId}:
+    post:
+      operationId: createMarket
+      summary: Register a new market on the matching engine
+      description: >
+        Validates the condition exists in the mint, creates empty order books
+        with CPMM pools for each outcome, and optionally stores a thumbnail.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - metadata
+              properties:
+                metadata:
+                  type: string
+                  description: >
+                    JSON-encoded CreateMarketRequest object containing market
+                    title, description, outcomes, liquidity, and category tags.
+                thumbnail:
+                  type: string
+                  format: binary
+                  description: Optional thumbnail image (JPEG, PNG, or WebP, max 5 MB).
+      responses:
+        '200':
+          description: Market created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateMarketResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                type: string
+        '409':
+          description: Market already exists for this condition
+          content:
+            application/json:
+              schema:
+                type: string
+
   /api/v1/{marketId}/orders:
     post:
       operationId: submitOrder
@@ -72,40 +119,6 @@ paths:
                 $ref: '#/components/schemas/OrderBookSnapshot'
 
   /api/v1/{marketId}/liquidity:
-    post:
-      operationId: registerLiquidity
-      summary: Register CPMM initial liquidity
-      description: >
-        Creates a CPMM (Constant Product Market Maker) pool for the given market
-        and places limit orders on the CLOB to bootstrap liquidity.
-      parameters:
-        - $ref: '#/components/parameters/MarketId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterLiquidityRequest'
-      responses:
-        '200':
-          description: Liquidity registered and orders placed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RegisterLiquidityResponse'
-        '400':
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                type: string
-        '409':
-          description: CPMM pool already exists for this market
-          content:
-            application/json:
-              schema:
-                type: string
-
     get:
       operationId: getLiquidity
       summary: Get CPMM pool state
@@ -119,36 +132,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LiquidityStateResponse'
-        '404':
-          description: No CPMM pool for this market
-
-    delete:
-      operationId: withdrawLiquidity
-      summary: Withdraw CPMM liquidity
-      description: >
-        Cancels all active CPMM orders and withdraws the liquidity pool.
-        Only the original provider can withdraw.
-      parameters:
-        - $ref: '#/components/parameters/MarketId'
-        - name: providerId
-          in: query
-          required: true
-          schema:
-            type: string
-          description: The provider ID that originally registered the liquidity.
-      responses:
-        '200':
-          description: Liquidity withdrawn
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WithdrawLiquidityResponse'
-        '400':
-          description: Authorization error (not the pool provider)
-          content:
-            application/json:
-              schema:
-                type: string
         '404':
           description: No CPMM pool for this market
 
@@ -176,41 +159,6 @@ paths:
                 $ref: '#/components/schemas/MarketMetadataSnapshot'
 
   /api/v1/{conditionId}/thumbnail:
-    post:
-      operationId: uploadThumbnail
-      summary: Upload a thumbnail image for a condition
-      description: >
-        Uploads a thumbnail image (JPEG/PNG/WebP, max 5 MB) for a condition.
-        Overwrites any existing thumbnail.
-      parameters:
-        - $ref: '#/components/parameters/ConditionId'
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required:
-                - file
-              properties:
-                file:
-                  type: string
-                  format: binary
-                  description: The image file (JPEG, PNG, or WebP).
-      responses:
-        '200':
-          description: Thumbnail uploaded
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UploadThumbnailResponse'
-        '400':
-          description: Invalid file (too large, wrong type, etc.)
-          content:
-            application/json:
-              schema:
-                type: string
-
     get:
       operationId: getThumbnail
       summary: Get the thumbnail image for a condition
@@ -439,80 +387,76 @@ components:
             - type: 'null'
           description: Difference between best ask and best bid. Null if either side is empty.
 
-    RegisterLiquidityRequest:
+    CreateMarketOutcome:
       type: object
       required:
-        - liquiditySats
-        - providerId
+        - name
+        - probability
       properties:
+        name:
+          type: string
+          description: Outcome label (e.g. "Yes", "Alice").
+        probability:
+          type: integer
+          minimum: 1
+          maximum: 99
+          description: Initial implied probability for this outcome [1, 99].
+
+    CreateMarketRequest:
+      type: object
+      description: >
+        JSON payload embedded in the multipart `metadata` field of the
+        createMarket endpoint.
+      required:
+        - title
+        - description
+        - outcomes
+      properties:
+        title:
+          type: string
+          description: Human-readable market title.
+        description:
+          type: string
+          description: Detailed market description.
+        outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateMarketOutcome'
+          minItems: 2
+          description: The outcomes for the market (at least 2).
         liquiditySats:
           type: integer
           format: int64
-          minimum: 1
-          description: Total liquidity to deposit in satoshis.
-        providerId:
-          type: string
-          description: Identifier of the liquidity provider.
-        initialProbability:
-          type: integer
-          minimum: 1
-          maximum: 99
-          default: 50
-          description: Initial implied probability for the market [1, 99].
-
-    RegisterLiquidityResponse:
-      type: object
-      required:
-        - marketId
-        - reserveA
-        - reserveB
-        - impliedProbability
-        - ordersPlaced
-      properties:
-        marketId:
-          type: string
-        reserveA:
-          type: integer
-          format: int64
-          description: Reserve for outcome A (YES/HI) after pool creation.
-        reserveB:
-          type: integer
-          format: int64
-          description: Reserve for outcome B (NO/LO) after pool creation.
-        impliedProbability:
-          type: integer
-          minimum: 1
-          maximum: 99
-          description: Implied probability derived from reserves.
-        ordersPlaced:
+          minimum: 0
+          default: 0
+          description: Initial liquidity to seed across outcome CPMM pools (in sats).
+        categoryTags:
           type: array
           items:
-            $ref: '#/components/schemas/LiquidityOrderDto'
-          description: List of limit orders placed on the CLOB.
+            type: string
+          description: Optional category tags for the market.
 
-    LiquidityOrderDto:
+    CreateMarketResponse:
       type: object
       required:
-        - orderId
-        - outcomeId
-        - side
-        - price
-        - amountSats
+        - conditionId
+        - marketsCreated
       properties:
-        orderId:
+        conditionId:
           type: string
-          format: uuid
-        outcomeId:
-          type: string
-        side:
-          type: string
-        price:
-          type: integer
-          minimum: 1
-          maximum: 99
-        amountSats:
-          type: integer
-          format: int64
+          description: The condition ID this market was registered for.
+        marketsCreated:
+          type: array
+          items:
+            type: string
+          description: >
+            List of per-outcome market IDs created
+            (format: "{conditionId}-{outcomeName}").
+        thumbnailUrl:
+          oneOf:
+            - type: string
+            - type: 'null'
+          description: URL to the uploaded thumbnail, or null if none was provided.
 
     LiquidityStateResponse:
       type: object
@@ -542,23 +486,6 @@ components:
         activeOrders:
           type: integer
           description: Number of active CPMM orders on the CLOB.
-
-    WithdrawLiquidityResponse:
-      type: object
-      required:
-        - cancelledOrders
-        - remainingReserveA
-        - remainingReserveB
-      properties:
-        cancelledOrders:
-          type: integer
-          description: Number of CPMM orders cancelled from the CLOB.
-        remainingReserveA:
-          type: integer
-          format: int64
-        remainingReserveB:
-          type: integer
-          format: int64
 
     MarketMetadataSnapshot:
       type: object
@@ -617,15 +544,3 @@ components:
           type: boolean
           description: Whether the user now likes the market.
 
-    UploadThumbnailResponse:
-      type: object
-      required:
-        - conditionId
-        - thumbnailUrl
-      properties:
-        conditionId:
-          type: string
-          description: The condition ID the thumbnail was uploaded for.
-        thumbnailUrl:
-          type: string
-          description: URL to retrieve the uploaded thumbnail.
