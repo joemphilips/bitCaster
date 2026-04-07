@@ -12,11 +12,12 @@ function AppRoutes() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // /setup renders without AppShell
-  if (location.pathname === "/setup") {
+  // These routes render without AppShell
+  if (location.pathname === "/setup" || location.pathname === "/creator/new") {
     return (
       <Routes>
         <Route path="/setup" element={<WalletSetupPage />} />
+        <Route path="/creator/new" element={<MarketCreationPage />} />
       </Routes>
     );
   }

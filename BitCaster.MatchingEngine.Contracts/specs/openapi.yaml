@@ -175,6 +175,58 @@ paths:
               schema:
                 $ref: '#/components/schemas/MarketMetadataSnapshot'
 
+  /api/v1/{conditionId}/thumbnail:
+    post:
+      operationId: uploadThumbnail
+      summary: Upload a thumbnail image for a condition
+      description: >
+        Uploads a thumbnail image (JPEG/PNG/WebP, max 5 MB) for a condition.
+        Overwrites any existing thumbnail.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The image file (JPEG, PNG, or WebP).
+      responses:
+        '200':
+          description: Thumbnail uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadThumbnailResponse'
+        '400':
+          description: Invalid file (too large, wrong type, etc.)
+          content:
+            application/json:
+              schema:
+                type: string
+
+    get:
+      operationId: getThumbnail
+      summary: Get the thumbnail image for a condition
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      responses:
+        '200':
+          description: The thumbnail image
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: No thumbnail for this condition
+
   /api/v1/{marketId}/like:
     post:
       operationId: toggleMarketLike
@@ -210,6 +262,15 @@ components:
         The market to trade on, in the format "{conditionId}-{outcomeName}"
         (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own
         independent binary order book. A marketId containing "|" is invalid.
+
+    ConditionId:
+      name: conditionId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: >
+        The condition identifier (hex string derived from the oracle announcement).
 
   schemas:
     Sats:
@@ -555,3 +616,16 @@ components:
         isLiked:
           type: boolean
           description: Whether the user now likes the market.
+
+    UploadThumbnailResponse:
+      type: object
+      required:
+        - conditionId
+        - thumbnailUrl
+      properties:
+        conditionId:
+          type: string
+          description: The condition ID the thumbnail was uploaded for.
+        thumbnailUrl:
+          type: string
+          description: URL to retrieve the uploaded thumbnail.

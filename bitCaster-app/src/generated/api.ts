@@ -106,6 +106,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/{conditionId}/thumbnail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the thumbnail image for a condition */
+        get: operations["getThumbnail"];
+        put?: never;
+        /**
+         * Upload a thumbnail image for a condition
+         * @description Uploads a thumbnail image (JPEG/PNG/WebP, max 5 MB) for a condition. Overwrites any existing thumbnail.
+         */
+        post: operations["uploadThumbnail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/{marketId}/like": {
         parameters: {
             query?: never;
@@ -312,11 +333,19 @@ export interface components {
             /** @description Whether the user now likes the market. */
             isLiked: boolean;
         };
+        UploadThumbnailResponse: {
+            /** @description The condition ID the thumbnail was uploaded for. */
+            conditionId: string;
+            /** @description URL to retrieve the uploaded thumbnail. */
+            thumbnailUrl: string;
+        };
     };
     responses: never;
     parameters: {
         /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
         MarketId: string;
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        ConditionId: string;
     };
     requestBodies: never;
     headers: never;
@@ -552,6 +581,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MarketMetadataSnapshot"];
+                };
+            };
+        };
+    };
+    getThumbnail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The thumbnail image */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/*": string;
+                };
+            };
+            /** @description No thumbnail for this condition */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    uploadThumbnail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * Format: binary
+                     * @description The image file (JPEG, PNG, or WebP).
+                     */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Thumbnail uploaded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadThumbnailResponse"];
+                };
+            };
+            /** @description Invalid file (too large, wrong type, etc.) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
                 };
             };
         };

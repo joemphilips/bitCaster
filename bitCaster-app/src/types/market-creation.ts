@@ -22,7 +22,7 @@ export interface WizardStepOracleCheck {
 // Get Started Types (Step 2)
 // =============================================================================
 
-export type OutcomeType = 'yesno' | 'categorical'
+export type OutcomeType = 'yesno' | 'categorical' | 'numeric'
 
 export interface WizardStepGetStarted {
   outcomeType: OutcomeType | null
@@ -37,7 +37,6 @@ export interface WizardStepBasicInfo {
   title: string
   categoryTags: string[]
   closingDate: string
-  answerUrls: string[]
 }
 
 // =============================================================================
@@ -54,32 +53,23 @@ export interface WizardOutcome {
 
 export interface WizardStepOutcomes {
   outcomeType: OutcomeType
-  outcomes: WizardOutcome[] | null  // null for yesno
+  outcomes: WizardOutcome[] | null  // null for numeric
+  loBound?: number
+  hiBound?: number
+  precision?: number
+  unit?: string
 }
 
 // =============================================================================
-// Market Settings Types (Step 5)
+// Initial Liquidity Types (Step 5)
 // =============================================================================
 
-export interface WizardStepMarketSettings {
-  sellFeePercent: number
-  buyFeePercent: number
-  winFeePercent: number
-  // No liquiditySats — removed per requirements
+export interface WizardStepInitialLiquidity {
+  liquiditySats: number
 }
 
 // =============================================================================
-// Market Preview Types (Step 6)
-// =============================================================================
-
-export interface WizardStepMarketPreview {
-  estimatedInitialCost: number
-  worstCaseLoss: number
-  confirmed: boolean
-}
-
-// =============================================================================
-// Review & Create Types (Step 7)
+// Review & Create Types (Step 6)
 // =============================================================================
 
 export interface WizardStepReviewAndCreate {
@@ -90,7 +80,7 @@ export interface WizardStepReviewAndCreate {
 // Top-level Wizard Draft
 // =============================================================================
 
-export type WizardStep = 1 | 2 | 3 | 4 | 5 | 6 | 7
+export type WizardStep = 1 | 2 | 3 | 4 | 5 | 6
 
 export interface WizardDraft {
   currentStep: WizardStep
@@ -99,8 +89,7 @@ export interface WizardDraft {
   stepGetStarted: WizardStepGetStarted | null
   stepBasicInfo: WizardStepBasicInfo | null
   stepOutcomes: WizardStepOutcomes | null
-  stepMarketSettings: WizardStepMarketSettings | null
-  stepMarketPreview: WizardStepMarketPreview | null
+  stepInitialLiquidity: WizardStepInitialLiquidity | null
   stepReviewAndCreate: WizardStepReviewAndCreate | null
 }
 
@@ -117,6 +106,15 @@ export interface MarketCreationWizardProps {
 
   /** Available category tags for basic info */
   categoryTags: string[]
+
+  /** Whether Nostr signer is configured */
+  isNostrConfigured: boolean
+
+  /** Whether market creation is in progress */
+  isSubmitting: boolean
+
+  /** Error message from submission */
+  submitError: string | null
 
   // -------------------------------------------------------------------------
   // Oracle Check Callbacks (Step 1)
@@ -157,11 +155,8 @@ export interface MarketCreationWizardProps {
   /** Called when user updates closing date */
   onClosingDateChange?: (date: string) => void
 
-  /** Called when user updates answer URLs */
-  onAnswerUrlsChange?: (urls: string[]) => void
-
   /** Called when user uploads a thumbnail */
-  onThumbnailUpload?: () => void
+  onThumbnailUpload?: (file: File) => void
 
   // -------------------------------------------------------------------------
   // Outcomes Callbacks (Step 4)
@@ -179,31 +174,30 @@ export interface MarketCreationWizardProps {
   /** Called when user updates an outcome probability */
   onOutcomeProbabilityChange?: (outcomeId: string, probability: number) => void
 
-  // -------------------------------------------------------------------------
-  // Market Settings Callbacks (Step 5)
-  // -------------------------------------------------------------------------
+  /** Called when user normalizes probabilities to sum to 100 */
+  onNormalizeProbabilities?: () => void
 
-  /** Called when user updates sell fee */
-  onSellFeeChange?: (percent: number) => void
+  /** Called when user updates numeric low bound */
+  onLoBoundChange?: (value: number) => void
 
-  /** Called when user updates buy fee */
-  onBuyFeeChange?: (percent: number) => void
+  /** Called when user updates numeric high bound */
+  onHiBoundChange?: (value: number) => void
 
-  /** Called when user updates win fee */
-  onWinFeeChange?: (percent: number) => void
+  /** Called when user updates numeric precision */
+  onPrecisionChange?: (value: number) => void
 
-  // -------------------------------------------------------------------------
-  // Preview Callbacks (Step 6)
-  // -------------------------------------------------------------------------
-
-  /** Called when user clicks Calculate Preview */
-  onCalculatePreview?: () => void
-
-  /** Called when user confirms the preview */
-  onConfirmPreview?: (confirmed: boolean) => void
+  /** Called when user updates numeric unit */
+  onUnitChange?: (value: string) => void
 
   // -------------------------------------------------------------------------
-  // Review Callbacks (Step 7)
+  // Initial Liquidity Callbacks (Step 5)
+  // -------------------------------------------------------------------------
+
+  /** Called when user updates liquidity amount */
+  onLiquiditySatsChange?: (sats: number) => void
+
+  // -------------------------------------------------------------------------
+  // Review Callbacks (Step 6)
   // -------------------------------------------------------------------------
 
   /** Called when user updates the description */

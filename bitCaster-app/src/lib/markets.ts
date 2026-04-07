@@ -157,8 +157,13 @@ export async function fetchMarkets(): Promise<Market[]> {
 
   const enriched = await Promise.all(
     markets.map(async (m) => {
-      const meta = await fetchMarketMetadata(m.id)
-      return meta ? applyMetadata(m, meta) : m
+      const [meta, thumbnailUrl] = await Promise.all([
+        fetchMarketMetadata(m.id),
+        fetchThumbnailUrl(m.id),
+      ])
+      let result = meta ? applyMetadata(m, meta) : m
+      if (thumbnailUrl) result = { ...result, imageUrl: thumbnailUrl }
+      return result
     })
   )
   return enriched
@@ -214,6 +219,9 @@ export type LevelDto = components['schemas']['LevelDto']
 export type Fill = components['schemas']['Fill']
 export type MarketMetadataSnapshot = components['schemas']['MarketMetadataSnapshot']
 export type ToggleLikeResponse = components['schemas']['ToggleLikeResponse']
+export type RegisterLiquidityRequest = components['schemas']['RegisterLiquidityRequest']
+export type RegisterLiquidityResponse = components['schemas']['RegisterLiquidityResponse']
+export type UploadThumbnailResponse = components['schemas']['UploadThumbnailResponse']
 
 export async function toggleMarketLike(marketId: string, userId: string): Promise<ToggleLikeResponse> {
   const response = await fetch(`/api/v1/${marketId}/like`, {
@@ -354,4 +362,97 @@ export async function submitOrder(marketId: string, params: SubmitOrderRequest):
     throw new Error(`Failed to submit order: ${response.status}`)
   }
   return response.json()
+}
+
+// =============================================================================
+// Market Creation API
+// =============================================================================
+
+export class MintError extends Error {
+  constructor(public readonly code: number, public readonly detail: string) {
+    super(detail)
+    this.name = 'MintError'
+  }
+}
+
+export async function registerCondition(params: {
+  tags: string[][]
+  announcementHex: string
+}): Promise<{ condition_id: string }> {
+  const response = await fetch('/v1/conditions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tags: params.tags,
+      announcement: params.announcementHex,
+    }),
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new MintError(
+      body.code ?? 0,
+      body.detail ?? `Failed to register condition: ${response.status}`,
+    )
+  }
+  return response.json()
+}
+
+export async function registerPartition(
+  conditionId: string,
+  partition: string[],
+): Promise<{ keysets: Record<string, string> }> {
+  const response = await fetch(`/v1/conditions/${conditionId}/partitions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ partition }),
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new MintError(
+      body.code ?? 0,
+      body.detail ?? `Failed to register partition: ${response.status}`,
+    )
+  }
+  return response.json()
+}
+
+export async function uploadThumbnail(
+  conditionId: string,
+  file: File,
+): Promise<UploadThumbnailResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await fetch(`/api/v1/${conditionId}/thumbnail`, {
+    method: 'POST',
+    body: formData,
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to upload thumbnail: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function registerLiquidity(
+  marketId: string,
+  params: RegisterLiquidityRequest,
+): Promise<RegisterLiquidityResponse> {
+  const response = await fetch(`/api/v1/${marketId}/liquidity`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to register liquidity: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function fetchThumbnailUrl(conditionId: string): Promise<string | null> {
+  try {
+    const response = await fetch(`/api/v1/${conditionId}/thumbnail`, { method: 'HEAD' })
+    if (response.ok) return `/api/v1/${conditionId}/thumbnail`
+    return null
+  } catch {
+    return null
+  }
 }

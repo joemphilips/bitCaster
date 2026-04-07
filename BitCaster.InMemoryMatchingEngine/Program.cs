@@ -15,5 +15,7 @@ app.MapHub<MarketHub>("/hubs/market");
 app.MapOrderEndpoints();
 app.MapBookEndpoints();
 app.MapMetadataEndpoints();
+app.MapThumbnailEndpoints();
+app.MapLiquidityEndpoints();
 
 app.Run();
