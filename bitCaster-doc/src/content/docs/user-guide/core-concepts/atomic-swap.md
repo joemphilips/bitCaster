@@ -7,7 +7,12 @@ sidebar:
 
 # How Token Exchange Works
 
-When you trade on bitCaster, the matching engine pairs your order with another participant. How the trade actually settles depends on the type of match:
+Trading on bitCaster involves two broad steps:
+
+1. You submit an order and the matching engine finds a match.
+2. Based on the result, an atomic swap is executed if needed.
+
+Complementary matches do not require an atomic swap.
 
 ## Complementary vs non-complementary matches
 
