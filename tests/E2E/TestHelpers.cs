@@ -35,6 +35,18 @@ public static class TestMnemonics
         "arrive lava rule exchange case boost catalog chef pond praise fat bench",
         "square organ aim local gold risk disorder fit equip keep glow decade",
         "style wash hockey bird sorry patient focus bike crime secret palace elephant",
+        "often abandon country another method pave almost worth desert force equal depth",
+        "forest skate vocal wasp tissue grab slide clock witness plate sunset brief",
+        "diary long diesel sing soda allow ring borrow plate tired range shallow",
+        "swarm mesh core clay anxiety fragile acquire seat magic task purchase walk",
+        "chimney thought junk marriage debate evidence card assist morning umbrella scrap motion",
+        "eternal evolve wine traffic wrist ceiling like punch aisle morning occur century",
+        "hub sauce all faith host exchange follow rural banana quantum nice card",
+        "option dutch good original balance weasel girl twist choice universe claw possible",
+        "veteran empower certain shoulder coil weapon wool adapt ensure assist seek exotic",
+        "find trust frequent fancy answer common novel into isolate into muffin major",
+        "isolate north ticket asset gather electric prosper tag screen disorder junior spike",
+        "way bounce purchase rich milk observe naive illegal behave ticket situate trust",
     ];
 
     private static int _counter = -1;
