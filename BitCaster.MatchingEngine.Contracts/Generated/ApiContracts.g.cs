@@ -629,6 +629,114 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class CreatePaymentRequestRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public CreatePaymentRequestRequest(long @amountSats, string @description)
+        {
+            this.AmountSats = @amountSats;
+            this.Description = @description;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        /// <summary>
+        /// Optional memo for the invoice.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("description")]
+        public string Description { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class CreatePaymentRequestResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public CreatePaymentRequestResponse(string @bolt11)
+        {
+            this.Bolt11 = @bolt11;
+        }
+
+        /// <summary>
+        /// The bolt11-encoded Lightning invoice.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("bolt11")]
+        public string Bolt11 { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SimulatePaymentRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SimulatePaymentRequest(string @bolt11)
+        {
+            this.Bolt11 = @bolt11;
+        }
+
+        /// <summary>
+        /// The bolt11 invoice to pay.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("bolt11")]
+        public string Bolt11 { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SimulatePaymentResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SimulatePaymentResponse(bool @paid)
+        {
+            this.Paid = @paid;
+        }
+
+        /// <summary>
+        /// Whether the payment was successful.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("paid")]
+        public bool Paid { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
     [System.CodeDom.Compiler.GeneratedCode("NSwag", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class FileParameter
     {
