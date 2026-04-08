@@ -54,6 +54,7 @@ bitCaster-doc/       Astro Starlight documentation site (GitHub Pages)
 bitCaster-design/    Design system, specs, and mockups
 nuts/                Cashu NUT specifications (submodule, branch: nuts_for_prediction_markets)
 cdk/                 Cashu Development Kit (submodule, branch: bitCaster at joemphilips/cdk)
+kormir/              DLC oracle library — WASM + server (submodule at joemphilips/kormir)
 cashu.me/            Reference cashu wallet (no CTF feature)
 tools/               Dev tooling (seed scripts, etc.) — NOT inside cdk/
 tests/E2E/           Playwright E2E tests (xUnit, docker-compose)

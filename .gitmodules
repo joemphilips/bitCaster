@@ -12,3 +12,6 @@
 [submodule "cashu.me"]
 	path = cashu.me
 	url = https://github.com/cashubtc/cashu.me
+[submodule "kormir"]
+	path = kormir
+	url = git@github.com:joemphilips/kormir.git
