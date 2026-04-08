@@ -251,30 +251,39 @@ public class MarketCreationTests : IAsyncLifetime
     [Fact]
     public async Task NewlyCreatedMarketVisibleToBothUsers()
     {
-        // Create a market on the matching engine via HTTP, then verify
-        // both users can see it on the /markets page.
-        var conditionId = $"e2e-{Guid.NewGuid():N}";
+        // Create a market on the matching engine using a real seeded condition
+        // from the mint, then verify both users can see it on the /markets page.
         var marketTitle = "E2E Created Market";
 
-        // First, register the condition on the mint so the matching engine
-        // can validate it, and so the frontend can list it.
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
-        // Seed a condition on the mint (POST /v1/conditions requires an oracle
-        // announcement which we don't have in this test). Instead, we'll
-        // intercept the frontend's GET /v1/conditions via Playwright route
-        // to include our fake condition, and call the matching engine directly.
+        // Fetch a real condition from the mint to use its ID
+        var mintConditionsResponse = await httpClient.GetAsync($"http://localhost:{MintPort}/v1/conditions");
+        Assert.True(mintConditionsResponse.IsSuccessStatusCode, "Failed to fetch conditions from mint");
+        var mintBody = await mintConditionsResponse.Content.ReadAsStringAsync();
+        using var mintDoc = System.Text.Json.JsonDocument.Parse(mintBody);
+        var firstCondition = mintDoc.RootElement.GetProperty("conditions").EnumerateArray().First();
+        var conditionId = firstCondition.GetProperty("condition_id").GetString()!;
+
+        // Extract outcome names from the seeded condition's first partition
+        var partition = firstCondition.GetProperty("partitions").EnumerateArray().First()
+            .GetProperty("partition");
+        var outcomeNames = partition.EnumerateArray().Select(p => p.GetString()!).ToList();
+        var probPerOutcome = 100 / outcomeNames.Count;
+        var outcomes = outcomeNames.Select((name, i) => new
+        {
+            name,
+            probability = i == outcomeNames.Count - 1
+                ? 100 - probPerOutcome * (outcomeNames.Count - 1)
+                : probPerOutcome,
+        }).ToArray();
 
         // Create market on the matching engine
         var metadata = System.Text.Json.JsonSerializer.Serialize(new
         {
             title = marketTitle,
             description = "E2E test description",
-            outcomes = new[]
-            {
-                new { name = "Yes", probability = 50 },
-                new { name = "No", probability = 50 },
-            },
+            outcomes,
             liquiditySats = 1000,
             categoryTags = new[] { "crypto" },
         });
@@ -286,13 +295,14 @@ public class MarketCreationTests : IAsyncLifetime
             $"http://localhost:{ServerPort}/api/v1/markets/{conditionId}",
             formContent);
 
-        // The matching engine may fail mint validation (condition doesn't exist
-        // in mint) — that's OK for this test since we're testing UI visibility.
-        // In the in-memory server, mint validation failure is non-fatal (caught).
-        Assert.True(createResponse.IsSuccessStatusCode,
+        // Accept both 200 (created) and 409 (already exists from prior run)
+        // since this test verifies UI visibility, not creation idempotency.
+        Assert.True(
+            createResponse.IsSuccessStatusCode || createResponse.StatusCode == System.Net.HttpStatusCode.Conflict,
             $"createMarket failed: {createResponse.StatusCode} {await createResponse.Content.ReadAsStringAsync()}");
 
-        // Build the fake condition JSON for route interception
+        // Build route interception JSON so the frontend sees our custom title
+        // for this condition (overriding the seeded title)
         var conditionJson = System.Text.Json.JsonSerializer.Serialize(new
         {
             conditions = new object[]
@@ -301,18 +311,21 @@ public class MarketCreationTests : IAsyncLifetime
                 {
                     condition_id = conditionId,
                     tags = new[] { new[] { "description", marketTitle } },
-                    threshold = 1,
-                    announcements = new[] { "fake-ann" },
-                    partitions = new object[]
-                    {
-                        new
+                    threshold = firstCondition.GetProperty("threshold").GetInt32(),
+                    announcements = firstCondition.GetProperty("announcements")
+                        .EnumerateArray().Select(a => a.GetString()).ToArray(),
+                    partitions = firstCondition.GetProperty("partitions")
+                        .EnumerateArray().Select(p => new
                         {
-                            partition = new[] { "Yes", "No" },
-                            collateral = "",
-                            parent_collection_id = "",
-                            keysets = new Dictionary<string, string>(),
-                        },
-                    },
+                            partition = p.GetProperty("partition")
+                                .EnumerateArray().Select(v => v.GetString()).ToArray(),
+                            collateral = p.TryGetProperty("collateral", out var c) ? c.GetString() ?? "" : "",
+                            parent_collection_id = p.TryGetProperty("parent_collection_id", out var pc)
+                                ? pc.GetString() ?? "" : "",
+                            keysets = p.TryGetProperty("keysets", out var ks)
+                                ? ks.EnumerateObject().ToDictionary(kv => kv.Name, kv => kv.Value.GetString() ?? "")
+                                : new Dictionary<string, string>(),
+                        }).ToArray(),
                     attestation = new
                     {
                         status = "pending",
@@ -323,8 +336,6 @@ public class MarketCreationTests : IAsyncLifetime
             },
         });
 
-        // Helper to set up route interception for GET /v1/conditions
-        // so the frontend sees our test condition
         async Task InterceptConditions(IPage page)
         {
             await page.RouteAsync("**/v1/conditions", async route =>
