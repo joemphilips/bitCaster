@@ -46,28 +46,31 @@ function getSeedBytes(mnemonic: string): Uint8Array | undefined {
  */
 class ZustandCounterSource implements CounterSource {
   async reserve(keysetId: string, n: number): Promise<CounterRange> {
-    const state = useWalletStore.getState()
-    const current = state.keysetCounters[keysetId] ?? 0
-    if (n === 0) return { start: current, count: 0 }
-    useWalletStore.setState((s) => ({
-      keysetCounters: { ...s.keysetCounters, [keysetId]: current + n },
-    }))
-    return { start: current, count: n }
+    if (n === 0) {
+      const current = useWalletStore.getState().keysetCounters[keysetId] ?? 0
+      return { start: current, count: 0 }
+    }
+    let start = 0
+    useWalletStore.setState((s) => {
+      start = s.keysetCounters[keysetId] ?? 0
+      return { keysetCounters: { ...s.keysetCounters, [keysetId]: start + n } }
+    })
+    return { start, count: n }
   }
 
   async advanceToAtLeast(keysetId: string, minNext: number): Promise<void> {
-    const current = useWalletStore.getState().keysetCounters[keysetId] ?? 0
-    if (minNext > current) {
-      useWalletStore.setState((s) => ({
-        keysetCounters: { ...s.keysetCounters, [keysetId]: minNext },
-      }))
-    }
+    useWalletStore.setState((s) => {
+      const current = s.keysetCounters[keysetId] ?? 0
+      if (minNext <= current) return s
+      return { keysetCounters: { ...s.keysetCounters, [keysetId]: minNext } }
+    })
   }
 
   async setNext(keysetId: string, next: number): Promise<void> {
-    useWalletStore.setState((s) => ({
-      keysetCounters: { ...s.keysetCounters, [keysetId]: next },
-    }))
+    useWalletStore.setState((s) => {
+      if ((s.keysetCounters[keysetId] ?? 0) === next) return s
+      return { keysetCounters: { ...s.keysetCounters, [keysetId]: next } }
+    })
   }
 
   async snapshot(): Promise<Record<string, number>> {
