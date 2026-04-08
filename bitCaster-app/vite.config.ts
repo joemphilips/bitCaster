@@ -70,6 +70,7 @@ export default defineConfig({
       "/v1": {
         target: process.env.services__mintd__mint_api__0 ?? "http://localhost:8085",
         changeOrigin: true,
+        ws: true,
       },
       "/api": {
         target: process.env.services__apiservice__http__0 ?? "http://localhost:5000",

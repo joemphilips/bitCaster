@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { Mint as CashuMint, Wallet as CashuWallet, type MintKeys, type MintKeyset } from '@cashu/cashu-ts'
+import { Mint as CashuMint, Wallet as CashuWallet, type MintKeys, type MintKeyset, type CounterSource, type CounterRange } from '@cashu/cashu-ts'
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
 import { db, getProofs, type StoredProof } from './proof-db'
@@ -38,6 +38,44 @@ function getSeedBytes(mnemonic: string): Uint8Array | undefined {
   if (!mnemonic) return undefined
   return bip39.toSeed(mnemonic.split(' '))
 }
+
+/**
+ * CounterSource backed by the Zustand wallet store's keysetCounters.
+ * Persists deterministic output counters to localStorage so they survive
+ * page reloads and prevent "Blinded Message already signed" collisions.
+ */
+class ZustandCounterSource implements CounterSource {
+  async reserve(keysetId: string, n: number): Promise<CounterRange> {
+    const state = useWalletStore.getState()
+    const current = state.keysetCounters[keysetId] ?? 0
+    if (n === 0) return { start: current, count: 0 }
+    useWalletStore.setState((s) => ({
+      keysetCounters: { ...s.keysetCounters, [keysetId]: current + n },
+    }))
+    return { start: current, count: n }
+  }
+
+  async advanceToAtLeast(keysetId: string, minNext: number): Promise<void> {
+    const current = useWalletStore.getState().keysetCounters[keysetId] ?? 0
+    if (minNext > current) {
+      useWalletStore.setState((s) => ({
+        keysetCounters: { ...s.keysetCounters, [keysetId]: minNext },
+      }))
+    }
+  }
+
+  async setNext(keysetId: string, next: number): Promise<void> {
+    useWalletStore.setState((s) => ({
+      keysetCounters: { ...s.keysetCounters, [keysetId]: next },
+    }))
+  }
+
+  async snapshot(): Promise<Record<string, number>> {
+    return { ...useWalletStore.getState().keysetCounters }
+  }
+}
+
+const _counterSource = new ZustandCounterSource()
 
 export const useWalletStore = create<WalletState>()(
   persist(
@@ -131,7 +169,7 @@ export const useWalletStore = create<WalletState>()(
         const mint = new CashuMint(url)
         const wallet = new CashuWallet(mint, {
           unit: 'sat',
-          ...(seedBytes ? { bip39seed: seedBytes } : {}),
+          ...(seedBytes ? { bip39seed: seedBytes, counterSource: _counterSource } : {}),
         })
         await wallet.loadMint()
         _walletCache.set(url, wallet)
