@@ -169,24 +169,78 @@ public class InteropTests : IAsyncLifetime
         }
         await createInvoiceBtn.ClickAsync();
 
-        // Wait for fakewallet to auto-pay. The invoice dialog may show "Paid!" briefly
-        // before auto-closing (especially with WebSocket-based mint quote notifications).
-        // Check for either "Paid!" or the balance updating to confirm receipt.
-        var paidOrBalance = page.Locator($"text=/Paid|₿{amountSats}|{amountSats}/");
+        // Wait until cashu.me's Dexie has persisted the minted proofs. The
+        // InvoiceDetailDialog's "Paid!" text is transient (auto-closes fast on CI)
+        // and the old regex text=/Paid|₿200|200/ matched the amount header the
+        // dialog renders immediately on open — a no-op that let the test race
+        // ahead before wallet.mint() had called addProofs().
         try
         {
-            await Assertions.Expect(paidOrBalance.First).ToBeVisibleAsync(new() { Timeout = 30_000 });
+            await WaitForCashuMeBalance(page, amountSats, timeoutMs: 30_000);
         }
-        catch
+        catch (Exception ex)
         {
+            var balance = await ReadCashuMeBalanceAsync(page);
             throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
-                $"cashu.me Lightning invoice ({amountSats} sats) was not paid by fakewallet.");
+                $"cashu.me Lightning invoice ({amountSats} sats) not completed: " +
+                $"balance={balance} sats, wait error={ex.Message}");
         }
 
-        // Close any open dialog
+        // Close any open dialog (it may have already auto-closed on fast machines).
         await page.Keyboard.PressAsync("Escape");
-        await page.WaitForTimeoutAsync(1000);
     }
+
+    /// <summary>
+    /// Inline JS that opens cashu.me's Dexie <c>db</c> database and returns the
+    /// summed <c>amount</c> field of every row in the <c>proofs</c> store,
+    /// or <c>-1</c> if the database or store is not yet initialised. Shared by
+    /// <see cref="ReadCashuMeBalanceAsync"/> and <see cref="WaitForCashuMeBalance"/>.
+    /// </summary>
+    private const string CashuMeReadBalanceJs = @"async () => {
+        try {
+            const db = await new Promise((resolve, reject) => {
+                const req = indexedDB.open('db');
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            if (!Array.from(db.objectStoreNames).includes('proofs')) {
+                db.close();
+                return -1;
+            }
+            const tx = db.transaction('proofs', 'readonly');
+            const proofs = await new Promise((resolve, reject) => {
+                const req = tx.objectStore('proofs').getAll();
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            db.close();
+            return proofs.reduce((sum, p) => sum + (p.amount || 0), 0);
+        } catch (e) {
+            return -1;
+        }
+    }";
+
+    /// <summary>
+    /// Wait (inside the browser, via <c>WaitForFunctionAsync</c>) until
+    /// cashu.me's Dexie <c>db</c> → <c>proofs</c> table has a summed amount of
+    /// at least <paramref name="expectedSats"/>. This is the only reliable
+    /// completion signal after an invoice is paid — the UI's "Paid!" text
+    /// flips on status change, but <c>proofsStore.addProofs()</c> runs afterwards.
+    /// </summary>
+    private static Task WaitForCashuMeBalance(IPage page, int expectedSats, int timeoutMs)
+        => page.WaitForFunctionAsync(
+            $"async (target) => ((await ({CashuMeReadBalanceJs})()) >= target)",
+            arg: expectedSats,
+            new PageWaitForFunctionOptions { Timeout = timeoutMs, PollingInterval = 200 });
+
+    /// <summary>
+    /// One-shot read of the total balance from cashu.me's Dexie <c>db</c>
+    /// database's <c>proofs</c> object store. Returns the summed <c>amount</c>,
+    /// or <c>-1</c> if the database or store is missing.
+    /// Used from catch blocks to enrich diagnostic messages.
+    /// </summary>
+    private static Task<int> ReadCashuMeBalanceAsync(IPage page)
+        => page.EvaluateAsync<int>(CashuMeReadBalanceJs);
 
     /// <summary>
     /// Generate an ecash token in cashu.me via the Send flow.
@@ -235,8 +289,10 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
+            var diagBalance = await ReadCashuMeBalanceAsync(page);
             throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
-                "Send button not enabled in cashu.me SendTokenDialog. Balance may not have loaded.");
+                $"Send button not enabled in cashu.me SendTokenDialog. " +
+                $"IndexedDB balance at failure: {diagBalance} sats (expected >= {amountSats}).");
         }
         await confirmSendBtn.Last.ClickAsync();
 
