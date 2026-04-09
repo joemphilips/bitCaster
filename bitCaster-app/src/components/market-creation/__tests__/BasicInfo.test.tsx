@@ -58,11 +58,11 @@ describe('BasicInfo', () => {
     expect(nextBtn).toBeEnabled()
   })
 
-  it('renders datetime input with min attribute', () => {
+  it('renders the End Time picker trigger with placeholder when unset', () => {
     render(<BasicInfo data={defaultData} categoryTags={categoryTags} />)
-    const dateInput = document.querySelector('input[type="datetime-local"]')
-    expect(dateInput).not.toBeNull()
-    expect(dateInput!.getAttribute('min')).toBeTruthy()
+    const trigger = screen.getByRole('button', { name: 'End Time' })
+    expect(trigger).toBeInTheDocument()
+    expect(trigger).toHaveTextContent(/select date/i)
   })
 
   it('calls onTitleChange when title is typed', async () => {

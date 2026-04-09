@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
 namespace BitCaster.E2ETest;
@@ -36,6 +38,50 @@ public class MarketCreationTests : IAsyncLifetime
 
     private async Task SetupComplete(IPage page) =>
         await TestHelpers.SetupComplete(page, VitePort);
+
+    /// <summary>
+    /// Open the End Time picker, navigate to the target month, click the target day,
+    /// set the time, and click Apply. The target must be in the future.
+    /// </summary>
+    private static async Task FillClosingDate(IPage page, DateTime target)
+    {
+        var trigger = page.GetByRole(AriaRole.Button, new() { Name = "End Time" });
+        await trigger.ClickAsync();
+
+        // Calendar opens on the current month (no draft selection). Advance by
+        // (target.month - now.month) steps using the "Next Month" chevron.
+        var now = DateTime.Now;
+        var monthsForward = (target.Year - now.Year) * 12 + (target.Month - now.Month);
+        if (monthsForward > 0)
+        {
+            var nextMonthBtn = page.GetByRole(AriaRole.Button, new()
+            {
+                NameRegex = new Regex("next month", RegexOptions.IgnoreCase),
+            });
+            for (var i = 0; i < monthsForward; i++)
+            {
+                await nextMonthBtn.ClickAsync();
+            }
+        }
+
+        // react-day-picker v9 labels day buttons as e.g. "Monday, April 20th, 2026".
+        // Match on month, day, optional ordinal suffix, and year to avoid substring collisions
+        // (e.g. "April 2" vs "April 20").
+        var monthName = target.ToString("MMMM", CultureInfo.InvariantCulture);
+        var dayRegex = new Regex(
+            $@"{monthName}\s+{target.Day}(?:st|nd|rd|th)?,?\s+{target.Year}",
+            RegexOptions.IgnoreCase);
+        var dayBtn = page.GetByRole(AriaRole.Button, new() { NameRegex = dayRegex });
+        await dayBtn.ClickAsync();
+
+        // Set time via the aria-labelled time input. Exact=true so "Time" does not
+        // substring-match "End Time" (trigger) or "Pick date and time" (dialog).
+        var timeInput = page.GetByLabel("Time", new() { Exact = true });
+        await timeInput.FillAsync($"{target.Hour:D2}:{target.Minute:D2}");
+
+        var applyBtn = page.GetByRole(AriaRole.Button, new() { Name = "Apply" });
+        await applyBtn.ClickAsync();
+    }
 
     /// <summary>
     /// Navigate from /creator/new step 1 past oracle check to step 2.
@@ -88,10 +134,9 @@ public class MarketCreationTests : IAsyncLifetime
         var titleInput = page.GetByPlaceholder("Type title...");
         await titleInput.FillAsync("E2E Test Market");
 
-        var dateInput = page.Locator("input[type='datetime-local']");
-        // Set a date 1 year in the future
-        var futureDate = DateTime.Now.AddYears(1).ToString("yyyy-MM-ddTHH:mm");
-        await dateInput.FillAsync(futureDate);
+        // Pick a date one month in the future via the date picker popup.
+        var futureTarget = DateTime.Now.AddMonths(1).Date.AddHours(12);
+        await FillClosingDate(page, futureTarget);
 
         nextBtn = page.GetByRole(AriaRole.Button, new() { Name = "Next" });
         await nextBtn.ClickAsync();
@@ -160,23 +205,38 @@ public class MarketCreationTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         await NavigateToStep(page, 3);
 
-        // Fill title
+        // Fill title so only the date field is gating Next.
         var titleInput = page.GetByPlaceholder("Type title...");
         await titleInput.FillAsync("Test Market");
 
-        // Set past date
-        var dateInput = page.Locator("input[type='datetime-local']");
-        await dateInput.FillAsync("2020-01-01T00:00");
-
-        // Next should be disabled (past date)
+        // Next should be disabled before any date is picked.
         var nextBtn = page.GetByRole(AriaRole.Button, new() { Name = "Next" });
         await Assertions.Expect(nextBtn).ToBeDisabledAsync();
 
-        // Set future date
-        var futureDate = DateTime.Now.AddYears(1).ToString("yyyy-MM-ddTHH:mm");
-        await dateInput.FillAsync(futureDate);
+        // Open the picker and confirm that days in the past are disabled.
+        // Navigate one month back so that every day on the grid belongs to a past month.
+        await page.GetByRole(AriaRole.Button, new() { Name = "End Time" }).ClickAsync();
+        var prevMonthBtn = page.GetByRole(AriaRole.Button, new()
+        {
+            NameRegex = new Regex("previous month", RegexOptions.IgnoreCase),
+        });
+        await prevMonthBtn.ClickAsync();
 
-        // Next should now be enabled
+        // Assert that the 1st of the previous month is disabled.
+        var prevMonth = DateTime.Now.AddMonths(-1);
+        var prevMonthName = prevMonth.ToString("MMMM", CultureInfo.InvariantCulture);
+        var firstDayRegex = new Regex(
+            $@"{prevMonthName}\s+1(?:st)?,?\s+{prevMonth.Year}",
+            RegexOptions.IgnoreCase);
+        var firstDayBtn = page.GetByRole(AriaRole.Button, new() { NameRegex = firstDayRegex });
+        await Assertions.Expect(firstDayBtn).ToBeDisabledAsync();
+
+        // Close the popover and pick a valid future date.
+        await page.Keyboard.PressAsync("Escape");
+        var futureTarget = DateTime.Now.AddMonths(1).Date.AddHours(12);
+        await FillClosingDate(page, futureTarget);
+
+        // Next should now be enabled.
         await Assertions.Expect(nextBtn).ToBeEnabledAsync();
     }
 

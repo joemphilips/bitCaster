@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { Upload, X, Plus } from 'lucide-react'
 import type { WizardStepBasicInfo } from '@/types/market-creation'
+import { DateTimePicker } from '@/components/shared/DateTimePicker'
 
 interface BasicInfoProps {
   data: WizardStepBasicInfo
@@ -22,7 +23,6 @@ export function BasicInfo({
   onNext,
 }: BasicInfoProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const minDateTime = new Date().toISOString().slice(0, 16)
   const canProceed = data.title.trim().length > 0 && data.closingDate.length > 0 && new Date(data.closingDate) > new Date()
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -125,12 +125,12 @@ export function BasicInfo({
         {/* Closing Date */}
         <div>
           <label className="block text-sm font-medium text-slate-300 mb-2">End Time</label>
-          <input
-            type="datetime-local"
+          <DateTimePicker
             value={data.closingDate}
-            min={minDateTime}
-            onChange={(e) => onClosingDateChange?.(e.target.value)}
-            className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
+            onChange={(v) => onClosingDateChange?.(v)}
+            min={new Date()}
+            placeholder="Select date & time"
+            aria-label="End Time"
           />
           <p className="text-xs text-slate-500 mt-1.5">When will this market stop accepting trades?</p>
         </div>
