@@ -109,8 +109,9 @@ jobs:
 
       # Start dependency services via Docker.
       # Server and frontend run natively to match the local dev workflow.
+      # lnbits-init pulls in lnbits via depends_on and runs first_install so /api/v1/health returns 200.
       - name: Start mint and interop services
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mintd seed cashu-me nostr-relay
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mintd seed cashu-me nostr-relay lnbits-init
 
       - name: Wait for mint
         run: |
@@ -143,6 +144,17 @@ jobs:
           done
           echo "nostr-relay not ready"
           docker compose -f docker-compose.yml -f docker-compose.ci.yml logs nostr-relay
+          exit 1
+
+      - name: Wait for lnbits
+        run: |
+          echo "Waiting for lnbits (post first_install)..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5002/api/v1/health && exit 0
+            sleep 2
+          done
+          echo "lnbits not ready"
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs lnbits lnbits-init
           exit 1
 
       - name: Start server
@@ -178,4 +190,4 @@ jobs:
 
       - name: Dump docker compose logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs mintd cashu-me nostr-relay
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs mintd cashu-me nostr-relay lnbits lnbits-init
