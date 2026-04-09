@@ -88,6 +88,22 @@ Test/seed data must **never** live in production frontend code. The frontend sho
 - To add or change seed markets, edit `tools/seed-conditions/seed.sh`
 - The announcement hex values are pre-computed from deterministic CDK test helpers (hardcoded oracle keys, no randomness)
 
+### kormir-wasm (DLC oracle)
+
+The frontend's become-oracle flow depends on a WASM build of kormir. The generated package is committed at `bitCaster-app/src/lib/kormir-wasm-pkg/` so normal builds and CI do not need a Rust toolchain. Rebuild it whenever the `kormir/` submodule changes:
+
+```bash
+./tools/build-kormir-wasm.sh          # release build (default)
+./tools/build-kormir-wasm.sh --dev    # faster dev build
+```
+
+The script wraps `wasm-pack build --target web` and auto-detects the clang resource directory for Nix's split `clang` / `clang-lib` packages (secp256k1-sys compiles C to wasm32 and needs `stddef.h` on the include path). Prerequisites:
+
+- `rustup target add wasm32-unknown-unknown`
+- `wasm-pack` (install with `curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh`)
+
+The frontend loads the ~3MB wasm bundle lazily via dynamic import in `bitCaster-app/src/lib/kormir.ts`, so users who never enter the oracle flow do not download it. Vite is configured to exclude the package from dep optimization (see `bitCaster-app/vite.config.ts`).
+
 ### Before Committing
 
 1. **All tests pass** — follow the Branch Completion Workflow below.

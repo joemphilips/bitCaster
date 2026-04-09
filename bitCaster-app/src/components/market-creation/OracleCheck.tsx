@@ -1,27 +1,42 @@
-import { Radio, Satellite, Settings, ArrowRight } from 'lucide-react'
+import { Radio, Satellite, Settings, Key } from 'lucide-react'
 import type { OracleAnnouncement, OracleCheckChoice } from '@/types/market-creation'
+import type { NostrSignerMode } from '@/types/settings'
 
 interface OracleCheckProps {
   choice: OracleCheckChoice | null
   selectedAnnouncementId: string | null
   announcements: OracleAnnouncement[]
-  isNostrConfigured: boolean
+  /** Current Nostr signer mode from settings. Controls which choices are enabled. */
+  signerMode: NostrSignerMode
   onChoiceSelect?: (choice: OracleCheckChoice) => void
   onAnnouncementSelect?: (announcementId: string) => void
   onContinue?: () => void
   onExit?: () => void
 }
 
+/**
+ * Step 1 of market creation: pick between an existing oracle announcement or
+ * becoming the oracle yourself.
+ *
+ * - "Use existing" is available whenever any Nostr signer is configured (nip07
+ *   or nsec), because the user only needs to subscribe to public events.
+ * - "Become an oracle" requires `signerMode === 'nsec'` because kormir needs
+ *   the raw secp256k1 secret key to produce DLC Schnorr signatures locally,
+ *   and NIP-07 extensions only expose opaque signing.
+ */
 export function OracleCheck({
   choice,
   selectedAnnouncementId,
   announcements,
-  isNostrConfigured,
+  signerMode,
   onChoiceSelect,
   onAnnouncementSelect,
   onContinue,
   onExit,
 }: OracleCheckProps) {
+  const canUseExisting = signerMode !== 'none'
+  const canBecomeOracle = signerMode === 'nsec'
+
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center px-6 text-center">
       <div className="w-20 h-20 rounded-full bg-blue-600/10 flex items-center justify-center mb-8">
@@ -38,10 +53,10 @@ export function OracleCheck({
 
       <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg mb-8">
         <button
-          onClick={() => isNostrConfigured && onChoiceSelect?.('existing')}
-          disabled={!isNostrConfigured}
+          onClick={() => canUseExisting && onChoiceSelect?.('existing')}
+          disabled={!canUseExisting}
           className={`flex-1 p-5 rounded-xl border-2 transition-all text-left ${
-            !isNostrConfigured
+            !canUseExisting
               ? 'border-slate-800 bg-slate-900/50 opacity-50 cursor-not-allowed'
               : choice === 'existing'
                 ? 'border-blue-500 bg-blue-500/10'
@@ -51,7 +66,7 @@ export function OracleCheck({
           <Radio className={`w-6 h-6 mb-3 ${choice === 'existing' ? 'text-blue-400' : 'text-slate-500'}`} strokeWidth={1.5} />
           <p className="font-semibold text-white text-sm mb-1">Yes, use an existing announcement</p>
           <p className="text-xs text-slate-400">
-            {isNostrConfigured
+            {canUseExisting
               ? 'Select from available oracle announcements on Nostr'
               : 'Requires Nostr configuration in Settings'}
           </p>
@@ -67,7 +82,11 @@ export function OracleCheck({
         >
           <Satellite className={`w-6 h-6 mb-3 ${choice === 'become-oracle' ? 'text-blue-400' : 'text-slate-500'}`} strokeWidth={1.5} />
           <p className="font-semibold text-white text-sm mb-1">No / I want to be an oracle</p>
-          <p className="text-xs text-slate-400">Configure your own oracle and create the announcement</p>
+          <p className="text-xs text-slate-400">
+            {canBecomeOracle
+              ? 'Use your Nostr key to sign DLC announcements locally'
+              : 'Requires a nostr private key (nsec) configured in Settings'}
+          </p>
         </button>
       </div>
 
@@ -121,32 +140,46 @@ export function OracleCheck({
         </div>
       )}
 
-      {choice === 'become-oracle' && (
+      {choice === 'become-oracle' && !canBecomeOracle && (
         <div className="w-full max-w-lg mb-8">
           <div className="p-5 rounded-xl bg-slate-900 border border-slate-700 text-left">
-            <h3 className="font-semibold text-white text-sm mb-2">Oracle Configuration Required</h3>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                <Key className="w-5 h-5 text-amber-400" strokeWidth={1.75} />
+              </div>
+              <h3 className="font-semibold text-white text-sm">
+                You must register a nostr key to become an oracle
+              </h3>
+            </div>
             <p className="text-xs text-slate-400 leading-relaxed mb-5">
-              To create a market as your own oracle, you need to configure your oracle settings first.
-              This includes setting up your signing keys and publishing your oracle announcement to Nostr.
-              If you've already done this, you can continue to market creation.
+              bitCaster uses your Nostr private key (nsec) as the DLC oracle signing key,
+              so the same identity publishes the announcement and signs the attestation.
+              {signerMode === 'nip07'
+                ? ' Browser extensions (NIP-07) cannot be used for this because they only expose opaque signing.'
+                : ''}{' '}
+              Add your nsec in the Nostr section of Settings to continue.
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
               <button
                 onClick={() => onExit?.()}
-                className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg border border-slate-600 text-sm font-medium text-slate-300 hover:bg-slate-800 transition-colors"
-              >
-                <Settings className="w-4 h-4" strokeWidth={1.5} />
-                Go to Settings
-              </button>
-              <button
-                onClick={() => onContinue?.()}
                 className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm font-medium text-white transition-colors shadow-lg shadow-blue-600/25"
               >
-                I've already configured
-                <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
+                <Settings className="w-4 h-4" strokeWidth={1.5} />
+                Go to Nostr Settings
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {choice === 'become-oracle' && canBecomeOracle && (
+        <div className="w-full max-w-lg mb-8">
+          <button
+            onClick={() => onContinue?.()}
+            className="w-full py-3 rounded-full font-semibold text-sm bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/25 transition-colors"
+          >
+            Continue as Oracle
+          </button>
         </div>
       )}
     </div>

@@ -549,32 +549,6 @@ export function Settings({
         </div>
       </CategoryCard>
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* 4. Oracle Settings (Placeholder)                                   */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      <CategoryCard
-        icon={Eye}
-        label="Oracle Settings"
-        category="oracle"
-        activeCategory={activeCategory}
-        onToggle={onCategoryToggle}
-      >
-        <div className="opacity-50 pointer-events-none">
-          <div className="flex items-center gap-3 mb-3">
-            <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-              Become an Oracle
-            </h3>
-            <span className="px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 text-xs font-semibold">
-              Coming Soon
-            </span>
-          </div>
-          <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-            Run a DLC oracle and publish kind-88 announcements on Nostr. Create and resolve
-            prediction markets with your own oracle identity.
-          </p>
-        </div>
-      </CategoryCard>
-
       {/* ── Seed Phrase Confirmation Modal ──────────────────────────────── */}
       {showSeedConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">

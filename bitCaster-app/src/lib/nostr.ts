@@ -16,6 +16,7 @@ import NDK, {
   type NDKEvent,
 } from "@nostr-dev-kit/ndk";
 import { NDKNWCWallet } from "@nostr-dev-kit/ndk-wallet";
+import { setPendingKormirNsec } from "./kormir";
 
 // ---------------------------------------------------------------------------
 // Singleton NDK instance
@@ -49,15 +50,30 @@ export async function loginWithExtension(): Promise<NDKSigner> {
   const ndk = getNdk();
   ndk.signer = signer;
   await ndk.connect();
+  // NIP-07 keeps the secret key inside the extension, so kormir (which needs
+  // the raw secret to produce DLC signatures locally) cannot use it. Forget
+  // any previously-staged nsec so the oracle flow will refuse to sign with a
+  // stale key after the user switches to an extension signer.
+  setPendingKormirNsec(null);
   return signer;
 }
 
-/** Login with a raw nsec private key (hex or bech32). */
+/**
+ * Login with a raw nsec private key (hex or bech32).
+ *
+ * The same key is also staged for the kormir-wasm oracle store so that the
+ * DLC oracle identity stays unified with the Nostr identity (same secp256k1
+ * secret key is used for both announcement Schnorr signatures and Nostr
+ * events). `setPendingKormirNsec` only remembers the key — the actual wasm
+ * load and IndexedDB write happen lazily on the first oracle operation, so
+ * users who only use Nostr for DMs never pay the 3MB wasm download cost.
+ */
 export async function loginWithNsec(nsec: string): Promise<NDKSigner> {
   const signer = new NDKPrivateKeySigner(nsec);
   const ndk = getNdk();
   ndk.signer = signer;
   await ndk.connect();
+  setPendingKormirNsec(nsec);
   return signer;
 }
 

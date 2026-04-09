@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router'
 import type {
   WizardDraft,
   WizardStep,
+  WizardStepBasicInfo,
   OracleCheckChoice,
   OutcomeType,
   OracleAnnouncement,
@@ -15,6 +16,8 @@ import {
   registerPartition,
   createMarket,
 } from '@/lib/markets'
+import { createEnumAnnouncement } from '@/lib/kormir'
+import { buildEventId } from '@/lib/slug'
 
 const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
 
@@ -57,12 +60,25 @@ export function useMarketCreationState() {
   const navigate = useNavigate()
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode)
   const isNostrConfigured = nostrSignerMode !== 'none'
+  const relays = useSettingsStore((s) => s.relays)
 
   const [draft, setDraft] = useState<WizardDraft>(defaultDraft)
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null)
   const [oracleAnnouncements, setOracleAnnouncements] = useState<OracleAnnouncement[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // Track the last blob URL created for the thumbnail preview so we can revoke
+  // it when the user picks a new file or when the component unmounts. Without
+  // this, every upload leaks a live Blob reference for the page's lifetime.
+  const thumbnailObjectUrlRef = useRef<string | null>(null)
+  useEffect(() => {
+    return () => {
+      if (thumbnailObjectUrlRef.current) {
+        URL.revokeObjectURL(thumbnailObjectUrlRef.current)
+        thumbnailObjectUrlRef.current = null
+      }
+    }
+  }, [])
 
   // Fetch oracle announcements when Nostr is configured
   useEffect(() => {
@@ -98,7 +114,10 @@ export function useMarketCreationState() {
   }, [updateDraft])
 
   const onExit = useCallback(() => {
-    navigate('/markets')
+    // Route to Settings with the Nostr category pre-expanded so the user can
+    // configure their nsec. Without the ?category query param they would
+    // land on the default General section and have to click to find Nostr.
+    navigate('/settings?category=nostr')
   }, [navigate])
 
   // --- Navigation ---
@@ -153,40 +172,40 @@ export function useMarketCreationState() {
   }, [updateDraft])
 
   // --- Basic Info (Step 3) ---
-  const onTitleChange = useCallback((title: string) => {
+  // All basic-info field setters share the same guarded-merge shape; this
+  // helper lets them be written as one-liners.
+  const updateBasicInfo = useCallback((patch: Partial<WizardStepBasicInfo>) => {
     setDraft((prev) => ({
       ...prev,
-      stepBasicInfo: prev.stepBasicInfo ? { ...prev.stepBasicInfo, title } : null,
+      stepBasicInfo: prev.stepBasicInfo ? { ...prev.stepBasicInfo, ...patch } : null,
       lastModified: new Date().toISOString(),
     }))
   }, [])
 
-  const onCategoryTagsChange = useCallback((tags: string[]) => {
-    setDraft((prev) => ({
-      ...prev,
-      stepBasicInfo: prev.stepBasicInfo ? { ...prev.stepBasicInfo, categoryTags: tags } : null,
-      lastModified: new Date().toISOString(),
-    }))
-  }, [])
+  const onTitleChange = useCallback(
+    (title: string) => updateBasicInfo({ title }),
+    [updateBasicInfo],
+  )
 
-  const onClosingDateChange = useCallback((date: string) => {
-    setDraft((prev) => ({
-      ...prev,
-      stepBasicInfo: prev.stepBasicInfo ? { ...prev.stepBasicInfo, closingDate: date } : null,
-      lastModified: new Date().toISOString(),
-    }))
-  }, [])
+  const onCategoryTagsChange = useCallback(
+    (categoryTags: string[]) => updateBasicInfo({ categoryTags }),
+    [updateBasicInfo],
+  )
+
+  const onClosingDateChange = useCallback(
+    (closingDate: string) => updateBasicInfo({ closingDate }),
+    [updateBasicInfo],
+  )
 
   const onThumbnailUpload = useCallback((file: File) => {
     setThumbnailFile(file)
-    setDraft((prev) => ({
-      ...prev,
-      stepBasicInfo: prev.stepBasicInfo
-        ? { ...prev.stepBasicInfo, imageFile: URL.createObjectURL(file) }
-        : null,
-      lastModified: new Date().toISOString(),
-    }))
-  }, [])
+    if (thumbnailObjectUrlRef.current) {
+      URL.revokeObjectURL(thumbnailObjectUrlRef.current)
+    }
+    const url = URL.createObjectURL(file)
+    thumbnailObjectUrlRef.current = url
+    updateBasicInfo({ imageFile: url })
+  }, [updateBasicInfo])
 
   // --- Outcomes (Step 4) ---
   const onAddOutcome = useCallback(() => {
@@ -320,11 +339,7 @@ export function useMarketCreationState() {
     setSubmitError(null)
 
     try {
-      const announcement = oracleAnnouncements.find(
-        (a) => a.id === draft.stepOracleCheck?.selectedAnnouncementId
-      )
-      if (!announcement) throw new Error('No oracle announcement selected')
-
+      const choice = draft.stepOracleCheck?.choice
       const title = draft.stepBasicInfo?.title ?? ''
       const categoryTags = draft.stepBasicInfo?.categoryTags ?? []
       const tags: string[][] = [
@@ -332,14 +347,70 @@ export function useMarketCreationState() {
         ...categoryTags.map((t) => ['t', t] as string[]),
       ]
 
+      // Resolve the oracle announcement hex and the outcome labels. These
+      // come from two different sources depending on whether the user is
+      // reusing an existing announcement or publishing a new one as their
+      // own oracle.
+      let announcementHex: string
+      let outcomes: string[]
+
+      if (choice === 'become-oracle') {
+        if (nostrSignerMode !== 'nsec') {
+          throw new Error(
+            'You must register a nostr private key (nsec) in Settings to become an oracle.',
+          )
+        }
+        const draftOutcomes = draft.stepOutcomes?.outcomes
+        if (!draftOutcomes || draftOutcomes.length < 2) {
+          throw new Error('At least two outcomes are required to create an oracle event.')
+        }
+        const outcomeType = draft.stepOutcomes?.outcomeType
+        if (outcomeType === 'numeric') {
+          throw new Error(
+            'Numeric oracle events are not yet supported in the become-oracle flow. ' +
+              'Please select an existing announcement.',
+          )
+        }
+        const closingDate = draft.stepBasicInfo?.closingDate
+        if (!closingDate) {
+          throw new Error('A closing date is required to publish an oracle announcement.')
+        }
+        const maturityEpoch = Math.floor(new Date(closingDate).getTime() / 1000)
+        if (!Number.isFinite(maturityEpoch) || maturityEpoch <= 0) {
+          throw new Error('Invalid closing date.')
+        }
+        outcomes = draftOutcomes.map((o) => o.label)
+        const eventId = buildEventId(title || 'market')
+        const relayUrls = relays.map((r) => r.url)
+        if (relayUrls.length === 0) {
+          throw new Error(
+            'Add at least one Nostr relay in Settings before publishing an oracle announcement.',
+          )
+        }
+        // kormir.create_enum_event both constructs the DLC announcement and
+        // publishes the kind-88 event to the configured relays.
+        announcementHex = await createEnumAnnouncement(
+          relayUrls,
+          eventId,
+          outcomes,
+          maturityEpoch,
+        )
+      } else {
+        const announcement = oracleAnnouncements.find(
+          (a) => a.id === draft.stepOracleCheck?.selectedAnnouncementId,
+        )
+        if (!announcement) throw new Error('No oracle announcement selected')
+        announcementHex = announcement.id
+        outcomes = draft.stepOutcomes?.outcomes?.map((o) => o.label) ?? announcement.outcomes
+      }
+
       // 1. Register condition on the mint
       const { condition_id } = await registerCondition({
         tags,
-        announcementHex: announcement.id,
+        announcementHex,
       })
 
       // 2. Register partition
-      const outcomes = draft.stepOutcomes?.outcomes?.map((o) => o.label) ?? announcement.outcomes
       await registerPartition(condition_id, outcomes)
 
       // 3. Create market on matching engine (includes thumbnail + CPMM pools)
@@ -364,7 +435,7 @@ export function useMarketCreationState() {
     } finally {
       setIsSubmitting(false)
     }
-  }, [draft, oracleAnnouncements, thumbnailFile, isSubmitting, navigate])
+  }, [draft, oracleAnnouncements, thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays])
 
   // Available category tags (could be fetched from an API in the future)
   const categoryTags = ['politics', 'sports', 'crypto', 'tech', 'entertainment', 'science', 'finance']
@@ -373,7 +444,7 @@ export function useMarketCreationState() {
     draft,
     oracleAnnouncements,
     categoryTags,
-    isNostrConfigured,
+    signerMode: nostrSignerMode,
     thumbnailFile,
     isSubmitting,
     submitError,

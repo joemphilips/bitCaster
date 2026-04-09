@@ -85,11 +85,30 @@ public class MarketCreationTests : IAsyncLifetime
 
     /// <summary>
     /// Navigate from /creator/new step 1 past oracle check to step 2.
-    /// Uses the "become oracle" path which doesn't require Nostr.
+    /// Uses the "become oracle" path, which requires a persisted nsec signer
+    /// mode in the settings store (kormir needs the raw secp256k1 secret to
+    /// produce DLC Schnorr signatures locally, so NIP-07 is not accepted).
     /// </summary>
     private async Task NavigateToStep2(IPage page)
     {
         await SetupComplete(page);
+        // Persist nostrSignerMode=nsec so OracleCheck enables the become-oracle
+        // path. The zustand settings store writes to localStorage under
+        // "bitcaster-settings"; we inject it directly rather than going through
+        // the Settings UI to keep the test focused on the market-creation flow.
+        await page.EvaluateAsync(@"
+            localStorage.setItem('bitcaster-settings', JSON.stringify({
+                state: {
+                    baseCurrency: 'BTC',
+                    language: 'en',
+                    theme: 'dark',
+                    nostrSignerMode: 'nsec',
+                    relays: [],
+                },
+                version: 0
+            }));
+        ");
+
         await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
@@ -101,10 +120,11 @@ public class MarketCreationTests : IAsyncLifetime
         await Assertions.Expect(becomeOracle).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await becomeOracle.ClickAsync();
 
-        // Click "I've already configured" to proceed
-        var configuredBtn = page.GetByText("I've already configured");
-        await Assertions.Expect(configuredBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await configuredBtn.ClickAsync();
+        // Click "Continue as Oracle" to proceed. This button only renders when
+        // canBecomeOracle is true (signerMode === 'nsec').
+        var continueBtn = page.GetByRole(AriaRole.Button, new() { Name = "Continue as Oracle" });
+        await Assertions.Expect(continueBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await continueBtn.ClickAsync();
 
         // Verify we're on step 2
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Get Started" });

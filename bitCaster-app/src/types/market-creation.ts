@@ -107,8 +107,14 @@ export interface MarketCreationWizardProps {
   /** Available category tags for basic info */
   categoryTags: string[]
 
-  /** Whether Nostr signer is configured */
-  isNostrConfigured: boolean
+  /**
+   * Current Nostr signer mode from settings. Controls which oracle choices
+   * are available in step 1:
+   * - 'none' — no Nostr signer; cannot even browse announcements
+   * - 'nip07' — can use existing announcements, cannot become oracle
+   * - 'nsec' — full access, can become oracle
+   */
+  signerMode: import('./settings').NostrSignerMode
 
   /** Whether market creation is in progress */
   isSubmitting: boolean

@@ -1,4 +1,5 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
+import { useSearchParams } from 'react-router'
 import { Settings } from '@/components/settings/Settings'
 import { useWalletStore } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
@@ -6,18 +7,28 @@ import { loginWithExtension, loginWithNsec, getNdk } from '@/lib/nostr'
 import type {
   SettingsState,
   MintConfig,
+  NostrProfile,
+  NostrProfileFetchStatus,
   NostrSignerMode,
+  SettingsCategory,
   ThemeOption,
 } from '@/types/settings'
+
+type SetProfileFn = (
+  profile: NostrProfile | null,
+  status: NostrProfileFetchStatus,
+) => void
+
+const VALID_CATEGORIES: readonly SettingsCategory[] = ['general', 'cashu', 'nostr']
+
+function isValidCategory(value: string | null): value is SettingsCategory {
+  return value !== null && (VALID_CATEGORIES as readonly string[]).includes(value)
+}
 
 const DEFAULT_MINT_URL = import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085'
 const APP_VERSION = '0.1.0'
 
-async function fetchNostrProfile(
-  setProfile: typeof useSettingsStore.getState extends () => infer S
-    ? S extends { setProfile: infer F } ? F : never
-    : never,
-) {
+async function fetchNostrProfile(setProfile: SetProfileFn) {
   setProfile(null, 'fetching')
   try {
     const ndk = getNdk()
@@ -52,6 +63,20 @@ async function fetchNostrProfile(
 export function SettingsPage() {
   const walletStore = useWalletStore()
   const settingsStore = useSettingsStore()
+  // Subscribe to the setter via a selector so we get the stable reference
+  // zustand guarantees for actions — avoids re-running the deep-link effect
+  // on every unrelated settings-store update.
+  const setActiveCategory = useSettingsStore((s) => s.setActiveCategory)
+  const [searchParams] = useSearchParams()
+
+  // Allow other parts of the app (e.g. the market creation wizard) to
+  // deep-link to a specific category via /settings?category=nostr.
+  useEffect(() => {
+    const categoryParam = searchParams.get('category')
+    if (isValidCategory(categoryParam)) {
+      setActiveCategory(categoryParam)
+    }
+  }, [searchParams, setActiveCategory])
 
   // Map wallet mints → MintConfig[]
   const mintConfigs: MintConfig[] = walletStore.mints.map((m) => ({
@@ -81,9 +106,6 @@ export function SettingsPage() {
       profile: settingsStore.nostrProfile,
       profileFetchStatus: settingsStore.nostrProfileFetchStatus,
       relays: settingsStore.relays,
-    },
-    oracle: {
-      comingSoon: true,
     },
   }
 

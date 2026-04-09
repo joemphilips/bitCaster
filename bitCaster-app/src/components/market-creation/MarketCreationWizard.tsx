@@ -13,7 +13,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     draft,
     oracleAnnouncements,
     categoryTags,
-    isNostrConfigured,
+    signerMode,
     isSubmitting,
     submitError,
     onOracleChoiceSelect,
@@ -49,7 +49,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
         choice={draft.stepOracleCheck?.choice ?? null}
         selectedAnnouncementId={draft.stepOracleCheck?.selectedAnnouncementId ?? null}
         announcements={oracleAnnouncements}
-        isNostrConfigured={isNostrConfigured}
+        signerMode={signerMode}
         onChoiceSelect={onOracleChoiceSelect}
         onAnnouncementSelect={onAnnouncementSelect}
         onContinue={onNext}

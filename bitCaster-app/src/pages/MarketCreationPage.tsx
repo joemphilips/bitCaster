@@ -9,7 +9,7 @@ export function MarketCreationPage() {
       draft={state.draft}
       oracleAnnouncements={state.oracleAnnouncements}
       categoryTags={state.categoryTags}
-      isNostrConfigured={state.isNostrConfigured}
+      signerMode={state.signerMode}
       isSubmitting={state.isSubmitting}
       submitError={state.submitError}
       onOracleChoiceSelect={state.onOracleChoiceSelect}
