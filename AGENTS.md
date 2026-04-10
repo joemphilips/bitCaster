@@ -44,6 +44,16 @@ Every communication should be defined as an open protocol
 
 See `nuts/CTF.md` for the complete specification.
 
+## Nostr relay
+
+Nostr relay is used for two purposes
+
+1. Store private information with [NIP-78.md](https://github.com/nostr-protocol/nips/blob/master/78.md)
+2. Broadcast/Fetch public information including those for DLC Oracle
+
+All informations to be stored in localStorage must also be stored in NIP-78 relay iff the user has already configured the nostr key.
+For public information, DLC Oracle announcement/attestation is the only usage. We SHOULD not publish anything else for the sake of anonymity of the user.
+
 ## Monorepo Layout
 
 ```

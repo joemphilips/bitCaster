@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { useSettingsStore } from '@/stores/settings'
+import { useMarketDraftStore, defaultDraft } from '@/stores/marketDraft'
 
 const {
   mockNavigate,
@@ -62,6 +63,9 @@ beforeEach(() => {
 
   // Configure Nostr so oracle announcements are fetched
   useSettingsStore.setState({ nostrSignerMode: 'nip07' })
+  // Reset the persisted wizard draft so each test starts from a clean
+  // "no work in progress" state.
+  useMarketDraftStore.setState({ draft: defaultDraft(), hasSavedDraft: false })
 })
 
 async function setupDraftForSubmission() {
@@ -161,5 +165,23 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     expect(mockCreateMarket).toHaveBeenCalledOnce()
     expect(mockNavigate).toHaveBeenCalledWith('/markets/test-cond-id')
+  })
+
+  it('clears the persisted draft on success so the wizard does not resurface stale work', async () => {
+    const result = await setupDraftForSubmission()
+    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true)
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(false)
+  })
+
+  it('keeps the persisted draft when createMarket fails so the user can retry', async () => {
+    const result = await setupDraftForSubmission()
+    mockCreateMarket.mockRejectedValueOnce(new Error('Market creation failed'))
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true)
   })
 })

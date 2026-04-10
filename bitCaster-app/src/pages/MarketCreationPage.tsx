@@ -7,6 +7,7 @@ export function MarketCreationPage() {
   return (
     <MarketCreationWizard
       draft={state.draft}
+      hasSavedDraft={state.hasSavedDraft}
       oracleAnnouncements={state.oracleAnnouncements}
       categoryTags={state.categoryTags}
       signerMode={state.signerMode}
@@ -15,6 +16,8 @@ export function MarketCreationPage() {
       onOracleChoiceSelect={state.onOracleChoiceSelect}
       onAnnouncementSelect={state.onAnnouncementSelect}
       onExit={state.onExit}
+      onClose={state.onClose}
+      clearDraft={state.clearDraft}
       onNext={state.onNext}
       onBack={state.onBack}
       onOutcomeTypeSelect={state.onOutcomeTypeSelect}

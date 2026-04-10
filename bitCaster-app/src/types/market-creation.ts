@@ -135,6 +135,15 @@ export interface MarketCreationWizardProps {
   /** Called when user exits the wizard (e.g. "Go to Settings") */
   onExit?: () => void
 
+  /** True when the wizard is being re-entered with a previously-saved draft. */
+  hasSavedDraft: boolean
+
+  /** Close the wizard without discarding the draft. */
+  onClose: () => void
+
+  /** Discard the in-progress draft and reset the wizard to step 1. */
+  clearDraft: () => void
+
   // -------------------------------------------------------------------------
   // Navigation Callbacks
   // -------------------------------------------------------------------------

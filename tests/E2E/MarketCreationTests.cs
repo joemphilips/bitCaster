@@ -199,6 +199,107 @@ public class MarketCreationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task WizardStep1_BecomeOracle_WithoutNsec_ShowsSettingsGateAndNavigates()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupComplete(page);
+        // Deliberately not injecting bitcaster-settings — the default
+        // nostrSignerMode='none' is the state under test.
+
+        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var becomeOracle = page.GetByText("No / I want to be an oracle");
+        await Assertions.Expect(becomeOracle).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await becomeOracle.ClickAsync();
+
+        var warning = page.GetByRole(AriaRole.Heading, new()
+        {
+            Name = "You must register a nostr key to become an oracle",
+        });
+        await Assertions.Expect(warning).ToBeVisibleAsync(new() { Timeout = 5_000 });
+
+        var continueBtn = page.GetByRole(AriaRole.Button, new() { Name = "Continue as Oracle" });
+        await Assertions.Expect(continueBtn).ToHaveCountAsync(0);
+
+        var settingsBtn = page.GetByRole(AriaRole.Button, new() { Name = "Go to Nostr Settings" });
+        await Assertions.Expect(settingsBtn).ToBeVisibleAsync();
+        await settingsBtn.ClickAsync();
+
+        await Assertions.Expect(page).ToHaveURLAsync(
+            new Regex(@"/settings\?category=nostr"));
+
+        var nostrCategory = page.GetByText("Nostr Settings").First;
+        await Assertions.Expect(nostrCategory).ToBeVisibleAsync(new() { Timeout = 5_000 });
+    }
+
+    [Fact]
+    public async Task WizardDraft_ResumeAfterClose_PreservesProgressAndShowsBanner()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await NavigateToStep(page, 3);
+
+        var titleInput = page.GetByPlaceholder("Type title...");
+        await titleInput.FillAsync("Resumable market");
+
+        var closeBtn = page.GetByRole(AriaRole.Button, new() { Name = "Close market creation" });
+        await closeBtn.ClickAsync();
+
+        await Assertions.Expect(page).Not.ToHaveURLAsync(new Regex("/creator/new"));
+
+        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var banner = page.GetByText("Picked up where you left off");
+        await Assertions.Expect(banner).ToBeVisibleAsync(new() { Timeout = 5_000 });
+
+        var basicInfoHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Basic Information" });
+        await Assertions.Expect(basicInfoHeading).ToBeVisibleAsync();
+
+        var titleInputAgain = page.GetByPlaceholder("Type title...");
+        await Assertions.Expect(titleInputAgain).ToHaveValueAsync("Resumable market");
+    }
+
+    [Fact]
+    public async Task WizardResumeBanner_StartOver_ClearsDraftAndResetsToStep1()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await NavigateToStep(page, 3);
+
+        var titleInput = page.GetByPlaceholder("Type title...");
+        await titleInput.FillAsync("Forgettable market");
+
+        var closeBtn = page.GetByRole(AriaRole.Button, new() { Name = "Close market creation" });
+        await closeBtn.ClickAsync();
+        await Assertions.Expect(page).Not.ToHaveURLAsync(new Regex("/creator/new"));
+
+        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var startOverBtn = page.GetByRole(AriaRole.Button, new() { Name = "Start over" });
+        await Assertions.Expect(startOverBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await startOverBtn.ClickAsync();
+
+        var oracleHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Oracle Announcement" });
+        await Assertions.Expect(oracleHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
+
+        var banner = page.GetByText("Picked up where you left off");
+        await Assertions.Expect(banner).ToHaveCountAsync(0);
+    }
+
+    [Fact]
     public async Task WizardStep2_SelectYesNo_AdvancesToStep3()
     {
         await using var context = await NewIsolatedContextAsync();

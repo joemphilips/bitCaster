@@ -10,6 +10,7 @@ import type {
   WizardOutcome,
 } from '@/types/market-creation'
 import { useSettingsStore } from '@/stores/settings'
+import { useMarketDraftStore } from '@/stores/marketDraft'
 import { fetchOracleAnnouncements } from '@/lib/oracle'
 import {
   registerCondition,
@@ -20,19 +21,6 @@ import { createEnumAnnouncement } from '@/lib/kormir'
 import { buildEventId } from '@/lib/slug'
 
 const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
-
-function defaultDraft(): WizardDraft {
-  return {
-    currentStep: 1,
-    lastModified: new Date().toISOString(),
-    stepOracleCheck: null,
-    stepGetStarted: null,
-    stepBasicInfo: null,
-    stepOutcomes: null,
-    stepInitialLiquidity: null,
-    stepReviewAndCreate: null,
-  }
-}
 
 /**
  * Normalize outcome probabilities to sum to exactly 100 using largest-remainder rounding.
@@ -62,7 +50,17 @@ export function useMarketCreationState() {
   const isNostrConfigured = nostrSignerMode !== 'none'
   const relays = useSettingsStore((s) => s.relays)
 
-  const [draft, setDraft] = useState<WizardDraft>(defaultDraft)
+  // The draft store lives in localStorage so closing the wizard mid-flow
+  // does not lose work. `setDraft` and `clearDraft` are stable zustand
+  // actions; the consumer callbacks below rely on that to keep empty deps.
+  const draft = useMarketDraftStore((s) => s.draft)
+  const setDraft = useMarketDraftStore((s) => s.setDraft)
+  const clearDraft = useMarketDraftStore((s) => s.clearDraft)
+  // Snapshot once at mount: whether the wizard is being re-entered with a
+  // saved draft. We don't subscribe to `hasSavedDraft` because the first
+  // keystroke would flip it to true and make the resume banner re-appear.
+  const [hasSavedDraft] = useState(() => useMarketDraftStore.getState().hasSavedDraft)
+
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null)
   const [oracleAnnouncements, setOracleAnnouncements] = useState<OracleAnnouncement[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -120,6 +118,15 @@ export function useMarketCreationState() {
     navigate('/settings?category=nostr')
   }, [navigate])
 
+  const onClose = useCallback(() => {
+    // Fall back to /creator when deep-linked with no history to walk back to.
+    if (window.history.length > 1) {
+      navigate(-1)
+    } else {
+      navigate('/creator')
+    }
+  }, [navigate])
+
   // --- Navigation ---
   const onNext = useCallback(() => {
     setDraft((prev) => {
@@ -164,12 +171,18 @@ export function useMarketCreationState() {
 
   // --- Get Started (Step 2) ---
   const onOutcomeTypeSelect = useCallback((type: OutcomeType) => {
-    updateDraft({
-      stepGetStarted: { outcomeType: type },
-      // Reset outcomes when type changes
-      stepOutcomes: null,
+    setDraft((prev) => {
+      // Clicking the already-selected type must not reset `stepOutcomes`,
+      // or the user loses any outcome work they had.
+      if (prev.stepGetStarted?.outcomeType === type) return prev
+      return {
+        ...prev,
+        stepGetStarted: { outcomeType: type },
+        stepOutcomes: null,
+        lastModified: new Date().toISOString(),
+      }
     })
-  }, [updateDraft])
+  }, [])
 
   // --- Basic Info (Step 3) ---
   // All basic-info field setters share the same guarded-merge shape; this
@@ -338,6 +351,10 @@ export function useMarketCreationState() {
     setIsSubmitting(true)
     setSubmitError(null)
 
+    // Read the draft fresh from the store rather than closing over it, so
+    // this callback's identity doesn't change on every keystroke.
+    const draft = useMarketDraftStore.getState().draft
+
     try {
       const choice = draft.stepOracleCheck?.choice
       const title = draft.stepBasicInfo?.title ?? ''
@@ -429,19 +446,21 @@ export function useMarketCreationState() {
         thumbnailFile,
       )
 
+      clearDraft()
       navigate(`/markets/${condition_id}`)
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to create market')
     } finally {
       setIsSubmitting(false)
     }
-  }, [draft, oracleAnnouncements, thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays])
+  }, [oracleAnnouncements, thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays, clearDraft])
 
   // Available category tags (could be fetched from an API in the future)
   const categoryTags = ['politics', 'sports', 'crypto', 'tech', 'entertainment', 'science', 'finance']
 
   return {
     draft,
+    hasSavedDraft,
     oracleAnnouncements,
     categoryTags,
     signerMode: nostrSignerMode,
@@ -451,6 +470,8 @@ export function useMarketCreationState() {
     onOracleChoiceSelect,
     onAnnouncementSelect,
     onExit,
+    onClose,
+    clearDraft,
     onNext,
     onBack,
     onOutcomeTypeSelect,

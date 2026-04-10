@@ -1,4 +1,5 @@
-import { ArrowLeft } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowLeft, X } from 'lucide-react'
 import type { MarketCreationWizardProps } from '@/types/market-creation'
 import { StepIndicator } from './StepIndicator'
 import { OracleCheck } from './OracleCheck'
@@ -7,10 +8,12 @@ import { BasicInfo } from './BasicInfo'
 import { OutcomesStep } from './OutcomesStep'
 import { InitialLiquidity } from './InitialLiquidity'
 import { ReviewAndCreate } from './ReviewAndCreate'
+import { ResumeBanner } from './ResumeBanner'
 
 export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const {
     draft,
+    hasSavedDraft,
     oracleAnnouncements,
     categoryTags,
     signerMode,
@@ -19,6 +22,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onOracleChoiceSelect,
     onAnnouncementSelect,
     onExit,
+    onClose,
+    clearDraft,
     onNext,
     onBack,
     onOutcomeTypeSelect,
@@ -42,25 +47,56 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
 
   const { currentStep } = draft
 
+  const [bannerDismissed, setBannerDismissed] = useState(false)
+  const showResumeBanner = hasSavedDraft && !bannerDismissed
+
+  const handleStartOver = () => {
+    clearDraft()
+    setBannerDismissed(true)
+  }
+
+  const header = (
+    <>
+      <button
+        onClick={onClose}
+        aria-label="Close market creation"
+        className="fixed top-4 right-4 z-20 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 backdrop-blur-sm transition-colors"
+      >
+        <X className="w-5 h-5" strokeWidth={1.75} />
+      </button>
+      {showResumeBanner && (
+        <ResumeBanner
+          lastModified={draft.lastModified}
+          onDismiss={() => setBannerDismissed(true)}
+          onStartOver={handleStartOver}
+        />
+      )}
+    </>
+  )
+
   // Step 1: Oracle Check — full-screen standalone
   if (currentStep === 1) {
     return (
-      <OracleCheck
-        choice={draft.stepOracleCheck?.choice ?? null}
-        selectedAnnouncementId={draft.stepOracleCheck?.selectedAnnouncementId ?? null}
-        announcements={oracleAnnouncements}
-        signerMode={signerMode}
-        onChoiceSelect={onOracleChoiceSelect}
-        onAnnouncementSelect={onAnnouncementSelect}
-        onContinue={onNext}
-        onExit={onExit}
-      />
+      <>
+        {header}
+        <OracleCheck
+          choice={draft.stepOracleCheck?.choice ?? null}
+          selectedAnnouncementId={draft.stepOracleCheck?.selectedAnnouncementId ?? null}
+          announcements={oracleAnnouncements}
+          signerMode={signerMode}
+          onChoiceSelect={onOracleChoiceSelect}
+          onAnnouncementSelect={onAnnouncementSelect}
+          onContinue={onNext}
+          onExit={onExit}
+        />
+      </>
     )
   }
 
   // Steps 2-6: Wizard with step indicator
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
+      {header}
       <div className="w-full max-w-2xl mx-auto px-4 pt-8 pb-4">
         <div className="h-10 mb-4">
           {currentStep > 2 && (
