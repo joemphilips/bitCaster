@@ -5,55 +5,27 @@ paths:
 
 # E2E Tests
 
-End-to-end tests live in `tests/E2E/` and use **Playwright** for browser automation and **xUnit** as the test runner. Tests assume all services are already running externally.
+`tests/E2E/` — **Playwright** (headless Chromium) + **xUnit** runner. Tests assume services are already running; see Local Dev in `../../AGENTS.md`.
 
-## Prerequisites
-
-Start all services before running tests (3 terminals + seed):
+## Running
 
 ```bash
-# Terminal 1: Start mint and cashu.me (cashu.me is required for InteropTests)
-docker compose up mintd cashu-me
-
-# Terminal 2: Start in-memory matching engine
-cd BitCaster.InMemoryMatchingEngine && dotnet run
-
-# Terminal 3: Start frontend
-cd bitCaster-app && npm install && npm run dev
-
-# One-off: Seed test data into the mint
-docker compose run --rm seed
+docker compose run --rm seed      # one-off: inject test data into mintd
+dotnet test tests/E2E/            # or: dotnet test (from repo root)
 ```
 
-> **Note:** `cashu-me` (port 3000) is required for `InteropTests.cs`. Other tests do not need it.
-
-## Running Tests
-
-```bash
-# From repo root — runs all tests including E2E
-dotnet test
-
-# Run only E2E tests
-dotnet test tests/E2E/
-```
-
-Tests will poll for service availability (30-second timeout) and fail with a clear error message if any service is unreachable.
+Services are polled for health (30s timeout) before tests start; any unreachable service fails with a clear error. `cashu-me` (port 3000) is only needed for `InteropTests.cs`.
 
 ## Stack
 
-- `Microsoft.Playwright` v1.57.0 — headless Chromium browser automation
-- `xunit` v2.9.3 — test framework with `IAsyncLifetime` for async setup/teardown
-- Long-running test timeout: **120 seconds** (configured in `xunit.runner.json`)
+- `Microsoft.Playwright` 1.57.0
+- `xunit` 2.9.3 with `IAsyncLifetime` for async setup/teardown
+- Long-running test timeout **120s** (`xunit.runner.json`)
+- Each test gets a unique BIP-39 mnemonic via `TestMnemonics.Get()` to avoid "Blinded Message is already signed" collisions
 
-## How It Works
+## Port Overrides (parallel worktrees)
 
-1. `InitializeAsync` polls mint (`TestPorts.Mint`, default 8085), matching engine (`TestPorts.Server`, default 5000), frontend (`TestPorts.Vite`, default 5173), and cashu.me (`TestPorts.CashuMe`, default 3000, InteropTests only) until all respond (30-second timeout)
-2. Playwright launches headless Chromium and navigates to the frontend
-3. Tests use Playwright's locator API (accessibility queries preferred)
-4. Each test gets a unique BIP-39 mnemonic via `TestMnemonics.Get()` to avoid "Blinded Message is already signed" collisions
-5. `DisposeAsync` closes the Playwright browser — no processes to tear down
-
-All port literals come from `TestPorts` in `tests/E2E/TestHelpers.cs`. It reads these env vars once at startup, falling back to the single-worktree defaults:
+All port literals come from `TestPorts` in `tests/E2E/TestHelpers.cs`, read once from env vars at startup:
 
 | Variable                    | Default | Property            |
 | --------------------------- | ------- | ------------------- |
@@ -63,9 +35,7 @@ All port literals come from `TestPorts` in `tests/E2E/TestHelpers.cs`. It reads 
 | `BITCASTER_E2E_CASHU_PORT`  | 3000    | `TestPorts.CashuMe` |
 | `BITCASTER_E2E_LNBITS_PORT` | 5002    | `TestPorts.LnBits`  |
 
-## Running in parallel across worktrees
-
-Multiple worktree sessions can run `dotnet test tests/E2E/` simultaneously against **one shared docker-compose backend**. Each worktree picks a slot number; slot `N` maps to vite `5173 + N*100` and engine `5000 + N*100`. Mint / cashu-me / lnbits / nostr-relay stay on their docker-compose ports for every slot.
+Multiple worktree sessions can run E2E in parallel against **one shared docker-compose backend**. Slot `N` maps to vite `5173 + N*100` and engine `5000 + N*100`; mint / cashu-me / lnbits / nostr-relay stay on their docker ports for every slot. Slot allocation is the user's responsibility — a collision is a bind failure.
 
 ```bash
 # Terminal A — slot 0 (defaults: vite 5173, engine 5000)
@@ -77,24 +47,20 @@ dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
 dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
 ```
 
-`tools/worktree-services.sh` exports `PORT` and `ASPNETCORE_URLS` for the launched services, `BITCASTER_SERVER_URL` for the vite proxy (`/api` and `/hubs`), and the `BITCASTER_E2E_*PORT` vars above for the test process. Run `dotnet test` in the same shell so the exports are inherited. See `plans/parallel-e2e-worktrees.md` for the full slot contract and audit results.
+`tools/worktree-services.sh` exports `PORT`, `ASPNETCORE_URLS`, `BITCASTER_SERVER_URL` (vite proxy for `/api` and `/hubs`), and the `BITCASTER_E2E_*PORT` vars. Run `dotnet test` in the same shell so exports are inherited. See `plans/parallel-e2e-worktrees.md` for the full slot contract.
 
 ## Key Files
 
-- `tests/E2E/BitCaster.E2ETest.csproj` — project file with dependencies
-- `tests/E2E/TestHelpers.cs` — shared helpers (`WaitForService`, `AttachConsoleCapture`, `TestMnemonics`, `TestPorts`)
-- `tests/E2E/InteropTests.cs` — bidirectional ecash token exchange between bitCaster and cashu.me
-- `tests/E2E/SettingsPageTests.cs` — settings page tests
-- `tests/E2E/MarketDiscoveryTests.cs` — market discovery and trading overlay tests
-- `tests/E2E/xunit.runner.json` — xUnit config (long-running test threshold)
-- `docker-compose.yml` — mintd + cashu-me service definitions (repo root)
+- `tests/E2E/TestHelpers.cs` — `WaitForService`, `AttachConsoleCapture`, `TestMnemonics`, `TestPorts`
+- `tests/E2E/InteropTests.cs` — bidirectional ecash exchange with cashu.me
+- `tests/E2E/SettingsPageTests.cs`, `MarketDiscoveryTests.cs`
+- `tests/E2E/xunit.runner.json` — long-running test threshold
 - `tools/worktree-services.sh` — slot-assigned launcher for engine + vite
 
-## Writing New Tests
+## Writing Tests
 
-- Add test methods to existing test classes or create new ones following the same `IAsyncLifetime` pattern
-- Use `Page.GetByRole()` and accessibility-based locators over CSS selectors
-- The `Browser` instance is shared across tests in a class via `InitializeAsync`/`DisposeAsync`
-- Use `TestHelpers.WaitForService` in `InitializeAsync` for health checks (do not duplicate)
-- Use `TestMnemonics.Get()` for wallet mnemonics to avoid collisions across parallel tests
-- **Never hardcode TCP ports.** Always go through `TestPorts.*` so parallel worktree runners can override them via the `BITCASTER_E2E_*PORT` env vars. New `const int VitePort = 5173;` style declarations defeat the slot model.
+- Follow the `IAsyncLifetime` pattern; the `Browser` instance is shared across tests in a class.
+- Use `Page.GetByRole()` and other accessibility locators — not CSS selectors.
+- Use `TestHelpers.WaitForService` for health checks (don't duplicate).
+- Use `TestMnemonics.Get()` for wallet mnemonics.
+- **Never hardcode TCP ports.** Always go through `TestPorts.*` — a new `const int VitePort = 5173;` defeats the slot model.
