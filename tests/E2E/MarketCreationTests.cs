@@ -8,17 +8,14 @@ public class MarketCreationTests : IAsyncLifetime
 {
     private IPlaywright? _playwright;
     private IBrowser? _browser;
-    private const int VitePort = 5173;
-    private const int MintPort = 8085;
-    private const int ServerPort = 5000;
 
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{ServerPort}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -37,7 +34,7 @@ public class MarketCreationTests : IAsyncLifetime
     }
 
     private async Task SetupComplete(IPage page) =>
-        await TestHelpers.SetupComplete(page, VitePort);
+        await TestHelpers.SetupComplete(page, TestPorts.Vite);
 
     /// <summary>
     /// Open the End Time picker, navigate to the target month, click the target day,
@@ -109,7 +106,7 @@ public class MarketCreationTests : IAsyncLifetime
             }));
         ");
 
-        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -207,7 +204,7 @@ public class MarketCreationTests : IAsyncLifetime
         // Deliberately not injecting bitcaster-settings — the default
         // nostrSignerMode='none' is the state under test.
 
-        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -252,7 +249,7 @@ public class MarketCreationTests : IAsyncLifetime
 
         await Assertions.Expect(page).Not.ToHaveURLAsync(new Regex("/creator/new"));
 
-        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -282,7 +279,7 @@ public class MarketCreationTests : IAsyncLifetime
         await closeBtn.ClickAsync();
         await Assertions.Expect(page).Not.ToHaveURLAsync(new Regex("/creator/new"));
 
-        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -439,7 +436,7 @@ public class MarketCreationTests : IAsyncLifetime
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
         // Fetch a real condition from the mint to use its ID
-        var mintConditionsResponse = await httpClient.GetAsync($"http://localhost:{MintPort}/v1/conditions");
+        var mintConditionsResponse = await httpClient.GetAsync($"http://localhost:{TestPorts.Mint}/v1/conditions");
         Assert.True(mintConditionsResponse.IsSuccessStatusCode, "Failed to fetch conditions from mint");
         var mintBody = await mintConditionsResponse.Content.ReadAsStringAsync();
         using var mintDoc = System.Text.Json.JsonDocument.Parse(mintBody);
@@ -473,7 +470,7 @@ public class MarketCreationTests : IAsyncLifetime
         formContent.Add(new StringContent(metadata), "metadata");
 
         var createResponse = await httpClient.PostAsync(
-            $"http://localhost:{ServerPort}/api/v1/markets/{conditionId}",
+            $"http://localhost:{TestPorts.Server}/api/v1/markets/{conditionId}",
             formContent);
 
         // Accept both 200 (created) and 409 (already exists from prior run)
@@ -543,7 +540,7 @@ public class MarketCreationTests : IAsyncLifetime
         await SetupComplete(pageA);
         await InterceptConditions(pageA);
 
-        await pageA.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await pageA.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -558,7 +555,7 @@ public class MarketCreationTests : IAsyncLifetime
         await SetupComplete(pageB);
         await InterceptConditions(pageB);
 
-        await pageB.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await pageB.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

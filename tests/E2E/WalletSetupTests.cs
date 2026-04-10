@@ -6,15 +6,13 @@ public class WalletSetupTests : IAsyncLifetime
 {
     private IPlaywright? _playwright;
     private IBrowser? _browser;
-    private const int VitePort = 5173;
-    private const int MintPort = 8085;
 
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -166,7 +164,7 @@ public class WalletSetupTests : IAsyncLifetime
         var page = await NewPwaPageAsync();
 
         // Navigate directly to /setup
-        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -201,7 +199,7 @@ public class WalletSetupTests : IAsyncLifetime
     {
         var page = await NewBrowserPageAsync();
 
-        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -221,7 +219,7 @@ public class WalletSetupTests : IAsyncLifetime
     public async Task SeedVerification_WrongWordBlocksContinue()
     {
         var page = await NewPwaPageAsync();
-        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -254,7 +252,7 @@ public class WalletSetupTests : IAsyncLifetime
     public async Task RecoverWallet_WithValidSeedAndRedirects()
     {
         var page = await NewPwaPageAsync();
-        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -289,7 +287,7 @@ public class WalletSetupTests : IAsyncLifetime
     public async Task RecoverWallet_InvalidChecksumShowsError()
     {
         var page = await NewPwaPageAsync();
-        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -328,7 +326,7 @@ public class WalletSetupTests : IAsyncLifetime
             });
         });
 
-        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -368,7 +366,7 @@ public class WalletSetupTests : IAsyncLifetime
 
         // Set setupComplete in localStorage before navigating
         var mnemonic = TestMnemonics.Get();
-        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -387,7 +385,7 @@ public class WalletSetupTests : IAsyncLifetime
         ");
 
         // Navigate to /markets
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

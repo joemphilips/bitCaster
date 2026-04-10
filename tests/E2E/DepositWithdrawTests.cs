@@ -6,15 +6,13 @@ public class DepositWithdrawTests : IAsyncLifetime
 {
     private IPlaywright? _playwright;
     private IBrowser? _browser;
-    private const int VitePort = 5173;
-    private const int MintPort = 8085;
 
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -44,7 +42,7 @@ public class DepositWithdrawTests : IAsyncLifetime
     {
         mnemonic ??= TestMnemonics.Get();
 
-        await page.GotoAsync($"http://localhost:{VitePort}/setup", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -58,8 +56,8 @@ public class DepositWithdrawTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: 'http://localhost:{VitePort}', info: {{ name: 'Test Mint' }} }}],
-                    activeMintUrl: 'http://localhost:{VitePort}',
+                    mints: [{{ url: 'http://localhost:{TestPorts.Vite}', info: {{ name: 'Test Mint' }} }}],
+                    activeMintUrl: 'http://localhost:{TestPorts.Vite}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
                 }},
@@ -73,7 +71,7 @@ public class DepositWithdrawTests : IAsyncLifetime
     /// </summary>
     private async Task NavigateToPortfolio(IPage page)
     {
-        await page.GotoAsync($"http://localhost:{VitePort}/portfolio", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

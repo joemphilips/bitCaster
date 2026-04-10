@@ -6,18 +6,15 @@ public class SettingsPageTests : IAsyncLifetime
 {
     private IPlaywright? _playwright;
     private IBrowser? _browser;
-    private const int VitePort = 5173;
-    private const int MintPort = 8085;
-    private const int ServerPort = 5000;
 
     public async Task InitializeAsync()
     {
         // Verify all external services are reachable before launching Playwright
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{ServerPort}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
 
         // Launch Playwright headless Chromium
         _playwright = await Playwright.CreateAsync();
@@ -40,12 +37,12 @@ public class SettingsPageTests : IAsyncLifetime
     }
 
     private async Task SetupComplete(IPage page) =>
-        await TestHelpers.SetupComplete(page, VitePort);
+        await TestHelpers.SetupComplete(page, TestPorts.Vite);
 
     [Fact]
     public async Task NavigateToSettings_ShowsSettingsHeading()
     {
-        var frontendUrl = $"http://localhost:{VitePort}";
+        var frontendUrl = $"http://localhost:{TestPorts.Vite}";
 
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();

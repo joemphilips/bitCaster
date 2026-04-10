@@ -4,6 +4,25 @@ using NBitcoin;
 namespace BitCaster.E2ETest;
 
 /// <summary>
+/// Resolves per-worktree service ports from environment variables so multiple
+/// worktree processes can run E2E tests in parallel against the same shared
+/// docker-compose backend. Defaults preserve the single-worktree workflow.
+///
+/// See <c>bitCaster/plans/parallel-e2e-worktrees.md</c> for the slot model.
+/// </summary>
+public static class TestPorts
+{
+    public static readonly int Vite = GetInt("BITCASTER_E2E_VITE_PORT", 5173);
+    public static readonly int Mint = GetInt("BITCASTER_E2E_MINT_PORT", 8085);
+    public static readonly int Server = GetInt("BITCASTER_E2E_SERVER_PORT", 5000);
+    public static readonly int CashuMe = GetInt("BITCASTER_E2E_CASHU_PORT", 3000);
+    public static readonly int LnBits = GetInt("BITCASTER_E2E_LNBITS_PORT", 5002);
+
+    private static int GetInt(string name, int @default) =>
+        int.TryParse(Environment.GetEnvironmentVariable(name), out var v) ? v : @default;
+}
+
+/// <summary>
 /// Generates random BIP-39 mnemonics for E2E tests. Each call to Get() returns
 /// a fresh random mnemonic so tests never collide with previous runs against
 /// a persistent mint (avoids "Blinded Message already signed" errors).

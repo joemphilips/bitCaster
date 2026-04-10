@@ -7,17 +7,14 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
 {
     private IPlaywright? _playwright;
     private IBrowser? _browser;
-    private const int VitePort = 5173;
-    private const int MintPort = 8085;
-    private const int ServerPort = 5000;
 
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{ServerPort}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -36,7 +33,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
     }
 
     private async Task SetupComplete(IPage page) =>
-        await TestHelpers.SetupComplete(page, VitePort);
+        await TestHelpers.SetupComplete(page, TestPorts.Vite);
 
     [Fact]
     public async Task MarketCards_DisplayMetadataFromMatchingEngine()
@@ -62,7 +59,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
             });
         });
 
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -87,7 +84,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         // Block the metadata API to simulate matching engine down
         await page.RouteAsync("**/api/v1/*/metadata", async route => await route.AbortAsync());
 
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -126,7 +123,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
             });
         });
 
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -166,7 +163,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
             await route.AbortAsync();
         });
 
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

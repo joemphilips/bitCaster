@@ -6,18 +6,15 @@ public class MarketDiscoveryTests : IAsyncLifetime
 {
     private IPlaywright? _playwright;
     private IBrowser? _browser;
-    private const int VitePort = 5173;
-    private const int MintPort = 8085;
-    private const int ServerPort = 5000;
 
     public async Task InitializeAsync()
     {
         // Verify all external services are reachable before launching Playwright
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{MintPort}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{ServerPort}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{VitePort}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
 
         // Launch Playwright headless Chromium
         _playwright = await Playwright.CreateAsync();
@@ -40,7 +37,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
     }
 
     private async Task SetupComplete(IPage page) =>
-        await TestHelpers.SetupComplete(page, VitePort);
+        await TestHelpers.SetupComplete(page, TestPorts.Vite);
 
     [Fact]
     public async Task NavigateToMarkets_ShowsSeededMarketCards()
@@ -48,7 +45,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await SetupComplete(page);
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -71,7 +68,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await SetupComplete(page);
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -96,7 +93,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         // No SetupComplete — fresh user with no wallet
-        await page.GotoAsync($"http://localhost:{VitePort}/", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -116,7 +113,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         // No wallet setup
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -140,7 +137,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -172,7 +169,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         });
         var page = await context.NewPageAsync();
         // No wallet setup
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -207,7 +204,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         // Block the mint API to simulate failure
         await page.RouteAsync("**/v1/conditions", route => route.AbortAsync());
 
-        await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

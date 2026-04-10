@@ -70,21 +70,35 @@ export default defineConfig({
     port: parseInt(process.env.PORT || "5173"),
     host: true,
     allowedHosts: "all",
-    proxy: {
-      "/v1": {
-        target: process.env.services__mintd__mint_api__0 ?? "http://localhost:8085",
-        changeOrigin: true,
-        ws: true,
-      },
-      "/api": {
-        target: process.env.services__apiservice__http__0 ?? "http://localhost:5000",
-        changeOrigin: true,
-      },
-      "/hubs": {
-        target: "http://localhost:5000",
-        changeOrigin: true,
-        ws: true,
-      },
-    },
+    proxy: (() => {
+      // BITCASTER_SERVER_URL lets parallel worktree runners point /api and /hubs
+      // at a per-slot matching engine (e.g. http://localhost:5100). Falls back to
+      // the Aspire-provided env var for the single-worktree workflow, then to
+      // the default localhost:5000.
+      const serverTarget =
+        process.env.BITCASTER_SERVER_URL ??
+        process.env.services__apiservice__http__0 ??
+        "http://localhost:5000";
+      const mintTarget =
+        process.env.BITCASTER_MINT_URL ??
+        process.env.services__mintd__mint_api__0 ??
+        "http://localhost:8085";
+      return {
+        "/v1": {
+          target: mintTarget,
+          changeOrigin: true,
+          ws: true,
+        },
+        "/api": {
+          target: serverTarget,
+          changeOrigin: true,
+        },
+        "/hubs": {
+          target: serverTarget,
+          changeOrigin: true,
+          ws: true,
+        },
+      };
+    })(),
   },
 });

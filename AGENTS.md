@@ -89,6 +89,25 @@ The mint runs on port 8085, the server on port 5000, and the frontend on port 51
 
 - Prefer TDD approach: When you create a plan. First have a happy path tests in `E2E` test project. And then, create unit tests for non-happy path. And then start implementation. Continue until the test passes.
 
+### Running multiple worktrees in parallel
+
+Multiple Claude Code worktree sessions can run `dotnet test tests/E2E/` at the same time against **one shared docker-compose backend** (mintd, cashu-me, lnbits, nostr-relay, seed). Each worktree picks a slot number; slot `N` maps to vite port `5173 + N*100` and engine port `5000 + N*100`. Slot 0 is the default and matches the single-worktree workflow above — no env vars needed.
+
+```bash
+# Terminal A — worktree A, slot 0 (defaults)
+cd <worktree-A>/bitCaster
+docker compose up -d                       # shared backend (once per machine)
+./tools/worktree-services.sh --slot 0      # vite:5173 engine:5000
+dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
+
+# Terminal B — worktree B, slot 1
+cd <worktree-B>/bitCaster
+./tools/worktree-services.sh --slot 1      # vite:5273 engine:5100
+dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
+```
+
+`tools/worktree-services.sh` exports `PORT`, `ASPNETCORE_URLS`, `BITCASTER_SERVER_URL`, and the `BITCASTER_E2E_*PORT` vars read by `tests/E2E/TestHelpers.cs`. Slot allocation is the user's responsibility — if two sessions pick the same slot the second one fails to bind. See `.claude/rules/e2e-tests.md` for the test-side contract.
+
 ### Data Seeding
 
 Test/seed data must **never** live in production frontend code. The frontend should show an honest empty or error state when the mint has no data.
