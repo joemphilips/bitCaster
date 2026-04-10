@@ -62,6 +62,10 @@ export default defineConfig({
       { find: /^@cashu\/cashu-ts$/, replacement: path.resolve(__dirname, "src/lib/cashu-ts-compat.ts") },
     ],
   },
+  // kormir-wasm is imported with a relative path (`./kormir-wasm-pkg/kormir_wasm`),
+  // so it naturally bypasses Vite's dep optimizer — no `optimizeDeps.exclude`
+  // needed. The ~3MB .wasm sibling is loaded at runtime via the generated ES
+  // shim's `fetch()` call and Vite picks it up as an asset automatically.
   server: {
     port: parseInt(process.env.PORT || "5173"),
     host: true,

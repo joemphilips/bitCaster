@@ -2,7 +2,7 @@
 // Settings Category
 // =============================================================================
 
-export type SettingsCategory = 'general' | 'cashu' | 'nostr' | 'oracle'
+export type SettingsCategory = 'general' | 'cashu' | 'nostr'
 
 // =============================================================================
 // General Settings Types
@@ -66,14 +66,6 @@ export interface NostrSettings {
 }
 
 // =============================================================================
-// Oracle Settings Types
-// =============================================================================
-
-export interface OracleSettings {
-  comingSoon: true
-}
-
-// =============================================================================
 // Combined Settings State
 // =============================================================================
 
@@ -81,7 +73,6 @@ export interface SettingsState {
   general: GeneralSettings
   cashu: CashuSettings
   nostr: NostrSettings
-  oracle: OracleSettings
 }
 
 // =============================================================================

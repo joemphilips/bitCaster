@@ -7,14 +7,17 @@ export function MarketCreationPage() {
   return (
     <MarketCreationWizard
       draft={state.draft}
+      hasSavedDraft={state.hasSavedDraft}
       oracleAnnouncements={state.oracleAnnouncements}
       categoryTags={state.categoryTags}
-      isNostrConfigured={state.isNostrConfigured}
+      signerMode={state.signerMode}
       isSubmitting={state.isSubmitting}
       submitError={state.submitError}
       onOracleChoiceSelect={state.onOracleChoiceSelect}
       onAnnouncementSelect={state.onAnnouncementSelect}
       onExit={state.onExit}
+      onClose={state.onClose}
+      clearDraft={state.clearDraft}
       onNext={state.onNext}
       onBack={state.onBack}
       onOutcomeTypeSelect={state.onOutcomeTypeSelect}

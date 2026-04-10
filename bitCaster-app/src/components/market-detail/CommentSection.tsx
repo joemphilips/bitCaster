@@ -1,28 +1,12 @@
 import { useRef, useState, useEffect } from 'react'
 import { Heart, ChevronUp, ChevronDown } from 'lucide-react'
 import type { Comment } from '@/types/market-detail'
+import { formatTimeAgo } from '@/lib/format'
 
 interface CommentSectionProps {
   comments: Comment[]
   onCommentLike?: (commentId: string) => void
   onLoadMoreComments?: () => void
-}
-
-function formatTimeAgo(timestamp: string): string {
-  const now = new Date()
-  const date = new Date(timestamp)
-  const diff = now.getTime() - date.getTime()
-
-  const minutes = Math.floor(diff / (1000 * 60))
-  const hours = Math.floor(diff / (1000 * 60 * 60))
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
-
-  if (minutes < 1) return 'Just now'
-  if (minutes < 60) return `${minutes}m ago`
-  if (hours < 24) return `${hours}h ago`
-  if (days < 7) return `${days}d ago`
-
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 function CommentRow({

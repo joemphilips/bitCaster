@@ -107,8 +107,14 @@ export interface MarketCreationWizardProps {
   /** Available category tags for basic info */
   categoryTags: string[]
 
-  /** Whether Nostr signer is configured */
-  isNostrConfigured: boolean
+  /**
+   * Current Nostr signer mode from settings. Controls which oracle choices
+   * are available in step 1:
+   * - 'none' — no Nostr signer; cannot even browse announcements
+   * - 'nip07' — can use existing announcements, cannot become oracle
+   * - 'nsec' — full access, can become oracle
+   */
+  signerMode: import('./settings').NostrSignerMode
 
   /** Whether market creation is in progress */
   isSubmitting: boolean
@@ -128,6 +134,15 @@ export interface MarketCreationWizardProps {
 
   /** Called when user exits the wizard (e.g. "Go to Settings") */
   onExit?: () => void
+
+  /** True when the wizard is being re-entered with a previously-saved draft. */
+  hasSavedDraft: boolean
+
+  /** Close the wizard without discarding the draft. */
+  onClose: () => void
+
+  /** Discard the in-progress draft and reset the wizard to step 1. */
+  clearDraft: () => void
 
   // -------------------------------------------------------------------------
   // Navigation Callbacks

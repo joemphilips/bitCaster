@@ -85,11 +85,30 @@ public class MarketCreationTests : IAsyncLifetime
 
     /// <summary>
     /// Navigate from /creator/new step 1 past oracle check to step 2.
-    /// Uses the "become oracle" path which doesn't require Nostr.
+    /// Uses the "become oracle" path, which requires a persisted nsec signer
+    /// mode in the settings store (kormir needs the raw secp256k1 secret to
+    /// produce DLC Schnorr signatures locally, so NIP-07 is not accepted).
     /// </summary>
     private async Task NavigateToStep2(IPage page)
     {
         await SetupComplete(page);
+        // Persist nostrSignerMode=nsec so OracleCheck enables the become-oracle
+        // path. The zustand settings store writes to localStorage under
+        // "bitcaster-settings"; we inject it directly rather than going through
+        // the Settings UI to keep the test focused on the market-creation flow.
+        await page.EvaluateAsync(@"
+            localStorage.setItem('bitcaster-settings', JSON.stringify({
+                state: {
+                    baseCurrency: 'BTC',
+                    language: 'en',
+                    theme: 'dark',
+                    nostrSignerMode: 'nsec',
+                    relays: [],
+                },
+                version: 0
+            }));
+        ");
+
         await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
@@ -101,10 +120,11 @@ public class MarketCreationTests : IAsyncLifetime
         await Assertions.Expect(becomeOracle).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await becomeOracle.ClickAsync();
 
-        // Click "I've already configured" to proceed
-        var configuredBtn = page.GetByText("I've already configured");
-        await Assertions.Expect(configuredBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await configuredBtn.ClickAsync();
+        // Click "Continue as Oracle" to proceed. This button only renders when
+        // canBecomeOracle is true (signerMode === 'nsec').
+        var continueBtn = page.GetByRole(AriaRole.Button, new() { Name = "Continue as Oracle" });
+        await Assertions.Expect(continueBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await continueBtn.ClickAsync();
 
         // Verify we're on step 2
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Get Started" });
@@ -176,6 +196,107 @@ public class MarketCreationTests : IAsyncLifetime
         // The "Get Started" heading should be visible (step 2)
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Get Started" });
         await Assertions.Expect(heading).ToBeVisibleAsync();
+    }
+
+    [Fact]
+    public async Task WizardStep1_BecomeOracle_WithoutNsec_ShowsSettingsGateAndNavigates()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupComplete(page);
+        // Deliberately not injecting bitcaster-settings — the default
+        // nostrSignerMode='none' is the state under test.
+
+        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var becomeOracle = page.GetByText("No / I want to be an oracle");
+        await Assertions.Expect(becomeOracle).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await becomeOracle.ClickAsync();
+
+        var warning = page.GetByRole(AriaRole.Heading, new()
+        {
+            Name = "You must register a nostr key to become an oracle",
+        });
+        await Assertions.Expect(warning).ToBeVisibleAsync(new() { Timeout = 5_000 });
+
+        var continueBtn = page.GetByRole(AriaRole.Button, new() { Name = "Continue as Oracle" });
+        await Assertions.Expect(continueBtn).ToHaveCountAsync(0);
+
+        var settingsBtn = page.GetByRole(AriaRole.Button, new() { Name = "Go to Nostr Settings" });
+        await Assertions.Expect(settingsBtn).ToBeVisibleAsync();
+        await settingsBtn.ClickAsync();
+
+        await Assertions.Expect(page).ToHaveURLAsync(
+            new Regex(@"/settings\?category=nostr"));
+
+        var nostrCategory = page.GetByText("Nostr Settings").First;
+        await Assertions.Expect(nostrCategory).ToBeVisibleAsync(new() { Timeout = 5_000 });
+    }
+
+    [Fact]
+    public async Task WizardDraft_ResumeAfterClose_PreservesProgressAndShowsBanner()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await NavigateToStep(page, 3);
+
+        var titleInput = page.GetByPlaceholder("Type title...");
+        await titleInput.FillAsync("Resumable market");
+
+        var closeBtn = page.GetByRole(AriaRole.Button, new() { Name = "Close market creation" });
+        await closeBtn.ClickAsync();
+
+        await Assertions.Expect(page).Not.ToHaveURLAsync(new Regex("/creator/new"));
+
+        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var banner = page.GetByText("Picked up where you left off");
+        await Assertions.Expect(banner).ToBeVisibleAsync(new() { Timeout = 5_000 });
+
+        var basicInfoHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Basic Information" });
+        await Assertions.Expect(basicInfoHeading).ToBeVisibleAsync();
+
+        var titleInputAgain = page.GetByPlaceholder("Type title...");
+        await Assertions.Expect(titleInputAgain).ToHaveValueAsync("Resumable market");
+    }
+
+    [Fact]
+    public async Task WizardResumeBanner_StartOver_ClearsDraftAndResetsToStep1()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await NavigateToStep(page, 3);
+
+        var titleInput = page.GetByPlaceholder("Type title...");
+        await titleInput.FillAsync("Forgettable market");
+
+        var closeBtn = page.GetByRole(AriaRole.Button, new() { Name = "Close market creation" });
+        await closeBtn.ClickAsync();
+        await Assertions.Expect(page).Not.ToHaveURLAsync(new Regex("/creator/new"));
+
+        await page.GotoAsync($"http://localhost:{VitePort}/creator/new", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var startOverBtn = page.GetByRole(AriaRole.Button, new() { Name = "Start over" });
+        await Assertions.Expect(startOverBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await startOverBtn.ClickAsync();
+
+        var oracleHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Oracle Announcement" });
+        await Assertions.Expect(oracleHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
+
+        var banner = page.GetByText("Picked up where you left off");
+        await Assertions.Expect(banner).ToHaveCountAsync(0);
     }
 
     [Fact]
