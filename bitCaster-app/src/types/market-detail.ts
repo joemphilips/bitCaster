@@ -132,8 +132,6 @@ interface BaseMarketDetail {
   closingDate: string
   createdDate: string
   activeSince: string
-  likeCount: number
-  isLiked: boolean
   baseUnit: string // e.g. "sats", "USD"
   creator: MarketCreator
   resolution: ResolutionDetails
@@ -277,9 +275,6 @@ export interface MarketDetailProps {
 
   /** Called when user confirms trade */
   onTradeConfirm?: () => void
-
-  /** Called when user likes/unlikes the market */
-  onLikeToggle?: () => void
 
   /** Called when user shares the market */
   onShare?: () => void

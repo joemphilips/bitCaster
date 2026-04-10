@@ -1,10 +1,10 @@
-import { Heart, Share2, Clock, CheckCircle2, Droplet, Users } from 'lucide-react'
+import { Bookmark, Share2, Clock, CheckCircle2, Droplet, Users } from 'lucide-react'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
+import { useBookmarkStore } from '@/stores/bookmarks'
 
 interface MarketHeaderProps {
   market: MarketDetail
-  onLikeToggle?: () => void
   onShare?: () => void
   onCreatorClick?: (creatorId: string) => void
 }
@@ -36,13 +36,14 @@ function formatTimeRemaining(closingDate: string): string {
 
 export function MarketHeader({
   market,
-  onLikeToggle,
   onShare,
   onCreatorClick,
 }: MarketHeaderProps) {
   const isResolved = market.resolution.status === 'resolved'
   const timeRemaining = formatTimeRemaining(market.closingDate)
   const isClosingSoon = !isResolved && new Date(market.closingDate).getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000
+  const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id))
+  const toggleBookmark = useBookmarkStore((s) => s.toggle)
 
   const resolvedDate = isResolved
     ? new Date(market.resolution.resolutionDate).toLocaleDateString('en-US', {
@@ -179,18 +180,18 @@ export function MarketHeader({
             <span className="font-mono font-medium">{market.traderCount.toLocaleString()}</span>
           </div>
           <button
-            onClick={onLikeToggle}
-            className={`flex items-center gap-1 cursor-pointer transition-colors ${
-              market.isLiked
-                ? 'text-rose-500'
+            onClick={() => toggleBookmark(market.id)}
+            className={`flex items-center cursor-pointer transition-colors ${
+              isBookmarked
+                ? 'text-amber-500'
                 : market.imageUrl
-                  ? 'text-slate-300 hover:text-rose-500'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-rose-500'
+                  ? 'text-slate-300 hover:text-amber-500'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-amber-500'
             }`}
-            title="Like"
+            title={isBookmarked ? 'Remove bookmark' : 'Bookmark'}
+            aria-pressed={isBookmarked}
           >
-            <Heart className="w-3.5 h-3.5" fill={market.isLiked ? 'currentColor' : 'none'} />
-            <span className="font-mono font-medium">{market.likeCount}</span>
+            <Bookmark className="w-3.5 h-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
           </button>
         </div>
       </div>

@@ -24,7 +24,6 @@ export interface PayoutClaimed { userId: string; marketId: string; positionId: s
 export interface CreatorFeeClaimed { userId: string; marketId: string; amountSats: number; date: string }
 
 // Social Events
-export interface MarketLiked { userId: string; marketId: string; date: string }
 export interface CommentPosted { commentId: string; userId: string; marketId: string; content: string; date: string }
 
 // Union Type
@@ -42,5 +41,4 @@ export type DomainEvent =
   | { type: 'LiquidityDeposited'; payload: LiquidityDeposited }
   | { type: 'PayoutClaimed'; payload: PayoutClaimed }
   | { type: 'CreatorFeeClaimed'; payload: CreatorFeeClaimed }
-  | { type: 'MarketLiked'; payload: MarketLiked }
   | { type: 'CommentPosted'; payload: CommentPosted }

@@ -1,14 +1,11 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 import { MarketDiscovery } from '@/components/markets'
-import { fetchMarkets, filterMarkets, toggleMarketLike } from '@/lib/markets'
-import { useWalletStore } from '@/stores/wallet'
-import { deriveNostrKeyPair } from '@/lib/nip17'
+import { fetchMarkets, filterMarkets } from '@/lib/markets'
 import type { Market, MarketType, VolumeRange, FilterState, CategoryTag, MetaTag } from '@/types/market'
 
 export function MarketsPage() {
   const navigate = useNavigate()
-  const mnemonic = useWalletStore((s) => s.mnemonic)
   const [markets, setMarkets] = useState<Market[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -103,38 +100,6 @@ export function MarketsPage() {
     [navigate]
   )
 
-  const handleLike = useCallback(
-    (marketId: string) => {
-      if (!mnemonic) return
-      const userId = deriveNostrKeyPair(mnemonic).publicKey
-      // Optimistic update
-      setMarkets((prev) =>
-        prev.map((m) =>
-          m.id === marketId
-            ? { ...m, isLiked: !m.isLiked, likeCount: m.likeCount + (m.isLiked ? -1 : 1) }
-            : m
-        )
-      )
-      toggleMarketLike(marketId, userId).then((res) => {
-        setMarkets((prev) =>
-          prev.map((m) =>
-            m.id === marketId ? { ...m, isLiked: res.isLiked, likeCount: res.likeCount } : m
-          )
-        )
-      }).catch(() => {
-        // Revert optimistic update
-        setMarkets((prev) =>
-          prev.map((m) =>
-            m.id === marketId
-              ? { ...m, isLiked: !m.isLiked, likeCount: m.likeCount + (m.isLiked ? -1 : 1) }
-              : m
-          )
-        )
-      })
-    },
-    [mnemonic]
-  )
-
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
@@ -170,7 +135,6 @@ export function MarketsPage() {
       onViewMarket={handleViewMarket}
       onLoadMore={handleLoadMore}
       onViewSecondaryMarket={handleViewSecondaryMarket}
-      onLike={handleLike}
     />
   )
 }

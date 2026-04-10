@@ -94,8 +94,6 @@ export function mapConditionToMarket(c: ConditionInfo): Market {
       createdDate: now,
       activeSince: now,
       creatorFeePercent: 0,
-      likeCount: 0,
-      isLiked: false,
       baseMarket: 'sats',
     }
   }
@@ -119,8 +117,6 @@ export function mapConditionToMarket(c: ConditionInfo): Market {
     createdDate: now,
     activeSince: now,
     creatorFeePercent: 0,
-    likeCount: 0,
-    isLiked: false,
     baseMarket: 'sats',
   }
 }
@@ -135,7 +131,7 @@ export async function fetchMarketMetadata(marketId: string): Promise<MarketMetad
   }
 }
 
-function applyMetadata<T extends { volume: number; liquidity: number; traderCount: number; likeCount: number; isLiked: boolean }>(
+function applyMetadata<T extends { volume: number; liquidity: number; traderCount: number }>(
   base: T,
   meta: MarketMetadataSnapshot,
 ): T {
@@ -144,8 +140,6 @@ function applyMetadata<T extends { volume: number; liquidity: number; traderCoun
     volume: meta.totalVolumeSats,
     liquidity: meta.totalLiquiditySats,
     traderCount: meta.uniqueTraderCount,
-    likeCount: meta.likeCount,
-    isLiked: meta.isLiked,
   }
 }
 
@@ -218,21 +212,8 @@ export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
 export type LevelDto = components['schemas']['LevelDto']
 export type Fill = components['schemas']['Fill']
 export type MarketMetadataSnapshot = components['schemas']['MarketMetadataSnapshot']
-export type ToggleLikeResponse = components['schemas']['ToggleLikeResponse']
 export type CreateMarketRequest = components['schemas']['CreateMarketRequest']
 export type CreateMarketResponse = components['schemas']['CreateMarketResponse']
-
-export async function toggleMarketLike(marketId: string, userId: string): Promise<ToggleLikeResponse> {
-  const response = await fetch(`/api/v1/${marketId}/like`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId }),
-  })
-  if (!response.ok) {
-    throw new Error(`Failed to toggle like: ${response.status}`)
-  }
-  return response.json()
-}
 
 // =============================================================================
 // Market Detail Data Fetching
@@ -267,8 +248,6 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     closingDate: now,
     createdDate: now,
     activeSince: now,
-    likeCount: 0,
-    isLiked: false,
     baseUnit: 'sats',
     creator: {
       id: 'unknown',

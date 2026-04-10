@@ -59,8 +59,6 @@ interface BaseMarket {
   createdDate: string
   activeSince: string
   creatorFeePercent: number
-  likeCount: number
-  isLiked: boolean
   baseMarket: string              // Default: "sats", or market ID for 2D markets
   secondaryMarkets?: string[]     // IDs of markets using this as base
 }
@@ -162,7 +160,4 @@ export interface MarketDiscoveryProps {
 
   /** Called when user clicks on a secondary market from expanded list */
   onViewSecondaryMarket?: (baseMarketId: string, secondaryMarketId: string) => void
-
-  /** Called when user likes/unlikes a market */
-  onLike?: (marketId: string) => void
 }

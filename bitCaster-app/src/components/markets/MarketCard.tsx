@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Users, Droplet, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
+import { Users, Droplet, ChevronUp, ChevronDown, Bookmark, ChevronRight } from 'lucide-react'
 import { formatBtc } from '@/lib/format'
 import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
+import { useBookmarkStore } from '@/stores/bookmarks'
 import type {
   Market,
   YesNoMarket,
@@ -20,7 +21,6 @@ interface MarketCardProps {
   secondaryMarketInfos?: SecondaryMarketInfo[]
   onViewMarket?: (marketId: string) => void
   onViewSecondaryMarket?: (baseMarketId: string, secondaryMarketId: string) => void
-  onLike?: (marketId: string) => void
   walletReady?: boolean
 }
 
@@ -373,11 +373,12 @@ export function MarketCard({
   secondaryMarketInfos,
   onViewMarket,
   onViewSecondaryMarket,
-  onLike,
   walletReady = true,
 }: MarketCardProps) {
   const [isSecondaryExpanded, setIsSecondaryExpanded] = useState(false)
   const [showWalletModal, setShowWalletModal] = useState(false)
+  const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id))
+  const toggleBookmark = useBookmarkStore((s) => s.toggle)
 
   const handleCardClick = (e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('button')) return
@@ -404,9 +405,9 @@ export function MarketCard({
     onViewSecondaryMarket?.(market.id, secondaryId)
   }
 
-  const handleLike = (e: React.MouseEvent) => {
+  const handleBookmark = (e: React.MouseEvent) => {
     e.stopPropagation()
-    onLike?.(market.id)
+    toggleBookmark(market.id)
   }
 
   const renderNormalView = () => {
@@ -556,16 +557,16 @@ export function MarketCard({
             <span className="font-mono font-medium">{market.traderCount.toLocaleString()}</span>
           </div>
           <button
-            onClick={handleLike}
-            className={`flex items-center gap-1 cursor-pointer transition-colors ${
-              market.isLiked
-                ? 'text-rose-500'
-                : 'hover:text-rose-500'
+            onClick={handleBookmark}
+            className={`flex items-center cursor-pointer transition-colors ${
+              isBookmarked
+                ? 'text-amber-500'
+                : 'hover:text-amber-500'
             }`}
-            title="Like"
+            title={isBookmarked ? 'Remove bookmark' : 'Bookmark'}
+            aria-pressed={isBookmarked}
           >
-            <Heart className="w-3.5 h-3.5" fill={market.isLiked ? 'currentColor' : 'none'} />
-            <span className="font-mono font-medium">{market.likeCount}</span>
+            <Bookmark className="w-3.5 h-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
           </button>
         </div>
       </div>

@@ -19,8 +19,6 @@ const yesNoMarket: YesNoMarket = {
   createdDate: '2026-01-01T00:00:00Z',
   activeSince: '2026-01-01T00:00:00Z',
   creatorFeePercent: 2,
-  likeCount: 10,
-  isLiked: false,
   baseMarket: 'sats',
 }
 
@@ -43,8 +41,6 @@ const categoricalMarket: CategoricalMarket = {
   createdDate: '2026-01-01T00:00:00Z',
   activeSince: '2026-01-01T00:00:00Z',
   creatorFeePercent: 1.5,
-  likeCount: 5,
-  isLiked: false,
   baseMarket: 'sats',
 }
 

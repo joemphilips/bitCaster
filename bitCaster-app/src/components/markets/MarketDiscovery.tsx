@@ -19,7 +19,6 @@ export function MarketDiscovery({
   onViewMarket,
   onLoadMore,
   onViewSecondaryMarket,
-  onLike,
 }: MarketDiscoveryProps) {
   const walletReady = useWalletStore((s) => s.setupComplete)
   const observerTarget = useRef<HTMLDivElement>(null)
@@ -133,7 +132,6 @@ export function MarketDiscovery({
                 secondaryMarketInfos={getSecondaryMarketInfos(market)}
                 onViewMarket={onViewMarket}
                 onViewSecondaryMarket={onViewSecondaryMarket}
-                onLike={onLike}
                 walletReady={walletReady}
               />
             ))}
