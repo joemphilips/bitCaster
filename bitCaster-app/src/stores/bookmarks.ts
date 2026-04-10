@@ -4,9 +4,21 @@ import { persist } from 'zustand/middleware'
 interface BookmarkState {
   markets: string[]
   toggle: (marketId: string) => void
-  isBookmarked: (marketId: string) => boolean
   /** Replace the bookmark set wholesale (used by the Nostr sync hook). */
   replace: (marketIds: string[]) => void
+}
+
+/** Order-insensitive equality for bookmark lists. */
+export function bookmarkSetsEqual(
+  a: readonly string[],
+  b: readonly string[],
+): boolean {
+  if (a.length !== b.length) return false
+  const setA = new Set(a)
+  for (const x of b) {
+    if (!setA.has(x)) return false
+  }
+  return true
 }
 
 /**
@@ -31,8 +43,11 @@ export const useBookmarkStore = create<BookmarkState>()(
           }
         })
       },
-      isBookmarked: (marketId) => get().markets.includes(marketId),
-      replace: (marketIds) => set({ markets: Array.from(new Set(marketIds)) }),
+      replace: (marketIds) => {
+        const deduped = Array.from(new Set(marketIds))
+        if (bookmarkSetsEqual(get().markets, deduped)) return
+        set({ markets: deduped })
+      },
     }),
     { name: 'bitcaster-bookmarks' },
   ),
