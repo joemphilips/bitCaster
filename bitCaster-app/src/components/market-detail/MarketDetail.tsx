@@ -62,7 +62,6 @@ export function MarketDetail({
   onTradeClear,
   onAmountChange,
   onTradeConfirm,
-  onLikeToggle,
   onShare,
   onCommentPost,
   onCommentLike,
@@ -101,7 +100,6 @@ export function MarketDetail({
             <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
               <MarketHeader
                 market={market}
-                onLikeToggle={onLikeToggle}
                 onShare={onShare}
                 onCreatorClick={onCreatorClick}
               />

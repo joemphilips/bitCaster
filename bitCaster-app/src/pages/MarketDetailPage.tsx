@@ -1,9 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { MarketDetail } from '@/components/market-detail'
-import { fetchMarketDetail, fetchOrderBook, submitOrder, toggleMarketLike } from '@/lib/markets'
+import { fetchMarketDetail, fetchOrderBook, submitOrder } from '@/lib/markets'
 import { useWalletStore } from '@/stores/wallet'
-import { deriveNostrKeyPair } from '@/lib/nip17'
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -19,7 +18,6 @@ export function MarketDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const setupComplete = useWalletStore((s) => s.setupComplete)
-  const mnemonic = useWalletStore((s) => s.mnemonic)
 
   // Data state
   const [market, setMarket] = useState<MarketDetailType | null>(null)
@@ -131,21 +129,6 @@ export function MarketDetailPage() {
     navigate(`/markets/${marketId}`)
   }, [navigate])
 
-  const handleLikeToggle = useCallback(() => {
-    if (!market || !mnemonic) return
-    const userId = deriveNostrKeyPair(mnemonic).publicKey
-    setMarket((prev) =>
-      prev ? { ...prev, isLiked: !prev.isLiked, likeCount: prev.likeCount + (prev.isLiked ? -1 : 1) } : prev
-    )
-    toggleMarketLike(market.id, userId).then((res) => {
-      setMarket((prev) => prev ? { ...prev, isLiked: res.isLiked, likeCount: res.likeCount } : prev)
-    }).catch(() => {
-      setMarket((prev) =>
-        prev ? { ...prev, isLiked: !prev.isLiked, likeCount: prev.likeCount + (prev.isLiked ? -1 : 1) } : prev
-      )
-    })
-  }, [market, mnemonic])
-
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
@@ -193,7 +176,6 @@ export function MarketDetailPage() {
       onOrderTypeChange={setOrderType}
       onLimitPriceChange={setLimitPrice}
       onRelatedMarketClick={handleRelatedMarketClick}
-      onLikeToggle={handleLikeToggle}
       walletReady={setupComplete}
     />
   )

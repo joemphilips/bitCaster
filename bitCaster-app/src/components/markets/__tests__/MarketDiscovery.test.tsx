@@ -27,8 +27,6 @@ const testMarkets: Market[] = [
     createdDate: '2026-01-01T00:00:00Z',
     activeSince: '2026-01-01T00:00:00Z',
     creatorFeePercent: 2,
-    likeCount: 0,
-    isLiked: false,
     baseMarket: 'sats',
   },
   {
@@ -49,8 +47,6 @@ const testMarkets: Market[] = [
     createdDate: '2026-01-01T00:00:00Z',
     activeSince: '2026-01-01T00:00:00Z',
     creatorFeePercent: 1.5,
-    likeCount: 0,
-    isLiked: false,
     baseMarket: 'sats',
   },
 ]

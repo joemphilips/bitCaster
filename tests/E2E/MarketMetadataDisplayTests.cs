@@ -58,8 +58,6 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
                     totalTrades = 15,
                     uniqueTraderCount = 42,
                     totalLiquiditySats = 100000,
-                    likeCount = 7,
-                    isLiked = false,
                 }),
             });
         });
@@ -77,10 +75,6 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         // Verify that metadata values are displayed (42 traders should appear)
         var traderCount = page.GetByText("42");
         await Assertions.Expect(traderCount.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
-
-        // Verify like count is displayed
-        var likeCount = page.GetByText("7");
-        await Assertions.Expect(likeCount.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
     [Fact]
@@ -128,8 +122,6 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
                     totalTrades = 25,
                     uniqueTraderCount = 100,
                     totalLiquiditySats = 200000,
-                    likeCount = 12,
-                    isLiked = false,
                 }),
             });
         });
@@ -160,51 +152,18 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task LikeButton_TogglesOnClick()
+    public async Task BookmarkButton_TogglesAndPersistsLocally()
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        // Intercept metadata — start with isLiked=false, likeCount=3
-        await page.RouteAsync("**/api/v1/*/metadata", async route =>
-        {
-            await route.FulfillAsync(new RouteFulfillOptions
-            {
-                ContentType = "application/json",
-                Body = JsonSerializer.Serialize(new
-                {
-                    marketId = "test",
-                    totalVolumeSats = 10000,
-                    totalTrades = 5,
-                    uniqueTraderCount = 10,
-                    totalLiquiditySats = 50000,
-                    likeCount = 3,
-                    isLiked = false,
-                }),
-            });
-        });
-
-        // Track like API calls
+        // The bookmark flow must never call the matching engine.
         var likeCalls = new List<string>();
         await page.RouteAsync("**/api/v1/*/like", async route =>
         {
-            var request = route.Request;
-            var body = request.PostData ?? "";
-            likeCalls.Add(body);
-
-            // First call: like (3 → 4)
-            // Second call: unlike (4 → 3)
-            var isFirstCall = likeCalls.Count == 1;
-            await route.FulfillAsync(new RouteFulfillOptions
-            {
-                ContentType = "application/json",
-                Body = JsonSerializer.Serialize(new
-                {
-                    likeCount = isFirstCall ? 4 : 3,
-                    isLiked = isFirstCall,
-                }),
-            });
+            likeCalls.Add(route.Request.Url);
+            await route.AbortAsync();
         });
 
         await page.GotoAsync($"http://localhost:{VitePort}/markets", new PageGotoOptions
@@ -213,37 +172,49 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        // Wait for market cards to render
+        // Wait for seeded market cards to render
         var btcMarket = page.GetByText("Will Bitcoin reach $100K");
         await Assertions.Expect(btcMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
-        // Verify initial like count is 3 and heart is not filled (not rose-500)
-        var likeButtons = page.GetByTitle("Like");
-        var firstLikeButton = likeButtons.First;
-        await Assertions.Expect(firstLikeButton).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await Assertions.Expect(firstLikeButton).ToContainTextAsync("3");
+        // Click through to the detail page — bookmark button is in the header
+        await btcMarket.First.ClickAsync();
+        await Assertions.Expect(page).ToHaveURLAsync(
+            new System.Text.RegularExpressions.Regex(@"/markets/[a-f0-9]+"),
+            new() { Timeout = 5_000 });
 
-        // Verify the heart SVG is not filled initially
-        var heartIcon = firstLikeButton.Locator("svg");
-        await Assertions.Expect(heartIcon).ToHaveAttributeAsync("fill", "none");
+        // Capture the market id from the URL so we can verify it lands in localStorage
+        var url = page.Url;
+        var marketId = url.Split('/').Last();
 
-        // Click the like button
-        await firstLikeButton.ClickAsync();
+        var bookmarkButton = page.GetByTitle("Bookmark");
+        await Assertions.Expect(bookmarkButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await Assertions.Expect(bookmarkButton).ToHaveAttributeAsync("aria-pressed", "false");
 
-        // Verify the API was called with a userId in the body
-        Assert.Single(likeCalls);
-        Assert.Contains("userId", likeCalls[0]);
+        var bookmarkIcon = bookmarkButton.Locator("svg");
+        await Assertions.Expect(bookmarkIcon).ToHaveAttributeAsync("fill", "none");
 
-        // Verify the like count updated to 4 and heart is filled
-        await Assertions.Expect(firstLikeButton).ToContainTextAsync("4", new() { Timeout = 5_000 });
-        await Assertions.Expect(heartIcon).ToHaveAttributeAsync("fill", "currentColor", new() { Timeout = 5_000 });
+        // Toggle bookmark on
+        await bookmarkButton.ClickAsync();
+        await Assertions.Expect(bookmarkButton).ToHaveAttributeAsync("aria-pressed", "true", new() { Timeout = 5_000 });
+        await Assertions.Expect(bookmarkButton).ToHaveAttributeAsync("title", "Remove bookmark");
+        await Assertions.Expect(bookmarkIcon).ToHaveAttributeAsync("fill", "currentColor", new() { Timeout = 5_000 });
 
-        // Click again to unlike
-        await firstLikeButton.ClickAsync();
+        // Bookmark must persist to localStorage (Zustand persist middleware)
+        var storedAfterBookmark = await page.EvaluateAsync<string?>("() => localStorage.getItem('bitcaster-bookmarks')");
+        Assert.NotNull(storedAfterBookmark);
+        Assert.Contains(marketId, storedAfterBookmark);
 
-        // Verify toggled back to 3 and heart is unfilled
-        await Assertions.Expect(firstLikeButton).ToContainTextAsync("3", new() { Timeout = 5_000 });
-        await Assertions.Expect(heartIcon).ToHaveAttributeAsync("fill", "none", new() { Timeout = 5_000 });
+        // Toggle bookmark off
+        await page.GetByTitle("Remove bookmark").ClickAsync();
+        await Assertions.Expect(bookmarkButton).ToHaveAttributeAsync("aria-pressed", "false", new() { Timeout = 5_000 });
+        await Assertions.Expect(bookmarkIcon).ToHaveAttributeAsync("fill", "none", new() { Timeout = 5_000 });
+
+        var storedAfterUnbookmark = await page.EvaluateAsync<string?>("() => localStorage.getItem('bitcaster-bookmarks')");
+        Assert.NotNull(storedAfterUnbookmark);
+        Assert.DoesNotContain(marketId, storedAfterUnbookmark);
+
+        // The matching engine like endpoint must never have been hit
+        Assert.Empty(likeCalls);
     }
 
     public async Task DisposeAsync()

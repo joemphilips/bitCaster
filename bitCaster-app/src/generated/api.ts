@@ -107,7 +107,7 @@ export interface paths {
         };
         /**
          * Get market metadata
-         * @description Returns aggregated metadata for a market including trading volume, trade count, unique trader count, liquidity, and like count.
+         * @description Returns aggregated metadata for a market including trading volume, trade count, unique trader count, and liquidity.
          */
         get: operations["getMarketMetadata"];
         put?: never;
@@ -135,7 +135,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/{marketId}/like": {
+    "/api/v1/markets/{marketId}/payment-requests": {
         parameters: {
             query?: never;
             header?: never;
@@ -145,10 +145,30 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Toggle market like
-         * @description Toggles the like state for a user on a market. If the user has already liked the market, the like is removed.
+         * Create a bolt11 payment request for a market
+         * @description Creates a Lightning invoice via the market's dedicated LNBits wallet. The returned bolt11 string contains the payment hash and all details.
          */
-        post: operations["toggleMarketLike"];
+        post: operations["createPaymentRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/markets/{marketId}/simulate-payment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Simulate paying a bolt11 invoice (dev-only)
+         * @description Pays the given bolt11 invoice using the market's LNBits wallet admin key. Only works with LNBits FakeWallet backend (internal invoices only).
+         */
+        post: operations["simulatePayment"];
         delete?: never;
         options?: never;
         head?: never;
@@ -309,20 +329,23 @@ export interface components {
              * @description Total CPMM liquidity deposited in satoshis.
              */
             totalLiquiditySats: number;
-            /** @description Number of users who have liked this market. */
-            likeCount: number;
-            /** @description Whether the requesting user has liked this market. */
-            isLiked: boolean;
         };
-        ToggleLikeRequest: {
-            /** @description The user toggling the like. */
-            userId: string;
+        CreatePaymentRequestRequest: {
+            amountSats: components["schemas"]["Sats"];
+            /** @description Optional memo for the invoice. */
+            description?: string;
         };
-        ToggleLikeResponse: {
-            /** @description Updated total like count for the market. */
-            likeCount: number;
-            /** @description Whether the user now likes the market. */
-            isLiked: boolean;
+        CreatePaymentRequestResponse: {
+            /** @description The bolt11-encoded Lightning invoice. */
+            bolt11: string;
+        };
+        SimulatePaymentRequest: {
+            /** @description The bolt11 invoice to pay. */
+            bolt11: string;
+        };
+        SimulatePaymentResponse: {
+            /** @description Whether the payment was successful. */
+            paid: boolean;
         };
     };
     responses: never;
@@ -512,10 +535,7 @@ export interface operations {
     };
     getMarketMetadata: {
         parameters: {
-            query?: {
-                /** @description Optional user ID to check if the user has liked this market. */
-                userId?: string;
-            };
+            query?: never;
             header?: never;
             path: {
                 /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
@@ -566,7 +586,7 @@ export interface operations {
             };
         };
     };
-    toggleMarketLike: {
+    createPaymentRequest: {
         parameters: {
             query?: never;
             header?: never;
@@ -578,18 +598,73 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ToggleLikeRequest"];
+                "application/json": components["schemas"]["CreatePaymentRequestRequest"];
             };
         };
         responses: {
-            /** @description Updated like state */
+            /** @description Invoice created */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ToggleLikeResponse"];
+                    "application/json": components["schemas"]["CreatePaymentRequestResponse"];
                 };
+            };
+            /** @description Market not found or no wallet provisioned */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description LNBits backend error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    simulatePayment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: components["parameters"]["MarketId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SimulatePaymentRequest"];
+            };
+        };
+        responses: {
+            /** @description Payment result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimulatePaymentResponse"];
+                };
+            };
+            /** @description Market not found or no wallet provisioned */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description LNBits backend error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
