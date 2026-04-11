@@ -68,6 +68,7 @@ export default defineConfig({
   // shim's `fetch()` call and Vite picks it up as an asset automatically.
   server: {
     port: parseInt(process.env.PORT || "5173"),
+    strictPort: true,
     host: true,
     allowedHosts: "all",
     proxy: (() => {

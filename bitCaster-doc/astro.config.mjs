@@ -7,6 +7,13 @@ export default defineConfig({
 	output: 'static',
 	site: 'https://bitcasterdoc.com',
 	base: process.env.BASE_URL || '/',
+	// Astro doesn't honor PORT by default — wire it through explicitly so
+	// Aspire's AppHost (which passes the allocated port via PORT) lines up
+	// with the dashboard's proxy endpoint.
+	server: {
+		port: parseInt(process.env.PORT || '4321'),
+		host: true,
+	},
 	integrations: [
 		starlight({
 			title: {
