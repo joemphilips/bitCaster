@@ -45,6 +45,24 @@ vi.mock('@/lib/oracle', () => ({
   }]),
 }))
 
+// Stub the wallet store — the real module transitively imports `@cashu/cashu-ts`
+// which fails to load cleanly under Vitest's ESM resolver, and this test does
+// not exercise the wallet at all.
+vi.mock('@/stores/wallet', () => ({
+  useWalletStore: {
+    getState: () => ({ mnemonic: null }),
+  },
+}))
+
+// Stub nip17 so the test does not pull in nostr-tools at module load time.
+// The real derivation is covered in `bitCaster-app/src/lib/__tests__`.
+vi.mock('@/lib/nip17', () => ({
+  deriveNostrKeyPair: () => ({
+    privateKeyHex: '00'.repeat(32),
+    publicKey: '11'.repeat(32),
+  }),
+}))
+
 // Stub env var before importing the hook (module-level const reads it at import time)
 vi.stubEnv('VITE_ORACLE_PUBKEY', 'fake-oracle-pubkey')
 

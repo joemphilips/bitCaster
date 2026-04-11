@@ -175,6 +175,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/creators/{pubkey}/markets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List markets created by a given Nostr pubkey
+         * @description Returns every market that was registered with the supplied pubkey in its `creatorPubkey` field, along with aggregated volume data so the creator dashboard can render totals without additional round-trips.
+         */
+        get: operations["listCreatorMarkets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -291,6 +311,8 @@ export interface components {
             liquiditySats: number;
             /** @description Optional category tags for the market. */
             categoryTags?: string[];
+            /** @description Optional Nostr pubkey (hex) of the account that created this market. When supplied, the market is indexed under this creator so it can be queried via the `listCreatorMarkets` endpoint. Self-declared; the engine performs no signature verification in v1. */
+            creatorPubkey?: string;
         };
         CreateMarketResponse: {
             /** @description The condition ID this market was registered for. */
@@ -346,6 +368,26 @@ export interface components {
         SimulatePaymentResponse: {
             /** @description Whether the payment was successful. */
             paid: boolean;
+        };
+        CreatorMarketEntry: {
+            /** @description The condition ID this market was registered under. */
+            conditionId: string;
+            /**
+             * Format: int64
+             * @description Aggregated trading volume in satoshis across every per-outcome market belonging to this condition.
+             */
+            totalVolumeSats: number;
+            /**
+             * Format: date-time
+             * @description When this market was registered with the matching engine.
+             */
+            createdAt: string;
+        };
+        CreatorMarketsResponse: {
+            /** @description The creator pubkey this response belongs to (echoed from the path). */
+            pubkey: string;
+            /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
+            markets: components["schemas"]["CreatorMarketEntry"][];
         };
     };
     responses: never;
@@ -665,6 +707,29 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    listCreatorMarkets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Nostr pubkey (hex) of the market creator. */
+                pubkey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of markets created by this pubkey */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatorMarketsResponse"];
+                };
             };
         };
     };

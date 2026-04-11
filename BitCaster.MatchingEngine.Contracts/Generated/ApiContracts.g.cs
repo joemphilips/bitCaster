@@ -365,13 +365,14 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, string @title)
+        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @creatorPubkey, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, string @title)
         {
             this.Title = @title;
             this.Description = @description;
             this.Outcomes = @outcomes;
             this.LiquiditySats = @liquiditySats;
             this.CategoryTags = @categoryTags;
+            this.CreatorPubkey = @creatorPubkey;
         }
 
         /// <summary>
@@ -403,6 +404,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("categoryTags")]
         public System.Collections.Generic.List<string> CategoryTags { get; }
+
+        /// <summary>
+        /// Optional Nostr pubkey (hex) of the account that created this market. When supplied, the market is indexed under this creator so it can be queried via the `listCreatorMarkets` endpoint. Self-declared; the engine performs no signature verification in v1.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
+        public string CreatorPubkey { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -652,6 +660,81 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("paid")]
         public bool Paid { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class CreatorMarketEntry
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public CreatorMarketEntry(string @conditionId, System.DateTimeOffset @createdAt, long @totalVolumeSats)
+        {
+            this.ConditionId = @conditionId;
+            this.TotalVolumeSats = @totalVolumeSats;
+            this.CreatedAt = @createdAt;
+        }
+
+        /// <summary>
+        /// The condition ID this market was registered under.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
+        public string ConditionId { get; }
+
+        /// <summary>
+        /// Aggregated trading volume in satoshis across every per-outcome market belonging to this condition.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("totalVolumeSats")]
+        public long TotalVolumeSats { get; }
+
+        /// <summary>
+        /// When this market was registered with the matching engine.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
+        public System.DateTimeOffset CreatedAt { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class CreatorMarketsResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public CreatorMarketsResponse(System.Collections.Generic.List<CreatorMarketEntry> @markets, string @pubkey)
+        {
+            this.Pubkey = @pubkey;
+            this.Markets = @markets;
+        }
+
+        /// <summary>
+        /// The creator pubkey this response belongs to (echoed from the path).
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("pubkey")]
+        public string Pubkey { get; }
+
+        /// <summary>
+        /// Markets created by this pubkey. May be empty if the creator has not registered any markets yet.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("markets")]
+        public System.Collections.Generic.List<CreatorMarketEntry> Markets { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 

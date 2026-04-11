@@ -214,6 +214,8 @@ export type Fill = components['schemas']['Fill']
 export type MarketMetadataSnapshot = components['schemas']['MarketMetadataSnapshot']
 export type CreateMarketRequest = components['schemas']['CreateMarketRequest']
 export type CreateMarketResponse = components['schemas']['CreateMarketResponse']
+export type CreatorMarketEntry = components['schemas']['CreatorMarketEntry']
+export type CreatorMarketsResponse = components['schemas']['CreatorMarketsResponse']
 
 // =============================================================================
 // Market Detail Data Fetching
@@ -422,4 +424,20 @@ export async function fetchThumbnailUrl(conditionId: string): Promise<string | n
   } catch {
     return null
   }
+}
+
+/**
+ * Fetch the list of markets the matching engine has indexed under a given
+ * creator pubkey. The engine returns volume/created-at for markets it knows
+ * about; the client is responsible for merging this with its own store so
+ * markets the backend hasn't indexed still show up as `0` volume.
+ */
+export async function fetchCreatorMarkets(
+  pubkey: string,
+): Promise<CreatorMarketsResponse> {
+  const response = await fetch(`/api/v1/creators/${pubkey}/markets`)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch creator markets: ${response.status}`)
+  }
+  return response.json()
 }

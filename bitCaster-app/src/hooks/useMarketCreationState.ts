@@ -11,14 +11,24 @@ import type {
 } from '@/types/market-creation'
 import { useSettingsStore } from '@/stores/settings'
 import { useMarketDraftStore } from '@/stores/marketDraft'
+import { useWalletStore } from '@/stores/wallet'
+import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
 import { fetchOracleAnnouncements } from '@/lib/oracle'
 import {
   registerCondition,
   registerPartition,
   createMarket,
 } from '@/lib/markets'
+import { deriveNostrKeyPair } from '@/lib/nip17'
 import { createEnumAnnouncement } from '@/lib/kormir'
 import { buildEventId } from '@/lib/slug'
+
+/**
+ * Default creator fee applied to every market created via the wizard. The fee
+ * is stubbed client-side for v1 — the matching engine does not track or
+ * accrue creator fees yet — so this is simply echoed on the creator dashboard.
+ */
+const DEFAULT_CREATOR_FEE_PERCENT = 0.02
 
 const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
 
@@ -430,8 +440,15 @@ export function useMarketCreationState() {
       // 2. Register partition
       await registerPartition(condition_id, outcomes)
 
+      // Derive the creator pubkey from the user's mnemonic if one is
+      // configured. Self-declared — the matching engine does not verify it.
+      const mnemonic = useWalletStore.getState().mnemonic
+      const creatorPubkey = mnemonic
+        ? deriveNostrKeyPair(mnemonic).publicKey
+        : undefined
+
       // 3. Create market on matching engine (includes thumbnail + CPMM pools)
-      await createMarket(
+      const createResponse = await createMarket(
         condition_id,
         {
           title,
@@ -442,9 +459,31 @@ export function useMarketCreationState() {
           })),
           liquiditySats: draft.stepInitialLiquidity?.liquiditySats ?? 0,
           categoryTags,
+          ...(creatorPubkey ? { creatorPubkey } : {}),
         },
         thumbnailFile,
       )
+
+      // Record the newly created market in the client-side creator store so
+      // the dashboard can render it immediately. NIP-78 sync takes over from
+      // here (see `useCreatorSync`). This write is best-effort: the market
+      // has already been registered on the mint and the matching engine, so
+      // a localStorage quota error must not surface as "Failed to create
+      // market" and strand the user on the wizard.
+      try {
+        useCreatorMarketsStore.getState().addCreatedMarket({
+          conditionId: condition_id,
+          title,
+          thumbnailUrl: createResponse.thumbnailUrl ?? null,
+          createdAt: new Date().toISOString(),
+          creatorFeePercent: DEFAULT_CREATOR_FEE_PERCENT,
+        })
+      } catch (storeErr) {
+        console.warn(
+          'Failed to persist created market to local creator store; dashboard will not show it until NIP-78 sync recovers.',
+          storeErr,
+        )
+      }
 
       clearDraft()
       navigate(`/markets/${condition_id}`)

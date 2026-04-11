@@ -1,0 +1,126 @@
+import { renderHook, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
+import { useWalletStore } from '@/stores/wallet'
+
+const { mockFetchCreatorMarkets, mockDeriveNostrKeyPair } = vi.hoisted(() => ({
+  mockFetchCreatorMarkets: vi.fn(),
+  mockDeriveNostrKeyPair: vi.fn(),
+}))
+
+vi.mock('@/lib/markets', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/markets')>('@/lib/markets')
+  return {
+    ...actual,
+    fetchCreatorMarkets: (...args: unknown[]) => mockFetchCreatorMarkets(...args),
+  }
+})
+
+vi.mock('@/lib/nip17', () => ({
+  deriveNostrKeyPair: (...args: unknown[]) => mockDeriveNostrKeyPair(...args),
+}))
+
+import { useCreatorDashboardState } from '../useCreatorDashboardState'
+
+const FAKE_PUBKEY = 'a'.repeat(64)
+const CONDITION_A = 'c'.repeat(64)
+const CONDITION_B = 'd'.repeat(64)
+
+beforeEach(() => {
+  mockFetchCreatorMarkets.mockReset()
+  mockDeriveNostrKeyPair.mockReset()
+  useCreatorMarketsStore.setState({ markets: [] })
+  useWalletStore.setState({ mnemonic: '' })
+  mockDeriveNostrKeyPair.mockReturnValue({
+    privateKeyHex: 'f'.repeat(64),
+    publicKey: FAKE_PUBKEY,
+  })
+})
+
+describe('useCreatorDashboardState', () => {
+  it('returns an empty state when no wallet is configured', () => {
+    mockFetchCreatorMarkets.mockResolvedValue({ pubkey: FAKE_PUBKEY, markets: [] })
+
+    const { result } = renderHook(() => useCreatorDashboardState())
+
+    expect(result.current.pubkey).toBeNull()
+    expect(result.current.isLoading).toBe(false)
+    expect(result.current.markets).toEqual([])
+    expect(result.current.stats.activeMarketsCount).toBe(0)
+    expect(mockFetchCreatorMarkets).not.toHaveBeenCalled()
+  })
+
+  it('merges backend volume data with local store markets', async () => {
+    useWalletStore.setState({ mnemonic: 'test mnemonic seed' })
+    useCreatorMarketsStore.setState({
+      markets: [
+        {
+          conditionId: CONDITION_A,
+          title: 'Market A',
+          thumbnailUrl: null,
+          createdAt: '2026-04-10T00:00:00.000Z',
+          creatorFeePercent: 0.02,
+        },
+        {
+          conditionId: CONDITION_B,
+          title: 'Market B',
+          thumbnailUrl: '/api/v1/foo/thumbnail',
+          createdAt: '2026-04-09T00:00:00.000Z',
+          creatorFeePercent: 0.03,
+        },
+      ],
+    })
+
+    mockFetchCreatorMarkets.mockResolvedValue({
+      pubkey: FAKE_PUBKEY,
+      // Only market A has backend volume — market B should default to 0.
+      markets: [
+        { conditionId: CONDITION_A, totalVolumeSats: 50_000, createdAt: '2026-04-10T00:00:00.000Z' },
+      ],
+    })
+
+    const { result } = renderHook(() => useCreatorDashboardState())
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    expect(result.current.pubkey).toBe(FAKE_PUBKEY)
+    expect(result.current.markets).toHaveLength(2)
+    const [a, b] = result.current.markets
+    expect(a.id).toBe(CONDITION_A)
+    expect(a.volume).toBe(50_000)
+    expect(a.status).toBe('active')
+    expect(a.creatorFeePercent).toBe(0.02)
+    expect(b.id).toBe(CONDITION_B)
+    expect(b.volume).toBe(0)
+
+    expect(result.current.stats.activeMarketsCount).toBe(2)
+    expect(result.current.stats.totalVolumeSats).toBe(50_000)
+    expect(result.current.stats.totalFeesEarnedSats).toBe(0)
+  })
+
+  it('falls back to zero volume on backend error and surfaces the error', async () => {
+    useWalletStore.setState({ mnemonic: 'test mnemonic seed' })
+    useCreatorMarketsStore.setState({
+      markets: [
+        {
+          conditionId: CONDITION_A,
+          title: 'Market A',
+          thumbnailUrl: null,
+          createdAt: '2026-04-10T00:00:00.000Z',
+          creatorFeePercent: 0.02,
+        },
+      ],
+    })
+
+    mockFetchCreatorMarkets.mockRejectedValue(new Error('engine unreachable'))
+
+    const { result } = renderHook(() => useCreatorDashboardState())
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    expect(result.current.error).toBe('engine unreachable')
+    expect(result.current.markets).toHaveLength(1)
+    expect(result.current.markets[0].volume).toBe(0)
+    expect(result.current.stats.totalVolumeSats).toBe(0)
+  })
+})

@@ -1,16 +1,27 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using BitCaster.MatchingEngine.Contracts;
 
 namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 
-public static class MarketEndpoints
+public static partial class MarketEndpoints
 {
-    private static readonly ConcurrentDictionary<string, CreateMarketResponse> Markets = new();
+    private sealed record MarketRecord(CreateMarketResponse Response, DateTimeOffset CreatedAt);
+
+    private static readonly ConcurrentDictionary<string, MarketRecord> Markets = new();
+
+    // Pubkey (hex) -> set of conditionIds created by that pubkey. Inner dictionary is used
+    // as a concurrent set (byte value is a placeholder).
+    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> CreatorIndex = new();
+
     private static readonly JsonSerializerOptions MetadataJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
+
+    [GeneratedRegex("^[0-9a-f]{64}$")]
+    private static partial Regex PubkeyHexRegex();
 
     public static void MapMarketEndpoints(this WebApplication app)
     {
@@ -129,9 +140,20 @@ public static class MarketEndpoints
                 marketsCreated: marketsCreated,
                 thumbnailUrl: thumbnailUrl);
 
+            var record = new MarketRecord(response, DateTimeOffset.UtcNow);
+
             // Atomically check-and-insert to avoid TOCTOU race
-            if (!Markets.TryAdd(conditionId, response))
+            if (!Markets.TryAdd(conditionId, record))
                 return Results.Conflict($"Market already exists for condition {conditionId}");
+
+            // Index this market under its creator pubkey if one was supplied.
+            // Self-declared — no signature verification in v1.
+            var creatorPubkey = metadata.CreatorPubkey;
+            if (!string.IsNullOrWhiteSpace(creatorPubkey) && PubkeyHexRegex().IsMatch(creatorPubkey))
+            {
+                var set = CreatorIndex.GetOrAdd(creatorPubkey, _ => new ConcurrentDictionary<string, byte>());
+                set[conditionId] = 0;
+            }
 
             // Commit side-effect state only after market is registered
             foreach (var (marketId, pool) in poolEntries)
@@ -153,6 +175,36 @@ public static class MarketEndpoints
                 }
             }));
 
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/api/v1/creators/{pubkey}/markets", (string pubkey) =>
+        {
+            if (string.IsNullOrWhiteSpace(pubkey) || !PubkeyHexRegex().IsMatch(pubkey))
+                return Results.BadRequest("pubkey must be a 64-character lowercase hex string");
+
+            var entries = new List<CreatorMarketEntry>();
+            if (CreatorIndex.TryGetValue(pubkey, out var conditionIds))
+            {
+                foreach (var conditionId in conditionIds.Keys)
+                {
+                    if (!Markets.TryGetValue(conditionId, out var record))
+                        continue;
+
+                    // The in-memory engine never produces fills, so volume is always 0.
+                    entries.Add(new CreatorMarketEntry(
+                        conditionId: conditionId,
+                        createdAt: record.CreatedAt,
+                        totalVolumeSats: 0));
+                }
+            }
+
+            // Deterministic ordering: most recently created first.
+            entries.Sort((a, b) => b.CreatedAt.CompareTo(a.CreatedAt));
+
+            var response = new CreatorMarketsResponse(
+                markets: entries,
+                pubkey: pubkey);
             return Results.Ok(response);
         });
     }

@@ -9,6 +9,18 @@ vi.mock('@/lib/markets', () => ({
   uploadThumbnail: vi.fn(),
   registerLiquidity: vi.fn(),
 }))
+// The real `@/stores/wallet` transitively imports `@cashu/cashu-ts`, which
+// fails to load cleanly under Vitest's ESM resolver. This test only exercises
+// the pure `normalizeProbabilities` helper, so a bare stub is sufficient.
+vi.mock('@/stores/wallet', () => ({
+  useWalletStore: { getState: () => ({ mnemonic: null }) },
+}))
+vi.mock('@/lib/nip17', () => ({
+  deriveNostrKeyPair: () => ({
+    privateKeyHex: '00'.repeat(32),
+    publicKey: '11'.repeat(32),
+  }),
+}))
 
 // Must import after mocks are declared
 const { normalizeProbabilities } = await import('../useMarketCreationState')

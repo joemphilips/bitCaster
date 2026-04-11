@@ -60,3 +60,15 @@
     @apply bg-white text-gray-900 dark:bg-[#0a0a0a] dark:text-gray-100 antialiased font-sans;
   }
 }
+
+/* Button shine animation used by the "Create Market" CTA in CreatorDashboard
+   (via the arbitrary `animate-[shimmer_3s_infinite]` utility). Defined outside
+   @layer base so Tailwind's JIT purge does not drop it. */
+@keyframes shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}

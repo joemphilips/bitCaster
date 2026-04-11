@@ -8,11 +8,13 @@ import { MarketCreationPage } from "@/pages/MarketCreationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { WalletSetupPage } from "@/pages/WalletSetupPage";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
+import { useCreatorSync } from "@/stores/useCreatorSync";
 
 function AppRoutes() {
   const navigate = useNavigate();
   const location = useLocation();
   useBookmarkSync();
+  useCreatorSync();
 
   // These routes render without AppShell
   if (location.pathname === "/setup" || location.pathname === "/creator/new") {
