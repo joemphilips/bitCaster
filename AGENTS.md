@@ -24,12 +24,19 @@ CDK mintd
   └─ Key Vault (mint keys)
 ```
 
-## Design Principle — Open Protocol First
+## Design Principle
+
+### Open Protocol First
 
 Every communication should be defined as an open protocol:
 
 - bitCaster-app ↔ cdk — defined in `nuts/`
 - bitCaster-app ↔ matching engine — defined in yaml specs under `BitCaster.MatchingEngine.Contracts/specs/`
+
+### User-specific state must handled by client-side
+
+- Matching engine **should NOT** store user information as much as possible. It's sole purpose is to keep the markets liquid and tradable.
+- User-specific data must be handled by client side using Nostr [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md), or simply by localStorage if user has not configured nostr pubkey
 
 ## Monorepo Layout
 
