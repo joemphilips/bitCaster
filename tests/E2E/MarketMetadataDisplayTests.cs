@@ -183,7 +183,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         var url = page.Url;
         var marketId = url.Split('/').Last();
 
-        var bookmarkButton = page.GetByTitle("Bookmark");
+        var bookmarkButton = page.GetByTitle("Bookmark").First;
         await Assertions.Expect(bookmarkButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await Assertions.Expect(bookmarkButton).ToHaveAttributeAsync("aria-pressed", "false");
 
@@ -202,7 +202,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         Assert.Contains(marketId, storedAfterBookmark);
 
         // Toggle bookmark off
-        await page.GetByTitle("Remove bookmark").ClickAsync();
+        await page.GetByTitle("Remove bookmark").First.ClickAsync();
         await Assertions.Expect(bookmarkButton).ToHaveAttributeAsync("aria-pressed", "false", new() { Timeout = 5_000 });
         await Assertions.Expect(bookmarkIcon).ToHaveAttributeAsync("fill", "none", new() { Timeout = 5_000 });
 

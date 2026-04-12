@@ -98,6 +98,9 @@ export interface WalletSetupProps {
   /** Called when user clicks Back */
   onBack?: () => void
 
+  /** Called when user clicks the close (X) button to exit the wizard */
+  onClose?: () => void
+
   /** Called when user clicks Finish Setup */
   onFinishSetup?: () => void
 }

@@ -144,10 +144,6 @@ export function CreatorDashboard() {
 
             {/* Market list */}
             <div>
-              <h2 className="mb-4 text-lg font-bold text-slate-900 dark:text-white">
-                Your Markets
-              </h2>
-
               {markets.length === 0 ? (
                 <EmptyState isLoading={isLoading} onCreate={handleCreateMarket} />
               ) : (

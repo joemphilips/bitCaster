@@ -1,4 +1,4 @@
-import { ArrowLeft, Loader2, Check, AlertCircle } from 'lucide-react'
+import { ArrowLeft, X, Loader2, Check, AlertCircle } from 'lucide-react'
 import type { WalletSetupProps } from '@/types/wallet-setup'
 import { StepIndicator } from './StepIndicator'
 import { WelcomeLanding } from './WelcomeLanding'
@@ -40,38 +40,56 @@ export function WalletSetup(props: ExtendedWalletSetupProps) {
     onRemoveMint,
     onContinue,
     onBack,
+    onClose,
     onFinishSetup,
     onVerificationComplete,
   } = props
 
+  const closeButton = (
+    <button
+      onClick={() => onClose?.()}
+      aria-label="Close wallet setup"
+      className="fixed top-4 right-4 z-20 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 backdrop-blur-sm transition-colors"
+    >
+      <X className="w-5 h-5" strokeWidth={1.75} />
+    </button>
+  )
+
   // Step 1: Welcome landing — full-screen standalone
   if (currentStep === 1) {
     return (
-      <WelcomeLanding
-        showTerms={showTerms}
-        backgroundDataLoad={backgroundDataLoad}
-        onWelcomeNext={onWelcomeNext}
-        onShowTerms={onShowTerms}
-        onCloseTerms={onCloseTerms}
-      />
+      <>
+        {closeButton}
+        <WelcomeLanding
+          showTerms={showTerms}
+          backgroundDataLoad={backgroundDataLoad}
+          onWelcomeNext={onWelcomeNext}
+          onShowTerms={onShowTerms}
+          onCloseTerms={onCloseTerms}
+        />
+      </>
     )
   }
 
   // Step 2: PWA confirmation — full-screen standalone
   if (currentStep === 2) {
     return (
-      <PwaConfirmation
-        isPwa={isPwa}
-        backgroundDataLoad={backgroundDataLoad}
-        onPwaNext={onPwaNext}
-        onBack={onBack}
-      />
+      <>
+        {closeButton}
+        <PwaConfirmation
+          isPwa={isPwa}
+          backgroundDataLoad={backgroundDataLoad}
+          onPwaNext={onPwaNext}
+          onBack={onBack}
+        />
+      </>
     )
   }
 
   // Steps 3-5: Wallet setup wizard with step indicator
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
+      {closeButton}
       {/* Header */}
       <div className="w-full max-w-2xl mx-auto px-4 pt-8 pb-4">
         {/* Back button */}

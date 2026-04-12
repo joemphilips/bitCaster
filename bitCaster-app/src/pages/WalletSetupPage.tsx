@@ -162,6 +162,14 @@ export function WalletSetupPage() {
     }
   }
 
+  const onClose = () => {
+    if (window.history.length > 1) {
+      navigate(-1)
+    } else {
+      navigate('/markets')
+    }
+  }
+
   const onBack = () => {
     if (currentStep === 4 && seedVerificationActive) {
       setSeedVerificationActive(false)
@@ -201,6 +209,7 @@ export function WalletSetupPage() {
       onRemoveMint={onRemoveMintHandler}
       onContinue={onVerificationComplete}
       onBack={onBack}
+      onClose={onClose}
       onFinishSetup={onFinishSetup}
       onVerificationComplete={onVerificationComplete}
     />
