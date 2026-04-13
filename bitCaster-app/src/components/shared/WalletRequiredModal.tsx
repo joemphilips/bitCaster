@@ -1,5 +1,5 @@
 import { Wallet } from 'lucide-react'
-import { useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 interface WalletRequiredModalProps {
   onClose: () => void
@@ -7,6 +7,7 @@ interface WalletRequiredModalProps {
 
 export function WalletRequiredModal({ onClose }: WalletRequiredModalProps) {
   const navigate = useNavigate()
+  const location = useLocation()
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center">
@@ -35,7 +36,7 @@ export function WalletRequiredModal({ onClose }: WalletRequiredModalProps) {
           <button
             onClick={() => {
               onClose()
-              navigate('/setup')
+              navigate('/setup', { state: { from: location.pathname + location.search } })
             }}
             className="flex-1 py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] text-white font-semibold transition-colors"
           >

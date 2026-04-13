@@ -12,7 +12,7 @@ export function PortfolioPage() {
   const [overlayMode, setOverlayMode] = useState<DepositWithdrawMode | null>(null)
 
   const handleGetStarted = useCallback(() => {
-    navigate('/setup')
+    navigate('/setup', { state: { from: '/portfolio' } })
   }, [navigate])
 
   const handleAvatarUpload = useCallback(

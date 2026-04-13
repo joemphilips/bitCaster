@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 import { WalletSetup } from '@/components/wallet-setup/WalletSetup'
 import { NowLoadingPage } from '@/components/wallet-setup/NowLoadingPage'
 import { useWalletStore } from '@/stores/wallet'
@@ -9,6 +9,8 @@ import type { SetupStep, SetupChoice, MintConnectionTest, BackgroundDataLoad } f
 
 export function WalletSetupPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const returnUrl = (location.state as { from?: string } | null)?.from || '/markets'
 
   // Local UI state
   const [currentStep, setCurrentStep] = useState<SetupStep>(1)
@@ -74,9 +76,9 @@ export function WalletSetupPage() {
 
   useEffect(() => {
     if (showLoadingPage && marketDataLoaded) {
-      navigate('/markets')
+      navigate(returnUrl)
     }
-  }, [showLoadingPage, marketDataLoaded, navigate])
+  }, [showLoadingPage, marketDataLoaded, navigate, returnUrl])
 
   // Auto-add default mint on step 5 entry
   const mintAutoAdded = useRef(false)
@@ -156,7 +158,7 @@ export function WalletSetupPage() {
   const onFinishSetup = () => {
     completeSetup()
     if (marketDataLoaded) {
-      navigate('/markets')
+      navigate(returnUrl)
     } else {
       setShowLoadingPage(true)
     }
