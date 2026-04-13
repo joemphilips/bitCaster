@@ -1,4 +1,5 @@
 using BitCaster.MatchingEngine.Contracts;
+using BitCaster.MatchingEngine.Contracts.Dev;
 
 namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 

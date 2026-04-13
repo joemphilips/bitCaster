@@ -1,0 +1,75 @@
+openapi: 3.1.0
+info:
+  title: BitCaster Matching Engine — Development-only API
+  description: >
+    Dev/staging-only endpoints exposed by both the in-memory stub and the real
+    matching engine when running in a non-production environment. These
+    endpoints are intentionally excluded from the public contract
+    (`openapi.yaml`) so that the production surface stays tight.
+  version: 0.2.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:5001
+    description: Local development (via Aspire AppHost)
+
+paths:
+  /api/v1/markets/{marketId}/simulate-payment:
+    post:
+      operationId: simulatePayment
+      summary: Simulate paying a bolt11 invoice (dev-only)
+      description: >
+        Pays the given bolt11 invoice using the market's LNBits wallet admin key.
+        Only works with LNBits FakeWallet backend (internal invoices only).
+      x-dev-only: true
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulatePaymentRequest'
+      responses:
+        '200':
+          description: Payment result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatePaymentResponse'
+        '404':
+          description: Market not found or no wallet provisioned
+        '502':
+          description: LNBits backend error
+
+components:
+  parameters:
+    MarketId:
+      name: marketId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: >
+        The market to trade on, in the format "{conditionId}-{outcomeName}"
+        (e.g. "deadbeef…abc-Alice").
+
+  schemas:
+    SimulatePaymentRequest:
+      type: object
+      required:
+        - bolt11
+      properties:
+        bolt11:
+          type: string
+          description: The bolt11 invoice to pay.
+
+    SimulatePaymentResponse:
+      type: object
+      required:
+        - paid
+      properties:
+        paid:
+          type: boolean
+          description: Whether the payment was successful.
