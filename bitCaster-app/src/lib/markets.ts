@@ -364,7 +364,7 @@ export async function registerCondition(params: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       tags: params.tags,
-      announcement: params.announcementHex,
+      announcements: [params.announcementHex],
     }),
   })
   if (!response.ok) {
