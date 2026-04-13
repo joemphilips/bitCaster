@@ -53,6 +53,12 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
   onSuccessRef.current = onSuccess
 
   useEffect(() => {
+    // StrictMode in dev runs this effect mount → cleanup → mount on the same
+    // fiber (refs survive), so the cleanup below would otherwise leave
+    // cancelledRef stuck at `true` and make every async callback in
+    // `startInvoice` think the component unmounted — producing the
+    // subscribe/immediate-unsubscribe you'd see on the mint WS.
+    cancelledRef.current = false
     return () => {
       cancelledRef.current = true
       unsubRef.current?.()
