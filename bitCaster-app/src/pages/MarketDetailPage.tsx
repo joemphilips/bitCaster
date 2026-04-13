@@ -1,8 +1,12 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { MarketDetail } from '@/components/market-detail'
+import { InsufficientBalanceModal } from '@/components/shared/InsufficientBalanceModal'
+import { TopUpOverlay } from '@/components/market-detail/TopUpOverlay'
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from '@/lib/markets'
-import { useWalletStore } from '@/stores/wallet'
+import { generateEphemeralKeyPair } from '@/lib/ephemeral-key'
+import { getBalance, useWalletStore } from '@/stores/wallet'
+import { usePendingTradesStore } from '@/stores/pendingTrades'
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -14,10 +18,14 @@ import type {
   LimitOrderPreview,
 } from '@/types/market-detail'
 
+type TopUpStage = 'closed' | 'modal' | 'overlay'
+
 export function MarketDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const setupComplete = useWalletStore((s) => s.setupComplete)
+  const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
+  const addPendingTrade = usePendingTradesStore((s) => s.add)
 
   // Data state
   const [market, setMarket] = useState<MarketDetailType | null>(null)
@@ -32,6 +40,13 @@ export function MarketDetailPage() {
   const [tradeSide, setTradeSide] = useState<TradeSide>('buy')
   const [orderType, setOrderType] = useState<OrderType>('market')
   const [limitPrice, setLimitPrice] = useState(50)
+
+  // Top-up flow state — surfaced only when the user tries to confirm a trade
+  // they can't afford. `balanceAtCheck` is the snapshot taken when the gate
+  // tripped, so the modal / overlay keep showing the user's real deficit even
+  // if the wallet balance changes live while they decide.
+  const [topUpStage, setTopUpStage] = useState<TopUpStage>('closed')
+  const [balanceAtCheck, setBalanceAtCheck] = useState(0)
 
   // Load market data
   const loadMarket = useCallback(() => {
@@ -99,31 +114,73 @@ export function MarketDetailPage() {
     }
   }, [tradeSelection, tradeAmount, market, orderType, limitPrice])
 
-  // Handlers
-  const handleTradeConfirm = useCallback(async () => {
+  // Submit the order. Assumes wallet is set up and balance has been checked —
+  // callers that can't promise that must route through `handleTradeConfirm`.
+  const placeOrder = useCallback(async () => {
     if (!market || !tradeSelection || !tradeAmount) return
+    const outcomeName = tradeSelection.outcomeId ?? tradeSelection.side
+    const marketId = `${market.id}-${outcomeName}`
+    const ephemeral = generateEphemeralKeyPair()
     try {
-      const outcomeName = tradeSelection.outcomeId ?? tradeSelection.side
-      await submitOrder(
-        `${market.id}-${outcomeName}`,
-        {
-          outcomeId: outcomeName,
-          side: tradeSide === 'buy' ? 'Buy' : 'Sell',
-          price: orderType === 'limit' ? limitPrice : 0,
-          amountSats: tradeAmount,
-          userId: 'anonymous',
-          timeInForce: 'GTC',
-        }
-      )
-      // Reset after successful trade
+      const response = await submitOrder(marketId, {
+        outcomeId: outcomeName,
+        side: tradeSide === 'buy' ? 'Buy' : 'Sell',
+        price: orderType === 'limit' ? limitPrice : 0,
+        amountSats: tradeAmount,
+        userId: 'anonymous',
+        timeInForce: 'GTC',
+        ephemeralPubkey: ephemeral.pubkey,
+      })
+      // Only persist the privkey once the engine has accepted the order.
+      // Otherwise we accumulate orphaned keys on every failed submission.
+      addPendingTrade({
+        orderId: response.orderId,
+        marketId,
+        ephemeralPubkey: ephemeral.pubkey,
+        ephemeralPrivkey: ephemeral.privkey,
+        submittedAt: Date.now(),
+      })
       setTradeSelection(null)
       setTradeAmount(0)
-      // Reload market data
       loadMarket()
     } catch {
-      // Error handling — could show a toast
+      // Error handling — could show a toast. PR1 deliberately keeps this silent
+      // so we don't ship half a notification system.
     }
-  }, [market, tradeSelection, tradeAmount, tradeSide, orderType, limitPrice, loadMarket])
+  }, [
+    market,
+    tradeSelection,
+    tradeAmount,
+    tradeSide,
+    orderType,
+    limitPrice,
+    loadMarket,
+    addPendingTrade,
+  ])
+
+  // Gate the order submission on sufficient balance. Reads the balance at
+  // click-time (not via `useBalance`) so we don't race a stale live-query
+  // subscription after a top-up.
+  const handleTradeConfirm = useCallback(async () => {
+    if (!market || !tradeSelection || !tradeAmount) return
+    const requiredSats = tradeAmount // totalCost for FAK today; PR2+ refines
+    const current = await getBalance(activeMintUrl)
+    if (current < requiredSats) {
+      setBalanceAtCheck(current)
+      setTopUpStage('modal')
+      return
+    }
+    await placeOrder()
+  }, [market, tradeSelection, tradeAmount, activeMintUrl, placeOrder])
+
+  // After a successful top-up, close the overlay and place the order.
+  // TopUpOverlay only invokes onSuccess once proofs have been written to the
+  // store, so the balance is guaranteed to cover `tradeAmount` by the time we
+  // get here — no re-read needed.
+  const handleTopUpSuccess = useCallback(async () => {
+    setTopUpStage('closed')
+    await placeOrder()
+  }, [placeOrder])
 
   const handleRelatedMarketClick = useCallback((marketId: string) => {
     navigate(`/markets/${marketId}`)
@@ -152,31 +209,48 @@ export function MarketDetailPage() {
   }
 
   return (
-    <MarketDetail
-      market={market}
-      chartTimeframe={chartTimeframe}
-      chartType={chartType}
-      tradeSelection={tradeSelection}
-      tradeAmount={tradeAmount}
-      tradePreview={tradePreview}
-      tradeSide={tradeSide}
-      orderType={orderType}
-      limitOrderPreview={limitOrderPreview}
-      limitPrice={limitPrice}
-      onTimeframeChange={setChartTimeframe}
-      onChartTypeChange={setChartType}
-      onTradeSelect={setTradeSelection}
-      onTradeClear={() => {
-        setTradeSelection(null)
-        setTradeAmount(0)
-      }}
-      onAmountChange={setTradeAmount}
-      onTradeConfirm={handleTradeConfirm}
-      onTradeSideChange={setTradeSide}
-      onOrderTypeChange={setOrderType}
-      onLimitPriceChange={setLimitPrice}
-      onRelatedMarketClick={handleRelatedMarketClick}
-      walletReady={setupComplete}
-    />
+    <>
+      <MarketDetail
+        market={market}
+        chartTimeframe={chartTimeframe}
+        chartType={chartType}
+        tradeSelection={tradeSelection}
+        tradeAmount={tradeAmount}
+        tradePreview={tradePreview}
+        tradeSide={tradeSide}
+        orderType={orderType}
+        limitOrderPreview={limitOrderPreview}
+        limitPrice={limitPrice}
+        onTimeframeChange={setChartTimeframe}
+        onChartTypeChange={setChartType}
+        onTradeSelect={setTradeSelection}
+        onTradeClear={() => {
+          setTradeSelection(null)
+          setTradeAmount(0)
+        }}
+        onAmountChange={setTradeAmount}
+        onTradeConfirm={handleTradeConfirm}
+        onTradeSideChange={setTradeSide}
+        onOrderTypeChange={setOrderType}
+        onLimitPriceChange={setLimitPrice}
+        onRelatedMarketClick={handleRelatedMarketClick}
+        walletReady={setupComplete}
+      />
+      {topUpStage === 'modal' && (
+        <InsufficientBalanceModal
+          balance={balanceAtCheck}
+          required={tradeAmount}
+          onCancel={() => setTopUpStage('closed')}
+          onTopUp={() => setTopUpStage('overlay')}
+        />
+      )}
+      {topUpStage === 'overlay' && (
+        <TopUpOverlay
+          deficit={Math.max(tradeAmount - balanceAtCheck, 0)}
+          onSuccess={handleTopUpSuccess}
+          onCancel={() => setTopUpStage('closed')}
+        />
+      )}
+    </>
   )
 }

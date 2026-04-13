@@ -27,6 +27,14 @@ import { useWalletStore } from "@/stores/wallet";
 
 const DEFAULT_MINT_URL = import.meta.env.VITE_MINT_URL ?? "http://localhost:8085";
 
+/**
+ * Small sats buffer added to top-up prefills to cover NUT-05 melt fees and
+ * the counterparty's expected fee contribution during atomic-swap. Users can
+ * raise this in the UI; the prefill just avoids the common case where the
+ * user funds exactly `deficit` and then can't afford mint-side overhead.
+ */
+export const FEE_BUFFER_SATS = 10;
+
 // ---------------------------------------------------------------------------
 // Singleton wallet — delegates to wallet store when available
 // ---------------------------------------------------------------------------
