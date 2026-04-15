@@ -47,7 +47,7 @@ dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
 dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
 ```
 
-`tools/worktree-services.sh` exports `PORT`, `ASPNETCORE_URLS`, `BITCASTER_SERVER_URL` (vite proxy for `/api` and `/hubs`), and the `BITCASTER_E2E_*PORT` vars. Run `dotnet test` in the same shell so exports are inherited. See `plans/parallel-e2e-worktrees.md` for the full slot contract.
+`tools/worktree-services.sh` exports `PORT`, `ASPNETCORE_URLS`, `BITCASTER_SERVER_URL` (vite proxy for `/api` and `/hubs`), and the `BITCASTER_E2E_*PORT` vars. Run `dotnet test` in the same shell so exports are inherited.
 
 ## Key Files
 

@@ -52,7 +52,6 @@ kormir/              DLC oracle library — WASM + server (submodule: joemphilip
 cashu.me/            Reference cashu wallet (no CTF)
 tools/               Dev tooling (seed scripts, worktree-services.sh, build-kormir-wasm.sh)
 tests/E2E/           Playwright E2E tests (xUnit)
-plans/               Implementation plans used by coding agents
 ```
 
 The real CLOB matching engine is a **private repo** one level above (`bitCaster-matching-engine`); it references `BitCaster.MatchingEngine.Contracts` via submodule.
