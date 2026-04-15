@@ -86,6 +86,34 @@ paths:
                 type: string
 
   /api/v1/{marketId}/orders/{orderId}:
+    get:
+      operationId: getOrderStatus
+      summary: Fetch the current state of an order
+      description: >
+        Returns the order's live status, remaining/filled amounts, and the
+        list of fills produced so far. Clients poll this endpoint to observe
+        async state changes (fills, cancellation, expiry) without holding an
+        open connection. The orderId is opaque and sufficient for authorization
+        — callers are assumed to have received it from submitOrder.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The order's unique identifier.
+      responses:
+        '200':
+          description: Current order status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderStatusResponse'
+        '404':
+          description: Order not found
+
     delete:
       operationId: cancelOrder
       summary: Cancel an existing order
@@ -357,6 +385,39 @@ components:
             this order's submitter. The corresponding private key stays on the
             client and is the only thing that can decrypt and sign swap
             payloads — the engine never sees it.
+
+    OrderStatusResponse:
+      type: object
+      required:
+        - orderId
+        - marketId
+        - status
+        - remainingAmountSats
+        - filledAmountSats
+        - fills
+      properties:
+        orderId:
+          type: string
+          format: uuid
+          description: The order's unique identifier.
+        marketId:
+          type: string
+          description: The market this order belongs to.
+        status:
+          type: string
+          description: >
+            One of: "resting" (on book, unmatched), "partially_filled",
+            "filled", "cancelled". The InMemoryMatchingEngine only ever
+            returns "resting" — matching semantics live in the real engine.
+        remainingAmountSats:
+          $ref: '#/components/schemas/Sats'
+        filledAmountSats:
+          $ref: '#/components/schemas/Sats'
+        fills:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fill'
+          description: All fills produced against this order so far.
 
     SubmitOrderResponse:
       type: object

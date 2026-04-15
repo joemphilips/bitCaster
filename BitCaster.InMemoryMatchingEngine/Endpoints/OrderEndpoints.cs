@@ -44,6 +44,27 @@ public static class OrderEndpoints
                 req.EphemeralPubkey, new List<Fill>(), order.Id, order.AmountSats.Value, "resting"));
         });
 
+        app.MapGet("/api/v1/{marketId}/orders/{orderId:guid}", (
+            string marketId,
+            Guid orderId,
+            InMemoryOrderBookManager bookManager) =>
+        {
+            var order = bookManager.GetOrder(orderId);
+            if (order is null || order.MarketId != marketId)
+                return Results.NotFound();
+
+            // Stub never matches, so every fetched order is still "resting".
+            // Clients keep the same polling shape the real engine will use.
+            var filled = order.AmountSats.Value - order.RemainingAmountSats.Value;
+            return Results.Ok(new OrderStatusResponse(
+                filledAmountSats: filled,
+                fills: new List<Fill>(),
+                marketId: order.MarketId,
+                orderId: order.Id,
+                remainingAmountSats: order.RemainingAmountSats.Value,
+                status: "resting"));
+        });
+
         app.MapDelete("/api/v1/orders/{id:guid}", async (
             Guid id,
             InMemoryOrderBookManager bookManager,

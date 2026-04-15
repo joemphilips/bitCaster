@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { TrendingUp, Search, User, Bell, Sparkles } from 'lucide-react'
+import { TrendingUp, Search, User, Sparkles } from 'lucide-react'
 import { MainNav } from './MainNav'
 import { UserMenu } from './UserMenu'
+import { NotificationBell } from './NotificationBell'
 import { formatBalance } from '@/lib/format'
 
 export interface AppShellProps {
@@ -58,11 +59,8 @@ export function AppShell({
             />
 
             {/* Notification Bell */}
-            <button
-              className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-            >
-              <Bell className="w-5 h-5" />
-            </button>
+            <NotificationBell onNavigate={onNavigate} />
+
 
             {/* User Menu */}
             {user && (
@@ -114,18 +112,8 @@ export function AppShell({
             <span className="text-xs font-medium">Search</span>
           </button>
 
-          {/* Notifications (placeholder — no route yet) */}
-          <button
-            className="flex flex-col items-center justify-center gap-1 text-slate-500 dark:text-slate-400 transition-colors relative"
-          >
-            <div className="relative">
-              <Bell className="w-5 h-5" />
-              <span className="absolute -top-1 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-[#f7931a] text-white text-[10px] font-bold flex items-center justify-center">
-                3
-              </span>
-            </div>
-            <span className="text-xs font-medium">Notifications</span>
-          </button>
+          {/* Notifications */}
+          <NotificationBell onNavigate={onNavigate} variant="mobile" />
 
           {/* Creator */}
           <button
