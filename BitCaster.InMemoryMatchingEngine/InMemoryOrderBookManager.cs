@@ -35,14 +35,16 @@ public class InMemoryOrderBookManager
         }
     }
 
-    public string? GetMarketIdForOrder(Guid id)
+    public string? GetMarketIdForOrder(Guid id) => GetOrder(id)?.MarketId;
+
+    public Order? GetOrder(Guid id)
     {
         lock (_lock)
         {
-            foreach (var (marketId, orders) in _orders)
+            foreach (var (_, orders) in _orders)
             {
-                if (orders.Any(o => o.Id == id))
-                    return marketId;
+                var order = orders.Find(o => o.Id == id);
+                if (order is not null) return order;
             }
             return null;
         }

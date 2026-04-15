@@ -55,6 +55,51 @@ public class OrderContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetOrderStatus_ReturnsRestingForNewlySubmittedOrder()
+    {
+        Assert.NotNull(_http);
+        var pubkey = NewCompressedPubkey();
+        var submit = new
+        {
+            outcomeId = "Yes",
+            side = "Buy",
+            price = 50,
+            amountSats = 100,
+            userId = "test-user",
+            timeInForce = "GTC",
+            ephemeralPubkey = pubkey,
+        };
+
+        var submitRes = await _http!.PostAsJsonAsync("/api/v1/status-market/orders", submit);
+        Assert.Equal(HttpStatusCode.OK, submitRes.StatusCode);
+        var submitJson = JsonDocument.Parse(await submitRes.Content.ReadAsStringAsync());
+        var orderId = submitJson.RootElement.GetProperty("orderId").GetString();
+        Assert.NotNull(orderId);
+
+        var statusRes = await _http!.GetAsync($"/api/v1/status-market/orders/{orderId}");
+        Assert.Equal(HttpStatusCode.OK, statusRes.StatusCode);
+
+        using var doc = JsonDocument.Parse(await statusRes.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        Assert.Equal(orderId, root.GetProperty("orderId").GetString());
+        Assert.Equal("status-market", root.GetProperty("marketId").GetString());
+        // The InMemoryMatchingEngine never matches, so new orders sit resting
+        // with zero fills and the full amount outstanding.
+        Assert.Equal("resting", root.GetProperty("status").GetString());
+        Assert.Equal(100, root.GetProperty("remainingAmountSats").GetInt32());
+        Assert.Equal(0, root.GetProperty("filledAmountSats").GetInt32());
+        Assert.Equal(0, root.GetProperty("fills").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task GetOrderStatus_ReturnsNotFoundForUnknownOrderId()
+    {
+        Assert.NotNull(_http);
+        var res = await _http!.GetAsync($"/api/v1/any-market/orders/{Guid.NewGuid()}");
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    [Fact]
     public async Task SubmitOrder_RejectsMalformedEphemeralPubkey()
     {
         Assert.NotNull(_http);

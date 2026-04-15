@@ -210,6 +210,62 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OrderStatusResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OrderStatusResponse(long @filledAmountSats, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSats, string @status)
+        {
+            this.OrderId = @orderId;
+            this.MarketId = @marketId;
+            this.Status = @status;
+            this.RemainingAmountSats = @remainingAmountSats;
+            this.FilledAmountSats = @filledAmountSats;
+            this.Fills = @fills;
+        }
+
+        /// <summary>
+        /// The order's unique identifier.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid OrderId { get; }
+
+        /// <summary>
+        /// The market this order belongs to.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled". The InMemoryMatchingEngine only ever returns "resting" — matching semantics live in the real engine.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        public string Status { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSats")]
+        public long RemainingAmountSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("filledAmountSats")]
+        public long FilledAmountSats { get; }
+
+        /// <summary>
+        /// All fills produced against this order so far.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("fills")]
+        public System.Collections.Generic.List<Fill> Fills { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SubmitOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]

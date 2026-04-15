@@ -12,9 +12,10 @@ export function formatBalance(sats?: number): string {
 }
 
 /** Short relative-time label ("Just now", "5m ago", "2h ago"). Falls back to a
- *  localized "Mon DD" date after a week. */
-export function formatTimeAgo(timestamp: string): string {
-  const date = new Date(timestamp)
+ *  localized "Mon DD" date after a week. Accepts an ISO string, unix ms, or
+ *  Date — callers pick whichever form they already have. */
+export function formatTimeAgo(timestamp: string | number | Date): string {
+  const date = timestamp instanceof Date ? timestamp : new Date(timestamp)
   const diff = Date.now() - date.getTime()
   if (!Number.isFinite(diff)) return 'recently'
 
