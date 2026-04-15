@@ -85,8 +85,10 @@ public class CreatorDashboardTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        // Header is visible
-        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Your Markets" });
+        // Header is visible. `Exact = true` is important — a substring match
+        // also hits the "Loading your markets…" heading during initial load,
+        // which trips Playwright's strict-mode check.
+        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Your Markets", Exact = true });
         await Assertions.Expect(heading).ToBeVisibleAsync();
 
         // Create Market CTA (header button) is visible

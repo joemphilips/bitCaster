@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@cashu/cashu-ts": "^3.5.0",
+    "@noble/curves": "^2.2.0",
     "@nostr-dev-kit/ndk": "^2.11.0",
     "@nostr-dev-kit/ndk-wallet": "^0.3.8",
     "@scure/bip39": "^2.0.1",

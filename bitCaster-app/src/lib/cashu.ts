@@ -27,6 +27,14 @@ import { useWalletStore } from "@/stores/wallet";
 
 const DEFAULT_MINT_URL = import.meta.env.VITE_MINT_URL ?? "http://localhost:8085";
 
+/**
+ * Small sats buffer added to top-up prefills to cover NUT-05 melt fees and
+ * the counterparty's expected fee contribution during atomic-swap. Users can
+ * raise this in the UI; the prefill just avoids the common case where the
+ * user funds exactly `deficit` and then can't afford mint-side overhead.
+ */
+export const FEE_BUFFER_SATS = 10;
+
 // ---------------------------------------------------------------------------
 // Singleton wallet — delegates to wallet store when available
 // ---------------------------------------------------------------------------
@@ -153,8 +161,12 @@ export async function checkMintQuote(
 }
 
 /**
- * Subscribe to mint quote payment via WebSocket (NUT-17), with polling fallback.
- * Returns an unsubscribe function for cleanup.
+ * Subscribe to mint quote payment updates. Runs NUT-17 WS and polling
+ * concurrently — whichever sees PAID first wins — so we don't hang when the
+ * WS silently drops its subscription ACK (cashu-ts only registers the sub
+ * listener *after* the ACK; if it never arrives, no error, no callback).
+ *
+ * Returns an unsubscribe function that tears down both paths.
  */
 export async function waitForMintQuotePaid(
   quoteId: string,
@@ -164,37 +176,58 @@ export async function waitForMintQuotePaid(
 ): Promise<() => void> {
   const wallet = await getWallet(mintUrl);
 
-  // Try WebSocket first (NUT-17)
-  try {
-    const unsub = await wallet.on.mintQuotePaid(
+  let done = false;
+  const fire = (quote: PartialMintQuoteResponse) => {
+    if (done) return;
+    done = true;
+    onPaid(quote);
+  };
+
+  // Path A — NUT-17 WebSocket. cashu-ts filters by state === PAID internally.
+  let wsUnsub: (() => void) | null = null;
+  wallet.on
+    .mintQuotePaid(
       quoteId,
-      (response: PartialMintQuoteResponse) => onPaid(response),
+      (response: PartialMintQuoteResponse) => fire(response),
       (error: Error) => onError?.(error)
-    );
-    return unsub;
-  } catch {
-    // Fallback to polling if NUT-17 is not supported
-    let cancelled = false;
-    const poll = async () => {
-      while (!cancelled) {
-        await new Promise((r) => setTimeout(r, 5000));
-        if (cancelled) break;
-        try {
-          const quote = await wallet.checkMintQuote(quoteId);
-          if (quote.state === "PAID") {
-            onPaid(quote);
-            break;
-          }
-        } catch (e) {
-          onError?.(e as Error);
-        }
+    )
+    .then((unsub) => {
+      if (done) {
+        unsub();
+      } else {
+        wsUnsub = unsub;
       }
-    };
-    poll();
-    return () => {
-      cancelled = true;
-    };
-  }
+    })
+    .catch((e) => {
+      // WS setup failed — polling will carry us. Log once so this is spottable
+      // in devtools without spamming.
+      console.warn("[cashu] mintQuotePaid WS subscribe failed, polling only", e);
+    });
+
+  // Path B — polling fallback. 2s interval is cheap against a local mint and
+  // short enough that the fakewallet auto-pay latency (≤3s) is never masked.
+  const POLL_INTERVAL_MS = 2_000;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  const poll = async () => {
+    if (done) return;
+    try {
+      const quote = await wallet.checkMintQuote(quoteId);
+      if (quote.state === "PAID") {
+        fire(quote);
+        return;
+      }
+    } catch (e) {
+      onError?.(e as Error);
+    }
+    if (!done) pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+  };
+  pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+
+  return () => {
+    done = true;
+    if (pollTimer) clearTimeout(pollTimer);
+    wsUnsub?.();
+  };
 }
 
 // ---------------------------------------------------------------------------

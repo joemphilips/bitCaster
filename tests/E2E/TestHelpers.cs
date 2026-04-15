@@ -82,12 +82,16 @@ public static class TestHelpers
     }
 
     /// <summary>
-    /// Inject localStorage so wallet is set up (no mint connection).
-    /// Use this for tests that only need setupComplete=true without a real mint URL.
+    /// Inject localStorage so wallet is set up. When <paramref name="mintUrl"/>
+    /// is supplied, the wallet is also pointed at that mint (so balance queries
+    /// resolve against real proofs); otherwise a placeholder URL is used — fine
+    /// for tests that only need <c>setupComplete=true</c>.
     /// </summary>
-    public static async Task SetupComplete(IPage page, int vitePort)
+    public static async Task SetupComplete(IPage page, int vitePort, string? mintUrl = null)
     {
         var mnemonic = TestMnemonics.Get();
+        var activeMint = mintUrl ?? "http://localhost:3338";
+        var mintsJson = mintUrl is null ? "[]" : $"[{{ url: '{mintUrl}' }}]";
         await page.GotoAsync($"http://localhost:{vitePort}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -98,8 +102,8 @@ public static class TestHelpers
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [],
-                    activeMintUrl: 'http://localhost:3338',
+                    mints: {mintsJson},
+                    activeMintUrl: '{activeMint}',
                     keysetCounters: {{}}
                 }},
                 version: 0

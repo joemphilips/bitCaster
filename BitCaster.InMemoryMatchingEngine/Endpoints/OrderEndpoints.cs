@@ -22,6 +22,9 @@ public static class OrderEndpoints
             if (marketId.Contains('|'))
                 return Results.BadRequest("Compound marketId (containing '|') is invalid.");
 
+            if (!IsValidCompressedPubkey(req.EphemeralPubkey))
+                return Results.BadRequest("EphemeralPubkey must be a 66-char hex string (33-byte compressed secp256k1 pubkey).");
+
             var order = new Order(
                 Guid.NewGuid(),
                 marketId,
@@ -38,7 +41,7 @@ public static class OrderEndpoints
                 .OrderBookUpdated(bookManager.GetSnapshot(marketId));
 
             return Results.Ok(new SubmitOrderResponse(
-                new List<Fill>(), order.Id, order.AmountSats.Value, "resting"));
+                req.EphemeralPubkey, new List<Fill>(), order.Id, order.AmountSats.Value, "resting"));
         });
 
         app.MapDelete("/api/v1/orders/{id:guid}", async (
@@ -56,4 +59,21 @@ public static class OrderEndpoints
             return Results.Ok();
         });
     }
+
+    // A 33-byte compressed secp256k1 pubkey renders as 66 hex chars, starting
+    // with 02 or 03. We're not verifying the point is on-curve here — the
+    // mock engine is a byte relay, and the real engine can do full validation.
+    private static bool IsValidCompressedPubkey(string? hex)
+    {
+        if (string.IsNullOrEmpty(hex) || hex.Length != 66) return false;
+        if (hex[0] != '0' || (hex[1] != '2' && hex[1] != '3')) return false;
+        for (var i = 0; i < hex.Length; i++)
+        {
+            var c = hex[i];
+            var isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!isHex) return false;
+        }
+        return true;
+    }
+
 }
