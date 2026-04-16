@@ -15,3 +15,6 @@
 [submodule "kormir"]
 	path = kormir
 	url = git@github.com:joemphilips/kormir.git
+[submodule "nips-protocol"]
+	path = nips-protocol
+	url = https://github.com/nostr-protocol/nips.git

@@ -47,6 +47,7 @@ bitCaster-app/       React 19 + Vite PWA frontend
 bitCaster-doc/       Astro Starlight doc site (GitHub Pages)
 bitCaster-design/    Design specs and mockups
 nuts/                Cashu NUT specs (submodule: nuts_for_prediction_markets)
+nips-protocol/       Nostr NIP specs (submodule: nostr-protocol/nips — upstream, read-only)
 cdk/                 Cashu Development Kit (submodule: joemphilips/cdk, branch bitCaster)
 kormir/              DLC oracle library — WASM + server (submodule: joemphilips/kormir)
 cashu.me/            Reference cashu wallet (no CTF)
@@ -60,6 +61,8 @@ The real CLOB matching engine is a **private repo** one level above (`bitCaster-
 
 1. **Private storage** via [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) — anything in localStorage must also be mirrored to NIP-78 iff the user has configured a nostr key.
 2. **Public broadcast/fetch** for DLC oracle announcements / attestations **only** — never publish anything else (user anonymity).
+
+When you need to understand a NIP, read the spec from the `nips-protocol/` submodule (pinned upstream copy of `nostr-protocol/nips`). **Do not edit files under `nips-protocol/`** — it is an upstream reference and must stay untouched. To pull a newer revision, bump the submodule pointer with `git submodule update --remote nips-protocol` rather than editing its contents.
 
 ## Local Dev
 
