@@ -53,5 +53,7 @@ In return, like any other cryptocurrency wallet, you are responsible for managin
 ## Getting started
 
 Ready to try it? Head to the [bitCaster app](https://frontend-bitcaster-staging.azurewebsites.net/) to start trading.
+The staging environment runs on **Bitcoin signet** (MutinyNet) — test satoshis only, no real funds at risk.
+The staging mint URL is `https://mint-bitcaster-staging.yellowwater-375bf89c.japaneast.azurecontainerapps.io`.
 
 [^1]: Note that ecash tokens are not strictly self-custodial. See https://iscashucustodial.com/ or https://bitcoin.design/guide/how-it-works/ecash/introduction/, https://stacker.news/items/793450 for details.

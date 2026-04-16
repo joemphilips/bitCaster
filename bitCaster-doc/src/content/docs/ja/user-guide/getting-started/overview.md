@@ -56,5 +56,7 @@ bitCaster ではオラクルによる不正ができる限り不可能となる�
 ## はじめよう
 
 試してみませんか？[bitCasterアプリ](https://frontend-bitcaster-staging.azurewebsites.net/)にアクセスして取引を始めましょう。
+ステージング環境は**Bitcoin signet**（MutinyNet）上で動作しており、テスト用のsatoshiのみ使用します。実際の資金は必要ありません。
+ステージングミントのURLは `https://mint-bitcaster-staging.yellowwater-375bf89c.japaneast.azurecontainerapps.io` です。
 
 [^1]: ecashのトークンは厳密にはセルフカストディではない点に注意してください。https://iscashucustodial.com/ または https://bitcoin.design/guide/how-it-works/ecash/introduction/, https://stacker.news/items/793450 などを参照
