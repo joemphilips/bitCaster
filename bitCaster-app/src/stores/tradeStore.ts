@@ -4,14 +4,15 @@
  * Tracks each trade from MATCHED through to CONFIRMED (or FAILED), including
  * the ephemeral keypair used for ECDH and the counterparty's pubkey.
  *
- * Persisted to localStorage so a page reload mid-swap can resume. Private
- * keys are Uint8Array but Zustand's persist middleware serialises via JSON
- * (which doesn't preserve Uint8Array), so we store them as hex strings and
- * re-hydrate on read.
+ * Persisted to sessionStorage (cleared on tab close) so a page reload
+ * mid-swap can resume without leaving ephemeral keys in long-lived storage.
+ * Private keys are Uint8Array but Zustand's persist middleware serialises via
+ * JSON (which doesn't preserve Uint8Array), so we store them as hex strings
+ * and re-hydrate on read.
  */
 
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, createJSONStorage } from 'zustand/middleware'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,7 +27,7 @@ export type TradeLifecycleState =
   | 'retrying'
   | 'failed'
 
-/** Serialised form stored in localStorage — private key as hex. */
+/** Serialised form stored in sessionStorage — private key as hex. */
 export interface PersistedTradeEntry {
   tradeId: string
   role: TradeRole
@@ -70,6 +71,12 @@ interface TradeStoreState {
   /** Remove a completed or failed trade. */
   remove: (tradeId: string) => void
 
+  /**
+   * Zero out the ephemeral private key for a trade that has reached a terminal
+   * state (CONFIRMED or FAILED). Reduces the window of key exposure.
+   */
+  clearTradeKeys: (tradeId: string) => void
+
   /** Return the runtime TradeEntry for a trade, or undefined. */
   get: (tradeId: string) => TradeEntry | undefined
 }
@@ -105,7 +112,9 @@ function toPersisted(entry: TradeEntry): PersistedTradeEntry {
 // Store
 // ---------------------------------------------------------------------------
 
-const TRADE_TTL_MS = 24 * 60 * 60 * 1000 // 1 day — locktimes are seconds, not days
+// TTL matches the typical locktime window — 5 minutes is sufficient for the
+// atomic swap handshake. Using sessionStorage means keys are cleared on tab close.
+const TRADE_TTL_MS = 5 * 60 * 1000
 
 export const useTradeStore = create<TradeStoreState>()(
   persist(
@@ -172,6 +181,19 @@ export const useTradeStore = create<TradeStoreState>()(
         })
       },
 
+      clearTradeKeys: (tradeId: string) => {
+        set((s) => {
+          const existing = s.byTradeId[tradeId]
+          if (!existing) return s
+          return {
+            byTradeId: {
+              ...s.byTradeId,
+              [tradeId]: { ...existing, ephemeralPrivkeyHex: '0'.repeat(64) },
+            },
+          }
+        })
+      },
+
       get: (tradeId: string) => {
         const entry = get().byTradeId[tradeId]
         return entry ? toRuntime(entry) : undefined
@@ -179,15 +201,18 @@ export const useTradeStore = create<TradeStoreState>()(
     }),
     {
       name: 'bitcaster-trades',
-      // Evict entries older than the TTL on rehydration
+      // Use sessionStorage: ephemeral keys must not survive a tab close.
+      storage: createJSONStorage(() => sessionStorage),
+      // Evict entries older than the TTL on rehydration.
+      // Use useTradeStore.setState (accessed lazily after creation) so that
+      // Zustand subscribers are notified — direct state mutation bypasses them.
       onRehydrateStorage: () => (state) => {
         if (!state) return
         const cutoff = Date.now() - TRADE_TTL_MS
         const entries = Object.entries(state.byTradeId)
         const fresh = entries.filter(([, t]) => t.createdAt >= cutoff)
-        if (fresh.length !== entries.length) {
-          state.byTradeId = Object.fromEntries(fresh)
-        }
+        if (fresh.length === entries.length) return
+        useTradeStore.setState({ byTradeId: Object.fromEntries(fresh) })
       },
     },
   ),

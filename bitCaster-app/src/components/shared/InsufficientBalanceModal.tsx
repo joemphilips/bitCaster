@@ -1,4 +1,5 @@
 import { Zap } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 interface InsufficientBalanceModalProps {
   /** How many sats the user has in the active mint. */
@@ -21,6 +22,7 @@ export function InsufficientBalanceModal({
   onCancel,
   onTopUp,
 }: InsufficientBalanceModalProps) {
+  const { t } = useTranslation()
   const deficit = Math.max(required - balance, 0)
 
   return (
@@ -33,26 +35,26 @@ export function InsufficientBalanceModal({
         </div>
 
         <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
-          Insufficient Balance
+          {t('insufficientBalance.title')}
         </h2>
 
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
-          This trade needs{' '}
+          {t('insufficientBalance.tradeNeeds')}{' '}
           <span className="font-mono text-slate-700 dark:text-slate-200">
-            {required.toLocaleString()} sats
+            {t('insufficientBalance.sats', { count: required })}
           </span>
           .
         </p>
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
-          You have{' '}
+          {t('insufficientBalance.youHave')}{' '}
           <span className="font-mono text-slate-700 dark:text-slate-200">
-            {balance.toLocaleString()} sats
+            {t('insufficientBalance.sats', { count: balance })}
           </span>
           {deficit > 0 && (
             <>
-              {' '}— short by{' '}
+              {' '}— {t('insufficientBalance.shortBy')}{' '}
               <span className="font-mono text-slate-700 dark:text-slate-200">
-                {deficit.toLocaleString()} sats
+                {t('insufficientBalance.sats', { count: deficit })}
               </span>
             </>
           )}
@@ -64,13 +66,13 @@ export function InsufficientBalanceModal({
             onClick={onCancel}
             className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             onClick={onTopUp}
             className="flex-1 py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] text-white font-semibold transition-colors"
           >
-            Top Up
+            {t('insufficientBalance.topUp')}
           </button>
         </div>
       </div>

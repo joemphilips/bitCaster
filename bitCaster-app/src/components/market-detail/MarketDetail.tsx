@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { MarketDetailProps } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
 import { MarketHeader } from './MarketHeader'
@@ -75,6 +76,7 @@ export function MarketDetail({
   userHoldings,
   walletReady = true,
 }: MarketDetailProps) {
+  const { t } = useTranslation()
   const [showWalletModal, setShowWalletModal] = useState(false)
   // Get outcomes for categorical markets
   const outcomes = market.type === 'categorical' ? market.outcomes : undefined
@@ -216,14 +218,14 @@ export function MarketDetail({
                   {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
                 </p>
                 <p className="text-sm font-medium text-slate-900 dark:text-white">
-                  {tradeAmount > 0 ? formatBtc(tradeAmount) : 'Enter amount'}
+                  {tradeAmount > 0 ? formatBtc(tradeAmount) : t('trade.enterAmount')}
                 </p>
               </div>
               <button
                 onClick={onTradeClear}
                 className="px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 onClick={() => {
@@ -240,7 +242,7 @@ export function MarketDetail({
                     : 'bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white'
                 }`}
               >
-                {walletReady ? 'Confirm' : 'Create Wallet'}
+                {walletReady ? t('market.confirm') : t('wallet.createWallet')}
               </button>
             </div>
           ) : (
@@ -259,7 +261,7 @@ export function MarketDetail({
                   : 'bg-blue-600 hover:bg-blue-700 text-white'
               }`}
             >
-              {walletReady ? 'Trade' : 'Create Wallet to Trade'}
+              {walletReady ? t('trade.title') : t('wallet.createWallet')}
             </button>
           )}
         </div>

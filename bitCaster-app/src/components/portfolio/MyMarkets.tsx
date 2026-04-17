@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { CreatedMarket } from '@/types/portfolio'
 import { ChevronDown } from 'lucide-react'
 import { CreatedMarketRow } from './CreatedMarketRow'
@@ -10,6 +11,7 @@ interface MyMarketsProps {
 }
 
 export function MyMarkets({ markets, onViewMarket, onClaimCreatorFees }: MyMarketsProps) {
+  const { t } = useTranslation()
   const [isOpen, setIsOpen] = useState(true)
 
   if (markets.length === 0) return null
@@ -21,7 +23,7 @@ export function MyMarkets({ markets, onViewMarket, onClaimCreatorFees }: MyMarke
         className="w-full flex items-center justify-between p-4 text-left"
       >
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-          My Markets ({markets.length})
+          {t('portfolio.myMarkets', { count: markets.length })}
         </h3>
         <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>

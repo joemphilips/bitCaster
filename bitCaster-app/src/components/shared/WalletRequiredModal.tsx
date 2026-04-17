@@ -1,4 +1,5 @@
 import { Wallet } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
 
 interface WalletRequiredModalProps {
@@ -6,6 +7,7 @@ interface WalletRequiredModalProps {
 }
 
 export function WalletRequiredModal({ onClose }: WalletRequiredModalProps) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -19,11 +21,11 @@ export function WalletRequiredModal({ onClose }: WalletRequiredModalProps) {
         </div>
 
         <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
-          Wallet Required
+          {t('wallet.required')}
         </h2>
 
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
-          Create a wallet to start trading prediction markets with Bitcoin.
+          {t('wallet.requiredDesc')}
         </p>
 
         <div className="flex gap-3">
@@ -31,7 +33,7 @@ export function WalletRequiredModal({ onClose }: WalletRequiredModalProps) {
             onClick={onClose}
             className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             onClick={() => {
@@ -40,7 +42,7 @@ export function WalletRequiredModal({ onClose }: WalletRequiredModalProps) {
             }}
             className="flex-1 py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] text-white font-semibold transition-colors"
           >
-            Create Wallet
+            {t('wallet.createWallet')}
           </button>
         </div>
       </div>

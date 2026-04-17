@@ -1,4 +1,5 @@
 import { AlertTriangle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 interface SeedDisplayProps {
   seedWords: string[]
@@ -13,14 +14,15 @@ export function SeedDisplay({
   onSeedSavedToggle,
   onContinue,
 }: SeedDisplayProps) {
+  const { t } = useTranslation()
   return (
     <div className="max-w-lg mx-auto">
       <div className="text-center mb-6">
         <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
-          Your Seed Phrase
+          {t('seed.yourSeedPhrase')}
         </h2>
         <p className="text-slate-500 dark:text-slate-400">
-          Write down these 12 words in order and store them safely
+          {t('seed.seedPhraseDesc')}
         </p>
       </div>
 
@@ -47,8 +49,7 @@ export function SeedDisplay({
       <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 mb-5">
         <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" strokeWidth={1.5} />
         <p className="text-sm text-amber-800 dark:text-amber-300 leading-relaxed">
-          Write down these words in order. You will need them to recover your wallet.
-          Never share your seed phrase.
+          {t('seed.warning')}
         </p>
       </div>
 
@@ -62,7 +63,7 @@ export function SeedDisplay({
             className="w-4.5 h-4.5 rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
           />
           <span className="text-sm font-medium text-slate-700 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">
-            I have saved my seed phrase
+            {t('seed.savedConfirm')}
           </span>
         </label>
 
@@ -71,7 +72,7 @@ export function SeedDisplay({
           disabled={!seedSaved}
           className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white disabled:text-slate-500 dark:disabled:text-slate-500 font-semibold transition-colors"
         >
-          Continue
+          {t('common.continue')}
         </button>
       </div>
     </div>

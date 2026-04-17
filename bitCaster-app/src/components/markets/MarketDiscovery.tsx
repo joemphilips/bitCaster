@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { TagBar } from './TagBar'
 import { FilterControls } from './FilterControls'
 import { MarketCard } from './MarketCard'
@@ -20,6 +21,7 @@ export function MarketDiscovery({
   onLoadMore,
   onViewSecondaryMarket,
 }: MarketDiscoveryProps) {
+  const { t } = useTranslation()
   const walletReady = useWalletStore((s) => s.setupComplete)
   const observerTarget = useRef<HTMLDivElement>(null)
   const [filtersVisible, setFiltersVisible] = useState(false)
@@ -117,10 +119,10 @@ export function MarketDiscovery({
           <div className="text-center py-16">
             <div className="text-6xl mb-4">🔍</div>
             <h3 className="text-xl font-bold text-slate-700 dark:text-slate-300 mb-2">
-              No markets found
+              {t('market.noMarketsFound')}
             </h3>
             <p className="text-slate-500 dark:text-slate-400">
-              Try adjusting your filters or search query
+              {t('market.noMarketsFoundHint')}
             </p>
           </div>
         ) : (
@@ -141,7 +143,7 @@ export function MarketDiscovery({
         <div ref={observerTarget} className="h-20 flex items-center justify-center">
           {markets.length > 0 && (
             <div className="text-sm text-slate-500 dark:text-slate-400 animate-pulse">
-              Loading more markets...
+              {t('market.loadingMore')}
             </div>
           )}
         </div>

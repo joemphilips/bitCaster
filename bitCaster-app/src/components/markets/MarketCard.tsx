@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Users, Droplet, ChevronUp, ChevronDown, Bookmark, ChevronRight } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { formatBtc } from '@/lib/format'
 import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import { useBookmarkStore } from '@/stores/bookmarks'
@@ -375,6 +376,7 @@ export function MarketCard({
   onViewSecondaryMarket,
   walletReady = true,
 }: MarketCardProps) {
+  const { t } = useTranslation()
   const [isSecondaryExpanded, setIsSecondaryExpanded] = useState(false)
   const [showWalletModal, setShowWalletModal] = useState(false)
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id))
@@ -416,7 +418,7 @@ export function MarketCard({
       return (
         <div className="flex-1 flex flex-col justify-end">
           <div className="flex items-center justify-center gap-2 py-2 flex-1">
-            <span className="text-sm font-medium text-slate-500 dark:text-slate-400">Chance</span>
+            <span className="text-sm font-medium text-slate-500 dark:text-slate-400">{t('market.chance')}</span>
             <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">
               {yesNoMarket.currentOdds.yes.toFixed(1)}%
             </span>
@@ -427,13 +429,13 @@ export function MarketCard({
               onClick={handleBuyClick}
               className="py-2.5 bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-md"
             >
-              Buy YES
+              {t('trade.buyYes')}
             </button>
             <button
               onClick={handleBuyClick}
               className="py-2.5 bg-rose-600 hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-md"
             >
-              Buy NO
+              {t('trade.buyNo')}
             </button>
           </div>
         </div>
@@ -472,7 +474,7 @@ export function MarketCard({
         <div className="flex-1 flex flex-col justify-center">
           <div className="bg-gradient-to-br from-purple-50 to-blue-50 dark:from-purple-950/30 dark:to-blue-950/30 rounded-lg p-4 border border-purple-200 dark:border-purple-800 text-center">
             <div className="text-xs text-slate-600 dark:text-slate-400 mb-2">
-              Complex 2D Market
+              {t('market.complex2D')}
             </div>
             <button
               onClick={(e) => {
@@ -481,7 +483,7 @@ export function MarketCard({
               }}
               className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-md"
             >
-              View & Trade
+              {t('market.viewAndTrade')}
             </button>
           </div>
         </div>

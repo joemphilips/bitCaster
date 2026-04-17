@@ -1,17 +1,19 @@
 import { Check } from 'lucide-react'
 import type { SetupStep } from '@/types/wallet-setup'
+import { useTranslation } from 'react-i18next'
 
 interface StepIndicatorProps {
   currentStep: SetupStep
 }
 
-const steps: { step: SetupStep; label: string; display: number }[] = [
-  { step: 3, label: 'Choice', display: 1 },
-  { step: 4, label: 'Seed', display: 2 },
-  { step: 5, label: 'Mint Setup', display: 3 },
-]
-
 export function StepIndicator({ currentStep }: StepIndicatorProps) {
+  const { t } = useTranslation()
+
+  const steps: { step: SetupStep; label: string; display: number }[] = [
+    { step: 3, label: t('stepIndicator.choice'), display: 1 },
+    { step: 4, label: t('stepIndicator.seed'), display: 2 },
+    { step: 5, label: t('stepIndicator.mintSetup'), display: 3 },
+  ]
   return (
     <div className="flex items-center justify-center gap-0">
       {steps.map(({ step, label, display }, index) => {

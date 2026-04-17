@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
 import { ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { Trade } from '@/types/market-detail'
 import { formatBtc, formatTimeAgo } from '@/lib/format'
 
@@ -58,6 +59,7 @@ export function ActivityFeed({
   trades,
   onLoadMoreTrades,
 }: ActivityFeedProps) {
+  const { t } = useTranslation()
   const scrollRef = useRef<HTMLDivElement>(null)
   const [canScrollUp, setCanScrollUp] = useState(false)
   const [canScrollDown, setCanScrollDown] = useState(false)
@@ -93,7 +95,7 @@ export function ActivityFeed({
       {/* Header */}
       <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-          Recent Trades
+          {t('trade.recentTrades')}
           <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500 font-normal">
             ({trades.length})
           </span>
@@ -119,7 +121,7 @@ export function ActivityFeed({
         >
           {trades.length === 0 ? (
             <p className="text-center text-sm text-slate-400 dark:text-slate-500 py-8">
-              No trades yet
+              {t('trade.noTrades')}
             </p>
           ) : (
             <>
@@ -131,7 +133,7 @@ export function ActivityFeed({
                   onClick={onLoadMoreTrades}
                   className="w-full py-3 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium"
                 >
-                  Load more trades
+                  {t('trade.loadMoreTrades')}
                 </button>
               )}
             </>

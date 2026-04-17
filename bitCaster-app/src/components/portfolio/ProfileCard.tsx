@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { UserProfile } from '@/types/portfolio'
 import { Camera, Eye } from 'lucide-react'
 
@@ -7,7 +8,8 @@ interface ProfileCardProps {
 }
 
 export function ProfileCard({ profile, onAvatarUpload }: ProfileCardProps) {
-  const joinedDate = new Date(profile.registeredDate).toLocaleDateString('en-US', {
+  const { t, i18n } = useTranslation()
+  const joinedDate = new Date(profile.registeredDate).toLocaleDateString(i18n.language, {
     month: 'short',
     year: 'numeric',
   })
@@ -55,11 +57,11 @@ export function ProfileCard({ profile, onAvatarUpload }: ProfileCardProps) {
           {profile.displayName}
         </h2>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Joined {joinedDate}
+          {t('portfolio.joined', { date: joinedDate })}
         </p>
         <div className="flex items-center gap-1 mt-0.5 text-xs text-slate-400 dark:text-slate-500">
           <Eye className="w-3 h-3" />
-          <span>{profile.viewCount.toLocaleString()} views</span>
+          <span>{t('portfolio.views', { count: profile.viewCount })}</span>
         </div>
       </div>
     </div>

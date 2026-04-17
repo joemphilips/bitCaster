@@ -23,6 +23,8 @@
     "dexie-react-hooks": "^4.2.0",
     "express": "^4.21.0",
     "http-proxy-middleware": "^3.0.3",
+    "i18next": "^26.0.5",
+    "i18next-browser-languagedetector": "^8.2.1",
     "lucide-react": "^0.575.0",
     "nostr-tools": "^2.23.3",
     "qr-scanner": "^1.4.2",
@@ -30,6 +32,7 @@
     "react": "^19.0.0",
     "react-day-picker": "^9.14.0",
     "react-dom": "^19.0.0",
+    "react-i18next": "^17.0.4",
     "react-router": "^7.0.0",
     "zustand": "^5.0.11"
   },

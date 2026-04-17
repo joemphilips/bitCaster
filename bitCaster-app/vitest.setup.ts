@@ -1,4 +1,6 @@
 import "@testing-library/jest-dom/vitest";
+// Initialize i18n so components that call useTranslation() get real translations
+import "./src/i18n";
 
 // Polyfill ResizeObserver for jsdom
 if (typeof globalThis.ResizeObserver === "undefined") {

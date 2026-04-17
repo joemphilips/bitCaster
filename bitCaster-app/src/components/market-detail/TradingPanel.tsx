@@ -13,6 +13,7 @@ import type {
   NumericMarketDetail,
 } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
+import { useTranslation } from 'react-i18next'
 
 interface TradingPanelProps {
   market: MarketDetail
@@ -122,6 +123,7 @@ function YesNoOutcomes({
   tradeSide: TradeSide
   onTradeSelect?: (selection: TradeSelection) => void
 }) {
+  const { t } = useTranslation()
   const isSell = tradeSide === 'sell'
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -134,7 +136,7 @@ function YesNoOutcomes({
         }`}
       >
         <div className="text-xs font-medium text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">
-          {isSell ? 'Sell Yes' : 'Yes'}
+          {isSell ? t('trade.sellYes') : t('common.yes')}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
           {market.currentOdds.yes.toFixed(1)}%
@@ -150,7 +152,7 @@ function YesNoOutcomes({
         }`}
       >
         <div className="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wider mb-1">
-          {isSell ? 'Sell No' : 'No'}
+          {isSell ? t('trade.sellNo') : t('common.no')}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
           {market.currentOdds.no.toFixed(1)}%
@@ -171,6 +173,7 @@ function CategoricalOutcomes({
   tradeSide: TradeSide
   onTradeSelect?: (selection: TradeSelection) => void
 }) {
+  const { t } = useTranslation()
   const isSell = tradeSide === 'sell'
   return (
     <ScrollableContainer className="space-y-2 max-h-64 overflow-y-auto pr-1 scrollbar-hide">
@@ -202,7 +205,7 @@ function CategoricalOutcomes({
                     : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20'
                 }`}
               >
-                {isSell ? 'Sell Yes' : 'Buy Yes'}
+                {isSell ? t('trade.sellYes') : t('trade.buyYes')}
               </button>
               <button
                 onClick={() => onTradeSelect?.({ side: 'no', outcomeId: outcome.id })}
@@ -212,7 +215,7 @@ function CategoricalOutcomes({
                     : 'bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20'
                 }`}
               >
-                {isSell ? 'Sell No' : 'Buy No'}
+                {isSell ? t('trade.sellNo') : t('trade.buyNo')}
               </button>
             </div>
           </div>
@@ -233,6 +236,7 @@ function NumericOutcomes({
   tradeSide: TradeSide
   onTradeSelect?: (selection: TradeSelection) => void
 }) {
+  const { t } = useTranslation()
   const isSell = tradeSide === 'sell'
   const formatPrice = (value: number) => {
     if (market.unit === 'USD') return `$${value.toLocaleString()}`
@@ -245,7 +249,7 @@ function NumericOutcomes({
       {/* Current implied price */}
       <div className="text-center p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
         <div className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-          Implied Price
+          {t('market.impliedPrice')}
         </div>
         <div className="text-3xl font-bold text-slate-900 dark:text-white">
           {formatPrice(market.currentPrice)}
@@ -281,10 +285,10 @@ function NumericOutcomes({
           }`}
         >
           <div className="text-xs font-medium text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">
-            {isSell ? 'Sell Higher' : 'Buy Higher'}
+            {isSell ? t('trade.sellHigher') : t('trade.buyHigher')}
           </div>
           <div className="text-sm font-bold text-slate-900 dark:text-white">
-            HI Token
+            {t('market.hiToken')}
           </div>
         </button>
 
@@ -297,10 +301,10 @@ function NumericOutcomes({
           }`}
         >
           <div className="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wider mb-1">
-            {isSell ? 'Sell Lower' : 'Buy Lower'}
+            {isSell ? t('trade.sellLower') : t('trade.buyLower')}
           </div>
           <div className="text-sm font-bold text-slate-900 dark:text-white">
-            LO Token
+            {t('market.loToken')}
           </div>
         </button>
       </div>
@@ -315,6 +319,7 @@ function BuySellToggle({
   tradeSide: TradeSide
   onTradeSideChange?: (side: TradeSide) => void
 }) {
+  const { t } = useTranslation()
   return (
     <div className="grid grid-cols-2 mb-3">
       <button
@@ -325,7 +330,7 @@ function BuySellToggle({
             : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
         }`}
       >
-        Buy
+        {t('trade.buy')}
       </button>
       <button
         onClick={() => onTradeSideChange?.('sell')}
@@ -335,7 +340,7 @@ function BuySellToggle({
             : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
         }`}
       >
-        Sell
+        {t('trade.sell')}
       </button>
     </div>
   )
@@ -348,6 +353,7 @@ function MarketLimitToggle({
   orderType: OrderType
   onOrderTypeChange?: (type: OrderType) => void
 }) {
+  const { t } = useTranslation()
   return (
     <div className="flex bg-slate-100 dark:bg-slate-700/50 rounded-lg p-1 mb-4">
       <button
@@ -358,7 +364,7 @@ function MarketLimitToggle({
             : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
         }`}
       >
-        Market
+        {t('trade.market')}
       </button>
       <button
         onClick={() => onOrderTypeChange?.('limit')}
@@ -368,7 +374,7 @@ function MarketLimitToggle({
             : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
         }`}
       >
-        Limit
+        {t('trade.limit')}
       </button>
     </div>
   )
@@ -383,10 +389,11 @@ function LimitPriceInput({
   baseUnit: string
   onLimitPriceChange?: (price: number) => void
 }) {
+  const { t } = useTranslation()
   return (
     <div className="mb-4">
       <label className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-2 block">
-        Limit Price
+        {t('trade.limitPrice')}
       </label>
       <div className="relative">
         <input
@@ -416,34 +423,35 @@ function LimitOrderPreviewSection({
   feePercent: number
   baseUnit: string
 }) {
+  const { t } = useTranslation()
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
       <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">Limit price</span>
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.limitPrice')}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
           {preview.limitPrice.toLocaleString()} {baseUnit}
         </span>
       </div>
       <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">Shares if filled</span>
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesIfFilled')}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
           {preview.sharesIfFilled.toLocaleString()}
         </span>
       </div>
       <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">Creator fee ({feePercent}%)</span>
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.creatorFee', { percent: feePercent })}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
           {formatBtc(preview.creatorFee)}
         </span>
       </div>
       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
-        <span className="text-slate-700 dark:text-slate-300 font-medium">Total cost</span>
+        <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalCost')}</span>
         <span className="font-bold text-blue-600 dark:text-blue-400">
           {formatBtc(preview.totalCost)}
         </span>
       </div>
       <p className="text-[10px] text-slate-400 dark:text-slate-500 pt-1">
-        Order will fill when market price reaches your specified level
+        {t('trade.orderFillHint')}
       </p>
     </div>
   )
@@ -469,6 +477,7 @@ export function TradingPanel({
   onLimitPriceChange,
   walletReady = true,
 }: TradingPanelProps) {
+  const { t } = useTranslation()
   const [tradeComment, setTradeComment] = useState('')
   const [showWalletModal, setShowWalletModal] = useState(false)
   const isSell = tradeSide === 'sell'
@@ -477,21 +486,21 @@ export function TradingPanel({
 
   // Build confirm button text
   const getConfirmText = () => {
-    if (!walletReady) return 'Create Wallet to Trade'
-    if (!tradeAmount || tradeAmount <= 0) return 'Enter amount'
+    if (!walletReady) return t('wallet.createWallet')
+    if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
     const amountLabel = formatBtc(tradeAmount)
 
-    if (isSell && isLimit) return `Place Sell Limit Order for ${amountLabel}`
-    if (isSell) return `Sell ${sideLabel} for ${amountLabel}`
-    if (isLimit) return `Place Limit Order for ${amountLabel}`
-    return `Buy ${sideLabel} for ${amountLabel}`
+    if (isSell && isLimit) return t('trade.confirmLimitSell', { amount: amountLabel })
+    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: amountLabel })
+    if (isLimit) return t('trade.confirmLimitBuy', { amount: amountLabel })
+    return t('trade.confirmBuy', { side: sideLabel, amount: amountLabel })
   }
 
   return (
     <div data-trading-panel className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5">
       <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">
-        Trade
+        {t('trade.title')}
       </h3>
 
       {/* Buy/Sell Toggle */}
@@ -531,7 +540,7 @@ export function TradingPanel({
         <div className="mt-5 pt-5 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between mb-1">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
-              {isSell ? 'Shares to sell' : 'Amount (₿)'}
+              {isSell ? t('trade.sharesToSell') : t('trade.amountBtc')}
             </span>
             <button
               onClick={onTradeClear}
@@ -544,7 +553,7 @@ export function TradingPanel({
           {/* Balance hint when selling */}
           {isSell && userHoldings != null && (
             <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
-              Balance: {userHoldings.toLocaleString()} shares
+              {t('trade.balance', { count: userHoldings })}
             </p>
           )}
 
@@ -613,26 +622,26 @@ export function TradingPanel({
           {!isLimit && tradePreview && tradeAmount > 0 && (
             <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
               <div className="flex justify-between text-sm">
-                <span className="text-slate-500 dark:text-slate-400">Price impact</span>
+                <span className="text-slate-500 dark:text-slate-400">{t('trade.priceImpact')}</span>
                 <span className={`font-medium ${tradePreview.priceImpact > 0 ? 'text-amber-500' : 'text-slate-600 dark:text-slate-300'}`}>
                   {tradePreview.priceImpact > 0 ? '+' : ''}{tradePreview.priceImpact.toFixed(1)}%
                 </span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-slate-500 dark:text-slate-400">Predicted odds</span>
+                <span className="text-slate-500 dark:text-slate-400">{t('trade.predictedOdds')}</span>
                 <span className="font-medium text-slate-600 dark:text-slate-300">
                   {tradePreview.predictedOdds.toFixed(1)}%
                 </span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-slate-500 dark:text-slate-400">Creator fee ({market.creator.feePercent}%)</span>
+                <span className="text-slate-500 dark:text-slate-400">{t('trade.creatorFee', { percent: market.creator.feePercent })}</span>
                 <span className="font-medium text-slate-600 dark:text-slate-300">
                   {formatBtc(tradePreview.creatorFee)}
                 </span>
               </div>
               <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
                 <span className="text-slate-700 dark:text-slate-300 font-medium">
-                  {isSell ? 'Proceeds' : 'Potential payout'}
+                  {isSell ? t('trade.proceeds') : t('trade.potentialPayout')}
                 </span>
                 <span className="font-bold text-emerald-600 dark:text-emerald-400">
                   {formatBtc(isSell ? tradePreview.totalCost : tradePreview.potentialPayout)}
@@ -653,12 +662,12 @@ export function TradingPanel({
           {/* Optional Comment with Trade */}
           <div className="mb-4">
             <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5 block">
-              Add a comment (optional)
+              {t('trade.comment')}
             </label>
             <textarea
               value={tradeComment}
               onChange={(e) => setTradeComment(e.target.value.slice(0, 280))}
-              placeholder="Share your reasoning..."
+              placeholder={t('trade.commentPlaceholder')}
               rows={2}
               className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
             />

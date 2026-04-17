@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 const VERIFICATION_INDICES = [2, 6, 11] // word #3, #7, #12 (0-indexed)
 
@@ -14,6 +15,7 @@ export function SeedVerification({
   onVerificationComplete,
   onBack,
 }: SeedVerificationProps) {
+  const { t } = useTranslation()
   const [subStep, setSubStep] = useState(0)
   const [input, setInput] = useState('')
   const [error, setError] = useState('')
@@ -24,7 +26,7 @@ export function SeedVerification({
 
   function handleSubmit() {
     if (input.toLowerCase().trim() !== seedWords[currentIndex]) {
-      setError(`Incorrect. Please enter word #${wordNumber} from your seed phrase.`)
+      setError(t('seed.incorrectWord', { number: wordNumber }))
       return
     }
 
@@ -57,21 +59,21 @@ export function SeedVerification({
         className="flex items-center gap-1.5 text-sm font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors mb-6"
       >
         <ArrowLeft className="w-4 h-4" strokeWidth={1.5} />
-        Back
+        {t('common.back')}
       </button>
 
       <div className="text-center mb-8">
         <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
-          Verify Your Seed Phrase
+          {t('seed.verifySeedPhrase')}
         </h2>
         <p className="text-slate-500 dark:text-slate-400">
-          Step {subStep + 1} of {VERIFICATION_INDICES.length}
+          {t('seed.verifyStep', { current: subStep + 1, total: VERIFICATION_INDICES.length })}
         </p>
       </div>
 
       <div className="bg-slate-50 dark:bg-slate-800/80 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 mb-6">
         <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">
-          Enter word #{wordNumber}
+          {t('seed.enterWord', { number: wordNumber })}
         </label>
         <input
           type="text"
@@ -81,7 +83,7 @@ export function SeedVerification({
             setError('')
           }}
           onKeyDown={(e) => e.key === 'Enter' && isCorrect && handleSubmit()}
-          placeholder={`Word #${wordNumber}`}
+          placeholder={t('seed.wordPlaceholderNumber', { number: wordNumber })}
           autoComplete="off"
           spellCheck={false}
           autoFocus
@@ -97,7 +99,7 @@ export function SeedVerification({
         disabled={!isCorrect}
         className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white disabled:text-slate-500 dark:disabled:text-slate-500 font-semibold transition-colors"
       >
-        {isLastStep ? 'Continue' : 'Next'}
+        {isLastStep ? t('common.continue') : t('common.next')}
       </button>
     </div>
   )

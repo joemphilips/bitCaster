@@ -1,4 +1,5 @@
 import { Bookmark, Share2, Clock, CheckCircle2, Droplet, Users } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
 import { useBookmarkStore } from '@/stores/bookmarks'
@@ -9,29 +10,29 @@ interface MarketHeaderProps {
   onCreatorClick?: (creatorId: string) => void
 }
 
-function formatTimeRemaining(closingDate: string): string {
+function formatTimeRemaining(closingDate: string, t: (key: string, opts?: Record<string, unknown>) => string, locale: string): string {
   const now = new Date()
   const close = new Date(closingDate)
   const diff = close.getTime() - now.getTime()
 
-  if (diff < 0) return 'Closed'
+  if (diff < 0) return t('market.closed')
 
   const days = Math.floor(diff / (1000 * 60 * 60 * 24))
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
 
   if (days > 7) {
-    return new Date(closingDate).toLocaleDateString('en-US', {
+    return new Date(closingDate).toLocaleDateString(locale, {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
     })
   }
 
-  if (days > 0) return `${days}d ${hours}h remaining`
-  if (hours > 0) return `${hours}h remaining`
+  if (days > 0) return t('market.daysHoursRemaining', { days, hours })
+  if (hours > 0) return t('market.hoursRemaining', { hours })
 
   const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
-  return `${minutes}m remaining`
+  return t('market.minutesRemaining', { minutes })
 }
 
 export function MarketHeader({
@@ -39,14 +40,15 @@ export function MarketHeader({
   onShare,
   onCreatorClick,
 }: MarketHeaderProps) {
+  const { t, i18n } = useTranslation()
   const isResolved = market.resolution.status === 'resolved'
-  const timeRemaining = formatTimeRemaining(market.closingDate)
+  const timeRemaining = formatTimeRemaining(market.closingDate, t, i18n.language)
   const isClosingSoon = !isResolved && new Date(market.closingDate).getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id))
   const toggleBookmark = useBookmarkStore((s) => s.toggle)
 
   const resolvedDate = isResolved
-    ? new Date(market.resolution.resolutionDate).toLocaleDateString('en-US', {
+    ? new Date(market.resolution.resolutionDate).toLocaleDateString(i18n.language, {
         month: 'long',
         day: 'numeric',
         year: 'numeric',
@@ -74,7 +76,7 @@ export function MarketHeader({
           <div className="flex items-center gap-2 mb-3">
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 uppercase tracking-wider">
               <CheckCircle2 className="w-3.5 h-3.5" />
-              Resolved
+              {t('marketStatus.resolved')}
             </span>
             {market.resolution.finalOutcome && (
               <span className="text-sm font-semibold text-emerald-400">
@@ -113,7 +115,7 @@ export function MarketHeader({
           }`}>
             {isResolved ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
             <span className="text-sm font-medium">
-              {isResolved ? `Resolved on ${resolvedDate}` : timeRemaining}
+              {isResolved ? t('market.resolvedOn', { date: resolvedDate }) : timeRemaining}
             </span>
           </div>
 
@@ -127,7 +129,7 @@ export function MarketHeader({
             }`}
           >
             <Share2 className="w-4 h-4" />
-            <span className="text-sm font-medium">Share</span>
+            <span className="text-sm font-medium">{t('common.share')}</span>
           </button>
         </div>
 
@@ -156,8 +158,8 @@ export function MarketHeader({
               {market.creator.name}
             </p>
             <p className={`text-xs ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>
-              {market.creator.totalMarketsCreated} markets created
-              {market.creator.reputationScore && ` • ${market.creator.reputationScore} rating`}
+              {t('market.marketsCreated', { count: market.creator.totalMarketsCreated })}
+              {market.creator.reputationScore && ` • ${market.creator.reputationScore} ${t('market.rating')}`}
             </p>
           </div>
         </button>
@@ -188,7 +190,7 @@ export function MarketHeader({
                   ? 'text-slate-300 hover:text-amber-500'
                   : 'text-slate-600 dark:text-slate-400 hover:text-amber-500'
             }`}
-            title={isBookmarked ? 'Remove bookmark' : 'Bookmark'}
+            title={isBookmarked ? t('market.removeBookmark') : t('market.bookmark')}
             aria-pressed={isBookmarked}
           >
             <Bookmark className="w-3.5 h-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />

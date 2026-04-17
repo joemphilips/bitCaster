@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { PortfolioStats } from '@/types/portfolio'
 import { formatBtc } from '@/lib/format'
 
@@ -19,11 +20,12 @@ function StatCard({ label, value }: { label: string; value: string }) {
 }
 
 export function StatsRow({ stats }: StatsRowProps) {
+  const { t } = useTranslation()
   return (
     <div className="flex items-stretch divide-x divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-      <StatCard label="Positions Value" value={formatBtc(stats.positionsValueSats)} />
-      <StatCard label="Biggest Win" value={formatBtc(stats.biggestWinSats)} />
-      <StatCard label="Predictions" value={stats.predictionsCount.toString()} />
+      <StatCard label={t('portfolio.positionsValue')} value={formatBtc(stats.positionsValueSats)} />
+      <StatCard label={t('portfolio.biggestWin')} value={formatBtc(stats.biggestWinSats)} />
+      <StatCard label={t('portfolio.predictions')} value={stats.predictionsCount.toString()} />
     </div>
   )
 }

@@ -7,7 +7,7 @@
  * Spec reference: nuts/11.md (P2PK spending conditions)
  */
 
-import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { schnorr } from '@noble/curves/secp256k1.js'
 
 // ---------------------------------------------------------------------------
 // NUT-11 secret structure
@@ -78,10 +78,10 @@ export function createP2PKWitness(
   message: Uint8Array,
 ): string {
   if (message.length !== 32) throw new Error('message must be 32 bytes')
-  // noble/curves v2: secp256k1.sign returns a Uint8Array (compact 64-byte DER sig)
-  // { lowS: true } ensures canonical form required by NUT-11.
-  const sigBytes = secp256k1.sign(message, privateKey, { lowS: true }) as unknown as Uint8Array
-  return JSON.stringify({ signatures: [bytesToHex(sigBytes)] })
+  // NUT-11 requires BIP-340 Schnorr signatures (not ECDSA).
+  // schnorr.sign returns a 64-byte Uint8Array directly — no cast needed.
+  const sig = schnorr.sign(message, privateKey)
+  return JSON.stringify({ signatures: [bytesToHex(sig)] })
 }
 
 // ---------------------------------------------------------------------------

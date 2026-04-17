@@ -1,4 +1,5 @@
 import { Filter } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { MarketType, VolumeRange } from '@/types/market'
 
 interface FilterControlsProps {
@@ -11,28 +12,28 @@ interface FilterControlsProps {
   onClosingDateChange?: (days?: number) => void
 }
 
-const MARKET_TYPE_OPTIONS: { value: MarketType; label: string }[] = [
-  { value: 'yesno', label: 'Yes/No' },
-  { value: 'categorical', label: 'Categorical' },
-  { value: 'twodimensional', label: 'Two-Dimensional' },
+const MARKET_TYPE_OPTIONS: { value: MarketType; labelKey: string }[] = [
+  { value: 'yesno', labelKey: 'filter.yesNo' },
+  { value: 'categorical', labelKey: 'filter.categorical' },
+  { value: 'twodimensional', labelKey: 'filter.twoDimensional' },
 ]
 
-const VOLUME_OPTIONS = [
-  { value: undefined, label: 'Any' },
-  { value: 10000, label: '10K+' },
-  { value: 100000, label: '100K+' },
-  { value: 500000, label: '500K+' },
-  { value: 1000000, label: '1M+' },
-  { value: 5000000, label: '5M+' },
+const VOLUME_OPTIONS: { value: number | undefined; labelKey: string; rawLabel?: string }[] = [
+  { value: undefined, labelKey: 'filter.volAny' },
+  { value: 10000, labelKey: '', rawLabel: '10K+' },
+  { value: 100000, labelKey: '', rawLabel: '100K+' },
+  { value: 500000, labelKey: '', rawLabel: '500K+' },
+  { value: 1000000, labelKey: '', rawLabel: '1M+' },
+  { value: 5000000, labelKey: '', rawLabel: '5M+' },
 ]
 
-const CLOSING_DATE_OPTIONS = [
-  { value: undefined, label: 'Any time' },
-  { value: 7, label: 'Within 7 days' },
-  { value: 30, label: 'Within 30 days' },
-  { value: 90, label: 'Within 90 days' },
-  { value: 180, label: 'Within 6 months' },
-  { value: 365, label: 'Within 1 year' },
+const CLOSING_DATE_OPTIONS: { value: number | undefined; labelKey: string }[] = [
+  { value: undefined, labelKey: 'filter.anyTime' },
+  { value: 7, labelKey: 'filter.within7Days' },
+  { value: 30, labelKey: 'filter.within30Days' },
+  { value: 90, labelKey: 'filter.within90Days' },
+  { value: 180, labelKey: 'filter.within6Months' },
+  { value: 365, labelKey: 'filter.within1Year' },
 ]
 
 export function FilterControls({
@@ -44,6 +45,8 @@ export function FilterControls({
   onVolumeRangeChange,
   onClosingDateChange,
 }: FilterControlsProps) {
+  const { t } = useTranslation()
+
   const handleMarketTypeToggle = (type: MarketType) => {
     const newTypes = selectedMarketTypes.includes(type)
       ? selectedMarketTypes.filter((t) => t !== type)
@@ -62,7 +65,7 @@ export function FilterControls({
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
             <Filter className="w-4 h-4" />
-            <span className="text-sm font-semibold">Filters:</span>
+            <span className="text-sm font-semibold">{t('common.filters')}</span>
           </div>
 
           {/* Market Type Filter */}
@@ -79,7 +82,7 @@ export function FilterControls({
                       : 'bg-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
                   }`}
                 >
-                  {option.label}
+                  {t(option.labelKey)}
                 </button>
               )
             })}
@@ -98,7 +101,7 @@ export function FilterControls({
           >
             {VOLUME_OPTIONS.map((option) => (
               <option key={option.value || 'any'} value={option.value || ''}>
-                Vol: {option.label}
+                {option.value === undefined ? t('filter.volAny') : option.rawLabel}
               </option>
             ))}
           </select>
@@ -113,7 +116,7 @@ export function FilterControls({
           >
             {CLOSING_DATE_OPTIONS.map((option) => (
               <option key={option.value || 'any'} value={option.value || ''}>
-                {option.label}
+                {t(option.labelKey)}
               </option>
             ))}
           </select>
@@ -124,12 +127,13 @@ export function FilterControls({
             closingInDays !== undefined) && (
             <div className="ml-auto flex items-center gap-2">
               <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">
-                {[
-                  selectedMarketTypes.length > 0 ? 1 : 0,
-                  volumeRange.min !== undefined ? 1 : 0,
-                  closingInDays !== undefined ? 1 : 0,
-                ].reduce((a, b) => a + b, 0)}{' '}
-                active
+                {t('common.active_filters', {
+                  count: [
+                    selectedMarketTypes.length > 0 ? 1 : 0,
+                    volumeRange.min !== undefined ? 1 : 0,
+                    closingInDays !== undefined ? 1 : 0,
+                  ].reduce((a, b) => a + b, 0),
+                })}
               </span>
               <button
                 onClick={() => {
@@ -139,7 +143,7 @@ export function FilterControls({
                 }}
                 className="text-xs font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 underline"
               >
-                Clear all
+                {t('common.clearAll')}
               </button>
             </div>
           )}

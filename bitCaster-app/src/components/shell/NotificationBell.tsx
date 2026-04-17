@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Bell, Check, X, TrendingUp, AlertCircle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import {
   type Notification,
   selectUnreadCount,
@@ -27,6 +28,7 @@ export function NotificationBell({
   onNavigate,
   variant = 'desktop',
 }: NotificationBellProps) {
+  const { t } = useTranslation()
   const [isOpen, setIsOpen] = useState(false)
   const unreadCount = useNotificationsStore(selectUnreadCount)
   const items = useNotificationsStore((s) => (isOpen ? s.items : EMPTY_ITEMS))
@@ -67,7 +69,7 @@ export function NotificationBell({
           <Bell className="w-5 h-5" />
           {badge}
         </div>
-        <span className="text-xs font-medium">Notifications</span>
+        <span className="text-xs font-medium">{t('nav.notifications')}</span>
       </button>
     ) : (
       <button
@@ -99,7 +101,7 @@ export function NotificationBell({
           >
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-700">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                Notifications
+                {t('nav.notifications')}
               </h3>
               <div className="flex items-center gap-1">
                 {items.length > 0 && (
@@ -107,7 +109,7 @@ export function NotificationBell({
                     onClick={clear}
                     className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700"
                   >
-                    Clear
+                    {t('common.clearAll')}
                   </button>
                 )}
                 <button
@@ -123,7 +125,7 @@ export function NotificationBell({
             <div className="overflow-y-auto flex-1">
               {items.length === 0 ? (
                 <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
-                  No notifications yet.
+                  {t('notification.empty')}
                 </div>
               ) : (
                 <ul className="divide-y divide-slate-200 dark:divide-slate-700">
@@ -136,7 +138,7 @@ export function NotificationBell({
                         <NotificationIcon kind={n.kind} />
                         <div className="flex-1 min-w-0">
                           <div className="text-sm text-slate-900 dark:text-slate-100">
-                            {formatNotification(n)}
+                            {formatNotification(n, t)}
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                             {formatTimeAgo(n.occurredAt)}
@@ -165,14 +167,14 @@ function NotificationIcon({ kind }: { kind: Notification['kind'] }) {
   return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
 }
 
-function formatNotification(n: Notification): string {
+function formatNotification(n: Notification, t: (key: string, opts?: Record<string, unknown>) => string): string {
   const parts = splitMarketId(n.marketId)
   const marketLabel = parts ? parts.outcomeName : n.marketId
   if (n.kind === 'filled') {
-    return `Order filled: ${n.filledAmountSats} sats on ${marketLabel}`
+    return t('notification.filled', { sats: n.filledAmountSats, market: marketLabel })
   }
   if (n.kind === 'partially_filled') {
-    return `Partial fill: ${n.filledAmountSats} sats filled on ${marketLabel}, ${n.remainingAmountSats} remaining`
+    return t('notification.partiallyFilled', { sats: n.filledAmountSats, remaining: n.remainingAmountSats, market: marketLabel })
   }
-  return `Order cancelled on ${marketLabel}`
+  return t('notification.cancelled', { market: marketLabel })
 }

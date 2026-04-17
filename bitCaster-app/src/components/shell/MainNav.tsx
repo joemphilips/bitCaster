@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { TrendingUp, Search } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 interface MainNavProps {
   items: Array<{ label: string; href: string; isActive?: boolean }>
@@ -8,6 +9,7 @@ interface MainNavProps {
 }
 
 export function MainNav({ items, onNavigate, onSearchChange }: MainNavProps) {
+  const { t } = useTranslation()
   const [searchQuery, setSearchQuery] = useState('')
   const [searchExpanded, setSearchExpanded] = useState(false)
 
@@ -45,7 +47,7 @@ export function MainNav({ items, onNavigate, onSearchChange }: MainNavProps) {
             onChange={handleSearchChange}
             onFocus={() => setSearchExpanded(true)}
             onBlur={() => setSearchExpanded(false)}
-            placeholder="Search markets..."
+            placeholder={t('nav.searchMarkets')}
             className={`w-full pl-9 pr-4 py-2 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
               searchExpanded ? 'ring-2 ring-blue-500' : ''
             }`}

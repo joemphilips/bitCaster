@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { PortfolioProps } from '@/types/portfolio'
 import { Settings } from 'lucide-react'
 import { ProfileCard } from './ProfileCard'
@@ -12,6 +13,7 @@ import { MyMarkets } from './MyMarkets'
 type MainTab = 'positions' | 'funds' | 'activity'
 
 export function Portfolio(props: PortfolioProps) {
+  const { t } = useTranslation()
   const [mainTab, setMainTab] = useState<MainTab>('positions')
 
   // No-wallet CTA state
@@ -22,16 +24,16 @@ export function Portfolio(props: PortfolioProps) {
           <span className="text-4xl">&#8383;</span>
         </div>
         <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
-          Welcome to bitCaster
+          {t('portfolio.welcomeTitle')}
         </h2>
         <p className="text-slate-500 dark:text-slate-400 max-w-sm mb-6">
-          Set up your wallet to start trading prediction markets with Bitcoin.
+          {t('portfolio.welcomeDesc')}
         </p>
         <button
           onClick={() => props.onGetStarted?.()}
           className="px-8 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold transition-colors"
         >
-          Get Started
+          {t('wallet.getStarted')}
         </button>
       </div>
     )
@@ -78,13 +80,13 @@ export function Portfolio(props: PortfolioProps) {
           onClick={() => props.onDeposit?.()}
           className="py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold transition-colors"
         >
-          Deposit
+          {t('common.deposit')}
         </button>
         <button
           onClick={() => props.onWithdraw?.()}
           className="py-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-900 dark:text-white font-semibold transition-colors border border-slate-200 dark:border-slate-600"
         >
-          Withdraw
+          {t('common.withdraw')}
         </button>
       </div>
 
@@ -103,7 +105,7 @@ export function Portfolio(props: PortfolioProps) {
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
               }`}
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {t(`portfolio.${tab}`)}
               {mainTab === tab && (
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 dark:bg-blue-400" />
               )}

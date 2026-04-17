@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { Fund } from '@/types/portfolio'
 import { FundRow } from './FundRow'
 
@@ -7,10 +8,11 @@ interface FundsListProps {
 }
 
 export function FundsList({ funds, onViewFund }: FundsListProps) {
+  const { t } = useTranslation()
   if (funds.length === 0) {
     return (
       <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-        No funds
+        {t('portfolio.noFunds')}
       </div>
     )
   }

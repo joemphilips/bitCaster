@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { Position } from '@/types/portfolio'
 import { PositionRow } from './PositionRow'
 
@@ -18,6 +19,7 @@ export function PositionsList({
   onClaimPayout,
   onViewPosition,
 }: PositionsListProps) {
+  const { t } = useTranslation()
   const filtered = positions.filter((p) => p.status === positionsTab)
 
   return (
@@ -38,7 +40,7 @@ export function PositionsList({
                   : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
               }`}
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)} ({count})
+              {t(`common.${tab}`)} ({count})
             </button>
           )
         })}
@@ -47,7 +49,7 @@ export function PositionsList({
       {/* Position List */}
       {filtered.length === 0 ? (
         <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-          No {positionsTab} positions
+          {positionsTab === 'active' ? t('portfolio.noActivePositions') : t('portfolio.noClosedPositions')}
         </div>
       ) : (
         <div className="space-y-1">

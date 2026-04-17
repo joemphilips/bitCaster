@@ -68,13 +68,21 @@ export function preSign(
 
   // Deterministic nonce derived from (sk, m, T) to avoid reuse
   const nonceBytes = deterministicNonce(privateKey, message, adaptorPoint)
-  const r = Fn.create(bytesToBigInt(nonceBytes))
-  if (r === 0n) throw new Error('degenerate nonce — try again')
+  let r_scalar = Fn.create(bytesToBigInt(nonceBytes))
+  if (r_scalar === 0n) throw new Error('degenerate nonce — try again')
 
   // R = r·G,  T = adaptorPoint,  R' = R + T
-  const R = Pt.BASE.multiply(r)
+  let R = Pt.BASE.multiply(r_scalar)
   const T = Pt.fromHex(bytesToHex(adaptorPoint))
-  const R_prime = R.add(T)
+  let R_prime = R.add(T)
+
+  // BIP-340 requires even-y for the nonce point used in the challenge.
+  // If R' has odd y, negate r so that R' flips to even y.
+  if (R_prime.toAffine().y % 2n !== 0n) {
+    r_scalar = Fn.create(ORDER - r_scalar)
+    R = Pt.BASE.multiply(r_scalar)
+    R_prime = R.add(T)
+  }
 
   // Signer's public key P = x·G
   const x = Fn.create(bytesToBigInt(privateKey))
@@ -86,7 +94,7 @@ export function preSign(
   const e = schnorrChallenge(R_prime_x, P_x, message)
 
   // s' = r + e·x  (mod n)
-  const s_prime = Fn.create(r + Fn.create(e * x))
+  const s_prime = Fn.create(r_scalar + Fn.create(e * x))
 
   const R_prime_compressed = hexToBytes(R_prime.toHex(true))  // 33 bytes
   const out = new Uint8Array(65)
@@ -150,32 +158,65 @@ export function adapt(preSig: Uint8Array, adaptorSecret: Uint8Array): Uint8Array
 
   const s_prime = bytesToBigInt(preSig.slice(33, 65))
   const t = Fn.create(bytesToBigInt(adaptorSecret))
-  const s = Fn.create(s_prime + t)
 
   // Canonical nonce: R = R' - T
   const R_prime = Pt.fromHex(bytesToHex(preSig.slice(0, 33)))
   const T = Pt.BASE.multiply(t)
   const R = R_prime.subtract(T)
 
+  // BIP-340 requires even-y for R. If R has odd y, negate s so the
+  // verifier's reconstruction of R (from s·G - e·P) yields the even-y point.
+  let s_val = Fn.create(s_prime + t)
+  if (R.toAffine().y % 2n !== 0n) {
+    s_val = Fn.create(ORDER - s_val)
+  }
+
   const sig = new Uint8Array(64)
   sig.set(bigIntToBytes32(R.toAffine().x), 0)  // x-only 32 bytes
-  sig.set(bigIntToBytes32(s), 32)
+  sig.set(bigIntToBytes32(s_val), 32)
   return sig
 }
 
 /**
  * Extract the adaptor secret from a completed signature and pre-signature.
  *
- * t = s - s'  (mod n)
+ * When R = R' - T has even y:  t = s - s'  (mod n)
+ * When R = R' - T has odd y:   adapt() negated s, so s_adapted = -(s'+t),
+ *                               therefore t = -s_adapted - s' = n - s - s'  (mod n)
+ *
+ * We disambiguate by trying both candidates and checking which gives a T
+ * consistent with R' = R + T (i.e. T = R' - R for the right parity of R).
  */
 export function extract(signature: Uint8Array, preSig: Uint8Array): Uint8Array {
   if (signature.length !== 64) throw new Error('signature must be 64 bytes')
   if (preSig.length !== 65) throw new Error('preSig must be 65 bytes')
 
-  const s = bytesToBigInt(signature.slice(32, 64))
+  const s_val = bytesToBigInt(signature.slice(32, 64))
   const s_prime = bytesToBigInt(preSig.slice(33, 65))
-  const t = Fn.create(s - s_prime + ORDER)
-  return bigIntToBytes32(t)
+  const R_prime = Pt.fromHex(bytesToHex(preSig.slice(0, 33)))
+  const R_x = bytesToBigInt(signature.slice(0, 32))
+
+  // Try both candidates for t (even-y and odd-y R cases)
+  const t_even = Fn.create(s_val - s_prime + ORDER)   // even-y R case
+  const t_odd  = Fn.create(ORDER - s_val - s_prime + ORDER)  // odd-y R (s was negated)
+
+  // For each candidate, reconstruct T = t·G and check R' = R_even + T or R' = R_odd + T
+  for (const t_candidate of [t_even, t_odd]) {
+    if (t_candidate === 0n) continue
+    try {
+      const T = Pt.BASE.multiply(t_candidate)
+      // R = R' - T; check that R's x-coordinate matches the sig
+      const R_reconstructed = R_prime.subtract(T)
+      if (R_reconstructed.toAffine().x === R_x) {
+        return bigIntToBytes32(t_candidate)
+      }
+    } catch {
+      // invalid point, try next candidate
+    }
+  }
+
+  // Fallback: return the even-y candidate (caller's responsibility to verify)
+  return bigIntToBytes32(t_even)
 }
 
 // ---------------------------------------------------------------------------
@@ -213,20 +254,34 @@ function schnorrChallenge(R_x: Uint8Array, P_x: Uint8Array, message: Uint8Array)
   return Fn.create(bytesToBigInt(digest))
 }
 
+// Pre-computed tagged hash prefix for adaptor nonce derivation (cached at module level)
+let _nonceTagPrefix: Uint8Array | null = null
+
+function getNonceTagPrefix(): Uint8Array {
+  if (_nonceTagPrefix) return _nonceTagPrefix
+  const tagHash = sha256(new TextEncoder().encode('bitcaster/adaptor-nonce'))
+  _nonceTagPrefix = new Uint8Array(64)
+  _nonceTagPrefix.set(tagHash, 0)
+  _nonceTagPrefix.set(tagHash, 32)
+  return _nonceTagPrefix
+}
+
 /**
- * Deterministic nonce: SHA256(privkey || message || adaptorPoint).
- * Ensures nonce uniqueness per (sk, m, T) triple.
+ * Deterministic nonce with domain separation.
+ * Uses a BIP-340-style tagged hash: SHA256(tag || tag || sk || m || T).
  */
 function deterministicNonce(
   privateKey: Uint8Array,
   message: Uint8Array,
   adaptorPoint: Uint8Array,
 ): Uint8Array {
-  const combined = new Uint8Array(privateKey.length + message.length + adaptorPoint.length)
-  combined.set(privateKey, 0)
-  combined.set(message, privateKey.length)
-  combined.set(adaptorPoint, privateKey.length + message.length)
-  return sha256(combined)
+  const prefix = getNonceTagPrefix()
+  const data = new Uint8Array(64 + privateKey.length + message.length + adaptorPoint.length)
+  data.set(prefix, 0)
+  data.set(privateKey, 64)
+  data.set(message, 64 + privateKey.length)
+  data.set(adaptorPoint, 64 + privateKey.length + message.length)
+  return sha256(data)
 }
 
 function bytesToBigInt(bytes: Uint8Array): bigint {

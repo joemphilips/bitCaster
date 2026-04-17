@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
+import { useTranslation } from "react-i18next";
 import { AppShell } from "@/components/shell";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
@@ -14,6 +15,7 @@ import { usePendingTradesPoller } from "@/lib/orderStatus";
 function AppRoutes() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { t } = useTranslation();
   useBookmarkSync();
   useCreatorSync();
   usePendingTradesPoller();
@@ -30,7 +32,7 @@ function AppRoutes() {
 
   const navigationItems = [
     {
-      label: "Markets",
+      label: t("nav.markets"),
       href: "/markets",
       isActive: location.pathname === "/" || location.pathname.startsWith("/markets"),
     },

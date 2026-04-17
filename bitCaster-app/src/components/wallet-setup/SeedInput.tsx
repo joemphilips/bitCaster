@@ -1,5 +1,6 @@
 import type { ClipboardEvent } from 'react'
 import * as bip39 from '@/lib/bip39'
+import { useTranslation } from 'react-i18next'
 
 interface SeedInputProps {
   inputSeedWords: string[]
@@ -14,6 +15,7 @@ export function SeedInput({
   onSeedPhrasePaste,
   onRecover,
 }: SeedInputProps) {
+  const { t } = useTranslation()
   const allFilled = inputSeedWords.every((w) => w.trim().length > 0)
   const allValidWords = allFilled && inputSeedWords.every((w) => bip39.validateWord(w.trim()))
   const isValidMnemonic = allValidWords && bip39.validate(inputSeedWords.map((w) => w.trim()))
@@ -31,10 +33,10 @@ export function SeedInput({
     <div className="max-w-lg mx-auto">
       <div className="text-center mb-6">
         <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
-          Enter Your Seed Phrase
+          {t('seed.enterSeedPhrase')}
         </h2>
         <p className="text-slate-500 dark:text-slate-400">
-          Enter your 12-word seed phrase to recover your wallet
+          {t('seed.enterSeedPhraseDesc')}
         </p>
       </div>
 
@@ -51,7 +53,7 @@ export function SeedInput({
                 value={word}
                 onChange={(e) => onSeedWordInput?.(index, e.target.value.toLowerCase().trim())}
                 onPaste={handlePaste}
-                placeholder="word"
+                placeholder={t('seed.wordPlaceholder')}
                 autoComplete="off"
                 spellCheck={false}
                 className="w-full px-2.5 py-2 rounded-lg bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 text-sm font-mono font-semibold text-slate-900 dark:text-white placeholder:text-slate-300 dark:placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
@@ -61,13 +63,13 @@ export function SeedInput({
         </div>
 
         <p className="mt-3 text-xs text-slate-400 dark:text-slate-500 text-center">
-          Tip: Paste your full 12-word phrase into any field to auto-fill all words
+          {t('seed.pasteTip')}
         </p>
       </div>
 
       {allFilled && !isValidMnemonic && (
         <p className="text-sm text-red-500 dark:text-red-400 mb-4 text-center">
-          Invalid mnemonic phrase. Please check your words and try again.
+          {t('seed.invalidMnemonic')}
         </p>
       )}
 
@@ -76,7 +78,7 @@ export function SeedInput({
         disabled={!isValidMnemonic}
         className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white disabled:text-slate-500 dark:disabled:text-slate-500 font-semibold transition-colors"
       >
-        Recover Wallet
+        {t('seed.recoverWallet')}
       </button>
     </div>
   )

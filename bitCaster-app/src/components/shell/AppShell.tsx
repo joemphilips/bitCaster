@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { TrendingUp, Search, User, Sparkles } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { MainNav } from './MainNav'
 import { UserMenu } from './UserMenu'
 import { NotificationBell } from './NotificationBell'
@@ -24,6 +25,7 @@ export function AppShell({
   onSearchChange,
   onCreateClick,
 }: AppShellProps) {
+  const { t } = useTranslation()
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false)
   const [mobileUserMenuOpen, setMobileUserMenuOpen] = useState(false)
 
@@ -100,7 +102,7 @@ export function AppShell({
             }`}
           >
             <TrendingUp className="w-5 h-5" />
-            <span className="text-xs font-medium">Markets</span>
+            <span className="text-xs font-medium">{t('nav.markets')}</span>
           </button>
 
           {/* Search */}
@@ -109,7 +111,7 @@ export function AppShell({
             className="flex flex-col items-center justify-center gap-1 text-slate-500 dark:text-slate-400 transition-colors"
           >
             <Search className="w-5 h-5" />
-            <span className="text-xs font-medium">Search</span>
+            <span className="text-xs font-medium">{t('nav.search')}</span>
           </button>
 
           {/* Notifications */}
@@ -121,7 +123,7 @@ export function AppShell({
             className="flex flex-col items-center justify-center gap-1 text-slate-500 dark:text-slate-400 transition-colors"
           >
             <Sparkles className="w-5 h-5" />
-            <span className="text-xs font-medium">Creator</span>
+            <span className="text-xs font-medium">{t('nav.creator')}</span>
           </button>
 
           {/* User → Open mobile menu */}
@@ -132,13 +134,13 @@ export function AppShell({
             {user?.avatarUrl ? (
               <img
                 src={user.avatarUrl}
-                alt={user.name || 'User'}
+                alt={user.name || t('nav.user')}
                 className="w-5 h-5 rounded-full"
               />
             ) : (
               <User className="w-5 h-5" />
             )}
-            <span className="text-xs font-medium">User</span>
+            <span className="text-xs font-medium">{t('nav.user')}</span>
           </button>
         </div>
       </nav>
@@ -152,14 +154,14 @@ export function AppShell({
                 onClick={() => setMobileSearchOpen(false)}
                 className="text-slate-500 dark:text-slate-400"
               >
-                Cancel
+                {t('common.cancel')}
               </button>
             </div>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
               <input
                 type="text"
-                placeholder="Search markets..."
+                placeholder={t('nav.searchMarkets')}
                 autoFocus
                 onChange={(e) => onSearchChange?.(e.target.value)}
                 className="w-full pl-10 pr-4 py-3 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-base text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -208,7 +210,7 @@ export function AppShell({
               }}
               className="w-full py-3 text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg px-3"
             >
-              Portfolio
+              {t('nav.portfolio')}
             </button>
             <button
               onClick={() => {
@@ -217,7 +219,7 @@ export function AppShell({
               }}
               className="w-full py-3 text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg px-3"
             >
-              Settings
+              {t('nav.settings')}
             </button>
             <button
               onClick={() => {
@@ -226,7 +228,7 @@ export function AppShell({
               }}
               className="w-full py-3 text-left text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg px-3"
             >
-              Logout
+              {t('nav.logout')}
             </button>
           </div>
         </div>

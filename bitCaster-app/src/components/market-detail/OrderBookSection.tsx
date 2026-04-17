@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { OrderBook } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
 
@@ -16,6 +17,7 @@ export function OrderBookSection({
   onOutcomeChange,
   outcomes,
 }: OrderBookSectionProps) {
+  const { t } = useTranslation()
   // Use outcome-specific order book if available
   const activeOrderBook = selectedOutcomeId && outcomeOrderBooks
     ? outcomeOrderBooks[selectedOutcomeId] || orderBook
@@ -31,7 +33,7 @@ export function OrderBookSection({
     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-          Order Book
+          {t('orderBook.title')}
         </h3>
 
         {/* Outcome Selector for Categorical Markets */}
@@ -52,7 +54,7 @@ export function OrderBookSection({
 
       {/* Spread Indicator */}
       <div className="flex items-center justify-center gap-2 py-2 mb-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
-        <span className="text-xs text-slate-500 dark:text-slate-400">Spread</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400">{t('orderBook.spread')}</span>
         <span className="text-sm font-mono font-medium text-slate-700 dark:text-slate-300">
           {activeOrderBook.spread.toFixed(1)}%
         </span>
@@ -107,12 +109,12 @@ export function OrderBookSection({
           <div className="flex items-center gap-1 mb-2">
             <div className="w-2 h-2 rounded-full bg-emerald-500" />
             <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-              Bids
+              {t('orderBook.bids')}
             </span>
           </div>
           <div className="space-y-1">
             {activeOrderBook.bids.length === 0 ? (
-              <p className="text-xs text-slate-400 dark:text-slate-500 py-2">No bids</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 py-2">{t('orderBook.noBids')}</p>
             ) : (
               activeOrderBook.bids.slice(0, 5).map((bid, i) => (
                 <div
@@ -136,12 +138,12 @@ export function OrderBookSection({
           <div className="flex items-center gap-1 mb-2">
             <div className="w-2 h-2 rounded-full bg-red-500" />
             <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-              Asks
+              {t('orderBook.asks')}
             </span>
           </div>
           <div className="space-y-1">
             {activeOrderBook.asks.length === 0 ? (
-              <p className="text-xs text-slate-400 dark:text-slate-500 py-2">No asks</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 py-2">{t('orderBook.noAsks')}</p>
             ) : (
               activeOrderBook.asks.slice(0, 5).map((ask, i) => (
                 <div

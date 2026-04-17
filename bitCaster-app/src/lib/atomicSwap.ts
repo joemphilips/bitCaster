@@ -18,7 +18,7 @@
  */
 
 import type { Proof, Token } from '@cashu/cashu-ts'
-import { Mint as CashuMint, Wallet as CashuWallet } from '@cashu/cashu-ts'
+import { Mint as CashuMint, Wallet as CashuWallet, hashToCurve } from '@cashu/cashu-ts'
 import {
   type EphemeralKeypair,
   computeSharedSecret,
@@ -35,7 +35,7 @@ import {
   adapt,
   extract,
 } from './adaptor'
-import { createP2PKSecret, createP2PKWitness } from './p2pk'
+import { createP2PKSecret } from './p2pk'
 
 // ---------------------------------------------------------------------------
 // Swap context
@@ -227,10 +227,8 @@ export async function sellerClaimSwap(
     bobProofs.map(async (proof, i) => {
       const preSigBytes = hexToBytes(bobPreSigsHex[i])
       const sig = adapt(preSigBytes, adaptorPoint.secret)
-      const msgHash = await messageToHash(proof.secret)
       return {
         proof,
-        witness: createP2PKWitness(ctx.ephemeralKey.privateKey, msgHash),
         adaptedSig: hexStr(sig),
       }
     }),
@@ -340,11 +338,13 @@ export async function buyerExtractSecret(
   spentProofs: Proof[],
   preSigsHex: string[],
 ): Promise<Uint8Array | null> {
-  // NUT-07 checkstate
+  // NUT-07 checkstate: Y = hashToCurve(secret) per NUT-00/NUT-07.
+  // hashToCurve takes a Uint8Array and returns a WeierstrassPoint; we need
+  // the compressed hex representation for the API request.
   const Ys = spentProofs.map((p) => {
-    // Y = SHA-256(secret) point — matches cashu-ts's serialisation
-    // For now derive the "Y" as the hash of the secret (cashu convention)
-    return p.id + ':' + p.secret
+    const secretBytes = new TextEncoder().encode(p.secret)
+    const point = hashToCurve(secretBytes)
+    return point.toHex(true)
   })
 
   const res = await fetch(`${mintUrl}/v1/checkstate`, {
@@ -370,9 +370,11 @@ export async function buyerExtractSecret(
   const sigHex = witnessObj.signatures?.[0]
   if (!sigHex) return null
 
-  // Find the matching pre-sig index
-  const idx = states.findIndex((s: CheckStateEntry) => s.Y === spent.Y)
-  if (idx < 0 || !preSigsHex[idx]) return null
+  // Correlate the spent Y back to the original preSigsHex index via the
+  // Ys array (same order as spentProofs / preSigsHex).
+  const yToIndex = new Map(Ys.map((y, i) => [y, i]))
+  const idx = yToIndex.get(spent.Y)
+  if (idx === undefined || !preSigsHex[idx]) return null
 
   const sig = hexToBytes(sigHex)
   const preSig = hexToBytes(preSigsHex[idx])

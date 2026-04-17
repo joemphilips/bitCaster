@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { MessageCircle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { PriceHistory, ChartTimeframe, ChartType, Comment } from '@/types/market-detail'
 
 interface PriceChartProps {
@@ -50,6 +51,7 @@ export function PriceChart({
   comments,
   unit,
 }: PriceChartProps) {
+  const { t } = useTranslation()
   const [hoveredCommentId, setHoveredCommentId] = useState<string | null>(null)
 
   // Determine which data to show
@@ -94,7 +96,7 @@ export function PriceChart({
             </div>
           ) : (
             <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-              Price Chart
+              {t('market.priceChart')}
             </h3>
           )}
         </div>
@@ -110,7 +112,7 @@ export function PriceChart({
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
               }`}
             >
-              Price
+              {t('common.price')}
             </button>
             <button
               onClick={() => onChartTypeChange?.('volume')}
@@ -120,7 +122,7 @@ export function PriceChart({
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
               }`}
             >
-              Volume
+              {t('market.volume')}
             </button>
           </div>
         </div>
@@ -130,7 +132,7 @@ export function PriceChart({
       <div className="relative h-48 mb-4 bg-slate-50 dark:bg-slate-900 rounded-xl overflow-hidden">
         {activeData.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
-            No data available
+            {t('market.noDataAvailable')}
           </div>
         ) : (
           <svg
@@ -254,7 +256,7 @@ export function PriceChart({
                   <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-slate-800 dark:bg-slate-700 text-white text-xs rounded-lg p-2.5 shadow-lg z-10 pointer-events-none">
                     <p className="font-medium mb-0.5">{comment.userDisplayName}</p>
                     <p className="text-slate-300 line-clamp-2">{comment.content}</p>
-                    <p className="text-slate-400 mt-1">{comment.likeCount} likes</p>
+                    <p className="text-slate-400 mt-1">{t('market.likes', { count: comment.likeCount })}</p>
                   </div>
                 )}
               </div>

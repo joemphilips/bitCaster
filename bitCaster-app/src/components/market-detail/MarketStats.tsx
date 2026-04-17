@@ -1,4 +1,5 @@
 import { TrendingUp, Droplets, Users, Calendar, Clock, CheckCircle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
 
@@ -6,26 +7,29 @@ interface MarketStatsProps {
   market: MarketDetail
 }
 
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-US', {
+function formatDate(dateStr: string, locale: string): string {
+  return new Date(dateStr).toLocaleDateString(locale, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
   })
 }
 
-function getTimeRemaining(closingDate: string): { text: string; isUrgent: boolean } {
+function getTimeRemaining(
+  closingDate: string,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): { text: string; isUrgent: boolean } {
   const now = new Date()
   const close = new Date(closingDate)
   const diff = close.getTime() - now.getTime()
 
-  if (diff < 0) return { text: 'Closed', isUrgent: false }
+  if (diff < 0) return { text: t('market.closed'), isUrgent: false }
 
   const days = Math.floor(diff / (1000 * 60 * 60 * 24))
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
 
   if (days > 7) {
-    return { text: `${days} days`, isUrgent: false }
+    return { text: `${days}d`, isUrgent: false }
   }
   if (days > 0) {
     return { text: `${days}d ${hours}h`, isUrgent: true }
@@ -40,42 +44,43 @@ function getTimeRemaining(closingDate: string): { text: string; isUrgent: boolea
 }
 
 export function MarketStats({ market }: MarketStatsProps) {
-  const timeRemaining = getTimeRemaining(market.closingDate)
+  const { t, i18n } = useTranslation()
+  const timeRemaining = getTimeRemaining(market.closingDate, t)
 
   const stats = [
     {
       icon: TrendingUp,
-      label: 'Volume',
+      label: t('market.volume'),
       value: formatBtc(market.volume),
       color: 'text-blue-500',
     },
     {
       icon: Droplets,
-      label: 'Liquidity',
+      label: t('market.liquidity'),
       value: formatBtc(market.liquidity),
       color: 'text-cyan-500',
     },
     {
       icon: Users,
-      label: 'Traders',
+      label: t('market.traders'),
       value: market.traderCount.toLocaleString(),
       color: 'text-violet-500',
     },
     {
       icon: Calendar,
-      label: 'Created',
-      value: formatDate(market.createdDate),
+      label: t('market.created'),
+      value: formatDate(market.createdDate, i18n.language),
       color: 'text-slate-400',
     },
     {
       icon: CheckCircle,
-      label: 'Active Since',
-      value: formatDate(market.activeSince),
+      label: t('market.activeSince'),
+      value: formatDate(market.activeSince, i18n.language),
       color: 'text-emerald-500',
     },
     {
       icon: Clock,
-      label: 'Time Left',
+      label: t('market.timeLeft'),
       value: timeRemaining.text,
       color: timeRemaining.isUrgent ? 'text-amber-500' : 'text-slate-400',
       highlight: timeRemaining.isUrgent,
@@ -85,7 +90,7 @@ export function MarketStats({ market }: MarketStatsProps) {
   return (
     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5">
       <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">
-        Market Statistics
+        {t('market.statistics')}
       </h3>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">

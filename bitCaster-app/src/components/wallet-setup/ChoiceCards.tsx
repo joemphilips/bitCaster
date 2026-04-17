@@ -1,34 +1,37 @@
 import { PlusCircle, RefreshCw } from 'lucide-react'
 import type { SetupChoice } from '@/types/wallet-setup'
+import { useTranslation } from 'react-i18next'
 
 interface ChoiceCardsProps {
   onChoiceSelect?: (choice: SetupChoice) => void
 }
 
-const choices = [
-  {
-    id: 'create' as SetupChoice,
-    icon: PlusCircle,
-    title: 'Create New Wallet',
-    description: 'Generate a fresh wallet with a new seed phrase',
-  },
-  {
-    id: 'recover' as SetupChoice,
-    icon: RefreshCw,
-    title: 'Recover Wallet',
-    description: 'Restore an existing wallet from your 12-word seed phrase',
-  },
-]
-
 export function ChoiceCards({ onChoiceSelect }: ChoiceCardsProps) {
+  const { t } = useTranslation()
+
+  const choices = [
+    {
+      id: 'create' as SetupChoice,
+      icon: PlusCircle,
+      title: t('wallet.createNew'),
+      description: t('wallet.createNewDesc'),
+    },
+    {
+      id: 'recover' as SetupChoice,
+      icon: RefreshCw,
+      title: t('wallet.recover'),
+      description: t('wallet.recoverDesc'),
+    },
+  ]
+
   return (
     <div className="max-w-2xl mx-auto">
       <div className="text-center mb-8">
         <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
-          Set Up Your Wallet
+          {t('wallet.title')}
         </h2>
         <p className="text-slate-500 dark:text-slate-400">
-          Choose how you'd like to get started
+          {t('wallet.subtitle')}
         </p>
       </div>
 

@@ -11,6 +11,7 @@
  */
 
 import React from 'react'
+import { useTranslation } from 'react-i18next'
 import type { TradeLifecycleState } from '@/stores/tradeStore'
 
 // ---------------------------------------------------------------------------
@@ -85,17 +86,17 @@ function AlertIcon({ className }: { className?: string }) {
 // Settling step indicator
 // ---------------------------------------------------------------------------
 
-const SETTLING_STEPS = [
-  'Locking proofs',
-  'Exchanging signatures',
-  'Claiming tokens',
-]
-
 function SettlingStepIndicator({ currentStep }: { currentStep?: number }) {
+  const { t } = useTranslation()
   const step = currentStep ?? 0
+  const settlingSteps = [
+    t('trade.settlingStep0'),
+    t('trade.settlingStep1'),
+    t('trade.settlingStep2'),
+  ]
   return (
     <ol className="flex gap-2 mt-2 text-xs text-slate-500 dark:text-slate-400">
-      {SETTLING_STEPS.map((label, i) => (
+      {settlingSteps.map((label, i) => (
         <li
           key={label}
           className={`flex items-center gap-1 ${
@@ -116,7 +117,7 @@ function SettlingStepIndicator({ currentStep }: { currentStep?: number }) {
             {i < step ? '✓' : i + 1}
           </span>
           {label}
-          {i < SETTLING_STEPS.length - 1 && (
+          {i < settlingSteps.length - 1 && (
             <span className="mx-1 text-slate-300 dark:text-slate-600">›</span>
           )}
         </li>
@@ -138,33 +139,33 @@ export interface TradeStatusProps {
   className?: string
 }
 
-const STATE_CONFIG: Record<
+const STATE_META: Record<
   TradeLifecycleState,
-  { icon: React.ReactNode; label: string; colour: string }
+  { icon: React.ReactNode; labelKey: string; colour: string }
 > = {
   matched: {
     icon: <SpinnerIcon className="w-5 h-5" />,
-    label: 'Preparing swap…',
+    labelKey: 'trade.preparing',
     colour: 'text-blue-600 dark:text-blue-400',
   },
   settling: {
     icon: <SpinnerIcon className="w-5 h-5" />,
-    label: 'Exchanging proofs…',
+    labelKey: 'trade.exchanging',
     colour: 'text-blue-600 dark:text-blue-400',
   },
   confirmed: {
     icon: <CheckIcon className="w-5 h-5" />,
-    label: 'Swap complete!',
+    labelKey: 'trade.complete',
     colour: 'text-emerald-600 dark:text-emerald-400',
   },
   retrying: {
     icon: <SpinnerIcon className="w-5 h-5" />,
-    label: 'Connection lost, retrying…',
+    labelKey: 'trade.retrying',
     colour: 'text-amber-600 dark:text-amber-400',
   },
   failed: {
     icon: <AlertIcon className="w-5 h-5" />,
-    label: 'Swap failed. Tokens will be refunded after locktime.',
+    labelKey: 'trade.failed',
     colour: 'text-red-600 dark:text-red-400',
   },
 }
@@ -175,7 +176,8 @@ export function TradeStatus({
   tradeId,
   className = '',
 }: TradeStatusProps) {
-  const { icon, label, colour } = STATE_CONFIG[state]
+  const { t } = useTranslation()
+  const { icon, labelKey, colour } = STATE_META[state]
 
   return (
     <div
@@ -185,13 +187,13 @@ export function TradeStatus({
     >
       {tradeId && (
         <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 font-mono truncate">
-          Trade {tradeId}
+          {t('trade.tradeId', { id: tradeId })}
         </p>
       )}
 
       <div className={`flex items-center gap-2 font-medium ${colour}`}>
         {icon}
-        <span>{label}</span>
+        <span>{t(labelKey)}</span>
       </div>
 
       {state === 'settling' && (

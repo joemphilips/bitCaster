@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { InvoiceDisplay } from '@/components/deposit-withdraw/InvoiceDisplay'
 import {
   FEE_BUFFER_SATS,
@@ -28,6 +29,7 @@ interface TopUpOverlayProps {
  * sees a bolt11, and the overlay tears itself down once proofs are stored.
  */
 export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps) {
+  const { t } = useTranslation()
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
   const prefill = Math.max(deficit + FEE_BUFFER_SATS, 1)
 
@@ -144,7 +146,7 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
       <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 max-w-sm w-full mx-4">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-            Top Up Wallet
+            {t('topUp.title')}
           </h2>
           <button
             onClick={onCancel}
@@ -155,16 +157,11 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
         </div>
 
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          Minimum{' '}
-          <span className="font-mono text-slate-700 dark:text-slate-200">
-            {deficit.toLocaleString()} sats
-          </span>{' '}
-          to cover the trade. We've prefilled a small buffer for fees — you can
-          raise it but not lower it.
+          {t('topUp.minimumDesc', { sats: deficit.toLocaleString() })}
         </p>
 
         <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">
-          Amount (sats)
+          {t('topUp.amountSats')}
         </label>
         <input
           type="number"
@@ -186,7 +183,7 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
           disabled={loading || amount < deficit}
           className="mt-6 w-full py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-semibold transition-colors"
         >
-          {loading ? 'Requesting invoice…' : 'Continue'}
+          {loading ? t('topUp.requesting') : t('common.continue')}
         </button>
       </div>
     </div>
