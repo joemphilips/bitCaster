@@ -2,11 +2,8 @@ import { useState } from 'react'
 import type {
   SettingsProps,
   SettingsCategory,
-  BaseCurrency,
   ThemeOption,
-  LanguageCode,
   MintConfig,
-  NostrSignerMode,
   RelayConnectionStatus,
 } from '@/types/settings'
 import {
@@ -25,7 +22,12 @@ import {
   Loader2,
   UserCircle,
   BadgeCheck,
+  Plug,
+  KeyRound,
+  AlertTriangle,
 } from 'lucide-react'
+import { useToastStore } from '@/stores/toast'
+import { isNip07Available } from '@/lib/nostr'
 
 // ─── Segmented Control ──────────────────────────────────────────────────────
 
@@ -123,8 +125,6 @@ export function Settings({
   settings,
   seedPhrase,
   onCategoryToggle,
-  onBaseCurrencyChange,
-  onLanguageChange,
   onThemeChange,
   onAddMint,
   onRemoveMint,
@@ -144,8 +144,11 @@ export function Settings({
   const [copied, setCopied] = useState(false)
   const [nsecValue, setNsecValue] = useState('')
   const [showNsec, setShowNsec] = useState(false)
+  const [showNsecInput, setShowNsecInput] = useState(false)
   const [showAddRelay, setShowAddRelay] = useState(false)
   const [newRelayUrl, setNewRelayUrl] = useState('')
+  const [isConnectingNip07, setIsConnectingNip07] = useState(false)
+  const [isConnectingNsec, setIsConnectingNsec] = useState(false)
 
   const displaySeedPhrase = seedPhrase ?? ''
 
@@ -163,10 +166,39 @@ export function Settings({
     setTimeout(() => setCopied(false), 2000)
   }
 
-  const handleNsecSubmit = () => {
-    if (nsecValue.trim()) {
-      onNsecSubmit?.(nsecValue.trim())
-      setNsecValue('')
+  const handleNsecSubmit = async () => {
+    if (!nsecValue.trim()) return
+    setIsConnectingNsec(true)
+    try {
+      const success = await onNsecSubmit?.(nsecValue.trim())
+      if (success) {
+        setNsecValue('')
+        setShowNsecInput(false)
+      }
+    } finally {
+      setIsConnectingNsec(false)
+    }
+  }
+
+  const handleNip07Connect = async () => {
+    if (!isNip07Available()) {
+      useToastStore.getState().addToast({
+        type: 'error',
+        message: 'You need to install a Nostr extension like Alby. Visit https://getalby.com',
+      })
+      return
+    }
+    setIsConnectingNip07(true)
+    try {
+      const success = await onSignerModeChange?.('nip07')
+      if (success) {
+        useToastStore.getState().addToast({
+          type: 'success',
+          message: 'Connected via NIP-07 extension',
+        })
+      }
+    } finally {
+      setIsConnectingNip07(false)
     }
   }
 
@@ -194,40 +226,6 @@ export function Settings({
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
       >
-        {/* Base Currency */}
-        <div>
-          <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-            Base Currency
-          </h3>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
-            Choose how amounts are displayed throughout the app.
-          </p>
-          <SegmentedControl<BaseCurrency>
-            options={[
-              { label: 'BTC', value: 'BTC' },
-              { label: 'USD', value: 'USD' },
-              { label: 'JPY', value: 'JPY' },
-            ]}
-            value={general.baseCurrency}
-            onChange={onBaseCurrencyChange}
-          />
-        </div>
-
-        {/* Language */}
-        <div>
-          <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-            Language
-          </h3>
-          <SegmentedControl<LanguageCode>
-            options={[
-              { label: 'English', value: 'en' },
-              { label: 'Japanese', value: 'ja' },
-            ]}
-            value={general.language}
-            onChange={onLanguageChange}
-          />
-        </div>
-
         {/* Theme */}
         <div>
           <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
@@ -259,7 +257,7 @@ export function Settings({
             <div className="border-t border-slate-100 dark:border-slate-700" />
             {[
               { label: 'Source Code', href: 'https://github.com/joemphilips/bitCaster' },
-              { label: 'Documentation', href: 'https://github.com/joemphilips/bitCaster/wiki' },
+              { label: 'Documentation', href: 'https://bitcasterdoc.com' },
               { label: 'Support', href: 'https://github.com/joemphilips/bitCaster/issues' },
             ].map((link) => (
               <a
@@ -385,54 +383,77 @@ export function Settings({
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
       >
-        {/* Signer Mode */}
+        {/* Nostr Connection */}
         <div>
           <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-            Signer Mode
+            Connect to Nostr
           </h3>
           <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
             Choose how to authenticate with Nostr.
           </p>
-          <SegmentedControl<NostrSignerMode>
-            options={[
-              { label: 'None', value: 'none' },
-              { label: 'NIP-07 Extension', value: 'nip07' },
-              { label: 'Private Key', value: 'nsec' },
-            ]}
-            value={nostr.signerMode}
-            onChange={onSignerModeChange}
-          />
+          <div className="space-y-3">
+            <button
+              onClick={handleNip07Connect}
+              disabled={isConnectingNip07}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {isConnectingNip07 ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Plug className="w-4 h-4" />
+              )}
+              Connect with NIP-07 Extension
+            </button>
+            <button
+              onClick={() => setShowNsecInput(!showNsecInput)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600"
+            >
+              <KeyRound className="w-4 h-4" />
+              Connect with Private Key
+            </button>
+          </div>
         </div>
 
-        {/* nsec Input (only when mode is nsec) */}
-        {nostr.signerMode === 'nsec' && (
-          <div>
-            <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-              Private Key (nsec)
-            </h3>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <input
-                  type={showNsec ? 'text' : 'password'}
-                  value={nsecValue}
-                  onChange={(e) => setNsecValue(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleNsecSubmit()}
-                  placeholder="nsec1..."
-                  className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+        {/* nsec Input (when user clicks Connect with Private Key) */}
+        {showNsecInput && (
+          <div className="space-y-3">
+            <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50">
+              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <p className="text-sm text-amber-800 dark:text-amber-300">
+                <span className="font-semibold">WARNING:</span> Pasting nsec is dangerous. This is necessary for now if you want to become an oracle. It is left for future improvement to make this not mandatory.
+              </p>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+                Private Key (nsec)
+              </h3>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type={showNsec ? 'text' : 'password'}
+                    value={nsecValue}
+                    onChange={(e) => setNsecValue(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleNsecSubmit()}
+                    placeholder="nsec1..."
+                    className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  <button
+                    onClick={() => setShowNsec(!showNsec)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                  >
+                    {showNsec ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
                 <button
-                  onClick={() => setShowNsec(!showNsec)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                  onClick={handleNsecSubmit}
+                  disabled={isConnectingNsec}
+                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
                 >
-                  {showNsec ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  {isConnectingNsec && <Loader2 className="w-4 h-4 animate-spin" />}
+                  Connect
                 </button>
               </div>
-              <button
-                onClick={handleNsecSubmit}
-                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
-              >
-                Connect
-              </button>
             </div>
           </div>
         )}

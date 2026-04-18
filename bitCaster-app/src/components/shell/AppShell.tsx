@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { TrendingUp, Search, User, Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { LANGUAGES } from '@/i18n'
 import { MainNav } from './MainNav'
 import { UserMenu } from './UserMenu'
 import { NotificationBell } from './NotificationBell'
@@ -25,7 +26,7 @@ export function AppShell({
   onSearchChange,
   onCreateClick,
 }: AppShellProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false)
   const [mobileUserMenuOpen, setMobileUserMenuOpen] = useState(false)
 
@@ -47,11 +48,11 @@ export function AppShell({
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16 gap-4">
             {/* Logo */}
-            <div className="flex-shrink-0">
+            <button onClick={() => onNavigate?.('/')} className="flex-shrink-0">
               <h1 className="text-xl md:text-2xl font-bold text-blue-600 dark:text-blue-400">
                 bitCaster
               </h1>
-            </div>
+            </button>
 
             {/* Main Navigation with Search */}
             <MainNav
@@ -80,9 +81,11 @@ export function AppShell({
       {/* Mobile Top Header - Logo Only */}
       <header className="sticky top-0 z-50 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 md:hidden">
         <div className="px-4 h-14 flex items-center justify-center">
-          <h1 className="text-xl font-bold text-blue-600 dark:text-blue-400">
-            bitCaster
-          </h1>
+          <button onClick={() => onNavigate?.('/')} className="flex-shrink-0">
+            <h1 className="text-xl font-bold text-blue-600 dark:text-blue-400">
+              bitCaster
+            </h1>
+          </button>
         </div>
       </header>
 
@@ -221,6 +224,30 @@ export function AppShell({
             >
               {t('nav.settings')}
             </button>
+
+            {/* Language selector */}
+            <div className="py-2 border-t border-slate-200 dark:border-slate-700">
+              <div className="px-3 pb-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                {t('nav.language')}
+              </div>
+              <div className="flex gap-2 px-3">
+                {LANGUAGES.map((lang) => (
+                  <button
+                    key={lang.code}
+                    onClick={() => i18n.changeLanguage(lang.code)}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                      i18n.language === lang.code
+                        ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium'
+                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <span>{lang.flag}</span>
+                    <span>{lang.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <button
               onClick={() => {
                 setMobileUserMenuOpen(false)

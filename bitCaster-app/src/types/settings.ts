@@ -93,8 +93,6 @@ export interface SettingsProps {
   onCategoryToggle?: (category: SettingsCategory) => void
 
   // General callbacks
-  onBaseCurrencyChange?: (currency: BaseCurrency) => void
-  onLanguageChange?: (language: LanguageCode) => void
   onThemeChange?: (theme: ThemeOption) => void
 
   // Cashu callbacks
@@ -103,8 +101,8 @@ export interface SettingsProps {
   onViewSeedPhrase?: () => void
 
   // Nostr callbacks
-  onSignerModeChange?: (mode: NostrSignerMode) => void
-  onNsecSubmit?: (nsec: string) => void
+  onSignerModeChange?: (mode: NostrSignerMode) => Promise<boolean>
+  onNsecSubmit?: (nsec: string) => Promise<boolean>
   onAddRelay?: (url: string) => void
   onRemoveRelay?: (url: string) => void
 }

@@ -52,7 +52,8 @@
     "creator": "クリエイター",
     "notifications": "通知",
     "search": "検索",
-    "user": "ユーザー"
+    "user": "ユーザー",
+    "language": "言語"
   },
   "wallet": {
     "title": "ウォレットのセットアップ",

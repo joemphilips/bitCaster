@@ -4,6 +4,13 @@ import LanguageDetector from 'i18next-browser-languagedetector'
 import en from './locales/en.json'
 import ja from './locales/ja.json'
 
+export const LANGUAGES = [
+  { code: 'en', label: 'English', flag: '\u{1F1FA}\u{1F1F8}' },
+  { code: 'ja', label: 'Japanese', flag: '\u{1F1EF}\u{1F1F5}' },
+] as const
+
+export type LanguageCode = (typeof LANGUAGES)[number]['code']
+
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
@@ -13,7 +20,7 @@ i18n
       ja: { translation: ja },
     },
     fallbackLng: 'en',
-    supportedLngs: ['en', 'ja'],
+    supportedLngs: LANGUAGES.map((l) => l.code),
     detection: {
       order: ['localStorage', 'navigator'],
       caches: ['localStorage'],

@@ -52,7 +52,8 @@
     "creator": "Creator",
     "notifications": "Notifications",
     "search": "Search",
-    "user": "User"
+    "user": "User",
+    "language": "Language"
   },
   "wallet": {
     "title": "Set Up Your Wallet",

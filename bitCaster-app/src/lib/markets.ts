@@ -411,7 +411,16 @@ export async function createMarket(
     body: formData,
   })
   if (!response.ok) {
-    throw new Error(`Failed to create market: ${response.status}`)
+    let detail = `HTTP ${response.status}`
+    try {
+      const body = await response.json()
+      const raw = body.detail ?? body.title ?? body.message ?? JSON.stringify(body)
+      detail = typeof raw === 'string' ? raw.slice(0, 500) : String(raw).slice(0, 500)
+    } catch {
+      // response wasn't JSON — use status text
+      detail = response.statusText || detail
+    }
+    throw new Error(`Failed to create market: ${detail}`)
   }
   return response.json()
 }

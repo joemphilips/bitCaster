@@ -1,8 +1,9 @@
 import { useCallback, useEffect } from 'react'
-import { useSearchParams } from 'react-router'
+import { useSearchParams, useNavigate } from 'react-router'
 import { Settings } from '@/components/settings/Settings'
 import { useWalletStore } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
+import { useToastStore } from '@/stores/toast'
 import { loginWithExtension, loginWithNsec, getNdk } from '@/lib/nostr'
 import type {
   SettingsState,
@@ -63,6 +64,7 @@ async function fetchNostrProfile(setProfile: SetProfileFn) {
 export function SettingsPage() {
   const walletStore = useWalletStore()
   const settingsStore = useSettingsStore()
+  const navigate = useNavigate()
   // Subscribe to the setter via a selector so we get the stable reference
   // zustand guarantees for actions — avoids re-running the deep-link effect
   // on every unrelated settings-store update.
@@ -132,32 +134,50 @@ export function SettingsPage() {
   )
 
   const handleSignerModeChange = useCallback(
-    async (mode: NostrSignerMode) => {
+    async (mode: NostrSignerMode): Promise<boolean> => {
       settingsStore.setSignerMode(mode)
       if (mode === 'nip07') {
         try {
           await loginWithExtension()
           await fetchNostrProfile(settingsStore.setProfile)
+          return true
         } catch {
           settingsStore.setProfile(null, 'not-found')
+          useToastStore.getState().addToast({
+            type: 'error',
+            message: 'Failed to connect with NIP-07 extension',
+          })
+          return false
         }
       } else if (mode === 'none') {
         settingsStore.setProfile(null, 'idle')
       }
+      return true
     },
     [settingsStore],
   )
 
   const handleNsecSubmit = useCallback(
-    async (nsec: string) => {
+    async (nsec: string): Promise<boolean> => {
       try {
         await loginWithNsec(nsec)
         await fetchNostrProfile(settingsStore.setProfile)
+        useToastStore.getState().addToast({
+          type: 'success',
+          message: 'Connected with private key',
+        })
+        navigate(-1)
+        return true
       } catch {
         settingsStore.setProfile(null, 'not-found')
+        useToastStore.getState().addToast({
+          type: 'error',
+          message: 'Invalid private key or connection failed',
+        })
+        return false
       }
     },
-    [settingsStore],
+    [settingsStore, navigate],
   )
 
   return (
@@ -166,8 +186,6 @@ export function SettingsPage() {
       settings={settingsState}
       seedPhrase={walletStore.mnemonic}
       onCategoryToggle={settingsStore.setActiveCategory}
-      onBaseCurrencyChange={settingsStore.setBaseCurrency}
-      onLanguageChange={settingsStore.setLanguage}
       onThemeChange={handleThemeChange}
       onAddMint={handleAddMint}
       onRemoveMint={handleRemoveMint}

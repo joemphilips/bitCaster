@@ -41,6 +41,16 @@ export function getNdk(): NDK {
 }
 
 // ---------------------------------------------------------------------------
+// NIP-07 detection
+// ---------------------------------------------------------------------------
+
+/** Check whether a NIP-07 browser extension (e.g. Alby, nos2x) is available. */
+export function isNip07Available(): boolean {
+  const ext = (window as { nostr?: { getPublicKey?: unknown } }).nostr
+  return !!ext && typeof ext.getPublicKey === 'function'
+}
+
+// ---------------------------------------------------------------------------
 // Signer helpers
 // ---------------------------------------------------------------------------
 

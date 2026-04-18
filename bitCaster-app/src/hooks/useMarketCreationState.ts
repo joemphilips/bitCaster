@@ -32,6 +32,19 @@ const DEFAULT_CREATOR_FEE_PERCENT = 0.02
 
 const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
 
+/** Check whether outcome probabilities sum to exactly 100. */
+export function probabilitySumValid(outcomes: WizardOutcome[]): boolean {
+  return outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0) === 100
+}
+
+/** Check whether every outcome probability is in the backend-enforced [1, 99] range. */
+export function allProbabilitiesInRange(outcomes: WizardOutcome[]): boolean {
+  return outcomes.every((o) => {
+    const p = o.probability ?? 0
+    return p >= 1 && p <= 99
+  })
+}
+
 /**
  * Normalize outcome probabilities to sum to exactly 100 using largest-remainder rounding.
  * Returns outcomes unchanged when all probabilities are zero.

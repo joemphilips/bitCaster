@@ -11,6 +11,7 @@ import { WalletSetupPage } from "@/pages/WalletSetupPage";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
+import { ToastContainer } from "@/components/ui/Toast";
 
 function AppRoutes() {
   const navigate = useNavigate();
@@ -64,6 +65,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AppRoutes />
+      <ToastContainer />
     </BrowserRouter>
   );
 }

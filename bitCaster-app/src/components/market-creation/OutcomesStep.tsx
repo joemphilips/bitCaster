@@ -1,5 +1,6 @@
 import { Plus, Trash2, Upload } from 'lucide-react'
 import type { WizardOutcome, OutcomeType } from '@/types/market-creation'
+import { probabilitySumValid, allProbabilitiesInRange } from '@/hooks/useMarketCreationState'
 
 interface OutcomesStepProps {
   outcomeType: OutcomeType
@@ -20,14 +21,14 @@ interface OutcomesStepProps {
   onNext?: () => void
 }
 
-function ProbabilityBar({ outcomes }: { outcomes: WizardOutcome[] }) {
+function ProbabilityBar({ outcomes, sumOk, rangeOk }: { outcomes: WizardOutcome[]; sumOk: boolean; rangeOk: boolean }) {
   const totalProbability = outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0)
 
   return (
     <div>
       <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
         <span>Target Probability Summary</span>
-        <span className={totalProbability === 100 ? 'text-green-400' : totalProbability > 100 ? 'text-red-400' : ''}>
+        <span className={sumOk ? 'text-green-400' : totalProbability > 100 ? 'text-red-400' : ''}>
           {totalProbability}%
         </span>
       </div>
@@ -46,6 +47,16 @@ function ProbabilityBar({ outcomes }: { outcomes: WizardOutcome[] }) {
           />
         ))}
       </div>
+      {!sumOk && (
+        <p className="text-xs text-red-400 mt-2">
+          Probabilities must sum to 100% (currently {totalProbability}%)
+        </p>
+      )}
+      {!rangeOk && (
+        <p className="text-xs text-red-400 mt-1">
+          Each probability must be between 1% and 99%
+        </p>
+      )}
     </div>
   )
 }
@@ -149,6 +160,10 @@ export function OutcomesStep({
 
   // Yes/No market
   if (outcomeType === 'yesno' && outcomes) {
+    const sumOk = probabilitySumValid(outcomes)
+    const rangeOk = allProbabilitiesInRange(outcomes)
+    const canProceedYesNo = sumOk && rangeOk
+
     return (
       <div className="w-full max-w-xl">
         <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Market Outcomes</h2>
@@ -196,12 +211,17 @@ export function OutcomesStep({
         </div>
 
         <div className="mb-8">
-          <ProbabilityBar outcomes={outcomes} />
+          <ProbabilityBar outcomes={outcomes} sumOk={sumOk} rangeOk={rangeOk} />
         </div>
 
         <button
           onClick={() => onNext?.()}
-          className="w-full py-3 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm transition-colors shadow-lg shadow-blue-600/25"
+          disabled={!canProceedYesNo}
+          className={`w-full py-3 rounded-full font-semibold text-sm transition-colors ${
+            canProceedYesNo
+              ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/25'
+              : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+          }`}
         >
           Next
         </button>
@@ -210,7 +230,14 @@ export function OutcomesStep({
   }
 
   // Categorical outcomes
-  const canProceed = outcomes && outcomes.length >= 2 && outcomes.every((o) => o.label.trim().length > 0)
+  const catSumOk = outcomes ? probabilitySumValid(outcomes) : false
+  const catRangeOk = outcomes ? allProbabilitiesInRange(outcomes) : false
+  const canProceed =
+    outcomes &&
+    outcomes.length >= 2 &&
+    outcomes.every((o) => o.label.trim().length > 0) &&
+    catSumOk &&
+    catRangeOk
 
   return (
     <div className="w-full max-w-xl">
@@ -282,7 +309,7 @@ export function OutcomesStep({
             </button>
           </div>
           <div className="mb-8">
-            <ProbabilityBar outcomes={outcomes} />
+            <ProbabilityBar outcomes={outcomes} sumOk={catSumOk} rangeOk={catRangeOk} />
           </div>
         </>
       )}

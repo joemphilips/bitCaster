@@ -42,6 +42,14 @@ cp bitCaster-app/.env.example bitCaster-app/.env
 - `src/lib/kormir.ts` — lazy dynamic import of the kormir-wasm bundle
 - `src/App.tsx` — root component + routing
 
+## Frontend-Backend Validation Parity
+
+Every validation rule enforced by the backend (in endpoint handlers or Sekiban domain commands) must be duplicated on the frontend so users cannot submit invalid data in the first place. The backend's OpenAPI spec (`BitCaster.MatchingEngine.Contracts/specs/openapi.yaml`) and value types (`Contracts/Domain/ValueTypes.cs`) are the source of truth for constraints (e.g., `Probability` must be in `[1, 99]`, probabilities must sum to 100). Frontend checks are a UX convenience; backend checks remain the security boundary.
+
+## Mobile/Desktop UI Parity
+
+Every feature visible in the desktop app bar / user menu must also be available in the mobile bottom nav / user menu overlay, and vice versa. The two layouts must show identical data (badges, notification counts, menu items including language selector, docs link, etc.). When adding a new feature to either layout, always update both.
+
 ## kormir-wasm (DLC oracle)
 
 The become-oracle flow depends on a WASM build of kormir. The generated package is committed at `src/lib/kormir-wasm-pkg/` so normal builds and CI don't need a Rust toolchain. Rebuild whenever the `kormir/` submodule changes:

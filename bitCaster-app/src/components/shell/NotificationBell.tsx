@@ -89,13 +89,13 @@ export function NotificationBell({
       {isOpen && (
         <>
           <div
-            className="fixed inset-0 z-40"
+            className={variant === 'mobile' ? 'fixed inset-0 z-[60]' : 'fixed inset-0 z-40'}
             onClick={() => setIsOpen(false)}
           />
           <div
             className={
               variant === 'mobile'
-                ? 'fixed inset-x-0 bottom-16 top-14 z-50 bg-white dark:bg-slate-900 flex flex-col'
+                ? 'fixed inset-x-0 bottom-16 top-14 z-[60] bg-white dark:bg-slate-900 flex flex-col'
                 : 'absolute right-0 mt-2 w-80 max-h-[70vh] bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 z-50 overflow-hidden flex flex-col'
             }
           >
