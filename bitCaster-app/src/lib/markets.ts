@@ -4,6 +4,8 @@ import type {
   OrderBook,
   Order,
 } from '@/types/market-detail'
+import { getNdk } from '@/lib/nostr'
+import { NDKEvent } from '@nostr-dev-kit/ndk'
 
 // CDK mint response types
 
@@ -371,7 +373,7 @@ export async function registerCondition(params: {
     const body = await response.json().catch(() => ({}))
     throw new MintError(
       body.code ?? 0,
-      body.detail ?? `Failed to register condition: ${response.status}`,
+      body.detail ?? `[Mint] Failed to register condition: ${response.status}`,
     )
   }
   return response.json()
@@ -390,10 +392,30 @@ export async function registerPartition(
     const body = await response.json().catch(() => ({}))
     throw new MintError(
       body.code ?? 0,
-      body.detail ?? `Failed to register partition: ${response.status}`,
+      body.detail ?? `[Mint] Failed to register partition: ${response.status}`,
     )
   }
   return response.json()
+}
+
+/**
+ * Generate a NIP-98 Authorization header using NDK's active signer.
+ * Works with both NIP-07 (browser extension) and nsec (private key) signers.
+ */
+async function generateNip98Header(url: string, method: string): Promise<string> {
+  const ndk = getNdk()
+  if (!ndk.signer) throw new Error('No Nostr signer configured — connect in Settings first')
+  const event = new NDKEvent(ndk)
+  event.kind = 27235
+  event.created_at = Math.floor(Date.now() / 1000)
+  event.content = ''
+  event.tags = [
+    ['u', url],
+    ['method', method.toUpperCase()],
+  ]
+  await event.sign()
+  const token = btoa(JSON.stringify(event.rawEvent()))
+  return `Nostr ${token}`
 }
 
 export async function createMarket(
@@ -406,8 +428,11 @@ export async function createMarket(
   if (thumbnailFile) {
     formData.append('thumbnail', thumbnailFile)
   }
-  const response = await fetch(`/api/v1/markets/${conditionId}`, {
+  const url = `${window.location.origin}/api/v1/markets/${conditionId}`
+  const authHeader = await generateNip98Header(url, 'POST')
+  const response = await fetch(url, {
     method: 'POST',
+    headers: { Authorization: authHeader },
     body: formData,
   })
   if (!response.ok) {
@@ -417,10 +442,9 @@ export async function createMarket(
       const raw = body.detail ?? body.title ?? body.message ?? JSON.stringify(body)
       detail = typeof raw === 'string' ? raw.slice(0, 500) : String(raw).slice(0, 500)
     } catch {
-      // response wasn't JSON — use status text
       detail = response.statusText || detail
     }
-    throw new Error(`Failed to create market: ${detail}`)
+    throw new Error(`[Matching Engine] Failed to create market: ${detail}`)
   }
   return response.json()
 }

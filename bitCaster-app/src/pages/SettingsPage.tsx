@@ -160,6 +160,7 @@ export function SettingsPage() {
   const handleNsecSubmit = useCallback(
     async (nsec: string): Promise<boolean> => {
       try {
+        settingsStore.setSignerMode('nsec')
         await loginWithNsec(nsec)
         await fetchNostrProfile(settingsStore.setProfile)
         useToastStore.getState().addToast({
@@ -169,6 +170,7 @@ export function SettingsPage() {
         navigate(-1)
         return true
       } catch {
+        settingsStore.setSignerMode('none')
         settingsStore.setProfile(null, 'not-found')
         useToastStore.getState().addToast({
           type: 'error',
