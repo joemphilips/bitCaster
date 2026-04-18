@@ -13,6 +13,18 @@ const PORT = process.env.PORT || 8080;
 const MINT_URL = process.env.MINT_URL;
 const BACKEND_URL = process.env.BACKEND_URL;
 
+app.disable('x-powered-by');
+
+// Security headers
+app.use((_req, res, next) => {
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+
 const proxyErrorHandler = (err, _req, res) => {
   console.error('Proxy error:', err.message);
   if (!res.headersSent) res.status(502).json({ error: 'Bad Gateway' });
