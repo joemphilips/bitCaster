@@ -59,7 +59,8 @@ export async function loginWithExtension(): Promise<NDKSigner> {
   const signer = new NDKNip07Signer();
   const ndk = getNdk();
   ndk.signer = signer;
-  await ndk.connect();
+  // Don't block login on relay connectivity — connect in background
+  ndk.connect();
   // NIP-07 keeps the secret key inside the extension, so kormir (which needs
   // the raw secret to produce DLC signatures locally) cannot use it. Forget
   // any previously-staged nsec so the oracle flow will refuse to sign with a
@@ -82,14 +83,15 @@ export async function loginWithNsec(nsec: string): Promise<NDKSigner> {
   const signer = new NDKPrivateKeySigner(nsec);
   const ndk = getNdk();
   ndk.signer = signer;
-  await ndk.connect();
+  // Don't block login on relay connectivity — connect in background
+  ndk.connect();
   setPendingKormirNsec(nsec);
   return signer;
 }
 
 /** Ensure NDK is connected without a signer (read-only mode). */
 export async function connectReadOnly(): Promise<void> {
-  await getNdk().connect();
+  getNdk().connect();
 }
 
 // ---------------------------------------------------------------------------
