@@ -39,7 +39,10 @@ async function fetchNostrProfile(setProfile: SetProfileFn) {
       return
     }
     const user = await signer.user()
-    await user.fetchProfile()
+    await Promise.race([
+      user.fetchProfile(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
+    ]).catch(() => { /* timeout or relay error — profile stays null */ })
     const profile = user.profile
     if (profile) {
       setProfile(
@@ -139,7 +142,7 @@ export function SettingsPage() {
       if (mode === 'nip07') {
         try {
           await loginWithExtension()
-          await fetchNostrProfile(settingsStore.setProfile)
+          fetchNostrProfile(settingsStore.setProfile)
           return true
         } catch {
           settingsStore.setProfile(null, 'not-found')
@@ -162,7 +165,8 @@ export function SettingsPage() {
       try {
         settingsStore.setSignerMode('nsec')
         await loginWithNsec(nsec)
-        await fetchNostrProfile(settingsStore.setProfile)
+        // Profile fetch is best-effort — don't block the success path on relay availability
+        fetchNostrProfile(settingsStore.setProfile)
         useToastStore.getState().addToast({
           type: 'success',
           message: 'Connected with private key',
