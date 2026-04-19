@@ -370,11 +370,17 @@ export async function registerCondition(params: {
     }),
   })
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}))
-    throw new MintError(
-      body.code ?? 0,
-      body.detail ?? `[Mint] Failed to register condition: ${response.status}`,
-    )
+    let detail = `HTTP ${response.status}`
+    try {
+      const text = await response.text()
+      try {
+        const body = JSON.parse(text)
+        detail = body.detail ?? body.message ?? text
+      } catch {
+        detail = text
+      }
+    } catch { /* empty */ }
+    throw new MintError(0, `[Mint] ${detail}`)
   }
   return response.json()
 }
@@ -389,11 +395,17 @@ export async function registerPartition(
     body: JSON.stringify({ partition }),
   })
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}))
-    throw new MintError(
-      body.code ?? 0,
-      body.detail ?? `[Mint] Failed to register partition: ${response.status}`,
-    )
+    let detail = `HTTP ${response.status}`
+    try {
+      const text = await response.text()
+      try {
+        const body = JSON.parse(text)
+        detail = body.detail ?? body.message ?? text
+      } catch {
+        detail = text
+      }
+    } catch { /* empty */ }
+    throw new MintError(0, `[Mint] ${detail}`)
   }
   return response.json()
 }
