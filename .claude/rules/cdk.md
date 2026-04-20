@@ -68,3 +68,8 @@ Saga pattern for crash-recoverable mint/wallet transactions. Feature flags: `min
 ## CI Docker Builds
 
 When `cdk` changes, the CI docker build is uncached and slow. Build the image locally and push to Docker Hub first.
+
+## Branching Policy
+
+`origin/ctf` is the feature branch for implementing specs defined in `nuts/CTF*.md`. **Never create other branches for CTF work** — all fixes and features go directly on `ctf`. Ideally it should catch up to the latest `upstream/main` branch with occasional rebasing. If there is a bug that has to be fixed in the CTF branch, first check whether it has been fixed in upstream main.
+
