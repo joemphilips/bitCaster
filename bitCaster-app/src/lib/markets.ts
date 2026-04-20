@@ -352,9 +352,26 @@ export async function submitOrder(marketId: string, params: SubmitOrderRequest):
 
 export class MintError extends Error {
   constructor(public readonly code: number, public readonly detail: string) {
-    super(detail)
+    super(`[Mint] ${detail}`)
     this.name = 'MintError'
   }
+}
+
+/** Parse a non-OK mint response into a MintError with the CDK error code. */
+async function parseMintError(response: Response, fallbackPrefix: string): Promise<MintError> {
+  let code = 0
+  let detail = `${fallbackPrefix}: ${response.status}`
+  try {
+    const text = await response.text()
+    try {
+      const body = JSON.parse(text)
+      code = typeof body.code === 'number' ? body.code : 0
+      detail = body.detail ?? body.message ?? text
+    } catch {
+      detail = text
+    }
+  } catch { /* empty */ }
+  return new MintError(code, detail)
 }
 
 export async function registerCondition(params: {
@@ -370,17 +387,7 @@ export async function registerCondition(params: {
     }),
   })
   if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try {
-      const text = await response.text()
-      try {
-        const body = JSON.parse(text)
-        detail = body.detail ?? body.message ?? text
-      } catch {
-        detail = text
-      }
-    } catch { /* empty */ }
-    throw new MintError(0, `[Mint] ${detail}`)
+    throw await parseMintError(response, 'Failed to register condition')
   }
   return response.json()
 }
@@ -392,20 +399,14 @@ export async function registerPartition(
   const response = await fetch(`/v1/conditions/${conditionId}/partitions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ partition }),
+    body: JSON.stringify({
+      collateral: 'sat',
+      partition,
+      parent_collection_id: '0000000000000000000000000000000000000000000000000000000000000000',
+    }),
   })
   if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try {
-      const text = await response.text()
-      try {
-        const body = JSON.parse(text)
-        detail = body.detail ?? body.message ?? text
-      } catch {
-        detail = text
-      }
-    } catch { /* empty */ }
-    throw new MintError(0, `[Mint] ${detail}`)
+    throw await parseMintError(response, 'Failed to register partition')
   }
   return response.json()
 }

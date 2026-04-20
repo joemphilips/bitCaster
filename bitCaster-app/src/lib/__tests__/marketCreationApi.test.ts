@@ -38,58 +38,53 @@ describe('registerCondition', () => {
     expect(result.condition_id).toBe('cond-123')
   })
 
-  it('throws MintError 13011 on oracle announcement verification failure', async () => {
+  it('throws MintError with CDK code 13011 on oracle announcement verification failure', async () => {
     mockFetchError(400, { code: 13011, detail: 'Oracle announcement verification failed' })
-    await expect(registerCondition(conditionParams)).rejects.toThrow(MintError)
-    try {
-      mockFetchError(400, { code: 13011, detail: 'Oracle announcement verification failed' })
-      await registerCondition(conditionParams)
-    } catch (e) {
+    await expect(registerCondition(conditionParams)).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError)
-      expect((e as MintError).code).toBe(13011)
-      expect((e as MintError).detail).toBe('Oracle announcement verification failed')
-    }
+      expect(e.code).toBe(13011)
+      expect(e.detail).toBe('Oracle announcement verification failed')
+      // message includes [Mint] prefix for UI display
+      expect(e.message).toBe('[Mint] Oracle announcement verification failed')
+      return true
+    })
   })
 
-  it('throws MintError 13020 on invalid condition ID', async () => {
+  it('throws MintError with CDK code 13020 on invalid condition ID', async () => {
     mockFetchError(400, { code: 13020, detail: 'Invalid condition ID' })
-    try {
-      await registerCondition(conditionParams)
-    } catch (e) {
+    await expect(registerCondition(conditionParams)).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError)
-      expect((e as MintError).code).toBe(13020)
-    }
+      expect(e.code).toBe(13020)
+      return true
+    })
   })
 
-  it('throws MintError 13027 on oracle threshold not met', async () => {
+  it('throws MintError with CDK code 13027 on oracle threshold not met', async () => {
     mockFetchError(400, { code: 13027, detail: 'Oracle threshold not met' })
-    try {
-      await registerCondition(conditionParams)
-    } catch (e) {
+    await expect(registerCondition(conditionParams)).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError)
-      expect((e as MintError).code).toBe(13027)
-    }
+      expect(e.code).toBe(13027)
+      return true
+    })
   })
 
-  it('throws MintError 13028 on condition already exists with different config', async () => {
+  it('throws MintError with CDK code 13028 on condition already exists', async () => {
     mockFetchError(409, { code: 13028, detail: 'Condition already exists' })
-    try {
-      await registerCondition(conditionParams)
-    } catch (e) {
+    await expect(registerCondition(conditionParams)).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError)
-      expect((e as MintError).code).toBe(13028)
-    }
+      expect(e.code).toBe(13028)
+      return true
+    })
   })
 
   it('throws MintError with code 0 and fallback message when body is not JSON', async () => {
     mockFetchErrorNoBody(500)
-    try {
-      await registerCondition(conditionParams)
-    } catch (e) {
+    await expect(registerCondition(conditionParams)).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError)
-      expect((e as MintError).code).toBe(0)
-      expect((e as MintError).detail).toMatch(/Failed to register condition: 500/)
-    }
+      expect(e.code).toBe(0)
+      expect(e.detail).toBe('not json')
+      return true
+    })
   })
 
   it('propagates network errors', async () => {
@@ -105,45 +100,55 @@ describe('registerPartition', () => {
     expect(result.keysets).toEqual({ Yes: 'ks1', No: 'ks2' })
   })
 
-  it('throws MintError 13021 on condition not found', async () => {
+  it('sends collateral and parent_collection_id in request body', async () => {
+    mockFetchSuccess({ keysets: { Yes: 'ks1', No: 'ks2' } })
+    await registerPartition('cond-123', ['Yes', 'No'])
+
+    const call = vi.mocked(globalThis.fetch).mock.calls[0]
+    const body = JSON.parse(call[1]?.body as string)
+    expect(body).toEqual({
+      collateral: 'sat',
+      partition: ['Yes', 'No'],
+      parent_collection_id: '0000000000000000000000000000000000000000000000000000000000000000',
+    })
+  })
+
+  it('throws MintError with CDK error code on condition not found', async () => {
     mockFetchError(404, { code: 13021, detail: 'Condition not found' })
-    try {
-      await registerPartition('nonexistent', ['Yes', 'No'])
-    } catch (e) {
+    await expect(registerPartition('nonexistent', ['Yes', 'No'])).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError)
-      expect((e as MintError).code).toBe(13021)
-    }
+      expect(e.code).toBe(13021)
+      expect(e.detail).toBe('Condition not found')
+      return true
+    })
   })
 
-  it('throws MintError 13037 on overlapping outcome collections', async () => {
+  it('throws MintError with CDK error code on overlapping outcome collections', async () => {
     mockFetchError(400, { code: 13037, detail: 'Overlapping outcome collections' })
-    try {
-      await registerPartition('cond-123', ['A|B', 'B|C'])
-    } catch (e) {
+    await expect(registerPartition('cond-123', ['A|B', 'B|C'])).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError)
-      expect((e as MintError).code).toBe(13037)
-    }
+      expect(e.code).toBe(13037)
+      return true
+    })
   })
 
-  it('throws MintError 13038 on incomplete partition', async () => {
+  it('throws MintError with CDK error code on incomplete partition', async () => {
     mockFetchError(400, { code: 13038, detail: 'Incomplete partition' })
-    try {
-      await registerPartition('cond-123', ['Yes'])
-    } catch (e) {
+    await expect(registerPartition('cond-123', ['Yes'])).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError)
-      expect((e as MintError).code).toBe(13038)
-    }
+      expect(e.code).toBe(13038)
+      return true
+    })
   })
 
   it('throws MintError with code 0 and fallback message when body is not JSON', async () => {
     mockFetchErrorNoBody(500)
-    try {
-      await registerPartition('cond-123', ['Yes', 'No'])
-    } catch (e) {
+    await expect(registerPartition('cond-123', ['Yes', 'No'])).rejects.toSatisfy((e: MintError) => {
       expect(e).toBeInstanceOf(MintError)
-      expect((e as MintError).code).toBe(0)
-      expect((e as MintError).detail).toMatch(/Failed to register partition: 500/)
-    }
+      expect(e.code).toBe(0)
+      expect(e.detail).toBe('not json')
+      return true
+    })
   })
 })
 
@@ -157,6 +162,34 @@ const createMarketParams = {
   liquiditySats: 10000,
   categoryTags: ['crypto'],
 }
+
+// createMarket calls generateNip98Header which requires an NDK signer.
+// Mock the nostr module so tests don't need a real signer.
+vi.mock('@/lib/nostr', () => ({
+  getNdk: () => ({
+    signer: {
+      sign: vi.fn(),
+    },
+  }),
+}))
+
+// Mock NDKEvent so NIP-98 header generation doesn't hit real crypto
+vi.mock('@nostr-dev-kit/ndk', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@nostr-dev-kit/ndk')>()
+  return {
+    ...mod,
+    NDKEvent: class MockNDKEvent {
+      kind = 0
+      created_at = 0
+      content = ''
+      tags: string[][] = []
+      async sign() { /* no-op */ }
+      rawEvent() {
+        return { kind: this.kind, created_at: this.created_at, content: this.content, tags: this.tags, id: 'mock', pubkey: 'mock', sig: 'mock' }
+      }
+    },
+  }
+})
 
 describe('createMarket', () => {
   it('returns response on success', async () => {
@@ -172,7 +205,7 @@ describe('createMarket', () => {
     await createMarket('cond-123', createMarketParams)
 
     const call = vi.mocked(globalThis.fetch).mock.calls[0]
-    expect(call[0]).toBe('/api/v1/markets/cond-123')
+    expect(call[0]).toContain('/api/v1/markets/cond-123')
     expect(call[1]?.method).toBe('POST')
     expect(call[1]?.body).toBeInstanceOf(FormData)
   })
@@ -181,13 +214,13 @@ describe('createMarket', () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(
       new Response('At least 2 outcomes required', { status: 400 }),
     )
-    await expect(createMarket('cond-123', createMarketParams)).rejects.toThrow('Failed to create market: 400')
+    await expect(createMarket('cond-123', createMarketParams)).rejects.toThrow(/Failed to create market/)
   })
 
   it('throws on conflict (409)', async () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(
       new Response('Market already exists', { status: 409 }),
     )
-    await expect(createMarket('cond-123', createMarketParams)).rejects.toThrow('Failed to create market: 409')
+    await expect(createMarket('cond-123', createMarketParams)).rejects.toThrow(/Failed to create market/)
   })
 })
