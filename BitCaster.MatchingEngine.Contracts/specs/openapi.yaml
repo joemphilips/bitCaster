@@ -15,9 +15,13 @@ paths:
     post:
       operationId: createMarket
       summary: Register a new market on the matching engine
+      security:
+        - nip98: []
       description: >
         Validates the condition exists in the mint, creates empty order books
         with CPMM pools for each outcome, and optionally stores a thumbnail.
+        The authenticated pubkey from the NIP-98 header is recorded as the
+        market creator — no creator field in the request body is needed.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
       requestBody:
@@ -51,6 +55,8 @@ paths:
             application/json:
               schema:
                 type: string
+        '401':
+          description: Missing or invalid NIP-98 authentication
         '409':
           description: Market already exists for this condition
           content:
@@ -62,6 +68,8 @@ paths:
     post:
       operationId: submitOrder
       summary: Submit a new order
+      security:
+        - nip98: []
       description: Submit a limit or market order to the matching engine.
       parameters:
         - $ref: '#/components/parameters/MarketId'
@@ -84,17 +92,21 @@ paths:
             application/json:
               schema:
                 type: string
+        '401':
+          description: Missing or invalid NIP-98 authentication
 
   /api/v1/{marketId}/orders/{orderId}:
     get:
       operationId: getOrderStatus
       summary: Fetch the current state of an order
+      security:
+        - nip98: []
       description: >
         Returns the order's live status, remaining/filled amounts, and the
         list of fills produced so far. Clients poll this endpoint to observe
         async state changes (fills, cancellation, expiry) without holding an
-        open connection. The orderId is opaque and sufficient for authorization
-        — callers are assumed to have received it from submitOrder.
+        open connection. Only the order's owner (matching the authenticated
+        pubkey) may query its status.
       parameters:
         - $ref: '#/components/parameters/MarketId'
         - name: orderId
@@ -111,12 +123,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderStatusResponse'
+        '401':
+          description: Missing or invalid NIP-98 authentication
         '404':
           description: Order not found
 
     delete:
       operationId: cancelOrder
       summary: Cancel an existing order
+      security:
+        - nip98: []
       parameters:
         - $ref: '#/components/parameters/MarketId'
         - name: orderId
@@ -129,6 +145,8 @@ paths:
       responses:
         '200':
           description: Order cancelled
+        '401':
+          description: Missing or invalid NIP-98 authentication
         '404':
           description: Order not found
 
@@ -201,6 +219,8 @@ paths:
     post:
       operationId: createPaymentRequest
       summary: Create a bolt11 payment request for a market
+      security:
+        - nip98: []
       description: >
         Creates a Lightning invoice via the market's dedicated LNBits wallet.
         The returned bolt11 string contains the payment hash and all details.
@@ -219,6 +239,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreatePaymentRequestResponse'
+        '401':
+          description: Missing or invalid NIP-98 authentication
         '404':
           description: Market not found or no wallet provisioned
         '502':
@@ -229,9 +251,10 @@ paths:
       operationId: listCreatorMarkets
       summary: List markets created by a given Nostr pubkey
       description: >
-        Returns every market that was registered with the supplied pubkey in
-        its `creatorPubkey` field, along with aggregated volume data so the
-        creator dashboard can render totals without additional round-trips.
+        Returns every market whose creator (authenticated via NIP-98 at
+        registration time) matches the supplied pubkey, along with aggregated
+        volume data so the creator dashboard can render totals without
+        additional round-trips.
       parameters:
         - name: pubkey
           in: path
@@ -250,6 +273,17 @@ paths:
 
 
 components:
+  securitySchemes:
+    nip98:
+      type: http
+      scheme: Nostr
+      description: >
+        NIP-98 HTTP Auth. The client signs a Nostr kind-27235 event containing
+        the request URL and HTTP method, then sends it as
+        `Authorization: Nostr <base64-encoded-event>`. The server verifies the
+        BIP-340 Schnorr signature and extracts the signer's pubkey as the
+        authenticated identity. See https://github.com/nostr-protocol/nips/blob/master/98.md
+
   parameters:
     MarketId:
       name: marketId
@@ -357,7 +391,6 @@ components:
         - side
         - price
         - amountSats
-        - userId
         - ephemeralPubkey
       properties:
         outcomeId:
@@ -369,9 +402,6 @@ components:
           $ref: '#/components/schemas/Probability'
         amountSats:
           $ref: '#/components/schemas/Sats'
-        userId:
-          type: string
-          description: Opaque user identifier (e.g. Nostr pubkey hex).
         timeInForce:
           $ref: '#/components/schemas/TimeInForce'
           default: GTC
@@ -537,14 +567,6 @@ components:
           items:
             type: string
           description: Optional category tags for the market.
-        creatorPubkey:
-          type: string
-          pattern: '^[0-9a-f]{64}$'
-          description: >
-            Optional Nostr pubkey (hex) of the account that created this market.
-            When supplied, the market is indexed under this creator so it can be
-            queried via the `listCreatorMarkets` endpoint. Self-declared; the
-            engine performs no signature verification in v1.
 
     CreateMarketResponse:
       type: object

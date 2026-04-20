@@ -32,7 +32,7 @@ public static class OrderEndpoints
                 OrderType.Limit,
                 new Probability(req.Price),
                 new Sats(req.AmountSats),
-                req.UserId,
+                "anonymous",
                 DateTimeOffset.UtcNow);
 
             bookManager.AddOrder(order);

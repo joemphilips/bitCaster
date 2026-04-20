@@ -11,7 +11,6 @@ import type {
 } from '@/types/market-creation'
 import { useSettingsStore } from '@/stores/settings'
 import { useMarketDraftStore } from '@/stores/marketDraft'
-import { useWalletStore } from '@/stores/wallet'
 import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
 import { fetchOracleAnnouncements } from '@/lib/oracle'
 import {
@@ -19,7 +18,6 @@ import {
   registerPartition,
   createMarket,
 } from '@/lib/markets'
-import { deriveNostrKeyPair } from '@/lib/nip17'
 import { createEnumAnnouncement } from '@/lib/kormir'
 import { buildEventId } from '@/lib/slug'
 
@@ -453,14 +451,8 @@ export function useMarketCreationState() {
       // 2. Register partition
       await registerPartition(condition_id, outcomes)
 
-      // Derive the creator pubkey from the user's mnemonic if one is
-      // configured. Self-declared — the matching engine does not verify it.
-      const mnemonic = useWalletStore.getState().mnemonic
-      const creatorPubkey = mnemonic
-        ? deriveNostrKeyPair(mnemonic).publicKey
-        : undefined
-
       // 3. Create market on matching engine (includes thumbnail + CPMM pools)
+      // Creator identity comes from the NIP-98 auth header, not the request body.
       const createResponse = await createMarket(
         condition_id,
         {
@@ -472,7 +464,6 @@ export function useMarketCreationState() {
           })),
           liquiditySats: draft.stepInitialLiquidity?.liquiditySats ?? 0,
           categoryTags,
-          ...(creatorPubkey ? { creatorPubkey } : {}),
         },
         thumbnailFile,
       )

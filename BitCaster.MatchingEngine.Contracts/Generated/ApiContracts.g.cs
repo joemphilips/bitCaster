@@ -154,13 +154,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(long @amountSats, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce, string @userId)
+        public SubmitOrderRequest(long @amountSats, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce)
         {
             this.OutcomeId = @outcomeId;
             this.Side = @side;
             this.Price = @price;
             this.AmountSats = @amountSats;
-            this.UserId = @userId;
             this.TimeInForce = @timeInForce;
             this.EphemeralPubkey = @ephemeralPubkey;
         }
@@ -180,12 +179,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
-
-        /// <summary>
-        /// Opaque user identifier (e.g. Nostr pubkey hex).
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("userId")]
-        public string UserId { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
         [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TimeInForce>))]
@@ -437,14 +430,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @creatorPubkey, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, string @title)
+        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, string @title)
         {
             this.Title = @title;
             this.Description = @description;
             this.Outcomes = @outcomes;
             this.LiquiditySats = @liquiditySats;
             this.CategoryTags = @categoryTags;
-            this.CreatorPubkey = @creatorPubkey;
         }
 
         /// <summary>
@@ -476,13 +468,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("categoryTags")]
         public System.Collections.Generic.List<string> CategoryTags { get; }
-
-        /// <summary>
-        /// Optional Nostr pubkey (hex) of the account that created this market. When supplied, the market is indexed under this creator so it can be queried via the `listCreatorMarkets` endpoint. Self-declared; the engine performs no signature verification in v1.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
-        public string CreatorPubkey { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 

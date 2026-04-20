@@ -40,7 +40,6 @@ public class OrderContractTests : IAsyncLifetime
             side = "Buy",
             price = 50,
             amountSats = 100,
-            userId = "test-user",
             timeInForce = "GTC",
             ephemeralPubkey = pubkey,
         };
@@ -65,7 +64,6 @@ public class OrderContractTests : IAsyncLifetime
             side = "Buy",
             price = 50,
             amountSats = 100,
-            userId = "test-user",
             timeInForce = "GTC",
             ephemeralPubkey = pubkey,
         };
@@ -109,7 +107,6 @@ public class OrderContractTests : IAsyncLifetime
             side = "Buy",
             price = 50,
             amountSats = 100,
-            userId = "test-user",
             timeInForce = "GTC",
             // Wrong prefix + length — must fail validation.
             ephemeralPubkey = "04deadbeef",

@@ -146,14 +146,8 @@ public static partial class MarketEndpoints
             if (!Markets.TryAdd(conditionId, record))
                 return Results.Conflict($"Market already exists for condition {conditionId}");
 
-            // Index this market under its creator pubkey if one was supplied.
-            // Self-declared — no signature verification in v1.
-            var creatorPubkey = metadata.CreatorPubkey;
-            if (!string.IsNullOrWhiteSpace(creatorPubkey) && PubkeyHexRegex().IsMatch(creatorPubkey))
-            {
-                var set = CreatorIndex.GetOrAdd(creatorPubkey, _ => new ConcurrentDictionary<string, byte>());
-                set[conditionId] = 0;
-            }
+            // In the real engine, creator identity comes from NIP-98 auth.
+            // The mock server has no auth, so creator indexing is a no-op.
 
             // Commit side-effect state only after market is registered
             foreach (var (marketId, pool) in poolEntries)

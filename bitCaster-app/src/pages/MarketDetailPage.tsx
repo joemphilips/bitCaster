@@ -127,7 +127,6 @@ export function MarketDetailPage() {
         side: tradeSide === 'buy' ? 'Buy' : 'Sell',
         price: orderType === 'limit' ? limitPrice : 0,
         amountSats: tradeAmount,
-        userId: 'anonymous',
         timeInForce: 'GTC',
         ephemeralPubkey: ephemeral.pubkey,
       })
