@@ -146,9 +146,6 @@ public static partial class MarketEndpoints
             if (!Markets.TryAdd(conditionId, record))
                 return Results.Conflict($"Market already exists for condition {conditionId}");
 
-            // In the real engine, creator identity comes from NIP-98 auth.
-            // The mock server has no auth, so creator indexing is a no-op.
-
             // Commit side-effect state only after market is registered
             foreach (var (marketId, pool) in poolEntries)
                 LiquidityEndpoints.Pools[marketId] = pool;

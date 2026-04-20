@@ -452,7 +452,6 @@ export function useMarketCreationState() {
       await registerPartition(condition_id, outcomes)
 
       // 3. Create market on matching engine (includes thumbnail + CPMM pools)
-      // Creator identity comes from the NIP-98 auth header, not the request body.
       const createResponse = await createMarket(
         condition_id,
         {
