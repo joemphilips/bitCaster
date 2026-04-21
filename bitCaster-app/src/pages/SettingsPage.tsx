@@ -86,6 +86,7 @@ export function SettingsPage() {
   // Map wallet mints → MintConfig[]
   const mintConfigs: MintConfig[] = walletStore.mints.map((m) => ({
     url: m.url,
+    name: (m.info as Record<string, unknown>)?.name as string | undefined,
     isDefault: m.url === DEFAULT_MINT_URL,
     connectionStatus:
       walletStore.mintConnectionStatuses[m.url] === 'connected'
@@ -116,11 +117,26 @@ export function SettingsPage() {
 
   const handleAddMint = useCallback(
     async (url: string) => {
-      await walletStore.testMintConnection(url)
+      const status = await walletStore.testMintConnection(url)
+      if (status === 'failed') {
+        throw new Error('Failed to connect — mint is unreachable or invalid')
+      }
       await walletStore.addMint(url)
     },
     [walletStore],
   )
+
+  const handleMintClick = useCallback(
+    (url: string) => {
+      navigate(`/mint-details?mintUrl=${encodeURIComponent(url)}`)
+    },
+    [navigate],
+  )
+
+  const handleDisconnectNostr = useCallback(() => {
+    settingsStore.setSignerMode('none')
+    settingsStore.setProfile(null, 'idle')
+  }, [settingsStore])
 
   const handleRemoveMint = useCallback(
     (url: string) => {
@@ -195,8 +211,10 @@ export function SettingsPage() {
       onThemeChange={handleThemeChange}
       onAddMint={handleAddMint}
       onRemoveMint={handleRemoveMint}
+      onMintClick={handleMintClick}
       onSignerModeChange={handleSignerModeChange}
       onNsecSubmit={handleNsecSubmit}
+      onDisconnectNostr={handleDisconnectNostr}
       onAddRelay={settingsStore.addRelay}
       onRemoveRelay={settingsStore.removeRelay}
     />

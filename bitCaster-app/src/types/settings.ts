@@ -2,7 +2,7 @@
 // Settings Category
 // =============================================================================
 
-export type SettingsCategory = 'general' | 'cashu' | 'nostr'
+export type SettingsCategory = 'general' | 'cashu' | 'nostr' | null
 
 // =============================================================================
 // General Settings Types
@@ -27,6 +27,7 @@ export type MintConnectionStatus = 'connected' | 'disconnected' | 'error'
 
 export interface MintConfig {
   url: string
+  name?: string
   isDefault: boolean
   connectionStatus: MintConnectionStatus
   addedDate: string
@@ -96,13 +97,15 @@ export interface SettingsProps {
   onThemeChange?: (theme: ThemeOption) => void
 
   // Cashu callbacks
-  onAddMint?: (url: string) => void
+  onAddMint?: (url: string) => Promise<void>
   onRemoveMint?: (url: string) => void
   onViewSeedPhrase?: () => void
+  onMintClick?: (url: string) => void
 
   // Nostr callbacks
   onSignerModeChange?: (mode: NostrSignerMode) => Promise<boolean>
   onNsecSubmit?: (nsec: string) => Promise<boolean>
+  onDisconnectNostr?: () => void
   onAddRelay?: (url: string) => void
   onRemoveRelay?: (url: string) => void
 }

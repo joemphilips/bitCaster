@@ -59,7 +59,7 @@ export function applyTheme(theme: ThemeOption) {
 export const useSettingsStore = create<SettingsStoreState>()(
   persist(
     (set) => ({
-      activeCategory: 'general',
+      activeCategory: 'general' as SettingsCategory,
       baseCurrency: 'BTC',
       language: 'en',
       theme: 'dark',
@@ -68,7 +68,9 @@ export const useSettingsStore = create<SettingsStoreState>()(
       nostrProfileFetchStatus: 'idle',
       relays: DEFAULT_RELAYS,
 
-      setActiveCategory: (category) => set({ activeCategory: category }),
+      setActiveCategory: (category) => set((s) => ({
+        activeCategory: s.activeCategory === category ? null : category,
+      })),
       setBaseCurrency: (currency) => set({ baseCurrency: currency }),
       setLanguage: (language) => set({ language }),
       setTheme: (theme) => {

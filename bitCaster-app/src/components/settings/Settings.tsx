@@ -87,9 +87,9 @@ function CategoryCard({
 }: {
   icon: React.ComponentType<{ className?: string }>
   label: string
-  category: SettingsCategory
+  category: Exclude<SettingsCategory, null>
   activeCategory: SettingsCategory
-  onToggle?: (cat: SettingsCategory) => void
+  onToggle?: (cat: Exclude<SettingsCategory, null>) => void
   children: React.ReactNode
 }) {
   const isOpen = activeCategory === category
@@ -129,8 +129,10 @@ export function Settings({
   onAddMint,
   onRemoveMint,
   onViewSeedPhrase,
+  onMintClick,
   onSignerModeChange,
   onNsecSubmit,
+  onDisconnectNostr,
   onAddRelay,
   onRemoveRelay,
 }: SettingsProps) {
@@ -139,6 +141,8 @@ export function Settings({
   // Local state for UI interactions
   const [showAddMint, setShowAddMint] = useState(false)
   const [newMintUrl, setNewMintUrl] = useState('')
+  const [isAddingMint, setIsAddingMint] = useState(false)
+  const [addMintError, setAddMintError] = useState<string | null>(null)
   const [showSeedConfirm, setShowSeedConfirm] = useState(false)
   const [showSeedPhrase, setShowSeedPhrase] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -152,11 +156,19 @@ export function Settings({
 
   const displaySeedPhrase = seedPhrase ?? ''
 
-  const handleAddMint = () => {
-    if (newMintUrl.trim()) {
-      onAddMint?.(newMintUrl.trim())
+  const handleAddMint = async () => {
+    const url = newMintUrl.trim()
+    if (!url) return
+    setIsAddingMint(true)
+    setAddMintError(null)
+    try {
+      await onAddMint?.(url)
       setNewMintUrl('')
       setShowAddMint(false)
+    } catch (e) {
+      setAddMintError((e as Error).message || 'Failed to connect to mint')
+    } finally {
+      setIsAddingMint(false)
     }
   }
 
@@ -296,12 +308,24 @@ export function Settings({
             {cashu.mints.map((mint) => (
               <div
                 key={mint.url}
-                className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700"
+                className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors"
+                onClick={() => onMintClick?.(mint.url)}
               >
                 <StatusDot status={mint.connectionStatus} />
-                <span className="font-mono text-sm text-slate-700 dark:text-slate-300 truncate flex-1">
-                  {mint.url}
-                </span>
+                {/* Mint thumbnail or initials */}
+                <div className="w-8 h-8 rounded-full bg-white dark:bg-slate-600 flex items-center justify-center flex-shrink-0 border border-slate-200 dark:border-slate-500">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                    {(mint.name ?? new URL(mint.url).hostname).slice(0, 2).toUpperCase()}
+                  </span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                    {mint.name ?? new URL(mint.url).hostname}
+                  </div>
+                  <div className="font-mono text-xs text-slate-500 dark:text-slate-400 truncate">
+                    {mint.url}
+                  </div>
+                </div>
                 {mint.isDefault && (
                   <span className="shrink-0 px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 text-xs font-semibold">
                     Default
@@ -309,7 +333,7 @@ export function Settings({
                 )}
                 {!mint.isDefault && (
                   <button
-                    onClick={() => onRemoveMint?.(mint.url)}
+                    onClick={(e) => { e.stopPropagation(); onRemoveMint?.(mint.url) }}
                     className="shrink-0 p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                     title="Remove mint"
                   >
@@ -321,28 +345,39 @@ export function Settings({
           </div>
 
           {showAddMint ? (
-            <div className="mt-3 flex gap-2">
-              <input
-                type="url"
-                value={newMintUrl}
-                onChange={(e) => setNewMintUrl(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleAddMint()}
-                placeholder="https://mint.example.com"
-                className="flex-1 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                autoFocus
-              />
-              <button
-                onClick={handleAddMint}
-                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
-              >
-                Add
-              </button>
-              <button
-                onClick={() => { setShowAddMint(false); setNewMintUrl('') }}
-                className="px-3 py-2 rounded-lg text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 text-sm transition-colors"
-              >
-                Cancel
-              </button>
+            <div className="mt-3 space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={newMintUrl}
+                  onChange={(e) => { setNewMintUrl(e.target.value); setAddMintError(null) }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddMint()}
+                  placeholder="https://mint.example.com"
+                  disabled={isAddingMint}
+                  className="flex-1 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+                  autoFocus
+                />
+                <button
+                  onClick={handleAddMint}
+                  disabled={isAddingMint}
+                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {isAddingMint && <Loader2 className="w-4 h-4 animate-spin" />}
+                  Add
+                </button>
+                <button
+                  onClick={() => { setShowAddMint(false); setNewMintUrl(''); setAddMintError(null) }}
+                  disabled={isAddingMint}
+                  className="px-3 py-2 rounded-lg text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 text-sm transition-colors disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+              </div>
+              {addMintError && (
+                <p className="text-sm text-red-500 dark:text-red-400">
+                  {addMintError}
+                </p>
+              )}
             </div>
           ) : (
             <button
@@ -383,36 +418,38 @@ export function Settings({
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
       >
-        {/* Nostr Connection */}
-        <div>
-          <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-            Connect to Nostr
-          </h3>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
-            Choose how to authenticate with Nostr.
-          </p>
-          <div className="space-y-3">
-            <button
-              onClick={handleNip07Connect}
-              disabled={isConnectingNip07}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600 disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {isConnectingNip07 ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Plug className="w-4 h-4" />
-              )}
-              Connect with NIP-07 Extension
-            </button>
-            <button
-              onClick={() => setShowNsecInput(!showNsecInput)}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600"
-            >
-              <KeyRound className="w-4 h-4" />
-              Connect with Private Key
-            </button>
+        {/* Nostr Connection — only show connect buttons if not already connected */}
+        {nostr.signerMode === 'none' && (
+          <div>
+            <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+              Connect to Nostr
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
+              Choose how to authenticate with Nostr.
+            </p>
+            <div className="space-y-3">
+              <button
+                onClick={handleNip07Connect}
+                disabled={isConnectingNip07}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {isConnectingNip07 ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Plug className="w-4 h-4" />
+                )}
+                Connect with NIP-07 Extension
+              </button>
+              <button
+                onClick={() => setShowNsecInput(!showNsecInput)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600"
+              >
+                <KeyRound className="w-4 h-4" />
+                Connect with Private Key
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* nsec Input (when user clicks Connect with Private Key) */}
         {showNsecInput && (
@@ -505,6 +542,12 @@ export function Settings({
                 </div>
               </div>
             )}
+            <button
+              onClick={() => onDisconnectNostr?.()}
+              className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm font-medium transition-colors"
+            >
+              Disconnect
+            </button>
           </div>
         )}
 

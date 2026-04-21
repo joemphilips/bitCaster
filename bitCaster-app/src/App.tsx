@@ -7,6 +7,7 @@ import { PortfolioPage } from "@/pages/PortfolioPage";
 import { CreatorPage } from "@/pages/CreatorPage";
 import { MarketCreationPage } from "@/pages/MarketCreationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { MintDetailPage } from "@/pages/MintDetailPage";
 import { WalletSetupPage } from "@/pages/WalletSetupPage";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
@@ -56,6 +57,7 @@ function AppRoutes() {
         <Route path="/creator" element={<CreatorPage />} />
         <Route path="/creator/new" element={<MarketCreationPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/mint-details" element={<MintDetailPage />} />
       </Routes>
     </AppShell>
   );
