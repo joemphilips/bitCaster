@@ -84,18 +84,23 @@ export function SettingsPage() {
   }, [searchParams, setActiveCategory])
 
   // Map wallet mints → MintConfig[]
-  const mintConfigs: MintConfig[] = walletStore.mints.map((m) => ({
-    url: m.url,
-    name: (m.info as Record<string, unknown>)?.name as string | undefined,
-    isDefault: m.url === DEFAULT_MINT_URL,
-    connectionStatus:
-      walletStore.mintConnectionStatuses[m.url] === 'connected'
-        ? 'connected'
-        : walletStore.mintConnectionStatuses[m.url] === 'failed'
-          ? 'error'
-          : 'disconnected',
-    addedDate: '',
-  }))
+  const mintConfigs: MintConfig[] = walletStore.mints.map((m) => {
+    const info = m.info as Record<string, unknown> | undefined
+    const nuts = info?.nuts as Record<string, unknown> | undefined
+    return {
+      url: m.url,
+      name: info?.name as string | undefined,
+      isDefault: m.url === DEFAULT_MINT_URL,
+      connectionStatus:
+        walletStore.mintConnectionStatuses[m.url] === 'connected'
+          ? 'connected'
+          : walletStore.mintConnectionStatuses[m.url] === 'failed'
+            ? 'error'
+            : 'disconnected',
+      supportsCTF: nuts != null && 'CTF' in nuts,
+      addedDate: '',
+    }
+  })
 
   const settingsState: SettingsState = {
     general: {

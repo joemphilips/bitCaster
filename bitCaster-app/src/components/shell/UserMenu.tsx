@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { User, LogOut, ChevronDown, ChevronRight, Wallet, Sparkles, Settings, BookOpen, ExternalLink, Languages, Check } from 'lucide-react'
+import { User, LogOut, ChevronDown, Wallet, Sparkles, Settings, BookOpen, ExternalLink, Languages, Check } from 'lucide-react'
 import { formatBalance } from '@/lib/format'
 import { useTranslation } from 'react-i18next'
 import { LANGUAGES } from '@/i18n'
@@ -62,22 +62,18 @@ export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenu
               <Settings className="w-4 h-4" /><span>{t('nav.settings')}</span>
             </button>
             <div className="border-t border-slate-200 dark:border-slate-700" />
-            {/* Language submenu */}
-            <div
-              className="relative"
-              onMouseEnter={() => setLangOpen(true)}
-              onMouseLeave={() => setLangOpen(false)}
-            >
+            {/* Language selector — inline within dropdown */}
+            <div>
               <button
                 onClick={() => setLangOpen(!langOpen)}
                 className="w-full px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center space-x-2"
               >
                 <Languages className="w-4 h-4" />
                 <span>{t('nav.language')}</span>
-                <ChevronRight className="w-4 h-4 ml-auto" />
+                <ChevronDown className={`w-4 h-4 ml-auto transition-transform ${langOpen ? 'rotate-180' : ''}`} />
               </button>
               {langOpen && (
-                <div className="absolute right-full top-0 mr-1 w-44 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 z-30 overflow-hidden">
+                <div className="border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-750">
                   {LANGUAGES.map((lang) => (
                     <button
                       key={lang.code}
@@ -86,7 +82,7 @@ export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenu
                         setLangOpen(false)
                         setIsOpen(false)
                       }}
-                      className="w-full px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center space-x-2"
+                      className="w-full px-6 py-2.5 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center space-x-2"
                     >
                       <span>{lang.flag}</span>
                       <span>{lang.label}</span>

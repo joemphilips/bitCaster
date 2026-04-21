@@ -30,6 +30,7 @@ export interface MintConfig {
   name?: string
   isDefault: boolean
   connectionStatus: MintConnectionStatus
+  supportsCTF: boolean
   addedDate: string
 }
 
