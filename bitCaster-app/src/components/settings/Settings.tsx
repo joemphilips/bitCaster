@@ -29,7 +29,15 @@ import {
 import { useToastStore } from '@/stores/toast'
 import { isNip07Available } from '@/lib/nostr'
 
-// ─── Segmented Control ──────────────────────────────────────────────────────
+function safeHostname(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
+//─── Segmented Control ──────────────────────────────────────────────────────
 
 function SegmentedControl<T extends string>({
   options,
@@ -315,12 +323,12 @@ export function Settings({
                 {/* Mint thumbnail or initials */}
                 <div className="w-8 h-8 rounded-full bg-white dark:bg-slate-600 flex items-center justify-center flex-shrink-0 border border-slate-200 dark:border-slate-500">
                   <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                    {(mint.name ?? new URL(mint.url).hostname).slice(0, 2).toUpperCase()}
+                    {(mint.name ?? safeHostname(mint.url)).slice(0, 2).toUpperCase()}
                   </span>
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                    {mint.name ?? new URL(mint.url).hostname}
+                    {mint.name ?? safeHostname(mint.url)}
                   </div>
                   <div className="font-mono text-xs text-slate-500 dark:text-slate-400 truncate">
                     {mint.url}

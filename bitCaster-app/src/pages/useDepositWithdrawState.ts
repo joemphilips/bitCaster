@@ -275,11 +275,7 @@ export function useDepositWithdrawState(
       const token = encodeToken(send, selectedMintId)
       setEcashToken(token)
       setCurrentView('token-display')
-
-      // Auto-navigate back to portfolio after 2 seconds
-      setTimeout(() => {
-        onDismiss()
-      }, 2000)
+      // User must manually dismiss after copying the token to avoid fund loss
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -439,6 +435,13 @@ export function useDepositWithdrawState(
           try {
             const payload = JSON.parse(content) as PaymentRequestPayload
             if (payload.proofs && payload.mint) {
+              // Validate mint URL against user's configured mints
+              const configuredMints = useWalletStore.getState().mints.map((m) => m.url)
+              if (!configuredMints.includes(payload.mint)) {
+                console.warn('[nip17] Ignoring payment from unconfigured mint:', payload.mint)
+                return
+              }
+
               // Receive the proofs from the payment
               const token = encodeToken(payload.proofs, payload.mint)
               const receivedProofs = await receiveToken(token, payload.mint)

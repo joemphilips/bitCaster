@@ -17,6 +17,7 @@ import {
   getPublicKey,
   finalizeEvent,
   getEventHash,
+  verifyEvent,
 } from "nostr-tools/pure";
 import type { UnsignedEvent, EventTemplate } from "nostr-tools/core";
 import { bytesToHex, hexToBytes } from "nostr-tools/utils";
@@ -260,6 +261,12 @@ export async function subscribeNip17DMs(
       const sealString = nip44.v2.decrypt(wrapEvent.content, wrapConvKey);
       const sealEvent = JSON.parse(sealString);
 
+      // Verify seal signature (NIP-17 requires valid Schnorr sig)
+      if (!verifyEvent(sealEvent)) {
+        console.warn("[nip17] Seal signature verification failed, ignoring");
+        return;
+      }
+
       // Unwrap seal: decrypt → rumor
       const sealConvKey = nip44.v2.utils.getConversationKey(
         privKey,
@@ -268,10 +275,16 @@ export async function subscribeNip17DMs(
       const rumorString = nip44.v2.decrypt(sealEvent.content, sealConvKey);
       const rumor = JSON.parse(rumorString);
 
+      // Verify sender consistency: seal pubkey must match rumor pubkey
+      if (sealEvent.pubkey !== rumor.pubkey) {
+        console.warn("[nip17] Seal/rumor pubkey mismatch, ignoring");
+        return;
+      }
+
       onMessage(rumor.content, rumor.pubkey);
     } catch (e) {
       // Ignore events we can't decrypt (not for us, or malformed)
-      console.warn("[nip17] Failed to decrypt DM:", e);
+      console.warn("[nip17] Failed to decrypt DM:", (e as Error).message);
     }
   });
 

@@ -115,6 +115,12 @@ export const useWalletStore = create<WalletState>()(
 
       testMintConnection: async (url: string): Promise<MintConnectionTestStatus> => {
         const normalized = normalizeUrl(url)
+        if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+          set((s) => ({
+            mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'failed' },
+          }))
+          return 'failed'
+        }
         set((s) => ({
           mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'connecting' },
         }))

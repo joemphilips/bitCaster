@@ -13,7 +13,7 @@ export function MintDetailPage() {
   const mints = useWalletStore((s) => s.mints)
 
   const info = storedMint?.info as Record<string, unknown> | undefined
-  const name = (info?.name as string) ?? new URL(mintUrl || 'http://unknown').hostname
+  const name = (info?.name as string) ?? (() => { try { return new URL(mintUrl).hostname } catch { return mintUrl } })()
   const description = (info?.description as string) ?? ''
   const motd = (info?.motd as string) ?? ''
   const nuts = info?.nuts as Record<string, unknown> | undefined
@@ -24,10 +24,12 @@ export function MintDetailPage() {
     navigate('/settings?category=cashu')
   }
 
-  if (!mintUrl) {
+  const isSafeUrl = mintUrl.startsWith('http://') || mintUrl.startsWith('https://')
+
+  if (!mintUrl || !isSafeUrl) {
     return (
       <div className="max-w-3xl mx-auto px-4 py-6">
-        <p className="text-slate-500">No mint URL specified.</p>
+        <p className="text-slate-500">No valid mint URL specified.</p>
       </div>
     )
   }
