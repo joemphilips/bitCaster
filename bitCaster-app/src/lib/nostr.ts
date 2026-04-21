@@ -27,7 +27,7 @@ export const DEFAULT_RELAYS: string[] = import.meta.env.VITE_NOSTR_RELAYS
   : [
       "wss://relay.damus.io",
       "wss://nos.lol",
-      "wss://relay.nostr.band",
+      "wss://relay.primal.net",
       "wss://nostr.bitcoiner.social",
     ];
 

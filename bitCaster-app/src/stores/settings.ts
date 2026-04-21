@@ -14,7 +14,7 @@ import type {
 const DEFAULT_RELAYS: RelayConfig[] = [
   { url: 'wss://relay.damus.io', connectionStatus: 'disconnected' },
   { url: 'wss://nos.lol', connectionStatus: 'disconnected' },
-  { url: 'wss://relay.nostr.band', connectionStatus: 'disconnected' },
+  { url: 'wss://relay.primal.net', connectionStatus: 'disconnected' },
   { url: 'wss://nostr.bitcoiner.social', connectionStatus: 'disconnected' },
 ]
 

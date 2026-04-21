@@ -9,11 +9,12 @@ import { MarketCreationPage } from "@/pages/MarketCreationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { MintDetailPage } from "@/pages/MintDetailPage";
 import { WalletSetupPage } from "@/pages/WalletSetupPage";
+import { useEffect, useRef } from "react";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
 import { useSettingsStore } from "@/stores/settings";
-import { useBalance } from "@/stores/wallet";
+import { useBalance, useWalletStore } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 
 function AppRoutes() {
@@ -23,6 +24,20 @@ function AppRoutes() {
   useBookmarkSync();
   useCreatorSync();
   usePendingTradesPoller();
+
+  // One-shot: ensure the active mint has full info fetched (CTF badge, NUTs, contact).
+  // Covers existing users who completed setup before completeSetup was fixed.
+  const mintInfoAttempted = useRef(false);
+  const setupComplete = useWalletStore((s) => s.setupComplete);
+  const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
+  useEffect(() => {
+    if (mintInfoAttempted.current || !setupComplete) return;
+    const { mints, addMint } = useWalletStore.getState();
+    if (!mints.some((m) => m.url === activeMintUrl)) {
+      mintInfoAttempted.current = true;
+      addMint(activeMintUrl).catch(() => {});
+    }
+  }, [setupComplete, activeMintUrl]);
 
   // These routes render without AppShell
   if (location.pathname === "/setup" || location.pathname === "/creator/new") {

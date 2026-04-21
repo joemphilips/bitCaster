@@ -27,7 +27,7 @@ interface WalletState {
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>
   addMint: (url: string) => Promise<void>
   removeMint: (url: string) => void
-  completeSetup: () => void
+  completeSetup: () => Promise<void>
   getWallet: (mintUrl?: string) => Promise<CashuWallet>
 }
 
@@ -170,7 +170,13 @@ export const useWalletStore = create<WalletState>()(
         }))
       },
 
-      completeSetup: () => {
+      completeSetup: async () => {
+        // Ensure the default mint is added with full info (keysets, NUTs, etc.)
+        // so features like CTF badge detection work on the Settings page.
+        const { mints } = get()
+        if (!mints.some((m) => m.url === DEFAULT_MINT_URL)) {
+          try { await get().addMint(DEFAULT_MINT_URL) } catch { /* retry on next app load */ }
+        }
         set({ setupComplete: true })
       },
 

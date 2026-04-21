@@ -57,6 +57,10 @@ dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
 - `tests/E2E/xunit.runner.json` — long-running test threshold
 - `tools/worktree-services.sh` — slot-assigned launcher for engine + vite
 
+## Staging Backend Health Checks
+
+The staging backend (`backend-bitcaster-staging`) is VNet-restricted — **403 from public internet is expected**, not a failure. The App Service SKU does not support `az webapp ssh --command`. Rely on Azure resource status (`az webapp show`) and Application Insights for health verification.
+
 ## Writing Tests
 
 - Follow the `IAsyncLifetime` pattern; the `Browser` instance is shared across tests in a class.

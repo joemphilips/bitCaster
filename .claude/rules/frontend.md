@@ -37,6 +37,7 @@ cp bitCaster-app/.env.example bitCaster-app/.env
 
 ## Key Files & Libraries
 
+- `src/stores/wallet.ts` — Zustand wallet store + `useBalance(mintUrl?)` hook (live IndexedDB query for proof sum)
 - `src/lib/cashu.ts` — `CashuWallet` / `CashuMint` singletons (`@cashu/cashu-ts` ^2.3.0)
 - `src/lib/nostr.ts` — NDK singleton, `NDKNip07Signer`, `NDKPrivateKeySigner`, `NDKNWCWallet` (`@nostr-dev-kit/ndk` ^2.11.0, `ndk-wallet` ^0.3.8)
 - `src/lib/kormir.ts` — lazy dynamic import of the kormir-wasm bundle
@@ -49,6 +50,10 @@ Every validation rule enforced by the backend (in endpoint handlers or Sekiban d
 ## Mobile/Desktop UI Parity
 
 Every feature visible in the desktop app bar / user menu must also be available in the mobile bottom nav / user menu overlay, and vice versa. The two layouts must show identical data (badges, notification counts, menu items including language selector, docs link, etc.). When adding a new feature to either layout, always update both.
+
+## Node Version
+
+Node 22+ is required. Node 20's ESM named-export validation breaks `@cashu/cashu-ts` imports before Vitest's resolve alias can remap them.
 
 ## kormir-wasm (DLC oracle)
 

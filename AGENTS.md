@@ -78,6 +78,10 @@ The frontend `.env` is pre-configured with the default ports.
 - **Parallel worktrees + port slots** — see `.claude/rules/e2e-tests.md`.
 - **kormir-wasm rebuild** — see `.claude/rules/frontend.md`.
 
+## Zustand + React Patterns
+
+- Never subscribe to state that a useEffect modifies (infinite retry loop) — use `useRef` one-shot guard + `useWalletStore.getState()` instead of selectors inside effects that trigger `addMint` or similar async mutations
+
 ## Branch Completion Workflow
 
 When work on a branch is complete, follow these steps in order before publishing a PR:

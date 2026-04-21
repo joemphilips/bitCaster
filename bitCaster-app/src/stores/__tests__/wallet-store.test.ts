@@ -92,9 +92,11 @@ describe('useWalletStore', () => {
   })
 
   describe('completeSetup', () => {
-    it('sets setupComplete to true', () => {
+    it('sets setupComplete to true', async () => {
+      // Pre-populate mints so completeSetup skips the addMint network call
+      useWalletStore.setState({ mints: [{ url: 'http://localhost:8085' }] })
       expect(useWalletStore.getState().setupComplete).toBe(false)
-      useWalletStore.getState().completeSetup()
+      await useWalletStore.getState().completeSetup()
       expect(useWalletStore.getState().setupComplete).toBe(true)
     })
   })
