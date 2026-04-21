@@ -1,0 +1,7 @@
+[package]
+name = "seed-conditions"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cashu = { path = "../../cdk/crates/cashu", features = ["test-utils"] }
