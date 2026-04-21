@@ -337,11 +337,11 @@ public class SettingsPageTests : IAsyncLifetime
             $"http://localhost:{TestPorts.Vite}/mint-details?mintUrl={Uri.EscapeDataString(mintUrl)}",
             new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30_000 });
 
-        // Should show mint name
-        var mintName = page.GetByText("CDK Mint");
+        // Should show mint name (appears in both h1 header and info card)
+        var mintName = page.GetByRole(AriaRole.Heading, new() { Name = "CDK Mint" });
         try
         {
-            await Assertions.Expect(mintName).ToBeVisibleAsync(new() { Timeout = 10_000 });
+            await Assertions.Expect(mintName.First).ToBeVisibleAsync(new() { Timeout = 10_000 });
         }
         catch
         {
