@@ -293,8 +293,10 @@ public class SettingsPageTests : IAsyncLifetime
         var connectBtn = page.GetByRole(AriaRole.Button, new() { Name = "Connect with NIP-07 Extension" });
         await Assertions.Expect(connectBtn).Not.ToBeVisibleAsync(new() { Timeout = 10_000 });
 
-        // The profile section should be visible with "TestUser"
-        var profileName = page.GetByText("TestUser");
+        // The profile section should be visible with "TestUser". Scope to the
+        // main content area — the app bar also shows "TestUser ₿" once the
+        // persisted profile rehydrates, which would trip strict-mode locators.
+        var profileName = page.GetByRole(AriaRole.Main).GetByText("TestUser");
         await Assertions.Expect(profileName).ToBeVisibleAsync(new() { Timeout = 5_000 });
 
         // A "Disconnect" button should be visible
@@ -349,9 +351,10 @@ public class SettingsPageTests : IAsyncLifetime
                 $"Mint detail page did not show mint name. URL: {page.Url}");
         }
 
-        // Should show the mint URL
-        var mintUrlText = page.GetByText(mintUrl);
-        await Assertions.Expect(mintUrlText.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        // Should show the mint description (the redesigned page no longer
+        // renders the raw URL as body text — the URL is only the page param).
+        var mintDescription = page.GetByText("A CDK test mint");
+        await Assertions.Expect(mintDescription.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
     public async Task DisposeAsync()

@@ -56,15 +56,15 @@ public class TradingFlowTests : IAsyncLifetime
     private static async Task SeedBalanceAsync(IPage page, int sats)
     {
         var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        // Open without a version — Dexie (`BitcasterDB`) has already opened the
+        // DB at its current schema (IDB v20 after the v2 bump in proof-db.ts).
+        // Requesting a lower version here throws VersionError.
         await page.EvaluateAsync($@"
             async () => {{
-                const open = indexedDB.open('bitcaster', 1);
+                const open = indexedDB.open('bitcaster');
                 await new Promise((resolve, reject) => {{
                     open.onsuccess = () => resolve();
                     open.onerror = () => reject(open.error);
-                    open.onupgradeneeded = () => {{
-                        open.result.createObjectStore('proofs', {{ keyPath: 'secret' }});
-                    }};
                 }});
                 const db = open.result;
                 const tx = db.transaction('proofs', 'readwrite');
