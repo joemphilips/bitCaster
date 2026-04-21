@@ -448,6 +448,13 @@ export function useDepositWithdrawState(
               }))
               await addProofs(stored)
               setPaymentRequestStatus('received')
+
+              // Auto-navigate back to portfolio after 2 seconds
+              setTimeout(() => {
+                nip17UnsubRef.current?.()
+                nip17UnsubRef.current = null
+                onDismiss()
+              }, 2000)
             }
           } catch {
             // Ignore messages that aren't payment payloads

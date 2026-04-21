@@ -182,6 +182,11 @@ export async function sendNip17DM(
  *
  * Unwraps: kind 1059 → decrypt → kind 13 seal → decrypt → kind 14 rumor
  * Returns an unsubscribe function for cleanup.
+ *
+ * Improvements over the initial implementation:
+ * - Extended since window (7 days) to catch messages that arrived while offline
+ * - NDK handles relay reconnection internally; we just need to connect
+ * - Logs relay connection status for debugging
  */
 export async function subscribeNip17DMs(
   privateKeyHex: string,
@@ -193,10 +198,47 @@ export async function subscribeNip17DMs(
   const privKey = hexToBytes(privateKeyHex);
   const seenIds = new Set<string>();
 
-  const ndk = new NDK({ explicitRelayUrls: resolvedRelays });
-  await ndk.connect();
+  const ndk = new NDK({
+    explicitRelayUrls: resolvedRelays,
+    autoConnectUserRelays: false,
+  });
 
-  const since = Math.floor(Date.now() / 1000) - 172800; // last 2 days
+  // NDK connect is best-effort — it will keep retrying failed relays internally
+  await ndk.connect().catch((e) => {
+    console.warn("[nip17] NDK connect error (will retry):", e);
+  });
+
+  // Wait briefly for at least one relay to connect
+  await new Promise<void>((resolve) => {
+    let resolved = false;
+    const checkConnected = () => {
+      for (const relay of ndk.pool.relays.values()) {
+        if (relay.status === 1) { // WebSocket.OPEN
+          if (!resolved) { resolved = true; resolve(); }
+          return;
+        }
+      }
+    };
+    checkConnected();
+    if (!resolved) {
+      // Poll for connection for up to 5 seconds
+      const interval = setInterval(() => {
+        checkConnected();
+        if (resolved) clearInterval(interval);
+      }, 500);
+      setTimeout(() => {
+        clearInterval(interval);
+        if (!resolved) {
+          resolved = true;
+          console.warn("[nip17] No relay connected within 5s, subscribing anyway");
+          resolve();
+        }
+      }, 5000);
+    }
+  });
+
+  // Extended since window: 7 days to catch messages while user was offline
+  const since = Math.floor(Date.now() / 1000) - 604800;
   const filter: NDKFilter = {
     kinds: [1059 as number],
     "#p": [publicKey],
@@ -229,7 +271,7 @@ export async function subscribeNip17DMs(
       onMessage(rumor.content, rumor.pubkey);
     } catch (e) {
       // Ignore events we can't decrypt (not for us, or malformed)
-      console.warn("Failed to decrypt NIP-17 DM:", e);
+      console.warn("[nip17] Failed to decrypt DM:", e);
     }
   });
 
