@@ -271,6 +271,216 @@ public class DepositWithdrawTests : IAsyncLifetime
         await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
     }
 
+    [Fact]
+    public async Task SendEcash_AutoNavigatesBackAfterSuccess()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+
+        await SetupCompleteWithMint(page);
+
+        // Deposit funds first
+        await DepositViaMint(page, 500, consoleMessages);
+        await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+
+        // Click Withdraw → Ecash → Enter 100 → Send
+        var withdrawBtn = page.GetByRole(AriaRole.Button, new() { Name = "Withdraw" });
+        await Assertions.Expect(withdrawBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await withdrawBtn.ClickAsync();
+
+        var ecashOption = page.GetByText("Ecash");
+        await Assertions.Expect(ecashOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await ecashOption.ClickAsync();
+
+        var numpad1 = page.GetByRole(AriaRole.Button, new() { Name = "1", Exact = true });
+        await Assertions.Expect(numpad1).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await numpad1.ClickAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "0", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "0", Exact = true }).ClickAsync();
+
+        var sendBtn = page.GetByRole(AriaRole.Button, new() { Name = "Send" });
+        await sendBtn.ClickAsync();
+
+        // Token display should appear briefly
+        var tokenText = page.Locator("text=/cashu/i");
+        await Assertions.Expect(tokenText.First).ToBeVisibleAsync(new() { Timeout = 15_000 });
+
+        // After ~2-3 seconds the overlay should auto-close and portfolio should be visible again
+        try
+        {
+            await Assertions.Expect(withdrawBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "SendEcash: overlay did not auto-close after showing token. Expected auto-navigate back to portfolio.");
+        }
+    }
+
+    [Fact]
+    public async Task MintSelector_OpensBottomSheet_SelectsMint()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+
+        // Setup with two mints
+        var mnemonic = TestMnemonics.Get();
+        var mintUrl = $"http://localhost:{TestPorts.Vite}";
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 30_000,
+        });
+        await page.EvaluateAsync($@"
+            localStorage.setItem('bitcaster-wallet', JSON.stringify({{
+                state: {{
+                    mnemonic: '{mnemonic}',
+                    setupComplete: true,
+                    mints: [
+                        {{ url: '{mintUrl}', info: {{ name: 'Primary Mint' }} }},
+                        {{ url: 'http://localhost:9999', info: {{ name: 'Secondary Mint' }} }}
+                    ],
+                    activeMintUrl: '{mintUrl}',
+                    keysetCounters: {{}},
+                    mintConnectionStatuses: {{}}
+                }},
+                version: 0
+            }}));
+        ");
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        // Open Deposit → Lightning (has mint selector)
+        var depositBtn = page.GetByRole(AriaRole.Button, new() { Name = "Deposit" });
+        await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await depositBtn.ClickAsync();
+
+        var lightningOption = page.GetByText("Lightning");
+        await Assertions.Expect(lightningOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await lightningOption.ClickAsync();
+
+        // Click the mint selector — should open a bottom sheet with both mints listed
+        var mintSelector = page.GetByText("Primary Mint");
+        await Assertions.Expect(mintSelector).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await mintSelector.ClickAsync();
+
+        // Bottom sheet should show "Secondary Mint" as an option
+        var secondaryMint = page.GetByText("Secondary Mint");
+        try
+        {
+            await Assertions.Expect(secondaryMint).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "MintSelector: bottom sheet did not open showing all mints. Currently still cycling.");
+        }
+    }
+
+    [Fact]
+    public async Task FundsTab_ShowsBalancePerMint()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+
+        await SetupCompleteWithMint(page);
+
+        // Deposit so we have a balance
+        await DepositViaMint(page, 200, consoleMessages);
+        await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+
+        // Navigate to portfolio and click Funds tab
+        var fundsTab = page.GetByRole(AriaRole.Tab, new() { Name = "Funds" });
+        try
+        {
+            await Assertions.Expect(fundsTab).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "FundsTab: 'Funds' tab not visible on portfolio page.");
+        }
+        await fundsTab.ClickAsync();
+
+        // Should show a fund card with the balance — look for "200" and mint info
+        var balanceText = page.Locator("text=/200/");
+        try
+        {
+            await Assertions.Expect(balanceText.First).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "FundsTab: did not show balance of 200 sats after deposit. Funds tab likely empty.");
+        }
+    }
+
+    [Fact]
+    public async Task PaymentRequest_ShowsMintSelector()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+
+        // Setup with two mints
+        var mnemonic = TestMnemonics.Get();
+        var mintUrl = $"http://localhost:{TestPorts.Vite}";
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 30_000,
+        });
+        await page.EvaluateAsync($@"
+            localStorage.setItem('bitcaster-wallet', JSON.stringify({{
+                state: {{
+                    mnemonic: '{mnemonic}',
+                    setupComplete: true,
+                    mints: [
+                        {{ url: '{mintUrl}', info: {{ name: 'Primary Mint' }} }},
+                        {{ url: 'http://localhost:9999', info: {{ name: 'Other Mint' }} }}
+                    ],
+                    activeMintUrl: '{mintUrl}',
+                    keysetCounters: {{}},
+                    mintConnectionStatuses: {{}}
+                }},
+                version: 0
+            }}));
+        ");
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        // Deposit → Ecash → Request
+        var depositBtn = page.GetByRole(AriaRole.Button, new() { Name = "Deposit" });
+        await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await depositBtn.ClickAsync();
+
+        var ecashOption = page.GetByText("Ecash");
+        await Assertions.Expect(ecashOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await ecashOption.ClickAsync();
+
+        // The deposit-ecash view should show a mint selector before generating request
+        var mintSelectorInDeposit = page.GetByText("Primary Mint");
+        try
+        {
+            await Assertions.Expect(mintSelectorInDeposit).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "PaymentRequest: Deposit Ecash view does not show mint selector for choosing which mint to use.");
+        }
+    }
+
     public async Task DisposeAsync()
     {
         if (_browser is not null)
