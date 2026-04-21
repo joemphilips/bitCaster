@@ -71,17 +71,19 @@ export function SettingsPage() {
   // Subscribe to the setter via a selector so we get the stable reference
   // zustand guarantees for actions — avoids re-running the deep-link effect
   // on every unrelated settings-store update.
-  const setActiveCategory = useSettingsStore((s) => s.setActiveCategory)
+  const openCategory = useSettingsStore((s) => s.openCategory)
   const [searchParams] = useSearchParams()
 
   // Allow other parts of the app (e.g. the market creation wizard) to
-  // deep-link to a specific category via /settings?category=nostr.
+  // deep-link to a specific category via /settings?category=nostr. Use
+  // `openCategory` (non-toggling) rather than `setActiveCategory`, because
+  // StrictMode double-invokes effects and a toggle cancels itself.
   useEffect(() => {
     const categoryParam = searchParams.get('category')
     if (isValidCategory(categoryParam)) {
-      setActiveCategory(categoryParam)
+      openCategory(categoryParam)
     }
-  }, [searchParams, setActiveCategory])
+  }, [searchParams, openCategory])
 
   // Map wallet mints → MintConfig[]
   const mintConfigs: MintConfig[] = walletStore.mints.map((m) => {

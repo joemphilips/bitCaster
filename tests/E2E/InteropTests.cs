@@ -64,7 +64,7 @@ public class InteropTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: 'http://localhost:{TestPorts.Mint}', info: {{ name: 'Test Mint' }} }}],
+                    mints: [{{ url: 'http://localhost:{TestPorts.Mint}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
                     activeMintUrl: 'http://localhost:{TestPorts.Mint}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}

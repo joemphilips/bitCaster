@@ -56,7 +56,7 @@ public class DepositWithdrawTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: 'http://localhost:{TestPorts.Vite}', info: {{ name: 'Test Mint' }} }}],
+                    mints: [{{ url: 'http://localhost:{TestPorts.Vite}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
                     activeMintUrl: 'http://localhost:{TestPorts.Vite}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
@@ -340,8 +340,8 @@ public class DepositWithdrawTests : IAsyncLifetime
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
                     mints: [
-                        {{ url: '{mintUrl}', info: {{ name: 'Primary Mint' }} }},
-                        {{ url: 'http://localhost:9999', info: {{ name: 'Secondary Mint' }} }}
+                        {{ url: '{mintUrl}', info: {{ name: 'Primary Mint', nuts: {{}} }} }},
+                        {{ url: 'http://localhost:9999', info: {{ name: 'Secondary Mint', nuts: {{}} }} }}
                     ],
                     activeMintUrl: '{mintUrl}',
                     keysetCounters: {{}},
@@ -443,8 +443,8 @@ public class DepositWithdrawTests : IAsyncLifetime
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
                     mints: [
-                        {{ url: '{mintUrl}', info: {{ name: 'Primary Mint' }} }},
-                        {{ url: 'http://localhost:9999', info: {{ name: 'Other Mint' }} }}
+                        {{ url: '{mintUrl}', info: {{ name: 'Primary Mint', nuts: {{}} }} }},
+                        {{ url: 'http://localhost:9999', info: {{ name: 'Other Mint', nuts: {{}} }} }}
                     ],
                     activeMintUrl: '{mintUrl}',
                     keysetCounters: {{}},

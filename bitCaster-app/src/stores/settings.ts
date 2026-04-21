@@ -37,6 +37,13 @@ interface SettingsStoreState {
   nsecSecret: string | null
 
   setActiveCategory: (category: SettingsCategory) => void
+  /**
+   * Deep-link setter — always opens the given category (no toggle).
+   * `setActiveCategory` is wired to the tab UI and toggles the category
+   * closed when clicked while already open, which fights StrictMode's
+   * double-invoked `useEffect` when we deep-link to `?category=nostr`.
+   */
+  openCategory: (category: SettingsCategory) => void
   setBaseCurrency: (currency: BaseCurrency) => void
   setLanguage: (language: LanguageCode) => void
   setTheme: (theme: ThemeOption) => void
@@ -81,6 +88,7 @@ export const useSettingsStore = create<SettingsStoreState>()(
       setActiveCategory: (category) => set((s) => ({
         activeCategory: s.activeCategory === category ? null : category,
       })),
+      openCategory: (category) => set({ activeCategory: category }),
       setBaseCurrency: (currency) => set({ baseCurrency: currency }),
       setLanguage: (language) => set({ language }),
       setTheme: (theme) => {

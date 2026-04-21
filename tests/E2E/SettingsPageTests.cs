@@ -83,7 +83,7 @@ public class SettingsPageTests : IAsyncLifetime
                     setupComplete: true,
                     mints: [{{
                         url: '{mintUrl}',
-                        info: {{ name: 'Test Mint', description: 'A test mint for E2E', icon_url: null }},
+                        info: {{ name: 'Test Mint', description: 'A test mint for E2E', icon_url: null, nuts: {{}} }},
                         keysets: [{{ id: '00abc123', unit: 'sat', active: true }}]
                     }}],
                     activeMintUrl: '{mintUrl}',
@@ -262,7 +262,7 @@ public class SettingsPageTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{mintUrl}', info: {{ name: 'Test Mint' }} }}],
+                    mints: [{{ url: '{mintUrl}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
                     activeMintUrl: '{mintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
@@ -323,7 +323,7 @@ public class SettingsPageTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{mintUrl}', info: {{ name: 'CDK Mint', description: 'A CDK test mint' }} }}],
+                    mints: [{{ url: '{mintUrl}', info: {{ name: 'CDK Mint', description: 'A CDK test mint', nuts: {{}} }} }}],
                     activeMintUrl: '{mintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
