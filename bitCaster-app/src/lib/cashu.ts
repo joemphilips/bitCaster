@@ -20,17 +20,13 @@ import {
   type Token,
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
+import { normalizeUrl } from "@/lib/url";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? "http://localhost:8085");
-
-/** Strip trailing slashes from mint URLs to avoid double-slash bugs. */
-function normalizeUrl(url: string): string {
-  return url.replace(/\/+$/, '');
-}
 
 /**
  * Small sats buffer added to top-up prefills to cover NUT-05 melt fees and

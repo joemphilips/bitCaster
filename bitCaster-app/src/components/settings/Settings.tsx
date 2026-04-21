@@ -28,14 +28,7 @@ import {
 } from 'lucide-react'
 import { useToastStore } from '@/stores/toast'
 import { isNip07Available } from '@/lib/nostr'
-
-function safeHostname(url: string): string {
-  try {
-    return new URL(url).hostname
-  } catch {
-    return url
-  }
-}
+import { safeHostname } from '@/lib/url'
 
 //─── Segmented Control ──────────────────────────────────────────────────────
 

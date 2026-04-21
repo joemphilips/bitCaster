@@ -2,6 +2,7 @@ import { useSearchParams, useNavigate } from 'react-router'
 import { ArrowLeft, Trash2, ExternalLink } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useWalletStore } from '@/stores/wallet'
+import { safeHostname } from '@/lib/url'
 
 export function MintDetailPage() {
   const [searchParams] = useSearchParams()
@@ -13,7 +14,7 @@ export function MintDetailPage() {
   const mints = useWalletStore((s) => s.mints)
 
   const info = storedMint?.info as Record<string, unknown> | undefined
-  const name = (info?.name as string) ?? (() => { try { return new URL(mintUrl).hostname } catch { return mintUrl } })()
+  const name = (info?.name as string) ?? safeHostname(mintUrl)
   const description = (info?.description as string) ?? ''
   const motd = (info?.motd as string) ?? ''
   const nuts = info?.nuts as Record<string, unknown> | undefined

@@ -36,6 +36,7 @@ import {
   getNostrNprofile,
   subscribeNip17DMs,
 } from '@/lib/nip17'
+import { safeHostname } from '@/lib/url'
 
 export type ExtendedView =
   | DepositWithdrawView
@@ -108,7 +109,7 @@ export function useDepositWithdrawState(
   // Build MintInfo[] from store mints with live balances
   const mintsWithBalance: MintInfo[] = storeMints.map((m) => ({
     id: m.url,
-    name: (m.info as Record<string, unknown>)?.name as string ?? new URL(m.url).hostname,
+    name: (m.info as Record<string, unknown>)?.name as string ?? safeHostname(m.url),
     url: m.url,
     balanceSats: balancesByMint[m.url] ?? 0,
   }))
@@ -281,7 +282,7 @@ export function useDepositWithdrawState(
     } finally {
       setIsLoading(false)
     }
-  }, [amountSats, selectedMintId, onDismiss])
+  }, [amountSats, selectedMintId])
 
   const onLightningInputChange = useCallback(async (value: string) => {
     setLightningInput(value)

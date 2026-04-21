@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
+import { safeHostname } from '@/lib/url'
 import type {
   WalletState,
   BaseCurrency,
@@ -113,7 +114,7 @@ export function usePortfolioState(): PortfolioState & {
         unit: 'sats' as const,
         amount,
         mintUrl,
-        mintName: name ?? new URL(mintUrl).hostname,
+        mintName: name ?? safeHostname(mintUrl),
       }
     })
   }, [storeMints], [] as (Fund & { mintName: string })[])

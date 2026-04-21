@@ -183,11 +183,6 @@ export async function sendNip17DM(
  *
  * Unwraps: kind 1059 → decrypt → kind 13 seal → decrypt → kind 14 rumor
  * Returns an unsubscribe function for cleanup.
- *
- * Improvements over the initial implementation:
- * - Extended since window (7 days) to catch messages that arrived while offline
- * - NDK handles relay reconnection internally; we just need to connect
- * - Logs relay connection status for debugging
  */
 export async function subscribeNip17DMs(
   privateKeyHex: string,
@@ -198,6 +193,7 @@ export async function subscribeNip17DMs(
   const resolvedRelays = relays ?? DEFAULT_RELAYS;
   const privKey = hexToBytes(privateKeyHex);
   const seenIds = new Set<string>();
+  const MAX_SEEN_IDS = 5000;
 
   const ndk = new NDK({
     explicitRelayUrls: resolvedRelays,
@@ -212,23 +208,26 @@ export async function subscribeNip17DMs(
   // Wait briefly for at least one relay to connect
   await new Promise<void>((resolve) => {
     let resolved = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const checkConnected = () => {
       for (const relay of ndk.pool.relays.values()) {
         if (relay.status === 1) { // WebSocket.OPEN
-          if (!resolved) { resolved = true; resolve(); }
+          if (!resolved) {
+            resolved = true;
+            if (interval) clearInterval(interval);
+            if (timeout) clearTimeout(timeout);
+            resolve();
+          }
           return;
         }
       }
     };
     checkConnected();
     if (!resolved) {
-      // Poll for connection for up to 5 seconds
-      const interval = setInterval(() => {
-        checkConnected();
-        if (resolved) clearInterval(interval);
-      }, 500);
-      setTimeout(() => {
-        clearInterval(interval);
+      interval = setInterval(() => { checkConnected(); }, 500);
+      timeout = setTimeout(() => {
+        if (interval) clearInterval(interval);
         if (!resolved) {
           resolved = true;
           console.warn("[nip17] No relay connected within 5s, subscribing anyway");
@@ -251,6 +250,7 @@ export async function subscribeNip17DMs(
   sub.on("event", (wrapEvent: NDKEvent) => {
     if (seenIds.has(wrapEvent.id)) return;
     seenIds.add(wrapEvent.id);
+    if (seenIds.size > MAX_SEEN_IDS) seenIds.clear();
 
     try {
       // Unwrap: decrypt gift wrap → seal

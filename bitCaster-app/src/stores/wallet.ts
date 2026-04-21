@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { Mint as CashuMint, Wallet as CashuWallet, type MintKeys, type MintKeyset, type CounterSource, type CounterRange } from '@cashu/cashu-ts'
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
+import { normalizeUrl } from '@/lib/url'
 import { db, getProofs, type StoredProof } from './proof-db'
 import type { MintConnectionTestStatus } from '@/types/wallet-setup'
 
@@ -31,11 +32,6 @@ interface WalletState {
 }
 
 const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085')
-
-/** Strip trailing slashes from mint URLs to avoid double-slash bugs (e.g. `mint.com//v1/info`). */
-function normalizeUrl(url: string): string {
-  return url.replace(/\/+$/, '')
-}
 
 let _walletCache: Map<string, CashuWallet> = new Map()
 
@@ -142,9 +138,11 @@ export const useWalletStore = create<WalletState>()(
       addMint: async (url: string) => {
         const normalized = normalizeUrl(url)
         const mint = new CashuMint(normalized)
-        const info = await mint.getInfo()
-        const { keysets } = await mint.getKeySets()
-        const keys = await mint.getKeys()
+        const [info, { keysets }, keys] = await Promise.all([
+          mint.getInfo(),
+          mint.getKeySets(),
+          mint.getKeys(),
+        ])
 
         const storedMint: StoredMint = {
           url: normalized,
