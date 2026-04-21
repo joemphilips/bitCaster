@@ -275,12 +275,17 @@ export function useDepositWithdrawState(
       const token = encodeToken(send, selectedMintId)
       setEcashToken(token)
       setCurrentView('token-display')
+
+      // Auto-navigate back to portfolio after 2 seconds
+      setTimeout(() => {
+        onDismiss()
+      }, 2000)
     } catch (e) {
       setError((e as Error).message)
     } finally {
       setIsLoading(false)
     }
-  }, [amountSats, selectedMintId])
+  }, [amountSats, selectedMintId, onDismiss])
 
   const onLightningInputChange = useCallback(async (value: string) => {
     setLightningInput(value)

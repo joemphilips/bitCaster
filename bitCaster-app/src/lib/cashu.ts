@@ -98,14 +98,28 @@ export function encodeToken(proofs: Proof[], mintUrl?: string): string {
 }
 
 /** Decode a cashu token string into proofs.
- *  Fetches mint keyset IDs to expand v1 short keyset IDs when needed. */
+ *  Fetches mint keyset IDs to expand v1 short keyset IDs when needed.
+ *  Searches ALL configured mints' keysets (not just active) for cross-mint tokens. */
 export async function decodeToken(tokenStr: string): Promise<Token> {
   // First try without keysets (works for v0 keyset IDs and full-length IDs)
   try {
     return getDecodedToken(tokenStr);
   } catch {
-    // v1 short keyset IDs need expansion — fetch from the active mint
+    // v1 short keyset IDs need expansion — try all configured mints' stored keysets first
     const store = useWalletStore.getState();
+    const allStoredKeysetIds = store.mints
+      .flatMap(m => m.keysets ?? [])
+      .map(k => k.id);
+
+    if (allStoredKeysetIds.length > 0) {
+      try {
+        return getDecodedToken(tokenStr, allStoredKeysetIds);
+      } catch {
+        // Fall through to fetch from active mint
+      }
+    }
+
+    // As a fallback, fetch fresh keysets from the active mint
     const mintUrl = store.activeMintUrl ?? _mintUrl;
     const mint = new CashuMint(mintUrl);
     const { keysets } = await mint.getKeySets();

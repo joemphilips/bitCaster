@@ -1,6 +1,11 @@
 import { ChevronLeft, Maximize2, Clipboard, ScanLine, FileText } from 'lucide-react'
+import { MintSelector } from './MintSelector'
+import type { MintInfo } from '@/types/deposit-withdraw'
 
 interface DepositEcashProps {
+  mints?: MintInfo[]
+  selectedMintId?: string
+  onMintChange?: (mintId: string) => void
   onPaste?: () => void
   onScan?: () => void
   onRequest?: () => void
@@ -9,6 +14,9 @@ interface DepositEcashProps {
 }
 
 export function DepositEcash({
+  mints,
+  selectedMintId,
+  onMintChange,
   onPaste,
   onScan,
   onRequest,
@@ -38,6 +46,17 @@ export function DepositEcash({
             <Maximize2 className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Mint Selector — for choosing which mint to use for payment requests */}
+        {mints && mints.length > 0 && selectedMintId && (
+          <div className="px-5 pb-3">
+            <MintSelector
+              mints={mints}
+              selectedMintId={selectedMintId}
+              onMintChange={onMintChange}
+            />
+          </div>
+        )}
 
         {/* Options */}
         <div className="px-5 pb-6 space-y-3">

@@ -22,6 +22,9 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
     case 'deposit-ecash':
       return (
         <DepositEcash
+          mints={props.mints}
+          selectedMintId={props.selectedMintId}
+          onMintChange={props.onMintChange}
           onPaste={props.onPaste}
           onScan={props.onScan}
           onRequest={props.onRequest}

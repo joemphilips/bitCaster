@@ -1,4 +1,7 @@
 import { useState, useCallback, useMemo } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { db } from '@/stores/proof-db'
+import { useWalletStore } from '@/stores/wallet'
 import type {
   WalletState,
   BaseCurrency,
@@ -89,13 +92,32 @@ export function usePortfolioState(): PortfolioState & {
   const [profile, setProfile] = useState<UserProfile>(loadProfile)
   const [positionsTab, setPositionsTab] = useState<'active' | 'closed'>('active')
 
-  // TODO: These will be populated from wallet token scanning and local DB
-  // once the wallet integration layer is built
   const [positions] = useState<Position[]>([])
-  const [funds] = useState<Fund[]>([])
   const [activity] = useState<ActivityItem[]>([])
   const [createdMarkets] = useState<CreatedMarket[]>([])
   const [plChartData] = useState<PLChartData>(EMPTY_PL_DATA)
+
+  // Funds: aggregate proof balances by mint from IndexedDB
+  const storeMints = useWalletStore((s) => s.mints)
+  const fundsFromDb = useLiveQuery(async () => {
+    const proofs = await db.proofs.toArray()
+    const balanceByMint: Record<string, number> = {}
+    for (const p of proofs) {
+      balanceByMint[p.mintUrl] = (balanceByMint[p.mintUrl] ?? 0) + p.amount
+    }
+    return Object.entries(balanceByMint).map(([mintUrl, amount]) => {
+      const mintInfo = storeMints.find((m) => m.url === mintUrl)
+      const name = (mintInfo?.info as Record<string, unknown>)?.name as string | undefined
+      return {
+        id: mintUrl,
+        unit: 'sats' as const,
+        amount,
+        mintUrl,
+        mintName: name ?? new URL(mintUrl).hostname,
+      }
+    })
+  }, [storeMints], [] as (Fund & { mintName: string })[])
+  const funds: Fund[] = fundsFromDb
 
   const stats = useMemo(() => computeStats(positions), [positions])
 
