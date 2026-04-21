@@ -204,6 +204,10 @@ export const useWalletStore = create<WalletState>()(
         mints: state.mints,
         activeMintUrl: state.activeMintUrl,
         keysetCounters: state.keysetCounters,
+        // Persist connection statuses so the Settings green/grey indicator
+        // doesn't reset to grey on every reload. A background refetch in
+        // App.tsx will correct any stale value on the next app load.
+        mintConnectionStatuses: state.mintConnectionStatuses,
       }),
     }
   )

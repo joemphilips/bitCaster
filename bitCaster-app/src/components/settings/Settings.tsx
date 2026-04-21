@@ -150,6 +150,7 @@ export function Settings({
   const [nsecValue, setNsecValue] = useState('')
   const [showNsec, setShowNsec] = useState(false)
   const [showNsecInput, setShowNsecInput] = useState(false)
+  const [ncryptsecPassphrase, setNcryptsecPassphrase] = useState('')
   const [showAddRelay, setShowAddRelay] = useState(false)
   const [newRelayUrl, setNewRelayUrl] = useState('')
   const [isConnectingNip07, setIsConnectingNip07] = useState(false)
@@ -179,13 +180,21 @@ export function Settings({
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const trimmedNsec = nsecValue.trim()
+  const isNcryptsec = trimmedNsec.startsWith('ncryptsec1')
+
   const handleNsecSubmit = async () => {
-    if (!nsecValue.trim()) return
+    if (!trimmedNsec) return
+    if (isNcryptsec && !ncryptsecPassphrase) return
     setIsConnectingNsec(true)
     try {
-      const success = await onNsecSubmit?.(nsecValue.trim())
+      const success = await onNsecSubmit?.(
+        trimmedNsec,
+        isNcryptsec ? ncryptsecPassphrase : undefined,
+      )
       if (success) {
         setNsecValue('')
+        setNcryptsecPassphrase('')
         setShowNsecInput(false)
       }
     } finally {
@@ -470,35 +479,52 @@ export function Settings({
             </div>
             <div>
               <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-                Private Key (nsec)
+                Private Key (nsec or ncryptsec)
               </h3>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <input
-                    type={showNsec ? 'text' : 'password'}
-                    value={nsecValue}
-                    onChange={(e) => setNsecValue(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleNsecSubmit()}
-                    placeholder="nsec1..."
-                    className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    autoFocus
-                  />
-                  <button
-                    onClick={() => setShowNsec(!showNsec)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                  >
-                    {showNsec ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
+              <div className="relative">
+                <input
+                  type={showNsec ? 'text' : 'password'}
+                  value={nsecValue}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setNsecValue(v)
+                    if (!v.trim().startsWith('ncryptsec1')) setNcryptsecPassphrase('')
+                  }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleNsecSubmit()}
+                  placeholder="nsec1... or ncryptsec1..."
+                  className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  autoFocus
+                />
                 <button
-                  onClick={handleNsecSubmit}
-                  disabled={isConnectingNsec}
-                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
+                  onClick={() => setShowNsec(!showNsec)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
                 >
-                  {isConnectingNsec && <Loader2 className="w-4 h-4 animate-spin" />}
-                  Connect
+                  {showNsec ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
+              {isNcryptsec && (
+                <div className="mt-3">
+                  <label className="block text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+                    Passphrase
+                  </label>
+                  <input
+                    type="password"
+                    value={ncryptsecPassphrase}
+                    onChange={(e) => setNcryptsecPassphrase(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleNsecSubmit()}
+                    placeholder="Decrypt passphrase (NIP-49)"
+                    className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              )}
+              <button
+                onClick={handleNsecSubmit}
+                disabled={isConnectingNsec || !trimmedNsec || (isNcryptsec && !ncryptsecPassphrase)}
+                className="mt-3 w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isConnectingNsec && <Loader2 className="w-4 h-4 animate-spin" />}
+                {isNcryptsec ? 'Decrypt & Connect' : 'Connect'}
+              </button>
             </div>
           </div>
         )}

@@ -4,7 +4,7 @@ import { Settings } from '@/components/settings/Settings'
 import { useWalletStore } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
-import { loginWithExtension, loginWithNsec, getNdk } from '@/lib/nostr'
+import { loginWithExtension, loginWithNsecOrNcryptsec, getNdk } from '@/lib/nostr'
 import type {
   SettingsState,
   MintConfig,
@@ -139,6 +139,8 @@ export function SettingsPage() {
   )
 
   const handleDisconnectNostr = useCallback(() => {
+    // `setSignerMode('none')` also wipes `nsecSecret` (see settings store),
+    // so no separate `setNsecSecret(null)` call is needed here.
     settingsStore.setSignerMode('none')
     settingsStore.setProfile(null, 'idle')
   }, [settingsStore])
@@ -182,10 +184,11 @@ export function SettingsPage() {
   )
 
   const handleNsecSubmit = useCallback(
-    async (nsec: string): Promise<boolean> => {
+    async (nsec: string, passphrase?: string): Promise<boolean> => {
       try {
         settingsStore.setSignerMode('nsec')
-        await loginWithNsec(nsec)
+        const { nsec: decryptedNsec } = await loginWithNsecOrNcryptsec(nsec, passphrase)
+        settingsStore.setNsecSecret(decryptedNsec)
         // Profile fetch is best-effort — don't block the success path on relay availability
         fetchNostrProfile(settingsStore.setProfile)
         useToastStore.getState().addToast({
@@ -193,12 +196,17 @@ export function SettingsPage() {
           message: 'Connected with private key',
         })
         return true
-      } catch {
+      } catch (err) {
+        // `setSignerMode('none')` also wipes any previously-stored nsec.
         settingsStore.setSignerMode('none')
         settingsStore.setProfile(null, 'not-found')
+        const message =
+          err instanceof Error && err.message.includes('passphrase')
+            ? err.message
+            : 'Invalid private key or connection failed'
         useToastStore.getState().addToast({
           type: 'error',
-          message: 'Invalid private key or connection failed',
+          message,
         })
         return false
       }

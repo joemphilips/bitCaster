@@ -155,8 +155,11 @@ export function WalletSetupPage() {
     setMintConnections((prev) => prev.filter((m) => m.url !== url))
   }
 
-  const onFinishSetup = () => {
-    completeSetup()
+  const onFinishSetup = async () => {
+    // Await so the default mint's info (NUTs/CTF, contact, etc.) is fully
+    // fetched and persisted before we navigate away — otherwise the Settings
+    // page can render with a stale/empty mint row on the next page.
+    await completeSetup()
     if (marketDataLoaded) {
       navigate(returnUrl)
     } else {

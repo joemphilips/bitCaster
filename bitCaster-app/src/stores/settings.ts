@@ -27,6 +27,14 @@ interface SettingsStoreState {
   nostrProfile: NostrProfile | null
   nostrProfileFetchStatus: NostrProfileFetchStatus
   relays: RelayConfig[]
+  /**
+   * The user's Nostr private key, stored as bech32 `nsec1...` (or raw hex).
+   * Persisted to localStorage alongside the BIP-39 mnemonic — same threat
+   * model (origin-scoped, XSS-exposed). Needed so the NDK signer can be
+   * re-installed on page reload without prompting the user every time.
+   * `null` when the user has not configured nsec login.
+   */
+  nsecSecret: string | null
 
   setActiveCategory: (category: SettingsCategory) => void
   setBaseCurrency: (currency: BaseCurrency) => void
@@ -34,6 +42,7 @@ interface SettingsStoreState {
   setTheme: (theme: ThemeOption) => void
   setSignerMode: (mode: NostrSignerMode) => void
   setProfile: (profile: NostrProfile | null, status: NostrProfileFetchStatus) => void
+  setNsecSecret: (nsec: string | null) => void
   addRelay: (url: string) => void
   removeRelay: (url: string) => void
 }
@@ -67,6 +76,7 @@ export const useSettingsStore = create<SettingsStoreState>()(
       nostrProfile: null,
       nostrProfileFetchStatus: 'idle',
       relays: DEFAULT_RELAYS,
+      nsecSecret: null,
 
       setActiveCategory: (category) => set((s) => ({
         activeCategory: s.activeCategory === category ? null : category,
@@ -77,8 +87,15 @@ export const useSettingsStore = create<SettingsStoreState>()(
         applyTheme(theme)
         set({ theme })
       },
-      setSignerMode: (mode) => set({ nostrSignerMode: mode }),
+      setSignerMode: (mode) =>
+        set((s) => ({
+          nostrSignerMode: mode,
+          // Any mode other than 'nsec' must not carry a stray secret in
+          // localStorage — switching to NIP-07 or disconnecting should wipe it.
+          nsecSecret: mode === 'nsec' ? s.nsecSecret : null,
+        })),
       setProfile: (profile, status) => set({ nostrProfile: profile, nostrProfileFetchStatus: status }),
+      setNsecSecret: (nsec) => set({ nsecSecret: nsec }),
       addRelay: (url) =>
         set((s) => {
           if (s.relays.some((r) => r.url === url)) return s
@@ -95,6 +112,9 @@ export const useSettingsStore = create<SettingsStoreState>()(
         theme: state.theme,
         nostrSignerMode: state.nostrSignerMode,
         relays: state.relays,
+        // Persist the decrypted nsec so the NDK signer can be rehydrated on
+        // reload. Same localStorage surface as the BIP-39 mnemonic.
+        nsecSecret: state.nsecSecret,
       }),
       onRehydrateStorage: () => {
         return (state: SettingsStoreState | undefined) => {

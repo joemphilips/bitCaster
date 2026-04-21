@@ -16,39 +16,35 @@ import { usePendingTradesPoller } from "@/lib/orderStatus";
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
+import { rehydrateNostrSigner } from "@/lib/nostr";
 
-function AppRoutes() {
+/**
+ * Paths that render full-window wizards without the app shell. Keeping
+ * this list in one place means the {@link WizardRoutes} route table and
+ * the layout-selection check in {@link AppRoutes} can't drift apart.
+ */
+const WIZARD_PATHS = ["/setup", "/creator/new"] as const;
+
+/**
+ * Wizard routes render without the app shell.
+ * Kept in a separate component so the hook list stays consistent between
+ * wizard and shell renders — mixing the two paths inside a single component
+ * with a conditional early return violates the Rules of Hooks and causes
+ * blank renders when navigating in/out of a wizard.
+ */
+function WizardRoutes() {
+  return (
+    <Routes>
+      <Route path="/setup" element={<WalletSetupPage />} />
+      <Route path="/creator/new" element={<MarketCreationPage />} />
+    </Routes>
+  );
+}
+
+function ShellRoutes() {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
-  useBookmarkSync();
-  useCreatorSync();
-  usePendingTradesPoller();
-
-  // One-shot: ensure the active mint has full info fetched (CTF badge, NUTs, contact).
-  // Covers existing users who completed setup before completeSetup was fixed.
-  const mintInfoAttempted = useRef(false);
-  const setupComplete = useWalletStore((s) => s.setupComplete);
-  const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
-  useEffect(() => {
-    if (mintInfoAttempted.current || !setupComplete) return;
-    const { mints, addMint } = useWalletStore.getState();
-    if (!mints.some((m) => m.url === activeMintUrl)) {
-      mintInfoAttempted.current = true;
-      addMint(activeMintUrl).catch(() => {});
-    }
-  }, [setupComplete, activeMintUrl]);
-
-  // These routes render without AppShell
-  if (location.pathname === "/setup" || location.pathname === "/creator/new") {
-    return (
-      <Routes>
-        <Route path="/setup" element={<WalletSetupPage />} />
-        <Route path="/creator/new" element={<MarketCreationPage />} />
-      </Routes>
-    );
-  }
-
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
   const totalBalance = useBalance();
 
@@ -79,12 +75,48 @@ function AppRoutes() {
         <Route path="/markets/:id" element={<MarketDetailPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/creator" element={<CreatorPage />} />
-        <Route path="/creator/new" element={<MarketCreationPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/mint-details" element={<MintDetailPage />} />
       </Routes>
     </AppShell>
   );
+}
+
+function AppRoutes() {
+  const location = useLocation();
+  useBookmarkSync();
+  useCreatorSync();
+  usePendingTradesPoller();
+
+  // Re-install the Nostr signer from localStorage once on mount — the nsec
+  // lives in the settings store but NDK.signer is RAM-only, so after any
+  // reload the runtime signer is absent until this rehydrates it.
+  const signerRehydrated = useRef(false);
+  useEffect(() => {
+    if (signerRehydrated.current) return;
+    signerRehydrated.current = true;
+    rehydrateNostrSigner().catch(() => {});
+  }, []);
+
+  // Ensure stored mints have full info (CTF badge, NUTs, contact) and that
+  // the status indicator reflects reality. Re-fetches any mint missing
+  // `info.nuts` — covers pre-P3 users who have a stale mint row in storage.
+  const mintRehydrateAttempted = useRef(false);
+  const setupComplete = useWalletStore((s) => s.setupComplete);
+  useEffect(() => {
+    if (mintRehydrateAttempted.current || !setupComplete) return;
+    mintRehydrateAttempted.current = true;
+    const { mints, addMint } = useWalletStore.getState();
+    for (const m of mints) {
+      const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)?.nuts;
+      if (!nuts) {
+        addMint(m.url).catch(() => {});
+      }
+    }
+  }, [setupComplete]);
+
+  const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
+  return isWizard ? <WizardRoutes /> : <ShellRoutes />;
 }
 
 export default function App() {

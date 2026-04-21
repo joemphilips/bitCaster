@@ -105,7 +105,7 @@ export interface SettingsProps {
 
   // Nostr callbacks
   onSignerModeChange?: (mode: NostrSignerMode) => Promise<boolean>
-  onNsecSubmit?: (nsec: string) => Promise<boolean>
+  onNsecSubmit?: (nsec: string, passphrase?: string) => Promise<boolean>
   onDisconnectNostr?: () => void
   onAddRelay?: (url: string) => void
   onRemoveRelay?: (url: string) => void

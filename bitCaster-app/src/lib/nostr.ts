@@ -16,7 +16,10 @@ import NDK, {
   type NDKEvent,
 } from "@nostr-dev-kit/ndk";
 import { NDKNWCWallet } from "@nostr-dev-kit/ndk-wallet";
+import { nip19 } from "nostr-tools";
+import * as nip49 from "nostr-tools/nip49";
 import { setPendingKormirNsec } from "./kormir";
+import { useSettingsStore } from "@/stores/settings";
 
 // ---------------------------------------------------------------------------
 // Singleton NDK instance
@@ -87,6 +90,55 @@ export async function loginWithNsec(nsec: string): Promise<NDKSigner> {
   ndk.connect();
   setPendingKormirNsec(nsec);
   return signer;
+}
+
+/**
+ * Login with either a raw nsec (hex / bech32 `nsec1...`) or an encrypted
+ * NIP-49 `ncryptsec1...`. When the input is an ncryptsec, `passphrase` must
+ * be supplied so the key can be decrypted before installation.
+ *
+ * Returns the decrypted nsec in bech32 form so callers can persist it for
+ * rehydration on reload (see {@link rehydrateNostrSigner}).
+ */
+export async function loginWithNsecOrNcryptsec(
+  input: string,
+  passphrase?: string,
+): Promise<{ signer: NDKSigner; nsec: string }> {
+  const trimmed = input.trim();
+  let nsec: string;
+  if (trimmed.startsWith("ncryptsec1")) {
+    if (!passphrase) {
+      throw new Error("A passphrase is required to decrypt an ncryptsec key.");
+    }
+    // nip49.decrypt returns the 32-byte secret key as Uint8Array.
+    const secretKey = nip49.decrypt(trimmed, passphrase);
+    nsec = nip19.nsecEncode(secretKey);
+  } else {
+    nsec = trimmed;
+  }
+  const signer = await loginWithNsec(nsec);
+  return { signer, nsec };
+}
+
+/**
+ * Re-install the Nostr signer on app startup using the nsec persisted in
+ * the settings store. `NDK.signer` lives in module-level state that's
+ * cleared on every page load, so without this call a user who logged in
+ * with nsec before a reload would appear connected (mode still `'nsec'`)
+ * but have no live signer — every signing attempt would throw.
+ */
+export async function rehydrateNostrSigner(): Promise<void> {
+  const settings = useSettingsStore.getState();
+  const { nostrSignerMode, nsecSecret } = settings;
+  if (nostrSignerMode !== "nsec" || !nsecSecret) return;
+  try {
+    await loginWithNsec(nsecSecret);
+  } catch {
+    // Stored nsec is corrupt — reset signer mode so the UI reflects reality.
+    // `setSignerMode` also wipes `nsecSecret` when leaving nsec mode, so we
+    // don't need a separate `setNsecSecret(null)` call.
+    settings.setSignerMode("none");
+  }
 }
 
 /** Ensure NDK is connected without a signer (read-only mode). */

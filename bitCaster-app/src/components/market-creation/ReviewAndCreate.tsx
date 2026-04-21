@@ -1,4 +1,5 @@
 import { FileText, Tag, Calendar, BarChart3, Coins, Loader2 } from 'lucide-react'
+import { Link } from 'react-router'
 import type {
   WizardStepBasicInfo,
   WizardStepOutcomes,
@@ -34,13 +35,6 @@ export function ReviewAndCreate({
       <p className="text-sm text-slate-400 mb-8">
         Add a description and review your market before creating it.
       </p>
-
-      {/* Error banner */}
-      {submitError && (
-        <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 mb-6">
-          <p className="text-sm text-red-400">{submitError}</p>
-        </div>
-      )}
 
       {/* Description */}
       <div className="mb-8">
@@ -161,6 +155,26 @@ export function ReviewAndCreate({
           'Create Market'
         )}
       </button>
+
+      {/* Error banner — placed under the button so it is adjacent to the
+          action that triggered it. Prior placement at the top of the page
+          left users staring at the button with no feedback in view. */}
+      {submitError && (
+        <div
+          role="alert"
+          className="mt-4 p-4 rounded-xl bg-red-500/10 border border-red-500/20"
+        >
+          <p className="text-sm text-red-400">{submitError}</p>
+          {submitError.includes('Settings') && (
+            <Link
+              to="/settings?category=nostr"
+              className="mt-2 inline-block text-sm font-medium text-red-300 underline hover:text-red-200"
+            >
+              Open Settings
+            </Link>
+          )}
+        </div>
+      )}
     </div>
   )
 }

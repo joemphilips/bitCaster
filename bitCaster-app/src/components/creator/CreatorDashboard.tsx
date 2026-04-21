@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
+import { useTranslation } from 'react-i18next'
 import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from 'lucide-react'
 import { formatBtc } from '@/lib/format'
 import { useCreatorDashboardState } from '@/hooks/useCreatorDashboardState'
@@ -44,6 +45,7 @@ function StatCard({ label, value, subValue, icon }: StatCardProps) {
  */
 export function CreatorDashboard() {
   const navigate = useNavigate()
+  const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview')
   const { stats, markets, isLoading, error, pubkey } = useCreatorDashboardState()
 
@@ -57,10 +59,10 @@ export function CreatorDashboard() {
         <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-3xl">
-              Your Markets
+              {t('creator.title')}
             </h1>
             <p className="mt-1 text-slate-500 dark:text-slate-400">
-              Create and manage your prediction markets
+              {t('creator.subtitle')}
             </p>
           </div>
 
@@ -70,7 +72,7 @@ export function CreatorDashboard() {
           >
             <div className="absolute inset-0 -translate-x-full animate-[shimmer_3s_infinite] bg-gradient-to-r from-transparent via-white/20 to-transparent" />
             <Plus className="relative h-5 w-5" />
-            <span className="relative">Create Market</span>
+            <span className="relative">{t('creator.createMarket')}</span>
           </button>
         </div>
 
@@ -86,7 +88,7 @@ export function CreatorDashboard() {
                   : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
               }`}
             >
-              {tab === 'overview' ? 'Overview' : 'Analytics'}
+              {tab === 'overview' ? t('creator.tabOverview') : t('creator.tabAnalytics')}
             </button>
           ))}
         </div>
@@ -97,35 +99,34 @@ export function CreatorDashboard() {
                wallet we have nothing to scope this dashboard to. */}
             {!pubkey && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-                Set up a wallet to start creating markets — your creator activity
-                is scoped to your Nostr identity.
+                {t('creator.walletPrompt')}
               </div>
             )}
 
             {/* Stats grid */}
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <StatCard
-                label="Active Markets"
+                label={t('creator.statActiveMarkets')}
                 value={stats.activeMarketsCount}
-                subValue="Currently trading"
+                subValue={t('creator.statActiveMarketsSub')}
                 icon={<TrendingUp className="h-5 w-5" />}
               />
               <StatCard
-                label="Resolved"
+                label={t('creator.statResolved')}
                 value={stats.resolvedMarketsCount}
-                subValue="Completed markets"
+                subValue={t('creator.statResolvedSub')}
                 icon={<CheckCircle2 className="h-5 w-5" />}
               />
               <StatCard
-                label="Total Volume"
+                label={t('creator.statTotalVolume')}
                 value={formatBtc(stats.totalVolumeSats)}
-                subValue="Traded"
+                subValue={t('creator.statTotalVolumeSub')}
                 icon={<BarChart3 className="h-5 w-5" />}
               />
               <StatCard
-                label="Fees Earned"
+                label={t('creator.statFeesEarned')}
                 value={formatBtc(stats.totalFeesEarnedSats)}
-                subValue="Coming soon"
+                subValue={t('creator.statFeesEarnedSub')}
                 icon={<Coins className="h-5 w-5" />}
               />
             </div>
@@ -136,7 +137,7 @@ export function CreatorDashboard() {
               <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300">
                 <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
                 <div>
-                  <p className="font-semibold">Couldn't load live volume data.</p>
+                  <p className="font-semibold">{t('creator.volumeErrorTitle')}</p>
                   <p className="mt-0.5 text-xs opacity-80">{error}</p>
                 </div>
               </div>
@@ -168,23 +169,24 @@ interface EmptyStateProps {
 }
 
 function EmptyState({ isLoading, onCreate }: EmptyStateProps) {
+  const { t } = useTranslation()
   return (
     <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white/50 p-12 text-center dark:border-slate-700 dark:bg-slate-900/50">
       <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-400">
         <Plus className="h-8 w-8" />
       </div>
       <h3 className="text-lg font-bold text-slate-900 dark:text-white">
-        {isLoading ? 'Loading your markets…' : 'Create your first market'}
+        {isLoading ? t('creator.emptyLoading') : t('creator.emptyTitle')}
       </h3>
       <p className="mt-2 text-slate-500 dark:text-slate-400">
-        Start earning fees by creating prediction markets for others to trade.
+        {t('creator.emptyDesc')}
       </p>
       <button
         onClick={onCreate}
         className="mt-6 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-3 font-bold text-white shadow-md transition-all hover:bg-blue-700 hover:shadow-lg"
       >
         <Plus className="h-5 w-5" />
-        Create Market
+        {t('creator.createMarket')}
       </button>
     </div>
   )

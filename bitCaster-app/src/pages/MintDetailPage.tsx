@@ -33,6 +33,11 @@ interface ContactEntry {
   info: string
 }
 
+interface SwapMethodLike {
+  method?: string
+  unit?: string
+}
+
 export function MintDetailPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -48,8 +53,16 @@ export function MintDetailPage() {
   const description = (info?.description as string) ?? ''
   const descriptionLong = (info?.description_long as string) ?? ''
   const motd = (info?.motd as string) ?? ''
+  const version = (info?.version as string) ?? ''
   const nuts = info?.nuts as Record<string, unknown> | undefined
   const contact = (info?.contact ?? []) as ContactEntry[]
+
+  // Derive supported currencies/units from NUT-4 (mint) and NUT-5 (melt) method lists.
+  const methodUnits = (['4', '5'] as const).flatMap((key) => {
+    const nut = nuts?.[key] as { methods?: SwapMethodLike[] } | undefined
+    return nut?.methods?.map((m) => m.unit).filter((u): u is string => !!u) ?? []
+  })
+  const supportedUnits = Array.from(new Set(methodUnits))
 
   const handleRemove = () => {
     if (mints.length <= 1) return
@@ -117,6 +130,39 @@ export function MintDetailPage() {
             <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50">
               <p className="text-sm text-amber-800 dark:text-amber-300">{motd}</p>
             </div>
+          </div>
+        )}
+
+        {/* Version + Currency */}
+        {(version || supportedUnits.length > 0) && (
+          <div className="grid grid-cols-2 gap-3">
+            {version && (
+              <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-700/30">
+                <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                  Version
+                </div>
+                <div className="text-sm font-mono text-slate-900 dark:text-white break-all">
+                  {version}
+                </div>
+              </div>
+            )}
+            {supportedUnits.length > 0 && (
+              <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-700/30">
+                <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                  Currency
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {supportedUnits.map((u) => (
+                    <span
+                      key={u}
+                      className="px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 text-xs font-mono text-slate-900 dark:text-white uppercase"
+                    >
+                      {u}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
