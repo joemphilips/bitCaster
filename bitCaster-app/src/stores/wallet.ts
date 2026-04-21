@@ -30,7 +30,12 @@ interface WalletState {
   getWallet: (mintUrl?: string) => Promise<CashuWallet>
 }
 
-const DEFAULT_MINT_URL = import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085'
+const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085')
+
+/** Strip trailing slashes from mint URLs to avoid double-slash bugs (e.g. `mint.com//v1/info`). */
+function normalizeUrl(url: string): string {
+  return url.replace(/\/+$/, '')
+}
 
 let _walletCache: Map<string, CashuWallet> = new Map()
 
@@ -109,43 +114,45 @@ export const useWalletStore = create<WalletState>()(
       },
 
       testMintConnection: async (url: string): Promise<MintConnectionTestStatus> => {
+        const normalized = normalizeUrl(url)
         set((s) => ({
-          mintConnectionStatuses: { ...s.mintConnectionStatuses, [url]: 'connecting' },
+          mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'connecting' },
         }))
         try {
-          const res = await fetch(`${url}/v1/info`)
+          const res = await fetch(`${normalized}/v1/info`)
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           set((s) => ({
-            mintConnectionStatuses: { ...s.mintConnectionStatuses, [url]: 'connected' },
+            mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'connected' },
           }))
           return 'connected'
         } catch {
           set((s) => ({
-            mintConnectionStatuses: { ...s.mintConnectionStatuses, [url]: 'failed' },
+            mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'failed' },
           }))
           return 'failed'
         }
       },
 
       addMint: async (url: string) => {
-        const mint = new CashuMint(url)
+        const normalized = normalizeUrl(url)
+        const mint = new CashuMint(normalized)
         const info = await mint.getInfo()
         const { keysets } = await mint.getKeySets()
         const keys = await mint.getKeys()
 
         const storedMint: StoredMint = {
-          url,
+          url: normalized,
           info: info as unknown as Record<string, unknown>,
           keysets,
           keys: keys.keysets[0],
         }
 
         set((s) => {
-          const exists = s.mints.some((m) => m.url === url)
+          const exists = s.mints.some((m) => m.url === normalized)
           return {
-            mints: exists ? s.mints.map((m) => (m.url === url ? storedMint : m)) : [...s.mints, storedMint],
-            activeMintUrl: url,
-            mintConnectionStatuses: { ...s.mintConnectionStatuses, [url]: 'connected' },
+            mints: exists ? s.mints.map((m) => (m.url === normalized ? storedMint : m)) : [...s.mints, storedMint],
+            activeMintUrl: normalized,
+            mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'connected' },
           }
         })
       },
@@ -164,7 +171,7 @@ export const useWalletStore = create<WalletState>()(
       },
 
       getWallet: async (mintUrl?: string): Promise<CashuWallet> => {
-        const url = mintUrl ?? get().activeMintUrl
+        const url = normalizeUrl(mintUrl ?? get().activeMintUrl)
         const cached = _walletCache.get(url)
         if (cached) return cached
 
