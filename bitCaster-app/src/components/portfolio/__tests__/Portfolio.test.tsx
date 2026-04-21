@@ -18,7 +18,6 @@ const mockProfile: UserProfile = {
   displayName: 'SatoshiTrader',
   avatarUrl: null,
   registeredDate: '2025-08-15T09:30:00Z',
-  viewCount: 1247,
 }
 
 const mockPLData: PLChartData = {
@@ -42,6 +41,7 @@ const mockPLData: PLChartData = {
 
 const mockStats: PortfolioStats = {
   positionsValueSats: 445750,
+  totalValueSats: 618750,
   biggestWinSats: 86400,
   predictionsCount: 8,
 }
@@ -197,7 +197,7 @@ describe('Portfolio', () => {
     it('renders stats row', () => {
       renderPortfolio()
       expect(screen.getByText('Positions Value')).toBeInTheDocument()
-      expect(screen.getByText('Biggest Win')).toBeInTheDocument()
+      expect(screen.getByText('Total Value')).toBeInTheDocument()
       expect(screen.getByText('Predictions')).toBeInTheDocument()
     })
 

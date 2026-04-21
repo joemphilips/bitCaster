@@ -73,7 +73,7 @@ export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenu
                 <ChevronDown className={`w-4 h-4 ml-auto transition-transform ${langOpen ? 'rotate-180' : ''}`} />
               </button>
               {langOpen && (
-                <div className="border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-750">
+                <div className="border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
                   {LANGUAGES.map((lang) => (
                     <button
                       key={lang.code}

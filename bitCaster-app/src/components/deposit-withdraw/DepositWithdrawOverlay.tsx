@@ -6,6 +6,7 @@ import { TokenDisplay } from './TokenDisplay'
 import { MeltConfirmation } from './MeltConfirmation'
 import { QrScannerView } from './QrScanner'
 import { PaymentRequestDisplay } from './PaymentRequestDisplay'
+import { SuccessView } from './SuccessView'
 
 interface DepositWithdrawOverlayProps {
   mode: DepositWithdrawMode
@@ -21,6 +22,10 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
       {state.error}
     </div>
   ) : null
+
+  if (state.currentView === 'success') {
+    return <SuccessView amountSats={state.successAmount} onClose={state.onClose} />
+  }
 
   if (state.currentView === 'scanner') {
     return (

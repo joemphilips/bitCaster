@@ -1,13 +1,43 @@
+import { useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router'
-import { ArrowLeft, Trash2, ExternalLink } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
+import { ArrowLeft, Trash2, ChevronDown, Mail, AtSign, Copy } from 'lucide-react'
 import { useWalletStore } from '@/stores/wallet'
 import { safeHostname } from '@/lib/url'
+
+/** Human-readable names for well-known NUTs (7+). */
+const NUT_NAMES: Record<string, string> = {
+  '7': 'Token state check',
+  '8': 'Overpaid Lightning fees',
+  '9': 'Signature restore',
+  '10': 'Spending conditions',
+  '11': 'Pay-to-Pubkey (P2PK)',
+  '12': 'DLEQ proofs',
+  '13': 'Deterministic secrets',
+  '14': 'Hashed Timelock Contracts',
+  '15': 'Partial multi-path payments',
+  '16': 'Animated QR codes',
+  '17': 'WebSocket subscriptions',
+  '18': 'Payment requests',
+  '19': 'Cached responses',
+  '20': 'Signature on mint quote',
+  '21': 'Clear authentication',
+  '22': 'Blind authentication',
+  '29': 'Batched minting',
+  'CTF': 'Conditional Tokens',
+  'CTF-split-merge': 'CTF Split/Merge',
+  'CTF-numeric': 'CTF Numeric',
+}
+
+interface ContactEntry {
+  method: string
+  info: string
+}
 
 export function MintDetailPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const mintUrl = searchParams.get('mintUrl') ?? ''
+  const [nutsExpanded, setNutsExpanded] = useState(false)
 
   const storedMint = useWalletStore((s) => s.mints.find((m) => m.url === mintUrl))
   const removeMint = useWalletStore((s) => s.removeMint)
@@ -16,8 +46,10 @@ export function MintDetailPage() {
   const info = storedMint?.info as Record<string, unknown> | undefined
   const name = (info?.name as string) ?? safeHostname(mintUrl)
   const description = (info?.description as string) ?? ''
+  const descriptionLong = (info?.description_long as string) ?? ''
   const motd = (info?.motd as string) ?? ''
   const nuts = info?.nuts as Record<string, unknown> | undefined
+  const contact = (info?.contact ?? []) as ContactEntry[]
 
   const handleRemove = () => {
     if (mints.length <= 1) return
@@ -34,6 +66,8 @@ export function MintDetailPage() {
       </div>
     )
   }
+
+  const nutKeys = nuts ? Object.keys(nuts) : []
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
@@ -67,57 +101,92 @@ export function MintDetailPage() {
           </div>
         </div>
 
-        {/* MOTD */}
+        {/* Long Description */}
+        {descriptionLong && (
+          <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
+            {descriptionLong}
+          </p>
+        )}
+
+        {/* Mint Message (MOTD) */}
         {motd && (
-          <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50">
-            <p className="text-sm text-amber-800 dark:text-amber-300">{motd}</p>
+          <div>
+            <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+              Mint Message
+            </h3>
+            <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50">
+              <p className="text-sm text-amber-800 dark:text-amber-300">{motd}</p>
+            </div>
           </div>
         )}
 
-        {/* URL */}
-        <div>
-          <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-            URL
-          </h3>
-          <a
-            href={mintUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 text-sm font-mono text-blue-600 dark:text-blue-400 hover:underline"
-          >
-            {mintUrl}
-            <ExternalLink className="w-3 h-3" />
-          </a>
-        </div>
-
-        {/* Supported NUTs */}
-        {nuts && Object.keys(nuts).length > 0 && (
+        {/* Contact Info */}
+        {contact.length > 0 && (
           <div>
             <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-              Supported NUTs
+              Contact
             </h3>
-            <div className="flex flex-wrap gap-2">
-              {Object.keys(nuts).map((nut) => (
-                <span
-                  key={nut}
-                  className="px-2 py-1 rounded-md bg-slate-100 dark:bg-slate-700 text-xs font-mono text-slate-700 dark:text-slate-300"
+            <div className="space-y-2">
+              {contact.map((c) => (
+                <div
+                  key={`${c.method}-${c.info}`}
+                  className="flex items-center gap-3 p-2 rounded-lg bg-slate-50 dark:bg-slate-700/30"
                 >
-                  NUT-{nut}
-                </span>
+                  <ContactIcon method={c.method} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-slate-500 dark:text-slate-400 capitalize">
+                      {c.method}
+                    </div>
+                    <div className="text-sm font-mono text-slate-900 dark:text-white truncate">
+                      {c.info}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(c.info)}
+                    className="p-1.5 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors"
+                    title="Copy"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               ))}
             </div>
           </div>
         )}
-      </div>
 
-      {/* QR Code */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-5 flex flex-col items-center">
-        <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-4">
-          QR Code
-        </h3>
-        <div className="bg-white p-3 rounded-xl">
-          <QRCodeSVG value={mintUrl} size={200} level="M" />
-        </div>
+        {/* Supported NUTs — expandable list */}
+        {nutKeys.length > 0 && (
+          <div>
+            <button
+              onClick={() => setNutsExpanded(!nutsExpanded)}
+              className="flex items-center justify-between w-full group"
+            >
+              <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Supported NUTs ({nutKeys.length})
+              </h3>
+              <ChevronDown
+                className={`w-4 h-4 text-slate-400 transition-transform ${nutsExpanded ? 'rotate-180' : ''}`}
+              />
+            </button>
+            {nutsExpanded && (
+              <div className="mt-2 space-y-1">
+                {nutKeys.map((nut) => (
+                  <div
+                    key={nut}
+                    className="flex items-baseline gap-2 px-2 py-1.5 rounded-md bg-slate-50 dark:bg-slate-700/30"
+                  >
+                    <span className="text-xs font-mono text-slate-400 dark:text-slate-500 shrink-0">
+                      {nut}:
+                    </span>
+                    <span className="text-sm text-slate-700 dark:text-slate-300">
+                      {NUT_NAMES[nut] ?? `NUT-${nut}`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Remove Button */}
@@ -132,4 +201,17 @@ export function MintDetailPage() {
       )}
     </div>
   )
+}
+
+function ContactIcon({ method }: { method: string }) {
+  switch (method) {
+    case 'email':
+      return <Mail className="w-4 h-4 text-slate-400 shrink-0" />
+    case 'nostr':
+    case 'twitter':
+    case 'telegram':
+      return <AtSign className="w-4 h-4 text-slate-400 shrink-0" />
+    default:
+      return <AtSign className="w-4 h-4 text-slate-400 shrink-0" />
+  }
 }

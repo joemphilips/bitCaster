@@ -40,7 +40,8 @@
     "unnamed": "Unnamed",
     "connect": "Connect",
     "share": "Share",
-    "price": "Price"
+    "price": "Price",
+    "success": "Success!"
   },
   "nav": {
     "markets": "Markets",
@@ -231,6 +232,7 @@
     "funds": "Funds",
     "activity": "Activity",
     "positionsValue": "Positions Value",
+    "totalValue": "Total Value",
     "biggestWin": "Biggest Win",
     "predictions": "Predictions",
     "noPositions": "No {{tab}} positions",
@@ -328,7 +330,8 @@
     "total": "Total",
     "scanQrCode": "Scan QR Code",
     "tapToScan": "Tap to scan an address",
-    "lightningAddressOrInvoice": "Lightning address or invoice"
+    "lightningAddressOrInvoice": "Lightning address or invoice",
+    "autoClose": "Closing automatically..."
   },
   "marketCreation": {
     "getStarted": "Get Started",

@@ -12,6 +12,7 @@ import {
   type PaymentRequestPayload,
 } from '@cashu/cashu-ts'
 import { useWalletStore } from '@/stores/wallet'
+import { useActivityLogStore } from '@/stores/activity-log'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/stores/proof-db'
 import {
@@ -45,6 +46,7 @@ export type ExtendedView =
   | 'melt-confirm'
   | 'scanner'
   | 'payment-request-display'
+  | 'success'
 
 export interface DepositWithdrawState {
   mode: DepositWithdrawMode
@@ -69,6 +71,9 @@ export interface DepositWithdrawState {
   // Payment request state
   paymentRequestEncoded: string | null
   paymentRequestStatus: 'waiting' | 'received'
+
+  // Success state
+  successAmount: number
 
   // Handlers
   onSelectMethod: (method: MethodType) => void
@@ -132,6 +137,9 @@ export function useDepositWithdrawState(
   // Payment request state
   const [paymentRequestEncoded, setPaymentRequestEncoded] = useState<string | null>(null)
   const [paymentRequestStatus, setPaymentRequestStatus] = useState<'waiting' | 'received'>('waiting')
+
+  // Success state
+  const [successAmount, setSuccessAmount] = useState(0)
 
   // Track which view opened the scanner so we can process results correctly
   const scanReturnViewRef = useRef<ExtendedView>('deposit-ecash')
@@ -206,6 +214,12 @@ export function useDepositWithdrawState(
             }))
             await addProofs(stored)
             setInvoiceStatus('paid')
+            useActivityLogStore.getState().addActivity({
+              type: 'deposit',
+              amountSats,
+              status: 'completed',
+              lightningInvoice: savedQuote.request,
+            })
           } catch (e) {
             setError((e as Error).message)
           }
@@ -238,8 +252,15 @@ export function useDepositWithdrawState(
           mintUrl,
         }))
         await addProofs(stored)
+        const receivedAmount = proofs.reduce((sum, p) => sum + p.amount, 0)
+        useActivityLogStore.getState().addActivity({
+          type: 'deposit',
+          amountSats: receivedAmount,
+          status: 'completed',
+        })
         setIsLoading(false)
-        onDismiss()
+        setSuccessAmount(receivedAmount)
+        setCurrentView('success')
       } else if (currentView === 'pay-lightning') {
         setLightningInput(text)
         // Auto-create melt quote if it looks like a bolt11 invoice
@@ -276,7 +297,11 @@ export function useDepositWithdrawState(
       const token = encodeToken(send, selectedMintId)
       setEcashToken(token)
       setCurrentView('token-display')
-      // User must manually dismiss after copying the token to avoid fund loss
+      useActivityLogStore.getState().addActivity({
+        type: 'withdrawal',
+        amountSats,
+        status: 'completed',
+      })
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -326,7 +351,14 @@ export function useDepositWithdrawState(
         await addProofs(changeStored)
       }
 
-      onDismiss()
+      useActivityLogStore.getState().addActivity({
+        type: 'withdrawal',
+        amountSats: meltQuote.amount,
+        status: 'completed',
+        lightningInvoice: lightningInput,
+      })
+      setSuccessAmount(meltQuote.amount)
+      setCurrentView('success')
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -354,7 +386,14 @@ export function useDepositWithdrawState(
           mintUrl: decoded.mint,
         }))
         await addProofs(stored)
-        onDismiss()
+        const receivedAmount = proofs.reduce((sum, p) => sum + p.amount, 0)
+        useActivityLogStore.getState().addActivity({
+          type: 'deposit',
+          amountSats: receivedAmount,
+          status: 'completed',
+        })
+        setSuccessAmount(receivedAmount)
+        setCurrentView('success')
       } catch (e) {
         setError((e as Error).message)
         setCurrentView(scanReturnViewRef.current)
@@ -451,6 +490,12 @@ export function useDepositWithdrawState(
                 mintUrl: payload.mint,
               }))
               await addProofs(stored)
+              const receivedAmount = receivedProofs.reduce((sum, p) => sum + p.amount, 0)
+              useActivityLogStore.getState().addActivity({
+                type: 'deposit',
+                amountSats: receivedAmount,
+                status: 'completed',
+              })
               setPaymentRequestStatus('received')
 
               // Auto-navigate back to portfolio after 2 seconds
@@ -509,6 +554,7 @@ export function useDepositWithdrawState(
     meltIsPaying,
     paymentRequestEncoded,
     paymentRequestStatus,
+    successAmount,
     onSelectMethod,
     onNumpadPress,
     onMintChange,

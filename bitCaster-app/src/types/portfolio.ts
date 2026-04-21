@@ -32,7 +32,6 @@ export interface UserProfile {
   displayName: string
   avatarUrl: string | null
   registeredDate: string
-  viewCount: number
 }
 
 // =============================================================================
@@ -41,6 +40,7 @@ export interface UserProfile {
 
 export interface PortfolioStats {
   positionsValueSats: number
+  totalValueSats: number
   biggestWinSats: number
   predictionsCount: number
 }

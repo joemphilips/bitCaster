@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import type { UserProfile } from '@/types/portfolio'
-import { Camera, Eye } from 'lucide-react'
+import { Camera } from 'lucide-react'
 
 interface ProfileCardProps {
   profile: UserProfile
@@ -59,10 +59,6 @@ export function ProfileCard({ profile, onAvatarUpload }: ProfileCardProps) {
         <p className="text-sm text-slate-500 dark:text-slate-400">
           {t('portfolio.joined', { date: joinedDate })}
         </p>
-        <div className="flex items-center gap-1 mt-0.5 text-xs text-slate-400 dark:text-slate-500">
-          <Eye className="w-3 h-3" />
-          <span>{t('portfolio.views', { count: profile.viewCount })}</span>
-        </div>
       </div>
     </div>
   )

@@ -6,10 +6,11 @@ const TIME_RANGES: PLTimeSelector[] = ['1D', '1W', '1M', 'ALL']
 interface PLChartProps {
   chartData: PLChartData
   selectedTimeRange: PLTimeSelector
+  totalValueSats?: number
   onTimeRangeChange?: (range: PLTimeSelector) => void
 }
 
-export function PLChart({ chartData, selectedTimeRange, onTimeRangeChange }: PLChartProps) {
+export function PLChart({ chartData, selectedTimeRange, totalValueSats, onTimeRangeChange }: PLChartProps) {
   const data = chartData[selectedTimeRange]
   const currentPL = data.length > 0 ? data[data.length - 1].cumulativePL : 0
   const startPL = data.length > 0 ? data[0].cumulativePL : 0
@@ -40,14 +41,29 @@ export function PLChart({ chartData, selectedTimeRange, onTimeRangeChange }: PLC
 
   return (
     <div>
-      {/* P/L Amount */}
+      {/* Total Value / P/L Amount */}
       <div className="mb-3">
-        <div className={`text-2xl font-bold font-mono ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-          {isPositive ? '+' : ''}{formatBtc(currentPL)}
-        </div>
-        <div className={`text-sm font-mono ${periodPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-          {periodPositive ? '+' : ''}{formatBtc(periodChange)} this period
-        </div>
+        {totalValueSats != null && totalValueSats > 0 ? (
+          <>
+            <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
+              {formatBtc(totalValueSats)}
+            </div>
+            {data.length > 0 && (
+              <div className={`text-sm font-mono ${periodPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
+                {periodPositive ? '+' : ''}{formatBtc(periodChange)} this period
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className={`text-2xl font-bold font-mono ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
+              {isPositive ? '+' : ''}{formatBtc(currentPL)}
+            </div>
+            <div className={`text-sm font-mono ${periodPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
+              {periodPositive ? '+' : ''}{formatBtc(periodChange)} this period
+            </div>
+          </>
+        )}
       </div>
 
       {/* SVG Chart */}

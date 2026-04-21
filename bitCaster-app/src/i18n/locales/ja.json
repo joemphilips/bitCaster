@@ -40,7 +40,8 @@
     "unnamed": "名前なし",
     "connect": "接続",
     "share": "シェア",
-    "price": "価格"
+    "price": "価格",
+    "success": "成功！"
   },
   "nav": {
     "markets": "マーケット",
@@ -231,6 +232,7 @@
     "funds": "資産",
     "activity": "アクティビティ",
     "positionsValue": "ポジション価値",
+    "totalValue": "合計価値",
     "biggestWin": "最大利益",
     "predictions": "予測数",
     "noPositions": "{{tab}}ポジションはありません",
@@ -328,7 +330,8 @@
     "total": "合計",
     "scanQrCode": "QRコードをスキャン",
     "tapToScan": "アドレスをスキャンするにはタップ",
-    "lightningAddressOrInvoice": "Lightningアドレスまたはインボイス"
+    "lightningAddressOrInvoice": "Lightningアドレスまたはインボイス",
+    "autoClose": "自動的に閉じます..."
   },
   "marketCreation": {
     "getStarted": "始める",

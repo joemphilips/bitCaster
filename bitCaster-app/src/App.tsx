@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
+import { useLiveQuery } from "dexie-react-hooks";
 import { AppShell } from "@/components/shell";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
@@ -12,6 +13,8 @@ import { WalletSetupPage } from "@/pages/WalletSetupPage";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
+import { useSettingsStore } from "@/stores/settings";
+import { db } from "@/stores/proof-db";
 import { ToastContainer } from "@/components/ui/Toast";
 
 function AppRoutes() {
@@ -32,6 +35,12 @@ function AppRoutes() {
     );
   }
 
+  const nostrProfile = useSettingsStore((s) => s.nostrProfile);
+  const totalBalance = useLiveQuery(async () => {
+    const proofs = await db.proofs.toArray();
+    return proofs.reduce((sum, p) => sum + p.amount, 0);
+  }, [], 0);
+
   const navigationItems = [
     {
       label: t("nav.markets"),
@@ -40,7 +49,11 @@ function AppRoutes() {
     },
   ];
 
-  const user = { name: "Anon", balance: 0 };
+  const user = {
+    name: nostrProfile?.displayName ?? "Anon",
+    avatarUrl: nostrProfile?.avatar ?? undefined,
+    balance: totalBalance,
+  };
 
   return (
     <AppShell

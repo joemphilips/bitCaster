@@ -2,12 +2,15 @@ import { useState, useCallback, useMemo } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
+import { useSettingsStore } from '@/stores/settings'
+import { useActivityLogStore } from '@/stores/activity-log'
 import { safeHostname } from '@/lib/url'
 import type {
   WalletState,
   BaseCurrency,
   PLTimeSelector,
   PLChartData,
+  PLChartDataPoint,
   PortfolioStats,
   UserProfile,
   Position,
@@ -30,11 +33,43 @@ interface PortfolioState {
   positionsTab: 'active' | 'closed'
 }
 
-const EMPTY_PL_DATA: PLChartData = {
-  '1D': [],
-  '1W': [],
-  '1M': [],
-  ALL: [],
+const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
+  '1D': 24 * 60 * 60 * 1000,
+  '1W': 7 * 24 * 60 * 60 * 1000,
+  '1M': 30 * 24 * 60 * 60 * 1000,
+  ALL: Infinity,
+}
+
+/** Build P/L chart data from activity history. */
+function buildPLChartData(items: ActivityItem[]): PLChartData {
+  // Sort oldest-first
+  const sorted = [...items]
+    .filter((a) => a.status === 'completed')
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+  if (sorted.length === 0) {
+    return { '1D': [], '1W': [], '1M': [], ALL: [] }
+  }
+
+  // Build cumulative balance points
+  const points: PLChartDataPoint[] = []
+  let cumulative = 0
+  for (const item of sorted) {
+    const delta =
+      item.type === 'deposit' || item.type === 'payout_claimed' || item.type === 'creator_fee_claimed'
+        ? item.amountSats
+        : -item.amountSats
+    cumulative += delta
+    points.push({ timestamp: item.date, cumulativePL: cumulative })
+  }
+
+  const now = Date.now()
+  const result: PLChartData = { '1D': [], '1W': [], '1M': [], ALL: points }
+  for (const range of ['1D', '1W', '1M'] as const) {
+    const cutoff = now - TIME_RANGE_MS[range]
+    result[range] = points.filter((p) => new Date(p.timestamp).getTime() >= cutoff)
+  }
+  return result
 }
 
 const DEFAULT_PROFILE: UserProfile = {
@@ -42,7 +77,6 @@ const DEFAULT_PROFILE: UserProfile = {
   displayName: 'Anon',
   avatarUrl: null,
   registeredDate: new Date().toISOString(),
-  viewCount: 0,
 }
 
 function detectWalletState(): WalletState {
@@ -68,7 +102,7 @@ function loadProfile(): UserProfile {
   return DEFAULT_PROFILE
 }
 
-function computeStats(positions: Position[]): PortfolioStats {
+function computeStats(positions: Position[], fundsBalance: number): PortfolioStats {
   const activePositions = positions.filter((p) => p.status === 'active')
   const positionsValueSats = activePositions.reduce((sum, p) => sum + p.currentValueSats, 0)
   const biggestWinSats = positions.reduce(
@@ -77,6 +111,7 @@ function computeStats(positions: Position[]): PortfolioStats {
   )
   return {
     positionsValueSats,
+    totalValueSats: positionsValueSats + fundsBalance,
     biggestWinSats,
     predictionsCount: positions.length,
   }
@@ -90,13 +125,24 @@ export function usePortfolioState(): PortfolioState & {
   const [walletState] = useState<WalletState>(detectWalletState)
   const [baseCurrency] = useState<BaseCurrency>('BTC')
   const [selectedTimeRange, setSelectedTimeRange] = useState<PLTimeSelector>('ALL')
-  const [profile, setProfile] = useState<UserProfile>(loadProfile)
+  const [localProfile, setLocalProfile] = useState<UserProfile>(loadProfile)
   const [positionsTab, setPositionsTab] = useState<'active' | 'closed'>('active')
 
+  // Merge nostr profile into local profile when available
+  const nostrProfile = useSettingsStore((s) => s.nostrProfile)
+  const profile: UserProfile = useMemo(() => {
+    if (!nostrProfile) return localProfile
+    return {
+      ...localProfile,
+      displayName: nostrProfile.displayName || localProfile.displayName,
+      avatarUrl: nostrProfile.avatar || localProfile.avatarUrl,
+    }
+  }, [localProfile, nostrProfile])
+
   const [positions] = useState<Position[]>([])
-  const [activity] = useState<ActivityItem[]>([])
+  const activity = useActivityLogStore((s) => s.items)
   const [createdMarkets] = useState<CreatedMarket[]>([])
-  const [plChartData] = useState<PLChartData>(EMPTY_PL_DATA)
+  const plChartData = useMemo(() => buildPLChartData(activity), [activity])
 
   // Funds: aggregate proof balances by mint from IndexedDB
   const storeMints = useWalletStore((s) => s.mints)
@@ -119,11 +165,12 @@ export function usePortfolioState(): PortfolioState & {
     })
   }, [storeMints], [] as (Fund & { mintName: string })[])
   const funds: Fund[] = fundsFromDb
+  const fundsBalance = useMemo(() => fundsFromDb.reduce((sum, f) => sum + f.amount, 0), [fundsFromDb])
 
-  const stats = useMemo(() => computeStats(positions), [positions])
+  const stats = useMemo(() => computeStats(positions, fundsBalance), [positions, fundsBalance])
 
   const saveProfile = useCallback((updated: UserProfile) => {
-    setProfile(updated)
+    setLocalProfile(updated)
     localStorage.setItem('bitcaster-profile', JSON.stringify(updated))
   }, [])
 

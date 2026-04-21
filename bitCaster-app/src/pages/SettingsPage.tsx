@@ -192,7 +192,6 @@ export function SettingsPage() {
           type: 'success',
           message: 'Connected with private key',
         })
-        navigate(-1)
         return true
       } catch {
         settingsStore.setSignerMode('none')
@@ -204,7 +203,7 @@ export function SettingsPage() {
         return false
       }
     },
-    [settingsStore, navigate],
+    [settingsStore],
   )
 
   return (

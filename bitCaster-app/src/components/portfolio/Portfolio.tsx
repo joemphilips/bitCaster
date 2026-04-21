@@ -66,6 +66,7 @@ export function Portfolio(props: PortfolioProps) {
           <PLChart
             chartData={props.plChartData}
             selectedTimeRange={props.selectedTimeRange}
+            totalValueSats={props.stats.totalValueSats}
             onTimeRangeChange={props.onTimeRangeChange}
           />
         </div>
