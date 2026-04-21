@@ -276,7 +276,7 @@ export function useDepositWithdrawState(
       setError((e as Error).message)
       setIsLoading(false)
     }
-  }, [currentView, selectedMintId, onDismiss])
+  }, [currentView, selectedMintId])
 
   const onSendEcash = useCallback(async () => {
     if (amountSats <= 0) return
@@ -364,7 +364,7 @@ export function useDepositWithdrawState(
     } finally {
       setMeltIsPaying(false)
     }
-  }, [meltQuote, selectedMintId, onDismiss])
+  }, [meltQuote, selectedMintId])
 
   const onScan = useCallback(() => {
     scanReturnViewRef.current = currentView
@@ -431,7 +431,7 @@ export function useDepositWithdrawState(
     // Unknown format
     setError('Unrecognized QR code format')
     setCurrentView(scanReturnViewRef.current)
-  }, [selectedMintId, onDismiss])
+  }, [selectedMintId])
 
   const onRequest = useCallback(async () => {
     setError(null)

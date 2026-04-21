@@ -44,25 +44,18 @@ export function PLChart({ chartData, selectedTimeRange, totalValueSats, onTimeRa
       {/* Total Value / P/L Amount */}
       <div className="mb-3">
         {totalValueSats != null && totalValueSats > 0 ? (
-          <>
-            <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
-              {formatBtc(totalValueSats)}
-            </div>
-            {data.length > 0 && (
-              <div className={`text-sm font-mono ${periodPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-                {periodPositive ? '+' : ''}{formatBtc(periodChange)} this period
-              </div>
-            )}
-          </>
+          <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
+            {formatBtc(totalValueSats)}
+          </div>
         ) : (
-          <>
-            <div className={`text-2xl font-bold font-mono ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-              {isPositive ? '+' : ''}{formatBtc(currentPL)}
-            </div>
-            <div className={`text-sm font-mono ${periodPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-              {periodPositive ? '+' : ''}{formatBtc(periodChange)} this period
-            </div>
-          </>
+          <div className={`text-2xl font-bold font-mono ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
+            {isPositive ? '+' : ''}{formatBtc(currentPL)}
+          </div>
+        )}
+        {data.length > 0 && (
+          <div className={`text-sm font-mono ${periodPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
+            {periodPositive ? '+' : ''}{formatBtc(periodChange)} this period
+          </div>
         )}
       </div>
 

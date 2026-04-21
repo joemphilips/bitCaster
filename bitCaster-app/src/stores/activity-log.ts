@@ -15,15 +15,13 @@ interface ActivityLogState {
   }) => void
 }
 
-let _nextId = Date.now()
-
 export const useActivityLogStore = create<ActivityLogState>()(
   persist(
     (set) => ({
       items: [],
       addActivity: (entry) => {
         const item: ActivityItem = {
-          id: String(_nextId++),
+          id: crypto.randomUUID(),
           type: entry.type,
           amountSats: entry.amountSats,
           date: new Date().toISOString(),

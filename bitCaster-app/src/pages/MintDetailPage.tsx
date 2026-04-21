@@ -204,14 +204,8 @@ export function MintDetailPage() {
 }
 
 function ContactIcon({ method }: { method: string }) {
-  switch (method) {
-    case 'email':
-      return <Mail className="w-4 h-4 text-slate-400 shrink-0" />
-    case 'nostr':
-    case 'twitter':
-    case 'telegram':
-      return <AtSign className="w-4 h-4 text-slate-400 shrink-0" />
-    default:
-      return <AtSign className="w-4 h-4 text-slate-400 shrink-0" />
+  if (method === 'email') {
+    return <Mail className="w-4 h-4 text-slate-400 shrink-0" />
   }
+  return <AtSign className="w-4 h-4 text-slate-400 shrink-0" />
 }

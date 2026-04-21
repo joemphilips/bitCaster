@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { Check } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { formatBtc } from '@/lib/format'
@@ -10,11 +10,13 @@ interface SuccessViewProps {
 
 export function SuccessView({ amountSats, onClose }: SuccessViewProps) {
   const { t } = useTranslation()
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
 
   useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
+    const timer = setTimeout(() => onCloseRef.current(), 3000)
     return () => clearTimeout(timer)
-  }, [onClose])
+  }, [])
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/95 flex flex-col items-center justify-center">
