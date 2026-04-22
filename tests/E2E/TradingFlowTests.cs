@@ -56,19 +56,35 @@ public class TradingFlowTests : IAsyncLifetime
     private static async Task SeedBalanceAsync(IPage page, int sats)
     {
         var mintUrl = $"http://localhost:{TestPorts.Mint}";
-        // Open without a version — Dexie (`BitcasterDB`) has already opened the
-        // DB at its current schema (IDB v20 after the v2 bump in proof-db.ts).
-        // Requesting a lower version here throws VersionError.
-        await page.EvaluateAsync($@"
+        // Raw IDB write — we open without a version so we attach to whatever
+        // schema Dexie has already materialized. But in CI, Dexie's lazy open
+        // can still be in flight when we arrive here (useBalance() mounts,
+        // kicks off Dexie.open, but the schema upgrade is async). If we open
+        // first, IDB gives us a fresh DB at version 1 with NO `proofs` store,
+        // the put throws, and the test sees 0 sats. So we poll the schema
+        // until the `proofs` store exists before writing, and read the count
+        // back afterwards so a silent failure surfaces as a clear error
+        // rather than a generic "text not visible" timeout.
+        var count = await page.EvaluateAsync<int>($@"
             async () => {{
-                const open = indexedDB.open('bitcaster');
-                await new Promise((resolve, reject) => {{
-                    open.onsuccess = () => resolve();
-                    open.onerror = () => reject(open.error);
-                }});
-                const db = open.result;
-                const tx = db.transaction('proofs', 'readwrite');
-                tx.objectStore('proofs').put({{
+                const openWithPoll = async () => {{
+                    const deadline = Date.now() + 10_000;
+                    while (Date.now() < deadline) {{
+                        const req = indexedDB.open('bitcaster');
+                        const db = await new Promise((resolve, reject) => {{
+                            req.onsuccess = () => resolve(req.result);
+                            req.onerror = () => reject(req.error);
+                            req.onupgradeneeded = () => {{}};
+                        }});
+                        if (db.objectStoreNames.contains('proofs')) return db;
+                        db.close();
+                        await new Promise(r => setTimeout(r, 50));
+                    }}
+                    throw new Error('Dexie did not materialize `proofs` store within 10s');
+                }};
+                const db = await openWithPoll();
+                const writeTx = db.transaction('proofs', 'readwrite');
+                writeTx.objectStore('proofs').put({{
                     secret: 'e2e-seed-' + Date.now(),
                     id: 'keyset-00',
                     C: '02' + '00'.repeat(32),
@@ -76,12 +92,25 @@ public class TradingFlowTests : IAsyncLifetime
                     mintUrl: '{mintUrl}',
                 }});
                 await new Promise((resolve, reject) => {{
-                    tx.oncomplete = () => resolve();
-                    tx.onerror = () => reject(tx.error);
+                    writeTx.oncomplete = () => resolve();
+                    writeTx.onerror = () => reject(writeTx.error);
+                }});
+                const readTx = db.transaction('proofs', 'readonly');
+                const count = await new Promise((resolve, reject) => {{
+                    const r = readTx.objectStore('proofs').count();
+                    r.onsuccess = () => resolve(r.result);
+                    r.onerror = () => reject(r.error);
                 }});
                 db.close();
+                return count;
             }}
         ");
+        if (count < 1)
+        {
+            throw new InvalidOperationException(
+                $"SeedBalanceAsync: expected at least 1 proof in IDB after write, got {count}. " +
+                "Dexie schema likely not ready at seed time.");
+        }
     }
 
     private static async Task GoToFirstMarketDetailAsync(IPage page)
