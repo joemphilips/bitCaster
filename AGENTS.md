@@ -81,6 +81,9 @@ The frontend `.env` is pre-configured with the default ports.
 ## Zustand + React Patterns
 
 - Never subscribe to state that a useEffect modifies (infinite retry loop) — use `useRef` one-shot guard + `useWalletStore.getState()` instead of selectors inside effects that trigger `addMint` or similar async mutations
+- Zustand `persist` rehydrates asynchronously — reading `getState()` inside a mount effect returns the initial state, not the persisted one. Gate boot-time reads on `persist.hasHydrated()` + `persist.onFinishHydration(fn)`.
+- E2E tests seed localStorage between `GotoAsync(/setup)` and `GotoAsync(/target)` — any boot effect that writes back through persist middleware will overwrite the seed. If the effect must skip certain routes (e.g. the setup wizard owns mint config), check `window.location.pathname` against a `WIZARD_PATHS` list.
+- `addMint(url)` in `stores/wallet.ts` sets `activeMintUrl` as a side-effect. Never call it from untrusted inputs (inbound NIP-17 DMs, query strings, etc.) without explicit user consent — doing so lets an attacker silently retarget the user's active mint.
 
 ## Branch Completion Workflow
 
