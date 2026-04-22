@@ -134,10 +134,9 @@ function AppRoutes() {
   // Ensure stored mints have full info (CTF badge, NUTs, contact) and that
   // the status indicator reflects reality. Re-fetches any mint missing
   // `info.nuts` — covers pre-P3 users who have a stale mint row in storage.
-  // Also seeds the default mint for first-run users (before setup) so
-  // /settings and /mint-details aren't empty while the wizard is still in
-  // progress — P5 item 1. `completeSetup()` keeps the same guarantee after
-  // setup finishes; this effect just moves the hydrate one step earlier.
+  // Also seeds the default mint for first-run users who land directly on
+  // /settings or /mint-details without going through the wizard (P5 item 1);
+  // the wizard's own `completeSetup()` handles the in-wizard case.
   //
   // Why defer to `onFinishHydration`: Zustand's persist middleware rehydrates
   // asynchronously. On the first render `useWalletStore.getState().mints` is
