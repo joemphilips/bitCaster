@@ -146,6 +146,16 @@ public class TradingFlowTests : IAsyncLifetime
         await SetupWalletAsync(page);
         await GoToFirstMarketDetailAsync(page);
         await SeedBalanceAsync(page, 10_000);
+        // Seed writes through raw indexedDB.open(), bypassing Dexie's change
+        // broadcast. An already-subscribed useLiveQuery (from `useBalance()`
+        // in the app shell) won't observe the write in CI. Reload so the app
+        // boots with the seeded proof already in IDB — first liveQuery fetch
+        // reads the populated store directly.
+        await page.ReloadAsync(new PageReloadOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
 
         var yesSide = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Yes\\s", RegexOptions.IgnoreCase) }).First;
         await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
@@ -155,7 +165,7 @@ public class TradingFlowTests : IAsyncLifetime
         // i18next plain `{{count}}` does not add thousands separators, so the
         // literal rendered string is "You have 10000 sats".
         var balanceHint = page.GetByText("You have 10000 sats").First;
-        await Assertions.Expect(balanceHint).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await Assertions.Expect(balanceHint).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
         // Quick-pick buttons top out at 5000 sats (QUICK_AMOUNTS in
         // TradingPanel.tsx); type a larger value directly to exceed the 10k
@@ -186,6 +196,13 @@ public class TradingFlowTests : IAsyncLifetime
         await SetupWalletAsync(page);
         await GoToFirstMarketDetailAsync(page);
         await SeedBalanceAsync(page, 10_000);
+        // Reload so the seeded proof is in IDB before useLiveQuery subscribes
+        // — see BuySide_ShowsWalletBalanceHint_AfterSeed for the same pattern.
+        await page.ReloadAsync(new PageReloadOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
 
         // Capture outgoing order requests — must contain a well-formed
         // ephemeralPubkey per the new wire contract.
