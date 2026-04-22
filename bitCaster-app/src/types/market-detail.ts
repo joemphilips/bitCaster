@@ -333,6 +333,9 @@ export interface MarketDetailProps {
   /** Number of shares the user currently holds (for sell percentage calculation) */
   userHoldings?: number
 
+  /** User's spendable sats balance at the active mint (for buy-side balance hint) */
+  walletBalanceSats?: number
+
   /** Whether the user has a wallet configured (gates trade confirmation) */
   walletReady?: boolean
 }

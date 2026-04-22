@@ -17,6 +17,7 @@ import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { rehydrateNostrSigner } from "@/lib/nostr";
+import { normalizeStoredMintUrls } from "@/stores/proof-db";
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -96,6 +97,18 @@ function AppRoutes() {
     if (signerRehydrated.current) return;
     signerRehydrated.current = true;
     rehydrateNostrSigner().catch(() => {});
+  }, []);
+
+  // One-shot migration: pre-fix proofs stored their mintUrl verbatim from
+  // the decoded token / NIP-17 payload, which could differ from the
+  // normalized `activeMintUrl` by a trailing slash. That mismatch made
+  // `getBalance(activeMintUrl)` return 0 even with proofs in IndexedDB —
+  // breaking the buy gate on market detail.
+  const proofMigrationAttempted = useRef(false);
+  useEffect(() => {
+    if (proofMigrationAttempted.current) return;
+    proofMigrationAttempted.current = true;
+    normalizeStoredMintUrls().catch(() => {});
   }, []);
 
   // Ensure stored mints have full info (CTF badge, NUTs, contact) and that

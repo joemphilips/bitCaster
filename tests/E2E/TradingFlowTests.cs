@@ -133,6 +133,52 @@ public class TradingFlowTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BuySide_ShowsWalletBalanceHint_AfterSeed()
+    {
+        // Regression for P5 item 6 — the buy-side trade panel used to show
+        // no balance hint, and the InsufficientBalanceModal reported
+        // "You have 0 sats" because the proof-row mintUrl never matched the
+        // normalized active mint URL. The fix is in `stores/proof-db.ts`
+        // (normalizes on write + a one-shot migration in `App.tsx`) and a
+        // live-balance wire-through to `<TradingPanel>`.
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupWalletAsync(page);
+        await GoToFirstMarketDetailAsync(page);
+        await SeedBalanceAsync(page, 10_000);
+
+        var yesSide = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Yes\\s", RegexOptions.IgnoreCase) }).First;
+        await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await yesSide.ClickAsync();
+
+        // Balance hint should reflect the seeded amount (live via useBalance).
+        // i18next plain `{{count}}` does not add thousands separators, so the
+        // literal rendered string is "You have 10000 sats".
+        var balanceHint = page.GetByText("You have 10000 sats").First;
+        await Assertions.Expect(balanceHint).ToBeVisibleAsync(new() { Timeout = 5_000 });
+
+        // Quick-pick buttons top out at 5000 sats (QUICK_AMOUNTS in
+        // TradingPanel.tsx); type a larger value directly to exceed the 10k
+        // seeded balance. The amount input is a <input type="number">
+        // sibling to the quick buttons.
+        var amountInput = page.GetByPlaceholder("0").First;
+        await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await amountInput.FillAsync("50000");
+
+        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) }).First;
+        await Assertions.Expect(confirm).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await confirm.ClickAsync();
+
+        var modalHeader = page.GetByText("Insufficient Balance");
+        await Assertions.Expect(modalHeader).ToBeVisibleAsync(new() { Timeout = 5_000 });
+
+        // The modal's "You have {{count}} sats" line must now report the
+        // seeded balance, not 0 (pre-fix regression).
+        var modalBalance = page.GetByText("10000 sats").First;
+        await Assertions.Expect(modalBalance).ToBeVisibleAsync(new() { Timeout = 5_000 });
+    }
+
+    [Fact]
     public async Task SufficientBalance_PostsOrderWithEphemeralPubkey()
     {
         await using var context = await NewIsolatedContextAsync();

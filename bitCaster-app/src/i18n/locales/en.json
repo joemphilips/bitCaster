@@ -199,6 +199,7 @@
     "sharesToSell": "Shares to sell",
     "amountBtc": "Amount (₿)",
     "balance": "Balance: {{count}} shares",
+    "walletBalance": "You have {{count}} sats",
     "comment": "Add a comment (optional)",
     "commentPlaceholder": "Share your reasoning...",
     "enterAmount": "Enter amount",

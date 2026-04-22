@@ -25,6 +25,7 @@ interface TradingPanelProps {
   limitOrderPreview?: LimitOrderPreview | null
   limitPrice?: number
   userHoldings?: number
+  walletBalanceSats?: number
   onTradeSelect?: (selection: TradeSelection) => void
   onTradeClear?: () => void
   onAmountChange?: (amount: number) => void
@@ -472,6 +473,7 @@ export function TradingPanel({
   onTradeConfirm,
   onCommentPost,
   userHoldings,
+  walletBalanceSats,
   onTradeSideChange,
   onOrderTypeChange,
   onLimitPriceChange,
@@ -550,10 +552,17 @@ export function TradingPanel({
             </button>
           </div>
 
-          {/* Balance hint when selling */}
+          {/* Balance hint — for sell show outcome shares held, for buy
+              show wallet balance at the active mint so the user knows
+              what they have to spend before hitting confirm. */}
           {isSell && userHoldings != null && (
             <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
               {t('trade.balance', { count: userHoldings })}
+            </p>
+          )}
+          {!isSell && walletBalanceSats != null && (
+            <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
+              {t('trade.walletBalance', { count: walletBalanceSats })}
             </p>
           )}
 

@@ -74,6 +74,7 @@ export function MarketDetail({
   onOrderTypeChange,
   onLimitPriceChange,
   userHoldings,
+  walletBalanceSats,
   walletReady = true,
 }: MarketDetailProps) {
   const { t } = useTranslation()
@@ -133,6 +134,7 @@ export function MarketDetail({
                   onOrderTypeChange={onOrderTypeChange}
                   onLimitPriceChange={onLimitPriceChange}
                   userHoldings={userHoldings}
+                  walletBalanceSats={walletBalanceSats}
                   walletReady={walletReady}
                 />
               </div>
@@ -199,6 +201,7 @@ export function MarketDetail({
                   onOrderTypeChange={onOrderTypeChange}
                   onLimitPriceChange={onLimitPriceChange}
                   userHoldings={userHoldings}
+                  walletBalanceSats={walletBalanceSats}
                   walletReady={walletReady}
                 />
               </div>

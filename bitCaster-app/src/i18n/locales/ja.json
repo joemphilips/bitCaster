@@ -199,6 +199,7 @@
     "sharesToSell": "売却するシェア数",
     "amountBtc": "数量 (₿)",
     "balance": "残高: {{count}} シェア",
+    "walletBalance": "残高: {{count}} sats",
     "comment": "コメントを追加 (任意)",
     "commentPlaceholder": "あなたの考えを共有...",
     "enterAmount": "数量を入力",

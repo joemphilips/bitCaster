@@ -5,7 +5,7 @@ import { InsufficientBalanceModal } from '@/components/shared/InsufficientBalanc
 import { TopUpOverlay } from '@/components/market-detail/TopUpOverlay'
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from '@/lib/markets'
 import { generateEphemeralKeyPair } from '@/lib/ephemeral-key'
-import { getBalance, useWalletStore } from '@/stores/wallet'
+import { getBalance, useBalance, useWalletStore } from '@/stores/wallet'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
 import type {
   MarketDetail as MarketDetailType,
@@ -26,6 +26,10 @@ export function MarketDetailPage() {
   const setupComplete = useWalletStore((s) => s.setupComplete)
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
   const addPendingTrade = usePendingTradesStore((s) => s.add)
+  // Live balance for the active mint so the trading panel can show
+  // "You have N sats" before the user tries to confirm (matches the
+  // pattern cashu.me uses to surface available funds).
+  const activeMintBalance = useBalance(activeMintUrl)
 
   // Data state
   const [market, setMarket] = useState<MarketDetailType | null>(null)
@@ -234,6 +238,7 @@ export function MarketDetailPage() {
         onLimitPriceChange={setLimitPrice}
         onRelatedMarketClick={handleRelatedMarketClick}
         walletReady={setupComplete}
+        walletBalanceSats={activeMintBalance}
       />
       {topUpStage === 'modal' && (
         <InsufficientBalanceModal
