@@ -631,6 +631,384 @@ public class InteropTests : IAsyncLifetime
         }
     }
 
+    // =========================================================================
+    // Payment-request helpers (NIP-17)
+    //
+    // bitCaster creates a PaymentRequest with a Nostr transport pointing at
+    // its own nprofile. cashu.me pays it from Send → Lightning (the
+    // PayInvoiceDialog parses creq/bolt11) → SendTokenDialog → Pay button.
+    // Both sides are forced onto the local nostr-rs-relay (`ws://localhost:7777`)
+    // so the test does not depend on public relays being reachable from CI.
+    // =========================================================================
+
+    /// <summary>Local nostr-rs-relay exposed by docker-compose.yml.</summary>
+    private const string LocalNostrRelayUrl = "ws://localhost:7777";
+
+    /// <summary>
+    /// Inject localStorage so bitCaster is wallet-configured AND forced onto
+    /// the local nostr relay. The listener reads relays from
+    /// <c>bitcaster-settings</c>, and <c>useDepositWithdrawState.onRequest</c>
+    /// now embeds those same relays in the nprofile — so setting this field
+    /// makes sender + recipient land on the same relay.
+    /// </summary>
+    private async Task SetupBitCasterWithLocalRelay(IPage page, string mnemonic)
+    {
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 30_000,
+        });
+
+        await page.EvaluateAsync($@"
+            localStorage.setItem('bitcaster-wallet', JSON.stringify({{
+                state: {{
+                    mnemonic: '{mnemonic}',
+                    setupComplete: true,
+                    mints: [{{ url: 'http://localhost:{TestPorts.Mint}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
+                    activeMintUrl: 'http://localhost:{TestPorts.Mint}',
+                    keysetCounters: {{}},
+                    mintConnectionStatuses: {{}}
+                }},
+                version: 0
+            }}));
+            localStorage.setItem('bitcaster-settings', JSON.stringify({{
+                state: {{
+                    baseCurrency: 'BTC',
+                    language: 'en',
+                    theme: 'dark',
+                    nostrSignerMode: 'none',
+                    relays: [{{ url: '{LocalNostrRelayUrl}', connectionStatus: 'disconnected' }}],
+                    nsecSecret: null
+                }},
+                version: 0
+            }}));
+        ");
+    }
+
+    /// <summary>
+    /// Inject cashu.me localStorage so it uses the test mint AND publishes /
+    /// subscribes on the same local nostr relay bitCaster points at.
+    /// cashu.me reads the relay list from <c>cashu.nostr.relays</c> (active
+    /// set) and <c>cashu.settings.defaultNostrRelays</c> (fallback).
+    /// </summary>
+    private async Task SetupCashuMeWithLocalRelay(IPage page, string mnemonic)
+    {
+        await page.GotoAsync($"http://localhost:{TestPorts.CashuMe}", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 30_000,
+        });
+
+        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        await page.EvaluateAsync($@"
+            localStorage.setItem('cashu.welcome.showWelcome', 'false');
+            localStorage.setItem('cashu.welcome.termsAccepted', 'true');
+            localStorage.setItem('cashu.mnemonic', JSON.stringify('{mnemonic}'));
+            const mint = {{
+                url: '{mintUrl}',
+                keys: [],
+                keysets: [],
+                nickname: 'Test Mint'
+            }};
+            localStorage.setItem('cashu.mints', JSON.stringify([mint]));
+            localStorage.setItem('cashu.activeMintUrl', JSON.stringify('{mintUrl}'));
+            localStorage.setItem('cashu.activeUnit', JSON.stringify('sat'));
+            localStorage.setItem('cashu.nostr.relays', JSON.stringify(['{LocalNostrRelayUrl}']));
+            localStorage.setItem('cashu.settings.defaultNostrRelays', JSON.stringify(['{LocalNostrRelayUrl}']));
+        ");
+
+        await page.ReloadAsync(new PageReloadOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+    }
+
+    /// <summary>
+    /// Drive bitCaster through Portfolio → Deposit → Ecash → Request.
+    /// Returns the encoded <c>creq...</c> string that a sender wallet can pay.
+    /// Leaves the PaymentRequestDisplay view mounted so the happy-path test
+    /// can observe the "Payment received!" transition; the reload variant
+    /// closes + reloads explicitly.
+    /// </summary>
+    private async Task<string> BitCasterCreatePaymentRequest(IPage page, List<string> consoleMessages)
+    {
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var depositBtn = page.GetByRole(AriaRole.Button, new() { Name = "Deposit" });
+        await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await depositBtn.ClickAsync();
+
+        var ecashOption = page.GetByText("Ecash");
+        await Assertions.Expect(ecashOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await ecashOption.ClickAsync();
+
+        var requestOption = page.GetByRole(AriaRole.Button, new() { Name = "Request" });
+        try
+        {
+            await Assertions.Expect(requestOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "Request option not visible in bitCaster DepositEcash view.");
+        }
+        await requestOption.ClickAsync();
+
+        // PaymentRequestDisplay renders the encoded request text in a
+        // truncated (visual only) mono span. Read the full text via DOM.
+        var requestHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Payment Request" });
+        try
+        {
+            await Assertions.Expect(requestHeading).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "PaymentRequestDisplay did not mount after clicking Request in bitCaster.");
+        }
+
+        var creqLocator = page.Locator(".font-mono.truncate").First;
+        var creq = (await creqLocator.TextContentAsync(new() { Timeout = 5_000 }))?.Trim();
+        if (string.IsNullOrEmpty(creq) || !creq.StartsWith("creq", StringComparison.OrdinalIgnoreCase))
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                $"Payment request encoded string not readable from display: '{creq}'");
+        }
+        return creq;
+    }
+
+    /// <summary>
+    /// Pay a bitCaster-issued PaymentRequest from cashu.me. Flow:
+    /// SEND → Lightning (opens PayInvoiceDialog) → paste creq into
+    /// ParseInputComponent → SendTokenDialog auto-opens with the PR info →
+    /// type <paramref name="amountSats"/> on the NumericKeyboard → click Pay.
+    /// </summary>
+    private async Task CashuMePayPaymentRequest(
+        IPage page, string creq, int amountSats, List<string> consoleMessages)
+    {
+        await page.GotoAsync($"http://localhost:{TestPorts.CashuMe}", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var sendBtn = page.GetByText("SEND");
+        await Assertions.Expect(sendBtn.First).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await sendBtn.First.ClickAsync();
+
+        var lightningOption = page.Locator(".action-row").GetByText("Lightning");
+        try
+        {
+            await Assertions.Expect(lightningOption).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "Lightning option not found in cashu.me SendDialog (for creq paste).");
+        }
+        await lightningOption.ClickAsync();
+
+        // ParseInputComponent is the input inside PayInvoiceDialog. Set the
+        // model value via clipboard + its Paste button so Vue's @update:model-value
+        // fires decodeAndQuote → decodeRequest → handlePaymentRequest. The
+        // pasteToParseDialog method reads from navigator.clipboard.
+        await page.EvaluateAsync("text => navigator.clipboard.writeText(text)", creq);
+
+        var parseInput = page.Locator(".q-dialog input, .q-dialog textarea").First;
+        try
+        {
+            await Assertions.Expect(parseInput).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                "cashu.me PayInvoiceDialog input not found after clicking Lightning.");
+        }
+        await parseInput.FillAsync(creq);
+        // Blur to trigger the watch/update handler that parses the creq.
+        await parseInput.PressAsync("Tab");
+
+        // SendTokenDialog should auto-open once the creq is decoded. It shows
+        // a numeric keypad + a Pay button (SendPaymentRequest when
+        // sendData.paymentRequest is set).
+        var digits = amountSats.ToString();
+        foreach (var digit in digits)
+        {
+            var digitBtn = page.Locator($".q-dialog button:has-text('{digit}')").First;
+            try
+            {
+                await Assertions.Expect(digitBtn).ToBeVisibleAsync(new() { Timeout = 15_000 });
+            }
+            catch
+            {
+                throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                    $"cashu.me numeric keypad digit '{digit}' not found — " +
+                    "SendTokenDialog may not have opened after the creq paste.");
+            }
+            await digitBtn.ClickAsync();
+        }
+
+        // The Pay button label is "Pay via Nostr" (SendTokenDialog.actions.pay.label).
+        // Match loosely by ^Pay to tolerate label drift.
+        var payBtn = page.Locator(".q-dialog").GetByRole(AriaRole.Button,
+            new() { NameRegex = new System.Text.RegularExpressions.Regex("^Pay") });
+        try
+        {
+            await Assertions.Expect(payBtn.Last).ToBeEnabledAsync(new() { Timeout = 15_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                $"cashu.me Pay button not enabled. Balance may be insufficient for {amountSats} sats.");
+        }
+        await payBtn.Last.ClickAsync(new() { Force = true });
+    }
+
+    /// <summary>
+    /// JS snippet that queries bitCaster's Dexie <c>bitcaster</c> database for
+    /// the summed <c>amount</c> across every proof row. Returns <c>-1</c> if
+    /// the database or store is missing. Mirrors
+    /// <see cref="CashuMeReadBalanceJs"/> but against bitCaster's schema.
+    /// </summary>
+    private const string BitCasterReadBalanceJs = @"async () => {
+        try {
+            const db = await new Promise((resolve, reject) => {
+                const req = indexedDB.open('bitcaster');
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            if (!Array.from(db.objectStoreNames).includes('proofs')) {
+                db.close();
+                return -1;
+            }
+            const tx = db.transaction('proofs', 'readonly');
+            const proofs = await new Promise((resolve, reject) => {
+                const req = tx.objectStore('proofs').getAll();
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            db.close();
+            return proofs.reduce((sum, p) => sum + (p.amount || 0), 0);
+        } catch (e) {
+            return -1;
+        }
+    }";
+
+    private static Task WaitForBitCasterBalance(IPage page, int expectedSats, int timeoutMs)
+        => page.WaitForFunctionAsync(
+            $"async (target) => ((await ({BitCasterReadBalanceJs})()) >= target)",
+            arg: expectedSats,
+            new PageWaitForFunctionOptions { Timeout = timeoutMs, PollingInterval = 250 });
+
+    /// <summary>
+    /// bitCaster issues a PaymentRequest, cashu.me pays it via NIP-17, and
+    /// bitCaster's continuous listener in <c>App.tsx::startNip17Listener</c>
+    /// redeems the payload + updates balance. Regression guard for P5 item 5.
+    /// </summary>
+    [Fact]
+    public async Task PaymentRequest_BitCasterInitiated_CashuMePays_BitCasterReceives()
+    {
+        var (cashuMeMnemonic, bitCasterMnemonic) = TestMnemonics.GetPair();
+        const int payAmount = 100;
+
+        // cashu.me: fund via Lightning so it has ecash to pay the request.
+        await using var cashuMeCtx = await NewIsolatedContextAsync();
+        var cashuMePage = await cashuMeCtx.NewPageAsync();
+        var cashuMeConsole = TestHelpers.AttachConsoleCapture(cashuMePage);
+        await SetupCashuMeWithLocalRelay(cashuMePage, cashuMeMnemonic);
+        await CashuMeDepositViaLightning(cashuMePage, 500, cashuMeConsole);
+
+        // bitCaster: create the PaymentRequest.
+        await using var bitCasterCtx = await NewIsolatedContextAsync();
+        var bitCasterPage = await bitCasterCtx.NewPageAsync();
+        var bitCasterConsole = TestHelpers.AttachConsoleCapture(bitCasterPage);
+        await SetupBitCasterWithLocalRelay(bitCasterPage, bitCasterMnemonic);
+        var creq = await BitCasterCreatePaymentRequest(bitCasterPage, bitCasterConsole);
+
+        // cashu.me: pay the request — this publishes a NIP-17 gift wrap to
+        // the local relay embedded in bitCaster's nprofile.
+        await CashuMePayPaymentRequest(cashuMePage, creq, payAmount, cashuMeConsole);
+
+        // bitCaster side: continuous listener should see the DM and redeem.
+        // Check the UI status flip first (it's the product-visible outcome),
+        // then confirm proofs actually landed in IndexedDB.
+        var receivedBanner = bitCasterPage.GetByText("Payment received!");
+        try
+        {
+            await Assertions.Expect(receivedBanner).ToBeVisibleAsync(new() { Timeout = 45_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(bitCasterPage, bitCasterConsole,
+                "bitCaster PaymentRequestDisplay never flipped to 'Payment received!' — " +
+                "NIP-17 DM not routed end-to-end.");
+        }
+
+        try
+        {
+            await WaitForBitCasterBalance(bitCasterPage, payAmount, timeoutMs: 15_000);
+        }
+        catch
+        {
+            var balance = await bitCasterPage.EvaluateAsync<int>(BitCasterReadBalanceJs);
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(bitCasterPage, bitCasterConsole,
+                $"bitCaster banner flipped but Dexie balance never reached {payAmount}: {balance}.");
+        }
+    }
+
+    /// <summary>
+    /// Reload-resilience variant — proves the continuous-subscribe fix. If
+    /// bitCaster's NIP-17 subscription were still view-scoped, reloading
+    /// before cashu.me pays would drop the DM. With the module-scope listener
+    /// re-started from <c>App.tsx</c> on boot, the payment must still land.
+    /// </summary>
+    [Fact]
+    public async Task PaymentRequest_BitCasterReloadsBeforePayment_StillReceives()
+    {
+        var (cashuMeMnemonic, bitCasterMnemonic) = TestMnemonics.GetPair();
+        const int payAmount = 100;
+
+        await using var cashuMeCtx = await NewIsolatedContextAsync();
+        var cashuMePage = await cashuMeCtx.NewPageAsync();
+        var cashuMeConsole = TestHelpers.AttachConsoleCapture(cashuMePage);
+        await SetupCashuMeWithLocalRelay(cashuMePage, cashuMeMnemonic);
+        await CashuMeDepositViaLightning(cashuMePage, 500, cashuMeConsole);
+
+        await using var bitCasterCtx = await NewIsolatedContextAsync();
+        var bitCasterPage = await bitCasterCtx.NewPageAsync();
+        var bitCasterConsole = TestHelpers.AttachConsoleCapture(bitCasterPage);
+        await SetupBitCasterWithLocalRelay(bitCasterPage, bitCasterMnemonic);
+        var creq = await BitCasterCreatePaymentRequest(bitCasterPage, bitCasterConsole);
+
+        // The PaymentRequest lives in the creq string (Nostr transport +
+        // pubkey + relays). Losing React state after reload must not prevent
+        // the listener from redeeming a DM that arrives later.
+        await bitCasterPage.ReloadAsync(new PageReloadOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        await CashuMePayPaymentRequest(cashuMePage, creq, payAmount, cashuMeConsole);
+
+        try
+        {
+            await WaitForBitCasterBalance(bitCasterPage, payAmount, timeoutMs: 45_000);
+        }
+        catch
+        {
+            var balance = await bitCasterPage.EvaluateAsync<int>(BitCasterReadBalanceJs);
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(bitCasterPage, bitCasterConsole,
+                $"After bitCaster reload, NIP-17 payment not redeemed. Balance: {balance} " +
+                "(expected >= {payAmount}). Continuous listener may not be rehydrating on boot.");
+        }
+    }
+
     public async Task DisposeAsync()
     {
         if (_browser is not null)

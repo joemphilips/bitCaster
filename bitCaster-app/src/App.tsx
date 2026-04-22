@@ -18,6 +18,7 @@ import { useBalance, useWalletStore } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { rehydrateNostrSigner } from "@/lib/nostr";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
+import { startNip17Listener } from "@/lib/nip17-listener";
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -110,6 +111,25 @@ function AppRoutes() {
     proofMigrationAttempted.current = true;
     normalizeStoredMintUrls().catch(() => {});
   }, []);
+
+  // Continuous NIP-17 listener so inbound payment-request DMs are
+  // processed regardless of which route is mounted. The per-view
+  // subscription inside `useDepositWithdrawState` was lost on reload and
+  // missed payments that arrived while the user wasn't on the Receive
+  // view — P5 item 5 regression.
+  const mnemonic = useWalletStore((s) => s.mnemonic);
+  const relayUrlsKey = useSettingsStore((s) =>
+    s.relays.map((r) => r.url).join("|")
+  );
+  useEffect(() => {
+    if (!mnemonic) return;
+    const relays = useSettingsStore.getState().relays.map((r) => r.url);
+    startNip17Listener(mnemonic, relays).catch((e) => {
+      console.warn("[app] startNip17Listener failed:", e);
+    });
+    // No cleanup — the listener is module-scoped and intentionally
+    // outlives React's mount/unmount dance (StrictMode, HMR).
+  }, [mnemonic, relayUrlsKey]);
 
   // Ensure stored mints have full info (CTF badge, NUTs, contact) and that
   // the status indicator reflects reality. Re-fetches any mint missing

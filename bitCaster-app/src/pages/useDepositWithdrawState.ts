@@ -9,9 +9,9 @@ import type { MeltQuoteResponse } from '@cashu/cashu-ts'
 import {
   PaymentRequest,
   PaymentRequestTransportType,
-  type PaymentRequestPayload,
 } from '@cashu/cashu-ts'
 import { useWalletStore } from '@/stores/wallet'
+import { useSettingsStore } from '@/stores/settings'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/stores/proof-db'
@@ -32,11 +32,8 @@ import {
   removeProofs,
   type StoredProof,
 } from '@/stores/proof-db'
-import {
-  deriveNostrKeyPair,
-  getNostrNprofile,
-  subscribeNip17DMs,
-} from '@/lib/nip17'
+import { deriveNostrKeyPair, getNostrNprofile } from '@/lib/nip17'
+import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
 
 export type ExtendedView =
@@ -147,15 +144,36 @@ export function useDepositWithdrawState(
   // Track the quote for cleanup
   const mintQuoteRef = useRef<{ quote: string; request: string } | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
-  const nip17UnsubRef = useRef<(() => void) | null>(null)
 
-  // Cleanup WebSocket/polling and NIP-17 subscription on unmount
+  // PaymentRequest id of the request currently displayed in the
+  // "Waiting for payment…" view. A non-null value subscribes us to the
+  // global inbox store so we react the moment a matching DM is redeemed —
+  // even if the DM arrives before this hook mounted.
+  const [pendingRequestId, setPendingRequestId] = useState<string | null>(null)
+  const inboxEntry = usePaymentRequestInbox((s) =>
+    pendingRequestId ? s.entries[pendingRequestId] : undefined
+  )
+
+  // Cleanup WebSocket/polling on unmount. The NIP-17 listener is
+  // global (see App.tsx::startNip17Listener) so we do NOT stop it here.
   useEffect(() => {
     return () => {
       unsubRef.current?.()
-      nip17UnsubRef.current?.()
     }
   }, [])
+
+  // React to the global inbox flipping our pending request to "received".
+  useEffect(() => {
+    if (!pendingRequestId || !inboxEntry) return
+    setPaymentRequestStatus('received')
+    setSuccessAmount(inboxEntry.amountSats)
+    const handle = setTimeout(() => {
+      usePaymentRequestInbox.getState().clear(pendingRequestId)
+      setPendingRequestId(null)
+      onDismiss()
+    }, 2000)
+    return () => clearTimeout(handle)
+  }, [pendingRequestId, inboxEntry, onDismiss])
 
   const amountSats = parseInt(amountString || '0', 10)
 
@@ -444,7 +462,16 @@ export function useDepositWithdrawState(
 
     try {
       const keyPair = deriveNostrKeyPair(mnemonic)
-      const nprofile = getNostrNprofile(keyPair.publicKey)
+      // Embed the user's configured relays in the nprofile so the payer
+      // publishes to the same relay set our continuous NIP-17 listener is
+      // subscribed to (matches cashu.me's seedSignerNprofile behaviour).
+      const configuredRelays = useSettingsStore
+        .getState()
+        .relays.map((r) => r.url)
+      const nprofile = getNostrNprofile(
+        keyPair.publicKey,
+        configuredRelays.length > 0 ? configuredRelays : undefined
+      )
 
       const transport = [{
         type: PaymentRequestTransportType.NOSTR,
@@ -452,9 +479,15 @@ export function useDepositWithdrawState(
         tags: [['n', '17']],
       }]
 
+      // cashu-ts's PaymentRequest does NOT auto-generate an id when the
+      // arg is undefined — it just leaves it as undefined. The payer then
+      // has no id to echo back in the NIP-17 payload, and our inbox store
+      // has nothing to key on. Mirror cashu.me's scheme (first segment of
+      // a UUIDv4) so the id survives the round-trip.
+      const id = crypto.randomUUID().split('-')[0]
       const pr = new PaymentRequest(
         transport,
-        undefined, // auto-generate ID
+        id,
         undefined, // no amount
         'sat',
         [selectedMintId],
@@ -465,52 +498,10 @@ export function useDepositWithdrawState(
       setPaymentRequestEncoded(encoded)
       setPaymentRequestStatus('waiting')
       setCurrentView('payment-request-display')
-
-      // Subscribe to NIP-17 DMs for incoming payment
-      nip17UnsubRef.current?.()
-      const unsub = await subscribeNip17DMs(
-        keyPair.privateKeyHex,
-        keyPair.publicKey,
-        async (content: string) => {
-          try {
-            const payload = JSON.parse(content) as PaymentRequestPayload
-            if (payload.proofs && payload.mint) {
-              // Validate mint URL against user's configured mints
-              const configuredMints = useWalletStore.getState().mints.map((m) => m.url)
-              if (!configuredMints.includes(payload.mint)) {
-                console.warn('[nip17] Ignoring payment from unconfigured mint:', payload.mint)
-                return
-              }
-
-              // Receive the proofs from the payment
-              const token = encodeToken(payload.proofs, payload.mint)
-              const receivedProofs = await receiveToken(token, payload.mint)
-              const stored: StoredProof[] = receivedProofs.map((p) => ({
-                ...p,
-                mintUrl: payload.mint,
-              }))
-              await addProofs(stored)
-              const receivedAmount = receivedProofs.reduce((sum, p) => sum + p.amount, 0)
-              useActivityLogStore.getState().addActivity({
-                type: 'deposit',
-                amountSats: receivedAmount,
-                status: 'completed',
-              })
-              setPaymentRequestStatus('received')
-
-              // Auto-navigate back to portfolio after 2 seconds
-              setTimeout(() => {
-                nip17UnsubRef.current?.()
-                nip17UnsubRef.current = null
-                onDismiss()
-              }, 2000)
-            }
-          } catch {
-            // Ignore messages that aren't payment payloads
-          }
-        }
-      )
-      nip17UnsubRef.current = unsub
+      // Hand receive-detection off to the continuous listener. The
+      // useEffect above flips status to 'received' when the global inbox
+      // gets an entry keyed by this id.
+      setPendingRequestId(id)
     } catch (e) {
       setError((e as Error).message)
     }
@@ -520,8 +511,7 @@ export function useDepositWithdrawState(
     if (currentView === 'scanner') {
       setCurrentView(scanReturnViewRef.current)
     } else if (currentView === 'payment-request-display') {
-      nip17UnsubRef.current?.()
-      nip17UnsubRef.current = null
+      setPendingRequestId(null)
       setCurrentView('deposit-ecash')
     } else {
       setCurrentView('chooser')
@@ -531,7 +521,7 @@ export function useDepositWithdrawState(
 
   const onClose = useCallback(() => {
     unsubRef.current?.()
-    nip17UnsubRef.current?.()
+    setPendingRequestId(null)
     onDismiss()
   }, [onDismiss])
 

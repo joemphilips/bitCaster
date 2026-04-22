@@ -214,12 +214,13 @@ export const useWalletStore = create<WalletState>()(
 )
 
 export function useBalance(mintUrl?: string): number {
+  const normalized = mintUrl ? normalizeUrl(mintUrl) : undefined
   const balance = useLiveQuery(async () => {
-    const proofs = mintUrl
-      ? await db.proofs.where('mintUrl').equals(mintUrl).toArray()
+    const proofs = normalized
+      ? await db.proofs.where('mintUrl').equals(normalized).toArray()
       : await db.proofs.toArray()
     return proofs.reduce((sum, p) => sum + p.amount, 0)
-  }, [mintUrl], 0)
+  }, [normalized], 0)
   return balance ?? 0
 }
 
