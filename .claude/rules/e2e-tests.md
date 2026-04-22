@@ -68,3 +68,5 @@ The staging backend (`backend-bitcaster-staging`) is VNet-restricted — **403 f
 - Use `TestHelpers.WaitForService` for health checks (don't duplicate).
 - Use `TestMnemonics.Get()` for wallet mnemonics.
 - **Never hardcode TCP ports.** Always go through `TestPorts.*` — a new `const int VitePort = 5173;` defeats the slot model.
+- **Raw IndexedDB access: open without a version.** Dexie (`BitcasterDB` in `src/stores/proof-db.ts`) maps `.version(N)` → IDB version `N*10`. A test that runs `indexedDB.open('bitcaster', 1)` after the app has loaded throws `VersionError` (requested < existing). Open with no version — Dexie has already created the stores.
+- **Scope locators when the profile is rehydrated.** Once a persisted nsec rehydrates, the app bar shows the user's displayName, so `GetByText("DisplayName")` resolves to two elements. In settings/profile tests, scope to `GetByRole(AriaRole.Main).GetByText(...)` to avoid strict-mode violations.
