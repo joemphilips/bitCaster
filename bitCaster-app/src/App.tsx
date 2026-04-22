@@ -138,21 +138,46 @@ function AppRoutes() {
   // /settings and /mint-details aren't empty while the wizard is still in
   // progress — P5 item 1. `completeSetup()` keeps the same guarantee after
   // setup finishes; this effect just moves the hydrate one step earlier.
+  //
+  // Why defer to `onFinishHydration`: Zustand's persist middleware rehydrates
+  // asynchronously. On the first render `useWalletStore.getState().mints` is
+  // `[]` even for a returning user with persisted mints — reading it here
+  // would mis-fire `addMint(DEFAULT_MINT_URL)` and overwrite the seeded
+  // info.nuts once hydration lands.
   const mintRehydrateAttempted = useRef(false);
   useEffect(() => {
     if (mintRehydrateAttempted.current) return;
-    mintRehydrateAttempted.current = true;
-    const { mints, addMint } = useWalletStore.getState();
-    if (mints.length === 0) {
-      addMint(DEFAULT_MINT_URL).catch(() => {});
+    const runMintRehydrate = () => {
+      if (mintRehydrateAttempted.current) return;
+      mintRehydrateAttempted.current = true;
+      const { mints, addMint } = useWalletStore.getState();
+      if (mints.length === 0) {
+        // Skip seeding while the wallet-setup wizard is visible — the
+        // wizard owns mint configuration and `completeSetup()` adds the
+        // default mint itself. Seeding here races with in-wizard state
+        // seeding (tests, power users reloading mid-wizard) and can
+        // overwrite the mint info they just chose.
+        const onWizard = (WIZARD_PATHS as readonly string[]).includes(
+          window.location.pathname
+        );
+        if (!onWizard) {
+          addMint(DEFAULT_MINT_URL).catch(() => {});
+        }
+        return;
+      }
+      for (const m of mints) {
+        const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)?.nuts;
+        if (!nuts) {
+          addMint(m.url).catch(() => {});
+        }
+      }
+    };
+    if (useWalletStore.persist.hasHydrated()) {
+      runMintRehydrate();
       return;
     }
-    for (const m of mints) {
-      const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)?.nuts;
-      if (!nuts) {
-        addMint(m.url).catch(() => {});
-      }
-    }
+    const unsub = useWalletStore.persist.onFinishHydration(runMintRehydrate);
+    return () => { unsub(); };
   }, []);
 
   const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
