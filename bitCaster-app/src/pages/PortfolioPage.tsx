@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router'
 import { Portfolio } from '@/components/portfolio'
 import { DepositWithdrawOverlay } from '@/components/deposit-withdraw/DepositWithdrawOverlay'
 import { usePortfolioState } from './usePortfolioState'
+import { useSettingsStore } from '@/stores/settings'
 import type { PLTimeSelector } from '@/types/portfolio'
 import type { DepositWithdrawMode } from '@/types/deposit-withdraw'
 
@@ -76,6 +77,16 @@ export function PortfolioPage() {
     navigate('/settings')
   }, [navigate])
 
+  const handleConnectNostr = useCallback(() => {
+    navigate('/settings?category=nostr')
+  }, [navigate])
+
+  // Anon state: no signer configured and no cached profile. Matches the
+  // empty app-bar "Anon" + empty avatar the user sees in this state.
+  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode)
+  const nostrProfile = useSettingsStore((s) => s.nostrProfile)
+  const showConnectNostrCta = nostrSignerMode === 'none' && nostrProfile == null
+
   return (
     <>
       <Portfolio
@@ -100,6 +111,8 @@ export function PortfolioPage() {
         onViewMarket={handleViewMarket}
         onPositionsTabChange={handlePositionsTabChange}
         onOpenSettings={handleOpenSettings}
+        showConnectNostrCta={showConnectNostrCta}
+        onConnectNostr={handleConnectNostr}
       />
       {overlayMode && (
         <DepositWithdrawOverlay

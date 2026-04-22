@@ -245,7 +245,8 @@
     "joined": "{{date}} 参加",
     "views": "{{count}} 閲覧",
     "claimFees": "手数料を受け取る",
-    "volLabel": "出来高: {{value}}"
+    "volLabel": "出来高: {{value}}",
+    "connectNostr": "Nostr に接続"
   },
   "activityType": {
     "deposit": "入金",

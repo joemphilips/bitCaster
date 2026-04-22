@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { PortfolioProps } from '@/types/portfolio'
-import { Settings } from 'lucide-react'
+import { Settings, Zap } from 'lucide-react'
 import { ProfileCard } from './ProfileCard'
+import { PrimaryGradientButton } from '@/components/shared/PrimaryGradientButton'
 import { PLChart } from './PLChart'
 import { StatsRow } from './StatsRow'
 import { PositionsList } from './PositionsList'
@@ -57,10 +58,23 @@ export function Portfolio(props: PortfolioProps) {
       <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Left: Profile */}
-          <ProfileCard
-            profile={props.profile}
-            onAvatarUpload={props.onAvatarUpload}
-          />
+          <div className="flex flex-col gap-3">
+            <ProfileCard
+              profile={props.profile}
+              onAvatarUpload={props.onAvatarUpload}
+            />
+            {/* P5 item 4: Anon users have no identity across reloads —
+                surface the Nostr connect flow here so they can find it
+                without hunting through the Settings category list. */}
+            {props.showConnectNostrCta && (
+              <PrimaryGradientButton
+                onClick={() => props.onConnectNostr?.()}
+                icon={Zap}
+              >
+                {t('portfolio.connectNostr')}
+              </PrimaryGradientButton>
+            )}
+          </div>
 
           {/* Right: P/L Chart */}
           <PLChart

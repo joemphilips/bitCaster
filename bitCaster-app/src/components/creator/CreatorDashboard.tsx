@@ -5,6 +5,7 @@ import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from 'l
 import { formatBtc } from '@/lib/format'
 import { useCreatorDashboardState } from '@/hooks/useCreatorDashboardState'
 import { MyMarkets } from '@/components/portfolio/MyMarkets'
+import { PrimaryGradientButton } from '@/components/shared/PrimaryGradientButton'
 import { AnalyticsComingSoon } from './AnalyticsComingSoon'
 
 type ActiveTab = 'overview' | 'analytics'
@@ -66,14 +67,9 @@ export function CreatorDashboard() {
             </p>
           </div>
 
-          <button
-            onClick={handleCreateMarket}
-            className="group relative inline-flex items-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-blue-600 via-blue-600 to-blue-700 px-6 py-3 text-base font-bold text-white shadow-lg shadow-blue-500/30 transition-all hover:scale-[1.02] hover:shadow-xl hover:shadow-blue-500/40 active:scale-[0.98]"
-          >
-            <div className="absolute inset-0 -translate-x-full animate-[shimmer_3s_infinite] bg-gradient-to-r from-transparent via-white/20 to-transparent" />
-            <Plus className="relative h-5 w-5" />
-            <span className="relative">{t('creator.createMarket')}</span>
-          </button>
+          <PrimaryGradientButton onClick={handleCreateMarket} icon={Plus}>
+            {t('creator.createMarket')}
+          </PrimaryGradientButton>
         </div>
 
         {/* Tab navigation */}

@@ -202,4 +202,14 @@ export interface PortfolioProps {
 
   /** Called when user opens Settings */
   onOpenSettings?: () => void
+
+  /**
+   * Show the "Connect Nostr" CTA just beneath ProfileCard. Set by the
+   * page when the user has no configured Nostr signer and no cached
+   * profile (Anon state) — P5 item 4.
+   */
+  showConnectNostrCta?: boolean
+
+  /** Called when user clicks "Connect Nostr" (navigates to Nostr settings) */
+  onConnectNostr?: () => void
 }
