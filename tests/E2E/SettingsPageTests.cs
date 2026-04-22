@@ -304,6 +304,99 @@ public class SettingsPageTests : IAsyncLifetime
         await Assertions.Expect(disconnectBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
+    /// <summary>
+    /// P5 item 3: connecting an nsec must survive a page reload. The
+    /// underlying bug was that `nostrProfile` is intentionally not
+    /// persisted (the relay is source of truth) but `rehydrateNostrSigner`
+    /// only re-installed the NDK signer — nothing re-fetched the profile.
+    /// After reload the user saw "Anon" / no avatar in the app bar and
+    /// the Settings profile section was blank.
+    ///
+    /// Assertion proxy: after reload, the Profile section's status UI
+    /// must transition out of 'idle' (either "Fetching profile..." or
+    /// "Profile not found on connected relays" appears). Without the
+    /// fix the status stays 'idle' and neither message ever renders.
+    /// </summary>
+    [Fact]
+    public async Task NostrNsec_ProfileFetchRestartsAfterReload()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+
+        var mnemonic = TestMnemonics.Get();
+        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        // Fixed BIP-340 nsec used only for this test — there is no
+        // kind-0 profile on any public relay for this pubkey, so the
+        // fetch deterministically ends in 'not-found' after the 8 s
+        // timeout inside fetchAndStoreNostrProfile.
+        const string nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
+
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 30_000,
+        });
+        // Seed: nsec signer mode, no pre-fetched profile. Matches the
+        // staging regression: user had connected with nsec, reloaded,
+        // and observed "Anon" in the app bar.
+        await page.EvaluateAsync($@"
+            localStorage.setItem('bitcaster-wallet', JSON.stringify({{
+                state: {{
+                    mnemonic: '{mnemonic}',
+                    setupComplete: true,
+                    mints: [{{ url: '{mintUrl}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
+                    activeMintUrl: '{mintUrl}',
+                    keysetCounters: {{}},
+                    mintConnectionStatuses: {{}}
+                }},
+                version: 0
+            }}));
+            localStorage.setItem('bitcaster-settings', JSON.stringify({{
+                state: {{
+                    activeCategory: 'nostr',
+                    baseCurrency: 'BTC',
+                    language: 'en',
+                    theme: 'dark',
+                    nostrSignerMode: 'nsec',
+                    nsecSecret: '{nsec}',
+                    nostrProfile: null,
+                    nostrProfileFetchStatus: 'idle',
+                    relays: []
+                }},
+                version: 0
+            }}));
+        ");
+
+        await page.GotoAsync(
+            $"http://localhost:{TestPorts.Vite}/settings?category=nostr",
+            new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30_000 });
+
+        // The Profile section must leave 'idle' — either we're still
+        // fetching or the fetch has completed with 'not-found'. Either
+        // proves `rehydrateNostrSigner` kicked off the fetch.
+        var fetching = page.GetByText("Fetching profile...");
+        var notFound = page.GetByText("Profile not found on connected relays");
+        try
+        {
+            await Assertions
+                .Expect(fetching.Or(notFound).First)
+                .ToBeVisibleAsync(new() { Timeout = 15_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                "Profile status stayed 'idle' after reload — rehydrateNostrSigner did not re-fetch the Nostr profile.");
+        }
+
+        // The Disconnect button must still be present — the signer is
+        // connected (setSignerMode('none') is the error branch).
+        var disconnectBtn = page.GetByRole(AriaRole.Button, new() { Name = "Disconnect" });
+        await Assertions.Expect(disconnectBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
+    }
+
     [Fact]
     public async Task MintDetailPage_ShowsMintInfo()
     {

@@ -4,21 +4,18 @@ import { Settings } from '@/components/settings/Settings'
 import { useWalletStore } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
-import { loginWithExtension, loginWithNsecOrNcryptsec, getNdk } from '@/lib/nostr'
+import {
+  loginWithExtension,
+  loginWithNsecOrNcryptsec,
+  fetchAndStoreNostrProfile,
+} from '@/lib/nostr'
 import type {
   SettingsState,
   MintConfig,
-  NostrProfile,
-  NostrProfileFetchStatus,
   NostrSignerMode,
   SettingsCategory,
   ThemeOption,
 } from '@/types/settings'
-
-type SetProfileFn = (
-  profile: NostrProfile | null,
-  status: NostrProfileFetchStatus,
-) => void
 
 const VALID_CATEGORIES: readonly SettingsCategory[] = ['general', 'cashu', 'nostr']
 
@@ -28,41 +25,6 @@ function isValidCategory(value: string | null): value is SettingsCategory {
 
 const DEFAULT_MINT_URL = import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085'
 const APP_VERSION = '0.1.0'
-
-async function fetchNostrProfile(setProfile: SetProfileFn) {
-  setProfile(null, 'fetching')
-  try {
-    const ndk = getNdk()
-    const signer = ndk.signer
-    if (!signer) {
-      setProfile(null, 'not-found')
-      return
-    }
-    const user = await signer.user()
-    await Promise.race([
-      user.fetchProfile(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
-    ]).catch(() => { /* timeout or relay error — profile stays null */ })
-    const profile = user.profile
-    if (profile) {
-      setProfile(
-        {
-          pubkey: user.pubkey,
-          displayName: profile.displayName ?? profile.name ?? user.pubkey.slice(0, 8),
-          avatar: profile.image ?? '',
-          nip05: profile.nip05 ?? '',
-          nip05verified: !!profile.nip05,
-          bio: profile.bio ?? profile.about ?? '',
-        },
-        'found',
-      )
-    } else {
-      setProfile(null, 'not-found')
-    }
-  } catch {
-    setProfile(null, 'not-found')
-  }
-}
 
 export function SettingsPage() {
   const walletStore = useWalletStore()
@@ -167,7 +129,7 @@ export function SettingsPage() {
       if (mode === 'nip07') {
         try {
           await loginWithExtension()
-          fetchNostrProfile(settingsStore.setProfile)
+          fetchAndStoreNostrProfile()
           return true
         } catch {
           settingsStore.setProfile(null, 'not-found')
@@ -192,7 +154,7 @@ export function SettingsPage() {
         const { nsec: decryptedNsec } = await loginWithNsecOrNcryptsec(nsec, passphrase)
         settingsStore.setNsecSecret(decryptedNsec)
         // Profile fetch is best-effort — don't block the success path on relay availability
-        fetchNostrProfile(settingsStore.setProfile)
+        fetchAndStoreNostrProfile()
         useToastStore.getState().addToast({
           type: 'success',
           message: 'Connected with private key',

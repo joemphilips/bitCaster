@@ -126,6 +126,12 @@ export async function loginWithNsecOrNcryptsec(
  * cleared on every page load, so without this call a user who logged in
  * with nsec before a reload would appear connected (mode still `'nsec'`)
  * but have no live signer — every signing attempt would throw.
+ *
+ * Also re-fetches the Nostr profile: `nostrProfile` is intentionally not
+ * persisted (the relay is source of truth), so after a reload the profile
+ * rehydrates as `null` and `ShellRoutes` falls back to "Anon" / no avatar.
+ * Kick off the fetch here so the user doesn't see the connected-but-anon
+ * state flicker.
  */
 export async function rehydrateNostrSigner(): Promise<void> {
   const settings = useSettingsStore.getState();
@@ -133,11 +139,63 @@ export async function rehydrateNostrSigner(): Promise<void> {
   if (nostrSignerMode !== "nsec" || !nsecSecret) return;
   try {
     await loginWithNsec(nsecSecret);
+    fetchAndStoreNostrProfile().catch(() => {});
   } catch {
     // Stored nsec is corrupt — reset signer mode so the UI reflects reality.
     // `setSignerMode` also wipes `nsecSecret` when leaving nsec mode, so we
     // don't need a separate `setNsecSecret(null)` call.
     settings.setSignerMode("none");
+  }
+}
+
+/**
+ * Fetch the current signer's Nostr profile from relays and store it in the
+ * settings store. Best-effort: a relay timeout / miss sets status
+ * `'not-found'` rather than throwing, so UI callers can await without
+ * wrapping in try/catch.
+ *
+ * Shared by {@link rehydrateNostrSigner} (reload path) and the Settings
+ * page's nsec / NIP-07 connect flows so the shaping of `NostrProfile` is
+ * defined in exactly one place.
+ */
+export async function fetchAndStoreNostrProfile(): Promise<void> {
+  const settings = useSettingsStore.getState();
+  settings.setProfile(null, "fetching");
+  try {
+    const ndk = getNdk();
+    const signer = ndk.signer;
+    if (!signer) {
+      settings.setProfile(null, "not-found");
+      return;
+    }
+    const user = await signer.user();
+    await Promise.race([
+      user.fetchProfile(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), 8000)
+      ),
+    ]).catch(() => {
+      /* timeout or relay error — profile stays null */
+    });
+    const profile = user.profile;
+    if (profile) {
+      settings.setProfile(
+        {
+          pubkey: user.pubkey,
+          displayName:
+            profile.displayName ?? profile.name ?? user.pubkey.slice(0, 8),
+          avatar: profile.image ?? "",
+          nip05: profile.nip05 ?? "",
+          nip05verified: !!profile.nip05,
+          bio: profile.bio ?? profile.about ?? "",
+        },
+        "found"
+      );
+    } else {
+      settings.setProfile(null, "not-found");
+    }
+  } catch {
+    settings.setProfile(null, "not-found");
   }
 }
 
