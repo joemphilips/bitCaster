@@ -186,25 +186,32 @@ public class TradingFlowTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        var yesSide = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Yes\\s", RegexOptions.IgnoreCase) }).First;
+        // MarketDetail renders two TradingPanel copies — one for mobile
+        // (`lg:hidden`) and one for desktop (`hidden lg:block`). At Playwright's
+        // default 1280×720 viewport the mobile copy has `display: none` but
+        // comes first in DOM order, so a plain `.First` selector resolves to
+        // the hidden one. Filter for visible so we target the desktop copy.
+        var yesSide = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Yes\\s", RegexOptions.IgnoreCase) })
+            .Filter(new() { Visible = true }).First;
         await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await yesSide.ClickAsync();
 
         // Balance hint should reflect the seeded amount (live via useBalance).
         // i18next plain `{{count}}` does not add thousands separators, so the
         // literal rendered string is "You have 10000 sats".
-        var balanceHint = page.GetByText("You have 10000 sats").First;
+        var balanceHint = page.GetByText("You have 10000 sats").Filter(new() { Visible = true }).First;
         await Assertions.Expect(balanceHint).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
         // Quick-pick buttons top out at 5000 sats (QUICK_AMOUNTS in
         // TradingPanel.tsx); type a larger value directly to exceed the 10k
         // seeded balance. The amount input is a <input type="number">
         // sibling to the quick buttons.
-        var amountInput = page.GetByPlaceholder("0").First;
+        var amountInput = page.GetByPlaceholder("0").Filter(new() { Visible = true }).First;
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync("50000");
 
-        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) }).First;
+        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) })
+            .Filter(new() { Visible = true }).First;
         await Assertions.Expect(confirm).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await confirm.ClickAsync();
 
@@ -213,7 +220,7 @@ public class TradingFlowTests : IAsyncLifetime
 
         // The modal's "You have {{count}} sats" line must now report the
         // seeded balance, not 0 (pre-fix regression).
-        var modalBalance = page.GetByText("10000 sats").First;
+        var modalBalance = page.GetByText("10000 sats").Filter(new() { Visible = true }).First;
         await Assertions.Expect(modalBalance).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
