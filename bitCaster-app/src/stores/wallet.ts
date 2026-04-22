@@ -31,7 +31,7 @@ interface WalletState {
   getWallet: (mintUrl?: string) => Promise<CashuWallet>
 }
 
-const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085')
+export const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085')
 
 let _walletCache: Map<string, CashuWallet> = new Map()
 

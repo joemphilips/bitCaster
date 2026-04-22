@@ -1,7 +1,7 @@
 import { useCallback, useEffect } from 'react'
 import { useSearchParams, useNavigate } from 'react-router'
 import { Settings } from '@/components/settings/Settings'
-import { useWalletStore } from '@/stores/wallet'
+import { useWalletStore, DEFAULT_MINT_URL } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
 import {
@@ -23,7 +23,6 @@ function isValidCategory(value: string | null): value is SettingsCategory {
   return value !== null && (VALID_CATEGORIES as readonly string[]).includes(value)
 }
 
-const DEFAULT_MINT_URL = import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085'
 const APP_VERSION = '0.1.0'
 
 export function SettingsPage() {

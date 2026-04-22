@@ -397,6 +397,49 @@ public class SettingsPageTests : IAsyncLifetime
         await Assertions.Expect(disconnectBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
+    /// <summary>
+    /// P5 item 1: before the setup wizard runs, /settings must still
+    /// show the default mint. Pre-fix the default-mint add only happened
+    /// inside `completeSetup()`, so a fresh user who opened /settings
+    /// straight away saw an empty Connected Mints list.
+    /// </summary>
+    [Fact]
+    public async Task DefaultMint_VisibleInSettingsBeforeSetup()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+
+        // No wallet setup, no seeded mints — fresh first-run state.
+        // Navigate to /settings directly (the route renders without the
+        // wizard gate).
+        await page.GotoAsync(
+            $"http://localhost:{TestPorts.Vite}/settings?category=cashu",
+            new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30_000 });
+
+        // The boot effect in App.tsx should call addMint(DEFAULT_MINT_URL)
+        // when mints.length === 0, irrespective of setupComplete. Give
+        // the round-trip to the mint a few seconds.
+        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var defaultBadge = page.GetByText("Default");
+        try
+        {
+            await Assertions.Expect(defaultBadge.First).ToBeVisibleAsync(new() { Timeout = 15_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                "Default mint row did not appear in /settings before wallet setup.");
+        }
+
+        // The mint's URL must be rendered in the row so the user can
+        // distinguish it from any custom mint they might add later.
+        var mintRowUrl = page.GetByText(mintUrl);
+        await Assertions.Expect(mintRowUrl.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
+    }
+
     [Fact]
     public async Task MintDetailPage_ShowsMintInfo()
     {

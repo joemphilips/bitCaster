@@ -14,7 +14,7 @@ import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
 import { useSettingsStore } from "@/stores/settings";
-import { useBalance, useWalletStore } from "@/stores/wallet";
+import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { rehydrateNostrSigner } from "@/lib/nostr";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
@@ -134,19 +134,26 @@ function AppRoutes() {
   // Ensure stored mints have full info (CTF badge, NUTs, contact) and that
   // the status indicator reflects reality. Re-fetches any mint missing
   // `info.nuts` — covers pre-P3 users who have a stale mint row in storage.
+  // Also seeds the default mint for first-run users (before setup) so
+  // /settings and /mint-details aren't empty while the wizard is still in
+  // progress — P5 item 1. `completeSetup()` keeps the same guarantee after
+  // setup finishes; this effect just moves the hydrate one step earlier.
   const mintRehydrateAttempted = useRef(false);
-  const setupComplete = useWalletStore((s) => s.setupComplete);
   useEffect(() => {
-    if (mintRehydrateAttempted.current || !setupComplete) return;
+    if (mintRehydrateAttempted.current) return;
     mintRehydrateAttempted.current = true;
     const { mints, addMint } = useWalletStore.getState();
+    if (mints.length === 0) {
+      addMint(DEFAULT_MINT_URL).catch(() => {});
+      return;
+    }
     for (const m of mints) {
       const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)?.nuts;
       if (!nuts) {
         addMint(m.url).catch(() => {});
       }
     }
-  }, [setupComplete]);
+  }, []);
 
   const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
   return isWizard ? <WizardRoutes /> : <ShellRoutes />;
