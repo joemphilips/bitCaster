@@ -2,7 +2,7 @@
 title: "Creating Markets"
 description: "How anyone can create a prediction market on bitCaster, from choosing an oracle to providing initial liquidity."
 sidebar:
-  order: 3
+  order: 4
 ---
 
 # Creating Markets
@@ -35,4 +35,4 @@ That's where manual market makers come in. As a market attracts attention, profe
 
 - [Market Making & Initial Liquidity](/technical/architecture/market-making/) — the technical details of CPMM mechanics, reserve formulas, and known limitations
 - [Resolution](/user-guide/core-concepts/resolution/) — how oracles attest to outcomes and how winning tokens are redeemed
-- [NUT-CTF Core Specification](/technical/nut-ctf/core-ctf/) — the protocol for conditional tokens
+- [Conditional Token Framework](/user-guide/core-concepts/conditional-tokens/) — bitCaster's three-layer asset model and how conditional tokens are minted

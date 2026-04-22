@@ -2,7 +2,7 @@
 title: "Atomic Swaps"
 description: "How bitCaster uses atomic swaps to settle trades between peers without trusting a custodian."
 sidebar:
-  order: 1
+  order: 2
 ---
 
 # How Token Exchange Works

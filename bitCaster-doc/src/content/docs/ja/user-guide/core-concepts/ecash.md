@@ -45,5 +45,5 @@ bitCasterでは、ミントがビットコイン（sats）建てのecashトー�
 
 - [アトミックスワップ](/ja/user-guide/core-concepts/atomic-swap/) — カストディアンを信頼せずに取引が決済される仕組み
 - [マーケットの清算](/ja/user-guide/core-concepts/resolution/) — マーケットがどのように解決され、勝利トークンがどのように償還されるか
-- [NUT-CTFコア仕様](/ja/technical/nut-ctf/core-ctf/) — 条件付きトークンのプロトコル
+- [コンディショナルトークンフレームワーク](/ja/user-guide/core-concepts/conditional-tokens/) — bitCasterの3層アセットモデルと、予測市場のポジションをecashとしてどう表現するか
 - [Bitcoin Design — Ecash Introduction](https://bitcoin.design/guide/how-it-works/ecash/introduction/) — ecash信頼モデルの外部プライマー

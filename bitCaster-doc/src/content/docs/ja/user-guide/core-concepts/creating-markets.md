@@ -2,7 +2,7 @@
 title: "マーケットの作成"
 description: "オラクルの選択から初期流動性の提供まで、bitCasterで誰でも予測市場を作成する方法"
 sidebar:
-  order: 3
+  order: 4
 ---
 
 # マーケットの作成
@@ -35,4 +35,4 @@ CPMMはシンプルで実績のある仕組みです。GnosisやPolymarketの初
 
 - [マーケットメイキングと初期流動性](/ja/technical/architecture/market-making/) — CPMMのメカニクス、リザーブ計算式、既知の制限事項の技術的詳細
 - [マーケットの清算](/ja/user-guide/core-concepts/resolution/) — オラクルがどのように結果を証明し、勝利トークンがどのように償還されるか
-- [NUT-CTFコア仕様](/ja/technical/nut-ctf/core-ctf/) — 条件付きトークンのプロトコル
+- [コンディショナルトークンフレームワーク](/ja/user-guide/core-concepts/conditional-tokens/) — bitCasterの3層アセットモデルと、条件付きトークンの発行手順

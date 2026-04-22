@@ -45,5 +45,5 @@ Blockchains excel at **censorship resistance** and **public verifiability** — 
 
 - [Atomic Swaps](/user-guide/core-concepts/atomic-swap/) — how trades settle without trusting a custodian
 - [Resolution](/user-guide/core-concepts/resolution/) — how markets resolve and winning tokens are redeemed
-- [NUT-CTF Core Specification](/technical/nut-ctf/core-ctf/) — the protocol for conditional tokens
+- [Conditional Token Framework](/user-guide/core-concepts/conditional-tokens/) — bitCaster's three-layer asset model and how prediction-market positions are encoded as ecash
 - [Bitcoin Design — Ecash Introduction](https://bitcoin.design/guide/how-it-works/ecash/introduction/) — an external primer on ecash trust models

@@ -2,7 +2,7 @@
 title: "マーケットの清算"
 description: "bitCasterマーケットがDLCオラクルを使用してどのように解決され、勝利トークンがどのように償還されるか"
 sidebar:
-  order: 2
+  order: 3
 ---
 
 # 清算
@@ -53,4 +53,4 @@ bitCasterのDLCアプローチは反対の立場を取ります：「結果に�
 ## さらに読む
 
 - [DLCオラクルNostrアナウンスメント（Kind 88）](/ja/technical/dlc-oracle/nostr-kind-88/) — オラクルがイベントをアナウンスしアテステーションを公開する方法
-- [NUT-CTFの基本仕様](/ja/technical/nut-ctf/core-ctf/) — 条件付きトークン、ミンティング、決済のプロトコル
+- [コンディショナルトークンフレームワーク](/ja/user-guide/core-concepts/conditional-tokens/) — bitCasterの3層アセットモデルと、条件付きトークンがecashに決済される仕組み

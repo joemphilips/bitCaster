@@ -2,7 +2,7 @@
 title: "アトミックスワップ"
 description: "bitCasterがカストディアンを信頼せずにピア間で取引を決済するためにアトミックスワップを使用する方法"
 sidebar:
-  order: 1
+  order: 2
 ---
 
 # トークン交換の仕組み

@@ -2,7 +2,7 @@
 title: "Market Resolution"
 description: "How bitCaster markets resolve using DLC oracles, and how winning tokens are redeemed."
 sidebar:
-  order: 2
+  order: 3
 ---
 
 # Resolution
@@ -53,4 +53,4 @@ Redeeming converts your conditional tokens (CTF tokens locked to an outcome) bac
 ## Further reading
 
 - [DLC Oracle Nostr Announcements (Kind 88)](/technical/dlc-oracle/nostr-kind-88/) — how oracles announce events and publish attestations
-- [NUT-CTF Core Specification](/technical/nut-ctf/core-ctf/) — the protocol for conditional tokens, minting, and settlement
+- [Conditional Token Framework](/user-guide/core-concepts/conditional-tokens/) — bitCaster's three-layer asset model and how conditional tokens settle back to ecash
