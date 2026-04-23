@@ -4,7 +4,7 @@ public static class BookEndpoints
 {
     public static void MapBookEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/v1/markets/{marketId}/orderbook", (
+        app.MapGet("/api/v1/{marketId}/orderbook", (
             string marketId,
             InMemoryOrderBookManager bookManager) =>
         {

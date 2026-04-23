@@ -7,6 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<InMemoryOrderBookManager>();
 builder.Services.AddSingleton<LnBitsWalletManager>();
+builder.Services.AddSingleton<InMemoryCpmmState>();
 builder.Services.AddHealthChecks();
 builder.Services.AddHttpClient("mint", c =>
     c.BaseAddress = new Uri(builder.Configuration["MINT_URL"] ?? "http://localhost:8085"));
@@ -24,5 +25,6 @@ app.MapMetadataEndpoints();
 app.MapThumbnailEndpoints();
 app.MapLiquidityEndpoints();
 app.MapPaymentEndpoints();
+app.MapCpmmEndpoints();
 
 app.Run();
