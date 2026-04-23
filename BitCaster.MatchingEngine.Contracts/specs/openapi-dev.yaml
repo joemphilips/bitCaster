@@ -43,6 +43,36 @@ paths:
         '502':
           description: LNBits backend error
 
+  /api/v1/_dev/markets/{marketId}/simulate-cpmm-funding:
+    post:
+      operationId: simulateCpmmFunding
+      summary: Flip a CPMM pool into Active state with synthesized reserves (dev-only)
+      description: >
+        Bypasses the real LN-deposit + mint-swap flow by directly writing a
+        per-outcome reserve map into the in-memory CPMM state and posting
+        bootstrap maker orders under the `cpmm:{marketId}` sentinel user id.
+        Used by the frontend E2E suite to seed a tradeable market in O(1)
+        without running a mint, LNBits, or price-ladder derivation. The real
+        server never exposes this endpoint.
+      x-dev-only: true
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulateCpmmFundingRequest'
+      responses:
+        '200':
+          description: Pool flipped to Active; bootstrap orders posted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulateCpmmFundingResponse'
+        '400':
+          description: Validation error (e.g. empty reserves, invalid bootstrap order)
+
 components:
   parameters:
     MarketId:
@@ -73,3 +103,84 @@ components:
         paid:
           type: boolean
           description: Whether the payment was successful.
+
+    SimulateCpmmFundingRequest:
+      type: object
+      required:
+        - declaredSats
+        - reservedSatsByOutcome
+      properties:
+        declaredSats:
+          type: integer
+          format: int64
+          description: Total sats the creator declared at market creation.
+        reservedSatsByOutcome:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+          description: >
+            Per-outcome reserve map — mirrors the real engine's CPMM pool
+            after a successful creator deposit. Each value must be a positive
+            integer (outcome-tokens held by the engine).
+        bootstrapOrders:
+          type: array
+          description: >
+            Optional resting maker orders to post under the
+            `cpmm:{marketId}` sentinel user id so a subsequent taker order
+            can match. Usually a single Sell order on the outcome the E2E
+            intends to buy is enough.
+          items:
+            $ref: '#/components/schemas/CpmmBootstrapOrder'
+
+    CpmmBootstrapOrder:
+      type: object
+      required:
+        - outcome
+        - side
+        - price
+        - amountSats
+      properties:
+        outcome:
+          type: string
+          description: Outcome name the order is posted against (e.g. "Yes").
+        side:
+          type: string
+          enum: [Buy, Sell]
+          description: Order side; CPMM bootstrap orders are typically Sell.
+        price:
+          type: integer
+          description: Probability price in [1,99].
+        amountSats:
+          type: integer
+          format: int64
+          description: Total order size in satoshis.
+
+    SimulateCpmmFundingResponse:
+      type: object
+      required:
+        - marketId
+        - status
+        - declaredSats
+        - reservedSatsByOutcome
+        - bootstrapOrderIds
+      properties:
+        marketId:
+          type: string
+        status:
+          type: string
+          enum: [AwaitingFunding, Active, Frozen]
+        declaredSats:
+          type: integer
+          format: int64
+        reservedSatsByOutcome:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+        bootstrapOrderIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Ids of posted bootstrap maker orders (empty if none requested).

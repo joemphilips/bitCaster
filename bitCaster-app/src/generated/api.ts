@@ -15,7 +15,7 @@ export interface paths {
         put?: never;
         /**
          * Register a new market on the matching engine
-         * @description Validates the condition exists in the mint, creates empty order books with CPMM pools for each outcome, and optionally stores a thumbnail.
+         * @description Validates the condition exists in the mint, creates empty order books with CPMM pools for each outcome, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed.
          */
         post: operations["createMarket"];
         delete?: never;
@@ -53,7 +53,7 @@ export interface paths {
         };
         /**
          * Fetch the current state of an order
-         * @description Returns the order's live status, remaining/filled amounts, and the list of fills produced so far. Clients poll this endpoint to observe async state changes (fills, cancellation, expiry) without holding an open connection. The orderId is opaque and sufficient for authorization — callers are assumed to have received it from submitOrder.
+         * @description Returns the order's live status, remaining/filled amounts, and the list of fills produced so far. Clients poll this endpoint to observe async state changes (fills, cancellation, expiry) without holding an open connection. Only the order's owner (matching the authenticated pubkey) may query its status.
          */
         get: operations["getOrderStatus"];
         put?: never;
@@ -159,20 +159,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/markets/{marketId}/simulate-payment": {
+    "/api/v1/engine/pubkey": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
         /**
-         * Simulate paying a bolt11 invoice (dev-only)
-         * @description Pays the given bolt11 invoice using the market's LNBits wallet admin key. Only works with LNBits FakeWallet backend (internal invoices only).
+         * Public wallet pubkey of the matching engine
+         * @description Returns the compressed secp256k1 pubkey of the engine's Cashu wallet. Frontends lock NUT-11 P2PK Cashu proofs to this pubkey before sending them as `lockedSatsProofs` on a CPMM-bound order. Public — no auth.
          */
-        post: operations["simulatePayment"];
+        get: operations["getEnginePubkey"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/{marketId}/funding-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * CPMM pool funding lifecycle snapshot
+         * @description Returns the status of a CPMM pool — "AwaitingFunding" (creator's LN deposit hasn't settled yet) vs "Active" (tradeable) vs "Frozen" — along with per-outcome reserve totals. Public; frontends use it to show "Awaiting liquidity" vs the trade UI and to decide whether LockedSatsProofs need to be populated on submitted orders.
+         */
+        get: operations["getFundingStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{pubkey}/positions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's net position in every market
+         * @description Returns every (marketId, outcome) pair the caller has a net token holding in, together with the cost-basis in satoshis. The path pubkey must equal the authenticated NIP-98 claim — cross-user reads return 403 (P03).
+         */
+        get: operations["getUserPositions"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -188,7 +228,7 @@ export interface paths {
         };
         /**
          * List markets created by a given Nostr pubkey
-         * @description Returns every market that was registered with the supplied pubkey in its `creatorPubkey` field, along with aggregated volume data so the creator dashboard can render totals without additional round-trips.
+         * @description Returns every market whose creator (authenticated via NIP-98 at registration time) matches the supplied pubkey, along with aggregated volume data so the creator dashboard can render totals without additional round-trips.
          */
         get: operations["listCreatorMarkets"];
         put?: never;
@@ -265,6 +305,8 @@ export interface components {
             timeInForce: components["schemas"]["TimeInForce"];
             /** @description Hex-encoded compressed secp256k1 pubkey (33 bytes, 66 hex chars) generated by the client per-order. Used by the matching engine to route the counterparty's encrypted atomic-swap messages back to this order's submitter. The corresponding private key stays on the client and is the only thing that can decrypt and sign swap payloads — the engine never sees it. */
             ephemeralPubkey: string;
+            /** @description Base64-encoded NUT-11 P2PK-locked Cashu proofs supplied by the buyer for CPMM-bound orders (i.e. orders expected to cross a CPMM-owned maker). Required when the market's CPMM pool is Active; ignored for P2P orders (Phase 2). Each proof must be locked to the engine's published pubkey (`GET /api/v1/engine/pubkey`). The backend enforces a size cap (64 entries × 4 KB each). */
+            lockedSatsProofs?: string[];
         };
         OrderStatusResponse: {
             /**
@@ -380,14 +422,6 @@ export interface components {
             /** @description The bolt11-encoded Lightning invoice. */
             bolt11: string;
         };
-        SimulatePaymentRequest: {
-            /** @description The bolt11 invoice to pay. */
-            bolt11: string;
-        };
-        SimulatePaymentResponse: {
-            /** @description Whether the payment was successful. */
-            paid: boolean;
-        };
         CreatorMarketEntry: {
             /** @description The condition ID this market was registered under. */
             conditionId: string;
@@ -407,6 +441,57 @@ export interface components {
             pubkey: string;
             /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
             markets: components["schemas"]["CreatorMarketEntry"][];
+        };
+        EngineInfoResponse: {
+            /** @description Compressed secp256k1 pubkey (hex) of the engine's Cashu wallet. Clients lock proofs to this pubkey via NUT-11 P2PK before sending them as `lockedSatsProofs` on CPMM-bound orders. */
+            pubkey: string;
+        };
+        FundingStatusResponse: {
+            /** @description The CPMM pool's market ID. */
+            marketId: string;
+            /**
+             * @description AwaitingFunding — declared at creation but creator's LN deposit has not settled into CTF reserves yet; trading is blocked. Active — pool is funded and tradeable. Frozen — pool has been paused out-of-band (e.g. reserve exhaustion or admin intervention).
+             * @enum {string}
+             */
+            status: "AwaitingFunding" | "Active" | "Frozen";
+            /**
+             * Format: int64
+             * @description Total sats the creator declared at market creation.
+             */
+            declaredSats: number;
+            /** @description Per-outcome sats reserve currently held by the engine's Cashu wallet, keyed by outcome name. */
+            reservedSatsByOutcome: {
+                [key: string]: number;
+            };
+            /** @description Timestamp of the last reserve mutation, or null if never funded. */
+            lastUpdatedAt?: string | null;
+        };
+        PositionDto: {
+            /** @description The per-outcome market ID this position belongs to. */
+            marketId: string;
+            /** @description The outcome name (e.g. "Yes", "Alice"). */
+            outcome: string;
+            /**
+             * Format: int64
+             * @description Signed net balance of outcome tokens — positive when the user holds tokens, negative when net short. Phase 1 CPMM flows only mint positive balances.
+             */
+            tokenAmount: number;
+            /**
+             * Format: int64
+             * @description Running cost basis in satoshis — positive = net sats spent, negative = net sats received.
+             */
+            totalCostSats: number;
+            /**
+             * Format: date-time
+             * @description Timestamp of the last mutation for this position.
+             */
+            lastUpdated: string;
+        };
+        PositionsResponse: {
+            /** @description The pubkey whose portfolio is returned (echoed from the path). */
+            userPubkey: string;
+            /** @description All positions the caller holds. Empty for users who have never traded — the backend treats "no aggregate" and "zero positions" as equivalent so the frontend can skip a "new user" branch. */
+            positions: components["schemas"]["PositionDto"][];
         };
     };
     responses: never;
@@ -464,6 +549,13 @@ export interface operations {
                     "application/json": string;
                 };
             };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Market already exists for this condition */
             409: {
                 headers: {
@@ -509,6 +601,13 @@ export interface operations {
                     "application/json": string;
                 };
             };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getOrderStatus: {
@@ -533,6 +632,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["OrderStatusResponse"];
                 };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Order not found */
             404: {
@@ -559,6 +665,13 @@ export interface operations {
         responses: {
             /** @description Order cancelled */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -704,6 +817,13 @@ export interface operations {
                     "application/json": components["schemas"]["CreatePaymentRequestResponse"];
                 };
             };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Market not found or no wallet provisioned */
             404: {
                 headers: {
@@ -720,7 +840,27 @@ export interface operations {
             };
         };
     };
-    simulatePayment: {
+    getEnginePubkey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Engine pubkey */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineInfoResponse"];
+                };
+            };
+        };
+    };
+    getFundingStatus: {
         parameters: {
             query?: never;
             header?: never;
@@ -730,30 +870,63 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SimulatePaymentRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Payment result */
+            /** @description Current funding status */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SimulatePaymentResponse"];
+                    "application/json": components["schemas"]["FundingStatusResponse"];
                 };
             };
-            /** @description Market not found or no wallet provisioned */
+            /** @description No CPMM pool for this market */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description LNBits backend error */
-            502: {
+        };
+    };
+    getUserPositions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Nostr pubkey (hex) — must match the NIP-98 auth claim. */
+                pubkey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User's portfolio */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PositionsResponse"];
+                };
+            };
+            /** @description Invalid pubkey format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Path pubkey does not match authenticated claim */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

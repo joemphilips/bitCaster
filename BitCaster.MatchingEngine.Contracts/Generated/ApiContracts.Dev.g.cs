@@ -78,6 +78,166 @@ namespace BitCaster.MatchingEngine.Contracts.Dev
 
     }
 
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SimulateCpmmFundingRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SimulateCpmmFundingRequest(System.Collections.Generic.List<CpmmBootstrapOrder> @bootstrapOrders, long @declaredSats, System.Collections.Generic.Dictionary<string, long> @reservedSatsByOutcome)
+        {
+            this.DeclaredSats = @declaredSats;
+            this.ReservedSatsByOutcome = @reservedSatsByOutcome;
+            this.BootstrapOrders = @bootstrapOrders;
+        }
+
+        /// <summary>
+        /// Total sats the creator declared at market creation.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("declaredSats")]
+        public long DeclaredSats { get; }
+
+        /// <summary>
+        /// Per-outcome reserve map — mirrors the real engine's CPMM pool after a successful creator deposit. Each value must be a positive integer (outcome-tokens held by the engine).
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("reservedSatsByOutcome")]
+        public System.Collections.Generic.Dictionary<string, long> ReservedSatsByOutcome { get; }
+
+        /// <summary>
+        /// Optional resting maker orders to post under the `cpmm:{marketId}` sentinel user id so a subsequent taker order can match. Usually a single Sell order on the outcome the E2E intends to buy is enough.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("bootstrapOrders")]
+        public System.Collections.Generic.List<CpmmBootstrapOrder> BootstrapOrders { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class CpmmBootstrapOrder
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public CpmmBootstrapOrder(long @amountSats, string @outcome, int @price, CpmmBootstrapOrderSide @side)
+        {
+            this.Outcome = @outcome;
+            this.Side = @side;
+            this.Price = @price;
+            this.AmountSats = @amountSats;
+        }
+
+        /// <summary>
+        /// Outcome name the order is posted against (e.g. "Yes").
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcome")]
+        public string Outcome { get; }
+
+        /// <summary>
+        /// Order side; CPMM bootstrap orders are typically Sell.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<CpmmBootstrapOrderSide>))]
+        public CpmmBootstrapOrderSide Side { get; }
+
+        /// <summary>
+        /// Probability price in [1,99].
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int Price { get; }
+
+        /// <summary>
+        /// Total order size in satoshis.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SimulateCpmmFundingResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SimulateCpmmFundingResponse(System.Collections.Generic.List<System.Guid> @bootstrapOrderIds, long @declaredSats, string @marketId, System.Collections.Generic.Dictionary<string, long> @reservedSatsByOutcome, SimulateCpmmFundingResponseStatus @status)
+        {
+            this.MarketId = @marketId;
+            this.Status = @status;
+            this.DeclaredSats = @declaredSats;
+            this.ReservedSatsByOutcome = @reservedSatsByOutcome;
+            this.BootstrapOrderIds = @bootstrapOrderIds;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<SimulateCpmmFundingResponseStatus>))]
+        public SimulateCpmmFundingResponseStatus Status { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("declaredSats")]
+        public long DeclaredSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("reservedSatsByOutcome")]
+        public System.Collections.Generic.Dictionary<string, long> ReservedSatsByOutcome { get; }
+
+        /// <summary>
+        /// Ids of posted bootstrap maker orders (empty if none requested).
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("bootstrapOrderIds")]
+        public System.Collections.Generic.List<System.Guid> BootstrapOrderIds { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum CpmmBootstrapOrderSide
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Buy")]
+        Buy = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Sell")]
+        Sell = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum SimulateCpmmFundingResponseStatus
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"AwaitingFunding")]
+        AwaitingFunding = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Active")]
+        Active = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Frozen")]
+        Frozen = 2,
+
+    }
+
 
 
     [System.CodeDom.Compiler.GeneratedCode("NSwag", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
