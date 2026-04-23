@@ -5,6 +5,8 @@ import {
   type NotificationKind,
   useNotificationsStore,
 } from '@/stores/notifications'
+import { usePortfolioStore } from '@/stores/portfolio'
+import { useSettingsStore } from '@/stores/settings'
 
 export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
 
@@ -146,6 +148,28 @@ export function usePendingTradesPoller(): void {
               })
               removePendingTrade(trade.orderId)
               lastFillCountRef.current.delete(trade.orderId)
+
+              // Phase 1D: after a fill settles, pull the latest portfolio
+              // snapshot so /portfolio reflects the new position without
+              // waiting for the next manual navigation. We skip this on
+              // `cancelled` — no position change possible — but fire on
+              // `filled` regardless of signer mode. The portfolio store
+              // ignores delta pushes for a different pubkey, and a
+              // signed-out user simply has nothing to refresh.
+              if (kind === 'filled') {
+                const pubkey =
+                  useSettingsStore.getState().nostrProfile?.pubkey
+                if (pubkey) {
+                  void usePortfolioStore.getState().refresh(pubkey)
+                }
+                // NOTE: `useWalletStore.refreshBalance()` intentionally not
+                // called — wallet balance is driven by a Dexie
+                // `useLiveQuery` over the proof-db, which auto-updates
+                // when new Cashu proofs land. The Phase 1.5 work that
+                // actually delivers CPMM fill proofs to the frontend will
+                // mutate proof-db directly; this poller only needs to
+                // nudge the portfolio store.
+              }
             }
           }),
         )

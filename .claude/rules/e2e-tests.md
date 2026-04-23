@@ -57,6 +57,10 @@ dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
 - `tests/E2E/xunit.runner.json` — long-running test threshold
 - `tools/worktree-services.sh` — slot-assigned launcher for engine + vite
 
+## AppHost vs docker-compose Port Collision
+
+The outer `bitCaster-matching-engine` AppHost and `bitCaster/docker-compose.yml` currently overlap on lnbits (5002) and likely other services — you cannot run both at once. Tear docker-compose down before starting AppHost. **Future improvement:** give AppHost and docker-compose disjoint port ranges so engine E2E and frontend E2E fixtures can coexist for cross-stack debugging.
+
 ## Staging Backend Health Checks
 
 The staging backend (`backend-bitcaster-staging`) is VNet-restricted — **403 from public internet is expected**, not a failure. The App Service SKU does not support `az webapp ssh --command`. Rely on Azure resource status (`az webapp show`) and Application Insights for health verification.
@@ -71,3 +75,4 @@ The staging backend (`backend-bitcaster-staging`) is VNet-restricted — **403 f
 - **Raw IndexedDB access: open without a version.** Dexie (`BitcasterDB` in `src/stores/proof-db.ts`) maps `.version(N)` → IDB version `N*10`. A test that runs `indexedDB.open('bitcaster', 1)` after the app has loaded throws `VersionError` (requested < existing). Open with no version — Dexie has already created the stores.
 - **Scope locators when the profile is rehydrated.** Once a persisted nsec rehydrates, the app bar shows the user's displayName, so `GetByText("DisplayName")` resolves to two elements. In settings/profile tests, scope to `GetByRole(AriaRole.Main).GetByText(...)` to avoid strict-mode violations.
 - **TradingPanel locators: filter Visible.** `MarketDetail.tsx` renders two TradingPanel copies — mobile (`lg:hidden`) and desktop (`hidden lg:block`). At Playwright's default 1280×720 viewport, the mobile copy is `display: none` but comes first in DOM order, so `.First` selects the hidden element. Use `.Filter(new() { Visible = true }).First` for any TradingPanel button / balance hint / amount input.
+- **Seed `bitcaster-settings` with an nsec before navigating for tests that submit authenticated orders.** `generateNip98Header` in `lib/markets.ts` throws "No Nostr signer configured" when `ndk.signer` is missing; `MarketDetailPage.placeOrder`'s outer catch swallows it so no POST fires and the test times out. Set `nostrSignerMode: 'nsec'` + a deterministic `nsecSecret` in `localStorage` before `GotoAsync()`; `App.tsx`'s `rehydrateNostrSigner()` installs the signer on mount.

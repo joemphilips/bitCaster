@@ -3,7 +3,14 @@ import { useParams, useNavigate } from 'react-router'
 import { MarketDetail } from '@/components/market-detail'
 import { InsufficientBalanceModal } from '@/components/shared/InsufficientBalanceModal'
 import { TopUpOverlay } from '@/components/market-detail/TopUpOverlay'
-import { fetchMarketDetail, fetchOrderBook, submitOrder } from '@/lib/markets'
+import {
+  buildLockedSatsProofs,
+  fetchEnginePubkey,
+  fetchFundingStatus,
+  fetchMarketDetail,
+  fetchOrderBook,
+  submitOrder,
+} from '@/lib/markets'
 import { generateEphemeralKeyPair } from '@/lib/ephemeral-key'
 import { getBalance, useBalance, useWalletStore } from '@/stores/wallet'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
@@ -126,6 +133,34 @@ export function MarketDetailPage() {
     const marketId = `${market.id}-${outcomeName}`
     const ephemeral = generateEphemeralKeyPair()
     try {
+      // If the market is funded as a CPMM pool, the engine is the
+      // counterparty and expects sat proofs locked to its pubkey upfront.
+      // Buy-side only — Sells hand CTF tokens to the engine separately (not
+      // wired in this phase). Any funding-status or engine-pubkey fetch
+      // failure rolls us back to a plain order submission; the backend will
+      // reject the CPMM order with a 4xx we can surface rather than locking
+      // funds we can't recover.
+      let lockedSatsProofs: string[] | undefined
+      if (tradeSide === 'buy') {
+        const funding = await fetchFundingStatus(marketId).catch(() => null)
+        if (funding?.status === 'Active') {
+          const enginePubkey = await fetchEnginePubkey()
+          // Locktime = 24h out. Any CPMM fill settles in seconds; this window
+          // just guarantees a refund path if the engine crashes mid-settle
+          // and we need to reclaim via the NUT-11 refund key.
+          const locktime = Math.floor(Date.now() / 1000) + 24 * 60 * 60
+          lockedSatsProofs = await buildLockedSatsProofs(
+            tradeAmount,
+            enginePubkey,
+            {
+              mintUrl: activeMintUrl,
+              refundPubkey: ephemeral.pubkey,
+              locktime,
+            },
+          )
+        }
+      }
+
       const response = await submitOrder(marketId, {
         outcomeId: outcomeName,
         side: tradeSide === 'buy' ? 'Buy' : 'Sell',
@@ -133,6 +168,7 @@ export function MarketDetailPage() {
         amountSats: tradeAmount,
         timeInForce: 'GTC',
         ephemeralPubkey: ephemeral.pubkey,
+        ...(lockedSatsProofs ? { lockedSatsProofs } : {}),
       })
       // Only persist the privkey once the engine has accepted the order.
       // Otherwise we accumulate orphaned keys on every failed submission.
@@ -157,6 +193,7 @@ export function MarketDetailPage() {
     tradeSide,
     orderType,
     limitPrice,
+    activeMintUrl,
     loadMarket,
     addPendingTrade,
   ])

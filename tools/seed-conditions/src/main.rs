@@ -1,3 +1,4 @@
+use cashu::nuts::nut_ctf::dlc::{parse_oracle_announcement, verify_announcement_signature};
 use cashu::nuts::nut_ctf::test_helpers::{create_test_announcement, create_test_oracle};
 
 fn main() {
@@ -27,6 +28,11 @@ fn main() {
         println!("# outcomes: {outcomes:?}");
         println!("# event_id: {event_id}");
         println!("{hex_tlv}");
+        let parsed = parse_oracle_announcement(&hex_tlv).expect("parse");
+        match verify_announcement_signature(&parsed) {
+            Ok(_) => eprintln!("# verify: OK"),
+            Err(e) => eprintln!("# verify: FAILED -- {}", e),
+        }
         println!();
     }
 }

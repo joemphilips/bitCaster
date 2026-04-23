@@ -19,6 +19,12 @@ import { ToastContainer } from "@/components/ui/Toast";
 import { rehydrateNostrSigner } from "@/lib/nostr";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import { startNip17Listener } from "@/lib/nip17-listener";
+import {
+  joinUserChannel,
+  leaveUserChannel,
+  onPositionUpdated,
+} from "@/lib/marketHub";
+import { usePortfolioStore } from "@/stores/portfolio";
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -130,6 +136,43 @@ function AppRoutes() {
     // No cleanup — the listener is module-scoped and intentionally
     // outlives React's mount/unmount dance (StrictMode, HMR).
   }, [mnemonic, relayUrlsKey]);
+
+  // Phase 1D: once the user has a Nostr identity configured, join their
+  // private MarketHub group so post-fill `PositionUpdated` deltas arrive
+  // without polling. We also seed the portfolio store with an initial
+  // refresh — PortfolioPage will pick this up if the user navigates there
+  // before any fills land.
+  //
+  // The dependency key is the pubkey itself (not `nostrSignerMode`) so a
+  // user switching from NIP-07 to nsec with the same pubkey doesn't churn
+  // the subscription. If the pubkey is empty (profile not yet fetched)
+  // we skip — `generateNip98Header` would throw anyway without a signer.
+  const userPubkey = useSettingsStore((s) => s.nostrProfile?.pubkey ?? "");
+  useEffect(() => {
+    if (!userPubkey) return;
+    let cancelled = false;
+
+    const unsubscribe = onPositionUpdated((eventPubkey, marketId, outcome, deltaTokens) => {
+      if (cancelled) return;
+      usePortfolioStore
+        .getState()
+        .applyDelta(eventPubkey, marketId, outcome, deltaTokens);
+    });
+
+    joinUserChannel().catch((err) => {
+      // A read-only visitor with no signer will land here — that's
+      // expected. Warn so dev consoles surface genuine auth failures.
+      console.warn("[app] joinUserChannel failed:", err);
+    });
+
+    usePortfolioStore.getState().refresh(userPubkey).catch(() => {});
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      void leaveUserChannel();
+    };
+  }, [userPubkey]);
 
   // Ensure stored mints have full info (CTF badge, NUTs, contact) and that
   // the status indicator reflects reality. Re-fetches any mint missing

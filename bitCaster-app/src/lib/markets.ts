@@ -6,6 +6,14 @@ import type {
 } from '@/types/market-detail'
 import { getNdk } from '@/lib/nostr'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
+import type { Proof } from '@cashu/cashu-ts'
+import { getWallet } from '@/lib/cashu'
+import {
+  addProofs,
+  getProofs,
+  removeProofs,
+  type StoredProof,
+} from '@/stores/proof-db'
 
 // CDK mint response types
 
@@ -305,7 +313,7 @@ export async function fetchMarketDetail(conditionId: string): Promise<MarketDeta
   return meta ? applyMetadata(detail, meta) : detail
 }
 
-function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
+export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
   let cumulativeBid = 0
   const bids: Order[] = snapshot.bids.map((level) => {
     cumulativeBid += level.amount
@@ -335,15 +343,149 @@ export async function fetchOrderBook(marketId: string): Promise<OrderBook> {
 }
 
 export async function submitOrder(marketId: string, params: SubmitOrderRequest): Promise<SubmitOrderResponse> {
-  const response = await fetch(`/api/v1/${marketId}/orders`, {
+  const url = `${window.location.origin}/api/v1/${marketId}/orders`
+  const authHeader = await generateNip98Header(url, 'POST')
+  const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: authHeader,
+    },
     body: JSON.stringify(params),
   })
   if (!response.ok) {
     throw new Error(`Failed to submit order: ${response.status}`)
   }
   return response.json()
+}
+
+// ---------------------------------------------------------------------------
+// CPMM funding-status + engine pubkey caches
+// ---------------------------------------------------------------------------
+
+type FundingSchemas = components['schemas']
+export type EngineInfoResponse = FundingSchemas['EngineInfoResponse']
+export type FundingStatusResponse = FundingSchemas['FundingStatusResponse']
+
+// Both values are stable for the lifetime of the page:
+//   - engine pubkey changes only on backend redeploy (operationally rare,
+//     and a redeploy forces frontend reconnects)
+//   - funding-status flips at most once per market (AwaitingFunding → Active)
+// Cache lets us avoid a round-trip per order submission on a hot trade UI.
+//
+// SECURITY: the engine pubkey is fetched from the authoritative backend
+// endpoint, not a user-controlled source, and held only in memory. We
+// intentionally never persist it — a poisoned localStorage entry could
+// otherwise mis-route locked Cashu proofs to an attacker's pubkey.
+
+let _enginePubkeyCache: string | null = null
+
+export async function fetchEnginePubkey(): Promise<string> {
+  if (_enginePubkeyCache) return _enginePubkeyCache
+  const response = await fetch('/api/v1/engine/pubkey')
+  if (!response.ok) {
+    throw new Error(`Failed to fetch engine pubkey: ${response.status}`)
+  }
+  const body: EngineInfoResponse = await response.json()
+  if (!/^[0-9a-fA-F]{66}$/.test(body.pubkey)) {
+    throw new Error('Engine pubkey is not a valid 33-byte compressed secp256k1 hex')
+  }
+  _enginePubkeyCache = body.pubkey.toLowerCase()
+  return _enginePubkeyCache
+}
+
+const _fundingStatusCache = new Map<string, FundingStatusResponse>()
+
+/** Fetch and memoise funding status for a market. */
+export async function fetchFundingStatus(
+  marketId: string,
+): Promise<FundingStatusResponse | null> {
+  const cached = _fundingStatusCache.get(marketId)
+  if (cached) return cached
+  const response = await fetch(`/api/v1/${marketId}/funding-status`)
+  if (response.status === 404) return null
+  if (!response.ok) {
+    throw new Error(`Failed to fetch funding status: ${response.status}`)
+  }
+  const body: FundingStatusResponse = await response.json()
+  // Only cache Active — AwaitingFunding is a transient state we should
+  // keep re-polling.
+  if (body.status === 'Active') _fundingStatusCache.set(marketId, body)
+  return body
+}
+
+/**
+ * Lock `amountSats` worth of the wallet's proofs to the matching engine's
+ * pubkey via NUT-11 P2PK and return them ready for the `lockedSatsProofs`
+ * field of a CPMM-bound `SubmitOrderRequest`.
+ *
+ * This is NOT the two-party adaptor-sig atomic swap from `atomicSwap.ts` —
+ * for CPMM the engine is the sole counterparty and holds the reserve side of
+ * the swap in its own wallet. We simply hand custody of sat proofs over and
+ * let the engine redeem them after the fill lands. The refund pubkey is the
+ * user's ephemeral key so they can reclaim via the NUT-11 locktime path if
+ * the engine fails to settle.
+ *
+ * SECURITY:
+ *  - `enginePubkey` MUST come from `fetchEnginePubkey()` (authenticated
+ *    backend endpoint, hex-validated). A caller-supplied pubkey would let a
+ *    poisoned IndexedDB / localStorage entry re-target locked ecash.
+ *  - On any failure after `wallet.send()` we persist the `keep` proofs so the
+ *    user doesn't lose visibility of the unsplit change. The `send` half is
+ *    intentionally not returned to storage — those proofs are already locked
+ *    to the engine and only redeemable by the engine (or by the user after
+ *    `locktime`).
+ *
+ * @returns base64-encoded JSON of each locked proof, as required by the
+ *   `lockedSatsProofs: string[]` contract in the OpenAPI spec.
+ */
+export async function buildLockedSatsProofs(
+  amountSats: number,
+  enginePubkey: string,
+  params: {
+    mintUrl: string
+    refundPubkey: string
+    /**
+     * Unix seconds after which the refund pubkey may reclaim the proofs. The
+     * engine's settlement window should comfortably fit inside this — bubble
+     * it up as a parameter so callers can align it with the order's TIF.
+     */
+    locktime: number
+  },
+): Promise<string[]> {
+  if (!/^[0-9a-fA-F]{66}$/.test(enginePubkey)) {
+    throw new Error('Engine pubkey is not a valid 33-byte compressed secp256k1 hex')
+  }
+  const wallet = await getWallet(params.mintUrl)
+  const available = await getProofs(params.mintUrl)
+  const { keep, send } = await wallet.send(amountSats, available, undefined, {
+    send: {
+      type: 'p2pk',
+      options: {
+        pubkey: enginePubkey,
+        locktime: params.locktime,
+        refundKeys: [params.refundPubkey],
+      },
+    },
+  })
+
+  // Swap-and-replace storage. Do this BEFORE encoding the outbound proofs so
+  // that a crash between here and the submit call leaves the user with the
+  // kept change already persisted (the send-half is sacrificed to the engine
+  // by design — it's locked to the engine pubkey anyway).
+  await removeProofs(available.map((p) => p.secret))
+  if (keep.length > 0) {
+    const kept: StoredProof[] = keep.map((p) => ({ ...p, mintUrl: params.mintUrl }))
+    await addProofs(kept)
+  }
+
+  return send.map(encodeProofToBase64)
+}
+
+function encodeProofToBase64(proof: Proof): string {
+  // Spec-compatible with the backend decoder — a stable JSON representation
+  // of the Cashu Proof (id, amount, secret, C, optional witness) base64'd.
+  return btoa(JSON.stringify(proof))
 }
 
 // =============================================================================
@@ -414,8 +556,11 @@ export async function registerPartition(
 /**
  * Generate a NIP-98 Authorization header using NDK's active signer.
  * Works with both NIP-07 (browser extension) and nsec (private key) signers.
+ *
+ * Exported so other modules (portfolio store, MarketHub helper, etc.) can
+ * reuse a single implementation instead of each growing its own NDK wiring.
  */
-async function generateNip98Header(url: string, method: string): Promise<string> {
+export async function generateNip98Header(url: string, method: string): Promise<string> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error('No Nostr signer configured — connect in Settings first')
   const event = new NDKEvent(ndk)

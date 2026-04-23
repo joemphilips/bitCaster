@@ -229,7 +229,32 @@ public class TradingFlowTests : IAsyncLifetime
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
         await SetupWalletAsync(page);
+        // submitOrder -> generateNip98Header requires an NDK signer. Seed
+        // bitcaster-settings with nostrSignerMode='nsec' + a deterministic
+        // throwaway nsec; App.tsx's rehydrateNostrSigner() will install the
+        // signer on the next navigation so the Authorization header can be
+        // produced. Without this the outer try/catch in MarketDetailPage's
+        // placeOrder swallows the "No Nostr signer configured" error and the
+        // POST is never dispatched.
+        const string nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
+        await page.EvaluateAsync($@"
+            localStorage.setItem('bitcaster-settings', JSON.stringify({{
+                state: {{
+                    activeCategory: 'general',
+                    baseCurrency: 'BTC',
+                    language: 'en',
+                    theme: 'dark',
+                    nostrSignerMode: 'nsec',
+                    nsecSecret: '{nsec}',
+                    nostrProfile: null,
+                    nostrProfileFetchStatus: 'idle',
+                    relays: []
+                }},
+                version: 0
+            }}));
+        ");
         await GoToFirstMarketDetailAsync(page);
         await SeedBalanceAsync(page, 10_000);
         // Reload so the seeded proof is in IDB before useLiveQuery subscribes
@@ -270,15 +295,21 @@ public class TradingFlowTests : IAsyncLifetime
             }
         });
 
-        var yesSide = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Yes\\s", RegexOptions.IgnoreCase) }).First;
+        // Filter Visible to target the desktop TradingPanel copy — the mobile
+        // copy is first in DOM order but hidden at the default 1280×720
+        // viewport, and click dispatch on it does not propagate state.
+        var yesSide = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Yes\\s", RegexOptions.IgnoreCase) })
+            .Filter(new() { Visible = true }).First;
         await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await yesSide.ClickAsync();
 
-        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "100" }).First;
+        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "100" })
+            .Filter(new() { Visible = true }).First;
         await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await quickAmount.ClickAsync();
 
-        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) }).First;
+        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) })
+            .Filter(new() { Visible = true }).First;
         await confirm.ClickAsync();
 
         // Wait for the request to land.
@@ -288,7 +319,11 @@ public class TradingFlowTests : IAsyncLifetime
             await Task.Delay(100);
         }
 
-        Assert.NotNull(capturedBody);
+        if (capturedBody is null)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page, consoleMessages, "submitOrder never reached Playwright intercept");
+        }
         using var doc = JsonDocument.Parse(capturedBody!);
         var pubkey = doc.RootElement.GetProperty("ephemeralPubkey").GetString();
         Assert.NotNull(pubkey);

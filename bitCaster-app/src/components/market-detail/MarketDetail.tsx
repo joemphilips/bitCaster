@@ -5,6 +5,7 @@ import { formatBtc } from '@/lib/format'
 import { MarketHeader } from './MarketHeader'
 import { TradingPanel } from './TradingPanel'
 import { PriceChart } from './PriceChart'
+import { OrderBookSection } from './OrderBookSection'
 import { ResolutionInfo } from './ResolutionInfo'
 import { ActivityFeed } from './ActivityFeed'
 import { RelatedMarkets } from './RelatedMarkets'
@@ -153,6 +154,18 @@ export function MarketDetail({
               comments={market.comments}
               unit={market.type === 'numeric' ? market.unit : undefined}
             />
+
+            {/* Order Book — only for binary yes/no markets in Phase 1.
+                `liveMarketId` threads the per-outcome market ID through to
+                the SignalR subscription so the book updates live without
+                a page reload. The initial snapshot comes via `orderBook`
+                (prefetched in MarketDetailPage). */}
+            {market.type === 'yesno' && !isResolved && (
+              <OrderBookSection
+                orderBook={market.orderBook}
+                liveMarketId={`${market.id}-Yes`}
+              />
+            )}
 
             {/* Resolution Info (in normal position for open markets) */}
             {!isResolved && (

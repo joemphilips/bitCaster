@@ -1,6 +1,13 @@
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { OrderBook } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
+import { mapSnapshotToOrderBook } from '@/lib/markets'
+import {
+  joinMarket,
+  leaveMarket,
+  onOrderBookUpdated,
+} from '@/lib/marketHub'
 
 interface OrderBookSectionProps {
   orderBook: OrderBook
@@ -8,6 +15,16 @@ interface OrderBookSectionProps {
   outcomeOrderBooks?: Record<string, OrderBook>
   onOutcomeChange?: (outcomeId: string) => void
   outcomes?: Array<{ id: string; label: string }>
+  /**
+   * Fully-qualified per-outcome market ID (`{conditionId}-{outcomeName}`).
+   * When present, the component subscribes to live `OrderBookUpdated`
+   * pushes from MarketHub for this market. Initial snapshot comes from the
+   * `orderBook` prop (fetched by the parent), so users see depth before
+   * the first push lands.
+   *
+   * Omit to render a static book (e.g. historical view, tests).
+   */
+  liveMarketId?: string
 }
 
 export function OrderBookSection({
@@ -16,12 +33,47 @@ export function OrderBookSection({
   outcomeOrderBooks,
   onOutcomeChange,
   outcomes,
+  liveMarketId,
 }: OrderBookSectionProps) {
   const { t } = useTranslation()
+
+  // Local mirror of the prop — updated in place when a MarketHub push lands.
+  // Falls back to the initial `orderBook` prop until the first push arrives,
+  // so users never see an empty book while the subscription handshake runs.
+  const [liveOrderBook, setLiveOrderBook] = useState<OrderBook>(orderBook)
+  useEffect(() => {
+    // Reset to the fresh parent-provided snapshot whenever the upstream
+    // `orderBook` prop changes (e.g. after a manual refetch) — otherwise a
+    // stale live-book from the previous market would linger.
+    setLiveOrderBook(orderBook)
+  }, [orderBook])
+
+  useEffect(() => {
+    if (!liveMarketId) return
+    let cancelled = false
+
+    const unsubscribe = onOrderBookUpdated(liveMarketId, (snapshot) => {
+      if (cancelled) return
+      setLiveOrderBook(mapSnapshotToOrderBook(snapshot))
+    })
+
+    // JoinMarket sends an initial snapshot back to the caller — we apply it
+    // via the handler above, which also handles every subsequent push.
+    joinMarket(liveMarketId).catch((err) => {
+      console.warn('[OrderBookSection] joinMarket failed:', err)
+    })
+
+    return () => {
+      cancelled = true
+      unsubscribe()
+      void leaveMarket(liveMarketId)
+    }
+  }, [liveMarketId])
+
   // Use outcome-specific order book if available
   const activeOrderBook = selectedOutcomeId && outcomeOrderBooks
-    ? outcomeOrderBooks[selectedOutcomeId] || orderBook
-    : orderBook
+    ? outcomeOrderBooks[selectedOutcomeId] || liveOrderBook
+    : liveOrderBook
 
   const maxTotal = Math.max(
     ...activeOrderBook.bids.map((b) => b.total),
