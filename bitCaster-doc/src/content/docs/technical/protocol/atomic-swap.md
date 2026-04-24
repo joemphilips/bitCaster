@@ -63,7 +63,7 @@ Two parties with keypairs `(a, A = a·G)` and `(b, B = b·G)` can compute a shar
 
 ### Step 1: Order Placement
 
-Alice and Bob each generate an ephemeral keypair for this trade and register orders with the matching engine.
+Alice and Bob each generate an ephemeral keypair and register orders with the matching engine.
 
 ```
 Alice: generates (a, A = a·G), registers sell order with pubkey A
@@ -71,6 +71,8 @@ Bob:   generates (b, B = b·G), registers buy  order with pubkey B
 ```
 
 The matching engine stores orders in its book. Ephemeral keys ensure unlinkability across trades.
+
+> **Key hygiene**: A fresh keypair MUST be generated per distinct swap. Within a single order that fills against multiple counterparties (partial fills), an implementation MAY reuse the order-level keypair across those fills, but this is a known linkability weakness and should eventually move to per-fill keys. Reusing keys across unrelated swaps leaks the ECDH shared-secret graph and is prohibited.
 
 ### Step 2: Match
 
@@ -195,7 +197,7 @@ The mint verifies the P2PK signatures and processes the swap. Alice now holds fr
 
 ### Step 8: Bob Extracts Adaptor Secret
 
-Bob queries the mint's NUT-07 token state check endpoint for his spent sat proofs:
+Bob queries the mint's NUT-07 token state check endpoint for his spent sat proofs. Bob retains the proofs he constructed in step 6, so he can compute `Y_j = hash_to_curve(secret_j)` for each proof locally (see [NUT-00][nut-00] for `hash_to_curve`):
 
 ```http
 POST /v1/checkstate
@@ -203,7 +205,9 @@ POST /v1/checkstate
 
 ```json
 {
-  "Ys": ["<Y values of Bob's spent sat proofs>"]
+  "Ys": [
+    "<Y_j = hash_to_curve(secret_j) for each sat proof Bob locked to Alice>"
+  ]
 }
 ```
 
@@ -255,10 +259,15 @@ The mint verifies and processes the swap. Bob now holds fresh YES conditional to
 
 ### Atomicity
 
-The protocol achieves atomicity through the adaptor signature construction:
+Atomicity requires **both** ingredients — adaptor signatures alone are not sufficient. The adaptor signature replaces HTLC's hash preimage with an EC scalar; the NUT-11 `locktime` + `refund` tags still provide the safety fallback when a counterparty disappears. Removing either piece breaks the protocol:
+
+- Adaptor signatures guarantee that **if Alice spends, Bob can spend** (liveness / linkability).
+- Locktime refunds guarantee that **if Alice never spends, Bob recovers his funds** (safety).
+
+Given both, the three cases are:
 
 - **If Alice claims** (step 7): Her adapted signatures `s_B = s'_B + t` are published to the mint. Bob can retrieve them via NUT-07 and extract `t`, which lets him claim Alice's proofs. Both parties complete the swap.
-- **If Alice does not claim**: Neither party's tokens are spent. After the locktime expires, both parties reclaim their own tokens via the refund path.
+- **If Alice does not claim**: Neither party's tokens are spent. After each proof's locktime expires, both parties reclaim their own tokens via the refund path.
 - **Bob cannot claim first**: Bob does not know `t`, so he cannot adapt Alice's pre-signatures. He must wait for Alice to reveal `t` by spending.
 
 ### Locktime Constraints
@@ -270,7 +279,15 @@ The locktime must be chosen carefully:
 
 Since this protocol involves only ecash swaps (no Lightning routing delays), locktimes can be very short — on the order of seconds rather than minutes. Both parties should agree on the locktime during the order matching phase.
 
-**Important**: Bob's sat proof locktime should be _longer_ than Alice's YES proof locktime, giving Bob time to extract `t` and claim Alice's YES proofs before she can refund them.
+**Important — locktime ordering**: Alice's YES proof locktime (`T_YES`) MUST be later than Bob's sat proof locktime (`T_sat`):
+
+```
+T_YES  >  T_sat  +  Δ
+```
+
+where `Δ` is the time Bob needs to query NUT-07, extract `t`, and submit his own swap.
+
+Alice spends Bob's sat proofs first (step 7) and may wait until just before `T_sat` to do so. Bob must observe the spend, extract `t`, and spend Alice's YES proofs before `T_YES` expires. If the ordering were reversed (i.e. `T_YES < T_sat`), Alice could wait for her own YES refund window to open, refund her YES proofs, and still claim Bob's sats while `T_sat` is unexpired — stealing both sides of the trade. This is the core P03 (atomic-swap atomicity) invariant; implementations MUST validate the ordering before accepting a counterparty's pre-signatures.
 
 ### NUT-07 Dependency
 
@@ -340,3 +357,5 @@ Conditional tokens from different mints are not fungible. Trading is limited to 
 - [Partially Blind Atomic Swap](https://github.com/ElementsProject/scriptless-scripts/blob/master/md/partially-blind-swap.md) — Blind Schnorr + adaptor signatures (Blockstream)
 - [Scriptless Scripts](https://github.com/BlockstreamResearch/scriptless-scripts/blob/master/md/atomic-swap.md) — Original adaptor signature specification (Poelstra)
 - [Blind Adaptor Signatures, Revisited](https://eprint.iacr.org/2026/060) — Formal BAS primitive (requires Schnorr, not BDHKE)
+
+[nut-00]: https://github.com/cashubtc/nuts/blob/main/00.md

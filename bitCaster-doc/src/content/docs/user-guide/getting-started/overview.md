@@ -46,7 +46,7 @@ Your tokens are just signed data. They live in your browser's local storage, not
 
 This means the server holds as little user information as possible. There is no account to create, no password to remember, and no personal information to hand over.
 
-This completely eliminates risks such as personal information leaks or having only specific individuals' assets frozen.
+**This completely eliminates risks such as personal information leaks or having only specific individuals' assets frozen.**
 
 In return, like any other cryptocurrency wallet, you are responsible for managing your own keys. Back up your 12-word mnemonic and keep it safe.
 
