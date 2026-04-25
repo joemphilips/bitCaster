@@ -10,50 +10,22 @@ namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 /// <summary>
 /// Endpoints that surface the mock's <see cref="InMemoryCpmmState"/> to
 /// frontend clients and Phase 1G E2E tests. Mirrors the subset of the real
-/// engine's CPMM API that the PWA actually consumes today — user positions
-/// and a dev-only simulate-funding flow.
+/// engine's CPMM API that the PWA actually consumes today — currently a
+/// dev-only simulate-funding flow.
 ///
 /// <para>
 /// <b>MOCK ONLY — never reference from the production ApiService.</b> The
-/// positions handler skips the path-pubkey vs NIP-98 claim match that the
-/// real engine enforces (P03), and the NIP-98 helper below only parses the
-/// token, never verifies the Schnorr signature (P04). Both shortcuts are
-/// acceptable because <c>BitCaster.InMemoryMatchingEngine</c> is dev/E2E
-/// scaffolding that is never deployed to staging or prod — ApiService runs
-/// a real <c>Nip98AuthenticationHandler</c> with full verification.
+/// NIP-98 helper below only parses the token, never verifies the Schnorr
+/// signature (P04). This shortcut is acceptable because
+/// <c>BitCaster.InMemoryMatchingEngine</c> is dev/E2E scaffolding that is
+/// never deployed to staging or prod — ApiService runs a real
+/// <c>Nip98AuthenticationHandler</c> with full verification.
 /// </para>
 /// </summary>
 public static class CpmmEndpoints
 {
     public static void MapCpmmEndpoints(this WebApplication app)
     {
-        // ------------------------------------------------------------------
-        // GET /api/v1/users/{pubkey}/positions
-        //   Returns every (marketId, outcome) the caller holds tokens in.
-        //   The real engine enforces `authedPubkey == pathPubkey` via NIP-98;
-        //   the mock has no auth stack, so we return positions for the path
-        //   pubkey directly. Safe because the mock is dev-only — this
-        //   endpoint is never compiled into the production ApiService.
-        // ------------------------------------------------------------------
-        app.MapGet("/api/v1/users/{pubkey}/positions", (
-            string pubkey,
-            InMemoryCpmmState cpmm) =>
-        {
-            if (!IsValidHexPubkey(pubkey))
-                return Results.BadRequest("Invalid pubkey format (expected 64-char hex).");
-
-            var records = cpmm.GetPositions(pubkey);
-            var dtos = records
-                .Select(r => new PositionDto(
-                    lastUpdated: r.LastUpdated,
-                    marketId: r.MarketId,
-                    outcome: r.Outcome,
-                    tokenAmount: r.TokenAmount,
-                    totalCostSats: r.TotalCostSats))
-                .ToList();
-            return Results.Ok(new PositionsResponse(positions: dtos, userPubkey: pubkey));
-        });
-
         // ------------------------------------------------------------------
         // POST /api/v1/_dev/markets/{marketId}/simulate-cpmm-funding
         //   Dev-only. Flips the pool to Active with explicit reserves and
@@ -124,18 +96,6 @@ public static class CpmmEndpoints
                 status: SimulateCpmmFundingResponseStatus.Active);
             return Results.Ok(response);
         });
-    }
-
-    private static bool IsValidHexPubkey(string? hex)
-    {
-        if (string.IsNullOrEmpty(hex) || hex.Length != 64) return false;
-        for (var i = 0; i < hex.Length; i++)
-        {
-            var c = hex[i];
-            var isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-            if (!isHex) return false;
-        }
-        return true;
     }
 
     /// <summary>

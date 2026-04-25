@@ -246,39 +246,6 @@ paths:
         '502':
           description: LNBits backend error
 
-  /api/v1/users/{pubkey}/positions:
-    get:
-      operationId: getUserPositions
-      summary: List the caller's net position in every market
-      security:
-        - nip98: []
-      description: >
-        Returns every (marketId, outcome) pair the caller has a net token
-        holding in, together with the cost-basis in satoshis. The path pubkey
-        must equal the authenticated NIP-98 claim — cross-user reads return
-        403 (P03).
-      parameters:
-        - name: pubkey
-          in: path
-          required: true
-          schema:
-            type: string
-            pattern: '^[0-9a-f]{64}$'
-          description: Nostr pubkey (hex) — must match the NIP-98 auth claim.
-      responses:
-        '200':
-          description: User's portfolio
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PositionsResponse'
-        '400':
-          description: Invalid pubkey format
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '403':
-          description: Path pubkey does not match authenticated claim
-
   /api/v1/creators/{pubkey}/markets:
     get:
       operationId: listCreatorMarkets
@@ -747,55 +714,4 @@ components:
           description: >
             Markets created by this pubkey. May be empty if the creator has
             not registered any markets yet.
-
-    PositionDto:
-      type: object
-      required:
-        - marketId
-        - outcome
-        - tokenAmount
-        - totalCostSats
-        - lastUpdated
-      properties:
-        marketId:
-          type: string
-          description: The per-outcome market ID this position belongs to.
-        outcome:
-          type: string
-          description: The outcome name (e.g. "Yes", "Alice").
-        tokenAmount:
-          type: integer
-          format: int64
-          description: >
-            Signed net balance of outcome tokens — positive when the user
-            holds tokens, negative when net short. Phase 1 CPMM flows only
-            mint positive balances.
-        totalCostSats:
-          type: integer
-          format: int64
-          description: >
-            Running cost basis in satoshis — positive = net sats spent,
-            negative = net sats received.
-        lastUpdated:
-          type: string
-          format: date-time
-          description: Timestamp of the last mutation for this position.
-
-    PositionsResponse:
-      type: object
-      required:
-        - userPubkey
-        - positions
-      properties:
-        userPubkey:
-          type: string
-          description: The pubkey whose portfolio is returned (echoed from the path).
-        positions:
-          type: array
-          items:
-            $ref: '#/components/schemas/PositionDto'
-          description: >
-            All positions the caller holds. Empty for users who have never
-            traded — the backend treats "no aggregate" and "zero positions"
-            as equivalent so the frontend can skip a "new user" branch.
 

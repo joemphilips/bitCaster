@@ -38,9 +38,6 @@ public class InMemoryCpmmState
 
     private readonly ConcurrentDictionary<string, PoolState> _pools = new();
 
-    // userPubkey -> (marketId -> PositionRecord)
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, PositionRecord>> _positions = new();
-
     public sealed class PoolState
     {
         public required string MarketId { get; init; }
@@ -57,13 +54,6 @@ public class InMemoryCpmmState
         public ImmutableDictionary<string, long> Reserves { get; set; } =
             ImmutableDictionary<string, long>.Empty;
     }
-
-    public sealed record PositionRecord(
-        string MarketId,
-        string Outcome,
-        long TokenAmount,
-        long TotalCostSats,
-        DateTimeOffset LastUpdated);
 
     public enum PoolStatus
     {
@@ -136,37 +126,4 @@ public class InMemoryCpmmState
         }
     }
 
-    /// <summary>
-    /// Accrue (or create) a user's position for a given (marketId, outcome)
-    /// tuple. Mirrors the real engine's <c>AccruePositionCommand</c> path —
-    /// positive deltas on buys, negative on sells. Phase 1G only exercises
-    /// the buy path.
-    /// </summary>
-    public PositionRecord ApplyPositionDelta(
-        string userPubkey,
-        string marketId,
-        string outcome,
-        long deltaTokens,
-        long deltaCostSats)
-    {
-        var byMarket = _positions.GetOrAdd(userPubkey,
-            _ => new ConcurrentDictionary<string, PositionRecord>());
-
-        return byMarket.AddOrUpdate(
-            marketId,
-            _ => new PositionRecord(marketId, outcome, deltaTokens, deltaCostSats, DateTimeOffset.UtcNow),
-            (_, existing) => existing with
-            {
-                TokenAmount = existing.TokenAmount + deltaTokens,
-                TotalCostSats = existing.TotalCostSats + deltaCostSats,
-                LastUpdated = DateTimeOffset.UtcNow,
-            });
-    }
-
-    public IReadOnlyList<PositionRecord> GetPositions(string userPubkey)
-    {
-        if (!_positions.TryGetValue(userPubkey, out var byMarket))
-            return Array.Empty<PositionRecord>();
-        return byMarket.Values.ToArray();
-    }
 }

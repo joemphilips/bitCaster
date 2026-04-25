@@ -159,26 +159,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/users/{pubkey}/positions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List the caller's net position in every market
-         * @description Returns every (marketId, outcome) pair the caller has a net token holding in, together with the cost-basis in satoshis. The path pubkey must equal the authenticated NIP-98 claim — cross-user reads return 403 (P03).
-         */
-        get: operations["getUserPositions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/creators/{pubkey}/markets": {
         parameters: {
             query?: never;
@@ -401,33 +381,6 @@ export interface components {
             pubkey: string;
             /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
             markets: components["schemas"]["CreatorMarketEntry"][];
-        };
-        PositionDto: {
-            /** @description The per-outcome market ID this position belongs to. */
-            marketId: string;
-            /** @description The outcome name (e.g. "Yes", "Alice"). */
-            outcome: string;
-            /**
-             * Format: int64
-             * @description Signed net balance of outcome tokens — positive when the user holds tokens, negative when net short. Phase 1 CPMM flows only mint positive balances.
-             */
-            tokenAmount: number;
-            /**
-             * Format: int64
-             * @description Running cost basis in satoshis — positive = net sats spent, negative = net sats received.
-             */
-            totalCostSats: number;
-            /**
-             * Format: date-time
-             * @description Timestamp of the last mutation for this position.
-             */
-            lastUpdated: string;
-        };
-        PositionsResponse: {
-            /** @description The pubkey whose portfolio is returned (echoed from the path). */
-            userPubkey: string;
-            /** @description All positions the caller holds. Empty for users who have never traded — the backend treats "no aggregate" and "zero positions" as equivalent so the frontend can skip a "new user" branch. */
-            positions: components["schemas"]["PositionDto"][];
         };
     };
     responses: never;
@@ -769,50 +722,6 @@ export interface operations {
             };
             /** @description LNBits backend error */
             502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getUserPositions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Nostr pubkey (hex) — must match the NIP-98 auth claim. */
-                pubkey: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description User's portfolio */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PositionsResponse"];
-                };
-            };
-            /** @description Invalid pubkey format */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Path pubkey does not match authenticated claim */
-            403: {
                 headers: {
                     [name: string]: unknown;
                 };

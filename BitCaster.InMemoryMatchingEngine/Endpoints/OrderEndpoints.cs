@@ -57,9 +57,10 @@ public static class OrderEndpoints
 
             // Auto-settle any CPMM-maker fills: for each fill whose maker
             // order's UserId begins with "cpmm:", decrement the engine's CTF
-            // reserve by the fill size (capped-loss gate) and accrue the
-            // taker's position. Mirrors the real engine's
-            // CpmmSettlementService.SettleAsync + AccruePositionsForFill.
+            // reserve by the fill size (capped-loss gate). Mirrors the real
+            // engine's CpmmSettlementService.SettleAsync. Per P08 the server
+            // does not track the taker's position — the wallet is the source
+            // of truth for user holdings.
             foreach (var fill in result.Fills)
             {
                 var makerOwner = bookManager.GetOrderOwner(fill.MakerOrderId);
@@ -80,19 +81,6 @@ public static class OrderEndpoints
                         outcome = req.OutcomeId,
                         tokenAmount,
                     });
-                }
-
-                // Accrue the taker's position only — skip the sentinel maker
-                // (tracking the engine as a counterparty is meaningless).
-                if (!takerUserId.StartsWith(CpmmUserPrefix, StringComparison.Ordinal)
-                    && takerUserId != "anonymous")
-                {
-                    cpmm.ApplyPositionDelta(
-                        userPubkey: takerUserId,
-                        marketId: marketId,
-                        outcome: req.OutcomeId,
-                        deltaTokens: tokenAmount,
-                        deltaCostSats: fill.AmountSats);
                 }
             }
 
