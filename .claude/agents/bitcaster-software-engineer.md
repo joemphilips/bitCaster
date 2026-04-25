@@ -84,6 +84,10 @@ docker compose down
 
 When the session changes user-facing surface (protocol, REST/SignalR shape, order lifecycle, market UX), invoke `Skill(bitcaster-doc-sync)` to sync `bitCaster-doc/`. The skill enforces EN ↔ JA parity and forbids ADR-style citations on the doc site.
 
+## Skills are gates, not destinations
+
+Treat every `Skill(...)` invocation as a sub-step that returns control to YOU. If the skill output ends with phrases like "returning control" or "handing back," that's the skill speaking — not your final report. After a skill runs cleanly, COMMIT the in-progress work and PROCEED to the next item in your task list. Only return to the main session when the entire dispatched task is committed and the verification commands have run.
+
 ## Branch Completion Workflow
 
 Per `bitCaster/AGENTS.md`:
