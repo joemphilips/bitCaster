@@ -1,3 +1,4 @@
+using System.Text.Json;
 using BitCaster.MatchingEngine.Contracts;
 using BitCaster.MatchingEngine.Contracts.Hubs;
 using BitCaster.InMemoryMatchingEngine.Hubs;
@@ -23,7 +24,9 @@ public static class OrderEndpoints
             HttpRequest httpRequest,
             InMemoryOrderBookManager bookManager,
             InMemoryCpmmState cpmm,
-            IHubContext<MarketHub, IMarketHubClient> hubContext) =>
+            InMemoryTradeRegistry trades,
+            IHubContext<MarketHub, IMarketHubClient> marketHub,
+            IHubContext<TradeHub, ITradeHubClient> tradeHub) =>
         {
             if (req.AmountSats <= 0)
                 return Results.BadRequest("AmountSats must be positive.");
@@ -93,8 +96,15 @@ public static class OrderEndpoints
                 }
             }
 
-            await hubContext.Clients.Group(marketId)
+            await marketHub.Clients.Group(marketId)
                 .OrderBookUpdated(bookManager.GetSnapshot(marketId));
+
+            // Register trades + replay TradeCreated for any direct-match fill
+            // that carries a tradeId. The taker's side maps onto the
+            // atomic-swap roles: Sell-side taker = seller (parts with the
+            // outcome token), Buy-side taker = buyer.
+            await EmitTradeCreatedForFills(
+                tradeHub, trades, result.Fills, req.Side, req.EphemeralPubkey);
 
             return Results.Ok(new SubmitOrderResponse(
                 ephemeralPubkey: req.EphemeralPubkey,
@@ -135,6 +145,56 @@ public static class OrderEndpoints
 
             return Results.Ok();
         });
+    }
+
+    /// <summary>
+    /// For each direct-match fill that carries a <c>tradeId</c> in its
+    /// extension data, register the trade in the in-memory registry and
+    /// broadcast <c>TradeCreated</c> to the trade group. The maker's
+    /// ephemeral pubkey is on the fill itself; the taker's is the request's
+    /// own ephemeral pubkey. Side mapping: a Sell-side taker is the
+    /// outcome-token seller (Alice); a Buy-side taker is the buyer (Bob).
+    /// </summary>
+    private static async Task EmitTradeCreatedForFills(
+        IHubContext<TradeHub, ITradeHubClient> tradeHub,
+        InMemoryTradeRegistry trades,
+        IEnumerable<Fill> fills,
+        OrderSide takerSide,
+        string takerEphemeralPubkey)
+    {
+        foreach (var fill in fills)
+        {
+            if (fill.Path != MatchPath.Direct) continue;
+            var tradeId = TryReadTradeId(fill);
+            if (tradeId is null) continue;
+
+            var (sellerPubkey, buyerPubkey) = takerSide == OrderSide.Sell
+                ? (takerEphemeralPubkey, fill.MakerEphemeralPubkey)
+                : (fill.MakerEphemeralPubkey, takerEphemeralPubkey);
+
+            // Skip fills against bootstrap orders (no maker ephemeral pubkey).
+            if (string.IsNullOrEmpty(sellerPubkey) || string.IsNullOrEmpty(buyerPubkey))
+                continue;
+
+            var record = trades.Register(tradeId.Value, sellerPubkey, buyerPubkey);
+            await tradeHub.Clients.Group(TradeHub.GroupName(tradeId.Value))
+                .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
+                    record.SellerLocktime, record.BuyerLocktime);
+        }
+    }
+
+    private static Guid? TryReadTradeId(Fill fill)
+    {
+        if (!fill.AdditionalProperties.TryGetValue("tradeId", out var raw) || raw is null)
+            return null;
+        return raw switch
+        {
+            Guid g => g,
+            string s when Guid.TryParse(s, out var parsed) => parsed,
+            JsonElement je when je.ValueKind == JsonValueKind.String
+                                && Guid.TryParse(je.GetString(), out var p) => p,
+            _ => null,
+        };
     }
 
     // A 33-byte compressed secp256k1 pubkey renders as 66 hex chars, starting

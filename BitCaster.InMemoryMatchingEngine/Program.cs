@@ -8,6 +8,7 @@ builder.Services.AddSignalR();
 builder.Services.AddSingleton<InMemoryOrderBookManager>();
 builder.Services.AddSingleton<LnBitsWalletManager>();
 builder.Services.AddSingleton<InMemoryCpmmState>();
+builder.Services.AddSingleton<InMemoryTradeRegistry>();
 builder.Services.AddHealthChecks();
 builder.Services.AddHttpClient("mint", c =>
     c.BaseAddress = new Uri(builder.Configuration["MINT_URL"] ?? "http://localhost:8085"));
@@ -18,6 +19,7 @@ var app = builder.Build();
 
 app.MapHealthChecks("/health");
 app.MapHub<MarketHub>("/hubs/market");
+app.MapHub<TradeHub>("/hubs/trade");
 app.MapMarketEndpoints();
 app.MapOrderEndpoints();
 app.MapBookEndpoints();

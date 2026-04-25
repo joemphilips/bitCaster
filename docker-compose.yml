@@ -49,13 +49,10 @@ services:
         condition: service_healthy
     entrypoint: ["sh", "-c", "curl -sf -X PUT http://lnbits:5000/api/v1/auth/first_install -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"adminpass\",\"password_repeat\":\"adminpass\"}'"]
 
-  # TODO(P2): extract BitCaster.MatchingEngine.Matching into the submodule so this
-  # Dockerfile can live purely inside bitCaster/ again. Current context reaches into
-  # the parent repo for the Domain reference added in Phase 1F.
   server:
     build:
-      context: ..
-      dockerfile: bitCaster/BitCaster.InMemoryMatchingEngine/Dockerfile
+      context: .
+      dockerfile: BitCaster.InMemoryMatchingEngine/Dockerfile
     ports:
       - "5000:5000"
     environment:

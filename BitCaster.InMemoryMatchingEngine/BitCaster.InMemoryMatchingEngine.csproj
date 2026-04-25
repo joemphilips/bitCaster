@@ -7,6 +7,5 @@
 
   <ItemGroup>
     <ProjectReference Include="..\BitCaster.MatchingEngine.Contracts\BitCaster.MatchingEngine.Contracts.csproj" />
-    <ProjectReference Include="..\..\BitCaster.MatchingEngine.Domain\BitCaster.MatchingEngine.Domain.csproj" />
   </ItemGroup>
 </Project>

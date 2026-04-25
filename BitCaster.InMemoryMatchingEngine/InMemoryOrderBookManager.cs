@@ -1,270 +1,327 @@
 using System.Collections.Concurrent;
 using BitCaster.MatchingEngine.Contracts;
-using MockOrderSide = BitCaster.MatchingEngine.Contracts.OrderSide;
-using MockFill = BitCaster.MatchingEngine.Contracts.Fill;
-using MockMatchPath = BitCaster.MatchingEngine.Contracts.MatchPath;
-using MockTimeInForce = BitCaster.MatchingEngine.Contracts.TimeInForce;
-using DomainOrder = BitCaster.MatchingEngine.Domain.Contracts.Domain.Order;
-using DomainOrderSide = BitCaster.MatchingEngine.Domain.Contracts.Domain.OrderSide;
-using DomainTif = BitCaster.MatchingEngine.Domain.Contracts.Domain.TimeInForce;
-using DomainSats = BitCaster.MatchingEngine.Domain.Contracts.Domain.Sats;
-using DomainProbability = BitCaster.MatchingEngine.Domain.Contracts.Domain.Probability;
-using DomainMatchPath = BitCaster.MatchingEngine.Domain.Contracts.Domain.MatchPath;
-using DomainFill = BitCaster.MatchingEngine.Domain.Contracts.Domain.Fill;
-using BitCaster.MatchingEngine.Domain.Aggregates.OrderBook;
-using BitCaster.MatchingEngine.Domain.Aggregates.OrderBook.Commands;
-using BitCaster.MatchingEngine.Domain.Aggregates.OrderBook.Events;
-using BitCaster.MatchingEngine.Domain.Aggregates.OrderBook.Payloads;
 
 namespace BitCaster.InMemoryMatchingEngine;
 
 /// <summary>
-/// In-memory matching-engine shim that delegates to the real
-/// <see cref="MatchingEngineLogic"/> + <see cref="OrderBookProjector"/> from the
-/// private engine's Domain assembly. This gives the mock identical matching
-/// semantics to the real engine without re-implementing any logic.
+/// In-memory matching-engine stub. Implements just enough of the real engine's
+/// behaviour to keep the frontend dev/E2E loop moving:
 ///
-/// The mock is allowed in-process <see cref="ConcurrentDictionary{TKey, TValue}"/>
-/// state because it is a test double — the Sekiban-persistence rule applies to the
-/// real engine only. Each market's state is a single immutable
-/// <see cref="OrderBookPayload"/> updated under a per-manager lock so concurrent
-/// requests from the frontend E2E suite see a consistent book.
+/// <list type="bullet">
+/// <item>Per-market FIFO order book at each price level (price-time priority).</item>
+/// <item>Direct match only — same outcome, opposite side. No complementary
+/// matching across the conditional-token complement (taking only what the
+/// frontend exercises).</item>
+/// <item>GTC + FAK time-in-force — what <c>MarketDetailPage</c> actually
+/// submits today. FOK / GTD treated as GTC; the OpenAPI gate keeps unknown
+/// values out.</item>
+/// </list>
+///
+/// <para>
+/// The mock's only state is an in-memory <see cref="ConcurrentDictionary{TKey, TValue}"/>
+/// per market — it has no Sekiban runtime and is never deployed; the
+/// production engine continues to own real persistence.
+/// </para>
+///
+/// <para>
+/// Direct-match fills get a freshly-generated <c>tradeId</c> stamped onto the
+/// emitted <see cref="Fill.AdditionalProperties"/>. The frontend reads the id
+/// off this dictionary in <c>orderStatus.ts</c> to wake the atomic-swap
+/// driver.
+/// </para>
 /// </summary>
 public class InMemoryOrderBookManager
 {
-    private readonly ConcurrentDictionary<string, OrderBookPayload> _books = new();
-    private readonly object _lock = new();
+    private readonly ConcurrentDictionary<string, OrderBook> _books = new();
 
     public SubmitResult SubmitOrder(
         string marketId,
         string outcomeId,
-        MockOrderSide side,
+        OrderSide side,
         int priceValue,
         long amountSats,
         string userId,
-        MockTimeInForce? timeInForce,
+        TimeInForce? timeInForce,
         string? ephemeralPubkey)
     {
-        var tif = ToDomainTif(timeInForce);
-        var price = new DomainProbability(priceValue);
-        var amount = new DomainSats(amountSats);
-        var placedAt = DateTimeOffset.UtcNow;
+        var tif = timeInForce ?? TimeInForce.GTC;
+        var book = _books.GetOrAdd(marketId, _ => new OrderBook(marketId));
+
         var orderId = Guid.NewGuid();
+        var incoming = new RestingOrder(
+            orderId, outcomeId, side, priceValue, amountSats,
+            userId, ephemeralPubkey, DateTimeOffset.UtcNow);
 
-        OrderSubmitted submitted;
-        lock (_lock)
+        List<Fill> fills;
+        long remaining;
+        lock (book)
         {
-            var book = _books.TryGetValue(marketId, out var existing)
-                ? existing
-                : OrderBookPayload.Empty(marketId);
+            fills = MatchAgainstBook(book, incoming);
+            remaining = incoming.RemainingSats;
 
-            // Lazy GTD expiry sweep — mirrors SubmitOrderCommand.HandleSubmit.
-            book = SubmitOrderCommand.SweepExpiredGtdOrders(book, placedAt);
-
-            var incoming = new DomainOrder(
-                orderId,
-                marketId,
-                outcomeId,
-                ToDomainSide(side),
-                price,
-                amount,
-                amount,
-                userId,
-                placedAt,
-                tif);
-
-            var (direct, complementary) = SubmitOrderCommand.BuildMatchingSets(
-                book, outcomeId, incoming.Side);
-
-            var matchResult = MatchingEngineLogic.Match(incoming, direct, complementary);
-            var fills = matchResult.Fills;
-            var remaining = matchResult.RemainingSats;
-
-            // FOK: reject entirely if not fully filled.
-            if (tif == DomainTif.FOK && remaining > DomainSats.Zero)
-            {
-                fills = [];
-                remaining = amount;
-            }
-
-            submitted = new OrderSubmitted(
-                orderId, outcomeId, ToDomainSide(side),
-                price, amount, userId, placedAt,
-                fills, remaining, tif, ExpiresAt: null, ephemeralPubkey);
-
-            book = OrderBookProjector.ApplyOrderSubmitted(book, submitted);
-            _books[marketId] = book;
+            // FAK: never rest the unfilled remainder. GTC: rest if anything left.
+            // (FOK isn't exercised by the mock — we treat it as GTC.)
+            if (tif != TimeInForce.FAK && remaining > 0)
+                book.AddResting(incoming);
         }
 
-        var status = DeriveStatus(submitted);
+        var status = DeriveStatus(amountSats, remaining, tif, fills.Count > 0);
         return new SubmitResult(
-            OrderId: submitted.OrderId,
+            OrderId: orderId,
             Status: status,
-            RemainingAmountSats: submitted.RemainingSats.Value,
-            Fills: submitted.Fills.Select(ToContractFill).ToList(),
+            RemainingAmountSats: remaining,
+            Fills: fills,
             EphemeralPubkey: ephemeralPubkey ?? string.Empty);
     }
 
     public bool CancelOrder(Guid orderId, out string? marketId)
     {
         marketId = null;
-        lock (_lock)
+        foreach (var (id, book) in _books)
         {
-            foreach (var (id, payload) in _books)
+            lock (book)
             {
-                if (!payload.OrdersById.ContainsKey(orderId)) continue;
-
-                var updated = OrderBookProjector.ApplyOrderCancelled(payload, new OrderCancelled(orderId));
-                _books[id] = updated;
+                if (!book.Cancel(orderId)) continue;
                 marketId = id;
                 return true;
             }
-            return false;
         }
-    }
-
-    public string? GetMarketIdForOrder(Guid orderId)
-    {
-        lock (_lock)
-        {
-            foreach (var (id, payload) in _books)
-            {
-                if (payload.OrdersById.ContainsKey(orderId) || payload.CompletedOrders.ContainsKey(orderId))
-                    return id;
-            }
-            return null;
-        }
+        return false;
     }
 
     /// <summary>
-    /// Look up the owning user id for an order id. Used by the mock's
-    /// CPMM-fill detection to identify bootstrap orders (whose UserId is the
-    /// <c>cpmm:{marketId}</c> sentinel). Returns the userId from either the
-    /// resting book or the completed-orders map — which covers the case where
-    /// a maker order was fully consumed by the same fill we're inspecting.
+    /// Look up the owning user id for an order. Used by the CPMM detection in
+    /// <c>OrderEndpoints</c> to identify bootstrap orders (whose UserId is the
+    /// <c>cpmm:{marketId}</c> sentinel). Searches both resting and completed
+    /// orders so the lookup still works when a maker was fully consumed by the
+    /// fill being inspected.
     /// </summary>
     public string? GetOrderOwner(Guid orderId)
     {
-        lock (_lock)
+        foreach (var (_, book) in _books)
         {
-            foreach (var (_, payload) in _books)
+            lock (book)
             {
-                if (payload.OrdersById.TryGetValue(orderId, out var resting))
-                    return resting.UserId;
-                if (payload.CompletedOrders.TryGetValue(orderId, out var completed))
-                    return completed.UserId;
+                var owner = book.LookupOwner(orderId);
+                if (owner is not null) return owner;
             }
-            return null;
         }
+        return null;
     }
 
     public OrderStatusView? GetOrderStatus(Guid orderId)
     {
-        lock (_lock)
+        foreach (var (id, book) in _books)
         {
-            foreach (var (id, payload) in _books)
+            lock (book)
             {
-                if (payload.OrdersById.TryGetValue(orderId, out var resting))
-                {
-                    var filled = resting.AmountSats.Value - resting.RemainingAmountSats.Value;
-                    var status = filled == 0 ? "resting" : "partially_filled";
-                    return new OrderStatusView(
-                        orderId, id, status,
-                        resting.RemainingAmountSats.Value, filled,
-                        new List<MockFill>());
-                }
-
-                if (payload.CompletedOrders.TryGetValue(orderId, out var completed))
-                {
-                    var filled = completed.AmountSats.Value - completed.RemainingAmountSats.Value;
-                    return new OrderStatusView(
-                        orderId, id, completed.Status,
-                        completed.RemainingAmountSats.Value, filled,
-                        // The Sekiban projector does not retain the fills list on the
-                        // completed-order record, matching the real engine's shape.
-                        new List<MockFill>());
-                }
+                var view = book.LookupStatus(id, orderId);
+                if (view is not null) return view;
             }
-            return null;
         }
+        return null;
     }
 
     public OrderBookSnapshot GetSnapshot(string marketId)
     {
-        lock (_lock)
+        if (!_books.TryGetValue(marketId, out var book))
+            return new OrderBookSnapshot([], [], marketId, null);
+
+        var parts = marketId.Split('-', 2);
+        var outcomeId = parts.Length > 1 ? parts[1] : marketId;
+
+        lock (book)
+            return book.SnapshotForOutcome(marketId, outcomeId);
+    }
+
+    /// <summary>
+    /// Direct-match the incoming order against same-outcome opposite-side
+    /// resting orders. Mutates <paramref name="incoming"/>.RemainingSats and
+    /// the matched resting orders in place; the caller still holds the book
+    /// lock. Generates a fresh <c>tradeId</c> per fill so the frontend's
+    /// atomic-swap driver can pair counterparties.
+    /// </summary>
+    private static List<Fill> MatchAgainstBook(OrderBook book, RestingOrder incoming)
+    {
+        var fills = new List<Fill>();
+        foreach (var maker in book.MatchableAgainst(incoming))
         {
-            if (!_books.TryGetValue(marketId, out var book))
-                return new OrderBookSnapshot(new List<LevelDto>(), new List<LevelDto>(), marketId, null);
+            if (incoming.RemainingSats <= 0) break;
+            var fillAmount = Math.Min(incoming.RemainingSats, maker.RemainingSats);
+            if (fillAmount <= 0) continue;
 
-            // The mock's wire format uses the NSwag-generated LevelDto/OrderBookSnapshot,
-            // which has flat (bids, asks) per market (outcome implied by marketId). Mirror
-            // GetOrderBookSnapshotQuery's price aggregation but emit mock-shaped DTOs.
-            var parts = marketId.Split('-', 2);
-            var outcomeId = parts.Length > 1 ? parts[1] : marketId;
-            if (!book.Sides.TryGetValue(outcomeId, out var sides))
-                return new OrderBookSnapshot(new List<LevelDto>(), new List<LevelDto>(), marketId, null);
+            incoming.RemainingSats -= fillAmount;
+            maker.RemainingSats -= fillAmount;
+            fills.Add(BuildFill(incoming, maker, fillAmount));
+        }
+        book.RemoveCompleted();
+        return fills;
+    }
 
-            var bids = sides.BidIds
-                .Select(id => book.OrdersById.GetValueOrDefault(id))
-                .Where(o => o is not null)
-                .GroupBy(o => o!.Price.Value)
-                .Select(g => new LevelDto(g.Sum(o => o!.RemainingAmountSats.Value), g.Key))
-                .OrderByDescending(l => l.Price)
-                .ToList();
+    private static Fill BuildFill(RestingOrder taker, RestingOrder maker, long amount)
+    {
+        var fill = new Fill(
+            amountSats: amount,
+            executionPrice: maker.Price,
+            filledAt: DateTimeOffset.UtcNow,
+            id: Guid.NewGuid(),
+            makerEphemeralPubkey: maker.EphemeralPubkey!,
+            makerOrderId: maker.Id,
+            path: MatchPath.Direct,
+            takerOrderId: taker.Id);
+        // Frontend reads tradeId off the Fill's open extension data — see
+        // bitCaster-app/src/lib/orderStatus.ts. The contract Fill class has no
+        // typed tradeId field; the AdditionalProperties dictionary is the
+        // forward-compatible escape hatch and serializes inline thanks to
+        // [JsonExtensionData] on the generated property.
+        fill.AdditionalProperties["tradeId"] = Guid.NewGuid().ToString();
+        return fill;
+    }
 
-            var asks = sides.AskIds
-                .Select(id => book.OrdersById.GetValueOrDefault(id))
-                .Where(o => o is not null)
-                .GroupBy(o => o!.Price.Value)
-                .Select(g => new LevelDto(g.Sum(o => o!.RemainingAmountSats.Value), g.Key))
-                .OrderBy(l => l.Price)
-                .ToList();
+    private static string DeriveStatus(long requested, long remaining, TimeInForce tif, bool anyFills)
+    {
+        if (remaining == 0) return "filled";
+        if (anyFills && tif == TimeInForce.FAK) return "partially_filled";
+        if (anyFills) return "partially_filled";
+        return tif == TimeInForce.FAK ? "cancelled" : "resting";
+    }
+}
 
-            int? spread = bids.Count > 0 && asks.Count > 0 ? asks[0].Price - bids[0].Price : null;
-            return new OrderBookSnapshot(asks, bids, marketId, spread);
+/// <summary>
+/// Per-market mutable state: live resting orders plus a completed-order index
+/// so <c>GET /orders/{id}</c> works after the order is fully filled or
+/// cancelled. Always accessed under the manager's lock.
+/// </summary>
+internal sealed class OrderBook
+{
+    public OrderBook(string marketId) => MarketId = marketId;
+
+    public string MarketId { get; }
+
+    private readonly List<RestingOrder> _resting = [];
+    private readonly Dictionary<Guid, CompletedOrder> _completed = [];
+
+    public void AddResting(RestingOrder order) => _resting.Add(order);
+
+    public IEnumerable<RestingOrder> MatchableAgainst(RestingOrder incoming)
+    {
+        // Crossing rule: incoming Buy crosses resting Sells priced ≤ incoming;
+        // incoming Sell crosses resting Buys priced ≥ incoming. Same outcome.
+        // FIFO at each price level — sort by (price, then placed time).
+        bool Crosses(RestingOrder maker) =>
+            maker.OutcomeId == incoming.OutcomeId
+            && maker.Side != incoming.Side
+            && (incoming.Side == OrderSide.Buy
+                ? maker.Price <= incoming.Price
+                : maker.Price >= incoming.Price);
+
+        return _resting
+            .Where(Crosses)
+            .OrderBy(o => incoming.Side == OrderSide.Buy ? o.Price : -o.Price)
+            .ThenBy(o => o.PlacedAt);
+    }
+
+    public void RemoveCompleted()
+    {
+        for (var i = _resting.Count - 1; i >= 0; i--)
+        {
+            var o = _resting[i];
+            if (o.RemainingSats > 0) continue;
+            _completed[o.Id] = new CompletedOrder(o, "filled");
+            _resting.RemoveAt(i);
         }
     }
 
-    private static DomainOrderSide ToDomainSide(MockOrderSide side)
-        => side == MockOrderSide.Buy ? DomainOrderSide.Buy : DomainOrderSide.Sell;
-
-    private static DomainTif ToDomainTif(MockTimeInForce? tif) => tif switch
+    public bool Cancel(Guid orderId)
     {
-        MockTimeInForce.FOK => DomainTif.FOK,
-        MockTimeInForce.FAK => DomainTif.FAK,
-        _ => DomainTif.GTC,
-    };
-
-    private static string DeriveStatus(OrderSubmitted submitted)
-    {
-        if (submitted.RemainingSats == DomainSats.Zero) return "filled";
-        return submitted.TimeInForce switch
+        for (var i = 0; i < _resting.Count; i++)
         {
-            DomainTif.GTC or DomainTif.GTD => submitted.Fills.Count > 0 ? "partially_filled" : "resting",
-            _ => submitted.Fills.Count > 0 ? "partially_filled" : "cancelled",
-        };
+            if (_resting[i].Id != orderId) continue;
+            _completed[orderId] = new CompletedOrder(_resting[i], "cancelled");
+            _resting.RemoveAt(i);
+            return true;
+        }
+        return false;
     }
 
-    private static MockFill ToContractFill(DomainFill f) =>
-        // Mock's Fill ctor: (amountSats, executionPrice, filledAt, id, makerEphemeralPubkey,
-        // makerOrderId, path, takerOrderId). The mock is a byte relay — it has no
-        // ephemeral-key data of its own, so makerEphemeralPubkey is always null.
-        new(
-            amountSats: f.AmountSats.Value,
-            executionPrice: f.ExecutionPrice.Value,
-            filledAt: f.FilledAt,
-            id: f.Id,
-            makerEphemeralPubkey: null!,
-            makerOrderId: f.MakerOrderId,
-            path: f.Path == DomainMatchPath.Direct ? MatchPath.Direct : MatchPath.Complementary,
-            takerOrderId: f.TakerOrderId);
+    public string? LookupOwner(Guid orderId)
+    {
+        foreach (var o in _resting)
+            if (o.Id == orderId) return o.UserId;
+        return _completed.TryGetValue(orderId, out var c) ? c.Order.UserId : null;
+    }
+
+    public OrderStatusView? LookupStatus(string marketId, Guid orderId)
+    {
+        foreach (var o in _resting)
+        {
+            if (o.Id != orderId) continue;
+            var filled = o.AmountSats - o.RemainingSats;
+            var status = filled == 0 ? "resting" : "partially_filled";
+            return new OrderStatusView(orderId, marketId, status, o.RemainingSats, filled, []);
+        }
+        if (_completed.TryGetValue(orderId, out var c))
+        {
+            var filled = c.Order.AmountSats - c.Order.RemainingSats;
+            return new OrderStatusView(orderId, marketId, c.Status, c.Order.RemainingSats, filled, []);
+        }
+        return null;
+    }
+
+    public OrderBookSnapshot SnapshotForOutcome(string marketId, string outcomeId)
+    {
+        var live = _resting.Where(o => o.OutcomeId == outcomeId).ToList();
+        var bids = AggregateLevels(live.Where(o => o.Side == OrderSide.Buy), descending: true);
+        var asks = AggregateLevels(live.Where(o => o.Side == OrderSide.Sell), descending: false);
+        int? spread = bids.Count > 0 && asks.Count > 0 ? asks[0].Price - bids[0].Price : null;
+        return new OrderBookSnapshot(asks, bids, marketId, spread);
+    }
+
+    private static List<LevelDto> AggregateLevels(IEnumerable<RestingOrder> orders, bool descending)
+    {
+        var grouped = orders
+            .GroupBy(o => o.Price)
+            .Select(g => new LevelDto(g.Sum(o => o.RemainingSats), g.Key));
+        return (descending ? grouped.OrderByDescending(l => l.Price) : grouped.OrderBy(l => l.Price))
+            .ToList();
+    }
 }
+
+internal sealed class RestingOrder
+{
+    public RestingOrder(
+        Guid id, string outcomeId, OrderSide side, int price, long amountSats,
+        string userId, string? ephemeralPubkey, DateTimeOffset placedAt)
+    {
+        Id = id;
+        OutcomeId = outcomeId;
+        Side = side;
+        Price = price;
+        AmountSats = amountSats;
+        RemainingSats = amountSats;
+        UserId = userId;
+        EphemeralPubkey = ephemeralPubkey;
+        PlacedAt = placedAt;
+    }
+
+    public Guid Id { get; }
+    public string OutcomeId { get; }
+    public OrderSide Side { get; }
+    public int Price { get; }
+    public long AmountSats { get; }
+    public long RemainingSats { get; set; }
+    public string UserId { get; }
+    public string? EphemeralPubkey { get; }
+    public DateTimeOffset PlacedAt { get; }
+}
+
+internal sealed record CompletedOrder(RestingOrder Order, string Status);
 
 public record SubmitResult(
     Guid OrderId,
     string Status,
     long RemainingAmountSats,
-    List<MockFill> Fills,
+    List<Fill> Fills,
     string EphemeralPubkey);
 
 public record OrderStatusView(
@@ -273,4 +330,4 @@ public record OrderStatusView(
     string Status,
     long RemainingAmountSats,
     long FilledAmountSats,
-    List<MockFill> Fills);
+    List<Fill> Fills);
