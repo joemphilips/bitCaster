@@ -10,8 +10,8 @@ namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 /// <summary>
 /// Endpoints that surface the mock's <see cref="InMemoryCpmmState"/> to
 /// frontend clients and Phase 1G E2E tests. Mirrors the subset of the real
-/// engine's CPMM API that the PWA actually consumes today — engine pubkey,
-/// funding-status, user positions, and a dev-only simulate-funding flow.
+/// engine's CPMM API that the PWA actually consumes today — user positions
+/// and a dev-only simulate-funding flow.
 ///
 /// <para>
 /// <b>MOCK ONLY — never reference from the production ApiService.</b> The
@@ -27,37 +27,6 @@ public static class CpmmEndpoints
 {
     public static void MapCpmmEndpoints(this WebApplication app)
     {
-        // ------------------------------------------------------------------
-        // GET /api/v1/engine/pubkey
-        //   Public. Returns the engine's deterministic fake pubkey so the
-        //   frontend can P2PK-lock Cashu proofs on CPMM-bound orders.
-        // ------------------------------------------------------------------
-        app.MapGet("/api/v1/engine/pubkey", () =>
-            Results.Ok(new EngineInfoResponse(pubkey: InMemoryCpmmState.EnginePubkey)));
-
-        // ------------------------------------------------------------------
-        // GET /api/v1/{marketId}/funding-status
-        //   Public. Returns AwaitingFunding / Active / Frozen + per-outcome
-        //   reserves. The frontend polls this to decide whether the trade UI
-        //   is enabled or if "Awaiting liquidity" banner should be shown.
-        // ------------------------------------------------------------------
-        app.MapGet("/api/v1/{marketId}/funding-status", (
-            string marketId,
-            InMemoryCpmmState cpmm) =>
-        {
-            var pool = cpmm.TryGetPool(marketId);
-            if (pool is null) return Results.NotFound($"No CPMM pool for market {marketId}");
-
-            var reserves = new Dictionary<string, long>(pool.Reserves);
-            var response = new FundingStatusResponse(
-                declaredSats: pool.DeclaredSats,
-                lastUpdatedAt: pool.LastUpdatedAt,
-                marketId: pool.MarketId,
-                reservedSatsByOutcome: reserves,
-                status: MapStatus(pool.Status));
-            return Results.Ok(response);
-        });
-
         // ------------------------------------------------------------------
         // GET /api/v1/users/{pubkey}/positions
         //   Returns every (marketId, outcome) the caller holds tokens in.
@@ -156,13 +125,6 @@ public static class CpmmEndpoints
             return Results.Ok(response);
         });
     }
-
-    private static FundingStatusResponseStatus MapStatus(InMemoryCpmmState.PoolStatus s) => s switch
-    {
-        InMemoryCpmmState.PoolStatus.Active => FundingStatusResponseStatus.Active,
-        InMemoryCpmmState.PoolStatus.Frozen => FundingStatusResponseStatus.Frozen,
-        _ => FundingStatusResponseStatus.AwaitingFunding,
-    };
 
     private static bool IsValidHexPubkey(string? hex)
     {
