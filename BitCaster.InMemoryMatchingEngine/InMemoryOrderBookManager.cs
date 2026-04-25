@@ -246,12 +246,15 @@ public class InMemoryOrderBookManager
     }
 
     private static MockFill ToContractFill(DomainFill f) =>
-        // Mock's Fill ctor: (amountSats, executionPrice, filledAt, id, makerOrderId, path, takerOrderId)
+        // Mock's Fill ctor: (amountSats, executionPrice, filledAt, id, makerEphemeralPubkey,
+        // makerOrderId, path, takerOrderId). The mock is a byte relay — it has no
+        // ephemeral-key data of its own, so makerEphemeralPubkey is always null.
         new(
             amountSats: f.AmountSats.Value,
             executionPrice: f.ExecutionPrice.Value,
             filledAt: f.FilledAt,
             id: f.Id,
+            makerEphemeralPubkey: null!,
             makerOrderId: f.MakerOrderId,
             path: f.Path == DomainMatchPath.Direct ? MatchPath.Direct : MatchPath.Complementary,
             takerOrderId: f.TakerOrderId);

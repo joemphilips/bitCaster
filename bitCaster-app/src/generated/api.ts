@@ -294,6 +294,8 @@ export interface components {
              * @description Timestamp when this fill was executed.
              */
             filledAt: string;
+            /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy CPMM bootstrap orders). */
+            makerEphemeralPubkey?: string;
         };
         SubmitOrderRequest: {
             /** @description The outcome to trade (e.g. "Alice", "YES"). */
