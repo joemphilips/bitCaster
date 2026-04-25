@@ -5,6 +5,7 @@ import {
   type NotificationKind,
   useNotificationsStore,
 } from '@/stores/notifications'
+import { useActiveSwapsStore } from '@/stores/activeSwaps'
 import { usePortfolioStore } from '@/stores/portfolio'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -39,6 +40,36 @@ export async function fetchOrderStatus(
 }
 
 const POLL_INTERVAL_MS = 5_000
+
+/**
+ * Promote any fills carrying a `tradeId` to the in-progress swap store. Direct
+ * matches surface the `tradeId` on every produced fill once the engine creates
+ * the Trade aggregate; complementary matches and CPMM-bootstrap fills come
+ * with no `tradeId` and are ignored here. Idempotent — `promote()` is a no-op
+ * for tradeIds already present in `activeSwaps`.
+ *
+ * Captures the ephemeral keypair from `pendingTrades` at promote-time so the
+ * swap-driver keeps working after the pending-trade entry is evicted on a
+ * terminal order status.
+ */
+function promoteFillsToActiveSwaps(
+  status: OrderStatusResponse,
+  trade: { orderId: string; marketId: string; ephemeralPubkey: string; ephemeralPrivkey: string },
+): void {
+  const promote = useActiveSwapsStore.getState().promote
+  for (const fill of status.fills) {
+    const fillWithTrade = fill as typeof fill & { tradeId?: string }
+    const tradeId = fillWithTrade.tradeId
+    if (!tradeId) continue
+    promote({
+      tradeId,
+      orderId: trade.orderId,
+      marketId: trade.marketId,
+      ephemeralPrivkeyHex: trade.ephemeralPrivkey,
+      ephemeralPubkeyHex: trade.ephemeralPubkey,
+    })
+  }
+}
 
 /**
  * Foreground-only poll loop that watches every pending trade's status on the
@@ -112,6 +143,12 @@ export function usePendingTradesPoller(): void {
             const fillCount = status.fills.length
             const lastFillCount =
               lastFillCountRef.current.get(trade.orderId) ?? 0
+
+            // Hand any fresh direct-match fills to useTradeSettlement so the
+            // atomic-swap driver can pick them up. Fills without a tradeId
+            // (complementary matches, legacy CPMM bootstrap fills) are
+            // skipped — they don't produce a Trade aggregate on the engine.
+            promoteFillsToActiveSwaps(status, trade)
 
             // Terminal status short-circuits partial-fill: a "filled" that
             // also has new fills shouldn't generate two separate bell entries

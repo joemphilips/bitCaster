@@ -9,10 +9,12 @@ import { MarketCreationPage } from "@/pages/MarketCreationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { MintDetailPage } from "@/pages/MintDetailPage";
 import { WalletSetupPage } from "@/pages/WalletSetupPage";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { nip19 } from "nostr-tools";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
+import { useTradeSettlement } from "@/hooks/useTradeSettlement";
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
@@ -90,11 +92,45 @@ function ShellRoutes() {
   );
 }
 
+/**
+ * Decode an `nsec1...` (or hex) value into raw 32-byte private-key material
+ * for the TradeHub NIP-98 signer. Returns null when the user has not signed
+ * in via nsec — NIP-07 users do not surface a raw privkey to the page, and
+ * the trade-settlement driver has no fallback for that case in Phase 2.
+ */
+function decodeNsecToPrivkey(nsec: string | null): Uint8Array | null {
+  if (!nsec) return null;
+  try {
+    if (nsec.startsWith("nsec1")) {
+      const decoded = nip19.decode(nsec);
+      if (decoded.type !== "nsec") return null;
+      return decoded.data;
+    }
+    // Raw 64-char hex fallback.
+    if (nsec.length === 64 && /^[0-9a-fA-F]+$/.test(nsec)) {
+      const out = new Uint8Array(32);
+      for (let i = 0; i < 32; i++) {
+        out[i] = parseInt(nsec.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function AppRoutes() {
   const location = useLocation();
   useBookmarkSync();
   useCreatorSync();
   usePendingTradesPoller();
+  const nsecSecret = useSettingsStore((s) => s.nsecSecret);
+  const tradeHubPrivkey = useMemo(
+    () => decodeNsecToPrivkey(nsecSecret),
+    [nsecSecret],
+  );
+  useTradeSettlement(tradeHubPrivkey);
 
   // Re-install the Nostr signer from localStorage once on mount — the nsec
   // lives in the settings store but NDK.signer is RAM-only, so after any
