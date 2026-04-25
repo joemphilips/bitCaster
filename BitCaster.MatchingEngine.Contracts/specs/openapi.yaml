@@ -246,44 +246,6 @@ paths:
         '502':
           description: LNBits backend error
 
-  /api/v1/engine/pubkey:
-    get:
-      operationId: getEnginePubkey
-      summary: Public wallet pubkey of the matching engine
-      description: >
-        Returns the compressed secp256k1 pubkey of the engine's Cashu wallet.
-        Frontends lock NUT-11 P2PK Cashu proofs to this pubkey before sending
-        them as `lockedSatsProofs` on a CPMM-bound order. Public — no auth.
-      responses:
-        '200':
-          description: Engine pubkey
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EngineInfoResponse'
-
-  /api/v1/{marketId}/funding-status:
-    get:
-      operationId: getFundingStatus
-      summary: CPMM pool funding lifecycle snapshot
-      description: >
-        Returns the status of a CPMM pool — "AwaitingFunding" (creator's LN
-        deposit hasn't settled yet) vs "Active" (tradeable) vs "Frozen" —
-        along with per-outcome reserve totals. Public; frontends use it to
-        show "Awaiting liquidity" vs the trade UI and to decide whether
-        LockedSatsProofs need to be populated on submitted orders.
-      parameters:
-        - $ref: '#/components/parameters/MarketId'
-      responses:
-        '200':
-          description: Current funding status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/FundingStatusResponse'
-        '404':
-          description: No CPMM pool for this market
-
   /api/v1/users/{pubkey}/positions:
     get:
       operationId: getUserPositions
@@ -496,17 +458,6 @@ components:
             this order's submitter. The corresponding private key stays on the
             client and is the only thing that can decrypt and sign swap
             payloads — the engine never sees it.
-        lockedSatsProofs:
-          type: array
-          items:
-            type: string
-          description: >
-            Base64-encoded NUT-11 P2PK-locked Cashu proofs supplied by the
-            buyer for CPMM-bound orders (i.e. orders expected to cross a
-            CPMM-owned maker). Required when the market's CPMM pool is
-            Active; ignored for P2P orders (Phase 2). Each proof must be
-            locked to the engine's published pubkey (`GET /api/v1/engine/pubkey`).
-            The backend enforces a size cap (64 entries × 4 KB each).
 
     OrderStatusResponse:
       type: object
@@ -796,60 +747,6 @@ components:
           description: >
             Markets created by this pubkey. May be empty if the creator has
             not registered any markets yet.
-
-    EngineInfoResponse:
-      type: object
-      required:
-        - pubkey
-      properties:
-        pubkey:
-          type: string
-          description: >
-            Compressed secp256k1 pubkey (hex) of the engine's Cashu wallet.
-            Clients lock proofs to this pubkey via NUT-11 P2PK before sending
-            them as `lockedSatsProofs` on CPMM-bound orders.
-
-    FundingStatusResponse:
-      type: object
-      required:
-        - marketId
-        - status
-        - declaredSats
-        - reservedSatsByOutcome
-      properties:
-        marketId:
-          type: string
-          description: The CPMM pool's market ID.
-        status:
-          type: string
-          enum:
-            - AwaitingFunding
-            - Active
-            - Frozen
-          description: >
-            AwaitingFunding — declared at creation but creator's LN deposit
-            has not settled into CTF reserves yet; trading is blocked.
-            Active — pool is funded and tradeable.
-            Frozen — pool has been paused out-of-band (e.g. reserve
-            exhaustion or admin intervention).
-        declaredSats:
-          type: integer
-          format: int64
-          description: Total sats the creator declared at market creation.
-        reservedSatsByOutcome:
-          type: object
-          additionalProperties:
-            type: integer
-            format: int64
-          description: >
-            Per-outcome sats reserve currently held by the engine's Cashu
-            wallet, keyed by outcome name.
-        lastUpdatedAt:
-          oneOf:
-            - type: string
-              format: date-time
-            - type: 'null'
-          description: Timestamp of the last reserve mutation, or null if never funded.
 
     PositionDto:
       type: object

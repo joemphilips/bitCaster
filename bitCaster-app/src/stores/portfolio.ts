@@ -6,12 +6,8 @@
  * that can be re-fetched at any time, and we'd rather show a momentary
  * loading state than a stale number after a fill.
  *
- * Two write paths:
- *   1. `refresh()` — hard fetch via NIP-98-authed GET. Fired after the order
- *      poller sees a terminal `filled` status (see lib/orderStatus.ts).
- *   2. `applyDelta()` — optimistic merge from the MarketHub
- *      `PositionUpdated(userPubkey, marketId, outcome, deltaTokens)` push.
- *      Keeps the UI responsive between a fill and the next `refresh()`.
+ * Write path: `refresh()` — hard fetch via NIP-98-authed GET. Fired after
+ * the order poller sees a terminal `filled` status (see lib/orderStatus.ts).
  *
  * SECURITY: every `refresh()` call signs a fresh NIP-98 event — the backend
  * compares the path pubkey against the authenticated claim (P03). We don't
@@ -36,23 +32,10 @@ interface PortfolioState {
 
   /** Pull the latest portfolio for `pubkey` from the engine. */
   refresh: (pubkey: string) => Promise<void>
-  /**
-   * Optimistically merge a `PositionUpdated` delta into the store. Called
-   * from the MarketHub SignalR handler wired up in App.tsx. If the
-   * incoming `userPubkey` doesn't match the currently-loaded `pubkey` the
-   * delta is dropped — this guards against the (unlikely) case where a
-   * stale hub event arrives after a user switch.
-   */
-  applyDelta: (
-    userPubkey: string,
-    marketId: string,
-    outcome: string,
-    deltaTokens: number,
-  ) => void
   clear: () => void
 }
 
-export const usePortfolioStore = create<PortfolioState>()((set, get) => ({
+export const usePortfolioStore = create<PortfolioState>()((set) => ({
   pubkey: '',
   positions: [],
   loading: false,
@@ -87,42 +70,6 @@ export const usePortfolioStore = create<PortfolioState>()((set, get) => ({
       const message = err instanceof Error ? err.message : String(err)
       set({ loading: false, error: message })
     }
-  },
-
-  applyDelta: (userPubkey, marketId, outcome, deltaTokens) => {
-    const current = get()
-    // Drop deltas for a different user — e.g. after a logout/login without
-    // a refresh landing yet. The next `refresh()` will reconcile.
-    if (current.pubkey && current.pubkey !== userPubkey) return
-    const now = new Date().toISOString()
-    const existingIdx = current.positions.findIndex(
-      (p) => p.marketId === marketId && p.outcome === outcome,
-    )
-    if (existingIdx === -1) {
-      // New position — we don't know the cost basis from a delta push
-      // alone, so leave totalCostSats at 0 until the next refresh.
-      set({
-        positions: [
-          ...current.positions,
-          {
-            marketId,
-            outcome,
-            tokenAmount: deltaTokens,
-            totalCostSats: 0,
-            lastUpdated: now,
-          },
-        ],
-      })
-      return
-    }
-    const next = [...current.positions]
-    const prev = next[existingIdx]
-    next[existingIdx] = {
-      ...prev,
-      tokenAmount: prev.tokenAmount + deltaTokens,
-      lastUpdated: now,
-    }
-    set({ positions: next })
   },
 
   clear: () => set({ pubkey: '', positions: [], error: null, lastFetchedAt: 0 }),

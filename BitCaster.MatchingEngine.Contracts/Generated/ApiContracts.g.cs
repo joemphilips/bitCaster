@@ -162,7 +162,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(long @amountSats, string @ephemeralPubkey, System.Collections.Generic.List<string> @lockedSatsProofs, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce)
+        public SubmitOrderRequest(long @amountSats, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce)
         {
             this.OutcomeId = @outcomeId;
             this.Side = @side;
@@ -170,7 +170,6 @@ namespace BitCaster.MatchingEngine.Contracts
             this.AmountSats = @amountSats;
             this.TimeInForce = @timeInForce;
             this.EphemeralPubkey = @ephemeralPubkey;
-            this.LockedSatsProofs = @lockedSatsProofs;
         }
 
         /// <summary>
@@ -199,13 +198,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("ephemeralPubkey")]
         public string EphemeralPubkey { get; }
-
-        /// <summary>
-        /// Base64-encoded NUT-11 P2PK-locked Cashu proofs supplied by the buyer for CPMM-bound orders (i.e. orders expected to cross a CPMM-owned maker). Required when the market's CPMM pool is Active; ignored for P2P orders (Phase 2). Each proof must be locked to the engine's published pubkey (`GET /api/v1/engine/pubkey`). The backend enforces a size cap (64 entries × 4 KB each).
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("lockedSatsProofs")]
-        public System.Collections.Generic.List<string> LockedSatsProofs { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -769,90 +761,6 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class EngineInfoResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public EngineInfoResponse(string @pubkey)
-        {
-            this.Pubkey = @pubkey;
-        }
-
-        /// <summary>
-        /// Compressed secp256k1 pubkey (hex) of the engine's Cashu wallet. Clients lock proofs to this pubkey via NUT-11 P2PK before sending them as `lockedSatsProofs` on CPMM-bound orders.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("pubkey")]
-        public string Pubkey { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class FundingStatusResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public FundingStatusResponse(long @declaredSats, System.DateTimeOffset? @lastUpdatedAt, string @marketId, System.Collections.Generic.Dictionary<string, long> @reservedSatsByOutcome, FundingStatusResponseStatus @status)
-        {
-            this.MarketId = @marketId;
-            this.Status = @status;
-            this.DeclaredSats = @declaredSats;
-            this.ReservedSatsByOutcome = @reservedSatsByOutcome;
-            this.LastUpdatedAt = @lastUpdatedAt;
-        }
-
-        /// <summary>
-        /// The CPMM pool's market ID.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
-        public string MarketId { get; }
-
-        /// <summary>
-        /// AwaitingFunding — declared at creation but creator's LN deposit has not settled into CTF reserves yet; trading is blocked. Active — pool is funded and tradeable. Frozen — pool has been paused out-of-band (e.g. reserve exhaustion or admin intervention).
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("status")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<FundingStatusResponseStatus>))]
-        public FundingStatusResponseStatus Status { get; }
-
-        /// <summary>
-        /// Total sats the creator declared at market creation.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("declaredSats")]
-        public long DeclaredSats { get; }
-
-        /// <summary>
-        /// Per-outcome sats reserve currently held by the engine's Cashu wallet, keyed by outcome name.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("reservedSatsByOutcome")]
-        public System.Collections.Generic.Dictionary<string, long> ReservedSatsByOutcome { get; }
-
-        /// <summary>
-        /// Timestamp of the last reserve mutation, or null if never funded.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("lastUpdatedAt")]
-        public System.DateTimeOffset? LastUpdatedAt { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class PositionDto
     {
         [System.Text.Json.Serialization.JsonConstructor]
@@ -939,21 +847,6 @@ namespace BitCaster.MatchingEngine.Contracts
             get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
             set { _additionalProperties = value; }
         }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum FundingStatusResponseStatus
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"AwaitingFunding")]
-        AwaitingFunding = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"Active")]
-        Active = 1,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"Frozen")]
-        Frozen = 2,
 
     }
 
