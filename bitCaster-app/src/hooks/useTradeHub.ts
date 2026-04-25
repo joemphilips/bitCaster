@@ -137,23 +137,36 @@ export function useTradeHub(
     }
   }, [ephemeralPrivkey])  // reconnect when key changes
 
-  const joinTrade = useCallback(async (tradeId: string) => {
-    const conn = connectionRef.current
-    if (!conn || conn.state !== HubConnectionState.Connected) {
-      throw new Error('TradeHub not connected')
+  /**
+   * Wait up to ~10 s for the SignalR connection to reach
+   * {@link HubConnectionState.Connected}. The connection lifecycle is async
+   * (negotiation may take several seconds, transient failures retry via
+   * `withAutomaticReconnect`); a caller that fires immediately on store
+   * change otherwise races the start sequence and fails the join with
+   * "TradeHub not connected", leaving the swap in a permanent `failed`
+   * step that no later state change recovers.
+   */
+  const waitForConnected = useCallback(async (timeoutMs = 10_000): Promise<HubConnection> => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const conn = connectionRef.current
+      if (conn?.state === HubConnectionState.Connected) return conn
+      await new Promise((r) => setTimeout(r, 100))
     }
-    await conn.invoke('JoinTrade', tradeId)
+    throw new Error('TradeHub not connected')
   }, [])
+
+  const joinTrade = useCallback(async (tradeId: string) => {
+    const conn = await waitForConnected()
+    await conn.invoke('JoinTrade', tradeId)
+  }, [waitForConnected])
 
   const sendSwapMessage = useCallback(
     async (tradeId: string, messageType: string, ciphertext: string) => {
-      const conn = connectionRef.current
-      if (!conn || conn.state !== HubConnectionState.Connected) {
-        throw new Error('TradeHub not connected')
-      }
+      const conn = await waitForConnected()
       await conn.invoke('SendSwapMessage', tradeId, messageType, ciphertext)
     },
-    [],
+    [waitForConnected],
   )
 
   const connectionState = useCallback(() => {

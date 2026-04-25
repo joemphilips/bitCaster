@@ -62,7 +62,18 @@ public class InMemoryOrderBookManager
             // FAK: never rest the unfilled remainder. GTC: rest if anything left.
             // (FOK isn't exercised by the mock — we treat it as GTC.)
             if (tif != TimeInForce.FAK && remaining > 0)
+            {
                 book.AddResting(incoming);
+            }
+            else if (fills.Count > 0)
+            {
+                // Fully-filled taker (or FAK with any fills) is not in
+                // _resting and would otherwise be invisible to GET /orders/{id}.
+                // Park it in _completed so the order-status poller can read
+                // back the per-fill tradeIds and wake the swap-driver.
+                var takerStatus = remaining == 0 ? "filled" : "cancelled";
+                book.MarkTakerCompleted(incoming, takerStatus);
+            }
         }
 
         var status = DeriveStatus(amountSats, remaining, tif, fills.Count > 0);
@@ -152,7 +163,9 @@ public class InMemoryOrderBookManager
 
             incoming.RemainingSats -= fillAmount;
             maker.RemainingSats -= fillAmount;
-            fills.Add(BuildFill(incoming, maker, fillAmount));
+            var fill = BuildFill(incoming, maker, fillAmount);
+            fills.Add(fill);
+            book.RecordFill(incoming.Id, maker.Id, fill);
         }
         book.RemoveCompleted();
         return fills;
@@ -200,8 +213,36 @@ internal sealed class OrderBook
 
     private readonly List<RestingOrder> _resting = [];
     private readonly Dictionary<Guid, CompletedOrder> _completed = [];
+    /// <summary>
+    /// Fills indexed by both the maker and taker orderId so a later
+    /// <c>GET /orders/{id}</c> can surface the per-fill <c>tradeId</c>.
+    /// The frontend's <c>usePendingTradesPoller</c> reads the tradeId off
+    /// this collection to wake the atomic-swap driver — without this index
+    /// the recovery path (close + reopen) has no way to discover that a
+    /// match has occurred.
+    /// </summary>
+    private readonly Dictionary<Guid, List<Fill>> _fillsByOrderId = [];
 
     public void AddResting(RestingOrder order) => _resting.Add(order);
+
+    /// <summary>
+    /// Record a fill against both sides of the match. Called from the
+    /// matching loop while the book lock is held.
+    /// </summary>
+    public void RecordFill(Guid takerOrderId, Guid makerOrderId, Fill fill)
+    {
+        if (!_fillsByOrderId.TryGetValue(takerOrderId, out var takerFills))
+            _fillsByOrderId[takerOrderId] = takerFills = [];
+        takerFills.Add(fill);
+        if (!_fillsByOrderId.TryGetValue(makerOrderId, out var makerFills))
+            _fillsByOrderId[makerOrderId] = makerFills = [];
+        makerFills.Add(fill);
+    }
+
+    public IReadOnlyList<Fill> GetFills(Guid orderId)
+        => _fillsByOrderId.TryGetValue(orderId, out var fills)
+            ? fills
+            : (IReadOnlyList<Fill>)Array.Empty<Fill>();
 
     public IEnumerable<RestingOrder> MatchableAgainst(RestingOrder incoming)
     {
@@ -232,6 +273,15 @@ internal sealed class OrderBook
         }
     }
 
+    /// <summary>
+    /// Park a fully-filled (or FAK-cancelled) taker order in the
+    /// completed index so <see cref="LookupStatus"/> can return its
+    /// fills. The taker never enters <c>_resting</c>, so
+    /// <see cref="RemoveCompleted"/> alone does not cover it.
+    /// </summary>
+    public void MarkTakerCompleted(RestingOrder taker, string status)
+        => _completed[taker.Id] = new CompletedOrder(taker, status);
+
     public bool Cancel(Guid orderId)
     {
         for (var i = 0; i < _resting.Count; i++)
@@ -253,17 +303,18 @@ internal sealed class OrderBook
 
     public OrderStatusView? LookupStatus(string marketId, Guid orderId)
     {
+        var fills = GetFills(orderId).ToList();
         foreach (var o in _resting)
         {
             if (o.Id != orderId) continue;
             var filled = o.AmountSats - o.RemainingSats;
             var status = filled == 0 ? "resting" : "partially_filled";
-            return new OrderStatusView(orderId, marketId, status, o.RemainingSats, filled, []);
+            return new OrderStatusView(orderId, marketId, status, o.RemainingSats, filled, fills);
         }
         if (_completed.TryGetValue(orderId, out var c))
         {
             var filled = c.Order.AmountSats - c.Order.RemainingSats;
-            return new OrderStatusView(orderId, marketId, c.Status, c.Order.RemainingSats, filled, []);
+            return new OrderStatusView(orderId, marketId, c.Status, c.Order.RemainingSats, filled, fills);
         }
         return null;
     }
