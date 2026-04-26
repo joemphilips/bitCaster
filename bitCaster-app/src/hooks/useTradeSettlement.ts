@@ -49,6 +49,7 @@ import {
   buyerPrepareSwap,
   sellerClaimSwap,
   sellerPrepareSwap,
+  validateLocktimeOrdering,
   type AdaptorPoint,
 } from '@/lib/atomicSwap'
 import { useToastStore } from '@/stores/toast'
@@ -126,6 +127,17 @@ function handleTradeCreated(
 ): void {
   const swap = useActiveSwapsStore.getState().byTradeId[payload.tradeId]
   if (!swap) return
+
+  // Defense-in-depth: refuse to lock proofs if the engine's TradeCreated
+  // payload violates `T_YES > T_sat + Δ`. Mirrors the wallet-service guard.
+  const sellerLocktime = parseLocktime(payload.sellerLocktime)
+  const buyerLocktime = parseLocktime(payload.buyerLocktime)
+  const lockErr = validateLocktimeOrdering(sellerLocktime, buyerLocktime)
+  if (lockErr) {
+    failSwap(payload.tradeId, new Error(lockErr))
+    return
+  }
+
   const role = decideRole(swap, payload)
   if (!role) {
     useActiveSwapsStore.getState().setStep(payload.tradeId, 'failed',
@@ -134,8 +146,8 @@ function handleTradeCreated(
   }
   const counterparty = role === 'seller' ? payload.buyerPubkey : payload.sellerPubkey
   useActiveSwapsStore.getState().setRoleAndCounterparty(payload.tradeId, role, counterparty, {
-    sellerLocktime: parseLocktime(payload.sellerLocktime),
-    buyerLocktime: parseLocktime(payload.buyerLocktime),
+    sellerLocktime,
+    buyerLocktime,
   })
 
   if (role === 'seller') {

@@ -46,11 +46,64 @@ export interface SwapContext {
   role: 'seller' | 'buyer'
   ephemeralKey: EphemeralKeypair
   counterpartyPubkey: string
-  /** Unix seconds — seller's locktime (should be shorter per spec) */
+  /**
+   * Unix seconds — seller's (Alice's) YES-proof locktime `T_YES`. Per the
+   * spec this MUST be later than the buyer's `T_sat` so that Bob has time to
+   * extract `t` after Alice spends. See
+   * bitCaster-doc/src/content/docs/technical/protocol/atomic-swap.md
+   * §"Locktime Constraints" — the invariant is `T_YES > T_sat + Δ`.
+   */
   sellerLocktime: number
-  /** Unix seconds — buyer's locktime (longer so Bob can extract t) */
+  /**
+   * Unix seconds — buyer's (Bob's) sat-proof locktime `T_sat`. Shorter than
+   * the seller's locktime by at least `MIN_LOCKTIME_DELTA_SECS`.
+   */
   buyerLocktime: number
   mintUrl: string
+}
+
+// ---------------------------------------------------------------------------
+// Locktime invariants (defense-in-depth)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum gap between the seller's and buyer's locktimes, in seconds. Mirrors
+ * the wallet-service's constant of the same name and the engine's
+ * `MinLocktimeDelta` value.
+ */
+export const MIN_LOCKTIME_DELTA_SECS = 5
+
+/**
+ * Validates the protocol's locktime ordering invariant before any proofs are
+ * locked or pre-signed.
+ *
+ * The atomic-swap spec requires `T_YES > T_sat + Δ` (i.e.
+ * `sellerLocktime > buyerLocktime + MIN_LOCKTIME_DELTA_SECS`). A buggy or
+ * malicious engine emitting an inverted ordering would let the seller refund
+ * their YES proofs after Bob already locked sats — and still claim Bob's
+ * sats while `T_sat` is unexpired, stealing both sides of the trade. See
+ * bitCaster-doc/src/content/docs/technical/protocol/atomic-swap.md
+ * §"Locktime Constraints".
+ *
+ * Returns `null` when the ordering is valid, otherwise a user-facing error
+ * message suitable for display.
+ */
+export function validateLocktimeOrdering(
+  sellerLocktime: number,
+  buyerLocktime: number,
+): string | null {
+  if (!Number.isFinite(sellerLocktime) || !Number.isFinite(buyerLocktime)) {
+    return 'Trade rejected: invalid locktime values from engine.'
+  }
+  if (sellerLocktime <= buyerLocktime + MIN_LOCKTIME_DELTA_SECS) {
+    return (
+      `Trade rejected: locktime ordering violates protocol invariant ` +
+      `(sellerLocktime=${sellerLocktime}, buyerLocktime=${buyerLocktime}). ` +
+      `Seller's locktime must exceed buyer's by at least ` +
+      `${MIN_LOCKTIME_DELTA_SECS}s.`
+    )
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
