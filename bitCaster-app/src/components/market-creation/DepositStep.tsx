@@ -1,0 +1,316 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router'
+import { Loader2, Zap, Coins, CheckCircle2, AlertCircle, Copy } from 'lucide-react'
+import {
+  requestLnInvoiceDeposit,
+  requestEcashDeposit,
+  getDepositStatus,
+  type DepositState,
+  type RequestLnInvoiceDepositResponse,
+} from '@/lib/markets'
+
+interface DepositStepProps {
+  /** The just-created market's condition id, returned by `createMarket`. */
+  conditionId: string
+  /** Pre-set amount from the wizard's liquidity step; user can override. */
+  defaultAmountSats: number
+}
+
+type Tab = 'ln' | 'ecash'
+
+const POLL_INTERVAL_MS = 1500
+/** Stop polling once a terminal state is reached. */
+const TERMINAL_STATES: DepositState[] = ['Credited', 'Failed']
+
+/**
+ * Final step of the market-create wizard. After `createMarket` succeeds, the
+ * wizard renders this component with the new `conditionId`. The user funds
+ * the market's CPMM bot via Lightning or ecash and waits for the
+ * wallet-service to credit the per-market account.
+ *
+ * Once the deposit reaches `Credited`, the user navigates to the market
+ * detail page — that's the only path forward; the market is unfunded and
+ * idle until a deposit lands.
+ */
+export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps) {
+  const navigate = useNavigate()
+  const [tab, setTab] = useState<Tab>('ln')
+  const [amountSats, setAmountSats] = useState(defaultAmountSats)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [depositId, setDepositId] = useState<string | null>(null)
+  const [bolt11, setBolt11] = useState<string | null>(null)
+  const [bolt11ExpiresAt, setBolt11ExpiresAt] = useState<string | null>(null)
+  const [ecashToken, setEcashToken] = useState('')
+  const [state, setState] = useState<DepositState | null>(null)
+  const [stateUpdatedAt, setStateUpdatedAt] = useState<string | null>(null)
+
+  // Polling driver — kicks off when `depositId` is set, stops on terminal state.
+  const pollHandle = useRef<number | null>(null)
+  useEffect(() => {
+    if (!depositId) return
+    if (state && TERMINAL_STATES.includes(state)) return
+
+    let cancelled = false
+    const tick = async () => {
+      if (cancelled) return
+      try {
+        const status = await getDepositStatus(conditionId, depositId)
+        if (cancelled) return
+        if (status) {
+          setState(status.state)
+          setStateUpdatedAt(status.updatedAt)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Status poll failed')
+        }
+      }
+    }
+    void tick()
+    pollHandle.current = window.setInterval(() => void tick(), POLL_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      if (pollHandle.current !== null) {
+        window.clearInterval(pollHandle.current)
+        pollHandle.current = null
+      }
+    }
+  }, [conditionId, depositId, state])
+
+  const onRequestLn = useCallback(async () => {
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res: RequestLnInvoiceDepositResponse = await requestLnInvoiceDeposit(conditionId, amountSats)
+      setDepositId(res.depositId)
+      setBolt11(res.bolt11)
+      setBolt11ExpiresAt(res.expiresAt)
+      setState('Requested')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to request invoice')
+    } finally {
+      setSubmitting(false)
+    }
+  }, [conditionId, amountSats])
+
+  const onSubmitEcash = useCallback(async () => {
+    if (ecashToken.trim().length === 0) {
+      setError('Paste an ecash token before submitting')
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await requestEcashDeposit(conditionId, amountSats, ecashToken.trim())
+      setDepositId(res.depositId)
+      setState(res.state)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit ecash')
+    } finally {
+      setSubmitting(false)
+    }
+  }, [conditionId, amountSats, ecashToken])
+
+  const onCopyBolt11 = useCallback(() => {
+    if (!bolt11) return
+    void navigator.clipboard.writeText(bolt11)
+  }, [bolt11])
+
+  const onContinue = useCallback(() => {
+    navigate(`/markets/${conditionId}`)
+  }, [navigate, conditionId])
+
+  const isTerminal = state ? TERMINAL_STATES.includes(state) : false
+  const credited = state === 'Credited'
+  const failed = state === 'Failed'
+
+  return (
+    <div className="w-full max-w-xl">
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Deposit funds</h2>
+      <p className="text-sm text-slate-400 mb-6">
+        Required to start your market with bot liquidity. This deposit funds the automated market
+        maker and is non-refundable.
+      </p>
+
+      <div data-testid="condition-id" className="mb-6 p-3 rounded-lg bg-slate-900 border border-slate-800">
+        <p className="text-xs text-slate-500 mb-1">Market created</p>
+        <p className="text-xs font-mono text-slate-300 break-all">{conditionId}</p>
+      </div>
+
+      {!depositId && (
+        <>
+          <div className="flex gap-2 mb-6 border-b border-slate-800">
+            <TabButton active={tab === 'ln'} onClick={() => setTab('ln')} icon={<Zap className="w-4 h-4" />} label="Lightning" testid="tab-ln" />
+            <TabButton active={tab === 'ecash'} onClick={() => setTab('ecash')} icon={<Coins className="w-4 h-4" />} label="Ecash" testid="tab-ecash" />
+          </div>
+
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-slate-300 mb-2">Amount (sats)</label>
+            <input
+              data-testid="amount-input"
+              type="number"
+              min={1}
+              value={amountSats}
+              onChange={(e) => setAmountSats(Math.max(1, Number.parseInt(e.target.value, 10) || 0))}
+              className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500"
+            />
+          </div>
+
+          {tab === 'ln' && (
+            <button
+              data-testid="request-ln-invoice"
+              type="button"
+              disabled={submitting || amountSats < 1}
+              onClick={onRequestLn}
+              className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+              Request Lightning invoice
+            </button>
+          )}
+
+          {tab === 'ecash' && (
+            <>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-slate-300 mb-2">Ecash token</label>
+                <textarea
+                  data-testid="ecash-token-input"
+                  value={ecashToken}
+                  onChange={(e) => setEcashToken(e.target.value)}
+                  placeholder="cashuB..."
+                  rows={4}
+                  className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs font-mono placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 resize-none"
+                />
+                <p className="text-xs text-slate-500 mt-1.5">
+                  Paste a Cashu V4 token. The wallet-service verifies the proofs before crediting.
+                </p>
+              </div>
+              <button
+                data-testid="submit-ecash"
+                type="button"
+                disabled={submitting || ecashToken.trim().length === 0 || amountSats < 1}
+                onClick={onSubmitEcash}
+                className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium transition-colors flex items-center justify-center gap-2"
+              >
+                {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Coins className="w-4 h-4" />}
+                Submit ecash
+              </button>
+            </>
+          )}
+        </>
+      )}
+
+      {bolt11 && (
+        <div data-testid="bolt11-display" className="mb-4 p-4 rounded-lg bg-slate-900 border border-slate-700">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs text-slate-400">Pay this Lightning invoice</p>
+            <button
+              type="button"
+              onClick={onCopyBolt11}
+              className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
+            >
+              <Copy className="w-3 h-3" /> Copy
+            </button>
+          </div>
+          <p className="text-xs font-mono text-slate-300 break-all">{bolt11}</p>
+          {bolt11ExpiresAt && (
+            <p className="text-xs text-slate-500 mt-2">
+              Expires {new Date(bolt11ExpiresAt).toLocaleString()}
+            </p>
+          )}
+        </div>
+      )}
+
+      {state && !credited && !failed && (
+        <div data-testid="deposit-status" className="mb-4 p-4 rounded-lg bg-slate-900 border border-slate-700 flex items-center gap-3">
+          <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+          <div>
+            <p className="text-sm font-medium text-white">{stateLabel(state)}</p>
+            {stateUpdatedAt && (
+              <p className="text-xs text-slate-500">Last update {new Date(stateUpdatedAt).toLocaleTimeString()}</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {credited && (
+        <div data-testid="deposit-credited" className="mb-4 p-4 rounded-lg bg-green-950/40 border border-green-800/60 flex items-start gap-3">
+          <CheckCircle2 className="w-5 h-5 text-green-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm font-medium text-white">Bot funded — your market is live</p>
+            <p className="text-xs text-slate-300">The CPMM maker is now quoting bid/ask on the order book.</p>
+          </div>
+        </div>
+      )}
+
+      {failed && (
+        <div data-testid="deposit-failed" className="mb-4 p-4 rounded-lg bg-red-950/40 border border-red-800/60 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-red-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm font-medium text-white">Deposit failed</p>
+            <p className="text-xs text-slate-300">
+              The invoice expired or proof verification failed. Retry from the market detail page.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-4 p-3 rounded-lg bg-red-950/30 border border-red-900/50 text-xs text-red-300">
+          {error}
+        </div>
+      )}
+
+      {isTerminal && (
+        <button
+          data-testid="continue-to-market"
+          type="button"
+          onClick={onContinue}
+          className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors"
+        >
+          Continue to your market
+        </button>
+      )}
+    </div>
+  )
+}
+
+interface TabButtonProps {
+  active: boolean
+  onClick: () => void
+  icon: React.ReactNode
+  label: string
+  testid: string
+}
+
+function TabButton({ active, onClick, icon, label, testid }: TabButtonProps) {
+  return (
+    <button
+      type="button"
+      data-testid={testid}
+      onClick={onClick}
+      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+        active
+          ? 'text-white border-blue-500'
+          : 'text-slate-400 border-transparent hover:text-slate-200'
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  )
+}
+
+function stateLabel(state: DepositState): string {
+  switch (state) {
+    case 'Requested':
+      return 'Awaiting payment…'
+    case 'Paid':
+      return 'Payment received — crediting your market…'
+    case 'Credited':
+      return 'Funded'
+    case 'Failed':
+      return 'Failed'
+  }
+}

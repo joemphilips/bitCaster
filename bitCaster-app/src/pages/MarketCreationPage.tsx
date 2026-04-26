@@ -37,6 +37,7 @@ export function MarketCreationPage() {
       onLiquiditySatsChange={state.onLiquiditySatsChange}
       onDescriptionChange={state.onDescriptionChange}
       onCreateMarket={state.onCreateMarket}
+      createdMarketConditionId={state.createdMarketConditionId}
     />
   )
 }

@@ -9,6 +9,7 @@ import { OutcomesStep } from './OutcomesStep'
 import { InitialLiquidity } from './InitialLiquidity'
 import { ReviewAndCreate } from './ReviewAndCreate'
 import { ResumeBanner } from './ResumeBanner'
+import { DepositStep } from './DepositStep'
 
 export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const {
@@ -43,6 +44,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onLiquiditySatsChange,
     onDescriptionChange,
     onCreateMarket,
+    createdMarketConditionId,
   } = props
 
   const { currentStep } = draft
@@ -163,7 +165,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           />
         )}
 
-        {currentStep === 6 && (
+        {currentStep === 6 && !createdMarketConditionId && (
           <ReviewAndCreate
             description={draft.stepReviewAndCreate?.description ?? ''}
             basicInfo={draft.stepBasicInfo}
@@ -173,6 +175,13 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             submitError={submitError}
             onDescriptionChange={onDescriptionChange}
             onCreateMarket={onCreateMarket}
+          />
+        )}
+
+        {createdMarketConditionId && (
+          <DepositStep
+            conditionId={createdMarketConditionId}
+            defaultAmountSats={draft.stepInitialLiquidity?.liquiditySats ?? 0}
           />
         )}
       </div>
