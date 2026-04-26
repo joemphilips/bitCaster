@@ -46,14 +46,21 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
   const [stateUpdatedAt, setStateUpdatedAt] = useState<string | null>(null)
 
   // Polling driver — kicks off when `depositId` is set, stops on terminal state.
-  const pollHandle = useRef<number | null>(null)
+  // The terminal check runs inside the tick (not in the effect deps) so each
+  // state transition does NOT tear down + recreate the interval; the interval
+  // lives until the deposit reaches Credited/Failed or the component unmounts.
+  const stateRef = useRef<DepositState | null>(state)
+  stateRef.current = state
   useEffect(() => {
     if (!depositId) return
-    if (state && TERMINAL_STATES.includes(state)) return
-
     let cancelled = false
+    let handle: number | null = null
     const tick = async () => {
       if (cancelled) return
+      if (stateRef.current && TERMINAL_STATES.includes(stateRef.current)) {
+        if (handle !== null) window.clearInterval(handle)
+        return
+      }
       try {
         const status = await getDepositStatus(conditionId, depositId)
         if (cancelled) return
@@ -68,15 +75,12 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
       }
     }
     void tick()
-    pollHandle.current = window.setInterval(() => void tick(), POLL_INTERVAL_MS)
+    handle = window.setInterval(() => void tick(), POLL_INTERVAL_MS)
     return () => {
       cancelled = true
-      if (pollHandle.current !== null) {
-        window.clearInterval(pollHandle.current)
-        pollHandle.current = null
-      }
+      if (handle !== null) window.clearInterval(handle)
     }
-  }, [conditionId, depositId, state])
+  }, [conditionId, depositId])
 
   const onRequestLn = useCallback(async () => {
     setSubmitting(true)
