@@ -44,6 +44,7 @@ app.MapMetadataEndpoints();
 app.MapThumbnailEndpoints();
 app.MapLiquidityEndpoints();
 app.MapPaymentEndpoints();
+app.MapDepositEndpoints();
 app.MapCpmmEndpoints();
 
 app.Run();

@@ -760,6 +760,244 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    /// <summary>
+    /// Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed; wallet-service can mint CTF. `Credited` → wallet-service finished crediting the per-market account (terminal-success). `Failed` → invoice expired, ecash rejected, or wallet-service errored (terminal-failure).
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DepositState
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Requested")]
+        Requested = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Paid")]
+        Paid = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Credited")]
+        Credited = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Failed")]
+        Failed = 3,
+
+    }
+
+    /// <summary>
+    /// How the funder is paying the deposit.
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum DepositMethod
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"LightningInvoice")]
+        LightningInvoice = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Ecash")]
+        Ecash = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RequestLnInvoiceDepositRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RequestLnInvoiceDepositRequest(long @amountSats)
+        {
+            this.AmountSats = @amountSats;
+        }
+
+        /// <summary>
+        /// Amount of sats the funder intends to deposit.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RequestLnInvoiceDepositResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RequestLnInvoiceDepositResponse(string @bolt11, System.Guid @depositId, System.DateTimeOffset @expiresAt)
+        {
+            this.DepositId = @depositId;
+            this.Bolt11 = @bolt11;
+            this.ExpiresAt = @expiresAt;
+        }
+
+        /// <summary>
+        /// Identifier for polling the deposit's lifecycle state.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("depositId")]
+        public System.Guid DepositId { get; }
+
+        /// <summary>
+        /// Bolt11 invoice the funder pays. Bearer material — never echoed from the polling endpoint.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("bolt11")]
+        public string Bolt11 { get; }
+
+        /// <summary>
+        /// When the bolt11 stops being payable.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
+        public System.DateTimeOffset ExpiresAt { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RequestEcashDepositRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RequestEcashDepositRequest(long @amountSats, string @proofsToken)
+        {
+            this.AmountSats = @amountSats;
+            this.ProofsToken = @proofsToken;
+        }
+
+        /// <summary>
+        /// Asserted sat value of the supplied ecash proofs.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        /// <summary>
+        /// Opaque ecash token (Cashu V4 token blob). The wallet-service verifies the proofs and amount before crediting; Phase 1 of the engine accepts and records without verification.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("proofsToken")]
+        public string ProofsToken { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RequestEcashDepositResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RequestEcashDepositResponse(System.Guid @depositId, DepositState @state)
+        {
+            this.DepositId = @depositId;
+            this.State = @state;
+        }
+
+        /// <summary>
+        /// Identifier for polling the deposit's lifecycle state.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("depositId")]
+        public System.Guid DepositId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("state")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<DepositState>))]
+        public DepositState State { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class GetDepositResponseDto
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public GetDepositResponseDto(long @amountSats, string @conditionId, System.Guid @depositId, System.DateTimeOffset? @expiresAt, string @failureReason, DepositMethod @method, System.DateTimeOffset @requestedAt, DepositState @state, System.DateTimeOffset @updatedAt)
+        {
+            this.DepositId = @depositId;
+            this.ConditionId = @conditionId;
+            this.State = @state;
+            this.Method = @method;
+            this.AmountSats = @amountSats;
+            this.RequestedAt = @requestedAt;
+            this.UpdatedAt = @updatedAt;
+            this.ExpiresAt = @expiresAt;
+            this.FailureReason = @failureReason;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("depositId")]
+        public System.Guid DepositId { get; }
+
+        /// <summary>
+        /// Condition the deposit funds.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
+        public string ConditionId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("state")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<DepositState>))]
+        public DepositState State { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("method")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<DepositMethod>))]
+        public DepositMethod Method { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("requestedAt")]
+        public System.DateTimeOffset RequestedAt { get; }
+
+        /// <summary>
+        /// Most recent state-change timestamp.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("updatedAt")]
+        public System.DateTimeOffset UpdatedAt { get; }
+
+        /// <summary>
+        /// For LN deposits, when the bolt11 stops being payable.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
+        public System.DateTimeOffset? ExpiresAt { get; }
+
+        /// <summary>
+        /// Populated only when `state == Failed`.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("failureReason")]
+        public string FailureReason { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
     [System.CodeDom.Compiler.GeneratedCode("NSwag", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class FileParameter
     {
