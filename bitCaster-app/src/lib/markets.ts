@@ -6,6 +6,7 @@ import type {
 } from '@/types/market-detail'
 import { getNdk } from '@/lib/nostr'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
+import { bytesToHex } from 'nostr-tools/utils'
 
 // CDK mint response types
 
@@ -428,9 +429,7 @@ export async function registerPartition(
  */
 async function sha256Hex(data: BufferSource): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', data)
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+  return bytesToHex(new Uint8Array(hash))
 }
 
 /**
