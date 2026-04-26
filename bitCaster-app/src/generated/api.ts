@@ -159,6 +159,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/markets/{conditionId}/deposit/ln-invoice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a Lightning invoice to deposit liquidity into a market's CPMM bot
+         * @description Issues a bolt11 invoice payable to the market's funding account. Once the invoice is paid the deposit transitions to `Paid`, and the wallet-service mints CTF tokens and credits the per-market account. The bolt11 string is returned only in this response — the polling endpoint deliberately omits bearer material.
+         */
+        post: operations["requestLnInvoiceDeposit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/markets/{conditionId}/deposit/ecash": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit an ecash payment to deposit liquidity into a market's CPMM bot
+         * @description Records an ecash deposit attempt. Phase 1 records the request only; actual proof verification and balance mutation happens in the wallet-service. Use the returned `depositId` to poll for state transitions via the GET endpoint.
+         */
+        post: operations["requestEcashDeposit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/markets/{conditionId}/deposit/{depositId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the current state of a deposit
+         * @description Polling-friendly read of a single deposit's lifecycle state. Bearer payment instruments (bolt11) and proof material are deliberately excluded from the response — they appear only in the original request response. Public; no authentication required.
+         */
+        get: operations["getDepositStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/creators/{pubkey}/markets": {
         parameters: {
             query?: never;
@@ -381,6 +441,78 @@ export interface components {
             pubkey: string;
             /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
             markets: components["schemas"]["CreatorMarketEntry"][];
+        };
+        /**
+         * @description Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed; wallet-service can mint CTF. `Credited` → wallet-service finished crediting the per-market account (terminal-success). `Failed` → invoice expired, ecash rejected, or wallet-service errored (terminal-failure).
+         * @enum {string}
+         */
+        DepositState: "Requested" | "Paid" | "Credited" | "Failed";
+        /**
+         * @description How the funder is paying the deposit.
+         * @enum {string}
+         */
+        DepositMethod: "LightningInvoice" | "Ecash";
+        RequestLnInvoiceDepositRequest: {
+            /**
+             * Format: int64
+             * @description Amount of sats the funder intends to deposit.
+             */
+            amountSats: number;
+        };
+        RequestLnInvoiceDepositResponse: {
+            /**
+             * Format: uuid
+             * @description Identifier for polling the deposit's lifecycle state.
+             */
+            depositId: string;
+            /** @description Bolt11 invoice the funder pays. Bearer material — never echoed from the polling endpoint. */
+            bolt11: string;
+            /**
+             * Format: date-time
+             * @description When the bolt11 stops being payable.
+             */
+            expiresAt: string;
+        };
+        RequestEcashDepositRequest: {
+            /**
+             * Format: int64
+             * @description Asserted sat value of the supplied ecash proofs.
+             */
+            amountSats: number;
+            /** @description Opaque ecash token (Cashu V4 token blob). The wallet-service verifies the proofs and amount before crediting; Phase 1 of the engine accepts and records without verification. */
+            proofsToken: string;
+        };
+        RequestEcashDepositResponse: {
+            /**
+             * Format: uuid
+             * @description Identifier for polling the deposit's lifecycle state.
+             */
+            depositId: string;
+            state: components["schemas"]["DepositState"];
+        };
+        GetDepositResponseDto: {
+            /** Format: uuid */
+            depositId: string;
+            /** @description Condition the deposit funds. */
+            conditionId: string;
+            state: components["schemas"]["DepositState"];
+            method: components["schemas"]["DepositMethod"];
+            /** Format: int64 */
+            amountSats: number;
+            /** Format: date-time */
+            requestedAt: string;
+            /**
+             * Format: date-time
+             * @description Most recent state-change timestamp.
+             */
+            updatedAt: string;
+            /**
+             * Format: date-time
+             * @description For LN deposits, when the bolt11 stops being payable.
+             */
+            expiresAt?: string | null;
+            /** @description Populated only when `state == Failed`. */
+            failureReason?: string | null;
         };
     };
     responses: never;
@@ -722,6 +854,155 @@ export interface operations {
             };
             /** @description LNBits backend error */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    requestLnInvoiceDeposit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestLnInvoiceDepositRequest"];
+            };
+        };
+        responses: {
+            /** @description Invoice issued; deposit recorded in `Requested` state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestLnInvoiceDepositResponse"];
+                };
+            };
+            /** @description Validation error (e.g. non-positive amount) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Market not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Per-pubkey deposit-request rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description LNBits backend error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    requestEcashDeposit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestEcashDepositRequest"];
+            };
+        };
+        responses: {
+            /** @description Deposit recorded; verification proceeds asynchronously */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestEcashDepositResponse"];
+                };
+            };
+            /** @description Validation error (e.g. malformed proofs token, non-positive amount) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Market not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Per-pubkey deposit-request rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getDepositStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+                /** @description Deposit identifier returned by the request endpoint. */
+                depositId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deposit found */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetDepositResponseDto"];
+                };
+            };
+            /** @description No deposit with this id for this condition */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

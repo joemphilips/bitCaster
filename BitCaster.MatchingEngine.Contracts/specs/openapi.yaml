@@ -246,6 +246,107 @@ paths:
         '502':
           description: LNBits backend error
 
+  /api/v1/markets/{conditionId}/deposit/ln-invoice:
+    post:
+      operationId: requestLnInvoiceDeposit
+      summary: Request a Lightning invoice to deposit liquidity into a market's CPMM bot
+      security:
+        - nip98: []
+      description: >
+        Issues a bolt11 invoice payable to the market's funding account. Once
+        the invoice is paid the deposit transitions to `Paid`, and the
+        wallet-service mints CTF tokens and credits the per-market account.
+        The bolt11 string is returned only in this response — the polling
+        endpoint deliberately omits bearer material.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestLnInvoiceDepositRequest'
+      responses:
+        '200':
+          description: Invoice issued; deposit recorded in `Requested` state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestLnInvoiceDepositResponse'
+        '400':
+          description: Validation error (e.g. non-positive amount)
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '404':
+          description: Market not found
+        '429':
+          description: Per-pubkey deposit-request rate limit exceeded
+        '502':
+          description: LNBits backend error
+
+  /api/v1/markets/{conditionId}/deposit/ecash:
+    post:
+      operationId: requestEcashDeposit
+      summary: Submit an ecash payment to deposit liquidity into a market's CPMM bot
+      security:
+        - nip98: []
+      description: >
+        Records an ecash deposit attempt. Phase 1 records the request only;
+        actual proof verification and balance mutation happens in the
+        wallet-service. Use the returned `depositId` to poll for state
+        transitions via the GET endpoint.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestEcashDepositRequest'
+      responses:
+        '200':
+          description: Deposit recorded; verification proceeds asynchronously
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestEcashDepositResponse'
+        '400':
+          description: Validation error (e.g. malformed proofs token, non-positive amount)
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '404':
+          description: Market not found
+        '429':
+          description: Per-pubkey deposit-request rate limit exceeded
+
+  /api/v1/markets/{conditionId}/deposit/{depositId}:
+    get:
+      operationId: getDepositStatus
+      summary: Read the current state of a deposit
+      description: >
+        Polling-friendly read of a single deposit's lifecycle state. Bearer
+        payment instruments (bolt11) and proof material are deliberately
+        excluded from the response — they appear only in the original
+        request response. Public; no authentication required.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+        - name: depositId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Deposit identifier returned by the request endpoint.
+      responses:
+        '200':
+          description: Deposit found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetDepositResponseDto'
+        '404':
+          description: No deposit with this id for this condition
+
   /api/v1/creators/{pubkey}/markets:
     get:
       operationId: listCreatorMarkets
@@ -714,4 +815,130 @@ components:
           description: >
             Markets created by this pubkey. May be empty if the creator has
             not registered any markets yet.
+
+    DepositState:
+      type: string
+      enum:
+        - Requested
+        - Paid
+        - Credited
+        - Failed
+      description: >
+        Lifecycle state of a single deposit. `Requested` → invoice issued or
+        ecash submission accepted, awaiting payment proof. `Paid` → payment
+        confirmed; wallet-service can mint CTF. `Credited` → wallet-service
+        finished crediting the per-market account (terminal-success).
+        `Failed` → invoice expired, ecash rejected, or wallet-service errored
+        (terminal-failure).
+
+    DepositMethod:
+      type: string
+      enum:
+        - LightningInvoice
+        - Ecash
+      description: How the funder is paying the deposit.
+
+    RequestLnInvoiceDepositRequest:
+      type: object
+      required:
+        - amountSats
+      properties:
+        amountSats:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Amount of sats the funder intends to deposit.
+
+    RequestLnInvoiceDepositResponse:
+      type: object
+      required:
+        - depositId
+        - bolt11
+        - expiresAt
+      properties:
+        depositId:
+          type: string
+          format: uuid
+          description: Identifier for polling the deposit's lifecycle state.
+        bolt11:
+          type: string
+          description: >
+            Bolt11 invoice the funder pays. Bearer material — never echoed
+            from the polling endpoint.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the bolt11 stops being payable.
+
+    RequestEcashDepositRequest:
+      type: object
+      required:
+        - amountSats
+        - proofsToken
+      properties:
+        amountSats:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Asserted sat value of the supplied ecash proofs.
+        proofsToken:
+          type: string
+          description: >
+            Opaque ecash token (Cashu V4 token blob). The wallet-service
+            verifies the proofs and amount before crediting; Phase 1 of the
+            engine accepts and records without verification.
+
+    RequestEcashDepositResponse:
+      type: object
+      required:
+        - depositId
+        - state
+      properties:
+        depositId:
+          type: string
+          format: uuid
+          description: Identifier for polling the deposit's lifecycle state.
+        state:
+          $ref: '#/components/schemas/DepositState'
+
+    GetDepositResponseDto:
+      type: object
+      required:
+        - depositId
+        - conditionId
+        - state
+        - method
+        - amountSats
+        - requestedAt
+        - updatedAt
+      properties:
+        depositId:
+          type: string
+          format: uuid
+        conditionId:
+          type: string
+          description: Condition the deposit funds.
+        state:
+          $ref: '#/components/schemas/DepositState'
+        method:
+          $ref: '#/components/schemas/DepositMethod'
+        amountSats:
+          type: integer
+          format: int64
+        requestedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+          description: Most recent state-change timestamp.
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: For LN deposits, when the bolt11 stops being payable.
+        failureReason:
+          type: string
+          nullable: true
+          description: Populated only when `state == Failed`.
 
