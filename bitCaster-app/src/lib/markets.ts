@@ -336,14 +336,18 @@ export async function fetchOrderBook(marketId: string): Promise<OrderBook> {
 
 export async function submitOrder(marketId: string, params: SubmitOrderRequest): Promise<SubmitOrderResponse> {
   const url = `${window.location.origin}/api/v1/${marketId}/orders`
-  const authHeader = await generateNip98Header(url, 'POST')
+  // Bind the NIP-98 token to the exact body bytes the server will hash.
+  const bodyText = JSON.stringify(params)
+  const bodyBytes = new TextEncoder().encode(bodyText)
+  const payloadHash = await sha256Hex(bodyBytes)
+  const authHeader = await generateNip98Header(url, 'POST', payloadHash)
   const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: authHeader,
     },
-    body: JSON.stringify(params),
+    body: bodyText,
   })
   if (!response.ok) {
     throw new Error(`Failed to submit order: ${response.status}`)
@@ -417,13 +421,35 @@ export async function registerPartition(
 }
 
 /**
+ * Lowercase-hex SHA-256 of a byte buffer. Used to bind NIP-98 tokens to
+ * the request body (`payload` tag); the matching engine rejects body-bearing
+ * REST verbs whose token's `payload` does not match the digest of the bytes
+ * the server actually receives.
+ */
+async function sha256Hex(data: BufferSource): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+/**
  * Generate a NIP-98 Authorization header using NDK's active signer.
  * Works with both NIP-07 (browser extension) and nsec (private key) signers.
+ *
+ * When `payloadHash` is supplied (lowercase-hex SHA-256 of the request body),
+ * a `payload` tag is added per NIP-98. The matching engine REQUIRES this for
+ * `POST`/`PUT`/`PATCH` — without it, the request is rejected as a replay
+ * candidate. GET / DELETE / SignalR-negotiate calls omit the parameter.
  *
  * Exported so other modules (portfolio store, MarketHub helper, etc.) can
  * reuse a single implementation instead of each growing its own NDK wiring.
  */
-export async function generateNip98Header(url: string, method: string): Promise<string> {
+export async function generateNip98Header(
+  url: string,
+  method: string,
+  payloadHash?: string,
+): Promise<string> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error('No Nostr signer configured — connect in Settings first')
   const event = new NDKEvent(ndk)
@@ -434,6 +460,9 @@ export async function generateNip98Header(url: string, method: string): Promise<
     ['u', url],
     ['method', method.toUpperCase()],
   ]
+  if (payloadHash) {
+    event.tags.push(['payload', payloadHash])
+  }
   await event.sign()
   const token = btoa(JSON.stringify(event.rawEvent()))
   return `Nostr ${token}`
@@ -450,11 +479,19 @@ export async function createMarket(
     formData.append('thumbnail', thumbnailFile)
   }
   const url = `${window.location.origin}/api/v1/markets/${conditionId}`
-  const authHeader = await generateNip98Header(url, 'POST')
+  // Multipart bodies need pre-serialization so the NIP-98 `payload` tag binds
+  // to the exact bytes (including the random multipart boundary) that fetch
+  // will ship. Construct a transient Request to serialize, hash, then send
+  // the same bytes with the same Content-Type so server-side SHA-256 matches.
+  const serialized = new Request(url, { method: 'POST', body: formData })
+  const bodyBytes = await serialized.arrayBuffer()
+  const contentType = serialized.headers.get('Content-Type') ?? 'multipart/form-data'
+  const payloadHash = await sha256Hex(bodyBytes)
+  const authHeader = await generateNip98Header(url, 'POST', payloadHash)
   const response = await fetch(url, {
     method: 'POST',
-    headers: { Authorization: authHeader },
-    body: formData,
+    headers: { 'Content-Type': contentType, Authorization: authHeader },
+    body: bodyBytes,
   })
   if (!response.ok) {
     let detail = `HTTP ${response.status}`

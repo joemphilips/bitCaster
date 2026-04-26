@@ -200,14 +200,43 @@ describe('createMarket', () => {
     expect(result.marketsCreated).toEqual(['cond-123-Yes', 'cond-123-No'])
   })
 
-  it('sends metadata as form data', async () => {
+  it('sends metadata as multipart form data', async () => {
     mockFetchSuccess({ conditionId: 'cond-123', marketsCreated: [], thumbnailUrl: null })
     await createMarket('cond-123', createMarketParams)
 
     const call = vi.mocked(globalThis.fetch).mock.calls[0]
     expect(call[0]).toContain('/api/v1/markets/cond-123')
     expect(call[1]?.method).toBe('POST')
-    expect(call[1]?.body).toBeInstanceOf(FormData)
+    // Body is pre-serialized so the NIP-98 `payload` tag can bind to the
+    // exact bytes; Content-Type carries the multipart boundary fetch would
+    // otherwise generate.
+    expect(call[1]?.body).toBeInstanceOf(ArrayBuffer)
+    const headers = call[1]?.headers as Record<string, string>
+    expect(headers['Content-Type']).toMatch(/^multipart\/form-data; boundary=/)
+    expect(headers.Authorization).toMatch(/^Nostr /)
+  })
+
+  it('binds the NIP-98 token to the request body via SHA-256 payload tag', async () => {
+    mockFetchSuccess({ conditionId: 'cond-123', marketsCreated: [], thumbnailUrl: null })
+    await createMarket('cond-123', createMarketParams)
+
+    const call = vi.mocked(globalThis.fetch).mock.calls[0]
+    const headers = call[1]?.headers as Record<string, string>
+    const body = call[1]?.body as ArrayBuffer
+
+    // Decode the NIP-98 token; mocked NDKEvent passes through the tags array.
+    const token = headers.Authorization.replace(/^Nostr /, '')
+    const event = JSON.parse(atob(token)) as { tags: string[][] }
+    const payloadTag = event.tags.find((t) => t[0] === 'payload')
+    expect(payloadTag).toBeDefined()
+    expect(payloadTag![1]).toMatch(/^[0-9a-f]{64}$/)
+
+    // The tag value MUST equal SHA-256 of the bytes shipped to the server.
+    const expectedDigest = await crypto.subtle.digest('SHA-256', body)
+    const expectedHex = Array.from(new Uint8Array(expectedDigest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+    expect(payloadTag![1]).toBe(expectedHex)
   })
 
   it('throws on validation error (400)', async () => {
