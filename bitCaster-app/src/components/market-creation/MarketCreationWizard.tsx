@@ -45,6 +45,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onDescriptionChange,
     onCreateMarket,
     createdMarketConditionId,
+    createdMarketLiquiditySats,
   } = props
 
   const { currentStep } = draft
@@ -75,6 +76,26 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
       )}
     </>
   )
+
+  // Deposit step takes priority once the market is created. `clearDraft()`
+  // in `onCreateMarket` resets the draft store (currentStep becomes 1)
+  // before `setCreatedMarketConditionId` re-renders us, which without this
+  // override would bounce the user back to OracleCheck even though the
+  // market is already registered on the mint and engine. The matching test
+  // is `MarketCreateWithDepositE2ETests.DepositStep_LightningHappyPath`.
+  if (createdMarketConditionId) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
+        {header}
+        <div className="flex-1 flex items-start justify-center px-4 py-8">
+          <DepositStep
+            conditionId={createdMarketConditionId}
+            defaultAmountSats={createdMarketLiquiditySats ?? 0}
+          />
+        </div>
+      </div>
+    )
+  }
 
   // Step 1: Oracle Check — full-screen standalone
   if (currentStep === 1) {
@@ -178,12 +199,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           />
         )}
 
-        {createdMarketConditionId && (
-          <DepositStep
-            conditionId={createdMarketConditionId}
-            defaultAmountSats={draft.stepInitialLiquidity?.liquiditySats ?? 0}
-          />
-        )}
       </div>
     </div>
   )
