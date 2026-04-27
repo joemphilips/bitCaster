@@ -94,6 +94,12 @@ export function useMarketCreationState() {
   //   - Refresh / close on this step is acceptable: the market exists in
   //     `Unfunded` state and the user can return via the dashboard.
   const [createdMarketConditionId, setCreatedMarketConditionId] = useState<string | null>(null)
+  // Snapshot of `draft.stepInitialLiquidity.liquiditySats` taken at success
+  // time so the deposit step's `defaultAmountSats` reads the value the user
+  // actually picked in step 5. Read separately from the draft because
+  // `clearDraft()` (called on the same tick as `setCreatedMarketConditionId`)
+  // wipes `stepInitialLiquidity` before DepositStep mounts.
+  const [createdMarketLiquiditySats, setCreatedMarketLiquiditySats] = useState<number | null>(null)
   // Track the last blob URL created for the thumbnail preview so we can revoke
   // it when the user picks a new file or when the component unmounts. Without
   // this, every upload leaks a live Blob reference for the page's lifetime.
@@ -496,10 +502,18 @@ export function useMarketCreationState() {
         )
       }
 
+      // Snapshot liquiditySats BEFORE clearDraft so DepositStep can use it
+      // as the default deposit amount — clearDraft wipes stepInitialLiquidity
+      // and DepositStep's useState would otherwise initialize amountSats=0
+      // (and disable the request button).
+      const snapshotLiquiditySats = draft.stepInitialLiquidity?.liquiditySats ?? 0
+
       clearDraft()
       // Hand off to the deposit step. The wizard renders DepositStep when
-      // this is set; the user navigates to /markets/{conditionId} from
-      // there once the deposit reaches `Credited`.
+      // `createdMarketConditionId` is set; the user navigates to
+      // /markets/{conditionId} from there once the deposit reaches
+      // `Credited`.
+      setCreatedMarketLiquiditySats(snapshotLiquiditySats)
       setCreatedMarketConditionId(condition_id)
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to create market')
@@ -521,6 +535,7 @@ export function useMarketCreationState() {
     isSubmitting,
     submitError,
     createdMarketConditionId,
+    createdMarketLiquiditySats,
     onOracleChoiceSelect,
     onAnnouncementSelect,
     onExit,

@@ -131,6 +131,15 @@ export interface MarketCreationWizardProps {
    */
   createdMarketConditionId: string | null
 
+  /**
+   * Snapshot of `draft.stepInitialLiquidity.liquiditySats` at the moment
+   * `createMarket` succeeded. Read by the deposit step as the default
+   * `amountSats` so the user does not have to retype the value they picked
+   * in step 5. Held separately because `clearDraft` (called on the same
+   * tick) wipes the draft before DepositStep mounts.
+   */
+  createdMarketLiquiditySats: number | null
+
   // -------------------------------------------------------------------------
   // Oracle Check Callbacks (Step 1)
   // -------------------------------------------------------------------------
