@@ -122,6 +122,15 @@ export interface MarketCreationWizardProps {
   /** Error message from submission */
   submitError: string | null
 
+  /**
+   * Set after `createMarket` succeeds — the wizard renders the DepositStep
+   * when this is non-null. The user funds the market's CPMM bot then
+   * navigates to the market detail page from there. Held in component
+   * state (not the localStorage draft) so reload doesn't replay
+   * registration against a market that already exists.
+   */
+  createdMarketConditionId: string | null
+
   // -------------------------------------------------------------------------
   // Oracle Check Callbacks (Step 1)
   // -------------------------------------------------------------------------

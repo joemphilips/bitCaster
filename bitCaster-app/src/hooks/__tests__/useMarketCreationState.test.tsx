@@ -176,13 +176,18 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(mockNavigate).not.toHaveBeenCalled()
   })
 
-  it('navigates to /markets/{condition_id} on full success', async () => {
+  it('hands off to the deposit step on full success (does NOT navigate immediately)', async () => {
     const result = await setupDraftForSubmission()
 
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(mockCreateMarket).toHaveBeenCalledOnce()
-    expect(mockNavigate).toHaveBeenCalledWith('/markets/test-cond-id')
+    // Post-CPMM-Phase-5: createMarket success transitions the wizard to the
+    // deposit step rather than navigating to the market detail page. The
+    // user funds the bot first; navigation happens from DepositStep on
+    // `Credited`. The hook signals this via `createdMarketConditionId`.
+    expect(result.current.createdMarketConditionId).toBe('test-cond-id')
+    expect(mockNavigate).not.toHaveBeenCalled()
   })
 
   it('clears the persisted draft on success so the wizard does not resurface stale work', async () => {

@@ -516,6 +516,90 @@ export async function fetchThumbnailUrl(conditionId: string): Promise<string | n
   }
 }
 
+// =============================================================================
+// CPMM Bot Deposit API (matching engine MarketFunding aggregate)
+// =============================================================================
+
+export type RequestLnInvoiceDepositRequest = components['schemas']['RequestLnInvoiceDepositRequest']
+export type RequestLnInvoiceDepositResponse = components['schemas']['RequestLnInvoiceDepositResponse']
+export type RequestEcashDepositRequest = components['schemas']['RequestEcashDepositRequest']
+export type RequestEcashDepositResponse = components['schemas']['RequestEcashDepositResponse']
+export type GetDepositResponseDto = components['schemas']['GetDepositResponseDto']
+export type DepositState = components['schemas']['DepositState']
+export type DepositMethod = components['schemas']['DepositMethod']
+
+/**
+ * Request a Lightning invoice for a market's CPMM bot deposit. The returned
+ * `bolt11` is bearer material — it appears only in this immediate response,
+ * never in the polling endpoint, so capture and display it before navigating
+ * away.
+ */
+export async function requestLnInvoiceDeposit(
+  conditionId: string,
+  amountSats: number,
+): Promise<RequestLnInvoiceDepositResponse> {
+  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ln-invoice`
+  const bodyText = JSON.stringify({ amountSats })
+  const bodyBytes = new TextEncoder().encode(bodyText)
+  const payloadHash = await sha256Hex(bodyBytes)
+  const authHeader = await generateNip98Header(url, 'POST', payloadHash)
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+    body: bodyText,
+  })
+  if (!response.ok) {
+    throw new Error(`[Matching Engine] Failed to request LN deposit: ${response.status} ${await response.text()}`)
+  }
+  return response.json()
+}
+
+/**
+ * Submit ecash proofs as a market's CPMM bot deposit. Phase 1 of the engine
+ * records the request and defers proof verification to the wallet-service;
+ * the deposit walks `Requested → Paid → Credited` as the wallet-service
+ * confirms.
+ */
+export async function requestEcashDeposit(
+  conditionId: string,
+  amountSats: number,
+  proofsToken: string,
+): Promise<RequestEcashDepositResponse> {
+  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`
+  const bodyText = JSON.stringify({ amountSats, proofsToken })
+  const bodyBytes = new TextEncoder().encode(bodyText)
+  const payloadHash = await sha256Hex(bodyBytes)
+  const authHeader = await generateNip98Header(url, 'POST', payloadHash)
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+    body: bodyText,
+  })
+  if (!response.ok) {
+    throw new Error(`[Matching Engine] Failed to submit ecash deposit: ${response.status} ${await response.text()}`)
+  }
+  return response.json()
+}
+
+/**
+ * Polling read of a deposit's current lifecycle state. Public — no auth.
+ * Returns `null` when the engine has no record of `depositId` for this
+ * `conditionId` (404). Bearer payment instruments (bolt11) and proof
+ * material are deliberately excluded from this shape by the engine.
+ */
+export async function getDepositStatus(
+  conditionId: string,
+  depositId: string,
+): Promise<GetDepositResponseDto | null> {
+  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/${depositId}`
+  const response = await fetch(url)
+  if (response.status === 404) return null
+  if (!response.ok) {
+    throw new Error(`Failed to read deposit status: ${response.status}`)
+  }
+  return response.json()
+}
+
 /**
  * Fetch the list of markets the matching engine has indexed under a given
  * creator pubkey. The engine returns volume/created-at for markets it knows

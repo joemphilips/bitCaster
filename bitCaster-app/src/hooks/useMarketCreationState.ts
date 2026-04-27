@@ -86,6 +86,14 @@ export function useMarketCreationState() {
   const [oracleAnnouncements, setOracleAnnouncements] = useState<OracleAnnouncement[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // Set after `createMarket` succeeds — the wizard then renders the deposit
+  // step (the user must fund the market's CPMM bot before it goes live).
+  // Holding this in component state, not the localStorage draft, because:
+  //   - The market is already registered on the engine; restarting the
+  //     wizard with a stale draft would attempt re-registration and 409.
+  //   - Refresh / close on this step is acceptable: the market exists in
+  //     `Unfunded` state and the user can return via the dashboard.
+  const [createdMarketConditionId, setCreatedMarketConditionId] = useState<string | null>(null)
   // Track the last blob URL created for the thumbnail preview so we can revoke
   // it when the user picks a new file or when the component unmounts. Without
   // this, every upload leaks a live Blob reference for the page's lifetime.
@@ -489,7 +497,10 @@ export function useMarketCreationState() {
       }
 
       clearDraft()
-      navigate(`/markets/${condition_id}`)
+      // Hand off to the deposit step. The wizard renders DepositStep when
+      // this is set; the user navigates to /markets/{conditionId} from
+      // there once the deposit reaches `Credited`.
+      setCreatedMarketConditionId(condition_id)
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to create market')
     } finally {
@@ -509,6 +520,7 @@ export function useMarketCreationState() {
     thumbnailFile,
     isSubmitting,
     submitError,
+    createdMarketConditionId,
     onOracleChoiceSelect,
     onAnnouncementSelect,
     onExit,
