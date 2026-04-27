@@ -30,18 +30,23 @@ public class InMemoryTradeRegistry
 
     /// <summary>
     /// Register a freshly-matched trade. Sets asymmetric locktimes that match
-    /// the protocol invariant (seller lock shorter than buyer lock so the
-    /// buyer can extract <c>t</c> after the seller spends). The values are
-    /// arbitrary in the mock — the seller's atomic-swap driver only checks
-    /// they are positive timestamps.
+    /// the protocol invariant <c>T_YES &gt; T_sat + Δ</c> — the seller's
+    /// (Alice's) YES-proof locktime is LONGER than the buyer's (Bob's) sat
+    /// locktime, so that Bob has time to extract <c>t</c> from Alice's mint
+    /// spend before his own refund window opens. See
+    /// bitCaster/bitCaster-doc/src/content/docs/technical/protocol/atomic-swap.md
+    /// §"Locktime Constraints". The 1h gap is arbitrary in the mock — the
+    /// real engine uses a 30-second gap — but the ordering must agree with
+    /// the engine so frontend devs running against the mock see the same
+    /// shape.
     /// </summary>
     public TradeRecord Register(Guid tradeId, string sellerPubkey, string buyerPubkey)
     {
         var now = DateTimeOffset.UtcNow;
         var record = new TradeRecord(
             tradeId, sellerPubkey, buyerPubkey,
-            SellerLocktime: now.AddHours(1),
-            BuyerLocktime: now.AddHours(2),
+            SellerLocktime: now.AddHours(2),
+            BuyerLocktime: now.AddHours(1),
             ConfirmedBy: [],
             Confirmed: false);
         return _trades.GetOrAdd(tradeId, record);
