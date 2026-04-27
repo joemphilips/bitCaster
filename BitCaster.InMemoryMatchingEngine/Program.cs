@@ -7,7 +7,6 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<InMemoryOrderBookManager>();
 builder.Services.AddSingleton<LnBitsWalletManager>();
-builder.Services.AddSingleton<InMemoryCpmmState>();
 builder.Services.AddSingleton<InMemoryTradeRegistry>();
 builder.Services.AddHealthChecks();
 builder.Services.AddHttpClient("mint", c =>
@@ -45,6 +44,5 @@ app.MapThumbnailEndpoints();
 app.MapLiquidityEndpoints();
 app.MapPaymentEndpoints();
 app.MapDepositEndpoints();
-app.MapCpmmEndpoints();
 
 app.Run();

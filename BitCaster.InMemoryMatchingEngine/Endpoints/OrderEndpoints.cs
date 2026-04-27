@@ -8,14 +8,6 @@ namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 
 public static class OrderEndpoints
 {
-    /// <summary>
-    /// Sentinel prefix for CPMM bootstrap orders. Mirrors the real engine's
-    /// convention (<c>CpmmBootstrap.cs</c>). When a fill's maker order was
-    /// posted under this prefix, the mock treats the fill as a CPMM trade
-    /// and auto-settles against <see cref="InMemoryCpmmState"/>.
-    /// </summary>
-    private const string CpmmUserPrefix = "cpmm:";
-
     public static void MapOrderEndpoints(this WebApplication app)
     {
         app.MapPost("/api/v1/{marketId}/orders", async (
@@ -23,7 +15,6 @@ public static class OrderEndpoints
             SubmitOrderRequest req,
             HttpRequest httpRequest,
             InMemoryOrderBookManager bookManager,
-            InMemoryCpmmState cpmm,
             InMemoryTradeRegistry trades,
             IHubContext<MarketHub, IMarketHubClient> marketHub,
             IHubContext<TradeHub, ITradeHubClient> tradeHub) =>
@@ -43,7 +34,7 @@ public static class OrderEndpoints
             // Identify the taker. The mock parses NIP-98 without verifying the
             // signature — sufficient for dev/E2E, unsafe in prod (enforced by
             // keeping this helper scoped to the mock project).
-            var takerUserId = CpmmEndpoints.TryExtractPubkeyFromNip98(httpRequest) ?? "anonymous";
+            var takerUserId = Nip98PubkeyExtractor.TryExtract(httpRequest) ?? "anonymous";
 
             var result = bookManager.SubmitOrder(
                 marketId,
@@ -54,35 +45,6 @@ public static class OrderEndpoints
                 userId: takerUserId,
                 timeInForce: req.TimeInForce,
                 ephemeralPubkey: req.EphemeralPubkey);
-
-            // Auto-settle any CPMM-maker fills: for each fill whose maker
-            // order's UserId begins with "cpmm:", decrement the engine's CTF
-            // reserve by the fill size (capped-loss gate). Mirrors the real
-            // engine's CpmmSettlementService.SettleAsync. Per P08 the server
-            // does not track the taker's position — the wallet is the source
-            // of truth for user holdings.
-            foreach (var fill in result.Fills)
-            {
-                var makerOwner = bookManager.GetOrderOwner(fill.MakerOrderId);
-                if (makerOwner is null || !makerOwner.StartsWith(CpmmUserPrefix, StringComparison.Ordinal))
-                    continue;
-
-                // Reserve tokens == fill sats (mock uses 1:1 for simplicity; the
-                // real engine derives token count from the CPMM curve).
-                var tokenAmount = fill.AmountSats;
-                var (outcomeResult, _) = cpmm.TryConsumeReserve(marketId, req.OutcomeId, tokenAmount);
-                if (outcomeResult != InMemoryCpmmState.ReserveResult.Success)
-                {
-                    return Results.BadRequest(new
-                    {
-                        error = "InsufficientCpmmReserve",
-                        detail = outcomeResult.ToString(),
-                        marketId,
-                        outcome = req.OutcomeId,
-                        tokenAmount,
-                    });
-                }
-            }
 
             await marketHub.Clients.Group(marketId)
                 .OrderBookUpdated(bookManager.GetSnapshot(marketId));

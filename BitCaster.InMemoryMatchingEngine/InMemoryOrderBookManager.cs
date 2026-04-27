@@ -100,26 +100,6 @@ public class InMemoryOrderBookManager
         return false;
     }
 
-    /// <summary>
-    /// Look up the owning user id for an order. Used by the CPMM detection in
-    /// <c>OrderEndpoints</c> to identify bootstrap orders (whose UserId is the
-    /// <c>cpmm:{marketId}</c> sentinel). Searches both resting and completed
-    /// orders so the lookup still works when a maker was fully consumed by the
-    /// fill being inspected.
-    /// </summary>
-    public string? GetOrderOwner(Guid orderId)
-    {
-        foreach (var (_, book) in _books)
-        {
-            lock (book)
-            {
-                var owner = book.LookupOwner(orderId);
-                if (owner is not null) return owner;
-            }
-        }
-        return null;
-    }
-
     public OrderStatusView? GetOrderStatus(Guid orderId)
     {
         foreach (var (id, book) in _books)
@@ -292,13 +272,6 @@ internal sealed class OrderBook
             return true;
         }
         return false;
-    }
-
-    public string? LookupOwner(Guid orderId)
-    {
-        foreach (var o in _resting)
-            if (o.Id == orderId) return o.UserId;
-        return _completed.TryGetValue(orderId, out var c) ? c.Order.UserId : null;
     }
 
     public OrderStatusView? LookupStatus(string marketId, Guid orderId)

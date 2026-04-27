@@ -1,4 +1,3 @@
-using BitCaster.InMemoryMatchingEngine.Endpoints;
 using BitCaster.MatchingEngine.Contracts.Hubs;
 using Microsoft.AspNetCore.SignalR;
 
@@ -11,11 +10,11 @@ namespace BitCaster.InMemoryMatchingEngine.Hubs;
 /// <para>
 /// MOCK ONLY — the real engine's <c>TradeHub</c> requires a verified NIP-98
 /// auth token and authorises join calls against the trade aggregate's
-/// recorded seller/buyer user-ids. The mock parses the NIP-98 token to read
-/// the caller's pubkey but does NOT verify the schnorr signature, mirroring
-/// the existing pattern in <see cref="CpmmEndpoints.TryExtractPubkeyFromNip98"/>.
-/// Anyone can join any trade — sufficient for two-browser-tab dev/E2E, unsafe
-/// in prod (enforced by keeping this hub scoped to the mock project).
+/// recorded seller/buyer user-ids. The mock parses the NIP-98 token via
+/// <see cref="Nip98PubkeyExtractor.TryExtract"/> to read the caller's pubkey
+/// but does NOT verify the schnorr signature. Anyone can join any trade —
+/// sufficient for two-browser-tab dev/E2E, unsafe in prod (enforced by
+/// keeping this hub scoped to the mock project).
 /// </para>
 ///
 /// <para>
@@ -91,7 +90,7 @@ public class TradeHub : Hub<ITradeHubClient>
     }
 
     private string NipPubkeyOrAnonymous()
-        => CpmmEndpoints.TryExtractPubkeyFromNip98(Context.GetHttpContext()?.Request!) ?? "anonymous";
+        => Nip98PubkeyExtractor.TryExtract(Context.GetHttpContext()?.Request!) ?? "anonymous";
 
     internal static string GroupName(Guid tradeId) => $"trade-{tradeId}";
 }
