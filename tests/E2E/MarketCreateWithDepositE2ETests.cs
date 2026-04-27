@@ -102,16 +102,17 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     // Wizard navigation — broken into focused per-step helpers
     // -----------------------------------------------------------------------
 
-    private static async Task<IPage> OpenWizardAsync(IBrowserContext context)
+    private static async Task<(IPage Page, List<string> Console)> OpenWizardAsync(IBrowserContext context)
     {
         var page = await context.NewPageAsync();
+        var console = TestHelpers.AttachConsoleCapture(page);
         await SeedWizardEnvironmentAsync(page);
         await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
         });
-        return page;
+        return (page, console);
     }
 
     private static async Task AdvanceStep1ToStep2_BecomeOracleAsync(IPage page)
@@ -197,11 +198,14 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     /// Step 6 → DepositStep: fill description, click Create Market, wait for
     /// the kormir + mint + engine chain to land, return the new conditionId.
     /// The chain runs asynchronously — kormir publish, two mint POSTs, one
-    /// engine POST — so the timeout is generous.
+    /// engine POST — so the timeout is generous. On failure, the page state
+    /// (URL, body text, console messages, error banner) is dumped so CI logs
+    /// surface the root cause without a second debug round-trip.
     /// </summary>
     private static async Task<string> CreateMarketAndReadConditionIdAsync(
         IPage page,
-        string description)
+        string description,
+        IReadOnlyList<string> console)
     {
         await page.GetByPlaceholder("Describe your market in detail")
             .FillAsync(description);
@@ -211,8 +215,17 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         await createBtn.ClickAsync();
 
         var conditionIdEl = page.GetByTestId("condition-id");
-        await Assertions.Expect(conditionIdEl)
-            .ToBeVisibleAsync(new() { Timeout = 60_000 });
+        try
+        {
+            await Assertions.Expect(conditionIdEl)
+                .ToBeVisibleAsync(new() { Timeout = 60_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page, console,
+                "DepositStep never rendered after clicking Create Market — the kormir publish + mint registerCondition/registerPartition + engine createMarket chain failed somewhere.");
+        }
 
         var text = await conditionIdEl.InnerTextAsync();
         // The component renders "Market created\n<conditionId>". The id is the
@@ -230,13 +243,13 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         string title,
         string description)
     {
-        var page = await OpenWizardAsync(context);
+        var (page, console) = await OpenWizardAsync(context);
         await AdvanceStep1ToStep2_BecomeOracleAsync(page);
         await AdvanceStep2ToStep3_YesNoAsync(page);
         await AdvanceStep3ToStep4_FillBasicsAsync(page, title);
         await AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(page);
         await AdvanceStep5ToStep6_PickQuickLiquidityAsync(page);
-        var conditionId = await CreateMarketAndReadConditionIdAsync(page, description);
+        var conditionId = await CreateMarketAndReadConditionIdAsync(page, description, console);
         return (page, conditionId);
     }
 
