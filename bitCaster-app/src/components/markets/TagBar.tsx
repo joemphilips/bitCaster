@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { SlidersHorizontal, ChevronLeft, ChevronRight } from 'lucide-react'
-import type { MetaTag, CategoryTag } from '@/types/market'
+import type { CategoryTag } from '@/types/market'
 
 interface TagBarProps {
-  metaTags: MetaTag[]
   categoryTags: CategoryTag[]
   selectedTag: string | null
   filtersVisible: boolean
@@ -13,7 +12,6 @@ interface TagBarProps {
 }
 
 export function TagBar({
-  metaTags,
   categoryTags,
   selectedTag,
   filtersVisible,
@@ -40,7 +38,7 @@ export function TagBar({
       resizeObserver.observe(scrollRef.current)
     }
     return () => resizeObserver.disconnect()
-  }, [metaTags, categoryTags])
+  }, [categoryTags])
 
   const scroll = (direction: 'left' | 'right') => {
     if (scrollRef.current) {
@@ -53,7 +51,10 @@ export function TagBar({
   }
 
   return (
-    <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md relative">
+    <div
+      data-testid="market-tag-bar"
+      className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md relative"
+    >
       {/* Left scroll button */}
       {canScrollLeft && (
         <button
@@ -80,28 +81,6 @@ export function TagBar({
         className="flex items-center gap-2 px-4 sm:px-6 lg:px-8 py-3 overflow-x-auto scrollbar-hide"
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
-        {/* Meta Tags */}
-        {metaTags.map((tag) => {
-          const isSelected = selectedTag === tag.id
-          return (
-            <button
-              key={tag.id}
-              onClick={() => onTagSelect?.(tag.id)}
-              className={`px-4 py-2 rounded-full font-bold text-sm transition-all transform hover:scale-105 whitespace-nowrap ${
-                isSelected
-                  ? 'bg-amber-500 dark:bg-amber-400 text-white shadow-lg scale-105'
-                  : 'bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-800/40'
-              }`}
-              title={tag.description}
-            >
-              {tag.label}
-            </button>
-          )
-        })}
-
-        {/* Divider */}
-        <div className="w-px bg-slate-300 dark:bg-slate-700 mx-2" />
-
         {/* Category Tags */}
         {categoryTags.map((tag) => {
           const isSelected = selectedTag === tag.id

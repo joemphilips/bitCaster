@@ -500,5 +500,11 @@
     "shortBy": "short by",
     "sats": "{{count}} sats",
     "topUp": "Top Up"
+  },
+  "sort": {
+    "label": "Sort markets",
+    "trending": "Trending",
+    "popular": "Popular",
+    "new": "New"
   }
 }

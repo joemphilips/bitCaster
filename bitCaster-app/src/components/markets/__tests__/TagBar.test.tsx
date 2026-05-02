@@ -2,12 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
 import { TagBar } from '../TagBar'
-import type { MetaTag, CategoryTag } from '@/types/market'
-
-const metaTags: MetaTag[] = [
-  { id: 'trending', label: 'Trending', description: 'High activity' },
-  { id: 'popular', label: 'Popular', description: 'Most volume' },
-]
+import type { CategoryTag } from '@/types/market'
 
 const categoryTags: CategoryTag[] = [
   { id: 'sports', label: 'Sports', marketCount: 42 },
@@ -15,10 +10,9 @@ const categoryTags: CategoryTag[] = [
 ]
 
 describe('TagBar', () => {
-  it('renders meta tags and category tags', () => {
+  it('renders category tag chips (Row 2 — sort buttons live in SortBar)', () => {
     render(
       <TagBar
-        metaTags={metaTags}
         categoryTags={categoryTags}
         selectedTag={null}
         filtersVisible={false}
@@ -26,10 +20,23 @@ describe('TagBar', () => {
       />
     )
 
-    expect(screen.getByText('Trending')).toBeInTheDocument()
-    expect(screen.getByText('Popular')).toBeInTheDocument()
     expect(screen.getByText('Sports')).toBeInTheDocument()
     expect(screen.getByText('Crypto')).toBeInTheDocument()
+  })
+
+  it('does not render sort dimensions inside the tag chip row (T4.2.d)', () => {
+    render(
+      <TagBar
+        categoryTags={categoryTags}
+        selectedTag={null}
+        filtersVisible={false}
+        activeFilterCount={0}
+      />
+    )
+
+    expect(screen.queryByText('Trending')).not.toBeInTheDocument()
+    expect(screen.queryByText('Popular')).not.toBeInTheDocument()
+    expect(screen.queryByText('New')).not.toBeInTheDocument()
   })
 
   it('calls onTagSelect when a tag is clicked', async () => {
@@ -38,7 +45,6 @@ describe('TagBar', () => {
 
     render(
       <TagBar
-        metaTags={metaTags}
         categoryTags={categoryTags}
         selectedTag={null}
         filtersVisible={false}
@@ -57,7 +63,6 @@ describe('TagBar', () => {
 
     render(
       <TagBar
-        metaTags={metaTags}
         categoryTags={categoryTags}
         selectedTag={null}
         filtersVisible={false}
@@ -73,7 +78,6 @@ describe('TagBar', () => {
   it('shows active filter count badge', () => {
     render(
       <TagBar
-        metaTags={metaTags}
         categoryTags={categoryTags}
         selectedTag={null}
         filtersVisible={false}

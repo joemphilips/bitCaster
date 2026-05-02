@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { TagBar } from './TagBar'
+import { SortBar } from './SortBar'
 import { FilterControls } from './FilterControls'
 import { MarketCard } from './MarketCard'
 import { useWalletStore } from '@/stores/wallet'
 import type { MarketDiscoveryProps, MarketType, VolumeRange, Market } from '@/types/market'
 
 export function MarketDiscovery({
-  metaTags,
   categoryTags,
   markets,
   selectedTag,
+  sort,
+  onSortChange,
   searchQuery: _searchQuery = '',
   onSearch: _onSearch,
   onTagSelect,
@@ -83,8 +85,10 @@ export function MarketDiscovery({
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
       <div className="sticky top-14 md:top-16 z-40 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
         <div className="max-w-7xl mx-auto">
+          {/* Row 1 — Sort buttons (always present, ADR-009 dimensions). */}
+          <SortBar active={sort} onSortChange={onSortChange} />
+          {/* Row 2 — Tag chips, multi-select category filter. */}
           <TagBar
-            metaTags={metaTags}
             categoryTags={categoryTags}
             selectedTag={selectedTag}
             filtersVisible={filtersVisible}

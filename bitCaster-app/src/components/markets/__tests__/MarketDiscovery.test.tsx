@@ -1,11 +1,8 @@
 import { render, screen } from '@testing-library/react'
-import { describe, it, expect } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { describe, it, expect, vi } from 'vitest'
 import { MarketDiscovery } from '../MarketDiscovery'
-import type { Market, MetaTag, CategoryTag } from '@/types/market'
-
-const testMetaTags: MetaTag[] = [
-  { id: 'trending', label: 'Trending', description: 'High activity' },
-]
+import type { Market, CategoryTag } from '@/types/market'
 
 const testCategoryTags: CategoryTag[] = [
   { id: 'sports', label: 'Sports', marketCount: 10 },
@@ -52,34 +49,57 @@ const testMarkets: Market[] = [
 ]
 
 describe('MarketDiscovery', () => {
-  it('renders TagBar and market grid with markets', () => {
+  it('renders SortBar (Row 1), TagBar (Row 2), and market grid', () => {
     render(
       <MarketDiscovery
-        metaTags={testMetaTags}
         categoryTags={testCategoryTags}
         markets={testMarkets}
         selectedTag={null}
+        sort="trending"
+        onSortChange={vi.fn()}
       />
     )
 
-    // TagBar rendered
-    expect(screen.getByText('Trending')).toBeInTheDocument()
+    // Row 1 — sort buttons live in their own bar
+    expect(screen.getByTestId('market-sort-trending')).toBeInTheDocument()
+    expect(screen.getByTestId('market-sort-popular')).toBeInTheDocument()
+    expect(screen.getByTestId('market-sort-new')).toBeInTheDocument()
+
+    // Row 2 — category tags
     expect(screen.getByText('Sports')).toBeInTheDocument()
 
-    // Market cards rendered
+    // Cards rendered
     expect(screen.getByText('Will Bitcoin reach $100K?')).toBeInTheDocument()
   })
 
   it('shows empty state when markets array is empty', () => {
     render(
       <MarketDiscovery
-        metaTags={testMetaTags}
         categoryTags={testCategoryTags}
         markets={[]}
         selectedTag={null}
+        sort="trending"
+        onSortChange={vi.fn()}
       />
     )
 
     expect(screen.getByText('No markets found')).toBeInTheDocument()
+  })
+
+  it('forwards SortBar interactions to onSortChange (T4.2.a)', async () => {
+    const user = userEvent.setup()
+    const onSortChange = vi.fn()
+    render(
+      <MarketDiscovery
+        categoryTags={testCategoryTags}
+        markets={testMarkets}
+        selectedTag={null}
+        sort="trending"
+        onSortChange={onSortChange}
+      />
+    )
+
+    await user.click(screen.getByTestId('market-sort-new'))
+    expect(onSortChange).toHaveBeenCalledWith('new')
   })
 })
