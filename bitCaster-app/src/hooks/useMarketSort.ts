@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { Market } from '@/types/market'
 
 /**
@@ -53,8 +53,7 @@ export function sortMarkets(markets: Market[], sort: MarketSort): Market[] {
 }
 
 export function useMarketSort(markets: Market[]): UseMarketSortResult {
-  const [sort, setSortState] = useState<MarketSort>(DEFAULT_MARKET_SORT)
-  const setSort = useCallback((next: MarketSort) => setSortState(next), [])
+  const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT)
   const sorted = useMemo(() => sortMarkets(markets, sort), [markets, sort])
   return { sort, setSort, sorted }
 }
