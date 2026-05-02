@@ -516,6 +516,20 @@ export async function fetchThumbnailUrl(conditionId: string): Promise<string | n
   }
 }
 
+/**
+ * Resolve a market's thumbnail URL for rendering. Returns the canonical
+ * matching-engine thumbnail URL when the engine reports a stored image,
+ * the explicit URL the caller has already resolved, or `null` when no
+ * thumbnail is available — the caller renders a placeholder asset instead
+ * of letting `<div style="background-image: url()">` produce a broken
+ * empty-string URL request (the P6 P4.3 regression).
+ */
+export function getMarketThumbnail(market: { id: string; imageUrl?: string | null }): string | null {
+  const explicit = market.imageUrl
+  if (typeof explicit === 'string' && explicit.trim().length > 0) return explicit
+  return null
+}
+
 // =============================================================================
 // CPMM Bot Deposit API (matching engine MarketFunding aggregate)
 // =============================================================================

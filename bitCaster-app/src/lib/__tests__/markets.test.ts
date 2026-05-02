@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { mapConditionToMarket, filterMarkets, getTagValue, getTagValues, extractCategoryTagIds } from '../markets'
+import {
+  mapConditionToMarket,
+  filterMarkets,
+  getTagValue,
+  getTagValues,
+  extractCategoryTagIds,
+  getMarketThumbnail,
+} from '../markets'
 import type { ConditionInfo } from '../markets'
 import type { FilterState } from '@/types/market'
 
@@ -148,5 +155,24 @@ describe('filterMarkets', () => {
     const result = filterMarkets(markets, { ...baseFilter, marketTypes: ['categorical'] })
     expect(result).toHaveLength(1)
     expect(result[0].type).toBe('categorical')
+  })
+})
+
+describe('getMarketThumbnail (T4.3.c)', () => {
+  it('returns the engine thumbnail URL when imageUrl resolved', () => {
+    const url = getMarketThumbnail({ id: 'cond1', imageUrl: '/api/v1/cond1/thumbnail' })
+    expect(url).toBe('/api/v1/cond1/thumbnail')
+  })
+
+  it('returns null when imageUrl is empty string (no broken url() in CSS)', () => {
+    expect(getMarketThumbnail({ id: 'cond1', imageUrl: '' })).toBeNull()
+  })
+
+  it('returns null when imageUrl is whitespace-only', () => {
+    expect(getMarketThumbnail({ id: 'cond1', imageUrl: '   ' })).toBeNull()
+  })
+
+  it('returns null when imageUrl is omitted entirely', () => {
+    expect(getMarketThumbnail({ id: 'cond1' })).toBeNull()
   })
 })
