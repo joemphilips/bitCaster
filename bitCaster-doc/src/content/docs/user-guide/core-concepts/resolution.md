@@ -36,12 +36,14 @@ bitCaster's DLC approach takes the opposite stance: make it clear who is respons
 
 ## After Resolution
 
-Once the oracle publishes its attestation, the mint processes the result.
+Once the oracle publishes its attestation, the mint processes the result and the market itself closes. From that moment on, no new orders or deposits are accepted.
 
 For example, in a market with YES/NO outcomes:
 
 - Winning tokens become redeemable for their full face value.
 - Losing tokens become worthless — they can no longer be swapped or redeemed.
+
+There is also a second path that closes a market. If the oracle's announced deadline passes without an attestation arriving, the market closes by deadline. The redemption window for winning tokens is set per-mint, not per-market — every market a given mint hosts shares the same window length, which the mint commits to in its vesting period.
 
 ## Redeeming Tokens
 

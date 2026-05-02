@@ -31,6 +31,12 @@ The CPMM is simple and battle-tested — Gnosis and early Polymarket both used t
 
 That's where manual market makers come in. As a market attracts attention, professional or experienced traders can place their own limit orders with better pricing than the CPMM provides. They can concentrate liquidity around the prices where trading actually happens, offering traders better deals. As this happens, the creator can withdraw some or all of their CPMM liquidity — the market now sustains itself through organic participation.
 
+## Market Lifecycle
+
+A market stays open until either of two events arrives. The first is the oracle's announced deadline — the time the oracle has committed to attesting an outcome. The second is the attestation itself, which can arrive earlier if the event resolves before the deadline. Whichever comes first closes the market.
+
+After a market closes, no new orders or deposits are accepted. From that point on, trading is over — what remains is the redemption phase, where winners exchange their conditional tokens for ecash. The redemption window is set per-mint, not per-market — the same window length applies to every market a given mint hosts.
+
 ## Further reading
 
 - [Market Making & Initial Liquidity](/technical/architecture/market-making/) — the technical details of CPMM mechanics, reserve formulas, and known limitations
