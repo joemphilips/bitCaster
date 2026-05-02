@@ -170,6 +170,10 @@ function AppRoutes() {
   // Ensure stored mints have full info (CTF badge, NUTs, contact) and that
   // the status indicator reflects reality. Re-fetches any mint missing
   // `info.nuts` — covers pre-P3 users who have a stale mint row in storage.
+  // The default mint additionally re-fetches if `nuts.CTF` is missing, since
+  // staging enabled NUT-CTF after some users had already snapshot their
+  // mint info; without the refresh those users see a stale "Ecash only"
+  // badge despite the mint now advertising CTF (P6 P4.4).
   // Also seeds the default mint for first-run users who land directly on
   // /settings or /mint-details without going through the wizard (P5 item 1);
   // the wizard's own `completeSetup()` handles the in-wizard case.
@@ -202,7 +206,9 @@ function AppRoutes() {
       }
       for (const m of mints) {
         const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)?.nuts;
-        if (!nuts) {
+        const isDefault = m.url === DEFAULT_MINT_URL;
+        const missingCtfOnDefault = isDefault && nuts != null && !('CTF' in nuts);
+        if (!nuts || missingCtfOnDefault) {
           addMint(m.url).catch(() => {});
         }
       }
