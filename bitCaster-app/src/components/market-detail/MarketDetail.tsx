@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { MarketDetailProps } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
+import { useMarketState } from '@/hooks/useMarketState'
 import { MarketHeader } from './MarketHeader'
 import { TradingPanel } from './TradingPanel'
 import { PriceChart } from './PriceChart'
@@ -89,9 +90,15 @@ export function MarketDetail({
   // Compute current display for price chart
   const currentDisplay = computeCurrentDisplay(market)
 
-  // Determine if market is resolved and if trading is enabled
+  // Determine market state per ADR-010. The resolved branch surfaces the
+  // resolution information panel; the closed branch (resolved OR expired
+  // OR violation) hides the trade pane and any deposit / payment-request
+  // affordances. `isResolved` keeps the existing semantics for the
+  // resolution-info badge; `isTradingEnabled` is the single closed-state
+  // gate consulted across the trade and deposit affordances. P4.1 + P4.5.
   const isResolved = market.resolution.status === 'resolved'
-  const isTradingEnabled = market.resolution.status === 'open'
+  const marketState = useMarketState(market)
+  const isTradingEnabled = marketState === 'Open'
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
@@ -159,12 +166,25 @@ export function MarketDetail({
                 `liveMarketId` threads the per-outcome market ID through to
                 the SignalR subscription so the book updates live without
                 a page reload. The initial snapshot comes via `orderBook`
-                (prefetched in MarketDetailPage). */}
-            {market.type === 'yesno' && !isResolved && (
-              <OrderBookSection
-                orderBook={market.orderBook}
-                liveMarketId={`${market.id}-Yes`}
-              />
+                (prefetched in MarketDetailPage).
+                Closed markets render the order book frozen (no live
+                subscription) so users still get last-traded context — see
+                ADR-010 P4.1. */}
+            {market.type === 'yesno' && (
+              <div className="relative" data-testid="order-book-section">
+                {marketState === 'Closed' && (
+                  <span
+                    data-testid="market-closed-badge"
+                    className="absolute right-3 top-3 z-10 rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-semibold uppercase text-rose-600 dark:text-rose-400"
+                  >
+                    {t('market.closed')}
+                  </span>
+                )}
+                <OrderBookSection
+                  orderBook={market.orderBook}
+                  liveMarketId={isTradingEnabled ? `${market.id}-Yes` : undefined}
+                />
+              </div>
             )}
 
             {/* Resolution Info (in normal position for open markets) */}

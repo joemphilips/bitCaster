@@ -6,6 +6,7 @@ import {
   getTagValues,
   extractCategoryTagIds,
   getMarketThumbnail,
+  isMarketClosed,
 } from '../markets'
 import type { ConditionInfo } from '../markets'
 import type { FilterState } from '@/types/market'
@@ -155,6 +156,24 @@ describe('filterMarkets', () => {
     const result = filterMarkets(markets, { ...baseFilter, marketTypes: ['categorical'] })
     expect(result).toHaveLength(1)
     expect(result[0].type).toBe('categorical')
+  })
+})
+
+describe('isMarketClosed (P4.1 close-state mapping)', () => {
+  it('returns false for a pending oracle attestation', () => {
+    expect(isMarketClosed({ status: 'pending' })).toBe(false)
+  })
+
+  it('returns true for an attested oracle outcome', () => {
+    expect(isMarketClosed({ status: 'attested' })).toBe(true)
+  })
+
+  it('returns true for an expired announcement (deadline passed without attestation)', () => {
+    expect(isMarketClosed({ status: 'expired' })).toBe(true)
+  })
+
+  it('returns true for an oracle CET-violation report', () => {
+    expect(isMarketClosed({ status: 'violation' })).toBe(true)
   })
 })
 

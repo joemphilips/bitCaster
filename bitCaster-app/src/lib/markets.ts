@@ -23,6 +23,18 @@ export interface AttestationState {
   attested_at: number | null
 }
 
+/**
+ * Per ADR-010 a market is `Closed` once the oracle has spoken (`attested`,
+ * `violation`) OR the announcement deadline has passed without an attestation
+ * (`expired`). Only `pending` remains `Open`. The previous mapping treated
+ * everything except `attested` as `open`, which kept expired/violation
+ * markets in the trade UI well past their close window — the user-visible
+ * regression flagged in P6 §`markets/{marketid}`.
+ */
+export function isMarketClosed(attestation: Pick<AttestationState, 'status'>): boolean {
+  return attestation.status !== 'pending'
+}
+
 export interface ConditionInfo {
   condition_id: string
   tags?: string[][]              // NIP-88 tag array (new spec)
@@ -234,7 +246,7 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     outcomes[0].toLowerCase() === 'yes' &&
     outcomes[1].toLowerCase() === 'no'
 
-  const isResolved = c.attestation.status === 'attested'
+  const isResolved = isMarketClosed(c.attestation)
   const tags = c.tags ?? []
   const title = getTagValue(tags, 'description') ?? c.description ?? 'Untitled Market'
 
