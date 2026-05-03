@@ -193,16 +193,19 @@ public class MarketDiscoveryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task MintUnavailable_ShowsErrorState()
+    public async Task EngineUnavailable_ShowsErrorState()
     {
         await using var context = await NewIsolatedContextAsync();
-        // This test verifies the error state when mint is down.
-        // We navigate with a broken proxy to simulate unavailability.
+        // This test verifies the error state when the matching engine is down.
+        // Pre-Phase 2 the markets-list page hit mintd directly; per ADR-009
+        // it now consumes the engine's `/api/v1/markets/query` catalogue
+        // proxy, so a 5xx / aborted call from the engine is the failure mode
+        // that surfaces the empty-state UI.
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        // Block the mint API to simulate failure
-        await page.RouteAsync("**/v1/conditions", route => route.AbortAsync());
+        // Block the engine markets-query proxy to simulate failure
+        await page.RouteAsync("**/api/v1/markets/query*", route => route.AbortAsync());
 
         await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
         {

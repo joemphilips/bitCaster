@@ -42,19 +42,42 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        // Intercept metadata API calls and return known values
-        await page.RouteAsync("**/api/v1/*/metadata", async route =>
+        // Per ADR-009 the markets-list page now reads volume / state from the
+        // engine's catalogue proxy directly (`MarketCatalogueEntry.volume24hSats`).
+        // Intercept the engine endpoint with a known volume so we can verify the
+        // card renders the engine-derived value. The deprecated per-market
+        // /api/v1/{id}/metadata fetch is no longer issued from this page; for
+        // backward compat we leave a stub in place that returns deterministic
+        // values in case any future feature re-introduces a per-card detail
+        // fetch.
+        await page.RouteAsync("**/api/v1/markets/query*", async route =>
         {
             await route.FulfillAsync(new RouteFulfillOptions
             {
                 ContentType = "application/json",
                 Body = JsonSerializer.Serialize(new
                 {
-                    marketId = "test",
-                    totalVolumeSats = 50000,
-                    totalTrades = 15,
-                    uniqueTraderCount = 42,
-                    totalLiquiditySats = 100000,
+                    markets = new[]
+                    {
+                        new
+                        {
+                            conditionId = "metadata-display-test",
+                            outcomes = new[] { "YES", "NO" },
+                            title = "Will Bitcoin reach $100K",
+                            thumbnailUrl = (string?)null,
+                            creatorPubkey = (string?)null,
+                            deadline = (string?)null,
+                            state = "open",
+                            createdAt = "2026-01-01T00:00:00Z",
+                            volume24hSats = 50_000L,
+                            volume30dSats = 200_000L,
+                            lastTradedPrice = (double?)null,
+                            categoryTags = new[] { "crypto" },
+                            lastSuccessfulRefreshAt = "2026-05-02T09:58:00Z",
+                        },
+                    },
+                    nextCursor = (string?)null,
+                    lastSuccessfulRefreshAt = "2026-05-02T09:58:00Z",
                 }),
             });
         });
@@ -65,13 +88,13 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        // Wait for seeded market cards to render
+        // The card displays the volume from the engine. 50_000 sats renders
+        // as "50K" via the formatBtc helper used in MarketCard.tsx.
         var btcMarket = page.GetByText("Will Bitcoin reach $100K");
         await Assertions.Expect(btcMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
-        // Verify that metadata values are displayed (42 traders should appear)
-        var traderCount = page.GetByText("42");
-        await Assertions.Expect(traderCount.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        var volumeBadge = page.GetByText("50.0K", new() { Exact = false });
+        await Assertions.Expect(volumeBadge.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
     [Fact]

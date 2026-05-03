@@ -3,16 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // `BrandMottoSplash` calls `useAppLoadingState` unconditionally (Rules of
 // Hooks), so even when `forcedState` overrides the rendered output we still
-// want the underlying `fetchMarkets` effect to settle without polluting the
+// want the underlying `getMarkets` effect to settle without polluting the
 // jsdom run with unhandled-rejection or "act warning" noise.
-const { mockFetchMarkets } = vi.hoisted(() => ({
-  mockFetchMarkets: vi.fn(),
+const { mockGetMarkets } = vi.hoisted(() => ({
+  mockGetMarkets: vi.fn(),
 }))
 vi.mock('@/lib/markets', async () => {
   const actual = await vi.importActual<typeof import('@/lib/markets')>('@/lib/markets')
   return {
     ...actual,
-    fetchMarkets: (...args: unknown[]) => mockFetchMarkets(...args),
+    getMarkets: (...args: unknown[]) => mockGetMarkets(...args),
   }
 })
 
@@ -21,9 +21,13 @@ import { __resetAppLoadingStateForTests } from '@/hooks/useAppLoadingState'
 
 beforeEach(() => {
   __resetAppLoadingStateForTests()
-  mockFetchMarkets.mockReset()
+  mockGetMarkets.mockReset()
   // Default to a resolved fetch so the inner hook completes quickly.
-  mockFetchMarkets.mockResolvedValue([])
+  mockGetMarkets.mockResolvedValue({
+    markets: [],
+    nextCursor: null,
+    lastSuccessfulRefreshAt: '2026-05-02T09:58:00Z',
+  })
 })
 
 afterEach(() => {
@@ -33,7 +37,7 @@ afterEach(() => {
 /**
  * Drain the inner `useAppLoadingState` effect that fires from
  * `BrandMottoSplash` regardless of `forcedState` (Rules of Hooks force the
- * unconditional call). Without this the resolved `fetchMarkets` promise
+ * unconditional call). Without this the resolved `getMarkets` promise
  * triggers a `setState` after the test body finishes and React logs an
  * "update not wrapped in act" warning. We don't care about the resulting
  * state — only that the effect has settled before the test exits.
@@ -42,7 +46,7 @@ async function flushSplashEffects() {
   await act(async () => {
     await Promise.resolve()
   })
-  await waitFor(() => expect(mockFetchMarkets).toHaveBeenCalled())
+  await waitFor(() => expect(mockGetMarkets).toHaveBeenCalled())
 }
 
 describe('BrandMottoSplash', () => {

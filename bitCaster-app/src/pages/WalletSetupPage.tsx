@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router'
 import { WalletSetup } from '@/components/wallet-setup/WalletSetup'
 import { NowLoadingPage } from '@/components/wallet-setup/NowLoadingPage'
 import { useWalletStore } from '@/stores/wallet'
-import { fetchConditions } from '@/lib/markets'
+import { getMarkets } from '@/lib/markets'
 import * as bip39Lib from '@/lib/bip39'
 import type { SetupStep, SetupChoice, MintConnectionTest, BackgroundDataLoad } from '@/types/wallet-setup'
 
@@ -55,13 +55,18 @@ export function WalletSetupPage() {
     if (currentStep >= 3 && !marketDataLoaded && !marketDataFetchStarted.current) {
       marketDataFetchStarted.current = true
       setBackgroundDataLoad((prev) => ({ ...prev, status: 'loading' }))
-      fetchConditions()
-        .then((conditions) => {
+      // Pre-warm the matching-engine catalogue proxy so the markets page
+      // renders instantly after setup completes. Hits the same
+      // `/api/v1/markets/query` endpoint as the markets-list page
+      // post-Phase 2 wiring; mintd is consulted only on the market-detail
+      // page (per ADR-009).
+      getMarkets()
+        .then((result) => {
           setMarketDataLoaded(true)
           setBackgroundDataLoad((prev) => ({
             ...prev,
             status: 'loaded',
-            conditionsLoaded: conditions.length,
+            conditionsLoaded: result.markets.length,
           }))
         })
         .catch(() => {

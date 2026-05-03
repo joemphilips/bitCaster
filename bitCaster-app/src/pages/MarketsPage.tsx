@@ -1,14 +1,16 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 import { MarketDiscovery } from '@/components/markets'
-import { fetchMarkets, filterMarkets } from '@/lib/markets'
-import { useMarketSort } from '@/hooks/useMarketSort'
+import { getMarkets, filterMarkets } from '@/lib/markets'
+import { DEFAULT_MARKET_SORT, type MarketSort } from '@/hooks/useMarketSort'
 import type { Market, MarketType, VolumeRange, FilterState, CategoryTag } from '@/types/market'
 
 export function MarketsPage() {
   const navigate = useNavigate()
   const [markets, setMarkets] = useState<Market[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
   const [filter, setFilter] = useState<FilterState>({
@@ -18,20 +20,27 @@ export function MarketsPage() {
     volumeRange: {},
   })
 
+  // Sort dimension is hoisted into the engine query (`?sort=`); the page now
+  // owns only the active selection, not the client-side ordering.
+  const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT)
+
   const loadMarkets = useCallback(() => {
     setLoading(true)
     setError(null)
-    fetchMarkets()
+    setNextCursor(null)
+    const tags = selectedTag ? [selectedTag] : undefined
+    getMarkets({ sort, tags })
       .then((result) => {
-        setMarkets(result)
+        setMarkets(result.markets)
+        setNextCursor(result.nextCursor)
       })
       .catch(() => {
-        setError('Failed to load markets. Please check that the mint is running.')
+        setError('Failed to load markets. Please check that the matching engine is running.')
       })
       .finally(() => {
         setLoading(false)
       })
-  }, [])
+  }, [sort, selectedTag])
 
   useEffect(() => {
     loadMarkets()
@@ -51,15 +60,14 @@ export function MarketsPage() {
     }))
   }, [markets])
 
+  // Search / market-type / volume / closing-date filters stay client-side —
+  // the engine endpoint exposes only `tag` and `state`. Tag selection is
+  // pushed up to the API call, so we strip it from the client filter to
+  // avoid double-applying.
   const filteredMarkets = useMemo(
-    () => filterMarkets(markets, { ...filter, selectedTag }),
-    [markets, filter, selectedTag]
+    () => filterMarkets(markets, { ...filter, selectedTag: null }),
+    [markets, filter]
   )
-
-  // Apply the ADR-009 sort dimensions client-side until engine PR #26
-  // exposes the `?sort=` query parameter. The hook always returns a stable
-  // copy so the underlying markets array is never mutated.
-  const { sort, setSort, sorted: visibleMarkets } = useMarketSort(filteredMarkets)
 
   const handleTagSelect = useCallback((tagId: string) => {
     setSelectedTag((prev) => (prev === tagId ? null : tagId))
@@ -82,8 +90,22 @@ export function MarketsPage() {
   }, [navigate])
 
   const handleLoadMore = useCallback(() => {
-    // No-op for M2 — all data loaded at once
-  }, [])
+    if (!nextCursor || loadingMore) return
+    setLoadingMore(true)
+    const tags = selectedTag ? [selectedTag] : undefined
+    getMarkets({ sort, tags, cursor: nextCursor })
+      .then((result) => {
+        setMarkets((prev) => [...prev, ...result.markets])
+        setNextCursor(result.nextCursor)
+      })
+      .catch(() => {
+        // Pagination failure is non-fatal — leave the existing list in place
+        // and surface nothing rather than blow up the page.
+      })
+      .finally(() => {
+        setLoadingMore(false)
+      })
+  }, [nextCursor, loadingMore, sort, selectedTag])
 
   const handleViewSecondaryMarket = useCallback(
     (_baseMarketId: string, secondaryMarketId: string) => {
@@ -117,7 +139,7 @@ export function MarketsPage() {
   return (
     <MarketDiscovery
       categoryTags={derivedCategoryTags}
-      markets={visibleMarkets}
+      markets={filteredMarkets}
       selectedTag={selectedTag}
       sort={sort}
       onSortChange={setSort}

@@ -37,6 +37,7 @@ app.MapHealthChecks("/health");
 app.MapHub<MarketHub>("/hubs/market");
 app.MapHub<TradeHub>("/hubs/trade");
 app.MapMarketEndpoints();
+app.MapMarketQueryEndpoint();
 app.MapOrderEndpoints();
 app.MapBookEndpoints();
 app.MapMetadataEndpoints();

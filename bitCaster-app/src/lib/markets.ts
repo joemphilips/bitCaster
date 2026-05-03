@@ -4,9 +4,24 @@ import type {
   OrderBook,
   Order,
 } from '@/types/market-detail'
+import type { MarketSort } from '@/hooks/useMarketSort'
+import type { components } from '@/generated/api'
 import { getNdk } from '@/lib/nostr'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { bytesToHex } from 'nostr-tools/utils'
+
+// Types from generated OpenAPI spec
+
+export type SubmitOrderRequest = components['schemas']['SubmitOrderRequest']
+export type SubmitOrderResponse = components['schemas']['SubmitOrderResponse']
+export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
+export type LevelDto = components['schemas']['LevelDto']
+export type Fill = components['schemas']['Fill']
+export type MarketMetadataSnapshot = components['schemas']['MarketMetadataSnapshot']
+export type CreateMarketRequest = components['schemas']['CreateMarketRequest']
+export type CreateMarketResponse = components['schemas']['CreateMarketResponse']
+export type CreatorMarketEntry = components['schemas']['CreatorMarketEntry']
+export type CreatorMarketsResponse = components['schemas']['CreatorMarketsResponse']
 
 // CDK mint response types
 
@@ -30,6 +45,12 @@ export interface AttestationState {
  * everything except `attested` as `open`, which kept expired/violation
  * markets in the trade UI well past their close window — the user-visible
  * regression flagged in P6 §`markets/{marketid}`.
+ *
+ * Only the market-detail page consumes this helper: per ADR-009 the detail
+ * page MUST hit mintd directly to verify market existence, and the engine's
+ * `MarketCatalogueEntry.state` (used by the markets-list page) flattens the
+ * same logic into an `open|closed` enum without exposing the underlying
+ * attestation status.
  */
 export function isMarketClosed(attestation: Pick<AttestationState, 'status'>): boolean {
   return attestation.status !== 'pending'
@@ -68,6 +89,13 @@ interface ConditionsResponse {
   conditions: ConditionInfo[]
 }
 
+/**
+ * Fetch the full mintd condition catalogue. Per ADR-009 only the
+ * market-detail page (`/markets/{conditionId}`) consumes this directly —
+ * it MUST reach mintd to verify a market exists before the user can place
+ * deposits or orders. The markets-list page goes through the engine's
+ * `/api/v1/markets/query` proxy (`getMarkets()` below).
+ */
 export async function fetchConditions(): Promise<ConditionInfo[]> {
   const response = await fetch('/v1/conditions')
   if (!response.ok) {
@@ -75,65 +103,6 @@ export async function fetchConditions(): Promise<ConditionInfo[]> {
   }
   const data: ConditionsResponse = await response.json()
   return data.conditions
-}
-
-export function mapConditionToMarket(c: ConditionInfo): Market {
-  // Determine market type from partition structure
-  const firstPartition = c.partitions[0]
-  const outcomes = firstPartition?.partition ?? []
-
-  const isYesNo =
-    outcomes.length === 2 &&
-    outcomes[0].toLowerCase() === 'yes' &&
-    outcomes[1].toLowerCase() === 'no'
-
-  const now = new Date().toISOString()
-  const tags = c.tags ?? []
-  const title = getTagValue(tags, 'description') ?? c.description ?? 'Untitled Market'
-  const categoryTags = extractCategoryTagIds(tags)
-  const metaTags = getTagValues(tags, 'n')
-
-  if (isYesNo) {
-    return {
-      id: c.condition_id,
-      title,
-      type: 'yesno',
-      imageUrl: '',
-      categoryTags,
-      metaTags,
-      currentOdds: { yes: 50, no: 50 },
-      volume: 0,
-      liquidity: 0,
-      traderCount: 0,
-      closingDate: now,
-      createdDate: now,
-      activeSince: now,
-      creatorFeePercent: 0,
-      baseMarket: 'sats',
-    }
-  }
-
-  return {
-    id: c.condition_id,
-    title,
-    type: 'categorical',
-    imageUrl: '',
-    categoryTags,
-    metaTags,
-    outcomes: outcomes.map((label, i) => ({
-      id: `outcome-${i}`,
-      label,
-      odds: 100 / outcomes.length,
-    })),
-    volume: 0,
-    liquidity: 0,
-    traderCount: 0,
-    closingDate: now,
-    createdDate: now,
-    activeSince: now,
-    creatorFeePercent: 0,
-    baseMarket: 'sats',
-  }
 }
 
 export async function fetchMarketMetadata(marketId: string): Promise<MarketMetadataSnapshot | null> {
@@ -158,24 +127,137 @@ function applyMetadata<T extends { volume: number; liquidity: number; traderCoun
   }
 }
 
-export async function fetchMarkets(): Promise<Market[]> {
-  const conditions = await fetchConditions()
-  const markets = conditions
-    .filter((c) => c.attestation.status === 'pending')
-    .map(mapConditionToMarket)
+// =============================================================================
+// Engine markets-query proxy (ADR-009)
+// =============================================================================
 
-  const enriched = await Promise.all(
-    markets.map(async (m) => {
-      const [meta, thumbnailUrl] = await Promise.all([
-        fetchMarketMetadata(m.id),
-        fetchThumbnailUrl(m.id),
-      ])
-      let result = meta ? applyMetadata(m, meta) : m
-      if (thumbnailUrl) result = { ...result, imageUrl: thumbnailUrl }
-      return result
-    })
-  )
-  return enriched
+const SORT_TO_QUERY: Record<MarketSort, 'Trending' | 'Popular' | 'New'> = {
+  trending: 'Trending',
+  popular: 'Popular',
+  new: 'New',
+}
+
+export interface GetMarketsParams {
+  /** Sort dimension. Defaults to engine default (`Trending`) when omitted. */
+  sort?: MarketSort
+  /** Repeatable category-tag filter. OR semantics across the supplied tags. */
+  tags?: string[]
+  /** Bulk-fetch by conditionId (cap 100). Pagination still applies. */
+  ids?: string[]
+  /** State filter — defaults to `Open`. */
+  state?: 'Open' | 'Closed' | 'All'
+  /** Opaque HMAC-signed cursor returned in the previous response. */
+  cursor?: string
+  /** Page size (default 20, max 50). */
+  pageSize?: number
+}
+
+export interface GetMarketsResult {
+  /** Page of markets ordered by the active sort dimension. */
+  markets: Market[]
+  /** Cursor for the next page, or `null` when this is the last page. */
+  nextCursor: string | null
+  /** Mintd-mirror staleness timestamp (ISO-8601). */
+  lastSuccessfulRefreshAt: string
+}
+
+export type MarketCatalogueEntry = components['schemas']['MarketCatalogueEntry']
+export type MarketCatalogueResponse = components['schemas']['MarketCatalogueResponse']
+
+function buildMarketsQueryString(params: GetMarketsParams): string {
+  const search = new URLSearchParams()
+  if (params.sort) search.set('sort', SORT_TO_QUERY[params.sort])
+  if (params.state) search.set('state', params.state)
+  if (params.cursor) search.set('cursor', params.cursor)
+  if (params.pageSize) search.set('page_size', String(params.pageSize))
+  for (const t of params.tags ?? []) search.append('tag', t)
+  // ?ids= is comma-separated per the OpenAPI spec, not repeated.
+  if (params.ids && params.ids.length > 0) search.set('ids', params.ids.join(','))
+  const qs = search.toString()
+  return qs ? `?${qs}` : ''
+}
+
+/**
+ * Convert one engine catalogue entry into the frontend `Market` shape used
+ * by the markets-list view. The engine projection already carries the merged
+ * mintd snapshot (outcomes, deadline) plus engine-derived fields (volume,
+ * createdAt, last-traded price, state); the mapper just shapes them into the
+ * existing `Market` union without re-fetching mintd.
+ */
+export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
+  const outcomes = entry.outcomes ?? []
+  const isYesNo =
+    outcomes.length === 2 &&
+    outcomes[0]?.toLowerCase() === 'yes' &&
+    outcomes[1]?.toLowerCase() === 'no'
+
+  const closingDate = entry.deadline ?? entry.createdAt
+  const title = entry.title ?? 'Untitled Market'
+  const imageUrl = entry.thumbnailUrl ?? ''
+
+  const base = {
+    id: entry.conditionId,
+    title,
+    imageUrl,
+    categoryTags: entry.categoryTags ?? [],
+    metaTags: [],
+    // 24h drives the Trending sort; the wire format also exposes 30d but the
+    // existing `Market` shape only carries one rolling-volume number. The
+    // sort dimension itself is hoisted up to the engine, so all three
+    // ordering dimensions are correct — `Market.volume` is now a UI display
+    // hint, not a tie-breaker.
+    volume: entry.volume24hSats ?? 0,
+    liquidity: 0,
+    traderCount: 0,
+    closingDate,
+    createdDate: entry.createdAt,
+    activeSince: entry.createdAt,
+    creatorFeePercent: 0,
+    baseMarket: 'sats',
+  }
+
+  if (isYesNo) {
+    return {
+      ...base,
+      type: 'yesno',
+      currentOdds: { yes: 50, no: 50 },
+    }
+  }
+
+  return {
+    ...base,
+    type: 'categorical',
+    outcomes: outcomes.map((label, i) => ({
+      id: `outcome-${i}`,
+      label,
+      odds: 100 / Math.max(outcomes.length, 1),
+    })),
+  }
+}
+
+/**
+ * Fetch a page of markets from the engine's catalogue proxy
+ * (`GET /api/v1/markets/query`). Mintd remains authoritative for outcomes /
+ * deadline / creator pubkey; the engine layers its own projections on top
+ * (state, volume, lastTradedPrice, createdAt). The frontend trust contract
+ * (ADR-009) is: the markets-list page may rely on this response, but the
+ * market-detail page MUST verify market existence directly against mintd.
+ */
+export async function getMarkets(params: GetMarketsParams = {}): Promise<GetMarketsResult> {
+  const url = `/api/v1/markets/query${buildMarketsQueryString(params)}`
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json' },
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to query markets: ${response.status}`)
+  }
+  const body: MarketCatalogueResponse = await response.json()
+  const markets = (body.markets ?? []).map(mapCatalogueEntryToMarket)
+  return {
+    markets,
+    nextCursor: body.nextCursor ?? null,
+    lastSuccessfulRefreshAt: body.lastSuccessfulRefreshAt,
+  }
 }
 
 export function filterMarkets(markets: Market[], filter: FilterState): Market[] {
@@ -216,21 +298,6 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
 
   return result
 }
-
-// Types from generated OpenAPI spec
-
-import type { components } from '@/generated/api'
-
-export type SubmitOrderRequest = components['schemas']['SubmitOrderRequest']
-export type SubmitOrderResponse = components['schemas']['SubmitOrderResponse']
-export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
-export type LevelDto = components['schemas']['LevelDto']
-export type Fill = components['schemas']['Fill']
-export type MarketMetadataSnapshot = components['schemas']['MarketMetadataSnapshot']
-export type CreateMarketRequest = components['schemas']['CreateMarketRequest']
-export type CreateMarketResponse = components['schemas']['CreateMarketResponse']
-export type CreatorMarketEntry = components['schemas']['CreatorMarketEntry']
-export type CreatorMarketsResponse = components['schemas']['CreatorMarketsResponse']
 
 // =============================================================================
 // Market Detail Data Fetching

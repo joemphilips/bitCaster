@@ -4,15 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Market } from '@/types/market'
 import { useBookmarkStore } from '@/stores/bookmarks'
 
-const { mockFetchMarkets } = vi.hoisted(() => ({
-  mockFetchMarkets: vi.fn(),
+const { mockGetMarkets } = vi.hoisted(() => ({
+  mockGetMarkets: vi.fn(),
 }))
 
 vi.mock('@/lib/markets', async () => {
   const actual = await vi.importActual<typeof import('@/lib/markets')>('@/lib/markets')
   return {
     ...actual,
-    fetchMarkets: (...args: unknown[]) => mockFetchMarkets(...args),
+    getMarkets: (...args: unknown[]) => mockGetMarkets(...args),
   }
 })
 
@@ -39,8 +39,16 @@ function makeMarket(id: string, title = `Market ${id}`): Market {
   } as Market
 }
 
+function makeResult(markets: Market[]) {
+  return {
+    markets,
+    nextCursor: null,
+    lastSuccessfulRefreshAt: '2026-05-02T09:58:00Z',
+  }
+}
+
 beforeEach(() => {
-  mockFetchMarkets.mockReset()
+  mockGetMarkets.mockReset()
   useBookmarkStore.setState({ markets: [] })
 })
 
@@ -50,13 +58,13 @@ afterEach(() => {
 
 describe('LikedMarkets (P5.1)', () => {
   it('renders the empty state when the user has no bookmarks', async () => {
-    mockFetchMarkets.mockResolvedValue([makeMarket('a')])
+    mockGetMarkets.mockResolvedValue(makeResult([makeMarket('a')]))
     render(<LikedMarkets />)
     expect(await screen.findByTestId('liked-markets-empty')).toBeInTheDocument()
   })
 
   it('renders one card per bookmarked market with click-through', async () => {
-    mockFetchMarkets.mockResolvedValue([makeMarket('a', 'Alpha'), makeMarket('b', 'Beta')])
+    mockGetMarkets.mockResolvedValue(makeResult([makeMarket('a', 'Alpha'), makeMarket('b', 'Beta')]))
     useBookmarkStore.setState({ markets: ['a', 'b'] })
     const user = userEvent.setup()
     const onViewMarket = vi.fn()
@@ -72,8 +80,8 @@ describe('LikedMarkets (P5.1)', () => {
     expect(onViewMarket).toHaveBeenCalledWith('a')
   })
 
-  it('shows an error message when the catalogue fetch fails', async () => {
-    mockFetchMarkets.mockRejectedValue(new Error('boom'))
+  it('shows an error message when the bulk fetch fails', async () => {
+    mockGetMarkets.mockRejectedValue(new Error('boom'))
     useBookmarkStore.setState({ markets: ['a'] })
     render(<LikedMarkets />)
     expect(await screen.findByTestId('liked-markets-error')).toBeInTheDocument()

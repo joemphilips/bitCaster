@@ -137,8 +137,8 @@ export interface MarketDiscoveryProps {
   /**
    * Active sort dimension. Per ADR-009 the markets list is always sorted
    * by exactly one of Trending / Popular / New; the page owner is the
-   * source of truth so the SortBar stays in sync with the URL / query
-   * proxy parameter once engine PR #26 lands.
+   * source of truth and the engine `?sort=` query parameter receives the
+   * value verbatim (post-Phase 2 wiring).
    */
   sort: import('@/hooks/useMarketSort').MarketSort
 
