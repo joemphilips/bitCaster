@@ -5,6 +5,7 @@ import { LANGUAGES } from '@/i18n'
 import { MainNav } from './MainNav'
 import { UserMenu } from './UserMenu'
 import { NotificationBell } from './NotificationBell'
+import { BitCasterLogo } from './BitCasterLogo'
 import { formatBalance } from '@/lib/format'
 
 export interface AppShellProps {
@@ -49,8 +50,9 @@ export function AppShell({
           <div className="flex items-center justify-between h-16 gap-4">
             {/* Logo */}
             <button onClick={() => onNavigate?.('/')} className="flex-shrink-0">
-              <h1 className="text-xl md:text-2xl font-bold text-blue-600 dark:text-blue-400">
-                bitCaster
+              <h1 className="text-xl md:text-2xl text-blue-600 dark:text-blue-400 flex items-center">
+                <BitCasterLogo className="h-7 md:h-8 w-auto" />
+                <span className="sr-only">bitCaster (beta)</span>
               </h1>
             </button>
 
@@ -82,8 +84,9 @@ export function AppShell({
       <header className="sticky top-0 z-50 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 md:hidden">
         <div className="px-4 h-14 flex items-center justify-center">
           <button onClick={() => onNavigate?.('/')} className="flex-shrink-0">
-            <h1 className="text-xl font-bold text-blue-600 dark:text-blue-400">
-              bitCaster
+            <h1 className="text-xl text-blue-600 dark:text-blue-400 flex items-center">
+              <BitCasterLogo className="h-6 w-auto" />
+              <span className="sr-only">bitCaster (beta)</span>
             </h1>
           </button>
         </div>
