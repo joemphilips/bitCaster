@@ -107,9 +107,22 @@ You cannot spawn other sub-agents. Surface to the user:
 - End-of-branch audit → ask the user to run `/security-review` (or whatever audit lives in this workspace).
 - Code-review quality pass → ask the user to invoke `/simplify`.
 
+## Session learning capture
+
+When you finish a dispatch and a generalisable lesson surfaced (a gotcha that bit you, a recurring pattern across the codebase, an anti-pattern, a surprising config), write **one feedback memo** to `~/.claude/projects/<slug>/memory/feedback_<short-name>.md` per the auto-memory format documented in the user's global CLAUDE.md.
+
+Include the **Why** (what went wrong or what made the pattern non-obvious) and **How to apply** (what to do next time).
+
+Do **NOT** edit `AGENTS.md` or `CLAUDE.md` directly. The main session is the single curator of those files; AGENTS.md updates require the cross-session view that only the main session has, and concurrent subagent edits silently race on the file. The main session reads new feedback memos at wrap-up time and decides which to promote.
+
+You are also NOT expected to run `/claude-md-management:revise-claude-md` yourself. Run `/simplify` and the relevant test commands (`npm run test`, Playwright via `dotnet test tests/E2E/`) when your diff calls for them. AGENTS.md curation is centralised in the main session.
+
+This rule mirrors the outer repo's `engine-engineer.md`; both submodule and outer agents follow the same memo-then-curate pattern so future sessions have a coherent learning corpus across the multi-repo workspace.
+
 ## Rules
 
 - **Stay inside `bitCaster/`.** Do not edit anything in a parent or sibling directory. Do not assume an outer repo exists or what's in it.
+- **Do NOT edit `AGENTS.md` or `CLAUDE.md`.** Write a feedback memo instead (see above).
 - **Submodules under `bitCaster/`** (`cdk/`, `nuts/`, `kormir/`, `cashu.me/`, `nips-protocol/`) are upstream dependencies. Read freely; only modify when an existing rule (e.g. `cdk.md`) explicitly says you may. Pin updates via submodule pointer bumps, not hand-edits.
 - **i18n parity is mandatory** when editing `bitCaster-doc/`. English and Japanese ship together or not at all.
 - Commit with descriptive messages. Do NOT use `--no-verify`, `--no-gpg-sign`, or amend published commits.
