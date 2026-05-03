@@ -29,6 +29,7 @@ import {
 import { useToastStore } from '@/stores/toast'
 import { isNip07Available } from '@/lib/nostr'
 import { safeHostname } from '@/lib/url'
+import { AddMintForm } from '@/components/shared/AddMintForm'
 
 //─── Segmented Control ──────────────────────────────────────────────────────
 
@@ -139,11 +140,11 @@ export function Settings({
 }: SettingsProps) {
   const { general, cashu, nostr } = settings
 
-  // Local state for UI interactions
-  const [showAddMint, setShowAddMint] = useState(false)
-  const [newMintUrl, setNewMintUrl] = useState('')
-  const [isAddingMint, setIsAddingMint] = useState(false)
-  const [addMintError, setAddMintError] = useState<string | null>(null)
+  // Local state for UI interactions. The add-mint subform is owned by
+  // AddMintForm itself so the same component can be reused from the
+  // portfolio mint selector (P5.2) without duplicating spinner / error
+  // state — `onAddMint` resolves only when the underlying wallet store
+  // has finished mutating.
   const [showSeedConfirm, setShowSeedConfirm] = useState(false)
   const [showSeedPhrase, setShowSeedPhrase] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -157,22 +158,6 @@ export function Settings({
   const [isConnectingNsec, setIsConnectingNsec] = useState(false)
 
   const displaySeedPhrase = seedPhrase ?? ''
-
-  const handleAddMint = async () => {
-    const url = newMintUrl.trim()
-    if (!url) return
-    setIsAddingMint(true)
-    setAddMintError(null)
-    try {
-      await onAddMint?.(url)
-      setNewMintUrl('')
-      setShowAddMint(false)
-    } catch (e) {
-      setAddMintError((e as Error).message || 'Failed to connect to mint')
-    } finally {
-      setIsAddingMint(false)
-    }
-  }
 
   const handleCopySeed = () => {
     navigator.clipboard.writeText(displaySeedPhrase)
@@ -361,50 +346,15 @@ export function Settings({
             ))}
           </div>
 
-          {showAddMint ? (
-            <div className="mt-3 space-y-2">
-              <div className="flex gap-2">
-                <input
-                  type="url"
-                  value={newMintUrl}
-                  onChange={(e) => { setNewMintUrl(e.target.value); setAddMintError(null) }}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddMint()}
-                  placeholder="https://mint.example.com"
-                  disabled={isAddingMint}
-                  className="flex-1 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
-                  autoFocus
-                />
-                <button
-                  onClick={handleAddMint}
-                  disabled={isAddingMint}
-                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
-                >
-                  {isAddingMint && <Loader2 className="w-4 h-4 animate-spin" />}
-                  Add
-                </button>
-                <button
-                  onClick={() => { setShowAddMint(false); setNewMintUrl(''); setAddMintError(null) }}
-                  disabled={isAddingMint}
-                  className="px-3 py-2 rounded-lg text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 text-sm transition-colors disabled:opacity-60"
-                >
-                  Cancel
-                </button>
-              </div>
-              {addMintError && (
-                <p className="text-sm text-red-500 dark:text-red-400">
-                  {addMintError}
-                </p>
-              )}
-            </div>
-          ) : (
-            <button
-              onClick={() => setShowAddMint(true)}
-              className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              Add Mint
-            </button>
-          )}
+          <div className="mt-3">
+            <AddMintForm
+              onAddMint={async (url) => {
+                if (!onAddMint) return
+                await onAddMint(url)
+              }}
+              triggerLabel="Add Mint"
+            />
+          </div>
         </div>
 
         {/* Seed Backup */}

@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { ChevronDown, Check, X } from 'lucide-react'
 import type { MintInfo } from '@/types/deposit-withdraw'
+import { AddMintForm } from '@/components/shared/AddMintForm'
+import { useWalletStore } from '@/stores/wallet'
+import { normalizeUrl } from '@/lib/url'
 
 interface MintSelectorProps {
   mints: MintInfo[]
@@ -14,8 +17,21 @@ export function MintSelector({
   onMintChange,
 }: MintSelectorProps) {
   const [isOpen, setIsOpen] = useState(false)
+  const addMint = useWalletStore((s) => s.addMint)
   const selected = mints.find((m) => m.id === selectedMintId) ?? mints[0]
   if (!selected) return null
+
+  /**
+   * Add-mint completion (P5.2). The shared form invokes the wallet-store
+   * action; on success the new mint URL becomes activeMintUrl and we
+   * mirror that into the local widget selection so the just-added mint
+   * is the one being deposited into. The bottom sheet stays open so the
+   * user sees the new row land in the list.
+   */
+  const handleAddMint = async (rawUrl: string) => {
+    await addMint(rawUrl)
+    onMintChange?.(normalizeUrl(rawUrl))
+  }
 
   return (
     <>
@@ -97,6 +113,15 @@ export function MintSelector({
                   )}
                 </button>
               ))}
+
+              {/* Add Mint trigger — same shared form as /settings (T5.2.c). */}
+              <div className="px-1 py-3">
+                <AddMintForm
+                  onAddMint={handleAddMint}
+                  triggerLabel="Add Mint"
+                  variant="sheet"
+                />
+              </div>
             </div>
           </div>
         </div>
