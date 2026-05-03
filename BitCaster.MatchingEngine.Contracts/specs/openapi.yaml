@@ -372,6 +372,142 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreatorMarketsResponse'
 
+  /api/v1/markets/query:
+    get:
+      operationId: queryMarkets
+      summary: Catalogue proxy — list markets with filters, sort, and pagination
+      description: >
+        Returns the public market catalogue, joining the engine's own
+        MarketRegistration projection with the mintd condition snapshot and
+        the trade-volume rollup. This is the read endpoint the markets list
+        page (`/markets`) and discovery surfaces consume.
+
+        Anonymous by default. NIP-98 is OPTIONAL — when present, the request
+        is authenticated and routed to a higher per-pubkey rate-limit bucket;
+        when absent, the per-IP bucket applies. Authentication does NOT change
+        the response shape or visibility — every market visible to an anonymous
+        caller is also visible to an authenticated caller and vice versa.
+
+        Source-of-truth split: mintd is authoritative for `outcomes`,
+        `creatorPubkey`, `deadline`, and (Phase 1) `attestation/close`; the
+        engine is authoritative for `state` (Open/Closed lifecycle), `volume*`,
+        `lastTradedPrice`, and `createdAt` (RegisterMarket timestamp). A market
+        registered on the engine but absent from the mintd snapshot is omitted
+        from the response, and vice versa — both sides must know about the
+        market for it to surface.
+      security:
+        - {}
+        - nip98: []
+      parameters:
+        - name: tag
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+            uniqueItems: false
+          style: form
+          explode: true
+          description: >
+            Repeatable category tag filter (e.g. `?tag=politics&tag=tech`).
+            A market matches when at least one of its category tags matches
+            at least one supplied tag (OR semantics across the supplied tags).
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [Open, Closed, All]
+            default: Open
+          description: >
+            State filter against the engine's own `MarketRegistration.State`
+            field. Default is `Open`. Use `All` to include both Open and
+            Closed markets in a single response. The match is case-insensitive
+            on the wire (`open` works the same as `Open`).
+        - name: creator_pubkey
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{64}$'
+          description: >
+            Restrict the result to markets whose creator pubkey matches.
+            64-character lowercase hex Nostr pubkey. Different from
+            `/api/v1/creators/{pubkey}/markets` — that endpoint returns the
+            creator-dashboard volume rollup; this filter returns the full
+            catalogue projection.
+        - name: ids
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Comma-separated list of conditionIds to bulk-fetch (e.g.
+            `?ids=abc,def,123`). Returns only the named markets that match the
+            other filters. Capped at 100 ids per request — exceeding the cap
+            is a 400.
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [Trending, Popular, New]
+            default: Trending
+          description: >
+            Sort dimension. `Trending` orders by 24h trading volume descending;
+            `Popular` orders by 30d trading volume descending; `New` orders
+            by RegisterMarket timestamp descending. Ties on the sort dimension
+            break by `conditionId` ascending so paginated streams remain
+            deterministic.
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Opaque pagination token returned in `nextCursor` from a previous
+            page. The engine HMAC-signs cursors before returning them and
+            verifies the signature before reading the underlying boundary —
+            tampered or unsigned cursors are 400. Omit for the first page.
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          description: >
+            Page size cap. Default 20, hard cap 50 — exceeding the cap is a
+            400. Page sizes below 1 are also a 400.
+      responses:
+        '200':
+          description: Paginated catalogue of markets matching the filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketCatalogueResponse'
+        '400':
+          description: >
+            Invalid query parameters — typo'd `state`/`sort` value, malformed
+            `creator_pubkey`, `ids` over the 100-cap, `page_size` outside
+            `[1, 50]`, or a tampered/malformed `cursor`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: >
+            NIP-98 token was supplied but rejected (e.g. expired, signature
+            mismatch, body-payload mismatch). Anonymous callers do NOT see 401
+            from this route.
+        '429':
+          description: >
+            Rate limit exceeded. Anonymous callers share a per-IP bucket;
+            NIP-98-authenticated callers have their own per-pubkey bucket
+            with a higher permit ceiling. The engine returns this when the
+            applicable bucket is empty.
 
 components:
   securitySchemes:
@@ -941,4 +1077,157 @@ components:
           type: string
           nullable: true
           description: Populated only when `state == Failed`.
+
+    MarketCatalogueEntry:
+      type: object
+      required:
+        - conditionId
+        - outcomes
+        - state
+        - createdAt
+        - volume24hSats
+        - volume30dSats
+        - categoryTags
+        - lastSuccessfulRefreshAt
+      properties:
+        conditionId:
+          type: string
+          description: >
+            The condition identifier (hex string derived from the oracle
+            announcement). Stable identifier for the market.
+        outcomes:
+          type: array
+          items:
+            type: string
+          description: >
+            Outcome names sourced from the mintd condition snapshot. Each
+            outcome maps to its own per-outcome order book at
+            `marketId = "{conditionId}-{outcomeName}"`.
+        title:
+          type: string
+          nullable: true
+          description: >
+            Optional human-readable title from market registration. Null when
+            the creator did not supply one.
+        thumbnailUrl:
+          type: string
+          nullable: true
+          description: >
+            Optional thumbnail URL. Null when no thumbnail was uploaded.
+        creatorPubkey:
+          type: string
+          nullable: true
+          pattern: '^[0-9a-f]{64}$'
+          description: >
+            Creator's Nostr pubkey (64-char lowercase hex), captured at
+            registration time via NIP-98. Null on legacy markets that
+            predate the creator-tracking projection.
+        deadline:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Oracle attestation deadline carried from the mintd condition
+            snapshot. The market auto-closes at this instant when the kind-89
+            attestation has not yet been observed.
+        state:
+          type: string
+          enum: [open, closed]
+          description: >
+            Engine-side lifecycle state. `open` accepts new orders; `closed`
+            does not. Source of truth is the engine's own
+            `MarketRegistration.State` field, NOT mintd's attestation status.
+        createdAt:
+          type: string
+          format: date-time
+          description: >
+            When the market was registered with the engine
+            (RegisterMarketCommand timestamp).
+        volume24hSats:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Trading volume over the last 24 hours in satoshis. Drives the
+            `Trending` sort dimension.
+        volume30dSats:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Trading volume over the last 30 days in satoshis. Drives the
+            `Popular` sort dimension.
+        lastTradedPrice:
+          type: number
+          nullable: true
+          description: >
+            Most recent execution price (probability in `[1, 99]`), null if
+            the market has never traded.
+        categoryTags:
+          type: array
+          items:
+            type: string
+          description: >
+            Category tags supplied at market registration. Filterable via
+            the `tag` query parameter.
+        lastSuccessfulRefreshAt:
+          type: string
+          format: date-time
+          description: >
+            When the engine last successfully pulled the mintd condition
+            snapshot used to populate this entry's mintd-sourced fields.
+            Mirrored on every entry so callers can render staleness
+            indicators per market without an additional projection.
+
+    MarketCatalogueResponse:
+      type: object
+      required:
+        - markets
+        - lastSuccessfulRefreshAt
+      properties:
+        markets:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketCatalogueEntry'
+          description: >
+            Page of markets matching the supplied filters, ordered by the
+            requested `sort` dimension. Empty when no markets match.
+        nextCursor:
+          type: string
+          nullable: true
+          description: >
+            Opaque (HMAC-signed) pagination cursor for the next page. Null
+            when this is the last page. Pass back as `?cursor=...` to
+            continue.
+        lastSuccessfulRefreshAt:
+          type: string
+          format: date-time
+          description: >
+            Top-level mirror of the mintd-mirror's most recent successful
+            refresh time. Useful for rendering a single staleness banner
+            covering the whole catalogue when the mintd poller has been
+            failing.
+
+    ProblemDetails:
+      type: object
+      description: >
+        RFC 7807 problem details. The matching engine returns this shape on
+        4xx and 5xx responses where additional context helps the caller
+        recover.
+      properties:
+        type:
+          type: string
+          description: A URI reference identifying the problem type.
+        title:
+          type: string
+          description: A short, human-readable summary of the problem.
+        status:
+          type: integer
+          description: The HTTP status code generated for this occurrence.
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          description: A URI reference identifying the specific occurrence.
 
