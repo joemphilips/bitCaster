@@ -214,8 +214,11 @@ public class MarketDiscoveryTests : IAsyncLifetime
         var errorText = page.GetByText("Failed to load markets");
         await Assertions.Expect(errorText).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
-        // Should show retry button
-        var retryButton = page.GetByRole(AriaRole.Button, new() { Name = "Retry" });
+        // Should show retry button — scope to <main> so we don't collide
+        // with the BrandMottoSplash error-state Retry which lives in a
+        // sibling role=status overlay (T5.4 — feat/p6-phase-5).
+        var retryButton = page.GetByRole(AriaRole.Main)
+            .GetByRole(AriaRole.Button, new() { Name = "Retry" });
         await Assertions.Expect(retryButton).ToBeVisibleAsync();
     }
 

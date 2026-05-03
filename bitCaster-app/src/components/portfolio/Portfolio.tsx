@@ -10,6 +10,7 @@ import { PositionsList } from './PositionsList'
 import { FundsList } from './FundsList'
 import { ActivityFeed } from './ActivityFeed'
 import { MyMarkets } from './MyMarkets'
+import { LikedMarkets } from './LikedMarkets'
 
 type MainTab = 'positions' | 'funds' | 'activity'
 
@@ -153,6 +154,9 @@ export function Portfolio(props: PortfolioProps) {
           )}
         </div>
       </div>
+
+      {/* Liked / Bookmarked Markets (P5.1) */}
+      <LikedMarkets onViewMarket={props.onViewMarket} />
 
       {/* My Markets (Collapsible) */}
       <MyMarkets

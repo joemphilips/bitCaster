@@ -1,4 +1,10 @@
 {
+  "app": {
+    "loading": "bitCaster を読み込んでいます...",
+    "loadFailedTitle": "bitCaster を読み込めませんでした",
+    "loadFailedHint": "ミントまたはマッチングエンジンが応答していません。ネットワークを確認してから再試行してください。",
+    "loadFailedRetry": "再試行"
+  },
   "common": {
     "next": "次へ",
     "back": "戻る",
@@ -246,7 +252,9 @@
     "views": "{{count}} 閲覧",
     "claimFees": "手数料を受け取る",
     "volLabel": "出来高: {{value}}",
-    "connectNostr": "Nostr に接続"
+    "connectNostr": "Nostr に接続",
+    "likedMarkets": "ブックマーク",
+    "likedMarketsEmpty": "ブックマークしたマーケットはありません — /markets でブックマークアイコンをタップしてください"
   },
   "activityType": {
     "deposit": "入金",
