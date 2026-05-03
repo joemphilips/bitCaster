@@ -998,6 +998,273 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketCatalogueEntry
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketCatalogueEntry(System.Collections.Generic.List<string> @categoryTags, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSats, long @volume30dSats)
+        {
+            this.ConditionId = @conditionId;
+            this.Outcomes = @outcomes;
+            this.Title = @title;
+            this.ThumbnailUrl = @thumbnailUrl;
+            this.CreatorPubkey = @creatorPubkey;
+            this.Deadline = @deadline;
+            this.State = @state;
+            this.CreatedAt = @createdAt;
+            this.Volume24hSats = @volume24hSats;
+            this.Volume30dSats = @volume30dSats;
+            this.LastTradedPrice = @lastTradedPrice;
+            this.CategoryTags = @categoryTags;
+            this.LastSuccessfulRefreshAt = @lastSuccessfulRefreshAt;
+        }
+
+        /// <summary>
+        /// The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
+        public string ConditionId { get; }
+
+        /// <summary>
+        /// Outcome names sourced from the mintd condition snapshot. Each outcome maps to its own per-outcome order book at `marketId = "{conditionId}-{outcomeName}"`.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
+        public System.Collections.Generic.List<string> Outcomes { get; }
+
+        /// <summary>
+        /// Optional human-readable title from market registration. Null when the creator did not supply one.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("title")]
+        public string Title { get; }
+
+        /// <summary>
+        /// Optional thumbnail URL. Null when no thumbnail was uploaded.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("thumbnailUrl")]
+        public string ThumbnailUrl { get; }
+
+        /// <summary>
+        /// Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate the creator-tracking projection.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
+        public string CreatorPubkey { get; }
+
+        /// <summary>
+        /// Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("deadline")]
+        public System.DateTimeOffset? Deadline { get; }
+
+        /// <summary>
+        /// Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the engine's own `MarketRegistration.State` field, NOT mintd's attestation status.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("state")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<MarketCatalogueEntryState>))]
+        public MarketCatalogueEntryState State { get; }
+
+        /// <summary>
+        /// When the market was registered with the engine (RegisterMarketCommand timestamp).
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
+        public System.DateTimeOffset CreatedAt { get; }
+
+        /// <summary>
+        /// Trading volume over the last 24 hours in satoshis. Drives the `Trending` sort dimension.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("volume24hSats")]
+        public long Volume24hSats { get; }
+
+        /// <summary>
+        /// Trading volume over the last 30 days in satoshis. Drives the `Popular` sort dimension.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("volume30dSats")]
+        public long Volume30dSats { get; }
+
+        /// <summary>
+        /// Most recent execution price (probability in `[1, 99]`), null if the market has never traded.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("lastTradedPrice")]
+        public double? LastTradedPrice { get; }
+
+        /// <summary>
+        /// Category tags supplied at market registration. Filterable via the `tag` query parameter.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("categoryTags")]
+        public System.Collections.Generic.List<string> CategoryTags { get; }
+
+        /// <summary>
+        /// When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional projection.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("lastSuccessfulRefreshAt")]
+        public System.DateTimeOffset LastSuccessfulRefreshAt { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketCatalogueResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketCatalogueResponse(System.DateTimeOffset @lastSuccessfulRefreshAt, System.Collections.Generic.List<MarketCatalogueEntry> @markets, string @nextCursor)
+        {
+            this.Markets = @markets;
+            this.NextCursor = @nextCursor;
+            this.LastSuccessfulRefreshAt = @lastSuccessfulRefreshAt;
+        }
+
+        /// <summary>
+        /// Page of markets matching the supplied filters, ordered by the requested `sort` dimension. Empty when no markets match.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("markets")]
+        public System.Collections.Generic.List<MarketCatalogueEntry> Markets { get; }
+
+        /// <summary>
+        /// Opaque (HMAC-signed) pagination cursor for the next page. Null when this is the last page. Pass back as `?cursor=...` to continue.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("nextCursor")]
+        public string NextCursor { get; }
+
+        /// <summary>
+        /// Top-level mirror of the mintd-mirror's most recent successful refresh time. Useful for rendering a single staleness banner covering the whole catalogue when the mintd poller has been failing.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("lastSuccessfulRefreshAt")]
+        public System.DateTimeOffset LastSuccessfulRefreshAt { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    /// <summary>
+    /// RFC 7807 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ProblemDetails
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ProblemDetails(string @detail, string @instance, int? @status, string @title, string @type)
+        {
+            this.Type = @type;
+            this.Title = @title;
+            this.Status = @status;
+            this.Detail = @detail;
+            this.Instance = @instance;
+        }
+
+        /// <summary>
+        /// A URI reference identifying the problem type.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("type")]
+        public string Type { get; }
+
+        /// <summary>
+        /// A short, human-readable summary of the problem.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("title")]
+        public string Title { get; }
+
+        /// <summary>
+        /// The HTTP status code generated for this occurrence.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        public int? Status { get; }
+
+        /// <summary>
+        /// A human-readable explanation specific to this occurrence.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("detail")]
+        public string Detail { get; }
+
+        /// <summary>
+        /// A URI reference identifying the specific occurrence.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("instance")]
+        public string Instance { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum State
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Open")]
+        Open = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Closed")]
+        Closed = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"All")]
+        All = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum Sort
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Trending")]
+        Trending = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Popular")]
+        Popular = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"New")]
+        New = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum MarketCatalogueEntryState
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"open")]
+        Open = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"closed")]
+        Closed = 1,
+
+    }
+
     [System.CodeDom.Compiler.GeneratedCode("NSwag", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class FileParameter
     {
