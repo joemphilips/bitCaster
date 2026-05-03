@@ -246,7 +246,9 @@
     "views": "{{count}} 閲覧",
     "claimFees": "手数料を受け取る",
     "volLabel": "出来高: {{value}}",
-    "connectNostr": "Nostr に接続"
+    "connectNostr": "Nostr に接続",
+    "likedMarkets": "ブックマーク",
+    "likedMarketsEmpty": "ブックマークしたマーケットはありません — /markets でブックマークアイコンをタップしてください"
   },
   "activityType": {
     "deposit": "入金",
