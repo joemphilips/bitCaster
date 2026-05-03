@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router'
 import { Loader2, Zap, Coins, CheckCircle2, AlertCircle, Copy } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import {
   requestLnInvoiceDeposit,
   requestEcashDeposit,
@@ -33,6 +34,7 @@ const TERMINAL_STATES: DepositState[] = ['Credited', 'Failed']
  * idle until a deposit lands.
  */
 export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('ln')
   const [amountSats, setAmountSats] = useState(defaultAmountSats)
@@ -70,7 +72,7 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Status poll failed')
+          setError(err instanceof Error ? err.message : t('marketCreation.statusPollError'))
         }
       }
     }
@@ -80,7 +82,7 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
       cancelled = true
       if (handle !== null) window.clearInterval(handle)
     }
-  }, [conditionId, depositId])
+  }, [conditionId, depositId, t])
 
   const onRequestLn = useCallback(async () => {
     setSubmitting(true)
@@ -92,15 +94,15 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
       setBolt11ExpiresAt(res.expiresAt)
       setState('Requested')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to request invoice')
+      setError(err instanceof Error ? err.message : t('marketCreation.lnRequestError'))
     } finally {
       setSubmitting(false)
     }
-  }, [conditionId, amountSats])
+  }, [conditionId, amountSats, t])
 
   const onSubmitEcash = useCallback(async () => {
     if (ecashToken.trim().length === 0) {
-      setError('Paste an ecash token before submitting')
+      setError(t('marketCreation.ecashRequiredError'))
       return
     }
     setSubmitting(true)
@@ -110,11 +112,11 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
       setDepositId(res.depositId)
       setState(res.state)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to submit ecash')
+      setError(err instanceof Error ? err.message : t('marketCreation.ecashSubmitError'))
     } finally {
       setSubmitting(false)
     }
-  }, [conditionId, amountSats, ecashToken])
+  }, [conditionId, amountSats, ecashToken, t])
 
   const onCopyBolt11 = useCallback(() => {
     if (!bolt11) return
@@ -131,26 +133,25 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
 
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Deposit funds</h2>
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{t('marketCreation.depositTitle')}</h2>
       <p className="text-sm text-slate-400 mb-6">
-        Required to start your market with bot liquidity. This deposit funds the automated market
-        maker and is non-refundable.
+        {t('marketCreation.depositSubtitle')}
       </p>
 
       <div data-testid="condition-id" className="mb-6 p-3 rounded-lg bg-slate-900 border border-slate-800">
-        <p className="text-xs text-slate-500 mb-1">Market created</p>
+        <p className="text-xs text-slate-500 mb-1">{t('marketCreation.marketCreatedLabel')}</p>
         <p className="text-xs font-mono text-slate-300 break-all">{conditionId}</p>
       </div>
 
       {!depositId && (
         <>
           <div className="flex gap-2 mb-6 border-b border-slate-800">
-            <TabButton active={tab === 'ln'} onClick={() => setTab('ln')} icon={<Zap className="w-4 h-4" />} label="Lightning" testid="tab-ln" />
-            <TabButton active={tab === 'ecash'} onClick={() => setTab('ecash')} icon={<Coins className="w-4 h-4" />} label="Ecash" testid="tab-ecash" />
+            <TabButton active={tab === 'ln'} onClick={() => setTab('ln')} icon={<Zap className="w-4 h-4" />} label={t('marketCreation.tabLightning')} testid="tab-ln" />
+            <TabButton active={tab === 'ecash'} onClick={() => setTab('ecash')} icon={<Coins className="w-4 h-4" />} label={t('marketCreation.tabEcash')} testid="tab-ecash" />
           </div>
 
           <div className="mb-6">
-            <label className="block text-sm font-medium text-slate-300 mb-2">Amount (sats)</label>
+            <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.amountSats')}</label>
             <input
               data-testid="amount-input"
               type="number"
@@ -170,24 +171,24 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
               className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium transition-colors flex items-center justify-center gap-2"
             >
               {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-              Request Lightning invoice
+              {t('marketCreation.requestLightningInvoice')}
             </button>
           )}
 
           {tab === 'ecash' && (
             <>
               <div className="mb-4">
-                <label className="block text-sm font-medium text-slate-300 mb-2">Ecash token</label>
+                <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.ecashTokenLabel')}</label>
                 <textarea
                   data-testid="ecash-token-input"
                   value={ecashToken}
                   onChange={(e) => setEcashToken(e.target.value)}
-                  placeholder="cashuB..."
+                  placeholder={t('marketCreation.ecashTokenPlaceholder')}
                   rows={4}
                   className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs font-mono placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 resize-none"
                 />
                 <p className="text-xs text-slate-500 mt-1.5">
-                  Paste a Cashu V4 token. The wallet-service verifies the proofs before crediting.
+                  {t('marketCreation.ecashTokenHint')}
                 </p>
               </div>
               <button
@@ -198,7 +199,7 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
                 className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium transition-colors flex items-center justify-center gap-2"
               >
                 {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Coins className="w-4 h-4" />}
-                Submit ecash
+                {t('marketCreation.submitEcash')}
               </button>
             </>
           )}
@@ -208,19 +209,19 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
       {bolt11 && (
         <div data-testid="bolt11-display" className="mb-4 p-4 rounded-lg bg-slate-900 border border-slate-700">
           <div className="flex items-center justify-between mb-2">
-            <p className="text-xs text-slate-400">Pay this Lightning invoice</p>
+            <p className="text-xs text-slate-400">{t('marketCreation.payThisInvoice')}</p>
             <button
               type="button"
               onClick={onCopyBolt11}
               className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
             >
-              <Copy className="w-3 h-3" /> Copy
+              <Copy className="w-3 h-3" /> {t('common.copy')}
             </button>
           </div>
           <p className="text-xs font-mono text-slate-300 break-all">{bolt11}</p>
           {bolt11ExpiresAt && (
             <p className="text-xs text-slate-500 mt-2">
-              Expires {new Date(bolt11ExpiresAt).toLocaleString()}
+              {t('marketCreation.expiresAt', { date: new Date(bolt11ExpiresAt).toLocaleString() })}
             </p>
           )}
         </div>
@@ -230,9 +231,9 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
         <div data-testid="deposit-status" className="mb-4 p-4 rounded-lg bg-slate-900 border border-slate-700 flex items-center gap-3">
           <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
           <div>
-            <p className="text-sm font-medium text-white">{stateLabel(state)}</p>
+            <p className="text-sm font-medium text-white">{stateLabel(state, t)}</p>
             {stateUpdatedAt && (
-              <p className="text-xs text-slate-500">Last update {new Date(stateUpdatedAt).toLocaleTimeString()}</p>
+              <p className="text-xs text-slate-500">{t('marketCreation.lastUpdate', { time: new Date(stateUpdatedAt).toLocaleTimeString() })}</p>
             )}
           </div>
         </div>
@@ -242,8 +243,8 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
         <div data-testid="deposit-credited" className="mb-4 p-4 rounded-lg bg-green-950/40 border border-green-800/60 flex items-start gap-3">
           <CheckCircle2 className="w-5 h-5 text-green-400 mt-0.5 shrink-0" />
           <div>
-            <p className="text-sm font-medium text-white">Bot funded — your market is live</p>
-            <p className="text-xs text-slate-300">The CPMM maker is now quoting bid/ask on the order book.</p>
+            <p className="text-sm font-medium text-white">{t('marketCreation.botFunded')}</p>
+            <p className="text-xs text-slate-300">{t('marketCreation.botFundedHint')}</p>
           </div>
         </div>
       )}
@@ -252,9 +253,9 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
         <div data-testid="deposit-failed" className="mb-4 p-4 rounded-lg bg-red-950/40 border border-red-800/60 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-red-400 mt-0.5 shrink-0" />
           <div>
-            <p className="text-sm font-medium text-white">Deposit failed</p>
+            <p className="text-sm font-medium text-white">{t('marketCreation.depositFailed')}</p>
             <p className="text-xs text-slate-300">
-              The invoice expired or proof verification failed. Retry from the market detail page.
+              {t('marketCreation.depositFailedHint')}
             </p>
           </div>
         </div>
@@ -273,7 +274,7 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
           onClick={onContinue}
           className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors"
         >
-          Continue to your market
+          {t('marketCreation.continueToMarket')}
         </button>
       )}
     </div>
@@ -306,15 +307,15 @@ function TabButton({ active, onClick, icon, label, testid }: TabButtonProps) {
   )
 }
 
-function stateLabel(state: DepositState): string {
+function stateLabel(state: DepositState, t: (key: string) => string): string {
   switch (state) {
     case 'Requested':
-      return 'Awaiting payment…'
+      return t('marketCreation.statusAwaitingPayment')
     case 'Paid':
-      return 'Payment received — crediting your market…'
+      return t('marketCreation.statusPaymentReceived')
     case 'Credited':
-      return 'Funded'
+      return t('marketCreation.statusFunded')
     case 'Failed':
-      return 'Failed'
+      return t('marketCreation.statusFailed')
   }
 }

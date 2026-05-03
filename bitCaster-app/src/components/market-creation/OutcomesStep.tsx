@@ -1,4 +1,5 @@
 import { Plus, Trash2, Upload } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { WizardOutcome, OutcomeType } from '@/types/market-creation'
 import { probabilitySumValid, allProbabilitiesInRange } from '@/hooks/useMarketCreationState'
 
@@ -22,12 +23,13 @@ interface OutcomesStepProps {
 }
 
 function ProbabilityBar({ outcomes, sumOk, rangeOk }: { outcomes: WizardOutcome[]; sumOk: boolean; rangeOk: boolean }) {
+  const { t } = useTranslation()
   const totalProbability = outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0)
 
   return (
     <div>
       <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-        <span>Target Probability Summary</span>
+        <span>{t('marketCreation.outcomeProbabilitySummary')}</span>
         <span className={sumOk ? 'text-green-400' : totalProbability > 100 ? 'text-red-400' : ''}>
           {totalProbability}%
         </span>
@@ -49,12 +51,12 @@ function ProbabilityBar({ outcomes, sumOk, rangeOk }: { outcomes: WizardOutcome[
       </div>
       {!sumOk && (
         <p className="text-xs text-red-400 mt-2">
-          Probabilities must sum to 100% (currently {totalProbability}%)
+          {t('marketCreation.probabilitiesMustSumTo100', { total: totalProbability })}
         </p>
       )}
       {!rangeOk && (
         <p className="text-xs text-red-400 mt-1">
-          Each probability must be between 1% and 99%
+          {t('marketCreation.probabilityRangeError')}
         </p>
       )}
     </div>
@@ -79,6 +81,8 @@ export function OutcomesStep({
   onUnitChange,
   onNext,
 }: OutcomesStepProps) {
+  const { t } = useTranslation()
+
   // Numeric market
   if (outcomeType === 'numeric') {
     const canProceed =
@@ -88,15 +92,15 @@ export function OutcomesStep({
 
     return (
       <div className="w-full max-w-xl">
-        <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Numeric Range</h2>
+        <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{t('marketCreation.numericRange')}</h2>
         <p className="text-sm text-slate-400 mb-8">
-          Define the range and precision for your numeric market.
+          {t('marketCreation.numericRangeDesc')}
         </p>
 
         <div className="space-y-5 mb-8">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">Low Bound</label>
+              <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.lowBound')}</label>
               <input
                 type="number"
                 value={loBound ?? ''}
@@ -106,7 +110,7 @@ export function OutcomesStep({
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">High Bound</label>
+              <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.highBound')}</label>
               <input
                 type="number"
                 value={hiBound ?? ''}
@@ -118,18 +122,18 @@ export function OutcomesStep({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Unit</label>
+            <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.unit')}</label>
             <input
               type="text"
               value={unit ?? ''}
               onChange={(e) => onUnitChange?.(e.target.value)}
-              placeholder="e.g. USD, BTC, %"
+              placeholder={t('marketCreation.unitPlaceholder')}
               className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Precision (decimal places)</label>
+            <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.precision')}</label>
             <input
               type="number"
               min={0}
@@ -139,7 +143,7 @@ export function OutcomesStep({
               placeholder="0"
               className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
             />
-            <p className="text-xs text-slate-500 mt-1.5">Number of decimal places for the outcome value</p>
+            <p className="text-xs text-slate-500 mt-1.5">{t('marketCreation.precisionHint')}</p>
           </div>
         </div>
 
@@ -152,7 +156,7 @@ export function OutcomesStep({
               : 'bg-slate-800 text-slate-500 cursor-not-allowed'
           }`}
         >
-          Next
+          {t('common.next')}
         </button>
       </div>
     )
@@ -166,9 +170,9 @@ export function OutcomesStep({
 
     return (
       <div className="w-full max-w-xl">
-        <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Market Outcomes</h2>
+        <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{t('marketCreation.marketOutcomes')}</h2>
         <p className="text-sm text-slate-400 mb-8">
-          Your Yes/No market has two fixed outcomes. Adjust initial probabilities below.
+          {t('marketCreation.marketOutcomesDesc')}
         </p>
 
         <div className="space-y-3 mb-4">
@@ -177,7 +181,7 @@ export function OutcomesStep({
               <div className="flex items-center gap-3">
                 <div className={`w-10 h-10 rounded-lg ${outcome.id === 'yes' ? 'bg-green-500/15' : 'bg-red-500/15'} flex items-center justify-center`}>
                   <span className={`${outcome.id === 'yes' ? 'text-green-400' : 'text-red-400'} font-bold text-sm`}>
-                    {outcome.id === 'yes' ? 'Y' : 'N'}
+                    {outcome.id === 'yes' ? t('marketCreation.outcomeYesLetter') : t('marketCreation.outcomeNoLetter')}
                   </span>
                 </div>
                 <div>
@@ -206,7 +210,7 @@ export function OutcomesStep({
             onClick={() => onNormalizeProbabilities?.()}
             className="text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors"
           >
-            Normalize to 100%
+            {t('marketCreation.normalizeTo100')}
           </button>
         </div>
 
@@ -223,7 +227,7 @@ export function OutcomesStep({
               : 'bg-slate-800 text-slate-500 cursor-not-allowed'
           }`}
         >
-          Next
+          {t('common.next')}
         </button>
       </div>
     )
@@ -241,9 +245,9 @@ export function OutcomesStep({
 
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Define Outcomes</h2>
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{t('marketCreation.defineOutcomes')}</h2>
       <p className="text-sm text-slate-400 mb-8">
-        Add at least 2 possible outcomes for your categorical market.
+        {t('marketCreation.defineOutcomesDesc')}
       </p>
 
       <div className="space-y-3 mb-4">
@@ -259,7 +263,7 @@ export function OutcomesStep({
                   type="text"
                   value={outcome.label}
                   onChange={(e) => onOutcomeLabelChange?.(outcome.id, e.target.value)}
-                  placeholder="Outcome label..."
+                  placeholder={t('marketCreation.outcomeLabelPlaceholder')}
                   className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
                 />
               </div>
@@ -295,7 +299,7 @@ export function OutcomesStep({
         className="flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 transition-colors mb-4"
       >
         <Plus className="w-4 h-4" strokeWidth={1.5} />
-        Add Outcome
+        {t('marketCreation.addOutcome')}
       </button>
 
       {outcomes && outcomes.length > 0 && (
@@ -305,7 +309,7 @@ export function OutcomesStep({
               onClick={() => onNormalizeProbabilities?.()}
               className="text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors"
             >
-              Normalize to 100%
+              {t('marketCreation.normalizeTo100')}
             </button>
           </div>
           <div className="mb-8">
@@ -323,7 +327,7 @@ export function OutcomesStep({
             : 'bg-slate-800 text-slate-500 cursor-not-allowed'
         }`}
       >
-        Next
+        {t('common.next')}
       </button>
     </div>
   )

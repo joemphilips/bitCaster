@@ -1,4 +1,5 @@
 import { Radio, Satellite, Settings, Key } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { OracleAnnouncement, OracleCheckChoice } from '@/types/market-creation'
 import type { NostrSignerMode } from '@/types/settings'
 
@@ -34,6 +35,7 @@ export function OracleCheck({
   onContinue,
   onExit,
 }: OracleCheckProps) {
+  const { t } = useTranslation()
   const canUseExisting = signerMode !== 'none'
   const canBecomeOracle = signerMode === 'nsec'
 
@@ -44,11 +46,11 @@ export function OracleCheck({
       </div>
 
       <h1 className="text-2xl sm:text-3xl font-bold text-white mb-3 tracking-tight">
-        Oracle Announcement
+        {t('marketCreation.oracleAnnouncement')}
       </h1>
 
       <p className="text-base text-slate-400 max-w-lg mb-10 leading-relaxed">
-        Is the market condition you want to create already announced by a DLC oracle on Nostr?
+        {t('marketCreation.oracleAnnouncementDesc')}
       </p>
 
       <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg mb-8">
@@ -64,11 +66,11 @@ export function OracleCheck({
           }`}
         >
           <Radio className={`w-6 h-6 mb-3 ${choice === 'existing' ? 'text-blue-400' : 'text-slate-500'}`} strokeWidth={1.5} />
-          <p className="font-semibold text-white text-sm mb-1">Yes, use an existing announcement</p>
+          <p className="font-semibold text-white text-sm mb-1">{t('marketCreation.useExisting')}</p>
           <p className="text-xs text-slate-400">
             {canUseExisting
-              ? 'Select from available oracle announcements on Nostr'
-              : 'Requires Nostr configuration in Settings'}
+              ? t('marketCreation.useExistingDesc')
+              : t('marketCreation.useExistingDisabledDesc')}
           </p>
         </button>
 
@@ -81,11 +83,11 @@ export function OracleCheck({
           }`}
         >
           <Satellite className={`w-6 h-6 mb-3 ${choice === 'become-oracle' ? 'text-blue-400' : 'text-slate-500'}`} strokeWidth={1.5} />
-          <p className="font-semibold text-white text-sm mb-1">No / I want to be an oracle</p>
+          <p className="font-semibold text-white text-sm mb-1">{t('marketCreation.becomeOracle')}</p>
           <p className="text-xs text-slate-400">
             {canBecomeOracle
-              ? 'Use your Nostr key to sign DLC announcements locally'
-              : 'Requires a nostr private key (nsec) configured in Settings'}
+              ? t('marketCreation.becomeOracleDesc')
+              : t('marketCreation.becomeOracleDisabledDesc')}
           </p>
         </button>
       </div>
@@ -93,10 +95,10 @@ export function OracleCheck({
       {choice === 'existing' && (
         <div className="w-full max-w-lg space-y-3 mb-8">
           <h3 className="text-sm font-medium text-slate-300 text-left mb-3">
-            Available Announcements
+            {t('marketCreation.availableAnnouncements')}
           </h3>
           {announcements.length === 0 && (
-            <p className="text-sm text-slate-500 text-left py-4">No announcements found from the oracle.</p>
+            <p className="text-sm text-slate-500 text-left py-4">{t('marketCreation.noAnnouncements')}</p>
           )}
           {announcements.map((ann) => (
             <button
@@ -110,8 +112,8 @@ export function OracleCheck({
             >
               <p className="font-medium text-white text-sm mb-1.5">{ann.description}</p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
-                <span>Oracle: {ann.oraclePubkey.slice(0, 16)}...</span>
-                <span>Resolves: {new Date(ann.resolutionDate).toLocaleDateString()}</span>
+                <span>{t('marketCreation.oraclePrefix')}{ann.oraclePubkey.slice(0, 16)}...</span>
+                <span>{t('marketCreation.resolvesLabel')}{new Date(ann.resolutionDate).toLocaleDateString()}</span>
               </div>
               <div className="flex gap-1.5 mt-2">
                 {ann.outcomes.map((outcome) => (
@@ -135,7 +137,7 @@ export function OracleCheck({
                 : 'bg-slate-800 text-slate-500 cursor-not-allowed'
             }`}
           >
-            Continue with Selected Announcement
+            {t('marketCreation.continueWithAnnouncement')}
           </button>
         </div>
       )}
@@ -148,16 +150,13 @@ export function OracleCheck({
                 <Key className="w-5 h-5 text-amber-400" strokeWidth={1.75} />
               </div>
               <h3 className="font-semibold text-white text-sm">
-                You must register a nostr key to become an oracle
+                {t('marketCreation.mustRegisterNostrKey')}
               </h3>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed mb-5">
-              bitCaster uses your Nostr private key (nsec) as the DLC oracle signing key,
-              so the same identity publishes the announcement and signs the attestation.
-              {signerMode === 'nip07'
-                ? ' Browser extensions (NIP-07) cannot be used for this because they only expose opaque signing.'
-                : ''}{' '}
-              Add your nsec in the Nostr section of Settings to continue.
+              {t('marketCreation.nsecRequired')}
+              {signerMode === 'nip07' ? t('marketCreation.nip07Warning') : ''}{' '}
+              {t('marketCreation.addNsecInSettings')}
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
               <button
@@ -165,7 +164,7 @@ export function OracleCheck({
                 className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm font-medium text-white transition-colors shadow-lg shadow-blue-600/25"
               >
                 <Settings className="w-4 h-4" strokeWidth={1.5} />
-                Go to Nostr Settings
+                {t('marketCreation.goToNostrSettings')}
               </button>
             </div>
           </div>
@@ -178,7 +177,7 @@ export function OracleCheck({
             onClick={() => onContinue?.()}
             className="w-full py-3 rounded-full font-semibold text-sm bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/25 transition-colors"
           >
-            Continue as Oracle
+            {t('marketCreation.continueAsOracle')}
           </button>
         </div>
       )}

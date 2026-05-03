@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { Upload, X, Plus } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { WizardStepBasicInfo } from '@/types/market-creation'
 import { DateTimePicker } from '@/components/shared/DateTimePicker'
 
@@ -22,6 +23,7 @@ export function BasicInfo({
   onThumbnailUpload,
   onNext,
 }: BasicInfoProps) {
+  const { t } = useTranslation()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const canProceed = data.title.trim().length > 0 && data.closingDate.length > 0 && new Date(data.closingDate) > new Date()
 
@@ -32,23 +34,23 @@ export function BasicInfo({
 
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Basic Information</h2>
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{t('marketCreation.basicInfo')}</h2>
       <p className="text-sm text-slate-400 mb-8">
-        Provide the core details for your prediction market.
+        {t('marketCreation.basicInfoDesc')}
       </p>
 
       <div className="space-y-6">
         {/* Thumbnail */}
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-2">Thumbnail</label>
+          <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.thumbnail')}</label>
           <div className="flex items-center gap-4">
             <div className="w-28 h-28 rounded-lg border-2 border-dashed border-slate-700 bg-slate-900 flex flex-col items-center justify-center text-slate-500 overflow-hidden">
               {data.imageFile ? (
-                <img src={data.imageFile} alt="Thumbnail preview" className="w-full h-full object-cover" />
+                <img src={data.imageFile} alt={t('marketCreation.thumbnail')} className="w-full h-full object-cover" />
               ) : (
                 <>
                   <Plus className="w-6 h-6 mb-1" strokeWidth={1.5} />
-                  <span className="text-xs">No image</span>
+                  <span className="text-xs">{t('marketCreation.noImage')}</span>
                 </>
               )}
             </div>
@@ -65,29 +67,29 @@ export function BasicInfo({
                 className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
               >
                 <Upload className="w-4 h-4 inline-block mr-1.5" strokeWidth={1.5} />
-                Upload image
+                {t('marketCreation.uploadImage')}
               </button>
-              <p className="text-xs text-slate-500 mt-1.5">JPG/PNG/WEBP, max 5MB</p>
+              <p className="text-xs text-slate-500 mt-1.5">{t('marketCreation.imageHint')}</p>
             </div>
           </div>
         </div>
 
         {/* Title */}
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-2">Title</label>
+          <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.titleLabel')}</label>
           <input
             type="text"
             value={data.title}
             onChange={(e) => onTitleChange?.(e.target.value)}
-            placeholder="Type title..."
+            placeholder={t('marketCreation.titlePlaceholder')}
             className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
           />
-          <p className="text-xs text-slate-500 mt-1.5">A clear question that the market resolves</p>
+          <p className="text-xs text-slate-500 mt-1.5">{t('marketCreation.titleHint')}</p>
         </div>
 
         {/* Categories */}
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-2">Categories</label>
+          <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.categories')}</label>
           <div className="flex flex-wrap gap-2 mb-2">
             {data.categoryTags.map((tag) => (
               <span
@@ -114,25 +116,25 @@ export function BasicInfo({
             defaultValue=""
             className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
           >
-            <option value="" disabled>Select...</option>
-            {categoryTags.filter((t) => !data.categoryTags.includes(t)).map((tag) => (
+            <option value="" disabled>{t('marketCreation.categoriesSelectPlaceholder')}</option>
+            {categoryTags.filter((tag) => !data.categoryTags.includes(tag)).map((tag) => (
               <option key={tag} value={tag}>{tag}</option>
             ))}
           </select>
-          <p className="text-xs text-slate-500 mt-1.5">Multiple selection. Choose relevant categories.</p>
+          <p className="text-xs text-slate-500 mt-1.5">{t('marketCreation.categoriesHint')}</p>
         </div>
 
         {/* Closing Date */}
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-2">End Time</label>
+          <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.endTime')}</label>
           <DateTimePicker
             value={data.closingDate}
             onChange={(v) => onClosingDateChange?.(v)}
             min={new Date()}
-            placeholder="Select date & time"
-            aria-label="End Time"
+            placeholder={t('marketCreation.endTimePlaceholder')}
+            aria-label={t('marketCreation.endTime')}
           />
-          <p className="text-xs text-slate-500 mt-1.5">When will this market stop accepting trades?</p>
+          <p className="text-xs text-slate-500 mt-1.5">{t('marketCreation.endTimeHint')}</p>
         </div>
       </div>
 
@@ -145,7 +147,7 @@ export function BasicInfo({
             : 'bg-slate-800 text-slate-500 cursor-not-allowed'
         }`}
       >
-        Next
+        {t('common.next')}
       </button>
     </div>
   )

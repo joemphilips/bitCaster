@@ -1,4 +1,5 @@
 import { ToggleLeft, LayoutGrid, SlidersHorizontal } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { OutcomeType } from '@/types/market-creation'
 
 interface GetStartedProps {
@@ -7,37 +8,30 @@ interface GetStartedProps {
   onNext?: () => void
 }
 
-const options: { type: OutcomeType; icon: typeof ToggleLeft; label: string; description: string }[] = [
-  {
-    type: 'yesno',
-    icon: ToggleLeft,
-    label: 'Yes / No',
-    description: 'A simple binary market with two outcomes. Example: "Will Bitcoin reach $200k by 2027?"',
-  },
-  {
-    type: 'categorical',
-    icon: LayoutGrid,
-    label: 'Categorical',
-    description: 'Multiple possible outcomes. Example: "Which team will win the Champions League?"',
-  },
-  {
-    type: 'numeric',
-    icon: SlidersHorizontal,
-    label: 'Numeric',
-    description: 'A range-based market. Example: "What will be the price of BTC on June 30?"',
-  },
+interface OutcomeOption {
+  type: OutcomeType
+  icon: typeof ToggleLeft
+  labelKey: string
+  descriptionKey: string
+}
+
+const options: OutcomeOption[] = [
+  { type: 'yesno', icon: ToggleLeft, labelKey: 'marketCreation.yesNo', descriptionKey: 'marketCreation.yesNoDesc' },
+  { type: 'categorical', icon: LayoutGrid, labelKey: 'marketCreation.categorical', descriptionKey: 'marketCreation.categoricalDesc' },
+  { type: 'numeric', icon: SlidersHorizontal, labelKey: 'marketCreation.numeric', descriptionKey: 'marketCreation.numericDesc' },
 ]
 
 export function GetStarted({ outcomeType, onOutcomeTypeSelect, onNext }: GetStartedProps) {
+  const { t } = useTranslation()
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Get Started</h2>
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{t('marketCreation.getStarted')}</h2>
       <p className="text-sm text-slate-400 mb-8">
-        Choose the type of market you want to create.
+        {t('marketCreation.getStartedDesc')}
       </p>
 
       <div className="space-y-4 mb-8">
-        {options.map(({ type, icon: Icon, label, description }) => (
+        {options.map(({ type, icon: Icon, labelKey, descriptionKey }) => (
           <button
             key={type}
             onClick={() => onOutcomeTypeSelect?.(type)}
@@ -52,8 +46,8 @@ export function GetStarted({ outcomeType, onOutcomeTypeSelect, onNext }: GetStar
                 <Icon className={`w-6 h-6 ${outcomeType === type ? 'text-blue-400' : 'text-slate-500'}`} strokeWidth={1.5} />
               </div>
               <div>
-                <p className="font-semibold text-white mb-1">{label}</p>
-                <p className="text-sm text-slate-400">{description}</p>
+                <p className="font-semibold text-white mb-1">{t(labelKey)}</p>
+                <p className="text-sm text-slate-400">{t(descriptionKey)}</p>
               </div>
             </div>
           </button>
@@ -69,7 +63,7 @@ export function GetStarted({ outcomeType, onOutcomeTypeSelect, onNext }: GetStar
             : 'bg-slate-800 text-slate-500 cursor-not-allowed'
         }`}
       >
-        Next
+        {t('common.next')}
       </button>
     </div>
   )
