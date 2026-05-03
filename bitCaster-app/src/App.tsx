@@ -18,6 +18,7 @@ import { useTradeSettlement } from "@/hooks/useTradeSettlement";
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
+import { BrandMottoSplash } from "@/components/shell/BrandMottoSplash";
 import { rehydrateNostrSigner } from "@/lib/nostr";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import { startNip17Listener } from "@/lib/nip17-listener";
@@ -224,6 +225,7 @@ export default function App() {
     <BrowserRouter>
       <AppRoutes />
       <ToastContainer />
+      <BrandMottoSplash />
     </BrowserRouter>
   );
 }

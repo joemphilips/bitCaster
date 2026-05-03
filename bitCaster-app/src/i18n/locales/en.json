@@ -1,4 +1,10 @@
 {
+  "app": {
+    "loading": "Loading bitCaster...",
+    "loadFailedTitle": "Couldn't load bitCaster",
+    "loadFailedHint": "The mint or matching engine isn't responding. Check your network and try again.",
+    "loadFailedRetry": "Retry"
+  },
   "common": {
     "next": "Next",
     "back": "Back",
