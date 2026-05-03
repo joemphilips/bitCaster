@@ -1,22 +1,24 @@
 import { Check } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { WizardStep } from '@/types/market-creation'
 
 interface StepIndicatorProps {
   currentStep: WizardStep
 }
 
-const steps: { step: WizardStep; label: string; display: number }[] = [
-  { step: 2, label: 'Get Started', display: 1 },
-  { step: 3, label: 'Basic Info', display: 2 },
-  { step: 4, label: 'Outcomes', display: 3 },
-  { step: 5, label: 'Liquidity', display: 4 },
-  { step: 6, label: 'Review', display: 5 },
+const steps: { step: WizardStep; labelKey: string; display: number }[] = [
+  { step: 2, labelKey: 'marketCreation.getStarted', display: 1 },
+  { step: 3, labelKey: 'marketCreation.stepBasicInfo', display: 2 },
+  { step: 4, labelKey: 'marketCreation.stepOutcomes', display: 3 },
+  { step: 5, labelKey: 'marketCreation.stepLiquidity', display: 4 },
+  { step: 6, labelKey: 'marketCreation.stepReview', display: 5 },
 ]
 
 export function StepIndicator({ currentStep }: StepIndicatorProps) {
+  const { t } = useTranslation()
   return (
     <div className="flex items-center justify-center gap-0">
-      {steps.map(({ step, label, display }, index) => {
+      {steps.map(({ step, labelKey, display }, index) => {
         const isCompleted = step < currentStep
         const isCurrent = step === currentStep
         const isFuture = step > currentStep
@@ -46,7 +48,7 @@ export function StepIndicator({ currentStep }: StepIndicatorProps) {
                     : 'text-slate-700 dark:text-slate-300'
                 }`}
               >
-                {label}
+                {t(labelKey)}
               </span>
             </div>
 

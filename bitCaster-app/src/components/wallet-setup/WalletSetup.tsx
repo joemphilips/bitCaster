@@ -1,4 +1,5 @@
 import { ArrowLeft, X, Loader2, Check, AlertCircle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { WalletSetupProps } from '@/types/wallet-setup'
 import { StepIndicator } from './StepIndicator'
 import { WelcomeLanding } from './WelcomeLanding'
@@ -16,6 +17,7 @@ interface ExtendedWalletSetupProps extends WalletSetupProps {
 }
 
 export function WalletSetup(props: ExtendedWalletSetupProps) {
+  const { t } = useTranslation()
   const {
     currentStep,
     showTerms,
@@ -48,7 +50,7 @@ export function WalletSetup(props: ExtendedWalletSetupProps) {
   const closeButton = (
     <button
       onClick={() => onClose?.()}
-      aria-label="Close wallet setup"
+      aria-label={t('walletSetup.closeWalletSetup')}
       className="fixed top-4 right-4 z-20 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 backdrop-blur-sm transition-colors"
     >
       <X className="w-5 h-5" strokeWidth={1.75} />
@@ -100,7 +102,7 @@ export function WalletSetup(props: ExtendedWalletSetupProps) {
               className="flex items-center gap-1.5 text-sm font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" strokeWidth={1.5} />
-              Back
+              {t('common.back')}
             </button>
           )}
         </div>
@@ -158,19 +160,19 @@ export function WalletSetup(props: ExtendedWalletSetupProps) {
             {backgroundDataLoad.status === 'loading' && (
               <>
                 <Loader2 className="w-3 h-3 animate-spin text-blue-500 dark:text-blue-400" />
-                <span className="text-slate-500 dark:text-slate-400">Loading markets...</span>
+                <span className="text-slate-500 dark:text-slate-400">{t('welcome.loadingMarkets')}</span>
               </>
             )}
             {backgroundDataLoad.status === 'loaded' && (
               <>
                 <Check className="w-3 h-3 text-emerald-500 dark:text-emerald-400" strokeWidth={2.5} />
-                <span className="text-slate-500 dark:text-slate-400">{backgroundDataLoad.conditionsLoaded} markets loaded</span>
+                <span className="text-slate-500 dark:text-slate-400">{t('welcome.marketsLoaded', { count: backgroundDataLoad.conditionsLoaded })}</span>
               </>
             )}
             {backgroundDataLoad.status === 'failed' && (
               <>
                 <AlertCircle className="w-3 h-3 text-amber-500 dark:text-amber-400" />
-                <span className="text-slate-500 dark:text-slate-400">Failed to load markets</span>
+                <span className="text-slate-500 dark:text-slate-400">{t('welcome.failedToLoadMarkets')}</span>
               </>
             )}
           </div>

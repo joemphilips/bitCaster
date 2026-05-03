@@ -1,4 +1,5 @@
 import { Coins, Info } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 interface InitialLiquidityProps {
   liquiditySats: number
@@ -13,31 +14,30 @@ export function InitialLiquidity({
   onLiquiditySatsChange,
   onNext,
 }: InitialLiquidityProps) {
+  const { t } = useTranslation()
   const canProceed = liquiditySats > 0
 
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Initial Liquidity</h2>
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{t('marketCreation.initialLiquidity')}</h2>
       <p className="text-sm text-slate-400 mb-8">
-        Set the amount of sats to seed the market's order book.
+        {t('marketCreation.initialLiquidityDesc')}
       </p>
 
       <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 mb-8">
         <div className="flex items-start gap-3">
           <Info className="w-5 h-5 text-blue-400 mt-0.5 shrink-0" strokeWidth={1.5} />
           <div>
-            <p className="text-sm font-medium text-blue-300 mb-1">Why seed liquidity?</p>
+            <p className="text-sm font-medium text-blue-300 mb-1">{t('marketCreation.whySeedLiquidity')}</p>
             <p className="text-xs text-blue-300/70 leading-relaxed">
-              Initial liquidity provides the first orders on both sides of the book, making
-              the market immediately tradeable for other participants. Higher liquidity means
-              tighter spreads and better prices for early traders.
+              {t('marketCreation.seedLiquidityExplanation')}
             </p>
           </div>
         </div>
       </div>
 
       <div className="mb-6">
-        <label className="block text-sm font-medium text-slate-300 mb-2">Amount (sats)</label>
+        <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.amountSats')}</label>
         <div className="relative">
           <Coins className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" strokeWidth={1.5} />
           <input
@@ -48,7 +48,7 @@ export function InitialLiquidity({
             placeholder="0"
             className="w-full pl-11 pr-16 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
           />
-          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-slate-500 font-medium">sats</span>
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-slate-500 font-medium">{t('marketCreation.satsSuffix')}</span>
         </div>
       </div>
 
@@ -77,7 +77,7 @@ export function InitialLiquidity({
             : 'bg-slate-800 text-slate-500 cursor-not-allowed'
         }`}
       >
-        Next
+        {t('common.next')}
       </button>
     </div>
   )

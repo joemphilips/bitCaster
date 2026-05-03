@@ -1,5 +1,6 @@
 import { FileText, Tag, Calendar, BarChart3, Coins, Loader2 } from 'lucide-react'
 import { Link } from 'react-router'
+import { useTranslation } from 'react-i18next'
 import type {
   WizardStepBasicInfo,
   WizardStepOutcomes,
@@ -27,39 +28,40 @@ export function ReviewAndCreate({
   onDescriptionChange,
   onCreateMarket,
 }: ReviewAndCreateProps) {
+  const { t } = useTranslation()
   const canCreate = description.trim().length > 0 && !isSubmitting
 
   return (
     <div className="w-full max-w-xl">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Review & Create</h2>
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{t('marketCreation.reviewAndCreate')}</h2>
       <p className="text-sm text-slate-400 mb-8">
-        Add a description and review your market before creating it.
+        {t('marketCreation.reviewAndCreateDesc')}
       </p>
 
       {/* Description */}
       <div className="mb-8">
-        <label className="block text-sm font-medium text-slate-300 mb-2">Description</label>
+        <label className="block text-sm font-medium text-slate-300 mb-2">{t('marketCreation.description')}</label>
         <textarea
           value={description}
           onChange={(e) => onDescriptionChange?.(e.target.value)}
-          placeholder="Describe your market in detail. Include resolution criteria, relevant context, and any edge cases..."
+          placeholder={t('marketCreation.descriptionPlaceholder')}
           rows={6}
           className="w-full px-4 py-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors resize-none"
         />
-        <p className="text-xs text-slate-500 mt-1.5">Provide clear resolution criteria for traders</p>
+        <p className="text-xs text-slate-500 mt-1.5">{t('marketCreation.descriptionHint')}</p>
       </div>
 
       {/* Market summary card */}
       <div className="p-5 rounded-xl bg-slate-900 border border-slate-700 mb-8">
-        <h3 className="text-sm font-semibold text-white mb-4">Market Summary</h3>
+        <h3 className="text-sm font-semibold text-white mb-4">{t('marketCreation.marketSummary')}</h3>
 
         <div className="space-y-4">
           {basicInfo && (
             <div className="flex items-start gap-3">
               <FileText className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" strokeWidth={1.5} />
               <div>
-                <p className="text-xs text-slate-400">Title</p>
-                <p className="text-sm text-white">{basicInfo.title || 'Untitled'}</p>
+                <p className="text-xs text-slate-400">{t('marketCreation.titleSummaryLabel')}</p>
+                <p className="text-sm text-white">{basicInfo.title || t('common.untitled')}</p>
               </div>
             </div>
           )}
@@ -68,7 +70,7 @@ export function ReviewAndCreate({
             <div className="flex items-start gap-3">
               <Tag className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" strokeWidth={1.5} />
               <div>
-                <p className="text-xs text-slate-400">Categories</p>
+                <p className="text-xs text-slate-400">{t('marketCreation.categoriesSummaryLabel')}</p>
                 <div className="flex flex-wrap gap-1 mt-0.5">
                   {basicInfo.categoryTags.map((tag) => (
                     <span key={tag} className="px-2 py-0.5 rounded-full bg-slate-800 text-xs text-slate-300">
@@ -84,7 +86,7 @@ export function ReviewAndCreate({
             <div className="flex items-start gap-3">
               <Calendar className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" strokeWidth={1.5} />
               <div>
-                <p className="text-xs text-slate-400">Closing Date</p>
+                <p className="text-xs text-slate-400">{t('marketCreation.closingDateLabel')}</p>
                 <p className="text-sm text-white">
                   {new Date(basicInfo.closingDate).toLocaleString()}
                 </p>
@@ -96,24 +98,39 @@ export function ReviewAndCreate({
             <div className="flex items-start gap-3">
               <BarChart3 className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" strokeWidth={1.5} />
               <div>
-                <p className="text-xs text-slate-400">Outcomes</p>
+                <p className="text-xs text-slate-400">{t('marketCreation.outcomesLabel')}</p>
                 {outcomes.outcomeType === 'numeric' ? (
                   <p className="text-sm text-white">
-                    Numeric: {outcomes.loBound ?? '?'} – {outcomes.hiBound ?? '?'} {outcomes.unit ?? ''}
-                    {outcomes.precision !== undefined && ` (${outcomes.precision} decimals)`}
+                    {outcomes.precision !== undefined
+                      ? t('marketCreation.numericSummaryWithPrecision', {
+                          lo: outcomes.loBound ?? '?',
+                          hi: outcomes.hiBound ?? '?',
+                          unit: outcomes.unit ?? '',
+                          precision: outcomes.precision,
+                        })
+                      : t('marketCreation.numericSummary', {
+                          lo: outcomes.loBound ?? '?',
+                          hi: outcomes.hiBound ?? '?',
+                          unit: outcomes.unit ?? '',
+                        })}
                   </p>
                 ) : (
                   <>
                     <p className="text-sm text-white capitalize">
                       {outcomes.outcomeType === 'yesno'
-                        ? 'Yes / No'
-                        : `${outcomes.outcomes?.length ?? 0} outcomes`}
+                        ? t('marketCreation.yesNoSummaryLabel')
+                        : t('marketCreation.outcomesCountSummary', { count: outcomes.outcomes?.length ?? 0 })}
                     </p>
                     {outcomes.outcomes && (
                       <div className="flex flex-wrap gap-1 mt-1">
                         {outcomes.outcomes.map((o) => (
                           <span key={o.id} className="px-2 py-0.5 rounded-full bg-slate-800 text-xs text-slate-300">
-                            {o.label || 'Unnamed'}{o.probability !== undefined ? ` (${o.probability}%)` : ''}
+                            {o.probability !== undefined
+                              ? t('marketCreation.outcomeWithProbability', {
+                                  label: o.label || t('common.unnamed'),
+                                  probability: o.probability,
+                                })
+                              : (o.label || t('common.unnamed'))}
                           </span>
                         ))}
                       </div>
@@ -128,8 +145,8 @@ export function ReviewAndCreate({
             <div className="flex items-start gap-3">
               <Coins className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" strokeWidth={1.5} />
               <div>
-                <p className="text-xs text-slate-400">Initial Liquidity</p>
-                <p className="text-sm font-semibold text-white">{liquidity.liquiditySats.toLocaleString()} sats</p>
+                <p className="text-xs text-slate-400">{t('marketCreation.initialLiquidityLabel')}</p>
+                <p className="text-sm font-semibold text-white">{t('marketCreation.liquiditySats', { count: liquidity.liquiditySats })}</p>
               </div>
             </div>
           )}
@@ -149,10 +166,10 @@ export function ReviewAndCreate({
         {isSubmitting ? (
           <>
             <Loader2 className="w-4 h-4 animate-spin" />
-            Creating Market...
+            {t('marketCreation.creatingMarket')}
           </>
         ) : (
-          'Create Market'
+          t('marketCreation.createMarket')
         )}
       </button>
 
@@ -170,7 +187,7 @@ export function ReviewAndCreate({
               to="/settings?category=nostr"
               className="mt-2 inline-block text-sm font-medium text-red-300 underline hover:text-red-200"
             >
-              Open Settings
+              {t('marketCreation.openSettings')}
             </Link>
           )}
         </div>

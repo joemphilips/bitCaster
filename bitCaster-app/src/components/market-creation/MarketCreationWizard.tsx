@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ArrowLeft, X } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { MarketCreationWizardProps } from '@/types/market-creation'
 import { StepIndicator } from './StepIndicator'
 import { OracleCheck } from './OracleCheck'
@@ -12,6 +13,7 @@ import { ResumeBanner } from './ResumeBanner'
 import { DepositStep } from './DepositStep'
 
 export function MarketCreationWizard(props: MarketCreationWizardProps) {
+  const { t } = useTranslation()
   const {
     draft,
     hasSavedDraft,
@@ -62,7 +64,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     <>
       <button
         onClick={onClose}
-        aria-label="Close market creation"
+        aria-label={t('marketCreation.closeMarketCreation')}
         className="fixed top-4 right-4 z-20 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 backdrop-blur-sm transition-colors"
       >
         <X className="w-5 h-5" strokeWidth={1.75} />
@@ -128,7 +130,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
               className="flex items-center gap-1.5 text-sm font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" strokeWidth={1.5} />
-              Back
+              {t('common.back')}
             </button>
           )}
         </div>
