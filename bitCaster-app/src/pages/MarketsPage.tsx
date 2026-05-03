@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 import { MarketDiscovery } from '@/components/markets'
 import { fetchMarkets, filterMarkets } from '@/lib/markets'
-import type { Market, MarketType, VolumeRange, FilterState, CategoryTag, MetaTag } from '@/types/market'
+import { useMarketSort } from '@/hooks/useMarketSort'
+import type { Market, MarketType, VolumeRange, FilterState, CategoryTag } from '@/types/market'
 
 export function MarketsPage() {
   const navigate = useNavigate()
@@ -50,24 +51,15 @@ export function MarketsPage() {
     }))
   }, [markets])
 
-  const derivedMetaTags = useMemo<MetaTag[]>(() => {
-    const seen = new Set<string>()
-    const result: MetaTag[] = []
-    for (const m of markets) {
-      for (const tagId of m.metaTags) {
-        if (!seen.has(tagId)) {
-          seen.add(tagId)
-          result.push({ id: tagId, label: tagId, description: '' })
-        }
-      }
-    }
-    return result
-  }, [markets])
-
   const filteredMarkets = useMemo(
     () => filterMarkets(markets, { ...filter, selectedTag }),
     [markets, filter, selectedTag]
   )
+
+  // Apply the ADR-009 sort dimensions client-side until engine PR #26
+  // exposes the `?sort=` query parameter. The hook always returns a stable
+  // copy so the underlying markets array is never mutated.
+  const { sort, setSort, sorted: visibleMarkets } = useMarketSort(filteredMarkets)
 
   const handleTagSelect = useCallback((tagId: string) => {
     setSelectedTag((prev) => (prev === tagId ? null : tagId))
@@ -124,10 +116,11 @@ export function MarketsPage() {
 
   return (
     <MarketDiscovery
-      metaTags={derivedMetaTags}
       categoryTags={derivedCategoryTags}
-      markets={filteredMarkets}
+      markets={visibleMarkets}
       selectedTag={selectedTag}
+      sort={sort}
+      onSortChange={setSort}
       onTagSelect={handleTagSelect}
       onMarketTypeChange={handleMarketTypeChange}
       onVolumeRangeChange={handleVolumeRangeChange}

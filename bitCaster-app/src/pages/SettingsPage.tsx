@@ -4,6 +4,7 @@ import { Settings } from '@/components/settings/Settings'
 import { useWalletStore, DEFAULT_MINT_URL } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
+import { detectMintCapabilities } from '@/lib/mints'
 import {
   loginWithExtension,
   loginWithNsecOrNcryptsec,
@@ -49,7 +50,7 @@ export function SettingsPage() {
   // Map wallet mints → MintConfig[]
   const mintConfigs: MintConfig[] = walletStore.mints.map((m) => {
     const info = m.info as Record<string, unknown> | undefined
-    const nuts = info?.nuts as Record<string, unknown> | undefined
+    const { ctf } = detectMintCapabilities(info)
     return {
       url: m.url,
       name: info?.name as string | undefined,
@@ -60,7 +61,7 @@ export function SettingsPage() {
           : walletStore.mintConnectionStatuses[m.url] === 'failed'
             ? 'error'
             : 'disconnected',
-      supportsCTF: nuts != null && 'CTF' in nuts,
+      supportsCTF: ctf,
       addedDate: '',
     }
   })

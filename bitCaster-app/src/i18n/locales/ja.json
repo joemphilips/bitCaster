@@ -500,5 +500,11 @@
     "shortBy": "不足額",
     "sats": "{{count}} sats",
     "topUp": "チャージ"
+  },
+  "sort": {
+    "label": "マーケットの並び替え",
+    "trending": "トレンド",
+    "popular": "人気",
+    "new": "新着"
   }
 }

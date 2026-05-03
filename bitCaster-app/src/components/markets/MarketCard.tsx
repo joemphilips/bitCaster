@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Users, Droplet, ChevronUp, ChevronDown, Bookmark, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { formatBtc } from '@/lib/format'
+import { getMarketThumbnail } from '@/lib/markets'
 import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import { useBookmarkStore } from '@/stores/bookmarks'
 import type {
@@ -23,6 +24,39 @@ interface MarketCardProps {
   onViewMarket?: (marketId: string) => void
   onViewSecondaryMarket?: (baseMarketId: string, secondaryMarketId: string) => void
   walletReady?: boolean
+}
+
+/**
+ * Renders the market's thumbnail. Falls back to a placeholder when the
+ * matching engine has no stored thumbnail rather than emitting an empty
+ * `url()` background-image — the empty-string variant fired a broken-asset
+ * GET against `<base>/` and showed the slate gradient regardless (P6 P4.3).
+ */
+function MarketThumbnail({ market }: { market: { id: string; title: string; imageUrl: string } }) {
+  const src = getMarketThumbnail(market)
+  return (
+    <div
+      className="relative w-12 h-12 flex-shrink-0 rounded-lg overflow-hidden bg-gradient-to-br from-slate-200 to-slate-300 dark:from-slate-800 dark:to-slate-700"
+      data-testid="market-thumbnail"
+    >
+      {src ? (
+        <img
+          src={src}
+          alt={market.title}
+          className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+          loading="lazy"
+        />
+      ) : (
+        <div
+          aria-hidden="true"
+          data-testid="market-thumbnail-placeholder"
+          className="absolute inset-0 flex items-center justify-center text-slate-500 dark:text-slate-400 text-sm font-bold uppercase"
+        >
+          {market.title.slice(0, 1)}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function CategoricalOutcomes({
@@ -504,12 +538,7 @@ export function MarketCard({
       className="group relative bg-white dark:bg-slate-900 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 transition-all duration-300 flex flex-col shadow-md hover:shadow-xl hover:scale-[1.01] cursor-pointer"
     >
       <div className="flex items-start gap-3 p-4 pb-2 flex-shrink-0">
-        <div className="relative w-12 h-12 flex-shrink-0 rounded-lg overflow-hidden bg-gradient-to-br from-slate-200 to-slate-300 dark:from-slate-800 dark:to-slate-700">
-          <div
-            className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-110"
-            style={{ backgroundImage: `url(${market.imageUrl})` }}
-          />
-        </div>
+        <MarketThumbnail market={market} />
         <div className="flex-1 min-w-0">
           {twoDMarket ? (
             <>

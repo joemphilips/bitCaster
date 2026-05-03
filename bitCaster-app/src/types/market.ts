@@ -122,9 +122,6 @@ export interface FilterState {
 // =============================================================================
 
 export interface MarketDiscoveryProps {
-  /** List of meta tags (Trending, Popular, New) */
-  metaTags: MetaTag[]
-
   /** List of category tags for filtering */
   categoryTags: CategoryTag[]
 
@@ -136,6 +133,17 @@ export interface MarketDiscoveryProps {
 
   /** Search query */
   searchQuery?: string
+
+  /**
+   * Active sort dimension. Per ADR-009 the markets list is always sorted
+   * by exactly one of Trending / Popular / New; the page owner is the
+   * source of truth so the SortBar stays in sync with the URL / query
+   * proxy parameter once engine PR #26 lands.
+   */
+  sort: import('@/hooks/useMarketSort').MarketSort
+
+  /** Called when user picks a different sort dimension. */
+  onSortChange: (next: import('@/hooks/useMarketSort').MarketSort) => void
 
   /** Called when user searches for markets */
   onSearch?: (query: string) => void
