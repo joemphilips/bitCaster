@@ -1,10 +1,4 @@
 {
-  "app": {
-    "loading": "bitCaster を読み込んでいます...",
-    "loadFailedTitle": "bitCaster を読み込めませんでした",
-    "loadFailedHint": "ミントまたはマッチングエンジンが応答していません。ネットワークを確認してから再試行してください。",
-    "loadFailedRetry": "再試行"
-  },
   "common": {
     "next": "次へ",
     "back": "戻る",
