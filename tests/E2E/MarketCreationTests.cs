@@ -479,44 +479,39 @@ public class MarketCreationTests : IAsyncLifetime
             createResponse.IsSuccessStatusCode || createResponse.StatusCode == System.Net.HttpStatusCode.Conflict,
             $"createMarket failed: {createResponse.StatusCode} {await createResponse.Content.ReadAsStringAsync()}");
 
-        // Build route interception JSON so the frontend sees our custom title
-        // for this condition (overriding the seeded title)
-        var conditionJson = System.Text.Json.JsonSerializer.Serialize(new
+        // Per ADR-009 the markets-list page now consumes the engine's
+        // `/api/v1/markets/query` proxy. Intercept that surface so the
+        // markets list reliably surfaces the freshly-registered market
+        // with the test-controlled title even if the engine projection has
+        // not yet caught up to mintd.
+        var queryJson = System.Text.Json.JsonSerializer.Serialize(new
         {
-            conditions = new object[]
+            markets = new object[]
             {
                 new
                 {
-                    condition_id = conditionId,
-                    tags = new[] { new[] { "description", marketTitle } },
-                    threshold = firstCondition.GetProperty("threshold").GetInt32(),
-                    announcements = firstCondition.GetProperty("announcements")
-                        .EnumerateArray().Select(a => a.GetString()).ToArray(),
-                    partitions = firstCondition.GetProperty("partitions")
-                        .EnumerateArray().Select(p => new
-                        {
-                            partition = p.GetProperty("partition")
-                                .EnumerateArray().Select(v => v.GetString()).ToArray(),
-                            collateral = p.TryGetProperty("collateral", out var c) ? c.GetString() ?? "" : "",
-                            parent_collection_id = p.TryGetProperty("parent_collection_id", out var pc)
-                                ? pc.GetString() ?? "" : "",
-                            keysets = p.TryGetProperty("keysets", out var ks)
-                                ? ks.EnumerateObject().ToDictionary(kv => kv.Name, kv => kv.Value.GetString() ?? "")
-                                : new Dictionary<string, string>(),
-                        }).ToArray(),
-                    attestation = new
-                    {
-                        status = "pending",
-                        winning_outcome = (string?)null,
-                        attested_at = (long?)null,
-                    },
+                    conditionId,
+                    outcomes = outcomeNames,
+                    title = marketTitle,
+                    thumbnailUrl = (string?)null,
+                    creatorPubkey = (string?)null,
+                    deadline = (string?)null,
+                    state = "open",
+                    createdAt = "2026-01-01T00:00:00Z",
+                    volume24hSats = 0,
+                    volume30dSats = 0,
+                    lastTradedPrice = (double?)null,
+                    categoryTags = new[] { "crypto" },
+                    lastSuccessfulRefreshAt = "2026-05-02T09:58:00Z",
                 },
             },
+            nextCursor = (string?)null,
+            lastSuccessfulRefreshAt = "2026-05-02T09:58:00Z",
         });
 
         async Task InterceptConditions(IPage page)
         {
-            await page.RouteAsync("**/v1/conditions", async route =>
+            await page.RouteAsync("**/api/v1/markets/query*", async route =>
             {
                 if (route.Request.Method == "GET")
                 {
@@ -524,7 +519,7 @@ public class MarketCreationTests : IAsyncLifetime
                     {
                         Status = 200,
                         ContentType = "application/json",
-                        Body = conditionJson,
+                        Body = queryJson,
                     });
                 }
                 else

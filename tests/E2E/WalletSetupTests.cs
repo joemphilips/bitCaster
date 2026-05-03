@@ -314,15 +314,18 @@ public class WalletSetupTests : IAsyncLifetime
     {
         var page = await NewPwaPageAsync();
 
-        // Intercept /v1/conditions to delay the response
+        // Intercept the engine markets-query proxy (Phase 2 wiring) to delay
+        // the response so the "Now Loading" page is observable. Pre-Phase 2
+        // this hooked /v1/conditions on mintd; the wallet-setup pre-warm
+        // call now goes through `/api/v1/markets/query` per ADR-009.
         var tcs = new TaskCompletionSource<bool>();
-        await page.RouteAsync("**/v1/conditions", async route =>
+        await page.RouteAsync("**/api/v1/markets/query*", async route =>
         {
             await tcs.Task;
             await route.FulfillAsync(new RouteFulfillOptions
             {
                 ContentType = "application/json",
-                Body = """{"conditions":[]}""",
+                Body = """{"markets":[],"nextCursor":null,"lastSuccessfulRefreshAt":"2026-05-02T09:58:00Z"}""",
             });
         });
 
@@ -338,7 +341,8 @@ public class WalletSetupTests : IAsyncLifetime
         await CheckSeedSavedAsync(page);
         await CompleteSeedVerificationAsync(page, seedWords);
 
-        // Wait for mint to connect (mint API is not intercepted, only /v1/conditions is)
+        // Wait for mint to connect — only /api/v1/markets/query is intercepted,
+        // mint API requests still flow through.
         await Assertions.Expect(page.GetByText("Connected")).ToBeVisibleAsync(new() { Timeout = 15_000 });
 
         // Click "Finish Setup"
@@ -347,7 +351,7 @@ public class WalletSetupTests : IAsyncLifetime
         // Assert the "Now Loading" page is shown
         await Assertions.Expect(page.GetByText("Finance wants to be free")).ToBeVisibleAsync(new() { Timeout = 5_000 });
 
-        // Release the delayed conditions response
+        // Release the delayed markets-query response
         tcs.SetResult(true);
 
         // Assert auto-navigation to /markets

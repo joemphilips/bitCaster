@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useWalletStore } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
-import { fetchMarkets } from '@/lib/markets'
+import { getMarkets } from '@/lib/markets'
 
 export type AppLoadingState = 'pending' | 'ready' | 'error'
 
@@ -42,8 +42,9 @@ interface UseAppLoadingStateOptions {
  *    will mis-render if we paint over the splash before that lands.
  *  - **Settings store hydrated.** Theme, base currency, signer mode —
  *    user-visible values that should not flicker on first paint.
- *  - **Markets catalogue resolved.** A successful `fetchMarkets` call
- *    proves the mint is reachable. Failure flips us to the error state
+ *  - **Markets catalogue resolved.** A successful `getMarkets()` call
+ *    proves the matching engine (and, transitively, the mintd-mirror it
+ *    serves from) is reachable. Failure flips us to the error state
  *    rather than spinning forever.
  *
  * Errors thrown during boot flip the state to 'error' so the splash UI
@@ -108,8 +109,9 @@ export function useAppLoadingState(
 
     // Markets catalogue. Treat any rejection as boot failure rather than
     // letting the splash hide it — the security-reviewer's "splash masks
-    // an error" failure mode.
-    fetchMarkets()
+    // an error" failure mode. Hits the engine's catalogue proxy
+    // (`/api/v1/markets/query`) post Phase-2 wiring, not mintd directly.
+    getMarkets()
       .then(() => {
         flags.marketsResolved = true
         tryFinish()
