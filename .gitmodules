@@ -5,7 +5,7 @@
 [submodule "cdk"]
 	path = cdk
 	url = git@github.com:joemphilips/cdk.git
-	branch = bitCaster
+	branch = ctf
 [submodule "bitCaster-design"]
 	path = bitCaster-design
 	url = git@github.com:joemphilips/bitCaster-design.git
