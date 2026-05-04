@@ -392,6 +392,28 @@ async function fetchEngineCatalogueEntry(
 }
 
 /**
+ * Normalise the engine `state` field at the boundary. Per the OpenAPI spec
+ * (and `bitcaster-coding-guideline` Rule 1) the engine MUST emit `"open"` /
+ * `"closed"` (camelCase). Both the InMemoryMatchingEngine and (as of this
+ * writing) the production engine ship with NSwag-generated DTOs whose
+ * property-level `[JsonConverter(typeof(JsonStringEnumConverter<T>))]`
+ * attribute overrides the global naming policy and emits the bare enum
+ * NAME — i.e. `"Open"` / `"Closed"` (PascalCase). Until the producer is
+ * fixed upstream (track via the engine repo's TODO), normalise once here so
+ * the detail page's exhaustive switch over `'open' | 'closed'` does not
+ * fall through to `assertNever` on every load.
+ *
+ * This is the SOLE place this normalisation lives — Rule 2 forbids paving
+ * over the case mismatch at every call site.
+ */
+function normalizeEngineMarketState(raw: unknown): MarketCatalogueEntry['state'] | null {
+  if (raw == null) return null
+  const s = String(raw).toLowerCase().trim()
+  if (s === 'open' || s === 'closed') return s
+  return null
+}
+
+/**
  * Merge engine catalogue fields into a mintd-derived `MarketDetail`. Engine
  * is authoritative for lifecycle (`state`), analytics (volume), and thumbnail.
  * Mintd-derived fields (title, outcomes, resolution metadata) survive
@@ -403,9 +425,10 @@ function mergeEngineCatalogueEntry(
   engineEntry: MarketCatalogueEntry | null,
 ): MarketDetail {
   if (!engineEntry) return detail
+  const normalisedState = normalizeEngineMarketState(engineEntry.state)
   return {
     ...detail,
-    state: engineEntry.state,
+    state: normalisedState ?? detail.state,
     imageUrl: engineEntry.thumbnailUrl ?? detail.imageUrl,
     volume: engineEntry.volume24hSats ?? detail.volume,
   }

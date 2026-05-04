@@ -376,4 +376,42 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
     expect(queryCall!).toContain('state=All')
     expect(queryCall!).toContain('ids=abc123')
   })
+
+  it('normalises engine state casing — defensive against the NSwag PascalCase emit', async () => {
+    // Producer bug: NSwag-generated DTOs ship `[JsonConverter(typeof(
+    // JsonStringEnumConverter<T>))]` per-property which overrides the global
+    // naming policy and emits "Open" / "Closed" instead of the spec's "open"
+    // / "closed". Until the producer is fixed upstream, the frontend
+    // normalises at the boundary so the detail page's exhaustive switch
+    // does not fall through to assertNever on every staging load.
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse()
+      if (url.includes('/api/v1/markets/query')) {
+        // Mimic the production engine wire form (capitalised).
+        const body = await engineQueryResponse('open', null).json()
+        body.markets[0].state = 'Open'
+        return new Response(JSON.stringify(body), { status: 200 })
+      }
+      return emptyMetadataResponse()
+    })
+    const detail = await fetchMarketDetail('abc123')
+    // Normalised to lowercase so useMarketState's switch matches.
+    expect(detail.state).toBe('open')
+  })
+
+  it('falls back when engine state is an unrecognised value (logs a soft fail)', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse()
+      if (url.includes('/api/v1/markets/query')) {
+        const body = await engineQueryResponse('open', null).json()
+        body.markets[0].state = 'Settling'
+        return new Response(JSON.stringify(body), { status: 200 })
+      }
+      return emptyMetadataResponse()
+    })
+    const detail = await fetchMarketDetail('abc123')
+    // Unrecognised value → undefined → useMarketState renders Open (safe
+    // pre-fetch default). Better than throwing on every page load.
+    expect(detail.state).toBeUndefined()
+  })
 })
