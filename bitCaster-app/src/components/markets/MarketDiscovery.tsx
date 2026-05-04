@@ -10,12 +10,13 @@ import type { MarketDiscoveryProps, MarketType, VolumeRange, Market } from '@/ty
 export function MarketDiscovery({
   categoryTags,
   markets,
-  selectedTag,
+  selectedTags,
   sort,
   onSortChange,
   searchQuery: _searchQuery = '',
   onSearch: _onSearch,
   onTagSelect,
+  onClearTags,
   onMarketTypeChange,
   onVolumeRangeChange,
   onClosingDateChange,
@@ -90,10 +91,11 @@ export function MarketDiscovery({
           {/* Row 2 — Tag chips, multi-select category filter. */}
           <TagBar
             categoryTags={categoryTags}
-            selectedTag={selectedTag}
+            selectedTags={selectedTags}
             filtersVisible={filtersVisible}
             activeFilterCount={activeFilterCount}
             onTagSelect={onTagSelect}
+            onClearTags={onClearTags}
             onToggleFilters={() => setFiltersVisible(!filtersVisible)}
           />
         </div>

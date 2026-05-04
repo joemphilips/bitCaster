@@ -116,7 +116,7 @@ describe('filterMarkets (client-side stop-gap)', () => {
 
   const baseFilter: FilterState = {
     searchQuery: '',
-    selectedTag: null,
+    selectedTags: [],
     marketTypes: [],
     volumeRange: {},
   }

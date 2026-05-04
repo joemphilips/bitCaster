@@ -1,24 +1,34 @@
 import { useState, useRef, useEffect } from 'react'
-import { SlidersHorizontal, ChevronLeft, ChevronRight } from 'lucide-react'
+import { SlidersHorizontal, ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { CategoryTag } from '@/types/market'
 
 interface TagBarProps {
   categoryTags: CategoryTag[]
-  selectedTag: string | null
+  /**
+   * Currently selected category tag IDs (multi-select, OR semantics). The
+   * engine's `/api/v1/markets/query?tag=…` accepts repeated values; the page
+   * forwards the whole set per click. P7 §`/markets`: users want to combine
+   * categories rather than cycle through them one at a time.
+   */
+  selectedTags: string[]
   filtersVisible: boolean
   activeFilterCount: number
   onTagSelect?: (tagId: string) => void
+  onClearTags?: () => void
   onToggleFilters?: () => void
 }
 
 export function TagBar({
   categoryTags,
-  selectedTag,
+  selectedTags,
   filtersVisible,
   activeFilterCount,
   onTagSelect,
+  onClearTags,
   onToggleFilters,
 }: TagBarProps) {
+  const { t } = useTranslation()
   const scrollRef = useRef<HTMLDivElement>(null)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
@@ -49,6 +59,9 @@ export function TagBar({
       })
     }
   }
+
+  const selectedSet = new Set(selectedTags)
+  const hasAnySelected = selectedSet.size > 0
 
   return (
     <div
@@ -83,11 +96,12 @@ export function TagBar({
       >
         {/* Category Tags */}
         {categoryTags.map((tag) => {
-          const isSelected = selectedTag === tag.id
+          const isSelected = selectedSet.has(tag.id)
           return (
             <button
               key={tag.id}
               onClick={() => onTagSelect?.(tag.id)}
+              aria-pressed={isSelected}
               className={`px-4 py-2 rounded-full font-semibold text-sm transition-all transform hover:scale-105 whitespace-nowrap ${
                 isSelected
                   ? 'bg-blue-600 dark:bg-blue-500 text-white shadow-lg scale-105'
@@ -99,6 +113,21 @@ export function TagBar({
             </button>
           )
         })}
+
+        {/* Clear-all chip — surfaces only while at least one tag is active so
+            the row stays calm at rest. The mobile bottom-nav and the
+            desktop header both render this row, so the affordance is
+            present in both layouts (Mobile/Desktop UI Parity). */}
+        {hasAnySelected && (
+          <button
+            onClick={onClearTags}
+            data-testid="market-tag-clear"
+            className="flex items-center gap-1 px-3 py-2 rounded-full font-semibold text-sm transition-colors whitespace-nowrap bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50"
+          >
+            <X className="w-3.5 h-3.5" />
+            <span>{t('common.clearAll')}</span>
+          </button>
+        )}
 
         {/* Filter Toggle Button */}
         <div className="w-px bg-slate-300 dark:bg-slate-700 mx-2" />

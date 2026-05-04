@@ -54,7 +54,7 @@ describe('MarketDiscovery', () => {
       <MarketDiscovery
         categoryTags={testCategoryTags}
         markets={testMarkets}
-        selectedTag={null}
+        selectedTags={[]}
         sort="trending"
         onSortChange={vi.fn()}
       />
@@ -77,7 +77,7 @@ describe('MarketDiscovery', () => {
       <MarketDiscovery
         categoryTags={testCategoryTags}
         markets={[]}
-        selectedTag={null}
+        selectedTags={[]}
         sort="trending"
         onSortChange={vi.fn()}
       />
@@ -93,7 +93,7 @@ describe('MarketDiscovery', () => {
       <MarketDiscovery
         categoryTags={testCategoryTags}
         markets={testMarkets}
-        selectedTag={null}
+        selectedTags={[]}
         sort="trending"
         onSortChange={onSortChange}
       />

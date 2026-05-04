@@ -12,10 +12,13 @@ export function MarketsPage() {
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selectedTag, setSelectedTag] = useState<string | null>(null)
+  // Selected category tags. P7 §`/markets`: chip multi-select with OR
+  // semantics. The engine's `/api/v1/markets/query?tag=…` accepts repeated
+  // `tag=` parameters, so the page forwards the whole set verbatim.
+  const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [filter, setFilter] = useState<FilterState>({
     searchQuery: '',
-    selectedTag: null,
+    selectedTags: [],
     marketTypes: [],
     volumeRange: {},
   })
@@ -28,7 +31,7 @@ export function MarketsPage() {
     setLoading(true)
     setError(null)
     setNextCursor(null)
-    const tags = selectedTag ? [selectedTag] : undefined
+    const tags = selectedTags.length > 0 ? selectedTags : undefined
     getMarkets({ sort, tags })
       .then((result) => {
         setMarkets(result.markets)
@@ -40,7 +43,7 @@ export function MarketsPage() {
       .finally(() => {
         setLoading(false)
       })
-  }, [sort, selectedTag])
+  }, [sort, selectedTags])
 
   useEffect(() => {
     loadMarkets()
@@ -65,12 +68,20 @@ export function MarketsPage() {
   // pushed up to the API call, so we strip it from the client filter to
   // avoid double-applying.
   const filteredMarkets = useMemo(
-    () => filterMarkets(markets, { ...filter, selectedTag: null }),
+    () => filterMarkets(markets, { ...filter, selectedTags: [] }),
     [markets, filter]
   )
 
   const handleTagSelect = useCallback((tagId: string) => {
-    setSelectedTag((prev) => (prev === tagId ? null : tagId))
+    setSelectedTags((prev) =>
+      prev.includes(tagId)
+        ? prev.filter((id) => id !== tagId)
+        : [...prev, tagId],
+    )
+  }, [])
+
+  const handleClearTags = useCallback(() => {
+    setSelectedTags([])
   }, [])
 
   const handleMarketTypeChange = useCallback((types: MarketType[]) => {
@@ -92,7 +103,7 @@ export function MarketsPage() {
   const handleLoadMore = useCallback(() => {
     if (!nextCursor || loadingMore) return
     setLoadingMore(true)
-    const tags = selectedTag ? [selectedTag] : undefined
+    const tags = selectedTags.length > 0 ? selectedTags : undefined
     getMarkets({ sort, tags, cursor: nextCursor })
       .then((result) => {
         setMarkets((prev) => [...prev, ...result.markets])
@@ -105,7 +116,7 @@ export function MarketsPage() {
       .finally(() => {
         setLoadingMore(false)
       })
-  }, [nextCursor, loadingMore, sort, selectedTag])
+  }, [nextCursor, loadingMore, sort, selectedTags])
 
   const handleViewSecondaryMarket = useCallback(
     (_baseMarketId: string, secondaryMarketId: string) => {
@@ -140,10 +151,11 @@ export function MarketsPage() {
     <MarketDiscovery
       categoryTags={derivedCategoryTags}
       markets={filteredMarkets}
-      selectedTag={selectedTag}
+      selectedTags={selectedTags}
       sort={sort}
       onSortChange={setSort}
       onTagSelect={handleTagSelect}
+      onClearTags={handleClearTags}
       onMarketTypeChange={handleMarketTypeChange}
       onVolumeRangeChange={handleVolumeRangeChange}
       onClosingDateChange={handleClosingDateChange}

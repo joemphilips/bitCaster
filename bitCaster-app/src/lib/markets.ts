@@ -251,10 +251,14 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
     result = result.filter((m) => m.title.toLowerCase().includes(query))
   }
 
-  if (filter.selectedTag) {
-    const tagId = filter.selectedTag
+  // Multi-tag OR semantics: a market matches if ANY of its meta/category
+  // tags is in the selected set. Empty set means "no tag filter".
+  if (filter.selectedTags.length > 0) {
+    const wanted = new Set(filter.selectedTags)
     result = result.filter(
-      (m) => m.metaTags.includes(tagId) || m.categoryTags.includes(tagId)
+      (m) =>
+        m.metaTags.some((id) => wanted.has(id)) ||
+        m.categoryTags.some((id) => wanted.has(id)),
     )
   }
 
