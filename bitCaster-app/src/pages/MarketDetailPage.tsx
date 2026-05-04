@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router'
 import { MarketDetail } from '@/components/market-detail'
 import { InsufficientBalanceModal } from '@/components/shared/InsufficientBalanceModal'
 import { TopUpOverlay } from '@/components/market-detail/TopUpOverlay'
+import { useShareMarket } from '@/components/market-detail/useShareMarket'
 import {
   fetchMarketDetail,
   fetchOrderBook,
@@ -193,6 +194,11 @@ export function MarketDetailPage() {
     navigate(`/markets/${marketId}`)
   }, [navigate])
 
+  // Share button (P7 §/markets/{id}). The hook handles the native share-sheet
+  // / clipboard-fallback split internally; the page just hands it the
+  // current title + the implicit window.location.href.
+  const handleShare = useShareMarket({ title: market?.title ?? '' })
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
@@ -237,6 +243,7 @@ export function MarketDetailPage() {
         }}
         onAmountChange={setTradeAmount}
         onTradeConfirm={handleTradeConfirm}
+        onShare={handleShare}
         onTradeSideChange={setTradeSide}
         onOrderTypeChange={setOrderType}
         onLimitPriceChange={setLimitPrice}
