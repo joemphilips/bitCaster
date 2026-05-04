@@ -54,6 +54,11 @@ vi.mock('@/stores/wallet', () => ({
   },
 }))
 
+// Pull the creator-markets store into the test so the post-success
+// "0% fee" assertion can read the persisted entry. Mocked separately from
+// the store under test so the assertion sees real reads/writes.
+import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
+
 // Stub nip17 so the test does not pull in nostr-tools at module load time.
 // The real derivation is covered in `bitCaster-app/src/lib/__tests__`.
 vi.mock('@/lib/nip17', () => ({
@@ -206,5 +211,20 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true)
+  })
+
+  it('stamps creatorFeePercent=0 (P7 §/creator: engine accrues no fees)', async () => {
+    // Reset the creator-markets store so the assertion is not polluted by
+    // entries from the other tests in this file.
+    useCreatorMarketsStore.setState({ markets: [] })
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    const entry = useCreatorMarketsStore
+      .getState()
+      .markets.find((m) => m.conditionId === 'test-cond-id')
+    expect(entry).toBeDefined()
+    expect(entry!.creatorFeePercent).toBe(0)
   })
 })
