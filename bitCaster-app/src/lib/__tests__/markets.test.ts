@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  fetchMarketDetail,
   filterMarkets,
   getMarkets,
   getTagValue,
@@ -248,5 +249,131 @@ describe('legacy mintd-list path (markets list) is fully removed', () => {
   it('no longer exports a mapConditionToMarket() function', async () => {
     const mod = await import('../markets')
     expect(Object.prototype.hasOwnProperty.call(mod, 'mapConditionToMarket')).toBe(false)
+  })
+})
+
+/**
+ * Phase 2 + Phase 7 of the P7 staging-fix plan: `fetchMarketDetail` consults
+ * mintd for existence and outcome metadata, AND the engine catalogue for
+ * lifecycle (`state`) and thumbnail (`imageUrl`). The test wires up a fake
+ * `fetch` that returns canned mintd + engine responses and asserts the
+ * merged `MarketDetail` carries the engine-side state + thumbnail.
+ */
+describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let originalFetch: typeof globalThis.fetch
+
+  function mintdConditionsResponse(): Response {
+    return new Response(
+      JSON.stringify({
+        conditions: [
+          {
+            condition_id: 'abc123',
+            tags: [['description', 'Will BTC hit 100K?']],
+            threshold: 1,
+            announcements: ['ann1'],
+            partitions: [{
+              partition: ['Yes', 'No'],
+              collateral: 'sat',
+              parent_collection_id: '0'.repeat(64),
+              keysets: {},
+            }],
+            attestation: { status: 'pending', winning_outcome: null, attested_at: null },
+          },
+        ],
+      }),
+      { status: 200 },
+    )
+  }
+
+  function engineQueryResponse(state: 'open' | 'closed', thumbnailUrl: string | null): Response {
+    return new Response(
+      JSON.stringify({
+        markets: [{
+          conditionId: 'abc123',
+          outcomes: ['Yes', 'No'],
+          title: 'Will BTC hit 100K?',
+          thumbnailUrl,
+          creatorPubkey: null,
+          deadline: null,
+          state,
+          createdAt: '2026-01-01T00:00:00Z',
+          volume24hSats: 5000,
+          volume30dSats: 50000,
+          lastTradedPrice: null,
+          categoryTags: ['crypto'],
+          lastSuccessfulRefreshAt: '2026-05-04T00:00:00Z',
+        }],
+        nextCursor: null,
+        lastSuccessfulRefreshAt: '2026-05-04T00:00:00Z',
+      }),
+      { status: 200 },
+    )
+  }
+
+  function emptyMetadataResponse(): Response {
+    return new Response('not found', { status: 404 })
+  }
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse()
+      if (url.includes('/api/v1/markets/query')) return engineQueryResponse('open', '/api/v1/abc123/thumbnail')
+      if (url.includes('/metadata')) return emptyMetadataResponse()
+      throw new Error(`unexpected URL: ${url}`)
+    })
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('merges engine state into the detail (Phase 2 lifecycle authority)', async () => {
+    const detail = await fetchMarketDetail('abc123')
+    expect(detail.state).toBe('open')
+  })
+
+  it('merges engine thumbnailUrl into imageUrl (Phase 7 thumbnail data path)', async () => {
+    const detail = await fetchMarketDetail('abc123')
+    expect(detail.imageUrl).toBe('/api/v1/abc123/thumbnail')
+  })
+
+  it('regression: engine state="closed" overrides mintd attestation="pending"', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse()
+      if (url.includes('/api/v1/markets/query')) return engineQueryResponse('closed', null)
+      return emptyMetadataResponse()
+    })
+    const detail = await fetchMarketDetail('abc123')
+    expect(detail.state).toBe('closed')
+    // Mintd attestation is pending → resolution status surfaces as 'open' (a
+    // PENDING resolution, not the engine lifecycle); the engine win is the
+    // load-bearing assertion above.
+    expect(detail.resolution.status).toBe('open')
+  })
+
+  it('falls back gracefully when the engine query fails (mintd-only render)', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse()
+      if (url.includes('/api/v1/markets/query')) return new Response('boom', { status: 500 })
+      return emptyMetadataResponse()
+    })
+    const detail = await fetchMarketDetail('abc123')
+    // No engine state → undefined → useMarketState() treats as Open.
+    expect(detail.state).toBeUndefined()
+    // Thumbnail unset → consumer falls back to placeholder asset.
+    expect(detail.imageUrl).toBeUndefined()
+  })
+
+  it('queries the engine catalogue with state=All so closed markets surface', async () => {
+    await fetchMarketDetail('abc123')
+    const calls = fetchMock.mock.calls.map((c) => c[0] as string)
+    const queryCall = calls.find((u) => u.includes('/api/v1/markets/query'))
+    expect(queryCall).toBeDefined()
+    expect(queryCall!).toContain('state=All')
+    expect(queryCall!).toContain('ids=abc123')
   })
 })
