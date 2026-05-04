@@ -1,38 +1,39 @@
-import type { MarketDetail, ResolutionStatus } from '@/types/market-detail'
+import { assertNever } from '@/lib/enumDiscipline'
+import type { components } from '@/generated/api'
 
 /**
- * Per ADR-010 the matching engine has a single closed-market discriminator:
- * `MarketState ∈ { Open, Closed }`. Until the market-query proxy (engine
- * PR #26 / ADR-009) lands and the engine surfaces `state` directly on the
- * REST market record, the frontend derives the same view from mintd's
- * attestation status — the same data path that already drives the
- * "resolved" affordances on the market-detail page.
+ * Engine-side `MarketState` enum, generated from the OpenAPI spec
+ * (`MarketCatalogueEntry.state`). Source-of-truth split per ADR-009
+ * (Amendment 2026-05-04 — detail-page compliance):
  *
- * The mapping mirrors the engine's two close sources:
+ *  - lifecycle (Open / Closed) — engine `state`
+ *  - market existence            — mintd `/v1/conditions`
+ *  - outcome metadata            — mintd `attestation.*` (normalised at
+ *                                   ingress via `lib/mintdIngress.ts`)
  *
- *   - oracle resolution attestation         → mintd `'attested'`     → Closed
- *   - oracle deadline passed without resolve → mintd `'expired'`      → Closed
- *   - oracle reported a CET-violation        → mintd `'violation'`    → Closed
- *   - oracle still has not declared anything → mintd `'pending'`      → Open
- *
- * `mapConditionToMarketDetail` collapses `attested|expired|violation` into
- * `resolution.status === 'resolved'`, so callers that already hold a
- * `MarketDetail` can drop in the hook below without touching their data
- * fetching path.
- *
- * Once engine PR #26 ships, this hook should switch over to the engine's
- * authoritative `state` field and treat the mintd attestation as a
- * fallback / staleness signal.
+ * Before this change the hook derived lifecycle from mintd's attestation
+ * status with a negative comparison (`status !== 'pending'`), which silently
+ * flipped to "Closed" for a freshly-created market with no attestation yet
+ * (the P7 §`/markets/{id}` regression). The fix is structural: read engine
+ * state directly, exhaustive-switch over the generated union, fail loudly on
+ * any unexpected value via `assertNever`. See
+ * `.claude/skills/bitcaster-coding-guideline/SKILL.md` for the full rule.
  */
+export type MarketState = components['schemas']['MarketCatalogueEntry']['state']
+
 export type DerivedMarketState = 'Open' | 'Closed'
 
-const CLOSED_RESOLUTION_STATUSES: ReadonlySet<ResolutionStatus> = new Set([
-  'resolved',
-  'pending_resolution',
-  'disputed',
-])
-
-export function useMarketState(market: Pick<MarketDetail, 'resolution'> | null | undefined): DerivedMarketState {
-  if (!market) return 'Open'
-  return CLOSED_RESOLUTION_STATUSES.has(market.resolution.status) ? 'Closed' : 'Open'
+/**
+ * Derive the rendered "Open" / "Closed" badge from the engine's authoritative
+ * `MarketCatalogueEntry.state`. `null` / `undefined` is the pre-fetch state
+ * (the engine catalogue request is in flight); render as Open so the trade
+ * pane and bookmark affordances do not flash hidden during initial load.
+ */
+export function useMarketState(state: MarketState | null | undefined): DerivedMarketState {
+  if (state == null) return 'Open'
+  switch (state) {
+    case 'open':   return 'Open'
+    case 'closed': return 'Closed'
+    default:       return assertNever(state)
+  }
 }

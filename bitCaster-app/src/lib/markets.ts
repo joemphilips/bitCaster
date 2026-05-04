@@ -9,6 +9,7 @@ import type { components } from '@/generated/api'
 import { getNdk } from '@/lib/nostr'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { bytesToHex } from 'nostr-tools/utils'
+import { isAttestationResolved, normalizeMintdStatus } from './mintdIngress'
 
 // Types from generated OpenAPI spec
 
@@ -36,24 +37,6 @@ export interface AttestationState {
   status: 'pending' | 'attested' | 'expired' | 'violation'
   winning_outcome: string | null
   attested_at: number | null
-}
-
-/**
- * Per ADR-010 a market is `Closed` once the oracle has spoken (`attested`,
- * `violation`) OR the announcement deadline has passed without an attestation
- * (`expired`). Only `pending` remains `Open`. The previous mapping treated
- * everything except `attested` as `open`, which kept expired/violation
- * markets in the trade UI well past their close window — the user-visible
- * regression flagged in P6 §`markets/{marketid}`.
- *
- * Only the market-detail page consumes this helper: per ADR-009 the detail
- * page MUST hit mintd directly to verify market existence, and the engine's
- * `MarketCatalogueEntry.state` (used by the markets-list page) flattens the
- * same logic into an `open|closed` enum without exposing the underlying
- * attestation status.
- */
-export function isMarketClosed(attestation: Pick<AttestationState, 'status'>): boolean {
-  return attestation.status !== 'pending'
 }
 
 export interface ConditionInfo {
@@ -313,7 +296,13 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     outcomes[0].toLowerCase() === 'yes' &&
     outcomes[1].toLowerCase() === 'no'
 
-  const isResolved = isMarketClosed(c.attestation)
+  // Mintd attestation is reduced to outcome metadata per ADR-009 Amendment
+  // 2026-05-04. Lifecycle (Open / Closed) reads engine `state` and is merged
+  // in by `fetchMarketDetail` after this mapper runs. Normalise the raw
+  // mintd value once at the ingress boundary per `bitcaster-coding-guideline`
+  // Rule 2; the resolution-info panel consumes the canonical union below.
+  const attestationStatus = normalizeMintdStatus(c.attestation.status)
+  const isResolved = isAttestationResolved(attestationStatus)
   const tags = c.tags ?? []
   const title = getTagValue(tags, 'description') ?? c.description ?? 'Untitled Market'
 
@@ -374,15 +363,65 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   }
 }
 
+/**
+ * Resolve the engine catalogue entry for a single `conditionId`. Used by the
+ * detail page to read engine-authoritative fields (`state`, `thumbnailUrl`,
+ * `volume24hSats`) that mintd does not carry. ADR-009 Amendment 2026-05-04
+ * splits the trust contract: mintd is the existence + outcome-metadata
+ * authority; the engine is the lifecycle + analytics + thumbnail authority.
+ * Returns `null` when the engine has no record of the market or the request
+ * fails — the detail page falls back to mintd-only data and renders the
+ * safer "Open" pre-fetch view.
+ */
+async function fetchEngineCatalogueEntry(
+  conditionId: string,
+): Promise<MarketCatalogueEntry | null> {
+  try {
+    const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`
+    const response = await fetch(url, { headers: { Accept: 'application/json' } })
+    if (!response.ok) return null
+    const body: MarketCatalogueResponse = await response.json()
+    return body.markets.find((m) => m.conditionId === conditionId) ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Merge engine catalogue fields into a mintd-derived `MarketDetail`. Engine
+ * is authoritative for lifecycle (`state`), analytics (volume), and thumbnail.
+ * Mintd-derived fields (title, outcomes, resolution metadata) survive
+ * untouched. Idempotent; safe to call when the engine entry is `null`
+ * (returns the detail unchanged so the caller need not branch).
+ */
+function mergeEngineCatalogueEntry(
+  detail: MarketDetail,
+  engineEntry: MarketCatalogueEntry | null,
+): MarketDetail {
+  if (!engineEntry) return detail
+  return {
+    ...detail,
+    state: engineEntry.state,
+    imageUrl: engineEntry.thumbnailUrl ?? detail.imageUrl,
+    volume: engineEntry.volume24hSats ?? detail.volume,
+  }
+}
+
 export async function fetchMarketDetail(conditionId: string): Promise<MarketDetail> {
   const conditions = await fetchConditions()
   const condition = conditions.find((c) => c.condition_id === conditionId)
   if (!condition) {
     throw new Error(`Condition not found: ${conditionId}`)
   }
+  // Run the engine catalogue lookup in parallel with the metadata lookup —
+  // the two are independent and both feed the rendered detail.
+  const [engineEntry, meta] = await Promise.all([
+    fetchEngineCatalogueEntry(conditionId),
+    fetchMarketMetadata(conditionId),
+  ])
   const detail = mapConditionToMarketDetail(condition)
-  const meta = await fetchMarketMetadata(conditionId)
-  return meta ? applyMetadata(detail, meta) : detail
+  const withEngine = mergeEngineCatalogueEntry(detail, engineEntry)
+  return meta ? applyMetadata(withEngine, meta) : withEngine
 }
 
 export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {

@@ -90,14 +90,17 @@ export function MarketDetail({
   // Compute current display for price chart
   const currentDisplay = computeCurrentDisplay(market)
 
-  // Determine market state per ADR-010. The resolved branch surfaces the
-  // resolution information panel; the closed branch (resolved OR expired
-  // OR violation) hides the trade pane and any deposit / payment-request
-  // affordances. `isResolved` keeps the existing semantics for the
-  // resolution-info badge; `isTradingEnabled` is the single closed-state
-  // gate consulted across the trade and deposit affordances. P4.1 + P4.5.
+  // Determine market state per ADR-009 (Amendment 2026-05-04 — detail-page
+  // compliance). The detail page reads engine `state` for lifecycle
+  // (Open / Closed) and reduces mintd's `attestation.*` to outcome metadata
+  // (which outcome the oracle attested, when, whether the announcement
+  // window expired). `isResolved` keeps the existing semantics for the
+  // resolution-info badge — surfaced when mintd reports a resolved outcome,
+  // independent of the engine's lifecycle state. `isTradingEnabled` is the
+  // single closed-state gate consulted across the trade and deposit
+  // affordances; it follows the engine.
   const isResolved = market.resolution.status === 'resolved'
-  const marketState = useMarketState(market)
+  const marketState = useMarketState(market.state)
   const isTradingEnabled = marketState === 'Open'
 
   return (
