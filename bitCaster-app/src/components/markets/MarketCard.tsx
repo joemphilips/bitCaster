@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Users, Droplet, ChevronUp, ChevronDown, Bookmark, ChevronRight } from 'lucide-react'
+import { Users, Droplet, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { formatBtc } from '@/lib/format'
 import { getMarketThumbnail } from '@/lib/markets'
@@ -591,13 +591,13 @@ export function MarketCard({
             onClick={handleBookmark}
             className={`flex items-center cursor-pointer transition-colors ${
               isBookmarked
-                ? 'text-amber-500'
-                : 'hover:text-amber-500'
+                ? 'text-rose-500'
+                : 'hover:text-rose-500'
             }`}
             title={isBookmarked ? 'Remove bookmark' : 'Bookmark'}
             aria-pressed={isBookmarked}
           >
-            <Bookmark className="w-3.5 h-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
+            <Heart className="w-3.5 h-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
           </button>
         </div>
       </div>
