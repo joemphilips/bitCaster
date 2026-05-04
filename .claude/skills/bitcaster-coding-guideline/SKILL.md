@@ -60,6 +60,8 @@ The mintd-side schema (`/v1/conditions`, `attestation.status`) is **upstream** a
 
 C# `JsonStringEnumConverter` is configured globally with `JsonNamingPolicy.CamelCase`. All enum values go out as `camelCase` strings (`"open"`, not `"Open"`). The frontend never accepts `"Open"`, never lowercases at the call site to "be safe". If a value arrives miscased from a producer we control, that is a **bug in the producer** — fix it at the boundary, not by paving over it with `.toLowerCase()`.
 
+> **NSwag trap (P7 finding, 2026-05-04).** NSwag-generated DTOs ship per-property `[JsonConverter(typeof(JsonStringEnumConverter<T>))]` attributes that use the parameterless converter constructor — **no naming policy** — silently overriding any global `JsonNamingPolicy.CamelCase`. The `[EnumMember(Value = "open")]` attributes NSwag also emits are honored by `Newtonsoft.Json` but **not** by `System.Text.Json.JsonStringEnumConverter`. Result: the engine emits `"state":"Open"` against a spec that says `"open"`. When you add a new enum to the OpenAPI spec, do not assume the C# producer emits camelCase just because the spec says so. **Verify with `curl`** that the running mock + production engine emit the lowercase form. If they don't, fix the producer (regenerate DTOs with `JsonStringEnumConverter(JsonNamingPolicy.CamelCase)`), not the consumer. Frontend defensive normalization is acceptable only as a stopgap with a TODO.
+
 For values that come from outside our control (mintd, NIP-88 events, NIP-17 DMs from arbitrary peers), normalize **once** at the ingress boundary into the generated TypeScript type:
 
 ```ts
