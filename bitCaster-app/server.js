@@ -40,12 +40,17 @@ if (MINT_URL) {
 
 let hubsProxy;
 if (BACKEND_URL) {
+  // xfwd:true sets X-Forwarded-{For,Port,Proto,Host} on the upstream request.
+  // The matching engine signs/verifies NIP-98 against the user-facing URL
+  // (browser origin); without X-Forwarded-Host the engine reconstructs the URL
+  // from its own Host header (which changeOrigin:true rewrites to the backend
+  // hostname) and rejects every body-bearing request as "Invalid NIP-98 event".
   app.use(createProxyMiddleware({
-    target: BACKEND_URL, changeOrigin: true, pathFilter: '/api/**',
+    target: BACKEND_URL, changeOrigin: true, xfwd: true, pathFilter: '/api/**',
     on: { error: proxyErrorHandler },
   }));
   hubsProxy = createProxyMiddleware({
-    target: BACKEND_URL, changeOrigin: true, pathFilter: '/hubs/**', ws: true,
+    target: BACKEND_URL, changeOrigin: true, xfwd: true, pathFilter: '/hubs/**', ws: true,
     on: { error: proxyErrorHandler },
   });
   app.use(hubsProxy);
