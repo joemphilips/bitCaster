@@ -84,6 +84,16 @@ docker compose down
 
 When the session changes user-facing surface (protocol, REST/SignalR shape, order lifecycle, market UX), invoke `Skill(bitcaster-doc-sync)` to sync `bitCaster-doc/`. The skill enforces EN ↔ JA parity and forbids ADR-style citations on the doc site.
 
+## Coding-guideline skill (cross-language enum discipline)
+
+When the diff touches a value that crosses the C# (engine / mock) ↔ TypeScript (frontend) wire — an OpenAPI enum, a SignalR hub method's enum-shaped argument, or a string union in `generated/api.ts` — invoke `Skill(bitcaster-coding-guideline)` BEFORE writing the code. The skill codifies three rules:
+
+1. OpenAPI is the single source of truth for shared enums; TS types are generated, not hand-written.
+2. One canonical wire form (`camelCase`); foreign values normalize once at ingress.
+3. Total mappings via exhaustive switches + `assertNever`; negative comparisons (`!== 'pending'`) are banned.
+
+This rule is mandatory whenever you modify `BitCaster.MatchingEngine.Contracts/specs/openapi.yaml`, `bitCaster-app/src/generated/`, or any `switch`/comparison over a value typed from those generated unions. Past regression caught by this rule: the P7 `isMarketClosed(s) => s.status !== 'pending'` bug that flipped `Closed` for newly-created markets with no attestation yet.
+
 ## Skills are gates, not destinations
 
 Treat every `Skill(...)` invocation as a sub-step that returns control to YOU. If the skill output ends with phrases like "returning control" or "handing back," that's the skill speaking — not your final report. After a skill runs cleanly, COMMIT the in-progress work and PROCEED to the next item in your task list. Only return to the main session when the entire dispatched task is committed and the verification commands have run.
