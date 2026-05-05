@@ -414,4 +414,27 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
     // pre-fetch default). Better than throwing on every page load.
     expect(detail.state).toBeUndefined()
   })
+
+  it('promotes engine.deadline into closingDate so MarketHeader stops rendering "Closed" against the mintd-only "now" placeholder', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse()
+      if (url.includes('/api/v1/markets/query')) {
+        const body = await engineQueryResponse('open', null).json()
+        body.markets[0].deadline = '2030-12-31T23:59:59Z'
+        return new Response(JSON.stringify(body), { status: 200 })
+      }
+      return emptyMetadataResponse()
+    })
+    const detail = await fetchMarketDetail('abc123')
+    expect(detail.closingDate).toBe('2030-12-31T23:59:59Z')
+  })
+
+  it('keeps the placeholder closingDate when engine.deadline is null (MarketHeader hides the row instead of lying)', async () => {
+    // Default engineQueryResponse already has deadline: null
+    const detail = await fetchMarketDetail('abc123')
+    // closingDate is still the page-load "now"; MarketHeader hides the time
+    // row when |closingDate - now| < 60s rather than rendering "Closed".
+    const closingMs = new Date(detail.closingDate).getTime()
+    expect(Math.abs(closingMs - Date.now())).toBeLessThan(60_000)
+  })
 })

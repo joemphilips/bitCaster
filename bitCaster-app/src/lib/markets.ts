@@ -431,6 +431,12 @@ function mergeEngineCatalogueEntry(
     state: normalisedState ?? detail.state,
     imageUrl: engineEntry.thumbnailUrl ?? detail.imageUrl,
     volume: engineEntry.volume24hSats ?? detail.volume,
+    // Engine surfaces the oracle attestation deadline (carried from the mintd
+    // condition snapshot) as the authoritative closing date. Without this
+    // override, MarketHeader's `formatTimeRemaining` would compute "in the
+    // past" against the `mapConditionToMarketDetail` placeholder and render a
+    // bogus "Closed" badge (P8 §market detail page regression).
+    closingDate: engineEntry.deadline ?? detail.closingDate,
   }
 }
 

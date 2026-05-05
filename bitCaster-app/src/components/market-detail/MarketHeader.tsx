@@ -15,6 +15,13 @@ function formatTimeRemaining(closingDate: string, t: (key: string, opts?: Record
   const close = new Date(closingDate)
   const diff = close.getTime() - now.getTime()
 
+  // `mapConditionToMarketDetail` defaults `closingDate` to the page-load time
+  // when neither mintd nor the engine catalogue surfaces a real deadline. Treat
+  // any |diff| under 60s as that "unknown deadline" sentinel and hide the row,
+  // rather than rendering a misleading "Closed" badge. Once `engineEntry.deadline`
+  // is wired through `mergeEngineCatalogueEntry`, real deadlines fall into the
+  // normal "in the past → Closed" / "in the future → countdown" branches below.
+  if (Math.abs(diff) < 60_000) return ''
   if (diff < 0) return t('market.closed')
 
   const days = Math.floor(diff / (1000 * 60 * 60 * 24))
@@ -107,17 +114,19 @@ export function MarketHeader({
 
         {/* Meta Row */}
         <div className="flex flex-wrap items-center gap-4 mb-4">
-          {/* Time Remaining / Resolved Date */}
-          <div className={`flex items-center gap-1.5 ${
-            isResolved
-              ? 'text-slate-400'
-              : isClosingSoon ? 'text-amber-400' : market.imageUrl ? 'text-slate-300' : 'text-slate-600 dark:text-slate-400'
-          }`}>
-            {isResolved ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
-            <span className="text-sm font-medium">
-              {isResolved ? t('market.resolvedOn', { date: resolvedDate }) : timeRemaining}
-            </span>
-          </div>
+          {/* Time Remaining / Resolved Date — hidden when no real deadline known */}
+          {(isResolved || timeRemaining) && (
+            <div className={`flex items-center gap-1.5 ${
+              isResolved
+                ? 'text-slate-400'
+                : isClosingSoon ? 'text-amber-400' : market.imageUrl ? 'text-slate-300' : 'text-slate-600 dark:text-slate-400'
+            }`}>
+              {isResolved ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
+              <span className="text-sm font-medium">
+                {isResolved ? t('market.resolvedOn', { date: resolvedDate }) : timeRemaining}
+              </span>
+            </div>
+          )}
 
           {/* Share Button */}
           <button
