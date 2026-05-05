@@ -49,15 +49,21 @@ export function CreatedMarketRow({ market, onView, onClaimFees }: CreatedMarketR
       </div>
 
       {/* Fees & Action */}
+      {/* The percentage row is hidden while the engine accrues no fees
+          (creatorFeePercent === 0); showing "0% fee" was the P7 §`/creator`
+          regression. A non-zero value still renders so a future engine-side
+          fee model surfaces without further UI work. */}
       <div className="text-right shrink-0">
         {market.creatorFeesEarned > 0 && (
           <div className="text-sm font-mono text-amber-600 dark:text-amber-400">
             {formatBtc(market.creatorFeesEarned)}
           </div>
         )}
-        <div className="text-xs text-slate-400 dark:text-slate-500">
-          {market.creatorFeePercent}% fee
-        </div>
+        {market.creatorFeePercent > 0 && (
+          <div className="text-xs text-slate-400 dark:text-slate-500">
+            {market.creatorFeePercent}% fee
+          </div>
+        )}
       </div>
 
       {canClaimFees && onClaimFees && (

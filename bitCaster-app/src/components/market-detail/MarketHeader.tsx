@@ -1,4 +1,4 @@
-import { Bookmark, Share2, Clock, CheckCircle2, Droplet, Users } from 'lucide-react'
+import { Heart, Share2, Clock, CheckCircle2, Droplet, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
@@ -185,15 +185,15 @@ export function MarketHeader({
             onClick={() => toggleBookmark(market.id)}
             className={`flex items-center cursor-pointer transition-colors ${
               isBookmarked
-                ? 'text-amber-500'
+                ? 'text-rose-500'
                 : market.imageUrl
-                  ? 'text-slate-300 hover:text-amber-500'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-amber-500'
+                  ? 'text-slate-300 hover:text-rose-500'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-rose-500'
             }`}
             title={isBookmarked ? t('market.removeBookmark') : t('market.bookmark')}
             aria-pressed={isBookmarked}
           >
-            <Bookmark className="w-3.5 h-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
+            <Heart className="w-3.5 h-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
           </button>
         </div>
       </div>

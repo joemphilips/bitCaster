@@ -22,11 +22,15 @@ import { createEnumAnnouncement } from '@/lib/kormir'
 import { buildEventId } from '@/lib/slug'
 
 /**
- * Default creator fee applied to every market created via the wizard. The fee
- * is stubbed client-side for v1 — the matching engine does not track or
- * accrue creator fees yet — so this is simply echoed on the creator dashboard.
+ * Default creator fee applied to every market created via the wizard. The
+ * matching engine does not track or accrue creator fees yet, so the value
+ * is stamped onto the local creator-markets store and rendered as
+ * informational metadata only. P7 §`/creator` flagged "0.02% fee" displayed
+ * on every market as misleading — the engine accrues nothing. The constant
+ * is kept (rather than removed) so a future engine-side fee model is a
+ * one-line change here. CreatedMarketRow hides the row when the value is 0.
  */
-const DEFAULT_CREATOR_FEE_PERCENT = 0.02
+const DEFAULT_CREATOR_FEE_PERCENT = 0
 
 const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
 

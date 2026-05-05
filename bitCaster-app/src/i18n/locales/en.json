@@ -166,7 +166,9 @@
     "resolvedOn": "Resolved on {{date}}",
     "daysHoursRemaining": "{{days}}d {{hours}}h remaining",
     "hoursRemaining": "{{hours}}h remaining",
-    "minutesRemaining": "{{minutes}}m remaining"
+    "minutesRemaining": "{{minutes}}m remaining",
+    "linkCopied": "Link copied to clipboard",
+    "shareFailed": "Failed to copy link"
   },
   "orderBook": {
     "title": "Order Book",

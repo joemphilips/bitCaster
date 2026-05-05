@@ -70,7 +70,10 @@ public class ClosedMarketUiTests : IAsyncLifetime
     /// <summary>
     /// Wire <c>/v1/conditions</c> to return a list of two markets — one
     /// open (pending), one closed (caller-controlled status). Returns the
-    /// condition IDs so the test can navigate to either.
+    /// condition IDs so the test can navigate to either. Also stubs the
+    /// engine catalogue proxy (<c>/api/v1/markets/query</c>) so the detail
+    /// page reads the matching engine `state` for lifecycle (Open / Closed)
+    /// per ADR-009 Amendment 2026-05-04 — not mintd's attestation status.
     /// </summary>
     private static async Task<(string OpenId, string ClosedId)> StubConditions(
         IPage page, string closedStatus)
@@ -93,6 +96,44 @@ public class ClosedMarketUiTests : IAsyncLifetime
                 Body = body,
             });
         });
+
+        // Engine catalogue proxy. The detail page calls /api/v1/markets/query?ids=<conditionId>
+        // for engine-authoritative `state`. Closed markets get `closed`; open ones get `open`.
+        await page.RouteAsync("**/api/v1/markets/query**", async route =>
+        {
+            var url = route.Request.Url;
+            var requestedId = url.Contains(closedId) ? closedId
+                : url.Contains(openId) ? openId
+                : openId;
+            var entryState = requestedId == closedId ? "closed" : "open";
+            var entryTitle = requestedId == closedId ? "P4.1 closed market" : "P4.1 open market";
+            var body = $@"{{
+                ""markets"": [{{
+                    ""conditionId"": ""{requestedId}"",
+                    ""outcomes"": [""YES"", ""NO""],
+                    ""title"": ""{entryTitle}"",
+                    ""thumbnailUrl"": null,
+                    ""creatorPubkey"": null,
+                    ""deadline"": null,
+                    ""state"": ""{entryState}"",
+                    ""createdAt"": ""2026-01-01T00:00:00Z"",
+                    ""volume24hSats"": 0,
+                    ""volume30dSats"": 0,
+                    ""lastTradedPrice"": null,
+                    ""categoryTags"": [],
+                    ""lastSuccessfulRefreshAt"": ""2026-05-04T00:00:00Z""
+                }}],
+                ""nextCursor"": null,
+                ""lastSuccessfulRefreshAt"": ""2026-05-04T00:00:00Z""
+            }}";
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = body,
+            });
+        });
+
         return (openId, closedId);
     }
 

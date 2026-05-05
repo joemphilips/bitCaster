@@ -111,7 +111,13 @@ export interface VolumeRange {
 
 export interface FilterState {
   searchQuery: string
-  selectedTag: string | null // Single selected tag (meta or category)
+  /**
+   * Selected category tags. Empty array means "no tag filter" (all markets);
+   * multiple tags OR-filter (the engine's `?tag=` query parameter is
+   * repeatable — see ADR-009 / §`/markets`). Per P7 §`/markets` the user
+   * needs to combine multiple categories to find the markets they care about.
+   */
+  selectedTags: string[]
   marketTypes: MarketType[]
   volumeRange: VolumeRange
   closingInDays?: number
@@ -128,8 +134,13 @@ export interface MarketDiscoveryProps {
   /** List of markets to display */
   markets: Market[]
 
-  /** Currently selected tag ID (single-select) */
-  selectedTag: string | null
+  /**
+   * Currently selected tag IDs (multi-select, OR semantics). Empty array =
+   * "no tag filter". The engine's `/api/v1/markets/query` accepts repeated
+   * `tag=` query parameters and ORs them; the page assembles the request
+   * from this set.
+   */
+  selectedTags: string[]
 
   /** Search query */
   searchQuery?: string
@@ -148,8 +159,14 @@ export interface MarketDiscoveryProps {
   /** Called when user searches for markets */
   onSearch?: (query: string) => void
 
-  /** Called when user selects a tag (single-select - only one active at a time) */
+  /**
+   * Called when user clicks a tag chip. The page-level handler toggles the
+   * tag in/out of the selected set (multi-select).
+   */
   onTagSelect?: (tagId: string) => void
+
+  /** Called when user clears all selected tags (the chip-row "Clear" affordance). */
+  onClearTags?: () => void
 
   /** Called when user changes market type filter */
   onMarketTypeChange?: (types: MarketType[]) => void

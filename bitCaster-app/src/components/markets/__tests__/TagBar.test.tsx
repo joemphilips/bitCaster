@@ -14,7 +14,7 @@ describe('TagBar', () => {
     render(
       <TagBar
         categoryTags={categoryTags}
-        selectedTag={null}
+        selectedTags={[]}
         filtersVisible={false}
         activeFilterCount={0}
       />
@@ -28,7 +28,7 @@ describe('TagBar', () => {
     render(
       <TagBar
         categoryTags={categoryTags}
-        selectedTag={null}
+        selectedTags={[]}
         filtersVisible={false}
         activeFilterCount={0}
       />
@@ -46,7 +46,7 @@ describe('TagBar', () => {
     render(
       <TagBar
         categoryTags={categoryTags}
-        selectedTag={null}
+        selectedTags={[]}
         filtersVisible={false}
         activeFilterCount={0}
         onTagSelect={onTagSelect}
@@ -64,7 +64,7 @@ describe('TagBar', () => {
     render(
       <TagBar
         categoryTags={categoryTags}
-        selectedTag={null}
+        selectedTags={[]}
         filtersVisible={false}
         activeFilterCount={0}
         onToggleFilters={onToggleFilters}
@@ -79,12 +79,57 @@ describe('TagBar', () => {
     render(
       <TagBar
         categoryTags={categoryTags}
-        selectedTag={null}
+        selectedTags={[]}
         filtersVisible={false}
         activeFilterCount={2}
       />
     )
 
     expect(screen.getByText('2')).toBeInTheDocument()
+  })
+
+  it('renders aria-pressed=true on every selected chip (multi-select)', () => {
+    render(
+      <TagBar
+        categoryTags={categoryTags}
+        selectedTags={['sports', 'crypto']}
+        filtersVisible={false}
+        activeFilterCount={0}
+      />,
+    )
+    const sports = screen.getByText('Sports').closest('button')!
+    const crypto = screen.getByText('Crypto').closest('button')!
+    expect(sports.getAttribute('aria-pressed')).toBe('true')
+    expect(crypto.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('hides the Clear-all chip when no tags are selected', () => {
+    render(
+      <TagBar
+        categoryTags={categoryTags}
+        selectedTags={[]}
+        filtersVisible={false}
+        activeFilterCount={0}
+      />,
+    )
+    expect(screen.queryByTestId('market-tag-clear')).toBeNull()
+  })
+
+  it('shows the Clear-all chip when at least one tag is selected and fires onClearTags', async () => {
+    const user = userEvent.setup()
+    const onClearTags = vi.fn()
+    render(
+      <TagBar
+        categoryTags={categoryTags}
+        selectedTags={['sports']}
+        filtersVisible={false}
+        activeFilterCount={0}
+        onClearTags={onClearTags}
+      />,
+    )
+    const clear = screen.getByTestId('market-tag-clear')
+    expect(clear).toBeInTheDocument()
+    await user.click(clear)
+    expect(onClearTags).toHaveBeenCalledOnce()
   })
 })

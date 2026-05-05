@@ -166,7 +166,9 @@
     "resolvedOn": "{{date}} に決済済み",
     "daysHoursRemaining": "残り {{days}}日 {{hours}}時間",
     "hoursRemaining": "残り {{hours}}時間",
-    "minutesRemaining": "残り {{minutes}}分"
+    "minutesRemaining": "残り {{minutes}}分",
+    "linkCopied": "リンクをコピーしました",
+    "shareFailed": "リンクのコピーに失敗しました"
   },
   "orderBook": {
     "title": "注文板",

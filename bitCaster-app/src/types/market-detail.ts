@@ -10,6 +10,7 @@ import type {
   CategoricalYesNoCompositeOdds,
   CategoryTag,
 } from './market'
+import type { MarketState } from '@/hooks/useMarketState'
 
 // =============================================================================
 // Resolution Types
@@ -134,6 +135,14 @@ interface BaseMarketDetail {
   activeSince: string
   baseUnit: string // e.g. "sats", "USD"
   creator: MarketCreator
+  /**
+   * Engine-side lifecycle state per ADR-009 Amendment 2026-05-04. The detail
+   * page reads this — NOT mintd's `attestation.status` — to decide Open /
+   * Closed. `null` / `undefined` is the pre-fetch state (the catalogue
+   * request is still in flight); the renderer treats it as Open so the
+   * trade pane does not flash hidden during initial load.
+   */
+  state?: MarketState | null
   resolution: ResolutionDetails
   priceHistory: PriceHistory
   orderBook: OrderBook
