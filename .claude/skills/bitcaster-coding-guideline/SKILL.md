@@ -126,6 +126,25 @@ public bool IsClosed(MarketState s) => s switch
 return s != MarketState.Open;
 ```
 
+### Rule 4 — Cross-aggregate state invariants live in the projector, not the command handler
+
+Per ADR-013, when a command's behaviour depends on the **current value of an event-sourced state field on a different aggregate** (the canonical case: `MarketRegistration.MarketState` gating `OrderBook` / `MarketFunding` / `Trade` / `MarketWallet` mutations), the invariant lives in the **projector**, not the handler. The handler accepts the command unconditionally on that axis; the projector subscribes to the source aggregate's state event (e.g. `MarketClosed`), mirrors the state into its own payload via Sekiban event-stream subscription, and emits a no-op for mutating events when the mirrored state forbids the mutation. The rejected event is preserved in the event store as a forensic record.
+
+Why: cross-aggregate reads from inside a command handler are non-local (extra round-trip, race surface, awkward Sekiban plumbing). The projector already owns the aggregate's state and is the natural enforcement point. The "accept-then-no-op" model is forensically complete (rejected attempts are recorded for audit / abuse triage) and structurally regression-safe (no gate to forget when a new command issuer is added).
+
+When this rule does **NOT** apply — keep the rejection at the handler:
+
+| Rejection class | Stays at handler because |
+|---|---|
+| Authz / IDOR (`order.UserId != requester`) | Returning 403 to the user is a useful signal; silent no-op masks legitimate client bugs |
+| Input validation (UserId format, hex shape, ExpiresAt-in-past) | Stateless; pure shape checks. Moving to projector adds ceremony with zero benefit |
+| Sekiban command idempotency (duplicate `DepositId`, replay of `RecordDepositPaid`) | Already an event-sourced no-op via `EventOrNone.None` — that IS the projector pattern, just earlier in the pipeline |
+| mTLS-internal contract (`RecordDepositCreditedCommand` rejected when not in `Paid` state) | Wallet-service is operator-internal; silent no-op would mask a real wallet-service bug |
+
+**Decision rule**: ask "does this rejection depend on the current value of an event-sourced state field on a different aggregate?" If yes → projector-side per ADR-013. If no → handler-side.
+
+The fast-fail UX gate at the HTTP endpoint (`ClosedMarketGate.CheckByConditionIdAsync`) is allowed as a defence-in-depth optimisation — return 409 fast on the first user attempt rather than letting the user wait for the round-trip-and-projector-no-op. It is NOT the primary correctness mechanism. Programmatic / internal command issuers (CPMM bot, Orleans timers, replay tooling) MUST NOT rely on the endpoint gate; they get the projector check for free.
+
 ## Enforcement
 
 The three rules are enforced — not aspirational.
