@@ -50,6 +50,15 @@ vi.mock('@/stores/paymentRequestInbox', () => ({
 vi.mock('../cashu', () => ({
   encodeToken: mocks.encodeToken,
   receiveToken: mocks.receiveToken,
+  // Mirror the real helper's contract: register the mint when missing.
+  // Tests still assert against `walletState.addMint` to prove the proofs
+  // would land under a configured row.
+  ensureMintRegistered: vi.fn(async (mintUrl: string) => {
+    const has = mocks.walletState.mints.some((m) => m.url === mintUrl)
+    if (has) return false
+    await mocks.walletState.addMint(mintUrl)
+    return true
+  }),
 }))
 
 vi.mock('../nip17', () => ({

@@ -131,6 +131,26 @@ export async function receiveToken(tokenStr: string, mintUrl?: string): Promise<
 }
 
 /**
+ * Ensure `mintUrl` is registered in the wallet store before redeeming proofs
+ * issued by it. Returns true when the mint was newly added, false when it was
+ * already configured. Throws if `addMint` itself fails (network unreachable,
+ * non-Cashu endpoint, etc.) — callers must surface the error to the user
+ * rather than swallow it; otherwise the redeemed proofs would be orphaned.
+ *
+ * Mirrors the cashu.me parity behaviour the NIP-17 listener already relies
+ * on: a token from an unconfigured mint silently mints under a synthetic
+ * wallet (see `getWallet` fallback), and the resulting proofs never appear
+ * in any UI surface because no `StoredMint` row exists to enumerate them.
+ */
+export async function ensureMintRegistered(mintUrl: string): Promise<boolean> {
+  const normalized = normalizeUrl(mintUrl);
+  const store = useWalletStore.getState();
+  if (store.mints.some((m) => m.url === normalized)) return false;
+  await store.addMint(normalized);
+  return true;
+}
+
+/**
  * Send `amountSats` using the provided proofs.
  * Returns `{ keep, send }` — store `keep` proofs, share `send` proofs.
  */

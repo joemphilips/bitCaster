@@ -1,8 +1,7 @@
 import type { PaymentRequestPayload } from '@cashu/cashu-ts'
 import { deriveNostrKeyPair, subscribeNip17DMs } from './nip17'
-import { encodeToken, receiveToken } from './cashu'
+import { encodeToken, ensureMintRegistered, receiveToken } from './cashu'
 import { normalizeUrl } from './url'
-import { useWalletStore } from '@/stores/wallet'
 import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
@@ -60,17 +59,11 @@ async function handleIncomingDM(content: string): Promise<void> {
   // cashu.me parity: if the payer sent from a mint we haven't configured
   // yet, auto-add it so the proofs can be redeemed and the balance shows
   // up without the user having to manually add the mint first.
-  const configured = useWalletStore
-    .getState()
-    .mints.map((m) => m.url)
-    .includes(normalizedMint)
-  if (!configured) {
-    try {
-      await useWalletStore.getState().addMint(normalizedMint)
-    } catch (e) {
-      console.warn('[nip17-listener] addMint failed:', (e as Error).message)
-      return
-    }
+  try {
+    await ensureMintRegistered(normalizedMint)
+  } catch (e) {
+    console.warn('[nip17-listener] addMint failed:', (e as Error).message)
+    return
   }
 
   try {
