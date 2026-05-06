@@ -126,14 +126,30 @@ function AppRoutes() {
   );
   useTradeSettlement(tradeHubPrivkey);
 
-  // Re-install the Nostr signer from localStorage once on mount — the nsec
-  // lives in the settings store but NDK.signer is RAM-only, so after any
-  // reload the runtime signer is absent until this rehydrates it.
+  // Re-install the Nostr signer from localStorage on mount — the nsec lives
+  // in the settings store but NDK.signer is RAM-only, so after any reload
+  // the runtime signer is absent until this rehydrates it.
+  //
+  // Why defer to `onFinishHydration`: Zustand's persist middleware rehydrates
+  // asynchronously. On first render `nostrSignerMode` is its default `"none"`
+  // and `nsecSecret` is `null` — `rehydrateNostrSigner` would short-circuit
+  // and never retry, leaving the user stuck on "Profile not found on
+  // connected relays" until full reload. Mirrors the mint-rehydrate pattern
+  // immediately below.
   const signerRehydrated = useRef(false);
   useEffect(() => {
     if (signerRehydrated.current) return;
-    signerRehydrated.current = true;
-    rehydrateNostrSigner().catch(() => {});
+    const runSignerRehydrate = () => {
+      if (signerRehydrated.current) return;
+      signerRehydrated.current = true;
+      rehydrateNostrSigner().catch(() => {});
+    };
+    if (useSettingsStore.persist.hasHydrated()) {
+      runSignerRehydrate();
+      return;
+    }
+    const unsub = useSettingsStore.persist.onFinishHydration(runSignerRehydrate);
+    return () => { unsub(); };
   }, []);
 
   // One-shot migration: pre-fix proofs stored their mintUrl verbatim from

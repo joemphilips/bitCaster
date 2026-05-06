@@ -27,7 +27,7 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import { useToastStore } from '@/stores/toast'
-import { isNip07Available } from '@/lib/nostr'
+import { isNip07Available, fetchAndStoreNostrProfile } from '@/lib/nostr'
 import { safeHostname } from '@/lib/url'
 import { AddMintForm } from '@/components/shared/AddMintForm'
 
@@ -156,6 +156,23 @@ export function Settings({
   const [newRelayUrl, setNewRelayUrl] = useState('')
   const [isConnectingNip07, setIsConnectingNip07] = useState(false)
   const [isConnectingNsec, setIsConnectingNsec] = useState(false)
+  const [isRetryingProfile, setIsRetryingProfile] = useState(false)
+
+  /**
+   * Manual retry for the Nostr profile fetch. Even after the persist-
+   * hydration fix in `App.tsx`, a pubkey may have no kind:0 yet on the
+   * connected relays, or the relays themselves may have been added after
+   * the initial rehydrate. The button gives the user an explicit way to
+   * trigger another fetch without a full reload.
+   */
+  const handleRetryProfile = async () => {
+    setIsRetryingProfile(true)
+    try {
+      await fetchAndStoreNostrProfile()
+    } finally {
+      setIsRetryingProfile(false)
+    }
+  }
 
   const displaySeedPhrase = seedPhrase ?? ''
 
@@ -492,9 +509,19 @@ export function Settings({
               </div>
             )}
             {nostr.profileFetchStatus === 'not-found' && (
-              <div className="flex items-center gap-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                <UserCircle className="w-5 h-5 text-slate-400" />
-                <span className="text-sm text-slate-500 dark:text-slate-400">Profile not found on connected relays</span>
+              <div className="flex items-center justify-between gap-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
+                <div className="flex items-center gap-2 min-w-0">
+                  <UserCircle className="w-5 h-5 text-slate-400 shrink-0" />
+                  <span className="text-sm text-slate-500 dark:text-slate-400 truncate">Profile not found on connected relays</span>
+                </div>
+                <button
+                  onClick={handleRetryProfile}
+                  disabled={isRetryingProfile}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-md text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium transition-colors disabled:opacity-60 shrink-0"
+                >
+                  {isRetryingProfile && <Loader2 className="w-4 h-4 animate-spin" />}
+                  Retry
+                </button>
               </div>
             )}
             {nostr.profileFetchStatus === 'found' && nostr.profile && (
