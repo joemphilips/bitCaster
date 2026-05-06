@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react'
-import { SlidersHorizontal, ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { SlidersHorizontal, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { HorizontalPager } from '@/components/common/HorizontalPager'
 import type { CategoryTag } from '@/types/market'
 
 interface TagBarProps {
@@ -17,6 +17,12 @@ interface TagBarProps {
   onTagSelect?: (tagId: string) => void
   onClearTags?: () => void
   onToggleFilters?: () => void
+  /**
+   * When the bar is composed alongside a sort row (Issue 5.1) the host
+   * supplies its own background; we drop the inner wrapper so the row
+   * presents as one continuous strip.
+   */
+  embedded?: boolean
 }
 
 export function TagBar({
@@ -27,127 +33,118 @@ export function TagBar({
   onTagSelect,
   onClearTags,
   onToggleFilters,
+  embedded = false,
 }: TagBarProps) {
   const { t } = useTranslation()
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [canScrollLeft, setCanScrollLeft] = useState(false)
-  const [canScrollRight, setCanScrollRight] = useState(false)
-
-  const checkScroll = () => {
-    if (scrollRef.current) {
-      const { scrollLeft, scrollWidth, clientWidth } = scrollRef.current
-      setCanScrollLeft(scrollLeft > 2)
-      setCanScrollRight(scrollLeft < scrollWidth - clientWidth - 2)
-    }
-  }
-
-  useEffect(() => {
-    checkScroll()
-    const resizeObserver = new ResizeObserver(checkScroll)
-    if (scrollRef.current) {
-      resizeObserver.observe(scrollRef.current)
-    }
-    return () => resizeObserver.disconnect()
-  }, [categoryTags])
-
-  const scroll = (direction: 'left' | 'right') => {
-    if (scrollRef.current) {
-      const scrollAmount = 200
-      scrollRef.current.scrollBy({
-        left: direction === 'left' ? -scrollAmount : scrollAmount,
-        behavior: 'smooth',
-      })
-    }
-  }
-
   const selectedSet = new Set(selectedTags)
   const hasAnySelected = selectedSet.size > 0
+
+  // When embedded the host (`MarketDiscovery`) supplies the row padding;
+  // otherwise this row is the standalone bar and owns its own padding.
+  const padClass = embedded ? '' : 'px-4 sm:px-6 lg:px-8 py-3'
+  const chips = (
+    <HorizontalPager
+      className={`items-center gap-2 ${padClass}`}
+      scrollerTestId="market-tag-scroller"
+    >
+      {categoryTags.map((tag) => (
+        <CategoryChip
+          key={tag.id}
+          tag={tag}
+          isSelected={selectedSet.has(tag.id)}
+          onSelect={() => onTagSelect?.(tag.id)}
+        />
+      ))}
+
+      {hasAnySelected && (
+        <ClearAllChip onClick={onClearTags} label={t('common.clearAll')} />
+      )}
+
+      <div className="w-px bg-slate-300 dark:bg-slate-700 mx-2 self-stretch" />
+      <FilterToggleButton
+        active={filtersVisible}
+        count={activeFilterCount}
+        onClick={onToggleFilters}
+      />
+    </HorizontalPager>
+  )
+
+  if (embedded) {
+    return <div data-testid="market-tag-bar">{chips}</div>
+  }
 
   return (
     <div
       data-testid="market-tag-bar"
-      className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md relative"
+      className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md"
     >
-      {/* Left scroll button */}
-      {canScrollLeft && (
-        <button
-          onClick={() => scroll('left')}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors border border-slate-200 dark:border-slate-700 ml-1"
-        >
-          <ChevronLeft className="w-5 h-5" />
-        </button>
-      )}
-
-      {/* Right scroll button */}
-      {canScrollRight && (
-        <button
-          onClick={() => scroll('right')}
-          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors border border-slate-200 dark:border-slate-700 mr-1"
-        >
-          <ChevronRight className="w-5 h-5" />
-        </button>
-      )}
-
-      <div
-        ref={scrollRef}
-        onScroll={checkScroll}
-        className="flex items-center gap-2 px-4 sm:px-6 lg:px-8 py-3 overflow-x-auto scrollbar-hide"
-        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-      >
-        {/* Category Tags */}
-        {categoryTags.map((tag) => {
-          const isSelected = selectedSet.has(tag.id)
-          return (
-            <button
-              key={tag.id}
-              onClick={() => onTagSelect?.(tag.id)}
-              aria-pressed={isSelected}
-              className={`px-4 py-2 rounded-full font-semibold text-sm transition-all transform hover:scale-105 whitespace-nowrap ${
-                isSelected
-                  ? 'bg-blue-600 dark:bg-blue-500 text-white shadow-lg scale-105'
-                  : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700'
-              }`}
-            >
-              <span>{tag.label}</span>
-              <span className="ml-2 text-xs opacity-75 font-mono">{tag.marketCount}</span>
-            </button>
-          )
-        })}
-
-        {/* Clear-all chip — surfaces only while at least one tag is active so
-            the row stays calm at rest. The mobile bottom-nav and the
-            desktop header both render this row, so the affordance is
-            present in both layouts (Mobile/Desktop UI Parity). */}
-        {hasAnySelected && (
-          <button
-            onClick={onClearTags}
-            data-testid="market-tag-clear"
-            className="flex items-center gap-1 px-3 py-2 rounded-full font-semibold text-sm transition-colors whitespace-nowrap bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50"
-          >
-            <X className="w-3.5 h-3.5" />
-            <span>{t('common.clearAll')}</span>
-          </button>
-        )}
-
-        {/* Filter Toggle Button */}
-        <div className="w-px bg-slate-300 dark:bg-slate-700 mx-2" />
-        <button
-          onClick={onToggleFilters}
-          className={`relative p-2 rounded-full transition-all transform hover:scale-105 ${
-            filtersVisible
-              ? 'bg-blue-600 dark:bg-blue-500 text-white shadow-lg'
-              : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700'
-          }`}
-          title={filtersVisible ? 'Hide filters' : 'Show filters'}
-        >
-          <SlidersHorizontal className="w-4 h-4" />
-          {activeFilterCount > 0 && (
-            <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-              {activeFilterCount}
-            </span>
-          )}
-        </button>
-      </div>
+      {chips}
     </div>
+  )
+}
+
+interface CategoryChipProps {
+  tag: CategoryTag
+  isSelected: boolean
+  onSelect: () => void
+}
+
+function CategoryChip({ tag, isSelected, onSelect }: CategoryChipProps) {
+  return (
+    <button
+      onClick={onSelect}
+      aria-pressed={isSelected}
+      className={`px-4 py-2 rounded-full font-semibold text-sm transition-all transform hover:scale-105 whitespace-nowrap ${
+        isSelected
+          ? 'bg-blue-600 dark:bg-blue-500 text-white shadow-lg scale-105'
+          : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700'
+      }`}
+    >
+      <span>{tag.label}</span>
+      <span className="ml-2 text-xs opacity-75 font-mono">{tag.marketCount}</span>
+    </button>
+  )
+}
+
+function ClearAllChip({ onClick, label }: { onClick?: () => void; label: string }) {
+  // Surfaces only while at least one tag is active so the row stays calm at
+  // rest. The mobile bottom-nav and the desktop header both render this
+  // row, so the affordance is present in both layouts.
+  return (
+    <button
+      onClick={onClick}
+      data-testid="market-tag-clear"
+      className="flex items-center gap-1 px-3 py-2 rounded-full font-semibold text-sm transition-colors whitespace-nowrap bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50"
+    >
+      <X className="w-3.5 h-3.5" />
+      <span>{label}</span>
+    </button>
+  )
+}
+
+interface FilterToggleButtonProps {
+  active: boolean
+  count: number
+  onClick?: () => void
+}
+
+function FilterToggleButton({ active, count, onClick }: FilterToggleButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative p-2 rounded-full transition-all transform hover:scale-105 ${
+        active
+          ? 'bg-blue-600 dark:bg-blue-500 text-white shadow-lg'
+          : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700'
+      }`}
+      title={active ? 'Hide filters' : 'Show filters'}
+    >
+      <SlidersHorizontal className="w-4 h-4" />
+      {count > 0 && (
+        <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+          {count}
+        </span>
+      )}
+    </button>
   )
 }

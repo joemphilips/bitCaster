@@ -86,6 +86,27 @@ describe('MarketDiscovery', () => {
     expect(screen.getByText('No markets found')).toBeInTheDocument()
   })
 
+  it('renders sort pills and category chips on a single discovery row (Issue 5.1)', () => {
+    render(
+      <MarketDiscovery
+        categoryTags={testCategoryTags}
+        markets={testMarkets}
+        selectedTags={[]}
+        sort="trending"
+        onSortChange={vi.fn()}
+      />
+    )
+
+    const row = screen.getByTestId('market-discovery-bar')
+    const trendingPill = screen.getByTestId('market-sort-trending')
+    const sportsChip = screen.getByText('Sports').closest('button')!
+
+    // Both must live inside the same flex row — proven by walking up
+    // from each leaf and asserting they share the discovery-bar parent.
+    expect(row).toContainElement(trendingPill)
+    expect(row).toContainElement(sportsChip)
+  })
+
   it('forwards SortBar interactions to onSortChange (T4.2.a)', async () => {
     const user = userEvent.setup()
     const onSortChange = vi.fn()

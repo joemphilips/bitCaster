@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import { Heart } from 'lucide-react'
+import { HorizontalPager } from '@/components/common/HorizontalPager'
 import { useLikedMarkets } from '@/hooks/useLikedMarkets'
 import type { Market } from '@/types/market'
 
@@ -55,10 +56,10 @@ export function LikedMarkets({ onViewMarket }: LikedMarketsProps) {
           {t('portfolio.likedMarketsEmpty')}
         </p>
       ) : (
-        <div
-          className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1 snap-x"
-          role="list"
-          data-testid="liked-markets-scroller"
+        <HorizontalPager
+          className="gap-3 pb-2 -mx-1 px-1 snap-x"
+          ariaLabel={t('portfolio.likedMarkets')}
+          scrollerTestId="liked-markets-scroller"
         >
           {markets.map((m) => (
             <LikedMarketCard
@@ -67,7 +68,7 @@ export function LikedMarkets({ onViewMarket }: LikedMarketsProps) {
               onClick={() => onViewMarket?.(m.id)}
             />
           ))}
-        </div>
+        </HorizontalPager>
       )}
     </section>
   )

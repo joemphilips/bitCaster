@@ -86,18 +86,27 @@ export function MarketDiscovery({
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
       <div className="sticky top-14 md:top-16 z-40 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
         <div className="max-w-7xl mx-auto">
-          {/* Row 1 — Sort buttons (always present, ADR-009 dimensions). */}
-          <SortBar active={sort} onSortChange={onSortChange} />
-          {/* Row 2 — Tag chips, multi-select category filter. */}
-          <TagBar
-            categoryTags={categoryTags}
-            selectedTags={selectedTags}
-            filtersVisible={filtersVisible}
-            activeFilterCount={activeFilterCount}
-            onTagSelect={onTagSelect}
-            onClearTags={onClearTags}
-            onToggleFilters={() => setFiltersVisible(!filtersVisible)}
-          />
+          {/* Single-row discovery bar: sort pills (left, non-scrolling)
+              → vertical divider → category chips inside HorizontalPager
+              (scrollable middle) → filter toggle pinned to the right.
+              Mirrors `bitCaster-design/.../TagBar.tsx`. */}
+          <div
+            data-testid="market-discovery-bar"
+            className="flex items-stretch gap-3 px-4 sm:px-6 lg:px-8 py-3"
+          >
+            <SortBar active={sort} onSortChange={onSortChange} />
+            <div className="w-px bg-slate-300 dark:bg-slate-700 self-stretch" />
+            <TagBar
+              embedded
+              categoryTags={categoryTags}
+              selectedTags={selectedTags}
+              filtersVisible={filtersVisible}
+              activeFilterCount={activeFilterCount}
+              onTagSelect={onTagSelect}
+              onClearTags={onClearTags}
+              onToggleFilters={() => setFiltersVisible(!filtersVisible)}
+            />
+          </div>
         </div>
       </div>
 
