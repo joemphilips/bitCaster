@@ -25,8 +25,24 @@ interface WalletState {
   generateMnemonic: () => void
   recoverFromMnemonic: (words: string[]) => { valid: boolean; error?: string }
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>
+  /**
+   * Register a mint and SET it as the active mint. Use ONLY for explicit
+   * user-initiated mint switches (setup wizard, Settings → Add Mint button).
+   * Do NOT call from untrusted-input handlers (paste/scan/NIP-17) — that
+   * silently retargets the user's active mint to an attacker-chosen URL
+   * (P8 security review Finding 3, AGENTS.md Zustand+React Patterns).
+   * For untrusted ingress, use `addMintWithoutActivating` instead.
+   */
   addMint: (url: string) => Promise<void>
+  /**
+   * Register a mint WITHOUT changing `activeMintUrl`. Used by paste/scan/NIP-17
+   * ingress to land orphaned proofs under a configured mint row while leaving
+   * the user's selected active mint untouched. The user can switch to the new
+   * mint manually via Settings if they want.
+   */
+  addMintWithoutActivating: (url: string) => Promise<void>
   removeMint: (url: string) => void
+  setActiveMint: (url: string) => void
   completeSetup: () => Promise<void>
   getWallet: (mintUrl?: string) => Promise<CashuWallet>
 }
@@ -80,6 +96,47 @@ class ZustandCounterSource implements CounterSource {
 }
 
 const _counterSource = new ZustandCounterSource()
+
+/**
+ * Shared body of `addMint` and `addMintWithoutActivating`. The `activate`
+ * flag is the only behavioural difference and exists explicitly so untrusted-
+ * input ingress (paste/scan/NIP-17) can register a mint without retargeting
+ * the user's `activeMintUrl` (P8 security review Finding 3).
+ */
+async function addOrUpdateMint(
+  url: string,
+  set: (
+    update: (s: WalletState) => Partial<WalletState> | WalletState
+  ) => void,
+  activate: boolean
+): Promise<void> {
+  const normalized = normalizeUrl(url)
+  const mint = new CashuMint(normalized)
+  const [info, { keysets }, keys] = await Promise.all([
+    mint.getInfo(),
+    mint.getKeySets(),
+    mint.getKeys(),
+  ])
+  const storedMint: StoredMint = {
+    url: normalized,
+    info: info as unknown as Record<string, unknown>,
+    keysets,
+    keys: keys.keysets[0],
+  }
+  set((s) => {
+    const exists = s.mints.some((m) => m.url === normalized)
+    return {
+      mints: exists
+        ? s.mints.map((m) => (m.url === normalized ? storedMint : m))
+        : [...s.mints, storedMint],
+      activeMintUrl: activate ? normalized : s.activeMintUrl,
+      mintConnectionStatuses: {
+        ...s.mintConnectionStatuses,
+        [normalized]: 'connected',
+      },
+    }
+  })
+}
 
 export const useWalletStore = create<WalletState>()(
   persist(
@@ -136,29 +193,20 @@ export const useWalletStore = create<WalletState>()(
       },
 
       addMint: async (url: string) => {
+        await addOrUpdateMint(url, set, /* activate */ true)
+      },
+
+      addMintWithoutActivating: async (url: string) => {
+        await addOrUpdateMint(url, set, /* activate */ false)
+      },
+
+      setActiveMint: (url: string) => {
         const normalized = normalizeUrl(url)
-        const mint = new CashuMint(normalized)
-        const [info, { keysets }, keys] = await Promise.all([
-          mint.getInfo(),
-          mint.getKeySets(),
-          mint.getKeys(),
-        ])
-
-        const storedMint: StoredMint = {
-          url: normalized,
-          info: info as unknown as Record<string, unknown>,
-          keysets,
-          keys: keys.keysets[0],
-        }
-
-        set((s) => {
-          const exists = s.mints.some((m) => m.url === normalized)
-          return {
-            mints: exists ? s.mints.map((m) => (m.url === normalized ? storedMint : m)) : [...s.mints, storedMint],
-            activeMintUrl: normalized,
-            mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'connected' },
-          }
-        })
+        set((s) =>
+          s.mints.some((m) => m.url === normalized)
+            ? { activeMintUrl: normalized }
+            : s
+        )
       },
 
       removeMint: (url: string) => {

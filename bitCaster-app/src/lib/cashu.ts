@@ -115,13 +115,80 @@ export async function decodeToken(tokenStr: string): Promise<Token> {
       }
     }
 
-    // As a fallback, fetch fresh keysets from the active mint
-    const mintUrl = store.activeMintUrl ?? _mintUrl;
+    // P8 fix: a v4 cashuB token from an unconfigured mint (e.g. a testnut
+    // token pasted from cashu.me) lands here. The active-mint fallback below
+    // would fetch the WRONG keysets and throw "Couldn't map short keyset ID".
+    // Pre-extract the mint URL from the v4 CBOR payload so we can fetch
+    // keysets from the issuing mint.
+    const mintFromToken = extractMintUrlFromV4Token(tokenStr);
+    const mintUrl = mintFromToken ?? store.activeMintUrl ?? _mintUrl;
     const mint = new CashuMint(mintUrl);
     const { keysets } = await mint.getKeySets();
     const keysetIds = keysets.map(k => k.id);
     return getDecodedToken(tokenStr, keysetIds);
   }
+}
+
+/**
+ * Extract the mint URL from a v4 cashuB token's CBOR payload without needing
+ * keyset knowledge. Used as a pre-decode step so that a token issued by an
+ * unconfigured mint (e.g. testnut.cashu.space pasted from cashu.me) can have
+ * its keysets fetched directly rather than against the user's active mint —
+ * which would otherwise throw "Couldn't map short keyset ID" and break the
+ * receive flow. Returns null if the token isn't v4 or the parse fails.
+ */
+export function extractMintUrlFromV4Token(tokenStr: string): string | null {
+  if (!tokenStr.startsWith("cashuB")) return null;
+  try {
+    const b64 = tokenStr.slice(6).replaceAll("-", "+").replaceAll("_", "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const bin = atob(padded);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return walkCborForMintUrl(bytes);
+  } catch {
+    return null;
+  }
+}
+
+// Minimal CBOR walker: read the top-level map and return the value of the
+// "m" key (the v4 cashu mint-url field). Supports the small subset of CBOR
+// that cashu v4 emits — see NUT-00 §3.2.
+function walkCborForMintUrl(b: Uint8Array): string | null {
+  if ((b[0] & 0xe0) !== 0xa0) return null; // top-level must be a map
+  const [n, start] = readLen(b, 0);
+  let i = start;
+  for (let e = 0; e < n; e++) {
+    const [key, j] = readString(b, i);
+    if (key === "m") return readString(b, j)[0];
+    i = skipValue(b, j);
+  }
+  return null;
+}
+
+function readLen(b: Uint8Array, i: number): [number, number] {
+  const ai = b[i] & 0x1f;
+  if (ai < 24) return [ai, i + 1];
+  if (ai === 24) return [b[i + 1], i + 2];
+  if (ai === 25) return [(b[i + 1] << 8) | b[i + 2], i + 3];
+  if (ai === 26) return [((b[i + 1] << 24) | (b[i + 2] << 16) | (b[i + 3] << 8) | b[i + 4]) >>> 0, i + 5];
+  throw new Error("CBOR len > uint32");
+}
+
+function readString(b: Uint8Array, i: number): [string, number] {
+  const major = b[i] >> 5;
+  if (major !== 3 && major !== 2) throw new Error("CBOR not string");
+  const [len, j] = readLen(b, i);
+  return [new TextDecoder().decode(b.slice(j, j + len)), j + len];
+}
+
+function skipValue(b: Uint8Array, i: number): number {
+  const major = b[i] >> 5;
+  if (major === 0 || major === 1 || major === 7) return readLen(b, i)[1];
+  if (major === 2 || major === 3) { const [len, j] = readLen(b, i); return j + len; }
+  if (major === 4) { const [n, j] = readLen(b, i); let p = j; for (let k = 0; k < n; k++) p = skipValue(b, p); return p; }
+  if (major === 5) { const [n, j] = readLen(b, i); let p = j; for (let k = 0; k < n; k++) { p = skipValue(b, p); p = skipValue(b, p); } return p; }
+  if (major === 6) return skipValue(b, readLen(b, i)[1]);
+  throw new Error("CBOR major " + major);
 }
 
 /** Receive a cashu token string and return the redeemed proofs. */
@@ -146,7 +213,13 @@ export async function ensureMintRegistered(mintUrl: string): Promise<boolean> {
   const normalized = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
   if (store.mints.some((m) => m.url === normalized)) return false;
-  await store.addMint(normalized);
+  // P8 security review Finding 3: `addMint` retargets `activeMintUrl` as a
+  // side effect. From an untrusted-input ingress (clipboard token, NIP-17
+  // DM, scanned QR), that silently switches the user's wallet to an
+  // attacker-chosen mint. Use the no-activate variant: register the mint so
+  // proofs land somewhere the UI can enumerate, but leave the active mint
+  // alone. The user can switch via Settings if they want.
+  await store.addMintWithoutActivating(normalized);
   return true;
 }
 
