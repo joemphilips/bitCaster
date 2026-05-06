@@ -10,6 +10,7 @@ beforeEach(() => {
     mints: [],
     activeMintUrl: 'http://localhost:8085',
     keysetCounters: {},
+    keysetCountersRecovered: {},
     mintConnectionStatuses: {},
   })
 })
@@ -47,6 +48,40 @@ describe('useWalletStore', () => {
       const result = useWalletStore.getState().recoverFromMnemonic(['abandon', 'abandon'])
       expect(result.valid).toBe(false)
       expect(result.error).toContain('12 words')
+    })
+
+    it('clears keysetCounters and keysetCountersRecovered when seed changes (codex review #6)', () => {
+      // Pre-existing wallet had counters and a recovery flag. Switching to
+      // a new seed via recoverFromMnemonic must NOT carry those over —
+      // otherwise the new seed is treated as already-recovered against the
+      // mint and counter collisions are not caught.
+      useWalletStore.setState({
+        mnemonic: 'old seed words placeholder',
+        keysetCounters: { k1: 42 },
+        keysetCountersRecovered: { k1: true },
+      })
+      const words = bip39.generate()
+      useWalletStore.getState().recoverFromMnemonic(words)
+
+      const state = useWalletStore.getState()
+      expect(state.mnemonic).toBe(words.join(' '))
+      expect(state.keysetCounters).toEqual({})
+      expect(state.keysetCountersRecovered).toEqual({})
+    })
+  })
+
+  describe('generateMnemonic — also clears counter state (codex review #6)', () => {
+    it('resets keysetCounters and keysetCountersRecovered on new mnemonic', () => {
+      useWalletStore.setState({
+        keysetCounters: { k1: 99 },
+        keysetCountersRecovered: { k1: true },
+      })
+      useWalletStore.getState().generateMnemonic()
+
+      const state = useWalletStore.getState()
+      expect(state.mnemonic.split(' ')).toHaveLength(12)
+      expect(state.keysetCounters).toEqual({})
+      expect(state.keysetCountersRecovered).toEqual({})
     })
   })
 

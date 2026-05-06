@@ -20,6 +20,7 @@ import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { rehydrateNostrSigner } from "@/lib/nostr";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
+import { recoverKeysetCountersForMint } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
 
 /**
@@ -162,6 +163,42 @@ function AppRoutes() {
     if (proofMigrationAttempted.current) return;
     proofMigrationAttempted.current = true;
     normalizeStoredMintUrls().catch(() => {});
+  }, []);
+
+  // P8 follow-up: cashu-ts deterministic counter recovery.
+  //
+  // CDK rejects re-used deterministic blinded outputs as a database duplicate
+  // and reports the misleadingly-named error "Invoice already paid or
+  // pending" (`cdk-common/src/error.rs:1017`). For wallets that existed
+  // before `ZustandCounterSource` (submodule commit `8711c73`, Apr 8) — or
+  // that were minted from a different device with the same seed — the local
+  // `keysetCounters` are missing or stale and the next `mintProofs` call
+  // collides at counter 0.
+  //
+  // Recovery walks `wallet.batchRestore(...)` for every keyset of every
+  // configured mint and advances `keysetCounters[keysetId]` past the
+  // highest signed output. Idempotent via `keysetCountersRecovered`. Runs
+  // ONCE per (mint, keyset) at startup, gated on persist hydration so the
+  // mints / mnemonic are loaded.
+  const counterRecoveryAttempted = useRef(false);
+  useEffect(() => {
+    if (counterRecoveryAttempted.current) return;
+    const runRecovery = () => {
+      if (counterRecoveryAttempted.current) return;
+      counterRecoveryAttempted.current = true;
+      const { mints, mnemonic } = useWalletStore.getState();
+      if (!mnemonic || mints.length === 0) return;
+      for (const m of mints) {
+        recoverKeysetCountersForMint(m.url).catch(() => {});
+      }
+    };
+    if (useWalletStore.persist.hasHydrated()) runRecovery();
+    else {
+      const unsub = useWalletStore.persist.onFinishHydration(() => {
+        runRecovery();
+        unsub();
+      });
+    }
   }, []);
 
   // Continuous NIP-17 listener so inbound payment-request DMs are
