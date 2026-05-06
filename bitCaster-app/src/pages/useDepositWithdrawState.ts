@@ -20,6 +20,7 @@ import {
   mintProofs,
   encodeToken,
   decodeToken,
+  ensureMintRegistered,
   receiveToken,
   sendProofs,
   createMeltQuote,
@@ -27,6 +28,7 @@ import {
   waitForMintQuotePaid,
   type MintQuoteWaitResult,
 } from '@/lib/cashu'
+import { useToastStore } from '@/stores/toast'
 import {
   getProofs,
   addProofs,
@@ -100,6 +102,23 @@ export interface DepositWithdrawState {
   onConfirmMelt: () => void
   onBack: () => void
   onClose: () => void
+}
+
+/**
+ * Register `mintUrl` if it's not in the configured mints list and surface a
+ * toast on first add. Shared by paste/scan ecash redemption — without this,
+ * proofs minted by an unknown mint (e.g. testnut.cashu.space pasted from an
+ * external cashu.me wallet) are orphaned because no `StoredMint` row exists
+ * for the UI to enumerate them under. addMint failures bubble — the caller's
+ * existing red banner reports them.
+ */
+async function registerMintWithToast(mintUrl: string): Promise<void> {
+  const added = await ensureMintRegistered(mintUrl)
+  if (!added) return
+  useToastStore.getState().addToast({
+    message: `Added new mint: ${safeHostname(mintUrl)}`,
+    type: 'info',
+  })
 }
 
 export function useDepositWithdrawState(
@@ -325,6 +344,7 @@ export function useDepositWithdrawState(
       if (currentView === 'deposit-ecash') {
         setIsLoading(true)
         const decoded = await decodeToken(text)
+        await registerMintWithToast(decoded.mint)
         const proofs = await receiveToken(text, decoded.mint)
         const mintUrl = decoded.mint
         const stored: StoredProof[] = proofs.map((p) => ({
@@ -460,6 +480,7 @@ export function useDepositWithdrawState(
       setIsLoading(true)
       try {
         const decoded = await decodeToken(trimmed)
+        await registerMintWithToast(decoded.mint)
         const proofs = await receiveToken(trimmed, decoded.mint)
         const stored: StoredProof[] = proofs.map((p) => ({
           ...p,

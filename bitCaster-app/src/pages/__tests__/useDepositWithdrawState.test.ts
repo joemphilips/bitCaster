@@ -9,6 +9,7 @@ vi.mock('@/lib/cashu', () => ({
   mintProofs: vi.fn(),
   encodeToken: vi.fn().mockReturnValue('cashuAtoken123'),
   decodeToken: vi.fn().mockReturnValue({ mint: 'http://localhost:8085', proofs: [] }),
+  ensureMintRegistered: vi.fn().mockResolvedValue(false),
   receiveToken: vi.fn().mockResolvedValue([]),
   sendProofs: vi.fn().mockResolvedValue({ keep: [], send: [{ secret: 's1', amount: 100 }] }),
   createMeltQuote: vi.fn(),
@@ -297,6 +298,71 @@ describe('useDepositWithdrawState', () => {
       // currentView is back at the lightning entry; quote ref cleared.
       await act(async () => { await result.current.onCreateInvoice() })
       expect(cashu.createMintQuote).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('onPaste — ecash from unknown mint', () => {
+    it('registers the unknown mint via ensureMintRegistered before redeeming', async () => {
+      const cashu = await import('@/lib/cashu')
+      vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+        mint: 'https://testnut.cashu.space',
+        proofs: [],
+      } as never)
+      vi.mocked(cashu.ensureMintRegistered).mockResolvedValueOnce(true)
+      vi.mocked(cashu.receiveToken).mockResolvedValueOnce([
+        { secret: 's-new', amount: 50, id: 'kid', C: 'C' } as never,
+      ])
+      // navigator.clipboard isn't in jsdom by default — install a stub.
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { readText: vi.fn().mockResolvedValue('cashuB-token-from-unknown-mint') },
+      })
+
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      expect(result.current.currentView).toBe('deposit-ecash')
+
+      await act(async () => { await result.current.onPaste() })
+
+      // ensureMintRegistered must run BEFORE receiveToken so the proofs land
+      // under a configured mint row rather than getting orphaned.
+      const ensureOrder = vi.mocked(cashu.ensureMintRegistered).mock
+        .invocationCallOrder[0]
+      const receiveOrder = vi.mocked(cashu.receiveToken).mock
+        .invocationCallOrder[0]
+      expect(ensureOrder).toBeLessThan(receiveOrder)
+      expect(cashu.ensureMintRegistered).toHaveBeenCalledWith(
+        'https://testnut.cashu.space'
+      )
+      expect(cashu.receiveToken).toHaveBeenCalledWith(
+        'cashuB-token-from-unknown-mint',
+        'https://testnut.cashu.space'
+      )
+      expect(result.current.currentView).toBe('success')
+      expect(result.current.successAmount).toBe(50)
+      expect(result.current.error).toBeNull()
+    })
+
+    it('surfaces receiveToken errors to the red banner without swallowing', async () => {
+      const cashu = await import('@/lib/cashu')
+      vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+        mint: 'https://testnut.cashu.space',
+        proofs: [],
+      } as never)
+      vi.mocked(cashu.ensureMintRegistered).mockResolvedValueOnce(true)
+      vi.mocked(cashu.receiveToken).mockRejectedValueOnce(
+        new Error('Token already spent')
+      )
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { readText: vi.fn().mockResolvedValue('cashuB-spent') },
+      })
+
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      await act(async () => { await result.current.onPaste() })
+
+      expect(result.current.error).toBe('Token already spent')
     })
   })
 

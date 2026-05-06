@@ -126,6 +126,46 @@ public bool IsClosed(MarketState s) => s switch
 return s != MarketState.Open;
 ```
 
+### Rule 4 — Cross-aggregate state invariants live in the projector, not the command handler
+
+Per ADR-013, when a command's behaviour depends on the **current value of an event-sourced state field on a different aggregate** (the canonical case: `MarketRegistration.MarketState` gating `OrderBook` / `MarketFunding` / `Trade` / `MarketWallet` mutations), the invariant lives in the **projector**, not the handler. The handler accepts the command unconditionally on that axis; the projector subscribes to the source aggregate's state event (e.g. `MarketClosed`), mirrors the state into its own payload via Sekiban event-stream subscription, and emits a no-op for mutating events when the mirrored state forbids the mutation. The rejected event is preserved in the event store as a forensic record.
+
+Why: cross-aggregate reads from inside a command handler are non-local (extra round-trip, race surface, awkward Sekiban plumbing). The projector already owns the aggregate's state and is the natural enforcement point. The "accept-then-no-op" model is forensically complete (rejected attempts are recorded for audit / abuse triage) and structurally regression-safe (no gate to forget when a new command issuer is added).
+
+When this rule does **NOT** apply — keep the rejection at the handler:
+
+| Rejection class | Stays at handler because |
+|---|---|
+| Authz / IDOR (`order.UserId != requester`) | Returning 403 to the user is a useful signal; silent no-op masks legitimate client bugs |
+| Input validation (UserId format, hex shape, ExpiresAt-in-past) | Stateless; pure shape checks. Moving to projector adds ceremony with zero benefit |
+| Sekiban command idempotency (duplicate `DepositId`, replay of `RecordDepositPaid`) | Already an event-sourced no-op via `EventOrNone.None` — that IS the projector pattern, just earlier in the pipeline |
+| mTLS-internal contract (`RecordDepositCreditedCommand` rejected when not in `Paid` state) | Wallet-service is operator-internal; silent no-op would mask a real wallet-service bug |
+
+**Decision rule**: ask "does this rejection depend on the current value of an event-sourced state field on a different aggregate?" If yes → projector-side per ADR-013. If no → handler-side.
+
+The fast-fail UX gate at the HTTP endpoint (`ClosedMarketGate.CheckByConditionIdAsync`) is allowed as a defence-in-depth optimisation — return 409 fast on the first user attempt rather than letting the user wait for the round-trip-and-projector-no-op. It is NOT the primary correctness mechanism. Programmatic / internal command issuers (CPMM bot, Orleans timers, replay tooling) MUST NOT rely on the endpoint gate; they get the projector check for free.
+
+### Rule 5 — Sibling ingress paths must share normalisation/preflight helpers
+
+When two or more code paths ingest the same kind of payload (cashu token, NIP-17 DM, scanned QR, market ID, oracle attestation, deposit notification, NIP-98 request, nostr event), the normalisation and preflight steps must live in **one** shared helper that all siblings call. Inline preflight in each path is how silent divergence happens — one path adds a missing step, the others quietly skip it; the reviewer cannot catch it because each path looks locally correct.
+
+Caught in P8 Issue 4. Three sibling paths in `bitCaster-app/` redeem cashu tokens: `pages/useDepositWithdrawState.ts:onPaste`, `pages/useDepositWithdrawState.ts:onScanResult`, and `lib/nip17-listener.ts:handleIncomingDM`. The NIP-17 listener correctly called `addMint(payload.mint)` first when the payer used an unconfigured mint (cashu.me parity). The other two paths skipped that preflight and called `receiveToken(text, decoded.mint)` directly. The user's pasted/scanned token from an external mint (testnut, cashu.me) silently minted into a synthetic `CashuWallet` (the `getWallet()` fallback in `lib/cashu.ts`) without registering the mint in `useWalletStore` — proofs orphaned, invisible in the mints list, lost on reload.
+
+Three prevention rules:
+
+(a) **Before writing a new ingress path, grep the codebase for siblings of the same payload kind** and list the preflight steps each does. Make them all call the same helper. Common payload kinds and their canonical preflight:
+
+| Payload | Canonical preflight helper |
+|---|---|
+| Cashu token (any source) | `ensureMintRegistered(decoded.mint)` then `receiveToken` (`bitCaster-app/src/lib/cashu.ts`) |
+| Mint URL (any source) | `normalizeUrl(...)` + `ensureMintRegistered(...)` |
+| Nostr event (oracle / NIP-17) | `verifyNostrSignature(...)` + kind/tag validation (`bitCaster-app/src/lib/nostr.ts`) |
+| Bolt11 invoice (paste/scan) | `decodePaymentRequest(...)` + amount/expiry validation (cashu-ts) |
+
+(b) **If a sibling path with diverging preflight is found, fix the divergence in the same change** rather than copying the wrong-looking version. The "one canonical helper, three call sites" pattern is the right shape.
+
+(c) **Untrusted-input preflight that mutates user state needs explicit consent.** A helper that registers something on the user's behalf (e.g. `addMint` from a clipboard-pasted token's `m` field) MUST NOT silently change user-facing state (e.g. `activeMintUrl`). Mutate only the additive surface (the mints list); leave the active selection alone unless the user explicitly opts in. AGENTS.md's Zustand+React Patterns section calls this out: *"`addMint(url)` in `stores/wallet.ts` sets `activeMintUrl` as a side-effect. Never call it from untrusted inputs (inbound NIP-17 DMs, query strings, etc.) without explicit user consent."* Re-introducing this anti-pattern via a shared preflight helper defeats the rule.
+
 ## Enforcement
 
 The three rules are enforced — not aspirational.
