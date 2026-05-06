@@ -35,10 +35,81 @@ export const DEFAULT_RELAYS: string[] = import.meta.env.VITE_NOSTR_RELAYS
     ];
 
 let _ndk: NDK | null = null;
+// Snapshot of the user-relay set last reconciled into the singleton NDK.
+// `getNdk()` is on hot paths (every login, profile fetch, oracle subscribe);
+// the snapshot lets us skip the pool walk when the user hasn't added or
+// removed a relay since the previous call.
+let _lastReconciledRelaysKey = "";
+
+/**
+ * Merge user-configured relays from the settings store with the static
+ * {@link DEFAULT_RELAYS} list, deduplicating while preserving order. The
+ * profile-fetch surface specifically needs this — a kind:0 published only to
+ * a user-added relay would never resolve when the NDK pool is restricted to
+ * the defaults. Returns DEFAULT_RELAYS alone when settings hasn't hydrated
+ * (or has no relays configured) so module-load callers don't crash.
+ */
+function mergedRelayUrls(): string[] {
+  try {
+    const userRelays = useSettingsStore.getState().relays.map((r) => r.url);
+    const merged = [...DEFAULT_RELAYS];
+    for (const url of userRelays) {
+      if (!merged.includes(url)) merged.push(url);
+    }
+    return merged;
+  } catch {
+    return DEFAULT_RELAYS;
+  }
+}
+
+function reconcileRelays(ndk: NDK, urls: string[]): void {
+  const known = new Set(ndk.pool.relays.keys());
+  const desired = new Set(urls);
+  // Add any desired relay not already in the pool.
+  for (const url of urls) {
+    if (known.has(url)) continue;
+    try {
+      ndk.addExplicitRelay(url, undefined, true);
+    } catch {
+      // Bad URL or already-known race — ignore; profile fetch can still
+      // succeed via the other relays.
+    }
+  }
+  // P8 codex review #4: reconcile must also remove relays the user dropped
+  // from settings. Without this, removed relays stay connected and continue
+  // to receive subscriptions / leak the user's queries to a relay they
+  // explicitly tried to disconnect.
+  for (const url of known) {
+    if (desired.has(url)) continue;
+    try {
+      const relay = ndk.pool.relays.get(url);
+      if (relay) {
+        relay.disconnect?.();
+        ndk.pool.relays.delete(url);
+      }
+    } catch {
+      // Best-effort teardown — leave the next reconciliation pass to retry.
+    }
+  }
+}
 
 export function getNdk(): NDK {
+  const urls = mergedRelayUrls();
   if (!_ndk) {
-    _ndk = new NDK({ explicitRelayUrls: DEFAULT_RELAYS });
+    _ndk = new NDK({ explicitRelayUrls: urls });
+    _lastReconciledRelaysKey = urls.slice().sort().join("|");
+    return _ndk;
+  }
+  // `addExplicitRelay` is idempotent on URL — but the pool walk plus Set
+  // construction is wasted work on every call. Short-circuit when the merged
+  // URL set (order-independent) hasn't changed since the previous
+  // reconciliation. Sorted join makes the cache key set-equal: re-hydration
+  // of settings with a different iteration order does not trigger a spurious
+  // pool walk.
+  const key = urls.slice().sort().join("|");
+  if (key !== _lastReconciledRelaysKey) {
+    reconcileRelays(_ndk, urls);
+    _lastReconciledRelaysKey = key;
   }
   return _ndk;
 }
@@ -120,6 +191,11 @@ export async function loginWithNsecOrNcryptsec(
   return { signer, nsec };
 }
 
+// Track the last nsec we installed onto the singleton NDK so repeated calls
+// (StrictMode double-invoke, persist re-hydration, manual retries) don't
+// reinstall the signer or refetch the profile when the input hasn't changed.
+let _installedNsec: string | null = null;
+
 /**
  * Re-install the Nostr signer on app startup using the nsec persisted in
  * the settings store. `NDK.signer` lives in module-level state that's
@@ -137,13 +213,20 @@ export async function rehydrateNostrSigner(): Promise<void> {
   const settings = useSettingsStore.getState();
   const { nostrSignerMode, nsecSecret } = settings;
   if (nostrSignerMode !== "nsec" || !nsecSecret) return;
+  // Identity-binding guard (P04): only short-circuit when the live NDK
+  // signer is in fact the private-key one. A mode-switch nsec → nip07 →
+  // nsec-with-same-string would otherwise leave the NIP-07 signer attached
+  // and we'd publish under the wrong identity.
+  if (_installedNsec === nsecSecret && getNdk().signer instanceof NDKPrivateKeySigner) return;
   try {
     await loginWithNsec(nsecSecret);
+    _installedNsec = nsecSecret;
     fetchAndStoreNostrProfile().catch(() => {});
   } catch {
     // Stored nsec is corrupt — reset signer mode so the UI reflects reality.
     // `setSignerMode` also wipes `nsecSecret` when leaving nsec mode, so we
     // don't need a separate `setNsecSecret(null)` call.
+    _installedNsec = null;
     settings.setSignerMode("none");
   }
 }
