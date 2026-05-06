@@ -21,6 +21,7 @@ import {
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 import { normalizeUrl } from "@/lib/url";
+import { addProofs, type StoredProof } from "@/stores/proof-db";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -77,15 +78,157 @@ export async function createMintQuote(
   return wallet.createMintQuote(amountSats);
 }
 
-/** Mint proofs after the invoice in `quote` has been paid. */
+/** Mint proofs after the invoice in `quote` has been paid.
+ *
+ * Wraps cashu-ts `wallet.mintProofs` with a one-shot recovery+retry on the
+ * CDK "Invoice already paid or pending" error. That string is misleading:
+ * `cdk-common/src/error.rs:1017` maps any database-duplicate error to
+ * `ErrorCode::InvoiceAlreadyPaid` with that detail — including the case
+ * where the wallet's deterministic blinded outputs (counter-derived) collide
+ * with outputs the mint already signed for this seed.
+ *
+ * When the safety net trips:
+ *  1. Force a counter rescan against the relevant keysets (bypassing the
+ *     idempotency flag — the flag's "scanned at startup" status is now
+ *     irrelevant; we have evidence that another writer has advanced the
+ *     mint's seen-outputs since then, e.g. another device with the same
+ *     seed).
+ *  2. Retry `wallet.mintProofs` ONCE. If the retry still fails — recovery
+ *     didn't unstick the issue (e.g. recovery itself failed against the
+ *     active keyset, or this is actually an unrelated error CDK rebadged) —
+ *     propagate to the caller. */
 export async function mintProofs(
   amountSats: number,
   quote: MintQuoteResponse,
   mintUrl?: string
 ): Promise<Proof[]> {
   const wallet = await getWallet(mintUrl);
-  return wallet.mintProofs(amountSats, quote.quote);
+  try {
+    return await wallet.mintProofs(amountSats, quote.quote);
+  } catch (err) {
+    if (!isCdkDuplicateOutputsError(err)) throw err;
+    // Anonymous (no-mnemonic) wallets cannot have deterministic counter
+    // collisions — their secrets are random. Re-throw so the caller sees
+    // the real error rather than a swallowed retry.
+    if (!useWalletStore.getState().mnemonic) throw err;
+    const url = normalizeUrl(mintUrl ?? useWalletStore.getState().activeMintUrl);
+    const result = await recoverKeysetCountersForMint(url, { force: true });
+    if (!result.scannedKeysets.length) {
+      // Recovery couldn't scan ANY keyset (network down, mint unreachable,
+      // store had no keysets). A retry would just re-throw the same error.
+      throw err;
+    }
+    // ZustandCounterSource.reserve() reads from the live store on every
+    // call (`stores/wallet.ts:65`), so the cached cashu-ts wallet picks up
+    // the recovered counter on the retry without rebuilding the wallet.
+    return await wallet.mintProofs(amountSats, quote.quote);
+  }
 }
+
+/**
+ * Match the CDK "Invoice already paid or pending" error precisely. CDK emits
+ * this string for `Database(Duplicate)` (see `cdk-common/src/error.rs:1017`)
+ * — typically a deterministic-output / counter collision, NOT an actual
+ * payment-state issue. We match on the literal detail string AND cashu-ts's
+ * `MintOperationError` shape (a 400 with a numeric `code`); both must
+ * match so a stray bare `Error('Invoice already paid or pending')` from app
+ * code can't trip the recovery path. NOTE: matching on `code` alone is
+ * unsafe — CDK's `20006` is also used for genuine paid-quote cases — so we
+ * use the message as the discriminator and the code/status as a structural
+ * sanity check.
+ */
+function isCdkDuplicateOutputsError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { message?: unknown; code?: unknown; status?: unknown; name?: unknown };
+  const msg = typeof e.message === "string" ? e.message : "";
+  if (!msg.includes("Invoice already paid or pending")) return false;
+  // Structural sanity check: cashu-ts surfaces this as `MintOperationError`
+  // with status 400. If neither shape matches, the error is some other code
+  // path (e.g. a wrapped fetch failure) using the same human string — skip.
+  return e.name === "MintOperationError" || e.status === 400 || typeof e.code === "number";
+}
+
+export interface KeysetRecoveryResult {
+  /** Keyset IDs that were scanned (regardless of whether anything new was
+   *  found). Empty means recovery couldn't run (e.g. mint unreachable). */
+  scannedKeysets: string[];
+}
+
+/**
+ * Walk the mint's seen-outputs space (via cashu-ts `batchRestore`) for every
+ * keyset of `mintUrl`, advance `keysetCounters[keysetId]` past the highest
+ * existing signed output, persist any UNSPENT recovered proofs to IndexedDB,
+ * and mark the keyset recovered.
+ *
+ * Two callers:
+ *  - `App.tsx` startup migration — once per mint at app load. Skips keysets
+ *    whose `keysetCountersRecovered[id]` flag is already set (idempotent).
+ *  - `mintProofs` safety-net catch — passes `{ force: true }` so the flag
+ *    is BYPASSED. The flag captures "we scanned at app start"; a duplicate
+ *    error proves our counter is stale despite the flag (e.g. another
+ *    device minted with the same seed since startup).
+ *
+ * Returns the list of keyset IDs that were actually scanned so the caller
+ * can decide whether a retry is worthwhile.
+ */
+export async function recoverKeysetCountersForMint(
+  mintUrl: string,
+  opts: { force?: boolean } = {},
+): Promise<KeysetRecoveryResult> {
+  const url = normalizeUrl(mintUrl);
+  const store = useWalletStore.getState();
+  if (!store.mnemonic) return { scannedKeysets: [] };
+  const wallet = await getWallet(url);
+  // Use the wallet's freshly-loaded keysets via the underlying mint, not the
+  // possibly-stale `store.mints[].keysets`. After mint key rotation the
+  // store can be days behind; the duplicate-error path needs to scan
+  // whatever keyset the wallet is actually trying to mint against right now.
+  const fresh = await wallet.mint.getKeySets().catch(() => null);
+  const keysets = fresh?.keysets ?? store.mints.find((m) => m.url === url)?.keysets ?? [];
+  const scanned: string[] = [];
+  for (const keyset of keysets) {
+    const recovered = useWalletStore.getState().keysetCountersRecovered[keyset.id];
+    if (!opts.force && recovered) continue;
+    try {
+      const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
+        300,
+        100,
+        0,
+        keyset.id,
+      );
+      const next = lastCounterWithSignature !== undefined
+        ? lastCounterWithSignature + 1
+        : 0;
+      const current = useWalletStore.getState().keysetCounters[keyset.id] ?? 0;
+      const advanced = Math.max(current, next);
+      useWalletStore.setState((s) => ({
+        keysetCounters: { ...s.keysetCounters, [keyset.id]: advanced },
+        keysetCountersRecovered: { ...s.keysetCountersRecovered, [keyset.id]: true },
+      }));
+      // CRITICAL: batchRestore returns ALL deterministic proofs the mint
+      // ever signed for this seed, including SPENT ones. Persisting spent
+      // proofs would inflate the displayed balance and cause spent-token
+      // errors on the next spend. Filter via `groupProofsByState` and keep
+      // only UNSPENT. PENDING is also excluded — those are mid-flight on
+      // another device and will resolve to SPENT or UNSPENT shortly.
+      if (proofs.length > 0) {
+        const grouped = await wallet.groupProofsByState(proofs).catch(() => null);
+        const safe = grouped?.unspent ?? [];
+        if (safe.length > 0) {
+          const stored: StoredProof[] = safe.map((p) => ({ ...p, mintUrl: url }));
+          await addProofs(stored);
+        }
+      }
+      scanned.push(keyset.id);
+    } catch {
+      // Best-effort: if this keyset's recovery fails (mint unreachable,
+      // keyset rotated, etc.) leave the flag unset so the next trip
+      // retries. Fall through to the next keyset.
+    }
+  }
+  return { scannedKeysets: scanned };
+}
+
 
 /** Encode proofs as a cashuV4 token string ready to share. */
 export function encodeToken(proofs: Proof[], mintUrl?: string): string {

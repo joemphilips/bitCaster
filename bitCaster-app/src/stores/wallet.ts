@@ -20,6 +20,21 @@ interface WalletState {
   mints: StoredMint[]
   activeMintUrl: string
   keysetCounters: Record<string, number>
+  /**
+   * Per-keyset flag indicating that the deterministic-output recovery scan
+   * (`batchRestore`) has been run against the mint at least once for this
+   * keyset. Without recovery, a wallet whose `keysetCounters` entry is
+   * missing or stale (e.g. because the wallet existed before the
+   * `ZustandCounterSource` landed in submodule commit `8711c73`, or proofs
+   * were minted from a different device with the same seed) re-uses
+   * deterministic blinded outputs starting at counter 0. CDK responds to
+   * the duplicate with the **misleadingly-named** error
+   * `"Invoice already paid or pending"` (per
+   * `cdk-common/src/error.rs:1017`, `Database(Duplicate)` →
+   * `ErrorCode::InvoiceAlreadyPaid`) — see
+   * `docs/TODO.md` "P8 follow-up: counter recovery".
+   */
+  keysetCountersRecovered: Record<string, boolean>
   mintConnectionStatuses: Record<string, MintConnectionTestStatus>
 
   generateMnemonic: () => void
@@ -146,12 +161,22 @@ export const useWalletStore = create<WalletState>()(
       mints: [],
       activeMintUrl: DEFAULT_MINT_URL,
       keysetCounters: {},
+      keysetCountersRecovered: {},
       mintConnectionStatuses: {},
 
       generateMnemonic: () => {
         const words = bip39.generate()
         _walletCache = new Map()
-        set({ mnemonic: words.join(' ') })
+        // Clear deterministic counter state — the new seed has its own
+        // counter space; reusing the previous wallet's counters or
+        // recovered-flags would either skip required recovery for the new
+        // seed or apply a stale counter to the wrong keyset (P8 codex
+        // adversarial review #6).
+        set({
+          mnemonic: words.join(' '),
+          keysetCounters: {},
+          keysetCountersRecovered: {},
+        })
       },
 
       recoverFromMnemonic: (words: string[]) => {
@@ -162,7 +187,14 @@ export const useWalletStore = create<WalletState>()(
           return { valid: false, error: 'Invalid seed phrase' }
         }
         _walletCache = new Map()
-        set({ mnemonic: words.join(' ') })
+        // See generateMnemonic — clear counter state on seed change so the
+        // recovered-flag idempotency doesn't suppress a needed scan for the
+        // new seed.
+        set({
+          mnemonic: words.join(' '),
+          keysetCounters: {},
+          keysetCountersRecovered: {},
+        })
         return { valid: true }
       },
 
@@ -252,6 +284,7 @@ export const useWalletStore = create<WalletState>()(
         mints: state.mints,
         activeMintUrl: state.activeMintUrl,
         keysetCounters: state.keysetCounters,
+        keysetCountersRecovered: state.keysetCountersRecovered,
         // Persist connection statuses so the Settings green/grey indicator
         // doesn't reset to grey on every reload. A background refetch in
         // App.tsx will correct any stale value on the next app load.
