@@ -5,7 +5,7 @@ import type {
   MethodType,
   MintInfo,
 } from '@/types/deposit-withdraw'
-import type { MeltQuoteResponse } from '@cashu/cashu-ts'
+import type { MeltQuoteResponse, MintQuoteResponse } from '@cashu/cashu-ts'
 import {
   PaymentRequest,
   PaymentRequestTransportType,
@@ -25,6 +25,7 @@ import {
   createMeltQuote,
   meltProofs,
   waitForMintQuotePaid,
+  type MintQuoteWaitResult,
 } from '@/lib/cashu'
 import {
   getProofs,
@@ -45,6 +46,12 @@ export type ExtendedView =
   | 'payment-request-display'
   | 'success'
 
+export type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
+
+function assertNeverWaitResult(r: never): never {
+  throw new Error(`unhandled MintQuoteWaitResult: ${JSON.stringify(r)}`)
+}
+
 export interface DepositWithdrawState {
   mode: DepositWithdrawMode
   currentView: ExtendedView
@@ -60,7 +67,9 @@ export interface DepositWithdrawState {
 
   // Result state
   bolt11: string | null
-  invoiceStatus: 'pending' | 'paid' | 'expired'
+  invoiceStatus: InvoiceStatus
+  /** Bolt11 expiry as unix-seconds. Drives the live countdown in the UI. */
+  invoiceExpiresAtSec: number | undefined
   ecashToken: string | null
   meltQuote: MeltQuoteResponse | null
   meltIsPaying: boolean
@@ -78,6 +87,9 @@ export interface DepositWithdrawState {
   onMintChange: (mintId: string) => void
   onToggleCurrency: () => void
   onCreateInvoice: () => void
+  /** Discard the active mint quote and return to the amount entry view so the
+   *  user can request a fresh invoice after expiry / failure. */
+  onRegenerateInvoice: () => void
   onSendEcash: () => void
   onPaste: () => void
   onScan: () => void
@@ -126,7 +138,8 @@ export function useDepositWithdrawState(
 
   // Result state
   const [bolt11, setBolt11] = useState<string | null>(null)
-  const [invoiceStatus, setInvoiceStatus] = useState<'pending' | 'paid' | 'expired'>('pending')
+  const [invoiceStatus, setInvoiceStatus] = useState<InvoiceStatus>('pending')
+  const [invoiceExpiresAtSec, setInvoiceExpiresAtSec] = useState<number | undefined>()
   const [ecashToken, setEcashToken] = useState<string | null>(null)
   const [meltQuote, setMeltQuote] = useState<MeltQuoteResponse | null>(null)
   const [meltIsPaying, setMeltIsPaying] = useState(false)
@@ -141,8 +154,15 @@ export function useDepositWithdrawState(
   // Track which view opened the scanner so we can process results correctly
   const scanReturnViewRef = useRef<ExtendedView>('deposit-ecash')
 
-  // Track the quote for cleanup
-  const mintQuoteRef = useRef<{ quote: string; request: string } | null>(null)
+  // The full active quote (request, quote-id, expiry). Persisted across renders
+  // so that re-clicking "Continue" — or a parent re-render in dev StrictMode —
+  // does NOT issue a second mint quote against the same mint state, which is
+  // what produces the LNBits "Invoice already paid or pending" passthrough.
+  const mintQuoteRef = useRef<MintQuoteResponse | null>(null)
+  // Synchronous double-click guard. `setIsLoading(true)` is one render late;
+  // a rapid second click would otherwise create a second quote & leak the
+  // first's polling subscription.
+  const inflightRef = useRef(false)
   const unsubRef = useRef<(() => void) | null>(null)
 
   // PaymentRequest id of the request currently displayed in the
@@ -207,51 +227,93 @@ export function useDepositWithdrawState(
     setShowFiatPrimary((prev) => !prev)
   }, [])
 
+  const handlePaidInvoice = useCallback(
+    async (quote: MintQuoteResponse, mintUrl: string, requested: number) => {
+      try {
+        const proofs = await mintProofs(requested, quote, mintUrl)
+        const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl }))
+        await addProofs(stored)
+        setInvoiceStatus('paid')
+        useActivityLogStore.getState().addActivity({
+          type: 'deposit',
+          amountSats: requested,
+          status: 'completed',
+          lightningInvoice: quote.request,
+        })
+      } catch (e) {
+        setInvoiceStatus('error')
+        setError((e as Error).message)
+      }
+    },
+    []
+  )
+
+  const handleInvoiceWaitResult = useCallback(
+    (r: MintQuoteWaitResult, quote: MintQuoteResponse, mintUrl: string, requested: number) => {
+      switch (r.status) {
+        case 'PAID':
+          handlePaidInvoice(quote, mintUrl, requested)
+          return
+        case 'EXPIRED':
+          setInvoiceStatus('expired')
+          setError('The Lightning invoice expired before payment arrived.')
+          return
+        case 'ERROR':
+          setInvoiceStatus('error')
+          setError(r.error.message)
+          return
+        default:
+          return assertNeverWaitResult(r)
+      }
+    },
+    [handlePaidInvoice]
+  )
+
   const onCreateInvoice = useCallback(async () => {
     if (amountSats <= 0) return
+    if (inflightRef.current) return
+    inflightRef.current = true
     setIsLoading(true)
     setError(null)
+    setInvoiceStatus('pending')
+    const requested = amountSats
+    const mintUrl = selectedMintId
     try {
-      const quote = await createMintQuote(amountSats, selectedMintId)
+      // Re-mount idempotency: reuse the active quote if one exists, otherwise
+      // request a fresh one. Prevents the duplicate-quote LNBits snackbar.
+      const quote = mintQuoteRef.current ?? await createMintQuote(requested, mintUrl)
       mintQuoteRef.current = quote
       setBolt11(quote.request)
-      setInvoiceStatus('pending')
+      setInvoiceExpiresAtSec(quote.expiry)
       setCurrentView('invoice-display')
 
-      // Wait for payment
       const unsub = await waitForMintQuotePaid(
-        quote.quote,
-        async () => {
-          try {
-            const savedQuote = mintQuoteRef.current
-            if (!savedQuote) return
-            const proofs = await mintProofs(amountSats, savedQuote as Parameters<typeof mintProofs>[1], selectedMintId)
-            const stored: StoredProof[] = proofs.map((p) => ({
-              ...p,
-              mintUrl: selectedMintId,
-            }))
-            await addProofs(stored)
-            setInvoiceStatus('paid')
-            useActivityLogStore.getState().addActivity({
-              type: 'deposit',
-              amountSats,
-              status: 'completed',
-              lightningInvoice: savedQuote.request,
-            })
-          } catch (e) {
-            setError((e as Error).message)
-          }
-        },
-        (e) => setError(e.message),
-        selectedMintId
+        quote,
+        (r) => handleInvoiceWaitResult(r, quote, mintUrl, requested),
+        { onTransientError: (e) => setError(e.message) },
+        mintUrl,
       )
       unsubRef.current = unsub
     } catch (e) {
+      setInvoiceStatus('error')
       setError((e as Error).message)
+      inflightRef.current = false
     } finally {
       setIsLoading(false)
     }
-  }, [amountSats, selectedMintId])
+  }, [amountSats, selectedMintId, handleInvoiceWaitResult])
+
+  const onRegenerateInvoice = useCallback(() => {
+    unsubRef.current?.()
+    unsubRef.current = null
+    mintQuoteRef.current = null
+    inflightRef.current = false
+    setBolt11(null)
+    setInvoiceExpiresAtSec(undefined)
+    setInvoiceStatus('pending')
+    setError(null)
+    setCurrentView('deposit-lightning')
+  }, [])
 
   const onPaste = useCallback(async () => {
     setError(null)
@@ -539,6 +601,7 @@ export function useDepositWithdrawState(
     error,
     bolt11,
     invoiceStatus,
+    invoiceExpiresAtSec,
     ecashToken,
     meltQuote,
     meltIsPaying,
@@ -550,6 +613,7 @@ export function useDepositWithdrawState(
     onMintChange,
     onToggleCurrency,
     onCreateInvoice,
+    onRegenerateInvoice,
     onSendEcash,
     onPaste,
     onScan,

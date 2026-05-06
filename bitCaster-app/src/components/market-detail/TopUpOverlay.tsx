@@ -7,11 +7,18 @@ import {
   createMintQuote,
   mintProofs,
   waitForMintQuotePaid,
+  type MintQuoteWaitResult,
 } from '@/lib/cashu'
 import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
+import type { MintQuoteResponse } from '@cashu/cashu-ts'
 
 type View = 'amount' | 'invoice'
+type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
+
+function assertNeverWaitResult(r: never): never {
+  throw new Error(`unhandled MintQuoteWaitResult: ${JSON.stringify(r)}`)
+}
 
 interface TopUpOverlayProps {
   /** Minimum sats the user must top up — the trade deficit. */
@@ -36,11 +43,17 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
   const [view, setView] = useState<View>('amount')
   const [amount, setAmount] = useState(prefill)
   const [bolt11, setBolt11] = useState('')
-  const [status, setStatus] = useState<'pending' | 'paid' | 'expired'>('pending')
+  const [expiresAtSec, setExpiresAtSec] = useState<number | undefined>()
+  const [status, setStatus] = useState<InvoiceStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   const unsubRef = useRef<(() => void) | null>(null)
+  // The active mint quote for this overlay-open. Persisted across re-renders
+  // (and StrictMode dev re-effects) so a re-render does NOT create a second
+  // quote against the mint — that's what produced the LNBits "Invoice already
+  // paid or pending" snackbar in P8.
+  const activeQuoteRef = useRef<MintQuoteResponse | null>(null)
   // Synchronous guard against double-submits — React's `loading` state is set
   // one render later, so a rapid second click would otherwise start a second
   // quote and leak the first's polling subscription.
@@ -68,65 +81,94 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
     }
   }, [])
 
+  const handlePaidQuote = useCallback(async (quote: MintQuoteResponse, requested: number) => {
+    try {
+      const proofs = await mintProofs(requested, quote, activeMintUrl)
+      const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl: activeMintUrl }))
+      await addProofs(stored)
+      if (cancelledRef.current) return
+      setStatus('paid')
+      // Small delay so the user sees "Payment received!" before the overlay vanishes.
+      setTimeout(() => { if (!cancelledRef.current) onSuccessRef.current() }, 800)
+    } catch (e) {
+      if (!cancelledRef.current) {
+        setStatus('error')
+        setError((e as Error).message)
+      }
+    }
+  }, [activeMintUrl])
+
+  const handleWaitResult = useCallback((result: MintQuoteWaitResult, quote: MintQuoteResponse, requested: number) => {
+    if (cancelledRef.current) return
+    switch (result.status) {
+      case 'PAID':
+        handlePaidQuote(quote, requested)
+        return
+      case 'EXPIRED':
+        setStatus('expired')
+        setError('The Lightning invoice expired before payment arrived.')
+        return
+      case 'ERROR':
+        setStatus('error')
+        setError(result.error.message)
+        return
+      default:
+        return assertNeverWaitResult(result)
+    }
+  }, [handlePaidQuote])
+
   const startInvoice = useCallback(async () => {
     if (inflightRef.current) return
     if (amount < deficit) {
       setError(`Amount must be at least ${deficit} sats to cover this trade.`)
       return
     }
-    // Snapshot the amount so the async paid-callback below doesn't read a
-    // later edit — once we've requested an invoice for N sats, we mint N.
     const requested = amount
     inflightRef.current = true
     setError(null)
+    setStatus('pending')
     setLoading(true)
     try {
-      const quote = await createMintQuote(requested, activeMintUrl)
+      // Re-mount idempotency: reuse a quote already issued during this open.
+      // Otherwise StrictMode (or a parent re-render) would issue a second quote
+      // against the same mint state — LNBits then returns "Invoice already paid
+      // or pending" verbatim, which the user sees as the P8 snackbar.
+      const quote = activeQuoteRef.current ?? await createMintQuote(requested, activeMintUrl)
+      activeQuoteRef.current = quote
       setBolt11(quote.request)
-      setStatus('pending')
+      setExpiresAtSec(quote.expiry)
       setView('invoice')
 
       const unsub = await waitForMintQuotePaid(
-        quote.quote,
-        async () => {
-          if (cancelledRef.current) return
-          try {
-            const proofs = await mintProofs(requested, quote, activeMintUrl)
-            const stored: StoredProof[] = proofs.map((p) => ({
-              ...p,
-              mintUrl: activeMintUrl,
-            }))
-            await addProofs(stored)
-            if (cancelledRef.current) return
-            setStatus('paid')
-            // Small delay so the user sees the "Payment received!" state before
-            // the overlay vanishes.
-            setTimeout(() => {
-              if (!cancelledRef.current) onSuccessRef.current()
-            }, 800)
-          } catch (e) {
-            if (!cancelledRef.current) setError((e as Error).message)
-          }
-        },
-        (e) => {
-          if (!cancelledRef.current) setError(e.message)
-        },
+        quote,
+        (r) => handleWaitResult(r, quote, requested),
+        { onTransientError: (e) => { if (!cancelledRef.current) setError(e.message) } },
         activeMintUrl,
       )
-      // If the component unmounted while awaits were in flight, the cleanup
-      // effect already ran with a null unsubRef; tear this one down directly.
-      if (cancelledRef.current) {
-        unsub()
-      } else {
-        unsubRef.current = unsub
-      }
+      if (cancelledRef.current) unsub()
+      else unsubRef.current = unsub
     } catch (e) {
-      if (!cancelledRef.current) setError((e as Error).message)
+      if (!cancelledRef.current) {
+        setStatus('error')
+        setError((e as Error).message)
+      }
       inflightRef.current = false
     } finally {
       if (!cancelledRef.current) setLoading(false)
     }
-  }, [activeMintUrl, amount, deficit])
+  }, [activeMintUrl, amount, deficit, handleWaitResult])
+
+  const regenerateInvoice = useCallback(() => {
+    // Tear down the prior wait and clear the cached quote so the next
+    // startInvoice() requests a fresh one.
+    unsubRef.current?.()
+    unsubRef.current = null
+    activeQuoteRef.current = null
+    inflightRef.current = false
+    setError(null)
+    setStatus('pending')
+    setView('amount')
+  }, [])
 
   if (view === 'invoice') {
     return (
@@ -134,7 +176,10 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
         bolt11={bolt11}
         amountSats={amount}
         status={status}
+        expiresAtSec={expiresAtSec}
+        errorMessage={error}
         onClose={onCancel}
+        onRegenerate={regenerateInvoice}
       />
     )
   }
