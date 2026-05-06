@@ -20,7 +20,51 @@ describe('InvoiceDisplay', () => {
 
   it('shows "Invoice expired" when status is expired', () => {
     render(<InvoiceDisplay bolt11={bolt11} amountSats={1000} status="expired" />)
-    expect(screen.getByText('Invoice expired')).toBeInTheDocument()
+    expect(screen.getByText(/invoice expired/i)).toBeInTheDocument()
+  })
+
+  it('shows the live countdown when expiresAtSec is in the future', () => {
+    const expiresAtSec = Math.floor(Date.now() / 1000) + 5 * 60 + 32
+    render(
+      <InvoiceDisplay
+        bolt11={bolt11}
+        amountSats={1000}
+        status="pending"
+        expiresAtSec={expiresAtSec}
+      />,
+    )
+    // "Awaiting payment (expires in 5m XXs)" — XXs may be 31 or 32 depending on
+    // the millisecond round-down inside formatRemaining; both are correct.
+    expect(screen.getByText(/Awaiting payment \(expires in 5m \d+s\)/)).toBeInTheDocument()
+  })
+
+  it('renders an onRegenerate button when status is expired', async () => {
+    const onRegenerate = vi.fn()
+    render(
+      <InvoiceDisplay
+        bolt11={bolt11}
+        amountSats={1000}
+        status="expired"
+        onRegenerate={onRegenerate}
+      />,
+    )
+    const regen = screen.getByRole('button', { name: /try again/i })
+    await userEvent.click(regen)
+    expect(onRegenerate).toHaveBeenCalledOnce()
+  })
+
+  it('surfaces errorMessage under the status when expired', () => {
+    render(
+      <InvoiceDisplay
+        bolt11={bolt11}
+        amountSats={1000}
+        status="expired"
+        errorMessage="The Lightning invoice expired before payment arrived."
+      />,
+    )
+    expect(
+      screen.getByText('The Lightning invoice expired before payment arrived.'),
+    ).toBeInTheDocument()
   })
 
   it('displays the amount', () => {

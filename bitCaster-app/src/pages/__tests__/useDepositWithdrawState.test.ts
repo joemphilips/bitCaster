@@ -232,6 +232,74 @@ describe('useDepositWithdrawState', () => {
     })
   })
 
+  describe('onCreateInvoice — re-mount idempotency', () => {
+    // Regression for the P8 "Invoice already paid or pending" snackbar:
+    // calling onCreateInvoice twice within a single open MUST reuse the cached
+    // mint quote and only call the mint's createMintQuote once. A double-fire
+    // is the signature of the bug — duplicate quotes against the same mint
+    // state make LNBits return the literal "Invoice already paid or pending".
+    it('issues exactly one mint quote across rapid double-fires', async () => {
+      const cashu = await import('@/lib/cashu')
+      vi.mocked(cashu.createMintQuote).mockClear()
+      vi.mocked(cashu.waitForMintQuotePaid).mockClear()
+      const quote = {
+        quote: 'q1',
+        request: 'lnbc1...',
+        amount: 1000,
+        state: 'UNPAID',
+        expiry: Math.floor(Date.now() / 1000) + 3600,
+      }
+      vi.mocked(cashu.createMintQuote).mockResolvedValue(quote as never)
+      vi.mocked(cashu.waitForMintQuotePaid).mockResolvedValue(() => {})
+
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', vi.fn()))
+      act(() => result.current.onSelectMethod('lightning'))
+      act(() => result.current.onNumpadPress('1'))
+      act(() => result.current.onNumpadPress('0'))
+      act(() => result.current.onNumpadPress('0'))
+      act(() => result.current.onNumpadPress('0'))
+
+      // Fire twice as quickly as a user could double-click.
+      await act(async () => {
+        result.current.onCreateInvoice()
+        result.current.onCreateInvoice()
+      })
+
+      expect(cashu.createMintQuote).toHaveBeenCalledTimes(1)
+      expect(result.current.invoiceExpiresAtSec).toBe(quote.expiry)
+    })
+
+    it('regenerate clears the cached quote so the next create issues a fresh one', async () => {
+      const cashu = await import('@/lib/cashu')
+      vi.mocked(cashu.createMintQuote).mockClear()
+      vi.mocked(cashu.waitForMintQuotePaid).mockClear()
+      const quote = {
+        quote: 'q1',
+        request: 'lnbc1...',
+        amount: 1000,
+        state: 'UNPAID',
+        expiry: Math.floor(Date.now() / 1000) + 3600,
+      }
+      vi.mocked(cashu.createMintQuote).mockResolvedValue(quote as never)
+      vi.mocked(cashu.waitForMintQuotePaid).mockResolvedValue(() => {})
+
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', vi.fn()))
+      act(() => result.current.onSelectMethod('lightning'))
+      act(() => result.current.onNumpadPress('1'))
+      act(() => result.current.onNumpadPress('0'))
+      act(() => result.current.onNumpadPress('0'))
+      act(() => result.current.onNumpadPress('0'))
+
+      await act(async () => { await result.current.onCreateInvoice() })
+      expect(cashu.createMintQuote).toHaveBeenCalledTimes(1)
+
+      act(() => result.current.onRegenerateInvoice())
+      // currentView is back at the lightning entry; quote ref cleared.
+      await act(async () => { await result.current.onCreateInvoice() })
+      expect(cashu.createMintQuote).toHaveBeenCalledTimes(2)
+    })
+  })
+
   describe('onLightningInputChange', () => {
     it('updates lightningInput for non-invoice text', async () => {
       const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))

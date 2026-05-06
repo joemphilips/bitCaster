@@ -61,7 +61,10 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
           bolt11={state.bolt11}
           amountSats={state.amountSats}
           status={state.invoiceStatus}
+          expiresAtSec={state.invoiceExpiresAtSec}
+          errorMessage={state.error}
           onClose={state.onClose}
+          onRegenerate={state.onRegenerateInvoice}
         />
       </>
     )

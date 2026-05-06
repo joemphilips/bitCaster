@@ -1,12 +1,19 @@
-import { X, Copy, Check, Loader2 } from 'lucide-react'
+import { X, Copy, Check, Loader2, RotateCcw } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useState } from 'react'
+import { useInvoiceCountdown, formatRemaining } from '@/lib/invoiceCountdown'
 
 interface InvoiceDisplayProps {
   bolt11: string
   amountSats: number
-  status: 'pending' | 'paid' | 'expired'
+  status: 'pending' | 'paid' | 'expired' | 'error'
+  /** Bolt11 expiry (unix seconds). Drives the live "expires in Xm Ys" line. */
+  expiresAtSec?: number
+  /** Last poll/mint error to surface under the status pill. */
+  errorMessage?: string | null
   onClose?: () => void
+  /** Shown as a "Try again" button when status is 'expired' or 'error'. */
+  onRegenerate?: () => void
   onPaid?: () => void
 }
 
@@ -14,9 +21,13 @@ export function InvoiceDisplay({
   bolt11,
   amountSats,
   status,
+  expiresAtSec,
+  errorMessage,
   onClose,
+  onRegenerate,
 }: InvoiceDisplayProps) {
   const [copied, setCopied] = useState(false)
+  const remainingMs = useInvoiceCountdown(expiresAtSec)
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(bolt11)
@@ -41,21 +52,45 @@ export function InvoiceDisplay({
       {/* Content */}
       <div className="flex-1 flex flex-col items-center justify-center max-w-md mx-auto w-full px-5">
         {/* Status */}
-        <div className="mb-6 flex items-center gap-2">
-          {status === 'pending' && (
-            <>
-              <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
-              <span className="text-sm text-amber-400">Waiting for payment...</span>
-            </>
+        <div className="mb-6 flex flex-col items-center gap-2">
+          <div className="flex items-center gap-2">
+            {status === 'pending' && (
+              <>
+                <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
+                <span className="text-sm text-amber-400">
+                  {expiresAtSec
+                    ? `Awaiting payment (expires in ${formatRemaining(remainingMs)})`
+                    : 'Waiting for payment...'}
+                </span>
+              </>
+            )}
+            {status === 'paid' && (
+              <>
+                <Check className="w-5 h-5 text-green-400" />
+                <span className="text-sm text-green-400">Payment received!</span>
+              </>
+            )}
+            {status === 'expired' && (
+              <span className="text-sm text-red-400">Invoice expired — try again</span>
+            )}
+            {status === 'error' && (
+              <span className="text-sm text-red-400">Payment failed</span>
+            )}
+          </div>
+          {errorMessage && (status === 'expired' || status === 'error') && (
+            <span className="text-xs text-red-300/80 max-w-xs text-center break-words">
+              {errorMessage}
+            </span>
           )}
-          {status === 'paid' && (
-            <>
-              <Check className="w-5 h-5 text-green-400" />
-              <span className="text-sm text-green-400">Payment received!</span>
-            </>
-          )}
-          {status === 'expired' && (
-            <span className="text-sm text-red-400">Invoice expired</span>
+          {(status === 'expired' || status === 'error') && onRegenerate && (
+            <button
+              type="button"
+              onClick={onRegenerate}
+              className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#f7931a] hover:bg-[#e8850f] text-white text-xs font-semibold transition-colors"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Try again
+            </button>
           )}
         </div>
 
