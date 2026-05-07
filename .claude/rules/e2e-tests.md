@@ -29,20 +29,20 @@ All port literals come from `TestPorts` in `tests/E2E/TestHelpers.cs`, read once
 
 | Variable                    | Default | Property            |
 | --------------------------- | ------- | ------------------- |
-| `BITCASTER_E2E_VITE_PORT`   | 5173    | `TestPorts.Vite`    |
+| `BITCASTER_E2E_VITE_PORT`   | 5273    | `TestPorts.Vite`    |
 | `BITCASTER_E2E_SERVER_PORT` | 5000    | `TestPorts.Server`  |
 | `BITCASTER_E2E_MINT_PORT`   | 8085    | `TestPorts.Mint`    |
 | `BITCASTER_E2E_CASHU_PORT`  | 3000    | `TestPorts.CashuMe` |
-| `BITCASTER_E2E_LNBITS_PORT` | 5002    | `TestPorts.LnBits`  |
+| `BITCASTER_E2E_LNBITS_PORT` | 5102    | `TestPorts.LnBits`  |
 
-Multiple worktree sessions can run E2E in parallel against **one shared docker-compose backend**. Slot `N` maps to vite `5173 + N*100` and engine `5000 + N*100`; mint / cashu-me / lnbits / nostr-relay stay on their docker ports for every slot. Slot allocation is the user's responsibility — a collision is a bind failure.
+Multiple worktree sessions can run E2E in parallel against **one shared docker-compose backend**. Slot `N` maps to vite `5273 + N*100` and engine `5000 + N*100`; mint / cashu-me / lnbits / nostr-relay stay on their docker ports for every slot. Slot allocation is the user's responsibility — a collision is a bind failure.
 
 ```bash
-# Terminal A — slot 0 (defaults: vite 5173, engine 5000)
+# Terminal A — slot 0 (defaults: vite 5273, engine 5000)
 ./tools/worktree-services.sh --slot 0
 dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
 
-# Terminal B — slot 1 (vite 5273, engine 5100)
+# Terminal B — slot 1 (vite 5373, engine 5100)
 ./tools/worktree-services.sh --slot 1
 dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
 ```
@@ -57,9 +57,9 @@ dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7
 - `tests/E2E/xunit.runner.json` — long-running test threshold
 - `tools/worktree-services.sh` — slot-assigned launcher for engine + vite
 
-## AppHost vs docker-compose Port Collision
+## AppHost vs docker-compose Ports
 
-The outer `bitCaster-matching-engine` AppHost and `bitCaster/docker-compose.yml` currently overlap on lnbits (5002) and likely other services — you cannot run both at once. Tear docker-compose down before starting AppHost. **Future improvement:** give AppHost and docker-compose disjoint port ranges so engine E2E and frontend E2E fixtures can coexist for cross-stack debugging.
+The outer `bitCaster-matching-engine` AppHost keeps its local frontend on 5173 and LNBits on 5002. This public submodule defaults to frontend 5273 and LNBits 5102, so the two dev stacks can coexist for cross-stack debugging.
 
 ## Staging Backend Health Checks
 
@@ -71,7 +71,7 @@ The staging backend (`backend-bitcaster-staging`) is VNet-restricted — **403 f
 - Use `Page.GetByRole()` and other accessibility locators — not CSS selectors.
 - Use `TestHelpers.WaitForService` for health checks (don't duplicate).
 - Use `TestMnemonics.Get()` for wallet mnemonics.
-- **Never hardcode TCP ports.** Always go through `TestPorts.*` — a new `const int VitePort = 5173;` defeats the slot model.
+- **Never hardcode TCP ports.** Always go through `TestPorts.*` — a new `const int VitePort = 5273;` defeats the slot model.
 - **Raw IndexedDB access: open without a version.** Dexie (`BitcasterDB` in `src/stores/proof-db.ts`) maps `.version(N)` → IDB version `N*10`. A test that runs `indexedDB.open('bitcaster', 1)` after the app has loaded throws `VersionError` (requested < existing). Open with no version — Dexie has already created the stores.
 - **Scope locators when the profile is rehydrated.** Once a persisted nsec rehydrates, the app bar shows the user's displayName, so `GetByText("DisplayName")` resolves to two elements. In settings/profile tests, scope to `GetByRole(AriaRole.Main).GetByText(...)` to avoid strict-mode violations.
 - **TradingPanel locators: filter Visible.** `MarketDetail.tsx` renders two TradingPanel copies — mobile (`lg:hidden`) and desktop (`hidden lg:block`). At Playwright's default 1280×720 viewport, the mobile copy is `display: none` but comes first in DOM order, so `.First` selects the hidden element. Use `.Filter(new() { Visible = true }).First` for any TradingPanel button / balance hint / amount input.

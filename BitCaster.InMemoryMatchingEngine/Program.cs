@@ -12,11 +12,11 @@ builder.Services.AddHealthChecks();
 builder.Services.AddHttpClient("mint", c =>
     c.BaseAddress = new Uri(builder.Configuration["MINT_URL"] ?? "http://localhost:8085"));
 builder.Services.AddHttpClient("lnbits", c =>
-    c.BaseAddress = new Uri(builder.Configuration["LNBITS_URL"] ?? "http://localhost:5002"));
+    c.BaseAddress = new Uri(builder.Configuration["LNBITS_URL"] ?? "http://localhost:5102"));
 
 // Dev/E2E only — the frontend's `useTradeHub` / `marketHub.ts` connect to
 // `VITE_SERVER_URL ?? http://localhost:5000` directly (not through the Vite
-// proxy), so any browser at a different origin (5173) needs CORS allowed
+// proxy), so any browser at a different origin (5273) needs CORS allowed
 // for SignalR negotiation + WebSocket upgrade. This mock is never deployed
 // to production; the real ApiService has its own CORS policy.
 const string DevCorsPolicy = "DevAllowAllOrigins";

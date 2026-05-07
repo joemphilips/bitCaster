@@ -7,7 +7,7 @@ namespace BitCaster.E2ETest;
 /// Tests bidirectional ecash token exchange: cashu.me ↔ bitCaster.
 /// Both wallets use cashu-ts v3 with v1 keyset IDs.
 ///
-/// Requires: mintd (8085), frontend (5173), cashu.me (3000).
+/// Requires: mintd (8085), frontend (5273), cashu.me (3000).
 /// </summary>
 public class InteropTests : IAsyncLifetime
 {

@@ -13,11 +13,11 @@ namespace BitCaster.E2ETest;
 /// </summary>
 public static class TestPorts
 {
-    public static readonly int Vite = GetInt("BITCASTER_E2E_VITE_PORT", 5173);
+    public static readonly int Vite = GetInt("BITCASTER_E2E_VITE_PORT", 5273);
     public static readonly int Mint = GetInt("BITCASTER_E2E_MINT_PORT", 8085);
     public static readonly int Server = GetInt("BITCASTER_E2E_SERVER_PORT", 5000);
     public static readonly int CashuMe = GetInt("BITCASTER_E2E_CASHU_PORT", 3000);
-    public static readonly int LnBits = GetInt("BITCASTER_E2E_LNBITS_PORT", 5002);
+    public static readonly int LnBits = GetInt("BITCASTER_E2E_LNBITS_PORT", 5102);
 
     public static readonly string FrontendUrl = GetUrl("BITCASTER_E2E_FRONTEND_URL", $"http://localhost:{Vite}");
     public static readonly string MintUrl = GetUrl("BITCASTER_E2E_MINT_URL", $"http://localhost:{Mint}");

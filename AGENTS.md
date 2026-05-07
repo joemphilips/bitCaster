@@ -74,8 +74,8 @@ When you need to understand a NIP, read the spec from the `nips-protocol/` submo
 ## Local Dev
 
 ```bash
-docker compose up -d                 # mint:8085, server:5000, cashu-me:3000, nostr-relay, lnbits, seed
-cd bitCaster-app && npm run dev      # frontend:5173
+docker compose up -d                 # mint:8085, server:5000, cashu-me:3000, nostr-relay, lnbits:5102, seed
+cd bitCaster-app && npm run dev      # frontend:5273
 ```
 
 The frontend `.env` is pre-configured with the default ports.
@@ -99,7 +99,7 @@ When work on a branch is complete, follow these steps in order before publishing
 1. **Run /simplify** — invoke the simplify skill to review changed code for reuse, quality, and efficiency. Commit any improvements.
 2. **Run frontend tests** — `cd bitCaster-app && npm run test`
 3. **Run .NET build** — `dotnet build BitCaster.MatchingEngine.Contracts/ && dotnet build BitCaster.InMemoryMatchingEngine/`
-4. **Run E2E tests** — `docker compose up -d`, wait for mint (`curl localhost:8085/v1/info`), server (`curl localhost:5000/health`), and frontend (`curl localhost:5173`) to be healthy, then `dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7`.
+4. **Run E2E tests** — `docker compose up -d`, wait for mint (`curl localhost:8085/v1/info`), server (`curl localhost:5000/health`), and frontend (`curl localhost:5273`) to be healthy, then `dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7`.
 5. **Create a draft PR** — `gh pr create --draft`. Monitor CI. If CI fails, fix issues, push, and iterate until green.
 6. **Publish the PR** — `gh pr ready`.
 

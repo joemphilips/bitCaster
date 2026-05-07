@@ -31,7 +31,7 @@ services:
   lnbits:
     image: lnbitsdocker/lnbits:latest
     ports:
-      - "5002:5000"
+      - "5102:5000"
     environment:
       LNBITS_ADMIN_UI: "true"
       LNBITS_BACKEND_WALLET_CLASS: FakeWallet

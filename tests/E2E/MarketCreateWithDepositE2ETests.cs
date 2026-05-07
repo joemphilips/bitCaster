@@ -367,15 +367,15 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
             .ToBeVisibleAsync(new() { Timeout = 15_000 });
     }
 
-    [Fact(Skip = "Pending wallet-service StrategyLoop wiring (outer-repo Phase 6 follow-up)")]
+    [Fact(Skip = "Pending funded bot inventory/full-stack settlement harness")]
     public async Task BotAsCounterparty_FullTradeSettlement()
     {
         // Placeholder: a full bot-as-counterparty trade-settlement E2E
-        // requires the wallet-service to be wired into the AppHost AND its
-        // StrategyLoop/TradeDriver boot sequence to be complete. Both are
-        // tracked in outer-repo docs/TODO.md (Phase 4 deferred items). When
-        // those land, drop the [Skip] string and implement the test against
-        // the real bot.
+        // now has StrategyLoop/TradeDriver wiring, but still needs a harness
+        // that provisions funded bot inventory and drives the real bot as the
+        // counterparty. When that harness lands, drop the [Skip] string and
+        // assert the browser-visible trade reaches the settlement-complete
+        // state against the real bot.
         await Task.CompletedTask;
     }
 }

@@ -50,7 +50,7 @@ public class DepositWithdrawTests : IAsyncLifetime
 
         // Use the frontend URL as mint URL so cashu-ts requests go through
         // the nginx/Vite proxy (/v1/ → mintd). This avoids cross-origin issues
-        // in Docker where the browser is on localhost:5173 but mint is on localhost:8085.
+        // in Docker where the browser is on localhost:5273 but mint is on localhost:8085.
         await page.EvaluateAsync($@"
             localStorage.setItem('bitcaster-wallet', JSON.stringify({{
                 state: {{
