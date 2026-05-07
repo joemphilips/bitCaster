@@ -1,4 +1,12 @@
-import { Heart, Share2, Clock, CheckCircle2, Droplet, Users, Landmark } from 'lucide-react'
+import {
+  Heart,
+  Share2,
+  Clock,
+  CheckCircle2,
+  Droplet,
+  Users,
+  Landmark,
+} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
@@ -10,7 +18,11 @@ interface MarketHeaderProps {
   onCreatorClick?: (creatorId: string) => void
 }
 
-function formatTimeRemaining(closingDate: string, t: (key: string, opts?: Record<string, unknown>) => string, locale: string): string {
+function formatTimeRemaining(
+  closingDate: string,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  locale: string,
+): string {
   const now = new Date()
   const close = new Date(closingDate)
   const diff = close.getTime() - now.getTime()
@@ -49,17 +61,29 @@ export function MarketHeader({
 }: MarketHeaderProps) {
   const { t, i18n } = useTranslation()
   const isResolved = market.resolution.status === 'resolved'
-  const timeRemaining = formatTimeRemaining(market.closingDate, t, i18n.language)
-  const isClosingSoon = !isResolved && new Date(market.closingDate).getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000
+  const timeRemaining = formatTimeRemaining(
+    market.closingDate,
+    t,
+    i18n.language,
+  )
+  const isClosingSoon =
+    !isResolved &&
+    new Date(market.closingDate).getTime() - Date.now() <
+      7 * 24 * 60 * 60 * 1000
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id))
   const toggleBookmark = useBookmarkStore((s) => s.toggle)
+  const creatorId = market.creator.id.trim()
+  const hasCreatorProfile = creatorId.length > 0 && creatorId !== 'unknown'
 
   const resolvedDate = isResolved
-    ? new Date(market.resolution.resolutionDate).toLocaleDateString(i18n.language, {
-        month: 'long',
-        day: 'numeric',
-        year: 'numeric',
-      })
+    ? new Date(market.resolution.resolutionDate).toLocaleDateString(
+        i18n.language,
+        {
+          month: 'long',
+          day: 'numeric',
+          year: 'numeric',
+        },
+      )
     : null
 
   return (
@@ -77,7 +101,9 @@ export function MarketHeader({
       )}
 
       {/* Content */}
-      <div className={`relative ${market.imageUrl ? 'pt-8 pb-6 px-6' : 'py-6 px-6'}`}>
+      <div
+        className={`relative ${market.imageUrl ? 'pt-8 pb-6 px-6' : 'py-6 px-6'}`}
+      >
         {/* RESOLVED Badge */}
         {isResolved && (
           <div className="flex items-center gap-2 mb-3">
@@ -106,9 +132,11 @@ export function MarketHeader({
         </div>
 
         {/* Title */}
-        <h1 className={`text-2xl md:text-3xl font-bold mb-4 leading-tight ${
-          market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'
-        }`}>
+        <h1
+          className={`text-2xl md:text-3xl font-bold mb-4 leading-tight ${
+            market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'
+          }`}
+        >
           {market.title}
         </h1>
 
@@ -116,14 +144,26 @@ export function MarketHeader({
         <div className="flex flex-wrap items-center gap-4 mb-4">
           {/* Time Remaining / Resolved Date — hidden when no real deadline known */}
           {(isResolved || timeRemaining) && (
-            <div className={`flex items-center gap-1.5 ${
-              isResolved
-                ? 'text-slate-400'
-                : isClosingSoon ? 'text-amber-400' : market.imageUrl ? 'text-slate-300' : 'text-slate-600 dark:text-slate-400'
-            }`}>
-              {isResolved ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
+            <div
+              className={`flex items-center gap-1.5 ${
+                isResolved
+                  ? 'text-slate-400'
+                  : isClosingSoon
+                    ? 'text-amber-400'
+                    : market.imageUrl
+                      ? 'text-slate-300'
+                      : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              {isResolved ? (
+                <CheckCircle2 className="w-4 h-4" />
+              ) : (
+                <Clock className="w-4 h-4" />
+              )}
               <span className="text-sm font-medium">
-                {isResolved ? t('market.resolvedOn', { date: resolvedDate }) : timeRemaining}
+                {isResolved
+                  ? t('market.resolvedOn', { date: resolvedDate })
+                  : timeRemaining}
               </span>
             </div>
           )}
@@ -145,11 +185,18 @@ export function MarketHeader({
         <div className="flex flex-col sm:flex-row gap-3">
           {/* Creator Info */}
           <button
-            onClick={() => onCreatorClick?.(market.creator.id)}
+            onClick={() => {
+              if (hasCreatorProfile) onCreatorClick?.(creatorId)
+            }}
+            disabled={!hasCreatorProfile}
             className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl transition-colors ${
               market.imageUrl
-                ? 'bg-white/10 hover:bg-white/20'
-                : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
+                ? hasCreatorProfile
+                  ? 'bg-white/10 hover:bg-white/20'
+                  : 'bg-white/10 opacity-70 cursor-default'
+                : hasCreatorProfile
+                  ? 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
+                  : 'bg-slate-100 dark:bg-slate-800 opacity-70 cursor-default'
             }`}
           >
             {market.creator.avatarUrl ? (
@@ -164,12 +211,19 @@ export function MarketHeader({
               </div>
             )}
             <div className="min-w-0 text-left">
-              <p className={`truncate text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
+              <p
+                className={`truncate text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}
+              >
                 {market.creator.name}
               </p>
-              <p className={`truncate text-xs ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>
-                {t('market.marketsCreated', { count: market.creator.totalMarketsCreated })}
-                {market.creator.reputationScore && ` • ${market.creator.reputationScore} ${t('market.rating')}`}
+              <p
+                className={`truncate text-xs ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
+              >
+                {t('market.marketsCreated', {
+                  count: market.creator.totalMarketsCreated,
+                })}
+                {market.creator.reputationScore &&
+                  ` • ${market.creator.reputationScore} ${t('market.rating')}`}
               </p>
             </div>
           </button>
@@ -186,12 +240,17 @@ export function MarketHeader({
                 <Landmark className="w-5 h-5" />
               </div>
               <div className="min-w-0">
-                <p className={`truncate text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
+                <p
+                  className={`truncate text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}
+                >
                   Mint
                 </p>
-                <p className={`truncate text-xs font-mono ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                <p
+                  className={`truncate text-xs font-mono ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
+                >
                   {market.mint.collateral.toUpperCase()} CTF
-                  {market.mint.keysetCount > 0 && ` - ${market.mint.keysetCount} keysets`}
+                  {market.mint.keysetCount > 0 &&
+                    ` - ${market.mint.keysetCount} keysets`}
                 </p>
               </div>
             </div>
@@ -199,21 +258,30 @@ export function MarketHeader({
         </div>
 
         {/* Metrics Footer */}
-        <div className={`flex items-center justify-between text-xs pt-4 mt-4 border-t ${
-          market.imageUrl
-            ? 'border-white/10 text-slate-300'
-            : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-        }`}>
-          <div className="flex items-center gap-1 font-mono font-semibold text-amber-600 dark:text-amber-400" title="Volume">
+        <div
+          className={`flex items-center justify-between text-xs pt-4 mt-4 border-t ${
+            market.imageUrl
+              ? 'border-white/10 text-slate-300'
+              : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+          }`}
+        >
+          <div
+            className="flex items-center gap-1 font-mono font-semibold text-amber-600 dark:text-amber-400"
+            title="Volume"
+          >
             {formatBtc(market.volume)}
           </div>
           <div className="flex items-center gap-1" title="Liquidity">
             <Droplet className="w-3.5 h-3.5" />
-            <span className="font-mono font-medium">{formatBtc(market.liquidity)}</span>
+            <span className="font-mono font-medium">
+              {formatBtc(market.liquidity)}
+            </span>
           </div>
           <div className="flex items-center gap-1" title="Traders">
             <Users className="w-3.5 h-3.5" />
-            <span className="font-mono font-medium">{market.traderCount.toLocaleString()}</span>
+            <span className="font-mono font-medium">
+              {market.traderCount.toLocaleString()}
+            </span>
           </div>
           <button
             onClick={() => toggleBookmark(market.id)}
@@ -224,10 +292,15 @@ export function MarketHeader({
                   ? 'text-slate-300 hover:text-rose-500'
                   : 'text-slate-600 dark:text-slate-400 hover:text-rose-500'
             }`}
-            title={isBookmarked ? t('market.removeBookmark') : t('market.bookmark')}
+            title={
+              isBookmarked ? t('market.removeBookmark') : t('market.bookmark')
+            }
             aria-pressed={isBookmarked}
           >
-            <Heart className="w-3.5 h-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
+            <Heart
+              className="w-3.5 h-3.5"
+              fill={isBookmarked ? 'currentColor' : 'none'}
+            />
           </button>
         </div>
       </div>

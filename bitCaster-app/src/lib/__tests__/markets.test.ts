@@ -90,7 +90,10 @@ describe('mapCatalogueEntryToMarket', () => {
 
 describe('tag helpers (mintd condition mapping — detail page only)', () => {
   it('getTagValue returns first value for key', () => {
-    const tags = [['description', 'hello'], ['n', 'BTC']]
+    const tags = [
+      ['description', 'hello'],
+      ['n', 'BTC'],
+    ]
     expect(getTagValue(tags, 'description')).toBe('hello')
     expect(getTagValue(tags, 'n')).toBe('BTC')
     expect(getTagValue(tags, 'missing')).toBeUndefined()
@@ -103,7 +106,12 @@ describe('tag helpers (mintd condition mapping — detail page only)', () => {
   })
 
   it('extractCategoryTagIds excludes known keys', () => {
-    const tags = [['description', 'x'], ['n', 'BTC'], ['category', 'crypto'], ['sport', 'NBA']]
+    const tags = [
+      ['description', 'x'],
+      ['n', 'BTC'],
+      ['category', 'crypto'],
+      ['sport', 'NBA'],
+    ]
     expect(extractCategoryTagIds(tags)).toEqual(['crypto', 'NBA'])
   })
 })
@@ -127,13 +135,19 @@ describe('filterMarkets (client-side stop-gap)', () => {
   })
 
   it('filters by search query', () => {
-    const result = filterMarkets(markets, { ...baseFilter, searchQuery: 'btc' })
+    const result = filterMarkets(markets, {
+      ...baseFilter,
+      searchQuery: 'btc',
+    })
     expect(result).toHaveLength(1)
     expect(result[0].title).toBe('Will BTC hit 100K?')
   })
 
   it('filters by market type', () => {
-    const result = filterMarkets(markets, { ...baseFilter, marketTypes: ['categorical'] })
+    const result = filterMarkets(markets, {
+      ...baseFilter,
+      marketTypes: ['categorical'],
+    })
     expect(result).toHaveLength(1)
     expect(result[0].type).toBe('categorical')
   })
@@ -141,7 +155,10 @@ describe('filterMarkets (client-side stop-gap)', () => {
 
 describe('getMarketThumbnail (T4.3.c)', () => {
   it('returns the engine thumbnail URL when imageUrl resolved', () => {
-    const url = getMarketThumbnail({ id: 'cond1', imageUrl: '/api/v1/cond1/thumbnail' })
+    const url = getMarketThumbnail({
+      id: 'cond1',
+      imageUrl: '/api/v1/cond1/thumbnail',
+    })
     expect(url).toBe('/api/v1/cond1/thumbnail')
   })
 
@@ -186,7 +203,9 @@ describe('getMarkets (engine catalogue proxy wiring)', () => {
   })
 
   function lastCallUrl(): string {
-    const [url] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string]
+    const [url] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [
+      string,
+    ]
     return url
   }
 
@@ -231,7 +250,9 @@ describe('getMarkets (engine catalogue proxy wiring)', () => {
     expect(result.markets[0].id).toBe('abc123')
     expect(result.markets[0].volume).toBe(12_000)
     expect(result.nextCursor).toBeNull()
-    expect(result.lastSuccessfulRefreshAt).toBe(yesNoEntry.lastSuccessfulRefreshAt)
+    expect(result.lastSuccessfulRefreshAt).toBe(
+      yesNoEntry.lastSuccessfulRefreshAt,
+    )
   })
 
   it('throws on non-2xx so the page can render an error/retry affordance', async () => {
@@ -243,12 +264,16 @@ describe('getMarkets (engine catalogue proxy wiring)', () => {
 describe('legacy mintd-list path (markets list) is fully removed', () => {
   it('no longer exports a fetchMarkets() function', async () => {
     const mod = await import('../markets')
-    expect(Object.prototype.hasOwnProperty.call(mod, 'fetchMarkets')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(mod, 'fetchMarkets')).toBe(
+      false,
+    )
   })
 
   it('no longer exports a mapConditionToMarket() function', async () => {
     const mod = await import('../markets')
-    expect(Object.prototype.hasOwnProperty.call(mod, 'mapConditionToMarket')).toBe(false)
+    expect(
+      Object.prototype.hasOwnProperty.call(mod, 'mapConditionToMarket'),
+    ).toBe(false)
   })
 })
 
@@ -272,13 +297,22 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
             tags: [['description', 'Will BTC hit 100K?']],
             threshold: 1,
             announcements: ['ann1'],
-            partitions: [{
-              partition: ['Yes', 'No'],
-              collateral: 'sat',
-              parent_collection_id: '0'.repeat(64),
-              keysets: {},
-            }],
-            attestation: { status: 'pending', winning_outcome: null, attested_at: null },
+            partitions: [
+              {
+                partition: ['Yes', 'No'],
+                collateral: 'sat',
+                parent_collection_id: '0'.repeat(64),
+                keysets: {
+                  keyset_a: '00'.repeat(32),
+                  keyset_b: '11'.repeat(32),
+                },
+              },
+            ],
+            attestation: {
+              status: 'pending',
+              winning_outcome: null,
+              attested_at: null,
+            },
           },
         ],
       }),
@@ -286,24 +320,30 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
     )
   }
 
-  function engineQueryResponse(state: 'open' | 'closed', thumbnailUrl: string | null): Response {
+  function engineQueryResponse(
+    state: 'open' | 'closed',
+    thumbnailUrl: string | null,
+    creatorPubkey: string | null = null,
+  ): Response {
     return new Response(
       JSON.stringify({
-        markets: [{
-          conditionId: 'abc123',
-          outcomes: ['Yes', 'No'],
-          title: 'Will BTC hit 100K?',
-          thumbnailUrl,
-          creatorPubkey: null,
-          deadline: null,
-          state,
-          createdAt: '2026-01-01T00:00:00Z',
-          volume24hSats: 5000,
-          volume30dSats: 50000,
-          lastTradedPrice: null,
-          categoryTags: ['crypto'],
-          lastSuccessfulRefreshAt: '2026-05-04T00:00:00Z',
-        }],
+        markets: [
+          {
+            conditionId: 'abc123',
+            outcomes: ['Yes', 'No'],
+            title: 'Will BTC hit 100K?',
+            thumbnailUrl,
+            creatorPubkey,
+            deadline: null,
+            state,
+            createdAt: '2026-01-01T00:00:00Z',
+            volume24hSats: 5000,
+            volume30dSats: 50000,
+            lastTradedPrice: null,
+            categoryTags: ['crypto'],
+            lastSuccessfulRefreshAt: '2026-05-04T00:00:00Z',
+          },
+        ],
         nextCursor: null,
         lastSuccessfulRefreshAt: '2026-05-04T00:00:00Z',
       }),
@@ -319,7 +359,8 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
     originalFetch = globalThis.fetch
     fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/v1/conditions')) return mintdConditionsResponse()
-      if (url.includes('/api/v1/markets/query')) return engineQueryResponse('open', '/api/v1/abc123/thumbnail')
+      if (url.includes('/api/v1/markets/query'))
+        return engineQueryResponse('open', '/api/v1/abc123/thumbnail')
       if (url.includes('/metadata')) return emptyMetadataResponse()
       throw new Error(`unexpected URL: ${url}`)
     })
@@ -341,10 +382,38 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
     expect(detail.imageUrl).toBe('/api/v1/abc123/thumbnail')
   })
 
+  it('keeps mint display metadata from the mintd partition', async () => {
+    const detail = await fetchMarketDetail('abc123')
+    expect(detail.mint).toEqual({ collateral: 'sat', keysetCount: 2 })
+  })
+
+  it('maps engine creatorPubkey into the detail creator card identity', async () => {
+    const creatorPubkey =
+      'npub1creatorpubkey000000000000000000000000000000000000000000000000'
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse()
+      if (url.includes('/api/v1/markets/query')) {
+        return engineQueryResponse(
+          'open',
+          '/api/v1/abc123/thumbnail',
+          creatorPubkey,
+        )
+      }
+      return emptyMetadataResponse()
+    })
+
+    const detail = await fetchMarketDetail('abc123')
+    expect(detail.creator.id).toBe(creatorPubkey)
+    expect(detail.creator.name).toBe(
+      `${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`,
+    )
+  })
+
   it('regression: engine state="closed" overrides mintd attestation="pending"', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes('/v1/conditions')) return mintdConditionsResponse()
-      if (url.includes('/api/v1/markets/query')) return engineQueryResponse('closed', null)
+      if (url.includes('/api/v1/markets/query'))
+        return engineQueryResponse('closed', null)
       return emptyMetadataResponse()
     })
     const detail = await fetchMarketDetail('abc123')
@@ -358,7 +427,8 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
   it('falls back gracefully when the engine query fails (mintd-only render)', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes('/v1/conditions')) return mintdConditionsResponse()
-      if (url.includes('/api/v1/markets/query')) return new Response('boom', { status: 500 })
+      if (url.includes('/api/v1/markets/query'))
+        return new Response('boom', { status: 500 })
       return emptyMetadataResponse()
     })
     const detail = await fetchMarketDetail('abc123')
