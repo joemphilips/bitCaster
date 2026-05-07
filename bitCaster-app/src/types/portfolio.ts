@@ -121,6 +121,14 @@ export interface CreatedMarket {
   volume: number
   creatorFeesEarned: number
   creatorFeePercent: number
+  oracle?: {
+    type: 'self'
+    eventId: string
+    outcomes: string[]
+    attestationHex?: string
+    attestedOutcome?: string
+    attestedAt?: string
+  }
 }
 
 // =============================================================================

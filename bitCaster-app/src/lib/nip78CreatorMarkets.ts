@@ -10,7 +10,10 @@
  */
 
 import NDK, { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import type { StoredCreatorMarket } from "@/stores/creatorMarkets";
+import type {
+  StoredCreatorMarket,
+  StoredCreatorOracleMetadata,
+} from "@/stores/creatorMarkets";
 import { DEFAULT_RELAYS } from "./nostr";
 
 export const CREATOR_MARKETS_KIND = 30078 as const;
@@ -18,6 +21,20 @@ export const CREATOR_MARKETS_D_TAG = "bitcaster:creator-markets" as const;
 
 interface CreatorMarketsPayload {
   markets: StoredCreatorMarket[];
+}
+
+function isStoredCreatorOracle(value: unknown): value is StoredCreatorOracleMetadata {
+  if (typeof value !== "object" || value === null) return false;
+  const oracle = value as Record<string, unknown>;
+  return (
+    oracle.type === "self" &&
+    typeof oracle.eventId === "string" &&
+    Array.isArray(oracle.outcomes) &&
+    oracle.outcomes.every((outcome) => typeof outcome === "string") &&
+    (oracle.attestationHex === undefined || typeof oracle.attestationHex === "string") &&
+    (oracle.attestedOutcome === undefined || typeof oracle.attestedOutcome === "string") &&
+    (oracle.attestedAt === undefined || typeof oracle.attestedAt === "string")
+  );
 }
 
 function isStoredCreatorMarket(value: unknown): value is StoredCreatorMarket {
@@ -28,7 +45,8 @@ function isStoredCreatorMarket(value: unknown): value is StoredCreatorMarket {
     typeof m.title === "string" &&
     (m.thumbnailUrl === null || typeof m.thumbnailUrl === "string") &&
     typeof m.createdAt === "string" &&
-    typeof m.creatorFeePercent === "number"
+    typeof m.creatorFeePercent === "number" &&
+    (m.oracle === undefined || isStoredCreatorOracle(m.oracle))
   );
 }
 

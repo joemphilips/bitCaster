@@ -10,11 +10,13 @@ const {
   mockRegisterCondition,
   mockRegisterPartition,
   mockCreateMarket,
+  mockCreateEnumAnnouncement,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockRegisterCondition: vi.fn(),
   mockRegisterPartition: vi.fn(),
   mockCreateMarket: vi.fn(),
+  mockCreateEnumAnnouncement: vi.fn(),
 }))
 
 vi.mock('react-router', async () => {
@@ -43,6 +45,10 @@ vi.mock('@/lib/oracle', () => ({
     resolutionDate: new Date(Date.now() + 86400000).toISOString(),
     outcomes: ['Yes', 'No'],
   }]),
+}))
+
+vi.mock('@/lib/kormir', () => ({
+  createEnumAnnouncement: (...args: unknown[]) => mockCreateEnumAnnouncement(...args),
 }))
 
 // Stub the wallet store — the real module transitively imports `@cashu/cashu-ts`
@@ -83,6 +89,7 @@ beforeEach(() => {
   mockRegisterCondition.mockResolvedValue({ condition_id: 'test-cond-id' })
   mockRegisterPartition.mockResolvedValue({ keysets: { Yes: 'ks1', No: 'ks2' } })
   mockCreateMarket.mockResolvedValue({ conditionId: 'test-cond-id', marketsCreated: ['test-cond-id-Yes', 'test-cond-id-No'], thumbnailUrl: null })
+  mockCreateEnumAnnouncement.mockResolvedValue('announcement-hex')
 
   // Configure Nostr so oracle announcements are fetched
   useSettingsStore.setState({ nostrSignerMode: 'nip07' })
@@ -226,5 +233,42 @@ describe('useMarketCreationState – onCreateMarket', () => {
       .markets.find((m) => m.conditionId === 'test-cond-id')
     expect(entry).toBeDefined()
     expect(entry!.creatorFeePercent).toBe(0)
+  })
+
+  it('records self-oracle event metadata when creating as the oracle', async () => {
+    useCreatorMarketsStore.setState({ markets: [] })
+    useSettingsStore.setState({
+      nostrSignerMode: 'nsec',
+      relays: [{ url: 'wss://relay.example.test', connectionStatus: 'connected' }],
+    })
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+
+    await act(async () => { result.current.onOracleChoiceSelect('become-oracle') })
+    await act(async () => { result.current.onNext() })
+    await act(async () => { result.current.onOutcomeTypeSelect('yesno') })
+    await act(async () => { result.current.onNext() })
+    await act(async () => { result.current.onTitleChange('Will BTC hit $150k?') })
+    await act(async () => {
+      const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16)
+      result.current.onClosingDateChange(future)
+    })
+    await act(async () => { result.current.onNext() })
+    await act(async () => { result.current.onNext() })
+    await act(async () => { result.current.onLiquiditySatsChange(10000) })
+    await act(async () => { result.current.onNext() })
+    await act(async () => { result.current.onDescriptionChange('Test description') })
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(mockCreateEnumAnnouncement).toHaveBeenCalledWith(
+      ['wss://relay.example.test'],
+      expect.stringMatching(/^will_btc_hit_150k_[0-9a-f]{12}$/),
+      ['Yes', 'No'],
+      expect.any(Number),
+    )
+    const entry = useCreatorMarketsStore.getState().markets[0]
+    expect(entry.oracle?.type).toBe('self')
+    expect(entry.oracle?.eventId).toMatch(/^will_btc_hit_150k_[0-9a-f]{12}$/)
+    expect(entry.oracle?.outcomes).toEqual(['Yes', 'No'])
   })
 })

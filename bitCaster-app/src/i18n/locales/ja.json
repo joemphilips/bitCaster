@@ -252,6 +252,7 @@
     "joined": "{{date}} 参加",
     "views": "{{count}} 閲覧",
     "claimFees": "手数料を受け取る",
+    "viewMarket": "{{title}} を表示",
     "volLabel": "出来高: {{value}}",
     "connectNostr": "Nostr に接続",
     "likedMarkets": "ブックマーク",
@@ -365,7 +366,17 @@
     "emptyDesc": "他のユーザーが取引できる予測マーケットを作成して、手数料を獲得しましょう。",
     "analyticsTitle": "分析機能は近日公開",
     "analyticsDesc": "取引高チャート、マーケット別内訳、手数料追跡は今後のリリースで提供予定です。いくつかマーケットを作成してから、集計データを確認してみてください。",
-    "analyticsBadge": "対応中"
+    "analyticsBadge": "対応中",
+    "winningOutcomeLabel": "{{title}} の勝利アウトカム",
+    "publishAttestation": "アテステーションを公開",
+    "publishingAttestation": "公開中...",
+    "attestedOutcome": "アテスト済み: {{outcome}}",
+    "nsecRequiredToResolve": "このオラクルアテステーションに署名するには、Nostr 秘密鍵 (nsec) で接続してください。",
+    "relayRequiredToResolve": "オラクルアテステーションを公開する前に、設定で少なくとも 1 つの Nostr リレーを追加してください。",
+    "invalidAttestationOutcome": "オラクルアテステーションを公開する前に、このマーケットでアナウンスされたアウトカムを選択してください。",
+    "attestationErrorTitle": "オラクルアテステーションを公開できませんでした。",
+    "attestationPublishFailed": "オラクルアテステーションの公開に失敗しました",
+    "attestationPublished": "{{outcome}} のオラクルアテステーションを公開しました。エンジンのリスナーが kind-89 イベントを検知するとマーケットはクローズします。"
   },
   "marketCreation": {
     "getStarted": "始める",

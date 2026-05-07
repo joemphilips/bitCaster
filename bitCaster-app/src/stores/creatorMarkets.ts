@@ -24,18 +24,56 @@ export interface StoredCreatorMarket {
    * stubbed for v1 and not tracked by the engine.
    */
   creatorFeePercent: number
+  /** Oracle metadata captured when the creator used their own nsec-backed DLC oracle. */
+  oracle?: StoredCreatorOracleMetadata
+}
+
+export interface StoredCreatorOracleMetadata {
+  type: 'self'
+  /** DLC oracle event_id passed to kormir when the announcement was created. */
+  eventId: string
+  /** Enum outcomes the oracle can attest. Numeric self-oracle markets are not supported yet. */
+  outcomes: string[]
+  /** Hex-encoded oracle_attestation returned by kormir after resolution signing. */
+  attestationHex?: string
+  /** Outcome the creator attested. */
+  attestedOutcome?: string
+  /** ISO-8601 timestamp recorded after kormir publishes the kind-89 attestation. */
+  attestedAt?: string
 }
 
 interface CreatorMarketsState {
   markets: StoredCreatorMarket[]
   /** Insert a market created via the wizard. Deduplicates on `conditionId`. */
   addCreatedMarket: (market: StoredCreatorMarket) => void
+  /** Mark a creator-owned oracle market as attested after publishing kind-89. */
+  markOracleAttested: (
+    conditionId: string,
+    attestation: { outcome: string; attestationHex: string; attestedAt: string },
+  ) => void
   /** Remove a market from the local record (e.g. after a user hides it). */
   removeCreatedMarket: (conditionId: string) => void
   /** Replace the entire set wholesale — used by `useCreatorSync` after a NIP-78 fetch. */
   replace: (markets: StoredCreatorMarket[]) => void
   /** Clear all entries. Exposed primarily for tests and logout flows. */
   clear: () => void
+}
+
+function creatorOracleEqual(
+  a: StoredCreatorOracleMetadata | undefined,
+  b: StoredCreatorOracleMetadata | undefined,
+): boolean {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  return (
+    a.type === b.type &&
+    a.eventId === b.eventId &&
+    a.attestationHex === b.attestationHex &&
+    a.attestedOutcome === b.attestedOutcome &&
+    a.attestedAt === b.attestedAt &&
+    a.outcomes.length === b.outcomes.length &&
+    a.outcomes.every((outcome, i) => outcome === b.outcomes[i])
+  )
 }
 
 /** Stable equality check used by the NIP-78 sync hook to skip no-op publishes. */
@@ -52,7 +90,8 @@ export function creatorMarketsEqual(
       other.title !== m.title ||
       other.thumbnailUrl !== m.thumbnailUrl ||
       other.createdAt !== m.createdAt ||
-      other.creatorFeePercent !== m.creatorFeePercent
+      other.creatorFeePercent !== m.creatorFeePercent ||
+      !creatorOracleEqual(other.oracle, m.oracle)
     ) {
       return false
     }
@@ -81,6 +120,22 @@ export const useCreatorMarketsStore = create<CreatorMarketsState>()(
           // expectation immediately after the wizard completes.
           return { markets: [market, ...without] }
         })
+      },
+      markOracleAttested: (conditionId, attestation) => {
+        set((state) => ({
+          markets: state.markets.map((market) => {
+            if (market.conditionId !== conditionId || !market.oracle) return market
+            return {
+              ...market,
+              oracle: {
+                ...market.oracle,
+                attestationHex: attestation.attestationHex,
+                attestedOutcome: attestation.outcome,
+                attestedAt: attestation.attestedAt,
+              },
+            }
+          }),
+        }))
       },
       removeCreatedMarket: (conditionId) => {
         set((state) => ({

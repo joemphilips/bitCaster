@@ -8,9 +8,11 @@ import type { DashboardStats } from '@/types/market-management'
 const {
   mockUseCreatorDashboardState,
   mockNavigate,
+  mockSignEnumAttestation,
 } = vi.hoisted(() => ({
   mockUseCreatorDashboardState: vi.fn(),
   mockNavigate: vi.fn(),
+  mockSignEnumAttestation: vi.fn(),
 }))
 
 vi.mock('@/hooks/useCreatorDashboardState', () => ({
@@ -22,7 +24,13 @@ vi.mock('react-router', async () => {
   return { ...actual, useNavigate: () => mockNavigate }
 })
 
+vi.mock('@/lib/kormir', () => ({
+  signEnumAttestation: (...args: unknown[]) => mockSignEnumAttestation(...args),
+}))
+
 import { CreatorDashboard } from '../CreatorDashboard'
+import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
+import { useSettingsStore } from '@/stores/settings'
 
 function emptyStats(): DashboardStats {
   return {
@@ -47,6 +55,13 @@ function renderDashboard() {
 beforeEach(() => {
   mockNavigate.mockReset()
   mockUseCreatorDashboardState.mockReset()
+  mockSignEnumAttestation.mockReset()
+  mockSignEnumAttestation.mockResolvedValue('attestation-hex')
+  useCreatorMarketsStore.setState({ markets: [] })
+  useSettingsStore.setState({
+    nostrSignerMode: 'none',
+    relays: [],
+  })
 })
 
 describe('CreatorDashboard', () => {
@@ -166,5 +181,67 @@ describe('CreatorDashboard', () => {
 
     expect(screen.getByText(/couldn't load live volume data/i)).toBeInTheDocument()
     expect(screen.getByText(/engine unreachable/i)).toBeInTheDocument()
+  })
+
+  it('publishes a creator-owned oracle attestation from a created market row', async () => {
+    const user = userEvent.setup()
+    const markets: CreatedMarket[] = [
+      {
+        id: 'a'.repeat(64),
+        title: 'Will BTC hit $150k?',
+        imageUrl: '',
+        status: 'active',
+        createdDate: '2026-04-10T00:00:00.000Z',
+        volume: 0,
+        creatorFeesEarned: 0,
+        creatorFeePercent: 0,
+        oracle: {
+          type: 'self',
+          eventId: 'will_btc_hit_150k_abcd',
+          outcomes: ['Yes', 'No'],
+        },
+      },
+    ]
+    useSettingsStore.setState({
+      nostrSignerMode: 'nsec',
+      relays: [{ url: 'wss://relay.example.test', connectionStatus: 'connected' }],
+    })
+    useCreatorMarketsStore.setState({
+      markets: [{
+        conditionId: 'a'.repeat(64),
+        title: 'Will BTC hit $150k?',
+        thumbnailUrl: null,
+        createdAt: '2026-04-10T00:00:00.000Z',
+        creatorFeePercent: 0,
+        oracle: {
+          type: 'self',
+          eventId: 'will_btc_hit_150k_abcd',
+          outcomes: ['Yes', 'No'],
+        },
+      }],
+    })
+    mockUseCreatorDashboardState.mockReturnValue({
+      pubkey: 'a'.repeat(64),
+      stats: { ...emptyStats(), activeMarketsCount: 1 },
+      markets,
+      isLoading: false,
+      error: null,
+      refresh: vi.fn(),
+    })
+
+    renderDashboard()
+
+    await user.click(screen.getByRole('button', { name: /publish attestation/i }))
+
+    expect(mockSignEnumAttestation).toHaveBeenCalledWith(
+      ['wss://relay.example.test'],
+      'will_btc_hit_150k_abcd',
+      'Yes',
+    )
+    expect(useCreatorMarketsStore.getState().markets[0].oracle).toMatchObject({
+      attestationHex: 'attestation-hex',
+      attestedOutcome: 'Yes',
+    })
+    expect(screen.getByText(/published oracle attestation/i)).toBeInTheDocument()
   })
 })

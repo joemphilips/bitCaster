@@ -37,7 +37,7 @@ interface UseCreatorDashboardStateResult {
  *
  * Fees are stubbed to `0` for v1 since the matching engine does not accrue
  * them. Status is always `active` until the public API exposes resolution
- * state.
+ * state; a local oracle attestation is metadata only, not lifecycle truth.
  */
 function buildCreatedMarket(
   stored: StoredCreatorMarket,
@@ -52,6 +52,7 @@ function buildCreatedMarket(
     volume: volumeByConditionId.get(stored.conditionId) ?? 0,
     creatorFeesEarned: 0,
     creatorFeePercent: stored.creatorFeePercent,
+    oracle: stored.oracle,
   }
 }
 
