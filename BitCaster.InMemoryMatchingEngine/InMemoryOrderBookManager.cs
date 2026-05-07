@@ -32,6 +32,7 @@ namespace BitCaster.InMemoryMatchingEngine;
 public class InMemoryOrderBookManager
 {
     private readonly ConcurrentDictionary<string, OrderBook> _books = new();
+    private readonly ConcurrentDictionary<Guid, string> _orderMarketIndex = new();
 
     public SubmitResult SubmitOrder(
         string marketId,
@@ -74,6 +75,7 @@ public class InMemoryOrderBookManager
                 book.MarkTakerCompleted(incoming, takerStatus);
             }
         }
+        _orderMarketIndex[orderId] = marketId;
 
         var status = DeriveStatus(amountSats, remaining, tif, fills.Count > 0);
         return new SubmitResult(
@@ -87,29 +89,30 @@ public class InMemoryOrderBookManager
     public bool CancelOrder(Guid orderId, out string? marketId)
     {
         marketId = null;
-        foreach (var (id, book) in _books)
+        if (!_orderMarketIndex.TryGetValue(orderId, out var indexedMarketId) ||
+            !_books.TryGetValue(indexedMarketId, out var book))
         {
-            lock (book)
-            {
-                if (!book.Cancel(orderId)) continue;
-                marketId = id;
-                return true;
-            }
+            return false;
         }
-        return false;
+
+        lock (book)
+        {
+            if (!book.Cancel(orderId)) return false;
+            marketId = indexedMarketId;
+            return true;
+        }
     }
 
     public OrderStatusView? GetOrderStatus(Guid orderId)
     {
-        foreach (var (id, book) in _books)
+        if (!_orderMarketIndex.TryGetValue(orderId, out var marketId) ||
+            !_books.TryGetValue(marketId, out var book))
         {
-            lock (book)
-            {
-                var view = book.LookupStatus(id, orderId);
-                if (view is not null) return view;
-            }
+            return null;
         }
-        return null;
+
+        lock (book)
+            return book.LookupStatus(marketId, orderId);
     }
 
     public OrderBookSnapshot GetSnapshot(string marketId)
