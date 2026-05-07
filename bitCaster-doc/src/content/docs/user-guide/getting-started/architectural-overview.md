@@ -5,9 +5,9 @@ sidebar:
   order: 2
 ---
 
-bitCaster is composed of four independent services that communicate over open protocols.
+bitCaster is composed of independent services that communicate over open protocols.
 
-![Architecture diagram showing Oracle, Cashu Mint, bitCaster App, and Matching Engine](../../../../assets/architecture.svg)
+![Architecture diagram showing Oracle, Nostr oracle network, Matching Engine, Cashu Mint, and bitCaster App](../../../../assets/architecture.svg)
 
 
 Each user runs their own instance of the app in their browser. All users connect to the same shared infrastructure.
@@ -16,21 +16,27 @@ Each user runs their own instance of the app in their browser. All users connect
 
 The mint is the core of the system.
 It issues both regular ecash tokens and conditional ecash tokens locked to specific market outcomes.
-When an event resolves, the mint settles automatically: winning tokens become redeemable for sats, and losing tokens expire.
+When an event resolves, the mint settles from the verified outcome supplied through the matching-engine flow: winning tokens become redeemable for sats, and losing tokens expire.
 
 ## bitCaster App
 
 The user-facing progressive web app (PWA). It runs entirely in your browser and holds your tokens locally. The app communicates directly with the mint for all token operations (minting, swapping, redeeming) and with the matching engine for order book access.
+
+## Matching Engine
+
+The matching engine maintains a central limit order book (CLOB) for each market. It matches buy and sell orders and broadcasts real-time price updates. It also connects to the Nostr oracle network, watches the oracle announcements and attestations relevant to registered markets, verifies them, and coordinates market closure when an attestation arrives.
+
+This is the only centralized component — it exists because order matching is inherently a coordination problem that benefits from a single sequencer.
+
+## Oracle Network
+
+Oracles publish announcements and attestations to Nostr relays. Those relays act as an untrusted public network: they can transport, cache, or withhold events, but they cannot make an invalid announcement or attestation valid. The matching engine treats the network as a source of signed DLC oracle data and verifies signatures before trusting anything it receives.
 
 ## Oracle
 
 An oracle is an entity from [Discreet Log Contracts (DLC)](https://www.dci.mit.edu/projects/discreet-log-contracts) that announces real-world events and later attests to their outcomes. Oracles publish announcements and attestations as Nostr events, making them publicly verifiable. Any bitCaster App can read oracle announcements directly from the Nostr network — no special server is needed.
 
 Importantly, oracles are completely independent of bitCaster — they don't need to know about the app or ecash at all. They simply attest to real-world facts using the DLC protocol.
-
-## Matching Engine
-
-The matching engine maintains a central limit order book (CLOB) for each market. It matches buy and sell orders and broadcasts real-time price updates. This is the only centralized component — it exists because order matching is inherently a coordination problem that benefits from a single sequencer.
 
 ## Open Source
 
