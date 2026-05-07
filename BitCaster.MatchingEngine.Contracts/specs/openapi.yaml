@@ -18,8 +18,8 @@ paths:
       security:
         - nip98: []
       description: >
-        Validates the condition exists in the mint, creates empty order books
-        with CPMM pools for each outcome, and optionally stores a thumbnail.
+        Validates the condition exists in the mint, creates market order books,
+        and optionally stores a thumbnail.
         The authenticated pubkey from the NIP-98 header is recorded as the
         market creator — no creator field in the request body is needed.
       parameters:
@@ -188,19 +188,19 @@ paths:
   /api/v1/{marketId}/liquidity:
     get:
       operationId: getLiquidity
-      summary: Get CPMM pool state
-      description: Returns the current state of the CPMM liquidity pool for a market.
+      summary: Get liquidity state
+      description: Returns the current public liquidity state for a market.
       parameters:
         - $ref: '#/components/parameters/MarketId'
       responses:
         '200':
-          description: Current pool state
+          description: Current liquidity state
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/LiquidityStateResponse'
         '404':
-          description: No CPMM pool for this market
+          description: No liquidity state for this market
 
   /api/v1/{marketId}/metadata:
     get:
@@ -658,7 +658,7 @@ components:
             derive the ECDH shared secret with the maker without an extra
             round-trip through the engine. Null on complementary-match fills
             and on fills against orders that did not declare an ephemeral
-            pubkey (e.g. legacy CPMM bootstrap orders).
+            pubkey (e.g. legacy automated-liquidity orders).
 
     SubmitOrderRequest:
       type: object
@@ -892,7 +892,7 @@ components:
           format: int64
           minimum: 0
           default: 0
-          description: Initial liquidity to seed across outcome CPMM pools (in sats).
+          description: Initial liquidity budget in satoshis.
         categoryTags:
           type: array
           items:
@@ -948,7 +948,7 @@ components:
           format: int64
         activeOrders:
           type: integer
-          description: Number of active CPMM orders on the CLOB.
+          description: Number of active liquidity orders.
 
     MarketMetadataSnapshot:
       type: object
@@ -975,7 +975,7 @@ components:
         totalLiquiditySats:
           type: integer
           format: int64
-          description: Total CPMM liquidity deposited in satoshis.
+          description: Total liquidity deposited in satoshis.
 
     CreatePaymentRequestRequest:
       type: object

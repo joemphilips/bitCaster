@@ -141,7 +141,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset FilledAt { get; }
 
         /// <summary>
-        /// Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy CPMM bootstrap orders).
+        /// Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders).
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("makerEphemeralPubkey")]
@@ -566,7 +566,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<CreateMarketOutcome> Outcomes { get; }
 
         /// <summary>
-        /// Initial liquidity to seed across outcome CPMM pools (in sats).
+        /// Initial liquidity budget in satoshis.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
         public long? LiquiditySats { get; }
@@ -659,7 +659,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long TotalLiquiditySats { get; }
 
         /// <summary>
-        /// Number of active CPMM orders on the CLOB.
+        /// Number of active liquidity orders.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeOrders")]
         public int ActiveOrders { get; }
@@ -713,7 +713,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public int UniqueTraderCount { get; }
 
         /// <summary>
-        /// Total CPMM liquidity deposited in satoshis.
+        /// Total liquidity deposited in satoshis.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySats")]
         public long TotalLiquiditySats { get; }
