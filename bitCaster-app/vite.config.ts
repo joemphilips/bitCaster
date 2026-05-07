@@ -93,10 +93,12 @@ export default defineConfig({
         "/api": {
           target: serverTarget,
           changeOrigin: true,
+          xfwd: true,
         },
         "/hubs": {
           target: serverTarget,
           changeOrigin: true,
+          xfwd: true,
           ws: true,
         },
       };
