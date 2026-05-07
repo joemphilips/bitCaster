@@ -10,6 +10,7 @@ import {
   normalizeRelayUrl,
   userAddAndSelectMint,
   userAddRelay,
+  userCreatePaymentRequest,
   userRemoveMint,
   userRemoveRelay,
   userSwitchActiveMint,
@@ -18,6 +19,15 @@ import {
 vi.mock('@/lib/cashu', () => ({
   decodeToken: vi.fn(),
   receiveToken: vi.fn(),
+}))
+
+vi.mock('@/lib/nip17', () => ({
+  deriveNostrKeyPair: vi.fn().mockReturnValue({
+    privateKey: new Uint8Array(32),
+    privateKeyHex: '0'.repeat(64),
+    publicKey: '1'.repeat(64),
+  }),
+  getNostrNprofile: vi.fn().mockReturnValue('nprofile1test'),
 }))
 
 describe('walletOps facade', () => {
@@ -38,6 +48,7 @@ describe('walletOps facade', () => {
       { secret: 's2', amount: 34, id: 'kid', C: 'C2' },
     ] as never)
     useWalletStore.setState({
+      mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
       mints: [{ url: 'https://active.mint', info: { name: 'Active' } }],
       activeMintUrl: 'https://active.mint',
       _addMint: addMint as never,
@@ -46,7 +57,7 @@ describe('walletOps facade', () => {
       _setActiveMint: setActiveMint as never,
     })
     useSettingsStore.setState({
-      relays: [],
+      relays: [{ url: 'wss://relay.example', connectionStatus: 'disconnected' }],
       addRelay: vi.fn(),
       removeRelay: vi.fn(),
     })
@@ -129,5 +140,22 @@ describe('walletOps facade', () => {
     expect(() => userAddRelay('https://relay.example')).toThrow(
       'Relay URL must start with wss://',
     )
+  })
+
+  it('creates NIP-17 payment requests with relays and a stable request id', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValueOnce('abcdef12-3456-7890-abcd-ef1234567890')
+    const nip17 = await import('@/lib/nip17')
+
+    const result = userCreatePaymentRequest('https://active.mint/')
+
+    expect(result.id).toBe('abcdef12')
+    expect(result.encoded).toMatch(/^creq/)
+    expect(nip17.getNostrNprofile).toHaveBeenCalledWith('1'.repeat(64), ['wss://relay.example'])
+  })
+
+  it('fails payment request creation when the wallet has no mnemonic', () => {
+    useWalletStore.setState({ mnemonic: '' })
+
+    expect(() => userCreatePaymentRequest('https://active.mint')).toThrow('Wallet not set up')
   })
 })

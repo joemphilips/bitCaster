@@ -22,6 +22,11 @@ vi.mock('@/lib/walletOps', () => ({
     amountSats: 0,
     proofs: [],
   }),
+  userCreatePaymentRequest: vi.fn().mockReturnValue({
+    encoded: 'creq1test',
+    id: 'req1',
+    request: {},
+  }),
 }))
 
 // Mock proof-db

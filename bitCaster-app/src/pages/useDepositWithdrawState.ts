@@ -6,12 +6,7 @@ import type {
   MintInfo,
 } from '@/types/deposit-withdraw'
 import type { MeltQuoteResponse, MintQuoteResponse } from '@cashu/cashu-ts'
-import {
-  PaymentRequest,
-  PaymentRequestTransportType,
-} from '@cashu/cashu-ts'
 import { useWalletStore } from '@/stores/wallet'
-import { useSettingsStore } from '@/stores/settings'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/stores/proof-db'
@@ -27,6 +22,7 @@ import {
 } from '@/lib/cashu'
 import {
   ingressReceiveCashuToken,
+  userCreatePaymentRequest,
   type IngressReceiveCashuTokenResult,
 } from '@/lib/walletOps'
 import { useToastStore } from '@/stores/toast'
@@ -36,7 +32,6 @@ import {
   removeProofs,
   type StoredProof,
 } from '@/stores/proof-db'
-import { deriveNostrKeyPair, getNostrNprofile } from '@/lib/nip17'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
 
@@ -529,54 +524,16 @@ export function useDepositWithdrawState(
   const onRequest = useCallback(async () => {
     setError(null)
 
-    const mnemonic = useWalletStore.getState().mnemonic
-    if (!mnemonic) {
-      setError('Wallet not set up')
-      return
-    }
-
     try {
-      const keyPair = deriveNostrKeyPair(mnemonic)
-      // Embed the user's configured relays in the nprofile so the payer
-      // publishes to the same relay set our continuous NIP-17 listener is
-      // subscribed to (matches cashu.me's seedSignerNprofile behaviour).
-      const configuredRelays = useSettingsStore
-        .getState()
-        .relays.map((r) => r.url)
-      const nprofile = getNostrNprofile(
-        keyPair.publicKey,
-        configuredRelays.length > 0 ? configuredRelays : undefined
-      )
+      const paymentRequest = userCreatePaymentRequest(selectedMintId)
 
-      const transport = [{
-        type: PaymentRequestTransportType.NOSTR,
-        target: nprofile,
-        tags: [['n', '17']],
-      }]
-
-      // cashu-ts's PaymentRequest does NOT auto-generate an id when the
-      // arg is undefined — it just leaves it as undefined. The payer then
-      // has no id to echo back in the NIP-17 payload, and our inbox store
-      // has nothing to key on. Mirror cashu.me's scheme (first segment of
-      // a UUIDv4) so the id survives the round-trip.
-      const id = crypto.randomUUID().split('-')[0]
-      const pr = new PaymentRequest(
-        transport,
-        id,
-        undefined, // no amount
-        'sat',
-        [selectedMintId],
-        undefined, // no description
-      )
-      const encoded = pr.toEncodedRequest()
-
-      setPaymentRequestEncoded(encoded)
+      setPaymentRequestEncoded(paymentRequest.encoded)
       setPaymentRequestStatus('waiting')
       setCurrentView('payment-request-display')
       // Hand receive-detection off to the continuous listener. The
       // useEffect above flips status to 'received' when the global inbox
       // gets an entry keyed by this id.
-      setPendingRequestId(id)
+      setPendingRequestId(paymentRequest.id)
     } catch (e) {
       setError((e as Error).message)
     }

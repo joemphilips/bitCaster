@@ -1,5 +1,6 @@
-import { PaymentRequest, type Proof } from '@cashu/cashu-ts'
+import { PaymentRequest, PaymentRequestTransportType, type Proof } from '@cashu/cashu-ts'
 import { decodeToken, receiveToken } from '@/lib/cashu'
+import { deriveNostrKeyPair, getNostrNprofile } from '@/lib/nip17'
 import { normalizeUrl } from '@/lib/url'
 import { useSettingsStore } from '@/stores/settings'
 import { useWalletStore, type StoredMint } from '@/stores/wallet'
@@ -20,6 +21,12 @@ export interface IngressReceiveCashuTokenResult extends IngressMintRegistrationR
 export interface DecodedWalletPaymentRequest {
   request: PaymentRequest
   source: WalletIngressSource
+}
+
+export interface CreatedWalletPaymentRequest {
+  encoded: string
+  id: string
+  request: PaymentRequest
 }
 
 export function getActiveMint(): StoredMint | undefined {
@@ -117,5 +124,41 @@ export async function ingressDecodePaymentRequest(
   return {
     request: PaymentRequest.fromEncodedRequest(text),
     source,
+  }
+}
+
+export function userCreatePaymentRequest(mintUrl: string): CreatedWalletPaymentRequest {
+  const mnemonic = useWalletStore.getState().mnemonic
+  if (!mnemonic) {
+    throw new Error('Wallet not set up')
+  }
+
+  const keyPair = deriveNostrKeyPair(mnemonic)
+  const configuredRelays = useSettingsStore.getState().relays.map((r) => r.url)
+  const nprofile = getNostrNprofile(
+    keyPair.publicKey,
+    configuredRelays.length > 0 ? configuredRelays : undefined,
+  )
+
+  // cashu-ts leaves the id undefined unless we provide one; the NIP-17 inbox
+  // needs it echoed back by the payer to correlate the received token.
+  const id = crypto.randomUUID().split('-')[0]
+  const request = new PaymentRequest(
+    [{
+      type: PaymentRequestTransportType.NOSTR,
+      target: nprofile,
+      tags: [['n', '17']],
+    }],
+    id,
+    undefined,
+    'sat',
+    [normalizeUrl(mintUrl)],
+    undefined,
+  )
+
+  return {
+    encoded: request.toEncodedRequest(),
+    id,
+    request,
   }
 }
