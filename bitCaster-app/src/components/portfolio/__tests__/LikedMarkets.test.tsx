@@ -87,7 +87,7 @@ describe('LikedMarkets (P5.1)', () => {
     expect(await screen.findByTestId('liked-markets-error')).toBeInTheDocument()
   })
 
-  it('hides the native scrollbar and renders inside a HorizontalPager', async () => {
+  it('hides the native scrollbar and preserves list semantics inside a HorizontalPager', async () => {
     // Issue 3 — the scroller must use the shared `<HorizontalPager>` so
     // overflowing bookmarks paginate by chevron rather than exposing the
     // OS scrollbar.
@@ -96,8 +96,11 @@ describe('LikedMarkets (P5.1)', () => {
     render(<LikedMarkets />)
 
     const scroller = await screen.findByTestId('liked-markets-scroller')
+    expect(scroller).toHaveAttribute('role', 'list')
+    expect(scroller).toHaveAccessibleName('Liked Markets')
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
     expect(scroller.className).toContain('scrollbar-hide')
     expect(scroller.style.scrollbarWidth).toBe('none')
-    expect(scroller.className).not.toContain('overflow-x-auto pb-2 -mx-1 px-1 snap-x role')
+    expect(scroller).not.toHaveStyle({ overflowX: 'scroll' })
   })
 })

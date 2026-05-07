@@ -59,6 +59,7 @@ export function LikedMarkets({ onViewMarket }: LikedMarketsProps) {
         <HorizontalPager
           className="gap-3 pb-2 -mx-1 px-1 snap-x"
           ariaLabel={t('portfolio.likedMarkets')}
+          role="list"
           scrollerTestId="liked-markets-scroller"
         >
           {markets.map((m) => (

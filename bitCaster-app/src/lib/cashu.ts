@@ -295,7 +295,9 @@ export function extractMintUrlFromV4Token(tokenStr: string): string | null {
 
 // Minimal CBOR walker: read the top-level map and return the value of the
 // "m" key (the v4 cashu mint-url field). Supports the small subset of CBOR
-// that cashu v4 emits — see NUT-00 §3.2.
+// that cashu v4 emits — see NUT-00 §3.2. CBOR major types per RFC 8949 §3.1:
+// 0=uint, 1=neg-int, 2=bytes, 3=text, 4=array, 5=map, 6=tag, 7=simple/float.
+// Additional info 24/25/26 means the length follows in 1/2/4 bytes.
 function walkCborForMintUrl(b: Uint8Array): string | null {
   if ((b[0] & 0xe0) !== 0xa0) return null; // top-level must be a map
   const [n, start] = readLen(b, 0);

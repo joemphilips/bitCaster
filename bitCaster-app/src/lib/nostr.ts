@@ -37,6 +37,11 @@ let _ndk: NDK | null = null;
 // removed a relay since the previous call.
 let _lastReconciledRelaysKey = "";
 
+type TeardownCapableSigner = NDKSigner & {
+  destroy?: () => void | Promise<void>;
+  stop?: () => void | Promise<void>;
+};
+
 /**
  * Merge user-configured relays from the settings store with the static
  * {@link DEFAULT_RELAYS} list, deduplicating while preserving order. The
@@ -110,6 +115,22 @@ export function getNdk(): NDK {
   return _ndk;
 }
 
+async function teardownCurrentSigner(ndk: NDK): Promise<void> {
+  const signer = ndk.signer as TeardownCapableSigner | undefined;
+  try {
+    if (typeof signer?.destroy === "function") {
+      await signer.destroy();
+      return;
+    }
+    if (typeof signer?.stop === "function") {
+      await signer.stop();
+    }
+  } catch {
+    // Best-effort: signer replacement must still proceed if an optional
+    // teardown hook fails or belongs to an older NDK implementation.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // NIP-07 detection
 // ---------------------------------------------------------------------------
@@ -128,6 +149,7 @@ export function isNip07Available(): boolean {
 export async function loginWithExtension(): Promise<NDKSigner> {
   const signer = new NDKNip07Signer();
   const ndk = getNdk();
+  await teardownCurrentSigner(ndk);
   ndk.signer = signer;
   // Don't block login on relay connectivity — connect in background
   ndk.connect();
@@ -152,6 +174,7 @@ export async function loginWithExtension(): Promise<NDKSigner> {
 export async function loginWithNsec(nsec: string): Promise<NDKSigner> {
   const signer = new NDKPrivateKeySigner(nsec);
   const ndk = getNdk();
+  await teardownCurrentSigner(ndk);
   ndk.signer = signer;
   // Don't block login on relay connectivity — connect in background
   ndk.connect();
