@@ -67,7 +67,7 @@ export interface ActiveSwap {
   counterpartyPubkey: string | null
   /** Unix seconds — Alice's locktime per the protocol spec. */
   sellerLocktime: number | null
-  /** Unix seconds — Bob's longer locktime. */
+  /** Unix seconds — Bob's shorter locktime. */
   buyerLocktime: number | null
   step: SwapStep
   messages: SwapMessages

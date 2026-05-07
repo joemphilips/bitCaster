@@ -62,4 +62,44 @@ describe('useTradeSettlement', () => {
     )
     expect(mockJoinTrade).toHaveBeenCalledWith('trade-1')
   })
+
+  it('fails the swap before role assignment when TradeCreated locktimes are inverted', async () => {
+    renderHook(() => useTradeSettlement(privkey))
+
+    await act(async () => {
+      useActiveSwapsStore.getState().promote({
+        tradeId: 'trade-2',
+        orderId: 'order-2',
+        marketId: 'market-1',
+        ephemeralPrivkeyHex: '11'.repeat(32),
+        ephemeralPubkeyHex: '22'.repeat(32),
+      })
+    })
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string
+        sellerPubkey: string
+        buyerPubkey: string
+        sellerLocktime: string
+        buyerLocktime: string
+      }) => void
+    }
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: 'trade-2',
+        sellerPubkey: '22'.repeat(32),
+        buyerPubkey: '33'.repeat(32),
+        sellerLocktime: '2026-05-07T12:00:00Z',
+        buyerLocktime: '2026-05-07T12:01:00Z',
+      })
+    })
+
+    const swap = useActiveSwapsStore.getState().byTradeId['trade-2']
+    expect(swap.step).toBe('failed')
+    expect(swap.role).toBeNull()
+    expect(swap.error).toMatch(/locktime ordering violates protocol invariant/i)
+    expect(mockSendSwapMessage).not.toHaveBeenCalled()
+  })
 })
