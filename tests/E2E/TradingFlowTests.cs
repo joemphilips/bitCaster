@@ -316,7 +316,7 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await limitOrder.ClickAsync();
 
-        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) })
+        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^(Buy|Place)\\s", RegexOptions.IgnoreCase) })
             .Filter(new() { Visible = true }).First;
         await confirm.ClickAsync();
 
