@@ -45,12 +45,7 @@ import {
 } from '@/stores/activeSwaps'
 import { useWalletStore } from '@/stores/wallet'
 import { addProofs, getProofs, type StoredProof } from '@/stores/proof-db'
-import {
-  computeSharedSecret,
-  decrypt,
-  deriveEncryptionKey,
-  hexToBytes,
-} from '@/lib/ecdh'
+import { hexToBytes } from '@/lib/ecdh'
 import {
   buyerClaimSwap,
   buyerExtractSecret,
@@ -291,11 +286,10 @@ async function runBuyerRespond(
       swap.messages.lockedProofsSeller,
       proofs,
     )
-    const sellerPreSigsHex = await extractSellerPreSigs(swap, ctx)
     buyerStateByTradeId.set(tradeId, {
       ownPreSigsHex: out.preSigsHex,
       lockedSatProofs: out.lockedProofs,
-      sellerPreSigsHex,
+      sellerPreSigsHex: out.sellerPreSigsHex,
     })
     await sendSwapMessage(
       tradeId,
@@ -307,26 +301,6 @@ async function runBuyerRespond(
   } finally {
     releaseStep(tradeId, 'buyer-respond')
   }
-}
-
-/**
- * Pull the seller's pre-sigs out of the `locked-proofs-seller` ciphertext so
- * we can adapt them on `buyerClaimSwap`. We do this here instead of inside
- * `buyerClaimSwap` to keep the cipher decoding co-located with the rest of
- * the buyer state — the function already takes the ciphertext as input.
- */
-async function extractSellerPreSigs(
-  swap: ActiveSwap,
-  ctx: SwapCtx,
-): Promise<string[]> {
-  const cipher = swap.messages.lockedProofsSeller
-  if (!cipher) throw new Error('Missing locked-proofs-seller cipher')
-  const sharedKey = await deriveEncryptionKey(
-    computeSharedSecret(ctx.ephemeralKey.privateKey, ctx.counterpartyPubkey),
-  )
-  const plain = await decrypt(sharedKey, cipher)
-  const parsed = JSON.parse(plain) as { preSigs: string[] }
-  return parsed.preSigs
 }
 
 // ---------------------------------------------------------------------------

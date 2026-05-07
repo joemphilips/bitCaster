@@ -311,7 +311,7 @@ export async function sellerClaimSwap(
  * locks his sat proofs to Alice's pubkey, pre-signs, and returns
  * the ciphertext ready for `sendSwapMessage`.
  *
- * @returns { lockedProofsCipher, lockedProofs, preSigsHex }
+ * @returns { lockedProofsCipher, lockedProofs, preSigsHex, sellerPreSigsHex }
  */
 export async function buyerPrepareSwap(
   ctx: SwapContext,
@@ -323,6 +323,7 @@ export async function buyerPrepareSwap(
   adaptorPointHex: string
   lockedProofs: Proof[]
   preSigsHex: string[]
+  sellerPreSigsHex: string[]
 }> {
   // Decrypt Alice's messages
   const aptPlain = await decryptMsg(ctx, aliceAdaptorPointCipher)
@@ -377,7 +378,13 @@ export async function buyerPrepareSwap(
     encodeProofsMsg(lockedProofsMsg),
   )
 
-  return { lockedProofsCipher, adaptorPointHex, lockedProofs, preSigsHex }
+  return {
+    lockedProofsCipher,
+    adaptorPointHex,
+    lockedProofs,
+    preSigsHex,
+    sellerPreSigsHex: alicePreSigsHex,
+  }
 }
 
 /**

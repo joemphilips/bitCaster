@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import type { Proof } from '@cashu/cashu-ts'
 import {
+  buyerPrepareSwap,
   MIN_LOCKTIME_DELTA_SECS,
+  sellerPrepareSwap,
+  type SwapContext,
   validateLocktimeOrdering,
 } from '../atomicSwap'
+import {
+  computeSharedSecret,
+  decrypt,
+  deriveEncryptionKey,
+  generateEphemeralKeypair,
+} from '../ecdh'
 
 // ---------------------------------------------------------------------------
 // validateLocktimeOrdering
@@ -50,3 +60,50 @@ describe('validateLocktimeOrdering', () => {
     expect(validateLocktimeOrdering(Infinity, buyer)).toMatch(/invalid locktime/i)
   })
 })
+
+describe('buyerPrepareSwap', () => {
+  it('returns the verified seller pre-sigs from Alice locked-proofs ciphertext', async () => {
+    const sellerKey = generateEphemeralKeypair()
+    const buyerKey = generateEphemeralKeypair()
+    const sellerCtx: SwapContext = {
+      tradeId: 'trade-1',
+      role: 'seller',
+      ephemeralKey: sellerKey,
+      counterpartyPubkey: buyerKey.publicKey,
+      sellerLocktime: 1_700_000_100,
+      buyerLocktime: 1_700_000_000,
+      mintUrl: 'https://mint.test',
+    }
+    const buyerCtx: SwapContext = {
+      ...sellerCtx,
+      role: 'buyer',
+      ephemeralKey: buyerKey,
+      counterpartyPubkey: sellerKey.publicKey,
+    }
+
+    const sellerOut = await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)])
+    const buyerOut = await buyerPrepareSwap(
+      buyerCtx,
+      sellerOut.adaptorPointCipher,
+      sellerOut.lockedProofsCipher,
+      [proof('bob-1', 7)],
+    )
+
+    const sharedKey = await deriveEncryptionKey(
+      computeSharedSecret(buyerKey.privateKey, sellerKey.publicKey),
+    )
+    const sellerLockedPlain = await decrypt(sharedKey, sellerOut.lockedProofsCipher)
+    const sellerLocked = JSON.parse(sellerLockedPlain) as { preSigs: string[] }
+    expect(buyerOut.sellerPreSigsHex).toEqual(sellerLocked.preSigs)
+    expect(buyerOut.sellerPreSigsHex).toHaveLength(1)
+  })
+})
+
+function proof(secret: string, amount: number): Proof {
+  return {
+    id: 'test-keyset',
+    amount,
+    secret,
+    C: '02'.padEnd(66, '0'),
+  } as Proof
+}
