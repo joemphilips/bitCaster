@@ -1,9 +1,5 @@
 import type { Market, FilterState } from '@/types/market'
-import type {
-  MarketDetail,
-  OrderBook,
-  Order,
-} from '@/types/market-detail'
+import type { MarketDetail, OrderBook, Order } from '@/types/market-detail'
 import type { MarketSort } from '@/hooks/useMarketSort'
 import type { components } from '@/generated/api'
 import { getNdk } from '@/lib/nostr'
@@ -18,11 +14,13 @@ export type SubmitOrderResponse = components['schemas']['SubmitOrderResponse']
 export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
 export type LevelDto = components['schemas']['LevelDto']
 export type Fill = components['schemas']['Fill']
-export type MarketMetadataSnapshot = components['schemas']['MarketMetadataSnapshot']
+export type MarketMetadataSnapshot =
+  components['schemas']['MarketMetadataSnapshot']
 export type CreateMarketRequest = components['schemas']['CreateMarketRequest']
 export type CreateMarketResponse = components['schemas']['CreateMarketResponse']
 export type CreatorMarketEntry = components['schemas']['CreatorMarketEntry']
-export type CreatorMarketsResponse = components['schemas']['CreatorMarketsResponse']
+export type CreatorMarketsResponse =
+  components['schemas']['CreatorMarketsResponse']
 
 // CDK mint response types
 
@@ -41,8 +39,8 @@ export interface AttestationState {
 
 export interface ConditionInfo {
   condition_id: string
-  tags?: string[][]              // NIP-88 tag array (new spec)
-  description?: string           // Legacy field (pre-tags CDK)
+  tags?: string[][] // NIP-88 tag array (new spec)
+  description?: string // Legacy field (pre-tags CDK)
   threshold: number
   announcements: string[]
   partitions: PartitionInfoEntry[]
@@ -88,7 +86,9 @@ export async function fetchConditions(): Promise<ConditionInfo[]> {
   return data.conditions
 }
 
-export async function fetchMarketMetadata(marketId: string): Promise<MarketMetadataSnapshot | null> {
+export async function fetchMarketMetadata(
+  marketId: string,
+): Promise<MarketMetadataSnapshot | null> {
   try {
     const response = await fetch(`/api/v1/${marketId}/metadata`)
     if (!response.ok) return null
@@ -98,10 +98,9 @@ export async function fetchMarketMetadata(marketId: string): Promise<MarketMetad
   }
 }
 
-function applyMetadata<T extends { volume: number; liquidity: number; traderCount: number }>(
-  base: T,
-  meta: MarketMetadataSnapshot,
-): T {
+function applyMetadata<
+  T extends { volume: number; liquidity: number; traderCount: number },
+>(base: T, meta: MarketMetadataSnapshot): T {
   return {
     ...base,
     volume: meta.totalVolumeSats,
@@ -145,7 +144,8 @@ export interface GetMarketsResult {
 }
 
 export type MarketCatalogueEntry = components['schemas']['MarketCatalogueEntry']
-export type MarketCatalogueResponse = components['schemas']['MarketCatalogueResponse']
+export type MarketCatalogueResponse =
+  components['schemas']['MarketCatalogueResponse']
 
 function buildMarketsQueryString(params: GetMarketsParams): string {
   const search = new URLSearchParams()
@@ -155,7 +155,8 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
   if (params.pageSize) search.set('page_size', String(params.pageSize))
   for (const t of params.tags ?? []) search.append('tag', t)
   // ?ids= is comma-separated per the OpenAPI spec, not repeated.
-  if (params.ids && params.ids.length > 0) search.set('ids', params.ids.join(','))
+  if (params.ids && params.ids.length > 0)
+    search.set('ids', params.ids.join(','))
   const qs = search.toString()
   return qs ? `?${qs}` : ''
 }
@@ -226,7 +227,9 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
  * (ADR-009) is: the markets-list page may rely on this response, but the
  * market-detail page MUST verify market existence directly against mintd.
  */
-export async function getMarkets(params: GetMarketsParams = {}): Promise<GetMarketsResult> {
+export async function getMarkets(
+  params: GetMarketsParams = {},
+): Promise<GetMarketsResult> {
   const url = `/api/v1/markets/query${buildMarketsQueryString(params)}`
   const response = await fetch(url, {
     headers: { Accept: 'application/json' },
@@ -243,7 +246,10 @@ export async function getMarkets(params: GetMarketsParams = {}): Promise<GetMark
   }
 }
 
-export function filterMarkets(markets: Market[], filter: FilterState): Market[] {
+export function filterMarkets(
+  markets: Market[],
+  filter: FilterState,
+): Market[] {
   let result = markets
 
   if (filter.searchQuery) {
@@ -308,7 +314,8 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   const attestationStatus = normalizeMintdStatus(c.attestation.status)
   const isResolved = isAttestationResolved(attestationStatus)
   const tags = c.tags ?? []
-  const title = getTagValue(tags, 'description') ?? c.description ?? 'Untitled Market'
+  const title =
+    getTagValue(tags, 'description') ?? c.description ?? 'Untitled Market'
 
   const base = {
     id: c.condition_id,
@@ -326,10 +333,14 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     createdDate: now,
     activeSince: now,
     baseUnit: 'sats',
-    mint: {
-      collateral: firstPartition?.collateral ?? 'sat',
-      keysetCount: Object.keys(firstPartition?.keysets ?? {}).length,
-    },
+    ...(firstPartition
+      ? {
+          mint: {
+            collateral: firstPartition.collateral,
+            keysetCount: Object.keys(firstPartition.keysets ?? {}).length,
+          },
+        }
+      : {}),
     creator: {
       id: 'unknown',
       name: 'Unknown',
@@ -340,7 +351,7 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
       criteria: title,
       source: 'oracle' as const,
       resolutionDate: now,
-      status: isResolved ? 'resolved' as const : 'open' as const,
+      status: isResolved ? ('resolved' as const) : ('open' as const),
       finalOutcome: c.attestation.winning_outcome ?? undefined,
     },
     priceHistory: { data: [], timeframe: '7d' as const },
@@ -386,7 +397,9 @@ async function fetchEngineCatalogueEntry(
 ): Promise<MarketCatalogueEntry | null> {
   try {
     const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`
-    const response = await fetch(url, { headers: { Accept: 'application/json' } })
+    const response = await fetch(url, {
+      headers: { Accept: 'application/json' },
+    })
     if (!response.ok) return null
     const body: MarketCatalogueResponse = await response.json()
     return body.markets.find((m) => m.conditionId === conditionId) ?? null
@@ -410,7 +423,9 @@ async function fetchEngineCatalogueEntry(
  * This is the SOLE place this normalisation lives — Rule 2 forbids paving
  * over the case mismatch at every call site.
  */
-function normalizeEngineMarketState(raw: unknown): MarketCatalogueEntry['state'] | null {
+function normalizeEngineMarketState(
+  raw: unknown,
+): MarketCatalogueEntry['state'] | null {
   if (raw == null) return null
   const s = String(raw).toLowerCase().trim()
   if (s === 'open' || s === 'closed') return s
@@ -452,7 +467,9 @@ function mergeEngineCatalogueEntry(
   }
 }
 
-export async function fetchMarketDetail(conditionId: string): Promise<MarketDetail> {
+export async function fetchMarketDetail(
+  conditionId: string,
+): Promise<MarketDetail> {
   const conditions = await fetchConditions()
   const condition = conditions.find((c) => c.condition_id === conditionId)
   if (!condition) {
@@ -498,7 +515,10 @@ export async function fetchOrderBook(marketId: string): Promise<OrderBook> {
   return mapSnapshotToOrderBook(snapshot)
 }
 
-export async function submitOrder(marketId: string, params: SubmitOrderRequest): Promise<SubmitOrderResponse> {
+export async function submitOrder(
+  marketId: string,
+  params: SubmitOrderRequest,
+): Promise<SubmitOrderResponse> {
   const url = `${window.location.origin}/api/v1/${marketId}/orders`
   // Bind the NIP-98 token to the exact body bytes the server will hash.
   const bodyText = JSON.stringify(params)
@@ -524,14 +544,20 @@ export async function submitOrder(marketId: string, params: SubmitOrderRequest):
 // =============================================================================
 
 export class MintError extends Error {
-  constructor(public readonly code: number, public readonly detail: string) {
+  constructor(
+    public readonly code: number,
+    public readonly detail: string,
+  ) {
     super(`[Mint] ${detail}`)
     this.name = 'MintError'
   }
 }
 
 /** Parse a non-OK mint response into a MintError with the CDK error code. */
-async function parseMintError(response: Response, fallbackPrefix: string): Promise<MintError> {
+async function parseMintError(
+  response: Response,
+  fallbackPrefix: string,
+): Promise<MintError> {
   let code = 0
   let detail = `${fallbackPrefix}: ${response.status}`
   try {
@@ -543,7 +569,9 @@ async function parseMintError(response: Response, fallbackPrefix: string): Promi
     } catch {
       detail = text
     }
-  } catch { /* empty */ }
+  } catch {
+    /* empty */
+  }
   return new MintError(code, detail)
 }
 
@@ -575,7 +603,8 @@ export async function registerPartition(
     body: JSON.stringify({
       collateral: 'sat',
       partition,
-      parent_collection_id: '0000000000000000000000000000000000000000000000000000000000000000',
+      parent_collection_id:
+        '0000000000000000000000000000000000000000000000000000000000000000',
     }),
   })
   if (!response.ok) {
@@ -613,7 +642,8 @@ export async function generateNip98Header(
   payloadHash?: string,
 ): Promise<string> {
   const ndk = getNdk()
-  if (!ndk.signer) throw new Error('No Nostr signer configured — connect in Settings first')
+  if (!ndk.signer)
+    throw new Error('No Nostr signer configured — connect in Settings first')
   const event = new NDKEvent(ndk)
   event.kind = 27235
   event.created_at = Math.floor(Date.now() / 1000)
@@ -647,7 +677,8 @@ export async function createMarket(
   // the same bytes with the same Content-Type so server-side SHA-256 matches.
   const serialized = new Request(url, { method: 'POST', body: formData })
   const bodyBytes = await serialized.arrayBuffer()
-  const contentType = serialized.headers.get('Content-Type') ?? 'multipart/form-data'
+  const contentType =
+    serialized.headers.get('Content-Type') ?? 'multipart/form-data'
   const payloadHash = await sha256Hex(bodyBytes)
   const authHeader = await generateNip98Header(url, 'POST', payloadHash)
   const response = await fetch(url, {
@@ -659,8 +690,10 @@ export async function createMarket(
     let detail = `HTTP ${response.status}`
     try {
       const body = await response.json()
-      const raw = body.detail ?? body.title ?? body.message ?? JSON.stringify(body)
-      detail = typeof raw === 'string' ? raw.slice(0, 500) : String(raw).slice(0, 500)
+      const raw =
+        body.detail ?? body.title ?? body.message ?? JSON.stringify(body)
+      detail =
+        typeof raw === 'string' ? raw.slice(0, 500) : String(raw).slice(0, 500)
     } catch {
       detail = response.statusText || detail
     }
@@ -669,9 +702,13 @@ export async function createMarket(
   return response.json()
 }
 
-export async function fetchThumbnailUrl(conditionId: string): Promise<string | null> {
+export async function fetchThumbnailUrl(
+  conditionId: string,
+): Promise<string | null> {
   try {
-    const response = await fetch(`/api/v1/${conditionId}/thumbnail`, { method: 'HEAD' })
+    const response = await fetch(`/api/v1/${conditionId}/thumbnail`, {
+      method: 'HEAD',
+    })
     if (response.ok) return `/api/v1/${conditionId}/thumbnail`
     return null
   } catch {
@@ -687,9 +724,13 @@ export async function fetchThumbnailUrl(conditionId: string): Promise<string | n
  * of letting `<div style="background-image: url()">` produce a broken
  * empty-string URL request (the P6 P4.3 regression).
  */
-export function getMarketThumbnail(market: { id: string; imageUrl?: string | null }): string | null {
+export function getMarketThumbnail(market: {
+  id: string
+  imageUrl?: string | null
+}): string | null {
   const explicit = market.imageUrl
-  if (typeof explicit === 'string' && explicit.trim().length > 0) return explicit
+  if (typeof explicit === 'string' && explicit.trim().length > 0)
+    return explicit
   return null
 }
 
@@ -697,11 +738,16 @@ export function getMarketThumbnail(market: { id: string; imageUrl?: string | nul
 // CPMM Bot Deposit API (matching engine MarketFunding aggregate)
 // =============================================================================
 
-export type RequestLnInvoiceDepositRequest = components['schemas']['RequestLnInvoiceDepositRequest']
-export type RequestLnInvoiceDepositResponse = components['schemas']['RequestLnInvoiceDepositResponse']
-export type RequestEcashDepositRequest = components['schemas']['RequestEcashDepositRequest']
-export type RequestEcashDepositResponse = components['schemas']['RequestEcashDepositResponse']
-export type GetDepositResponseDto = components['schemas']['GetDepositResponseDto']
+export type RequestLnInvoiceDepositRequest =
+  components['schemas']['RequestLnInvoiceDepositRequest']
+export type RequestLnInvoiceDepositResponse =
+  components['schemas']['RequestLnInvoiceDepositResponse']
+export type RequestEcashDepositRequest =
+  components['schemas']['RequestEcashDepositRequest']
+export type RequestEcashDepositResponse =
+  components['schemas']['RequestEcashDepositResponse']
+export type GetDepositResponseDto =
+  components['schemas']['GetDepositResponseDto']
 export type DepositState = components['schemas']['DepositState']
 export type DepositMethod = components['schemas']['DepositMethod']
 
@@ -726,7 +772,9 @@ export async function requestLnInvoiceDeposit(
     body: bodyText,
   })
   if (!response.ok) {
-    throw new Error(`[Matching Engine] Failed to request LN deposit: ${response.status} ${await response.text()}`)
+    throw new Error(
+      `[Matching Engine] Failed to request LN deposit: ${response.status} ${await response.text()}`,
+    )
   }
   return response.json()
 }
@@ -753,7 +801,9 @@ export async function requestEcashDeposit(
     body: bodyText,
   })
   if (!response.ok) {
-    throw new Error(`[Matching Engine] Failed to submit ecash deposit: ${response.status} ${await response.text()}`)
+    throw new Error(
+      `[Matching Engine] Failed to submit ecash deposit: ${response.status} ${await response.text()}`,
+    )
   }
   return response.json()
 }

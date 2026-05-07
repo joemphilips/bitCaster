@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 
 fail=0
 
-if matches=$(rg -n '(s\.|\.)((addMint|addMintWithoutActivating|removeMint|setActiveMint))\s*\(' src \
+if matches=$(rg -n '(s\.|\.)(_?(addMint|addMintWithoutActivating|removeMint|setActiveMint))\s*\(' src \
   --glob '!src/stores/wallet.ts' \
   --glob '!src/lib/walletOps.ts' \
   --glob '!**/__tests__/**'); then

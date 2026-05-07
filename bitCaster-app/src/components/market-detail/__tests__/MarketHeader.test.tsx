@@ -81,6 +81,13 @@ describe('MarketHeader', () => {
     expect(screen.getByText('SAT CTF - 2 keysets')).toBeInTheDocument()
   })
 
+  it('renders explicit missing mint metadata degradation', () => {
+    render(<MarketHeader market={makeMarket({ mint: undefined })} />)
+
+    expect(screen.getByText('Mint')).toBeInTheDocument()
+    expect(screen.getByText('Unknown')).toBeInTheDocument()
+  })
+
   it('renders a shortened oracle npub and copies the full npub', async () => {
     const user = userEvent.setup()
     const writeText = vi.fn().mockResolvedValue(undefined)
@@ -92,7 +99,9 @@ describe('MarketHeader', () => {
     render(<MarketHeader market={makeMarket()} />)
 
     expect(
-      screen.getByText(`${creatorNpub.slice(0, 10)}...${creatorNpub.slice(-6)}`),
+      screen.getByText(
+        `${creatorNpub.slice(0, 10)}...${creatorNpub.slice(-6)}`,
+      ),
     ).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Copy oracle pubkey' }))
 

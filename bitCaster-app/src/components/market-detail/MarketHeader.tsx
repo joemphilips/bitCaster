@@ -25,7 +25,8 @@ function formatCreatorNpub(creatorId: string): string | null {
   const trimmed = creatorId.trim()
   if (!trimmed || trimmed === 'unknown') return null
   if (trimmed.startsWith('npub1')) return trimmed
-  if (HexPubkeyPattern.test(trimmed)) return nip19.npubEncode(trimmed.toLowerCase())
+  if (HexPubkeyPattern.test(trimmed))
+    return nip19.npubEncode(trimmed.toLowerCase())
   return trimmed
 }
 
@@ -70,10 +71,7 @@ function formatTimeRemaining(
   return t('market.minutesRemaining', { minutes })
 }
 
-export function MarketHeader({
-  market,
-  onShare,
-}: MarketHeaderProps) {
+export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const { t, i18n } = useTranslation()
   const isResolved = market.resolution.status === 'resolved'
   const timeRemaining = formatTimeRemaining(
@@ -89,6 +87,13 @@ export function MarketHeader({
   const toggleBookmark = useBookmarkStore((s) => s.toggle)
   const creatorNpub = formatCreatorNpub(market.creator.id)
   const creatorLabel = creatorNpub ? shortenNpub(creatorNpub) : 'Unknown'
+  const mintLabel = market.mint
+    ? `${market.mint.collateral.toUpperCase()} CTF${
+        market.mint.keysetCount > 0
+          ? ` - ${market.mint.keysetCount} keysets`
+          : ''
+      }`
+    : 'Unknown'
 
   const resolvedDate = isResolved
     ? new Date(market.resolution.resolutionDate).toLocaleDateString(
@@ -148,9 +153,7 @@ export function MarketHeader({
 
         {/* Title */}
         <h1
-          className={`text-2xl md:text-3xl font-bold mb-4 leading-tight ${
-            market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'
-          }`}
+          className={`text-2xl md:text-3xl font-bold mb-4 leading-tight ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}
         >
           {market.title}
         </h1>
@@ -160,15 +163,7 @@ export function MarketHeader({
           {/* Time Remaining / Resolved Date — hidden when no real deadline known */}
           {(isResolved || timeRemaining) && (
             <div
-              className={`flex items-center gap-1.5 ${
-                isResolved
-                  ? 'text-slate-400'
-                  : isClosingSoon
-                    ? 'text-amber-400'
-                    : market.imageUrl
-                      ? 'text-slate-300'
-                      : 'text-slate-600 dark:text-slate-400'
-              }`}
+              className={`flex items-center gap-1.5 ${isResolved ? 'text-slate-400' : isClosingSoon ? 'text-amber-400' : market.imageUrl ? 'text-slate-300' : 'text-slate-600 dark:text-slate-400'}`}
             >
               {isResolved ? (
                 <CheckCircle2 className="w-4 h-4" />
@@ -186,11 +181,7 @@ export function MarketHeader({
           {/* Share Button */}
           <button
             onClick={onShare}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors ${
-              market.imageUrl
-                ? 'bg-white/10 text-slate-300 hover:bg-white/20'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
-            }`}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors ${market.imageUrl ? 'bg-white/10 text-slate-300 hover:bg-white/20' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}`}
           >
             <Share2 className="w-4 h-4" />
             <span className="text-sm font-medium">{t('common.share')}</span>
@@ -200,11 +191,7 @@ export function MarketHeader({
         <div className="flex flex-col sm:flex-row gap-3">
           {/* Creator Info */}
           <div
-            className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${
-              market.imageUrl
-                ? 'bg-white/10'
-                : 'bg-slate-100 dark:bg-slate-800'
-            }`}
+            className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${market.imageUrl ? 'bg-white/10' : 'bg-slate-100 dark:bg-slate-800'}`}
           >
             {market.creator.avatarUrl ? (
               <img
@@ -235,11 +222,7 @@ export function MarketHeader({
                 onClick={() => {
                   void navigator.clipboard?.writeText(creatorNpub)
                 }}
-                className={`shrink-0 rounded-full p-2 transition-colors ${
-                  market.imageUrl
-                    ? 'text-slate-300 hover:bg-white/15 hover:text-white'
-                    : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white'
-                }`}
+                className={`shrink-0 rounded-full p-2 transition-colors ${market.imageUrl ? 'text-slate-300 hover:bg-white/15 hover:text-white' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white'}`}
                 aria-label={t('market.copyOraclePubkey')}
                 title={t('market.copyOraclePubkey')}
               >
@@ -248,42 +231,30 @@ export function MarketHeader({
             )}
           </div>
 
-          {market.mint && (
-            <div
-              className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${
-                market.imageUrl
-                  ? 'bg-white/10'
-                  : 'bg-slate-100 dark:bg-slate-800'
-              }`}
-            >
-              <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center text-amber-500">
-                <Landmark className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <p
-                  className={`truncate text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}
-                >
-                  Mint
-                </p>
-                <p
-                  className={`truncate text-xs font-mono ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
-                >
-                  {market.mint.collateral.toUpperCase()} CTF
-                  {market.mint.keysetCount > 0 &&
-                    ` - ${market.mint.keysetCount} keysets`}
-                </p>
-              </div>
+          <div
+            className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${market.imageUrl ? 'bg-white/10' : 'bg-slate-100 dark:bg-slate-800'}`}
+          >
+            <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center text-amber-500">
+              <Landmark className="w-5 h-5" />
             </div>
-          )}
+            <div className="min-w-0">
+              <p
+                className={`truncate text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}
+              >
+                Mint
+              </p>
+              <p
+                className={`truncate text-xs font-mono ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
+              >
+                {mintLabel}
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Metrics Footer */}
         <div
-          className={`flex items-center justify-between text-xs pt-4 mt-4 border-t ${
-            market.imageUrl
-              ? 'border-white/10 text-slate-300'
-              : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-          }`}
+          className={`flex items-center justify-between text-xs pt-4 mt-4 border-t ${market.imageUrl ? 'border-white/10 text-slate-300' : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}
         >
           <div
             className="flex items-center gap-1 font-mono font-semibold text-amber-600 dark:text-amber-400"
@@ -305,13 +276,7 @@ export function MarketHeader({
           </div>
           <button
             onClick={() => toggleBookmark(market.id)}
-            className={`flex items-center cursor-pointer transition-colors ${
-              isBookmarked
-                ? 'text-rose-500'
-                : market.imageUrl
-                  ? 'text-slate-300 hover:text-rose-500'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-rose-500'
-            }`}
+            className={`flex items-center cursor-pointer transition-colors ${isBookmarked ? 'text-rose-500' : market.imageUrl ? 'text-slate-300 hover:text-rose-500' : 'text-slate-600 dark:text-slate-400 hover:text-rose-500'}`}
             title={
               isBookmarked ? t('market.removeBookmark') : t('market.bookmark')
             }

@@ -44,6 +44,9 @@ const categoricalEntry: MarketCatalogueEntry = {
   lastSuccessfulRefreshAt: '2026-05-02T09:58:00Z',
 }
 
+const creatorPubkey =
+  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+
 describe('mapCatalogueEntryToMarket', () => {
   it('maps a 2-outcome YES/NO entry to a yesno market', () => {
     const market = mapCatalogueEntryToMarket(yesNoEntry)
@@ -288,7 +291,28 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
   let fetchMock: ReturnType<typeof vi.fn>
   let originalFetch: typeof globalThis.fetch
 
-  function mintdConditionsResponse(): Response {
+  interface MintdPartition {
+    partition: string[]
+    collateral: string
+    parent_collection_id: string
+    keysets: Record<string, string>
+  }
+
+  const defaultPartitions: MintdPartition[] = [
+    {
+      partition: ['Yes', 'No'],
+      collateral: 'sat',
+      parent_collection_id: '0'.repeat(64),
+      keysets: {
+        keyset_a: '00'.repeat(32),
+        keyset_b: '11'.repeat(32),
+      },
+    },
+  ]
+
+  function mintdConditionsResponse(
+    partitions: MintdPartition[] = defaultPartitions,
+  ): Response {
     return new Response(
       JSON.stringify({
         conditions: [
@@ -297,17 +321,7 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
             tags: [['description', 'Will BTC hit 100K?']],
             threshold: 1,
             announcements: ['ann1'],
-            partitions: [
-              {
-                partition: ['Yes', 'No'],
-                collateral: 'sat',
-                parent_collection_id: '0'.repeat(64),
-                keysets: {
-                  keyset_a: '00'.repeat(32),
-                  keyset_b: '11'.repeat(32),
-                },
-              },
-            ],
+            partitions,
             attestation: {
               status: 'pending',
               winning_outcome: null,
@@ -388,8 +402,6 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
   })
 
   it('maps engine creatorPubkey into the detail creator card identity', async () => {
-    const creatorPubkey =
-      'npub1creatorpubkey000000000000000000000000000000000000000000000000'
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes('/v1/conditions')) return mintdConditionsResponse()
       if (url.includes('/api/v1/markets/query')) {
@@ -407,6 +419,24 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
     expect(detail.creator.name).toBe(
       `${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`,
     )
+  })
+
+  it('preserves oracle identity while explicitly degrading missing mint metadata', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse([])
+      if (url.includes('/api/v1/markets/query')) {
+        return engineQueryResponse(
+          'open',
+          '/api/v1/abc123/thumbnail',
+          creatorPubkey,
+        )
+      }
+      return emptyMetadataResponse()
+    })
+
+    const detail = await fetchMarketDetail('abc123')
+    expect(detail.creator.id).toBe(creatorPubkey)
+    expect(detail.mint).toBeUndefined()
   })
 
   it('regression: engine state="closed" overrides mintd attestation="pending"', async () => {
