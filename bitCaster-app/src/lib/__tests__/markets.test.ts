@@ -247,6 +247,11 @@ describe('getMarkets (engine catalogue proxy wiring)', () => {
     expect(url).toContain('page_size=50')
   })
 
+  it('forwards normalized search text as ?search=', async () => {
+    await getMarkets({ search: '  bitcoin oracle  ' })
+    expect(lastCallUrl()).toContain('search=bitcoin+oracle')
+  })
+
   it('shapes the response into Market objects with engine-derived fields', async () => {
     const result = await getMarkets()
     expect(result.markets).toHaveLength(1)

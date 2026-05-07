@@ -377,10 +377,10 @@ paths:
       operationId: queryMarkets
       summary: Catalogue proxy — list markets with filters, sort, and pagination
       description: >
-        Returns the public market catalogue, joining the engine's own
-        MarketRegistration projection with the mintd condition snapshot and
-        the trade-volume rollup. This is the read endpoint the markets list
-        page (`/markets`) and discovery surfaces consume.
+        Returns the public market catalogue with matching-engine market state,
+        mint condition data, and trading summary fields. This is the read
+        endpoint the markets list page (`/markets`) and discovery surfaces
+        consume.
 
         Anonymous by default. NIP-98 is OPTIONAL — when present, the request
         is authenticated and routed to a higher per-pubkey rate-limit bucket;
@@ -421,10 +421,10 @@ paths:
             enum: [Open, Closed, All]
             default: Open
           description: >
-            State filter against the engine's own `MarketRegistration.State`
-            field. Default is `Open`. Use `All` to include both Open and
-            Closed markets in a single response. The match is case-insensitive
-            on the wire (`open` works the same as `Open`).
+            State filter against the matching engine's lifecycle state.
+            Default is `Open`. Use `All` to include both Open and Closed
+            markets in a single response. The match is case-insensitive on
+            the wire (`open` works the same as `Open`).
         - name: creator_pubkey
           in: query
           required: false
@@ -436,7 +436,7 @@ paths:
             64-character lowercase hex Nostr pubkey. Different from
             `/api/v1/creators/{pubkey}/markets` — that endpoint returns the
             creator-dashboard volume rollup; this filter returns the full
-            catalogue projection.
+            catalogue response.
         - name: ids
           in: query
           required: false
@@ -447,6 +447,17 @@ paths:
             `?ids=abc,def,123`). Returns only the named markets that match the
             other filters. Capped at 100 ids per request — exceeding the cap
             is a 400.
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 200
+          description: >
+            Full-text market search query. When present, results are ordered by
+            relevance. The active `tag`, `state`, `creator_pubkey`, and `ids`
+            filters also constrain the search. Capped at 200 normalized
+            characters.
         - name: sort
           in: query
           required: false
@@ -684,8 +695,7 @@ components:
           type: string
           description: >
             One of: "resting" (on book, unmatched), "partially_filled",
-            "filled", "cancelled". The InMemoryMatchingEngine only ever
-            returns "resting" — matching semantics live in the real engine.
+            "filled", "cancelled".
         remainingAmountSats:
           $ref: '#/components/schemas/Sats'
         filledAmountSats:
@@ -1121,7 +1131,7 @@ components:
           description: >
             Creator's Nostr pubkey (64-char lowercase hex), captured at
             registration time via NIP-98. Null on legacy markets that
-            predate the creator-tracking projection.
+            predate creator tracking.
         deadline:
           type: string
           format: date-time
@@ -1135,14 +1145,13 @@ components:
           enum: [open, closed]
           description: >
             Engine-side lifecycle state. `open` accepts new orders; `closed`
-            does not. Source of truth is the engine's own
-            `MarketRegistration.State` field, NOT mintd's attestation status.
+            does not. Source of truth is the matching engine's lifecycle state,
+            NOT mintd's attestation status.
         createdAt:
           type: string
           format: date-time
           description: >
-            When the market was registered with the engine
-            (RegisterMarketCommand timestamp).
+            When the market was registered with the matching engine.
         volume24hSats:
           type: integer
           format: int64
@@ -1177,7 +1186,7 @@ components:
             When the engine last successfully pulled the mintd condition
             snapshot used to populate this entry's mintd-sourced fields.
             Mirrored on every entry so callers can render staleness
-            indicators per market without an additional projection.
+            indicators per market without an additional request.
 
     MarketCatalogueResponse:
       type: object
@@ -1230,4 +1239,3 @@ components:
         instance:
           type: string
           description: A URI reference identifying the specific occurrence.
-

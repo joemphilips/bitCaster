@@ -1,12 +1,20 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { MarketDiscovery } from '@/components/markets'
 import { getMarkets, filterMarkets } from '@/lib/markets'
 import { DEFAULT_MARKET_SORT, type MarketSort } from '@/hooks/useMarketSort'
-import type { Market, MarketType, VolumeRange, FilterState, CategoryTag } from '@/types/market'
+import type {
+  Market,
+  MarketType,
+  VolumeRange,
+  FilterState,
+  CategoryTag,
+} from '@/types/market'
 
 export function MarketsPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const searchQuery = searchParams.get('search')?.trim() ?? ''
   const [markets, setMarkets] = useState<Market[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -32,18 +40,20 @@ export function MarketsPage() {
     setError(null)
     setNextCursor(null)
     const tags = selectedTags.length > 0 ? selectedTags : undefined
-    getMarkets({ sort, tags })
+    getMarkets({ sort, tags, search: searchQuery || undefined })
       .then((result) => {
         setMarkets(result.markets)
         setNextCursor(result.nextCursor)
       })
       .catch(() => {
-        setError('Failed to load markets. Please check that the matching engine is running.')
+        setError(
+          'Failed to load markets. Please check that the matching engine is running.',
+        )
       })
       .finally(() => {
         setLoading(false)
       })
-  }, [sort, selectedTags])
+  }, [sort, selectedTags, searchQuery])
 
   useEffect(() => {
     loadMarkets()
@@ -63,13 +73,13 @@ export function MarketsPage() {
     }))
   }, [markets])
 
-  // Search / market-type / volume / closing-date filters stay client-side —
-  // the engine endpoint exposes only `tag` and `state`. Tag selection is
-  // pushed up to the API call, so we strip it from the client filter to
-  // avoid double-applying.
+  // Market-type / volume / closing-date filters stay client-side. Search and
+  // tag selection are pushed up to the API call, so we strip them from the
+  // client filter to avoid double-applying.
   const filteredMarkets = useMemo(
-    () => filterMarkets(markets, { ...filter, selectedTags: [] }),
-    [markets, filter]
+    () =>
+      filterMarkets(markets, { ...filter, searchQuery: '', selectedTags: [] }),
+    [markets, filter],
   )
 
   const handleTagSelect = useCallback((tagId: string) => {
@@ -96,15 +106,23 @@ export function MarketsPage() {
     setFilter((prev) => ({ ...prev, closingInDays: days }))
   }, [])
 
-  const handleViewMarket = useCallback((marketId: string) => {
-    navigate(`/markets/${marketId}`)
-  }, [navigate])
+  const handleViewMarket = useCallback(
+    (marketId: string) => {
+      navigate(`/markets/${marketId}`)
+    },
+    [navigate],
+  )
 
   const handleLoadMore = useCallback(() => {
     if (!nextCursor || loadingMore) return
     setLoadingMore(true)
     const tags = selectedTags.length > 0 ? selectedTags : undefined
-    getMarkets({ sort, tags, cursor: nextCursor })
+    getMarkets({
+      sort,
+      tags,
+      search: searchQuery || undefined,
+      cursor: nextCursor,
+    })
       .then((result) => {
         setMarkets((prev) => [...prev, ...result.markets])
         setNextCursor(result.nextCursor)
@@ -116,13 +134,13 @@ export function MarketsPage() {
       .finally(() => {
         setLoadingMore(false)
       })
-  }, [nextCursor, loadingMore, sort, selectedTags])
+  }, [nextCursor, loadingMore, sort, selectedTags, searchQuery])
 
   const handleViewSecondaryMarket = useCallback(
     (_baseMarketId: string, secondaryMarketId: string) => {
       navigate(`/markets/${secondaryMarketId}`)
     },
-    [navigate]
+    [navigate],
   )
 
   if (loading) {
@@ -153,6 +171,7 @@ export function MarketsPage() {
       markets={filteredMarkets}
       selectedTags={selectedTags}
       sort={sort}
+      searchQuery={searchQuery}
       onSortChange={setSort}
       onTagSelect={handleTagSelect}
       onClearTags={handleClearTags}

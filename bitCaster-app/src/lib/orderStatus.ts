@@ -10,9 +10,7 @@ import { useActiveSwapsStore } from '@/stores/activeSwaps'
 export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
 
 /**
- * Mirrors `OrderStatusResponse.status` from `openapi.yaml`. "resting" is the
- * only status the InMemoryMatchingEngine ever returns today; the real engine
- * reports the full set.
+ * Mirrors `OrderStatusResponse.status` from `openapi.yaml`.
  */
 export type OrderStatus =
   | 'resting'

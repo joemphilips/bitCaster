@@ -4,8 +4,8 @@ using BitCaster.MatchingEngine.Contracts;
 namespace BitCaster.InMemoryMatchingEngine;
 
 /// <summary>
-/// In-memory matching-engine stub. Implements just enough of the real engine's
-/// behaviour to keep the frontend dev/E2E loop moving:
+/// In-memory matching-engine stub. Implements just enough catalogue/order
+/// behavior to keep the frontend dev/E2E loop moving:
 ///
 /// <list type="bullet">
 /// <item>Per-market FIFO order book at each price level (price-time priority).</item>
@@ -19,8 +19,7 @@ namespace BitCaster.InMemoryMatchingEngine;
 ///
 /// <para>
 /// The mock's only state is an in-memory <see cref="ConcurrentDictionary{TKey, TValue}"/>
-/// per market — it has no Sekiban runtime and is never deployed; the
-/// production engine continues to own real persistence.
+/// per market. It is dev/E2E scaffolding, not production persistence.
 /// </para>
 ///
 /// <para>

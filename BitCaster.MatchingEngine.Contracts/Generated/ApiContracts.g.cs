@@ -237,7 +237,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string MarketId { get; }
 
         /// <summary>
-        /// One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled". The InMemoryMatchingEngine only ever returns "resting" — matching semantics live in the real engine.
+        /// One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled".
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("status")]
@@ -1048,7 +1048,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ThumbnailUrl { get; }
 
         /// <summary>
-        /// Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate the creator-tracking projection.
+        /// Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
@@ -1062,7 +1062,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset? Deadline { get; }
 
         /// <summary>
-        /// Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the engine's own `MarketRegistration.State` field, NOT mintd's attestation status.
+        /// Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("state")]
@@ -1070,7 +1070,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public MarketCatalogueEntryState State { get; }
 
         /// <summary>
-        /// When the market was registered with the engine (RegisterMarketCommand timestamp).
+        /// When the market was registered with the matching engine.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
@@ -1105,7 +1105,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<string> CategoryTags { get; }
 
         /// <summary>
-        /// When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional projection.
+        /// When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("lastSuccessfulRefreshAt")]

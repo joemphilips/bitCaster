@@ -132,6 +132,8 @@ export interface GetMarketsParams {
   cursor?: string
   /** Page size (default 20, max 50). */
   pageSize?: number
+  /** Full-text market search query. */
+  search?: string
 }
 
 export interface GetMarketsResult {
@@ -153,6 +155,7 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
   if (params.state) search.set('state', params.state)
   if (params.cursor) search.set('cursor', params.cursor)
   if (params.pageSize) search.set('page_size', String(params.pageSize))
+  if (params.search?.trim()) search.set('search', params.search.trim())
   for (const t of params.tags ?? []) search.append('tag', t)
   // ?ids= is comma-separated per the OpenAPI spec, not repeated.
   if (params.ids && params.ids.length > 0)
@@ -162,11 +165,9 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
 }
 
 /**
- * Convert one engine catalogue entry into the frontend `Market` shape used
- * by the markets-list view. The engine projection already carries the merged
- * mintd snapshot (outcomes, deadline) plus engine-derived fields (volume,
- * createdAt, last-traded price, state); the mapper just shapes them into the
- * existing `Market` union without re-fetching mintd.
+ * Convert one catalogue entry into the frontend `Market` shape used by the
+ * markets-list view. The response already carries the public market data the
+ * list needs; the mapper just shapes it into the existing `Market` union.
  */
 export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const outcomes = entry.outcomes ?? []
@@ -220,12 +221,10 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
 }
 
 /**
- * Fetch a page of markets from the engine's catalogue proxy
- * (`GET /api/v1/markets/query`). Mintd remains authoritative for outcomes /
- * deadline / creator pubkey; the engine layers its own projections on top
- * (state, volume, lastTradedPrice, createdAt). The frontend trust contract
- * (ADR-009) is: the markets-list page may rely on this response, but the
- * market-detail page MUST verify market existence directly against mintd.
+ * Fetch a page of markets from the matching-engine catalogue API
+ * (`GET /api/v1/markets/query`). The frontend trust contract (ADR-009) is:
+ * the markets-list page may rely on this response, but the market-detail page
+ * MUST verify market existence directly against mintd.
  */
 export async function getMarkets(
   params: GetMarketsParams = {},

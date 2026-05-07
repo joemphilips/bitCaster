@@ -479,11 +479,10 @@ public class MarketCreationTests : IAsyncLifetime
             createResponse.IsSuccessStatusCode || createResponse.StatusCode == System.Net.HttpStatusCode.Conflict,
             $"createMarket failed: {createResponse.StatusCode} {await createResponse.Content.ReadAsStringAsync()}");
 
-        // Per ADR-009 the markets-list page now consumes the engine's
-        // `/api/v1/markets/query` proxy. Intercept that surface so the
-        // markets list reliably surfaces the freshly-registered market
-        // with the test-controlled title even if the engine projection has
-        // not yet caught up to mintd.
+        // Per ADR-009 the markets-list page consumes
+        // `/api/v1/markets/query`. Intercept that surface so the markets list
+        // reliably surfaces the freshly-registered market with the
+        // test-controlled title.
         var queryJson = System.Text.Json.JsonSerializer.Serialize(new
         {
             markets = new object[]

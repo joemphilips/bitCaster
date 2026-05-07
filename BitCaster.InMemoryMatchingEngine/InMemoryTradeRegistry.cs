@@ -10,9 +10,8 @@ namespace BitCaster.InMemoryMatchingEngine;
 /// sides report they have swapped at the mint.
 ///
 /// <para>
-/// Mock-only — never compiled into the real engine. The real engine persists
-/// trades in a Sekiban aggregate with full schnorr-authenticated party ids;
-/// the mock is a byte relay and does not verify identities.
+/// Mock-only: this is a byte relay for frontend dev/E2E and does not verify
+/// identities.
 /// </para>
 /// </summary>
 public class InMemoryTradeRegistry
@@ -35,10 +34,8 @@ public class InMemoryTradeRegistry
     /// locktime, so that Bob has time to extract <c>t</c> from Alice's mint
     /// spend before his own refund window opens. See
     /// bitCaster/bitCaster-doc/src/content/docs/technical/protocol/atomic-swap.md
-    /// §"Locktime Constraints". The 1h gap is arbitrary in the mock — the
-    /// real engine uses a 30-second gap — but the ordering must agree with
-    /// the engine so frontend devs running against the mock see the same
-    /// shape.
+    /// §"Locktime Constraints". The 1h gap is arbitrary in the mock, but the
+    /// ordering must match the public protocol shape.
     /// </summary>
     public TradeRecord Register(Guid tradeId, string sellerPubkey, string buyerPubkey)
     {

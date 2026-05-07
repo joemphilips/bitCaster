@@ -11,13 +11,13 @@ User Browser (PWA)
   │  cashu-ts   ←→  CDK mintd (Azure Container Apps)
   │  NDK        ←→  Nostr relays (oracle announcements)
   │  NWC        ←→  Lightning wallet (top-up)
-  │  SignalR    ←→  Matching Engine (price feed)
-  │  REST       ←→  Matching Engine (order submission)
+  │  SignalR    ←→  Matching Engine API (price feed)
+  │  REST       ←→  Matching Engine API (order submission)
   │
   └─ Azure Static Web Apps (CDN)
 
-Matching Engine (private repo: bitCaster-matching-engine)
-  └─ In-memory order books (ConcurrentDictionary per market)
+Matching Engine API
+  └─ Public REST / SignalR contract defined by this repo
 
 CDK mintd
   ├─ PostgreSQL Flexible Server (state)
@@ -32,6 +32,12 @@ Every communication should be defined as an open protocol:
 
 - bitCaster-app ↔ cdk — defined in `nuts/`
 - bitCaster-app ↔ matching engine — defined in yaml specs under `BitCaster.MatchingEngine.Contracts/specs/`
+
+Public contracts and docs in this submodule must describe only wire-visible
+behavior: endpoints, schemas, authentication, errors, state semantics, and
+client obligations. Do not mention non-public service repositories or backend
+implementation choices in `BitCaster.MatchingEngine.Contracts/`,
+`bitCaster-app/`, or `bitCaster-doc/`.
 
 ### User-specific state must handled by client-side
 
@@ -55,7 +61,8 @@ tools/               Dev tooling (seed scripts, worktree-services.sh, build-korm
 tests/E2E/           Playwright E2E tests (xUnit)
 ```
 
-The real CLOB matching engine is a **private repo** one level above (`bitCaster-matching-engine`); it references `BitCaster.MatchingEngine.Contracts` via submodule.
+The matching engine is an external service from this public repo's perspective.
+This repo owns only the public contract, mock/dev server, frontend, and docs.
 
 ## Nostr Usage
 

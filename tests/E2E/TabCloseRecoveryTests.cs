@@ -32,16 +32,11 @@ namespace BitCaster.E2ETest;
 ///
 /// <para>
 /// Runs against the in-memory mock (Hubs/TradeHub.cs in
-/// BitCaster.InMemoryMatchingEngine) — that hub is the only TradeHub the
-/// frontend E2E suite can reach (the Sekiban-backed real engine runs
-/// inside the outer matching-engine repo's AppHost). The mock's TradeHub
-/// is byte-relay only: it does not retain prior <c>SwapMessageReceived</c>
-/// payloads, so a recovery test that drives all the way to
-/// <c>TradeStateChanged → Confirmed</c> is structurally not achievable
-/// against the current mock — that requires Sekiban-style event replay
-/// in the engine, which is in scope for the outer repo's E2E suite, not
-/// here. This test therefore narrows to the recovery primitives the
-/// plan's A.6 row actually asserts.
+/// BitCaster.InMemoryMatchingEngine). The mock's TradeHub is byte-relay only:
+/// it does not retain prior <c>SwapMessageReceived</c> payloads, so a recovery
+/// test that drives all the way to <c>TradeStateChanged → Confirmed</c> is
+/// structurally not achievable here. This test therefore narrows to the
+/// recovery primitives the plan's A.6 row actually asserts.
 /// </para>
 ///
 /// <para>

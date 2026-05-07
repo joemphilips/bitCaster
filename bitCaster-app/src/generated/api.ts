@@ -248,7 +248,7 @@ export interface paths {
         };
         /**
          * Catalogue proxy — list markets with filters, sort, and pagination
-         * @description Returns the public market catalogue, joining the engine's own MarketRegistration projection with the mintd condition snapshot and the trade-volume rollup. This is the read endpoint the markets list page (`/markets`) and discovery surfaces consume.
+         * @description Returns the public market catalogue with matching-engine market state, mint condition data, and trading summary fields. This is the read endpoint the markets list page (`/markets`) and discovery surfaces consume.
          *     Anonymous by default. NIP-98 is OPTIONAL — when present, the request is authenticated and routed to a higher per-pubkey rate-limit bucket; when absent, the per-IP bucket applies. Authentication does NOT change the response shape or visibility — every market visible to an anonymous caller is also visible to an authenticated caller and vice versa.
          *     Source-of-truth split: mintd is authoritative for `outcomes`, `creatorPubkey`, `deadline`, and (Phase 1) `attestation/close`; the engine is authoritative for `state` (Open/Closed lifecycle), `volume*`, `lastTradedPrice`, and `createdAt` (RegisterMarket timestamp). A market registered on the engine but absent from the mintd snapshot is omitted from the response, and vice versa — both sides must know about the market for it to surface.
          */
@@ -338,7 +338,7 @@ export interface components {
             orderId: string;
             /** @description The market this order belongs to. */
             marketId: string;
-            /** @description One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled". The InMemoryMatchingEngine only ever returns "resting" — matching semantics live in the real engine. */
+            /** @description One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled". */
             status: string;
             remainingAmountSats: components["schemas"]["Sats"];
             filledAmountSats: components["schemas"]["Sats"];
@@ -545,7 +545,7 @@ export interface components {
             title?: string | null;
             /** @description Optional thumbnail URL. Null when no thumbnail was uploaded. */
             thumbnailUrl?: string | null;
-            /** @description Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate the creator-tracking projection. */
+            /** @description Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking. */
             creatorPubkey?: string | null;
             /**
              * Format: date-time
@@ -553,13 +553,13 @@ export interface components {
              */
             deadline?: string | null;
             /**
-             * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the engine's own `MarketRegistration.State` field, NOT mintd's attestation status.
+             * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
              * @enum {string}
              */
             state: "open" | "closed";
             /**
              * Format: date-time
-             * @description When the market was registered with the engine (RegisterMarketCommand timestamp).
+             * @description When the market was registered with the matching engine.
              */
             createdAt: string;
             /**
@@ -578,7 +578,7 @@ export interface components {
             categoryTags: string[];
             /**
              * Format: date-time
-             * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional projection.
+             * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
              */
             lastSuccessfulRefreshAt: string;
         };
@@ -1130,12 +1130,14 @@ export interface operations {
             query?: {
                 /** @description Repeatable category tag filter (e.g. `?tag=politics&tag=tech`). A market matches when at least one of its category tags matches at least one supplied tag (OR semantics across the supplied tags). */
                 tag?: string[];
-                /** @description State filter against the engine's own `MarketRegistration.State` field. Default is `Open`. Use `All` to include both Open and Closed markets in a single response. The match is case-insensitive on the wire (`open` works the same as `Open`). */
+                /** @description State filter against the matching engine's lifecycle state. Default is `Open`. Use `All` to include both Open and Closed markets in a single response. The match is case-insensitive on the wire (`open` works the same as `Open`). */
                 state?: "Open" | "Closed" | "All";
-                /** @description Restrict the result to markets whose creator pubkey matches. 64-character lowercase hex Nostr pubkey. Different from `/api/v1/creators/{pubkey}/markets` — that endpoint returns the creator-dashboard volume rollup; this filter returns the full catalogue projection. */
+                /** @description Restrict the result to markets whose creator pubkey matches. 64-character lowercase hex Nostr pubkey. Different from `/api/v1/creators/{pubkey}/markets` — that endpoint returns the creator-dashboard volume rollup; this filter returns the full catalogue response. */
                 creator_pubkey?: string;
                 /** @description Comma-separated list of conditionIds to bulk-fetch (e.g. `?ids=abc,def,123`). Returns only the named markets that match the other filters. Capped at 100 ids per request — exceeding the cap is a 400. */
                 ids?: string;
+                /** @description Full-text market search query. When present, results are ordered by relevance. The active `tag`, `state`, `creator_pubkey`, and `ids` filters also constrain the search. Capped at 200 normalized characters. */
+                search?: string;
                 /** @description Sort dimension. `Trending` orders by 24h trading volume descending; `Popular` orders by 30d trading volume descending; `New` orders by RegisterMarket timestamp descending. Ties on the sort dimension break by `conditionId` ascending so paginated streams remain deterministic. */
                 sort?: "Trending" | "Popular" | "New";
                 /** @description Opaque pagination token returned in `nextCursor` from a previous page. The engine HMAC-signs cursors before returning them and verifies the signature before reading the underlying boundary — tampered or unsigned cursors are 400. Omit for the first page. */

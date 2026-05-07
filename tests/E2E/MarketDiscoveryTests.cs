@@ -63,6 +63,25 @@ public class MarketDiscoveryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NavigateToMarkets_WithSearch_ShowsMatchingSeededMarketOnly()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupComplete(page);
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets?search=NBA", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var nbaMarket = page.GetByText("2026 NBA Championship Winner");
+        await Assertions.Expect(nbaMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
+
+        var btcMarket = page.GetByText("Will Bitcoin reach $100K");
+        await Assertions.Expect(btcMarket).ToHaveCountAsync(0);
+    }
+
+    [Fact]
     public async Task ClickBuyYes_NavigatesToMarketDetail()
     {
         await using var context = await NewIsolatedContextAsync();

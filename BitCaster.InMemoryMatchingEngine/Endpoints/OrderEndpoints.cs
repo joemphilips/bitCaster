@@ -148,8 +148,8 @@ public static class OrderEndpoints
     }
 
     // A 33-byte compressed secp256k1 pubkey renders as 66 hex chars, starting
-    // with 02 or 03. We're not verifying the point is on-curve here — the
-    // mock engine is a byte relay, and the real engine can do full validation.
+    // with 02 or 03. We're not verifying the point is on-curve here because
+    // the mock engine is only a byte relay.
     private static bool IsValidCompressedPubkey(string? hex)
     {
         if (string.IsNullOrEmpty(hex) || hex.Length != 66) return false;

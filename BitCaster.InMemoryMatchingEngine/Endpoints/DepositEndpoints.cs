@@ -4,11 +4,9 @@ using BitCaster.MatchingEngine.Contracts;
 namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 
 /// <summary>
-/// Stub endpoints for the deposit/funding flow. The real engine routes
-/// these through the wallet-service microservice (Phase 2 onward); the
-/// mock just records each deposit in memory and auto-transitions through
-/// the lifecycle on a short delay so the frontend wizard's polling UX has
-/// realistic states to render against.
+/// Stub endpoints for the deposit/funding flow. The mock records each deposit
+/// in memory and auto-transitions through the lifecycle on a short delay so
+/// the frontend wizard's polling UX has realistic states to render against.
 ///
 /// Per the submodule-independence rule (bitCaster/AGENTS.md), this mock is
 /// not a fidelity reimplementation — it is the smallest behaviour that
@@ -42,7 +40,7 @@ public static class DepositEndpoints
                 expiresAt,
                 FailureReason: null);
             // Plausible-but-fake bolt11 — long enough to look real to UI components,
-            // never actually decodes. Real engine returns a real LNBits invoice.
+            // never actually decodes.
             var fakeBolt11 = $"lnbcrt{req.AmountSats}n1pq{depositId:N}stub";
             return Results.Ok(new RequestLnInvoiceDepositResponse(fakeBolt11, depositId, expiresAt));
         });
@@ -59,8 +57,7 @@ public static class DepositEndpoints
             var depositId = Guid.NewGuid();
             var now = DateTimeOffset.UtcNow;
             // Ecash skips Requested → Paid (we trust the caller) and lets the
-            // mock's auto-transition timer credit it. Mirrors the real engine's
-            // Phase-1 stub semantics.
+            // mock's auto-transition timer credit it.
             Deposits[depositId] = new MockDeposit(
                 depositId,
                 conditionId,

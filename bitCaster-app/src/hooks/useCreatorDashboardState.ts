@@ -32,12 +32,12 @@ interface UseCreatorDashboardStateResult {
  * components. Each market combines:
  *
  *  - Local wizard record (title, thumbnail, createdAt, creator fee %) — always present.
- *  - Backend volume lookup by conditionId — falls back to `0` when the engine
- *    has not indexed the market yet (e.g. real engine Phase 1 stub).
+ *  - Backend volume lookup by conditionId — falls back to `0` when catalogue
+ *    volume is not available yet.
  *
  * Fees are stubbed to `0` for v1 since the matching engine does not accrue
- * them. Status is always `active` because neither the mock nor the real engine
- * exposes resolution state yet.
+ * them. Status is always `active` until the public API exposes resolution
+ * state.
  */
 function buildCreatedMarket(
   stored: StoredCreatorMarket,

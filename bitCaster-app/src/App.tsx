@@ -74,6 +74,16 @@ function ShellRoutes() {
       navigationItems={navigationItems}
       user={user}
       onNavigate={(href) => navigate(href)}
+      onSearchChange={(query) => {
+        const trimmed = query.trim();
+        navigate(
+          {
+            pathname: "/markets",
+            search: trimmed ? `?search=${encodeURIComponent(trimmed)}` : "",
+          },
+          { replace: location.pathname.startsWith("/markets") },
+        );
+      }}
       onCreateClick={() => navigate("/creator")}
     >
       <Routes>

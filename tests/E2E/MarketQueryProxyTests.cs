@@ -12,7 +12,7 @@ namespace BitCaster.E2ETest;
 /// portfolio surface uses the <c>?ids=</c> bulk-fetch path.
 ///
 /// Tests intercept the engine endpoint with <see cref="IPage.RouteAsync"/>
-/// so the assertions run regardless of the in-memory mock's projection
+/// so the assertions run regardless of the in-memory mock's current
 /// state — what's under test here is the wiring on the frontend side.
 /// </summary>
 public class MarketQueryProxyTests : IAsyncLifetime
@@ -75,7 +75,7 @@ public class MarketQueryProxyTests : IAsyncLifetime
 
     /// <summary>
     /// T2.f.a — the markets list calls /api/v1/markets/query and renders the
-    /// engine-projected titles. The deprecated mintd-direct path
+    /// API-provided titles. The deprecated mintd-direct path
     /// (/v1/conditions) MUST NOT be used.
     /// </summary>
     [Fact]
@@ -178,6 +178,57 @@ public class MarketQueryProxyTests : IAsyncLifetime
         {
             throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
                 $"Sort selector did not forward sort=New (queryUrls={string.Join(',', queryUrls)})");
+        }
+    }
+
+    /// <summary>
+    /// Search text in the shell navigates to `/markets?search=...` and
+    /// forwards the same query to the catalogue API.
+    /// </summary>
+    [Fact]
+    public async Task ShellSearch_ForwardsSearchQueryParameter()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+
+        var queryUrls = new List<string>();
+        await page.RouteAsync("**/api/v1/markets/query*", async route =>
+        {
+            queryUrls.Add(route.Request.Url);
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = CatalogueResponse(("search01", "Bitcoin oracle search result", new[] { "crypto" })),
+            });
+        });
+
+        await SetupComplete(page);
+        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var searchBox = page.GetByPlaceholder("Search markets...").First;
+        await Assertions.Expect(searchBox).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await searchBox.FillAsync("bitcoin oracle");
+
+        try
+        {
+            await Assertions.Expect(page).ToHaveURLAsync(
+                new System.Text.RegularExpressions.Regex(@"\/markets\?search=bitcoin%20oracle"),
+                new() { Timeout = 5_000 });
+            await PollUntilAsync(
+                () => queryUrls.Any(u => u.Contains("search=bitcoin+oracle") || u.Contains("search=bitcoin%20oracle")),
+                timeout: TimeSpan.FromSeconds(5),
+                description: "engine query with search=bitcoin oracle");
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                $"Search box did not forward search=bitcoin oracle (queryUrls={string.Join(',', queryUrls)})");
         }
     }
 

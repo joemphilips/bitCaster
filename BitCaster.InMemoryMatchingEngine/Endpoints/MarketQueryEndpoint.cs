@@ -5,19 +5,19 @@ namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 
 /// <summary>
 /// Stub for the engine's catalogue proxy (`GET /api/v1/markets/query`,
-/// ADR-009). The real engine merges its own `MarketRegistration` projection
-/// with the mintd-mirror snapshot; this mock skips the projection layer and
-/// returns mintd's `/v1/conditions` re-shaped as catalogue entries so the
-/// frontend dev/E2E flow works against the seeded test data.
+/// ADR-009). The mock returns mintd's `/v1/conditions` re-shaped as catalogue
+/// entries so the frontend dev/E2E flow works against the seeded test data.
 ///
 /// Sort, pagination, rate-limiting, and HMAC-signed cursors are deliberately
 /// not implemented — the mock hands back every condition that survives the
-/// `?ids=` / `?state=` filters in a single response with `nextCursor = null`.
-/// Tests that need to exercise the cursor edge cases mock the endpoint
-/// directly via Playwright `RouteAsync`.
+/// `?ids=` / `?state=` / `?search=` filters in a single response with
+/// `nextCursor = null`. Tests that need to exercise cursor edge cases mock the
+/// endpoint directly via Playwright `RouteAsync`.
 /// </summary>
 public static class MarketQueryEndpoint
 {
+    private const int MaxSearchLength = 200;
+
     private static readonly JsonSerializerOptions ConditionsJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -37,11 +37,18 @@ public static class MarketQueryEndpoint
             if (state is null)
                 return Results.BadRequest("state must be one of: Open, Closed, All");
 
+            var search = ParseSearchQuery(request.Query["search"]);
+            if (search.Status == SearchParseStatus.InvalidLength)
+                return Results.BadRequest("search exceeds the 200-character cap");
+            if (search.Status == SearchParseStatus.InvalidControlCharacters)
+                return Results.BadRequest("search must not contain control characters");
+
             var refreshedAt = DateTimeOffset.UtcNow;
             var conditions = await TryReadConditionsAsync(httpClientFactory);
             var entries = conditions
                 .Where(c => MatchesIdsFilter(c, ids))
                 .Where(c => MatchesStateFilter(c, state.Value))
+                .Where(c => MatchesSearchFilter(c, search.Terms))
                 .Select(c => ToCatalogueEntry(c, refreshedAt))
                 .ToList();
 
@@ -91,6 +98,33 @@ public static class MarketQueryEndpoint
             StateFilter.Closed => !open,
             _ => true,
         };
+    }
+
+    private static SearchParseResult ParseSearchQuery(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return new SearchParseResult(SearchParseStatus.Valid, []);
+        var normalized = string.Join(' ', raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (normalized.Length > MaxSearchLength) return new SearchParseResult(SearchParseStatus.InvalidLength, []);
+        if (normalized.Any(char.IsControl)) return new SearchParseResult(SearchParseStatus.InvalidControlCharacters, []);
+        return new SearchParseResult(
+            SearchParseStatus.Valid,
+            normalized
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(t => t.ToLowerInvariant())
+                .ToArray());
+    }
+
+    private static bool MatchesSearchFilter(MintdConditionDto c, IReadOnlyList<string> terms)
+    {
+        if (terms.Count == 0) return true;
+        var haystack = string.Join(' ', new[]
+        {
+            c.ConditionId,
+            c.Title,
+            string.Join(' ', c.Outcomes),
+            string.Join(' ', c.CategoryTags),
+        }).ToLowerInvariant();
+        return terms.All(haystack.Contains);
     }
 
     private static MarketCatalogueEntry ToCatalogueEntry(MintdConditionDto c, DateTimeOffset refreshedAt)
@@ -197,4 +231,8 @@ public static class MarketQueryEndpoint
             return outcomes;
         }
     }
+
+    private enum SearchParseStatus { Valid, InvalidLength, InvalidControlCharacters }
+
+    private sealed record SearchParseResult(SearchParseStatus Status, IReadOnlyList<string> Terms);
 }
