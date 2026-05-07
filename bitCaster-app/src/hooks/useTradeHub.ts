@@ -19,6 +19,7 @@ import {
   HttpTransportType,
   type HubConnection,
 } from '@microsoft/signalr'
+import { resolveHubServerUrl } from '@/lib/hubUrl'
 import { generateNip98AuthHeader, tradeHubUrl } from '@/lib/nip98'
 
 // ---------------------------------------------------------------------------
@@ -56,7 +57,7 @@ export interface TradeHubActions {
 // Hook
 // ---------------------------------------------------------------------------
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:5000'
+const SERVER_URL = resolveHubServerUrl()
 
 /**
  * Connect to the TradeHub and register event handlers.

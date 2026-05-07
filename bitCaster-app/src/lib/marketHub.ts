@@ -19,12 +19,13 @@ import {
   type HubConnection,
 } from '@microsoft/signalr'
 import type { components } from '@/generated/api'
+import { resolveHubServerUrl } from '@/lib/hubUrl'
 
 export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
 
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:5000'
+const SERVER_URL = resolveHubServerUrl()
 const HUB_URL = `${SERVER_URL}/hubs/market`
 
 // ---------------------------------------------------------------------------
