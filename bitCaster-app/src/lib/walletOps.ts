@@ -32,15 +32,15 @@ export function getKnownMints(): StoredMint[] {
 }
 
 export async function userAddAndSelectMint(url: string): Promise<void> {
-  await useWalletStore.getState().addMint(url)
+  await useWalletStore.getState()._addMint(url)
 }
 
 export function userSwitchActiveMint(url: string): void {
-  useWalletStore.getState().setActiveMint(url)
+  useWalletStore.getState()._setActiveMint(url)
 }
 
 export function userRemoveMint(url: string): void {
-  useWalletStore.getState().removeMint(normalizeUrl(url))
+  useWalletStore.getState()._removeMint(normalizeUrl(url))
 }
 
 export function normalizeRelayUrl(wssUrl: string): string {
@@ -89,7 +89,7 @@ export async function ingressRegisterMint(
   if (store.mints.some((m) => m.url === mintUrl)) {
     return { added: false, mintUrl, source }
   }
-  await store.addMintWithoutActivating(mintUrl)
+  await store._addMintWithoutActivating(mintUrl)
   return { added: true, mintUrl, source }
 }
 

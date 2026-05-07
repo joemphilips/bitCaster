@@ -40,10 +40,10 @@ describe('walletOps facade', () => {
     useWalletStore.setState({
       mints: [{ url: 'https://active.mint', info: { name: 'Active' } }],
       activeMintUrl: 'https://active.mint',
-      addMint: addMint as never,
-      addMintWithoutActivating: addMintWithoutActivating as never,
-      removeMint: removeMint as never,
-      setActiveMint: setActiveMint as never,
+      _addMint: addMint as never,
+      _addMintWithoutActivating: addMintWithoutActivating as never,
+      _removeMint: removeMint as never,
+      _setActiveMint: setActiveMint as never,
     })
     useSettingsStore.setState({
       relays: [],

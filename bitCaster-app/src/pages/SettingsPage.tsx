@@ -5,12 +5,13 @@ import { useWalletStore, DEFAULT_MINT_URL } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
 import { detectMintCapabilities } from '@/lib/mints'
-import { userAddAndSelectMint, userAddRelay, userRemoveMint, userRemoveRelay } from '@/lib/walletOps'
 import {
-  loginWithExtension,
-  loginWithNsecOrNcryptsec,
-  fetchAndStoreNostrProfile,
-} from '@/lib/nostr'
+  disconnectNostrIdentity,
+  refreshNostrProfile,
+  userConnectNostrSignerMode,
+  userConnectNsecIdentity,
+} from '@/lib/identityOps'
+import { userAddAndSelectMint, userAddRelay, userRemoveMint, userRemoveRelay } from '@/lib/walletOps'
 import type {
   SettingsState,
   MintConfig,
@@ -104,11 +105,8 @@ export function SettingsPage() {
   )
 
   const handleDisconnectNostr = useCallback(() => {
-    // `setSignerMode('none')` also wipes `nsecSecret` (see settings store),
-    // so no separate `setNsecSecret(null)` call is needed here.
-    settingsStore.setSignerMode('none')
-    settingsStore.setProfile(null, 'idle')
-  }, [settingsStore])
+    disconnectNostrIdentity()
+  }, [])
 
   const handleRemoveMint = useCallback(
     (url: string) => {
@@ -126,57 +124,35 @@ export function SettingsPage() {
 
   const handleSignerModeChange = useCallback(
     async (mode: NostrSignerMode): Promise<boolean> => {
-      settingsStore.setSignerMode(mode)
-      if (mode === 'nip07') {
-        try {
-          await loginWithExtension()
-          fetchAndStoreNostrProfile()
-          return true
-        } catch {
-          settingsStore.setProfile(null, 'not-found')
-          useToastStore.getState().addToast({
-            type: 'error',
-            message: 'Failed to connect with NIP-07 extension',
-          })
-          return false
-        }
-      } else if (mode === 'none') {
-        settingsStore.setProfile(null, 'idle')
+      const result = await userConnectNostrSignerMode(mode)
+      if (!result.ok) {
+        useToastStore.getState().addToast({
+          type: 'error',
+          message: result.error ?? 'Failed to connect Nostr signer',
+        })
       }
-      return true
+      return result.ok
     },
-    [settingsStore],
+    [],
   )
 
   const handleNsecSubmit = useCallback(
     async (nsec: string, passphrase?: string): Promise<boolean> => {
-      try {
-        settingsStore.setSignerMode('nsec')
-        const { nsec: decryptedNsec } = await loginWithNsecOrNcryptsec(nsec, passphrase)
-        settingsStore.setNsecSecret(decryptedNsec)
-        // Profile fetch is best-effort — don't block the success path on relay availability
-        fetchAndStoreNostrProfile()
+      const result = await userConnectNsecIdentity(nsec, passphrase)
+      if (result.ok) {
         useToastStore.getState().addToast({
           type: 'success',
           message: 'Connected with private key',
         })
         return true
-      } catch (err) {
-        // `setSignerMode('none')` also wipes any previously-stored nsec.
-        settingsStore.setSignerMode('none')
-        settingsStore.setProfile(null, 'not-found')
-        const message =
-          err instanceof Error && err.message.includes('passphrase')
-            ? err.message
-            : 'Invalid private key or connection failed'
-        useToastStore.getState().addToast({
-          type: 'error',
-          message,
-        })
-        return false
       }
+      useToastStore.getState().addToast({
+        type: 'error',
+        message: result.error ?? 'Invalid private key or connection failed',
+      })
+      return false
     },
-    [settingsStore],
+    [],
   )
 
   return (
@@ -192,6 +168,7 @@ export function SettingsPage() {
       onSignerModeChange={handleSignerModeChange}
       onNsecSubmit={handleNsecSubmit}
       onDisconnectNostr={handleDisconnectNostr}
+      onRetryNostrProfile={refreshNostrProfile}
       onAddRelay={userAddRelay}
       onRemoveRelay={userRemoveRelay}
     />

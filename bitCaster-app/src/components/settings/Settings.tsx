@@ -27,7 +27,7 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import { useToastStore } from '@/stores/toast'
-import { isNip07Available, fetchAndStoreNostrProfile } from '@/lib/nostr'
+import { isNip07Available } from '@/lib/nostr'
 import { getRelayUrlValidationError } from '@/lib/walletOps'
 import { safeHostname } from '@/lib/url'
 import { AddMintForm } from '@/components/shared/AddMintForm'
@@ -136,6 +136,7 @@ export function Settings({
   onSignerModeChange,
   onNsecSubmit,
   onDisconnectNostr,
+  onRetryNostrProfile,
   onAddRelay,
   onRemoveRelay,
 }: SettingsProps) {
@@ -169,7 +170,7 @@ export function Settings({
   const handleRetryProfile = async () => {
     setIsRetryingProfile(true)
     try {
-      await fetchAndStoreNostrProfile()
+      await onRetryNostrProfile?.()
     } finally {
       setIsRetryingProfile(false)
     }

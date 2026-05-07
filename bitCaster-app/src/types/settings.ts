@@ -107,6 +107,7 @@ export interface SettingsProps {
   onSignerModeChange?: (mode: NostrSignerMode) => Promise<boolean>
   onNsecSubmit?: (nsec: string, passphrase?: string) => Promise<boolean>
   onDisconnectNostr?: () => void
+  onRetryNostrProfile?: () => Promise<void>
   onAddRelay?: (url: string) => void
   onRemoveRelay?: (url: string) => void
 }

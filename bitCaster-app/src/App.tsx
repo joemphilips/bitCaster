@@ -19,11 +19,11 @@ import { useTradeSettlement } from "@/hooks/useTradeSettlement";
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
-import { rehydrateNostrSigner } from "@/lib/nostr";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import { recoverKeysetCountersForMint } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
 import { userAddAndSelectMint } from "@/lib/walletOps";
+import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -130,30 +130,10 @@ function AppRoutes() {
   );
   useTradeSettlement(tradeHubPrivkey);
 
-  // Re-install the Nostr signer from localStorage on mount — the nsec lives
-  // in the settings store but NDK.signer is RAM-only, so after any reload
-  // the runtime signer is absent until this rehydrates it.
-  //
-  // Why defer to `onFinishHydration`: Zustand's persist middleware rehydrates
-  // asynchronously. On first render `nostrSignerMode` is its default `"none"`
-  // and `nsecSecret` is `null` — `rehydrateNostrSigner` would short-circuit
-  // and never retry, leaving the user stuck on "Profile not found on
-  // connected relays" until full reload. Mirrors the mint-rehydrate pattern
-  // immediately below.
-  const signerRehydrated = useRef(false);
+  // Re-install the Nostr signer from persisted settings after Zustand
+  // hydration. The identityOps helper owns the one-shot/hydration semantics.
   useEffect(() => {
-    if (signerRehydrated.current) return;
-    const runSignerRehydrate = () => {
-      if (signerRehydrated.current) return;
-      signerRehydrated.current = true;
-      rehydrateNostrSigner().catch(() => {});
-    };
-    if (useSettingsStore.persist.hasHydrated()) {
-      runSignerRehydrate();
-      return;
-    }
-    const unsub = useSettingsStore.persist.onFinishHydration(runSignerRehydrate);
-    return () => { unsub(); };
+    rehydratePersistedNostrIdentity().catch(() => {});
   }, []);
 
   // One-shot migration: pre-fix proofs stored their mintUrl verbatim from

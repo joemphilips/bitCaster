@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint:enum-discipline": "bash scripts/check-enum-discipline.sh",
+    "lint:identity-ops": "bash scripts/check-identity-ops-boundary.sh",
     "lint:wallet-ops": "bash scripts/check-wallet-ops-boundary.sh",
     "test": "vitest run",
     "test:watch": "vitest",
