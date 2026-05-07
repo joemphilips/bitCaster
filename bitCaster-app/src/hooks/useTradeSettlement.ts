@@ -253,13 +253,21 @@ function recordCipher(
   messageType: 'adaptor-point' | 'locked-proofs-seller' | 'locked-proofs-buyer',
   ciphertext: string,
 ): void {
-  const key: keyof ActiveSwap['messages'] =
-    messageType === 'adaptor-point'
-      ? 'adaptorPoint'
-      : messageType === 'locked-proofs-seller'
-        ? 'lockedProofsSeller'
-        : 'lockedProofsBuyer'
+  const key = messageStoreKey(messageType)
   useActiveSwapsStore.getState().recordMessage(tradeId, key, ciphertext)
+}
+
+function messageStoreKey(
+  messageType: 'adaptor-point' | 'locked-proofs-seller' | 'locked-proofs-buyer',
+): keyof ActiveSwap['messages'] {
+  switch (messageType) {
+    case 'adaptor-point':
+      return 'adaptorPoint'
+    case 'locked-proofs-seller':
+      return 'lockedProofsSeller'
+    case 'locked-proofs-buyer':
+      return 'lockedProofsBuyer'
+  }
 }
 
 // ---------------------------------------------------------------------------
