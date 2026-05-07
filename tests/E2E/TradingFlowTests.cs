@@ -115,7 +115,7 @@ public class TradingFlowTests : IAsyncLifetime
 
     private static async Task GoToFirstMarketDetailAsync(IPage page)
     {
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

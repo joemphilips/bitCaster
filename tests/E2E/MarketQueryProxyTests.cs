@@ -107,7 +107,7 @@ public class MarketQueryProxyTests : IAsyncLifetime
         });
 
         await SetupComplete(page);
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -156,7 +156,7 @@ public class MarketQueryProxyTests : IAsyncLifetime
         });
 
         await SetupComplete(page);
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -205,7 +205,7 @@ public class MarketQueryProxyTests : IAsyncLifetime
         });
 
         await SetupComplete(page);
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -261,7 +261,7 @@ public class MarketQueryProxyTests : IAsyncLifetime
         });
 
         await SetupComplete(page);
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -362,7 +362,7 @@ public class MarketQueryProxyTests : IAsyncLifetime
         });
 
         await SetupComplete(page);
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

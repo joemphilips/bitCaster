@@ -534,7 +534,7 @@ public class MarketCreationTests : IAsyncLifetime
         await SetupComplete(pageA);
         await InterceptConditions(pageA);
 
-        await pageA.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(pageA, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -549,7 +549,7 @@ public class MarketCreationTests : IAsyncLifetime
         await SetupComplete(pageB);
         await InterceptConditions(pageB);
 
-        await pageB.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(pageB, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

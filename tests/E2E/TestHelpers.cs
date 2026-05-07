@@ -50,6 +50,36 @@ public static class TestMnemonics
 public static class TestHelpers
 {
     /// <summary>
+    /// Convenience overload for callers that only customise navigation options.
+    /// </summary>
+    public static Task<IResponse?> GotoMarketsAsync(
+        IPage page,
+        PageGotoOptions? options) =>
+        GotoMarketsAsync(page, string.Empty, options);
+
+    /// <summary>
+    /// Navigate to the markets index through the configured Vite test port.
+    /// Keeping this route in one place makes local/staging E2E URL overrides
+    /// less error-prone.
+    /// </summary>
+    public static Task<IResponse?> GotoMarketsAsync(
+        IPage page,
+        string query = "",
+        PageGotoOptions? options = null)
+    {
+        var suffix = string.IsNullOrWhiteSpace(query)
+            ? string.Empty
+            : query.StartsWith('?') ? query : $"?{query}";
+        return page.GotoAsync(
+            $"http://localhost:{TestPorts.Vite}/markets{suffix}",
+            options ?? new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded,
+                Timeout = 30_000,
+            });
+    }
+
+    /// <summary>
     /// Attach console and page error capture to a page, returning the shared message list.
     /// </summary>
     public static List<string> AttachConsoleCapture(IPage page)

@@ -389,7 +389,7 @@ public class WalletSetupTests : IAsyncLifetime
         ");
 
         // Navigate to /markets
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

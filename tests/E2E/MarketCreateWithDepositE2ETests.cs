@@ -361,7 +361,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         // the engine (createMarket), even though the deposit never landed.
         // /markets reads conditions from the mint and surfaces each one
         // tagged with its description; our unique title must be visible.
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets",
+        await TestHelpers.GotoMarketsAsync(page,
             new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30_000 });
         await Assertions.Expect(page.GetByText(title))
             .ToBeVisibleAsync(new() { Timeout = 15_000 });
