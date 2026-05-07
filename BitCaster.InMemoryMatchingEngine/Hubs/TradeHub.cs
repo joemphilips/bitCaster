@@ -64,7 +64,7 @@ public class TradeHub : Hub<ITradeHubClient>
         var caller = NipPubkeyOrAnonymous();
         var group = GroupName(tradeId);
 
-        if (messageType == "settlement-complete")
+        if (messageType == TradeMessageTypes.SettlementComplete)
         {
             await HandleSettlementComplete(tradeId, caller, group);
             return;
@@ -74,7 +74,7 @@ public class TradeHub : Hub<ITradeHubClient>
 
         // Flip to Settling once the buyer has answered with their locked proofs
         // — both clients then run their claim branch in `useTradeSettlement`.
-        if (messageType == "locked-proofs-buyer")
+        if (messageType == TradeMessageTypes.LockedProofsBuyer)
             await Clients.Group(group).TradeStateChanged(tradeId, "Settling");
     }
 

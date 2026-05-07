@@ -21,6 +21,7 @@ import {
 } from '@microsoft/signalr'
 import { resolveHubServerUrl } from '@/lib/hubUrl'
 import { generateNip98AuthHeader, tradeHubUrl } from '@/lib/nip98'
+import type { TradeMessageType } from '@/lib/tradeMessageTypes'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,7 +50,11 @@ export interface TradeHubCallbacks {
 
 export interface TradeHubActions {
   joinTrade: (tradeId: string) => Promise<void>
-  sendSwapMessage: (tradeId: string, messageType: string, ciphertext: string) => Promise<void>
+  sendSwapMessage: (
+    tradeId: string,
+    messageType: TradeMessageType,
+    ciphertext: string,
+  ) => Promise<void>
   connectionState: () => HubConnectionState
 }
 
@@ -163,7 +168,11 @@ export function useTradeHub(
   }, [waitForConnected])
 
   const sendSwapMessage = useCallback(
-    async (tradeId: string, messageType: string, ciphertext: string) => {
+    async (
+      tradeId: string,
+      messageType: TradeMessageType,
+      ciphertext: string,
+    ) => {
       const conn = await waitForConnected()
       await conn.invoke('SendSwapMessage', tradeId, messageType, ciphertext)
     },

@@ -56,6 +56,12 @@ import {
   type AdaptorPoint,
 } from '@/lib/atomicSwap'
 import { useToastStore } from '@/stores/toast'
+import {
+  TRADE_MESSAGE_TYPES,
+  isSwapCipherMessageType,
+  type SwapCipherMessageType,
+  type TradeMessageType,
+} from '@/lib/tradeMessageTypes'
 
 // ---------------------------------------------------------------------------
 // Module-scope per-swap secret state
@@ -117,7 +123,11 @@ export function useTradeSettlement(ephemeralPrivkey: Uint8Array | null): void {
       // claim path doesn't need to thread `sendSwapMessage` through every
       // helper. The closure captures the mounted hub instance.
       settlementCompleteSenders.set(swap.tradeId, () =>
-        sendSwapMessage(swap.tradeId, 'settlement-complete', ''),
+        sendSwapMessage(
+          swap.tradeId,
+          TRADE_MESSAGE_TYPES.settlementComplete,
+          '',
+        ),
       )
       joinTrade(swap.tradeId).catch((err) => {
         const message = err instanceof Error ? err.message : String(err)
@@ -207,10 +217,14 @@ async function runSellerSendOpening(
     const proofs = await loadProofsForLock(mintUrl)
     const out = await sellerPrepareSwap(ctx, proofs)
     sellerStateByTradeId.set(tradeId, { adaptorPoint: out.adaptorPoint })
-    await sendSwapMessage(tradeId, 'adaptor-point', out.adaptorPointCipher)
     await sendSwapMessage(
       tradeId,
-      'locked-proofs-seller',
+      TRADE_MESSAGE_TYPES.adaptorPoint,
+      out.adaptorPointCipher,
+    )
+    await sendSwapMessage(
+      tradeId,
+      TRADE_MESSAGE_TYPES.lockedProofsSeller,
       out.lockedProofsCipher,
     )
   } catch (err) {
@@ -229,13 +243,9 @@ function handleSwapMessage(
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
 ): void {
-  const messageKey = msg.messageType as
-    | 'adaptor-point'
-    | 'locked-proofs-seller'
-    | 'locked-proofs-buyer'
-    | 'settlement-complete'
-  if (messageKey === 'settlement-complete') return // engine emits TradeStateChanged for the terminal hop
-  recordCipher(msg.tradeId, messageKey, msg.ciphertext)
+  if (msg.messageType === TRADE_MESSAGE_TYPES.settlementComplete) return // engine emits TradeStateChanged for the terminal hop
+  if (!isSwapCipherMessageType(msg.messageType)) return
+  recordCipher(msg.tradeId, msg.messageType, msg.ciphertext)
   const swap = useActiveSwapsStore.getState().byTradeId[msg.tradeId]
   if (!swap) return
 
@@ -250,7 +260,7 @@ function hasAllSellerMessages(swap: ActiveSwap): boolean {
 
 function recordCipher(
   tradeId: string,
-  messageType: 'adaptor-point' | 'locked-proofs-seller' | 'locked-proofs-buyer',
+  messageType: SwapCipherMessageType,
   ciphertext: string,
 ): void {
   const key = messageStoreKey(messageType)
@@ -258,14 +268,14 @@ function recordCipher(
 }
 
 function messageStoreKey(
-  messageType: 'adaptor-point' | 'locked-proofs-seller' | 'locked-proofs-buyer',
+  messageType: SwapCipherMessageType,
 ): keyof ActiveSwap['messages'] {
   switch (messageType) {
-    case 'adaptor-point':
+    case TRADE_MESSAGE_TYPES.adaptorPoint:
       return 'adaptorPoint'
-    case 'locked-proofs-seller':
+    case TRADE_MESSAGE_TYPES.lockedProofsSeller:
       return 'lockedProofsSeller'
-    case 'locked-proofs-buyer':
+    case TRADE_MESSAGE_TYPES.lockedProofsBuyer:
       return 'lockedProofsBuyer'
   }
 }
@@ -301,7 +311,7 @@ async function runBuyerRespond(
     })
     await sendSwapMessage(
       tradeId,
-      'locked-proofs-buyer',
+      TRADE_MESSAGE_TYPES.lockedProofsBuyer,
       out.lockedProofsCipher,
     )
   } catch (err) {
@@ -497,6 +507,6 @@ function buildSwapContext(swap: ActiveSwap, mintUrl: string): SwapCtx | null {
 
 type SendSwapMessageFn = (
   tradeId: string,
-  type: string,
+  type: TradeMessageType,
   ciphertext: string,
 ) => Promise<void>
