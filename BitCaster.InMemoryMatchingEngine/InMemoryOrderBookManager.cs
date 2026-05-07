@@ -188,12 +188,15 @@ public class InMemoryOrderBookManager
 /// </summary>
 internal sealed class OrderBook
 {
+    private const int RetainedOrderIndexLimit = 1000;
+
     public OrderBook(string marketId) => MarketId = marketId;
 
     public string MarketId { get; }
 
     private readonly List<RestingOrder> _resting = [];
     private readonly Dictionary<Guid, CompletedOrder> _completed = [];
+    private readonly Queue<Guid> _completedOrderRetention = [];
     /// <summary>
     /// Fills indexed by both the maker and taker orderId so a later
     /// <c>GET /orders/{id}</c> can surface the per-fill <c>tradeId</c>.
@@ -203,6 +206,7 @@ internal sealed class OrderBook
     /// match has occurred.
     /// </summary>
     private readonly Dictionary<Guid, List<Fill>> _fillsByOrderId = [];
+    private readonly Queue<Guid> _fillOrderRetention = [];
 
     public void AddResting(RestingOrder order) => _resting.Add(order);
 
@@ -212,12 +216,8 @@ internal sealed class OrderBook
     /// </summary>
     public void RecordFill(Guid takerOrderId, Guid makerOrderId, Fill fill)
     {
-        if (!_fillsByOrderId.TryGetValue(takerOrderId, out var takerFills))
-            _fillsByOrderId[takerOrderId] = takerFills = [];
-        takerFills.Add(fill);
-        if (!_fillsByOrderId.TryGetValue(makerOrderId, out var makerFills))
-            _fillsByOrderId[makerOrderId] = makerFills = [];
-        makerFills.Add(fill);
+        GetOrCreateFills(takerOrderId).Add(fill);
+        GetOrCreateFills(makerOrderId).Add(fill);
     }
 
     public IReadOnlyList<Fill> GetFills(Guid orderId)
@@ -249,7 +249,7 @@ internal sealed class OrderBook
         {
             var o = _resting[i];
             if (o.RemainingSats > 0) continue;
-            _completed[o.Id] = new CompletedOrder(o, "filled");
+            RememberCompleted(o.Id, new CompletedOrder(o, "filled"));
             _resting.RemoveAt(i);
         }
     }
@@ -261,14 +261,14 @@ internal sealed class OrderBook
     /// <see cref="RemoveCompleted"/> alone does not cover it.
     /// </summary>
     public void MarkTakerCompleted(RestingOrder taker, string status)
-        => _completed[taker.Id] = new CompletedOrder(taker, status);
+        => RememberCompleted(taker.Id, new CompletedOrder(taker, status));
 
     public bool Cancel(Guid orderId)
     {
         for (var i = 0; i < _resting.Count; i++)
         {
             if (_resting[i].Id != orderId) continue;
-            _completed[orderId] = new CompletedOrder(_resting[i], "cancelled");
+            RememberCompleted(orderId, new CompletedOrder(_resting[i], "cancelled"));
             _resting.RemoveAt(i);
             return true;
         }
@@ -309,6 +309,37 @@ internal sealed class OrderBook
             .Select(g => new LevelDto(g.Sum(o => o.RemainingSats), g.Key));
         return (descending ? grouped.OrderByDescending(l => l.Price) : grouped.OrderBy(l => l.Price))
             .ToList();
+    }
+
+    private List<Fill> GetOrCreateFills(Guid orderId)
+    {
+        if (_fillsByOrderId.TryGetValue(orderId, out var fills))
+            return fills;
+
+        fills = [];
+        _fillsByOrderId[orderId] = fills;
+        _fillOrderRetention.Enqueue(orderId);
+        while (_fillsByOrderId.Count > RetainedOrderIndexLimit &&
+               _fillOrderRetention.TryDequeue(out var oldest))
+        {
+            _fillsByOrderId.Remove(oldest);
+        }
+        return fills;
+    }
+
+    private void RememberCompleted(Guid orderId, CompletedOrder completed)
+    {
+        var isNew = !_completed.ContainsKey(orderId);
+        _completed[orderId] = completed;
+        if (!isNew) return;
+
+        _completedOrderRetention.Enqueue(orderId);
+        while (_completed.Count > RetainedOrderIndexLimit &&
+               _completedOrderRetention.TryDequeue(out var oldest))
+        {
+            _completed.Remove(oldest);
+            _fillsByOrderId.Remove(oldest);
+        }
     }
 }
 
