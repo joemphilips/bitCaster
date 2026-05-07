@@ -18,6 +18,13 @@ export type OrderStatus =
   | 'filled'
   | 'cancelled'
 
+type PendingTradeForPromotion = {
+  orderId: string
+  marketId: string
+  ephemeralPubkey: string
+  ephemeralPrivkey: string
+}
+
 const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set([
   'filled',
   'cancelled',
@@ -48,12 +55,16 @@ const POLL_INTERVAL_MS = 5_000
  * swap-driver keeps working after the pending-trade entry is evicted on a
  * terminal order status.
  */
-function promoteFillsToActiveSwaps(
+export function promoteNewFillsToActiveSwaps(
   status: OrderStatusResponse,
-  trade: { orderId: string; marketId: string; ephemeralPubkey: string; ephemeralPrivkey: string },
-): void {
+  trade: PendingTradeForPromotion,
+  lastFillCount: number,
+): number {
+  if (status.fills.length <= lastFillCount) return 0
+
   const promote = useActiveSwapsStore.getState().promote
-  for (const fill of status.fills) {
+  let promoted = 0
+  for (const fill of status.fills.slice(lastFillCount)) {
     const fillWithTrade = fill as typeof fill & { tradeId?: string }
     const tradeId = fillWithTrade.tradeId
     if (!tradeId) continue
@@ -64,7 +75,9 @@ function promoteFillsToActiveSwaps(
       ephemeralPrivkeyHex: trade.ephemeralPrivkey,
       ephemeralPubkeyHex: trade.ephemeralPubkey,
     })
+    promoted += 1
   }
+  return promoted
 }
 
 /**
@@ -144,7 +157,8 @@ export function usePendingTradesPoller(): void {
             // atomic-swap driver can pick them up. Fills without a tradeId
             // (complementary matches, legacy CPMM bootstrap fills) are
             // skipped — they don't produce a Trade aggregate on the engine.
-            promoteFillsToActiveSwaps(status, trade)
+            const hasNewFills = fillCount > lastFillCount
+            promoteNewFillsToActiveSwaps(status, trade, lastFillCount)
 
             // Terminal status short-circuits partial-fill: a "filled" that
             // also has new fills shouldn't generate two separate bell entries
@@ -152,7 +166,7 @@ export function usePendingTradesPoller(): void {
             if (
               !isTerminal &&
               current === 'partially_filled' &&
-              fillCount > lastFillCount
+              hasNewFills
             ) {
               addNotification({
                 id: `${trade.orderId}-partially_filled-${fillCount}`,
@@ -164,6 +178,9 @@ export function usePendingTradesPoller(): void {
                 occurredAt: Date.now(),
                 read: false,
               })
+            }
+
+            if (!isTerminal && hasNewFills) {
               lastFillCountRef.current.set(trade.orderId, fillCount)
             }
 
