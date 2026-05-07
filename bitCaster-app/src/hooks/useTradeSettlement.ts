@@ -42,6 +42,7 @@ import {
   useActiveSwapsStore,
   type ActiveSwap,
   type SwapRole,
+  type SwapWorkKey,
 } from '@/stores/activeSwaps'
 import { useWalletStore } from '@/stores/wallet'
 import { addProofs, getProofs, type StoredProof } from '@/stores/proof-db'
@@ -53,7 +54,6 @@ import {
   sellerClaimSwap,
   sellerPrepareSwap,
   validateLocktimeOrdering,
-  type AdaptorPoint,
 } from '@/lib/atomicSwap'
 import { useToastStore } from '@/stores/toast'
 import {
@@ -62,30 +62,6 @@ import {
   type SwapCipherMessageType,
   type TradeMessageType,
 } from '@/lib/tradeMessageTypes'
-
-// ---------------------------------------------------------------------------
-// Module-scope per-swap secret state
-// ---------------------------------------------------------------------------
-
-/** Material the seller (Alice) generates and must hold across messages. */
-interface SellerState {
-  adaptorPoint: AdaptorPoint
-}
-
-/** Material the buyer (Bob) generates after `buyerPrepareSwap`. */
-interface BuyerState {
-  /** Bob's pre-sigs over Bob's locked sat proofs — extract `t` from these. */
-  ownPreSigsHex: string[]
-  /** The proofs Bob locked to Alice; needed for the NUT-07 poll. */
-  lockedSatProofs: Proof[]
-  /** Alice's pre-sigs from her locked-proofs message — adapted on claim. */
-  sellerPreSigsHex: string[]
-}
-
-const sellerStateByTradeId = new Map<string, SellerState>()
-const buyerStateByTradeId = new Map<string, BuyerState>()
-const settlementCompleteSenders = new Map<string, () => Promise<void>>()
-const inFlightSteps = new Set<string>()
 
 // ---------------------------------------------------------------------------
 // Public hook
@@ -112,23 +88,13 @@ export function useTradeSettlement(ephemeralPrivkey: Uint8Array | null): void {
     onSwapMessageReceived: (msg) =>
       handleSwapMessage(msg, sendSwapMessage, activeMintUrl),
     onTradeStateChanged: (tradeId, newState) =>
-      handleTradeStateChanged(tradeId, newState),
+      handleTradeStateChanged(tradeId, newState, sendSwapMessage),
   })
 
   useEffect(() => {
     if (!tradeHubPrivkey) return
     for (const swap of Object.values(swapsByTradeId)) {
       if (swap.step !== 'awaiting-trade-created') continue
-      // Bind a sender for `settlement-complete` keyed by tradeId so the
-      // claim path doesn't need to thread `sendSwapMessage` through every
-      // helper. The closure captures the mounted hub instance.
-      settlementCompleteSenders.set(swap.tradeId, () =>
-        sendSwapMessage(
-          swap.tradeId,
-          TRADE_MESSAGE_TYPES.settlementComplete,
-          '',
-        ),
-      )
       joinTrade(swap.tradeId).catch((err) => {
         const message = err instanceof Error ? err.message : String(err)
         useActiveSwapsStore.getState().setStep(swap.tradeId, 'failed', message)
@@ -216,7 +182,9 @@ async function runSellerSendOpening(
     if (!ctx) return
     const proofs = await loadProofsForLock(mintUrl)
     const out = await sellerPrepareSwap(ctx, proofs)
-    sellerStateByTradeId.set(tradeId, { adaptorPoint: out.adaptorPoint })
+    useActiveSwapsStore
+      .getState()
+      .setSellerState(tradeId, { adaptorPoint: out.adaptorPoint })
     await sendSwapMessage(
       tradeId,
       TRADE_MESSAGE_TYPES.adaptorPoint,
@@ -304,7 +272,7 @@ async function runBuyerRespond(
       swap.messages.lockedProofsSeller,
       proofs,
     )
-    buyerStateByTradeId.set(tradeId, {
+    useActiveSwapsStore.getState().setBuyerState(tradeId, {
       ownPreSigsHex: out.preSigsHex,
       lockedSatProofs: out.lockedProofs,
       sellerPreSigsHex: out.sellerPreSigsHex,
@@ -325,15 +293,22 @@ async function runBuyerRespond(
 // TradeStateChanged → claim + settlement-complete
 // ---------------------------------------------------------------------------
 
-function handleTradeStateChanged(tradeId: string, newState: string): void {
+function handleTradeStateChanged(
+  tradeId: string,
+  newState: string,
+  sendSwapMessage: SendSwapMessageFn,
+): void {
   const lower = newState.toLowerCase()
   if (lower === 'confirmed') return finishSwap(tradeId, 'success')
   if (lower === 'failed') return finishSwap(tradeId, 'failed')
   if (lower !== 'settling') return
-  void runSettlementClaim(tradeId)
+  void runSettlementClaim(tradeId, sendSwapMessage)
 }
 
-async function runSettlementClaim(tradeId: string): Promise<void> {
+async function runSettlementClaim(
+  tradeId: string,
+  sendSwapMessage: SendSwapMessageFn,
+): Promise<void> {
   if (!claimStep(tradeId, 'settle')) return
   try {
     const swap = useActiveSwapsStore.getState().byTradeId[tradeId]
@@ -347,7 +322,11 @@ async function runSettlementClaim(tradeId: string): Promise<void> {
         : await runBuyerClaim(swap, ctx)
     await persistFreshProofs(fresh, mintUrl)
     useActiveSwapsStore.getState().setStep(tradeId, 'awaiting-confirmation')
-    await sendSettlementComplete(tradeId)
+    await sendSwapMessage(
+      tradeId,
+      TRADE_MESSAGE_TYPES.settlementComplete,
+      '',
+    )
   } catch (err) {
     failSwap(tradeId, err)
   } finally {
@@ -359,32 +338,30 @@ async function runSellerClaim(
   swap: ActiveSwap,
   ctx: SwapCtx,
 ): Promise<Proof[]> {
-  const seller = sellerStateByTradeId.get(swap.tradeId)
-  if (!seller) throw new Error('Missing seller adaptor state')
+  if (!swap.sellerState) throw new Error('Missing seller adaptor state')
   if (!swap.messages.lockedProofsBuyer)
     throw new Error('Missing locked-proofs-buyer cipher')
   return sellerClaimSwap(
     ctx,
-    seller.adaptorPoint,
+    swap.sellerState.adaptorPoint,
     swap.messages.lockedProofsBuyer,
   )
 }
 
 async function runBuyerClaim(swap: ActiveSwap, ctx: SwapCtx): Promise<Proof[]> {
-  const buyer = buyerStateByTradeId.get(swap.tradeId)
-  if (!buyer) throw new Error('Missing buyer pre-sig state')
+  if (!swap.buyerState) throw new Error('Missing buyer pre-sig state')
   if (!swap.messages.lockedProofsSeller)
     throw new Error('Missing locked-proofs-seller cipher')
   const adaptorSecret = await pollForAdaptorSecret(
     ctx.mintUrl,
-    buyer.lockedSatProofs,
-    buyer.ownPreSigsHex,
+    swap.buyerState.lockedSatProofs,
+    swap.buyerState.ownPreSigsHex,
   )
   return buyerClaimSwap(
     ctx,
     adaptorSecret,
     swap.messages.lockedProofsSeller,
-    buyer.sellerPreSigsHex,
+    swap.buyerState.sellerPreSigsHex,
   )
 }
 
@@ -419,12 +396,6 @@ async function persistFreshProofs(
   await addProofs(fresh)
 }
 
-async function sendSettlementComplete(tradeId: string): Promise<void> {
-  const fn = settlementCompleteSenders.get(tradeId)
-  if (!fn) return
-  await fn()
-}
-
 // ---------------------------------------------------------------------------
 // Cleanup helpers
 // ---------------------------------------------------------------------------
@@ -435,9 +406,7 @@ function finishSwap(tradeId: string, outcome: 'success' | 'failed'): void {
   useActiveSwapsStore
     .getState()
     .setStep(tradeId, outcome === 'success' ? 'completed' : 'failed')
-  sellerStateByTradeId.delete(tradeId)
-  buyerStateByTradeId.delete(tradeId)
-  settlementCompleteSenders.delete(tradeId)
+  useActiveSwapsStore.getState().clearProtocolState(tradeId)
   const toast = useToastStore.getState().addToast
   toast({
     type: outcome === 'success' ? 'success' : 'error',
@@ -457,15 +426,12 @@ function failSwap(tradeId: string, err: unknown): void {
   finishSwap(tradeId, 'failed')
 }
 
-function claimStep(tradeId: string, key: string): boolean {
-  const id = `${tradeId}:${key}`
-  if (inFlightSteps.has(id)) return false
-  inFlightSteps.add(id)
-  return true
+function claimStep(tradeId: string, key: SwapWorkKey): boolean {
+  return useActiveSwapsStore.getState().claimStep(tradeId, key)
 }
 
-function releaseStep(tradeId: string, key: string): void {
-  inFlightSteps.delete(`${tradeId}:${key}`)
+function releaseStep(tradeId: string, key: SwapWorkKey): void {
+  useActiveSwapsStore.getState().releaseStep(tradeId, key)
 }
 
 // ---------------------------------------------------------------------------
