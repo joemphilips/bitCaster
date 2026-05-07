@@ -173,7 +173,6 @@ public class InMemoryOrderBookManager
     private static string DeriveStatus(long requested, long remaining, TimeInForce tif, bool anyFills)
     {
         if (remaining == 0) return "filled";
-        if (anyFills && tif == TimeInForce.FAK) return "partially_filled";
         if (anyFills) return "partially_filled";
         return tif == TimeInForce.FAK ? "cancelled" : "resting";
     }
