@@ -72,7 +72,6 @@ export function MarketDetail({
   onLoadMoreTrades,
   onLoadMoreComments,
   onRelatedMarketClick,
-  onCreatorClick,
   onTradeSideChange,
   onOrderTypeChange,
   onLimitPriceChange,
@@ -116,7 +115,6 @@ export function MarketDetail({
               <MarketHeader
                 market={market}
                 onShare={onShare}
-                onCreatorClick={onCreatorClick}
               />
             </div>
 

@@ -285,9 +285,6 @@ export function MarketDetailPage() {
         onOrderTypeChange={setOrderType}
         onLimitPriceChange={setLimitPrice}
         onRelatedMarketClick={handleRelatedMarketClick}
-        onCreatorClick={(creatorId) => {
-          if (creatorId && creatorId !== 'unknown') navigate(`/user/${creatorId}`)
-        }}
         walletReady={setupComplete}
         walletBalanceSats={activeMintBalance}
       />

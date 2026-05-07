@@ -1,11 +1,17 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { nip19 } from 'nostr-tools'
 import { MarketHeader } from '../MarketHeader'
 import type { YesNoMarketDetail } from '@/types/market-detail'
 
 const creatorPubkey =
-  'npub1creatorprofile000000000000000000000000000000000000abcd'
+  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+const creatorNpub = nip19.npubEncode(creatorPubkey)
+
+interface NavigatorMutable {
+  clipboard?: { writeText: (text: string) => Promise<void> }
+}
 
 function makeMarket(
   overrides: Partial<YesNoMarketDetail> = {},
@@ -50,6 +56,24 @@ function makeMarket(
 }
 
 describe('MarketHeader', () => {
+  let originalClipboard: NavigatorMutable['clipboard']
+
+  beforeEach(() => {
+    originalClipboard = (navigator as unknown as NavigatorMutable).clipboard
+  })
+
+  afterEach(() => {
+    if (originalClipboard === undefined) {
+      delete (navigator as unknown as NavigatorMutable).clipboard
+    } else {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+        writable: true,
+      })
+    }
+  })
+
   it('renders mint metadata beside the creator card', () => {
     render(<MarketHeader market={makeMarket()} />)
 
@@ -57,23 +81,25 @@ describe('MarketHeader', () => {
     expect(screen.getByText('SAT CTF - 2 keysets')).toBeInTheDocument()
   })
 
-  it('passes the creator pubkey when the creator card is clicked', async () => {
+  it('renders a shortened oracle npub and copies the full npub', async () => {
     const user = userEvent.setup()
-    const onCreatorClick = vi.fn()
-    render(
-      <MarketHeader market={makeMarket()} onCreatorClick={onCreatorClick} />,
-    )
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+      writable: true,
+    })
+    render(<MarketHeader market={makeMarket()} />)
 
-    const creatorButton = screen.getByText('npub1cre...abcd').closest('button')
-    expect(creatorButton).not.toBeNull()
-    await user.click(creatorButton!)
+    expect(
+      screen.getByText(`${creatorNpub.slice(0, 10)}...${creatorNpub.slice(-6)}`),
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Copy oracle pubkey' }))
 
-    expect(onCreatorClick).toHaveBeenCalledWith(creatorPubkey)
+    expect(writeText).toHaveBeenCalledWith(creatorNpub)
   })
 
-  it('disables creator navigation when the detail has no creator pubkey', async () => {
-    const user = userEvent.setup()
-    const onCreatorClick = vi.fn()
+  it('does not render a copy button when the detail has no creator pubkey', () => {
     render(
       <MarketHeader
         market={makeMarket({
@@ -84,14 +110,12 @@ describe('MarketHeader', () => {
             feePercent: 0,
           },
         })}
-        onCreatorClick={onCreatorClick}
       />,
     )
 
-    const creatorButton = screen.getByText('Unknown').closest('button')
-    expect(creatorButton).toBeDisabled()
-    await user.click(creatorButton!)
-
-    expect(onCreatorClick).not.toHaveBeenCalled()
+    expect(screen.getByText('Unknown')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Copy oracle pubkey' }),
+    ).not.toBeInTheDocument()
   })
 })

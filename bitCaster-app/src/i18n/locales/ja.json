@@ -168,7 +168,9 @@
     "hoursRemaining": "残り {{hours}}時間",
     "minutesRemaining": "残り {{minutes}}分",
     "linkCopied": "リンクをコピーしました",
-    "shareFailed": "リンクのコピーに失敗しました"
+    "shareFailed": "リンクのコピーに失敗しました",
+    "oracle": "オラクル",
+    "copyOraclePubkey": "オラクル公開鍵をコピー"
   },
   "orderBook": {
     "title": "注文板",

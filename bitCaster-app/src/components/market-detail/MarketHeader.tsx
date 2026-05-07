@@ -6,7 +6,9 @@ import {
   Droplet,
   Users,
   Landmark,
+  Copy,
 } from 'lucide-react'
+import { nip19 } from 'nostr-tools'
 import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
@@ -15,7 +17,21 @@ import { useBookmarkStore } from '@/stores/bookmarks'
 interface MarketHeaderProps {
   market: MarketDetail
   onShare?: () => void
-  onCreatorClick?: (creatorId: string) => void
+}
+
+const HexPubkeyPattern = /^[0-9a-f]{64}$/i
+
+function formatCreatorNpub(creatorId: string): string | null {
+  const trimmed = creatorId.trim()
+  if (!trimmed || trimmed === 'unknown') return null
+  if (trimmed.startsWith('npub1')) return trimmed
+  if (HexPubkeyPattern.test(trimmed)) return nip19.npubEncode(trimmed.toLowerCase())
+  return trimmed
+}
+
+function shortenNpub(npub: string): string {
+  if (npub.length <= 18) return npub
+  return `${npub.slice(0, 10)}...${npub.slice(-6)}`
 }
 
 function formatTimeRemaining(
@@ -57,7 +73,6 @@ function formatTimeRemaining(
 export function MarketHeader({
   market,
   onShare,
-  onCreatorClick,
 }: MarketHeaderProps) {
   const { t, i18n } = useTranslation()
   const isResolved = market.resolution.status === 'resolved'
@@ -72,8 +87,8 @@ export function MarketHeader({
       7 * 24 * 60 * 60 * 1000
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id))
   const toggleBookmark = useBookmarkStore((s) => s.toggle)
-  const creatorId = market.creator.id.trim()
-  const hasCreatorProfile = creatorId.length > 0 && creatorId !== 'unknown'
+  const creatorNpub = formatCreatorNpub(market.creator.id)
+  const creatorLabel = creatorNpub ? shortenNpub(creatorNpub) : 'Unknown'
 
   const resolvedDate = isResolved
     ? new Date(market.resolution.resolutionDate).toLocaleDateString(
@@ -184,19 +199,11 @@ export function MarketHeader({
 
         <div className="flex flex-col sm:flex-row gap-3">
           {/* Creator Info */}
-          <button
-            onClick={() => {
-              if (hasCreatorProfile) onCreatorClick?.(creatorId)
-            }}
-            disabled={!hasCreatorProfile}
-            className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl transition-colors ${
+          <div
+            className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${
               market.imageUrl
-                ? hasCreatorProfile
-                  ? 'bg-white/10 hover:bg-white/20'
-                  : 'bg-white/10 opacity-70 cursor-default'
-                : hasCreatorProfile
-                  ? 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
-                  : 'bg-slate-100 dark:bg-slate-800 opacity-70 cursor-default'
+                ? 'bg-white/10'
+                : 'bg-slate-100 dark:bg-slate-800'
             }`}
           >
             {market.creator.avatarUrl ? (
@@ -207,26 +214,39 @@ export function MarketHeader({
               />
             ) : (
               <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold">
-                {market.creator.name.charAt(0).toUpperCase()}
+                {creatorLabel.charAt(0).toUpperCase()}
               </div>
             )}
-            <div className="min-w-0 text-left">
+            <div className="min-w-0 flex-1">
               <p
                 className={`truncate text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}
               >
-                {market.creator.name}
+                {t('market.oracle')}
               </p>
               <p
-                className={`truncate text-xs ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
+                className={`truncate text-xs font-mono ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
               >
-                {t('market.marketsCreated', {
-                  count: market.creator.totalMarketsCreated,
-                })}
-                {market.creator.reputationScore &&
-                  ` • ${market.creator.reputationScore} ${t('market.rating')}`}
+                {creatorLabel}
               </p>
             </div>
-          </button>
+            {creatorNpub && (
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(creatorNpub)
+                }}
+                className={`shrink-0 rounded-full p-2 transition-colors ${
+                  market.imageUrl
+                    ? 'text-slate-300 hover:bg-white/15 hover:text-white'
+                    : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white'
+                }`}
+                aria-label={t('market.copyOraclePubkey')}
+                title={t('market.copyOraclePubkey')}
+              >
+                <Copy className="w-4 h-4" />
+              </button>
+            )}
+          </div>
 
           {market.mint && (
             <div

@@ -168,7 +168,9 @@
     "hoursRemaining": "{{hours}}h remaining",
     "minutesRemaining": "{{minutes}}m remaining",
     "linkCopied": "Link copied to clipboard",
-    "shareFailed": "Failed to copy link"
+    "shareFailed": "Failed to copy link",
+    "oracle": "Oracle",
+    "copyOraclePubkey": "Copy oracle pubkey"
   },
   "orderBook": {
     "title": "Order Book",
