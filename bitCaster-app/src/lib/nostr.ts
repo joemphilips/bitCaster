@@ -243,7 +243,6 @@ export async function rehydrateNostrSigner(): Promise<void> {
  */
 export async function fetchAndStoreNostrProfile(): Promise<void> {
   const settings = useSettingsStore.getState();
-  settings.setProfile(null, "fetching");
   try {
     const ndk = getNdk();
     const signer = ndk.signer;
@@ -252,6 +251,10 @@ export async function fetchAndStoreNostrProfile(): Promise<void> {
       return;
     }
     const user = await signer.user();
+    const cached = settings.nostrProfile?.pubkey === user.pubkey
+      ? settings.nostrProfile
+      : null;
+    settings.setProfile(cached, "fetching");
     await Promise.race([
       user.fetchProfile(),
       new Promise((_, reject) =>
@@ -274,11 +277,18 @@ export async function fetchAndStoreNostrProfile(): Promise<void> {
         },
         "found"
       );
+    } else if (cached) {
+      settings.setProfile(cached, "found");
     } else {
       settings.setProfile(null, "not-found");
     }
   } catch {
-    settings.setProfile(null, "not-found");
+    const current = useSettingsStore.getState().nostrProfile;
+    if (current) {
+      settings.setProfile(current, "found");
+    } else {
+      settings.setProfile(null, "not-found");
+    }
   }
 }
 

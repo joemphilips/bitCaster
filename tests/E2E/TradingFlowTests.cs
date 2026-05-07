@@ -210,7 +210,7 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync("50000");
 
-        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) })
+        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^(Buy|Place)\\s", RegexOptions.IgnoreCase) })
             .Filter(new() { Visible = true }).First;
         await Assertions.Expect(confirm).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await confirm.ClickAsync();
@@ -308,7 +308,15 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await quickAmount.ClickAsync();
 
-        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) })
+        // The seeded order book is empty. A market order should now fail
+        // before POSTing because there is no executable liquidity; use a limit
+        // order for this regression guard, which only asserts submission shape.
+        var limitOrder = page.GetByRole(AriaRole.Button, new() { Name = "Limit" })
+            .Filter(new() { Visible = true }).First;
+        await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await limitOrder.ClickAsync();
+
+        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^(Buy|Place)\\s", RegexOptions.IgnoreCase) })
             .Filter(new() { Visible = true }).First;
         await confirm.ClickAsync();
 

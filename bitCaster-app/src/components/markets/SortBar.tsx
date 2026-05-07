@@ -36,7 +36,7 @@ export function SortBar({ active, onSortChange }: SortBarProps) {
       role="tablist"
       aria-label={t('sort.label')}
       data-testid="market-sort-bar"
-      className="flex items-center gap-2 shrink-0"
+      className="flex items-center gap-2 overflow-x-auto shrink-0"
     >
       {SORT_OPTIONS.map(({ value, labelKey, Icon }) => (
         <SortPill

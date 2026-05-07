@@ -1,4 +1,4 @@
-import { Heart, Share2, Clock, CheckCircle2, Droplet, Users } from 'lucide-react'
+import { Heart, Share2, Clock, CheckCircle2, Droplet, Users, Landmark } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
@@ -142,36 +142,61 @@ export function MarketHeader({
           </button>
         </div>
 
-        {/* Creator Info */}
-        <button
-          onClick={() => onCreatorClick?.(market.creator.id)}
-          className={`flex items-center gap-3 p-3 rounded-xl transition-colors ${
-            market.imageUrl
-              ? 'bg-white/10 hover:bg-white/20'
-              : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
-          }`}
-        >
-          {market.creator.avatarUrl ? (
-            <img
-              src={market.creator.avatarUrl}
-              alt={market.creator.name}
-              className="w-10 h-10 rounded-full"
-            />
-          ) : (
-            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold">
-              {market.creator.name.charAt(0).toUpperCase()}
+        <div className="flex flex-col sm:flex-row gap-3">
+          {/* Creator Info */}
+          <button
+            onClick={() => onCreatorClick?.(market.creator.id)}
+            className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl transition-colors ${
+              market.imageUrl
+                ? 'bg-white/10 hover:bg-white/20'
+                : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
+            }`}
+          >
+            {market.creator.avatarUrl ? (
+              <img
+                src={market.creator.avatarUrl}
+                alt={market.creator.name}
+                className="w-10 h-10 rounded-full"
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold">
+                {market.creator.name.charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div className="min-w-0 text-left">
+              <p className={`truncate text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
+                {market.creator.name}
+              </p>
+              <p className={`truncate text-xs ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                {t('market.marketsCreated', { count: market.creator.totalMarketsCreated })}
+                {market.creator.reputationScore && ` • ${market.creator.reputationScore} ${t('market.rating')}`}
+              </p>
+            </div>
+          </button>
+
+          {market.mint && (
+            <div
+              className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${
+                market.imageUrl
+                  ? 'bg-white/10'
+                  : 'bg-slate-100 dark:bg-slate-800'
+              }`}
+            >
+              <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center text-amber-500">
+                <Landmark className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <p className={`truncate text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
+                  Mint
+                </p>
+                <p className={`truncate text-xs font-mono ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                  {market.mint.collateral.toUpperCase()} CTF
+                  {market.mint.keysetCount > 0 && ` - ${market.mint.keysetCount} keysets`}
+                </p>
+              </div>
             </div>
           )}
-          <div className="text-left">
-            <p className={`text-sm font-medium ${market.imageUrl ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
-              {market.creator.name}
-            </p>
-            <p className={`text-xs ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>
-              {t('market.marketsCreated', { count: market.creator.totalMarketsCreated })}
-              {market.creator.reputationScore && ` • ${market.creator.reputationScore} ${t('market.rating')}`}
-            </p>
-          </div>
-        </button>
+        </div>
 
         {/* Metrics Footer */}
         <div className={`flex items-center justify-between text-xs pt-4 mt-4 border-t ${

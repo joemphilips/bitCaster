@@ -53,7 +53,7 @@ export function HorizontalPager({
     // Also re-evaluate when child nodes mutate (e.g. tag list updates),
     // since ResizeObserver only fires on box-size changes.
     const mutation = new MutationObserver(checkScroll)
-    mutation.observe(el, { childList: true, subtree: true })
+    mutation.observe(el, { childList: true })
     return () => {
       observer.disconnect()
       mutation.disconnect()

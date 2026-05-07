@@ -92,10 +92,10 @@ export function MarketDiscovery({
               Mirrors `bitCaster-design/.../TagBar.tsx`. */}
           <div
             data-testid="market-discovery-bar"
-            className="flex items-stretch gap-3 px-4 sm:px-6 lg:px-8 py-3"
+            className="flex flex-col items-stretch gap-3 px-4 sm:px-6 lg:px-8 py-3 md:flex-row"
           >
             <SortBar active={sort} onSortChange={onSortChange} />
-            <div className="w-px bg-slate-300 dark:bg-slate-700 self-stretch" />
+            <div className="hidden w-px bg-slate-300 dark:bg-slate-700 self-stretch md:block" />
             <TagBar
               embedded
               categoryTags={categoryTags}

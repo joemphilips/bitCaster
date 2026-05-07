@@ -9,6 +9,7 @@ import {
   fetchOrderBook,
   submitOrder,
 } from '@/lib/markets'
+import { buildTradeTicket, TradeTicketError } from '@/lib/tradeTicket'
 import { generateEphemeralKeyPair } from '@/lib/ephemeral-key'
 import { getBalance, useBalance, useWalletStore } from '@/stores/wallet'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
@@ -49,6 +50,10 @@ export function MarketDetailPage() {
   const [tradeSide, setTradeSide] = useState<TradeSide>('buy')
   const [orderType, setOrderType] = useState<OrderType>('market')
   const [limitPrice, setLimitPrice] = useState(50)
+  const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
+    kind: 'info' | 'success' | 'error'
+    message: string
+  } | null>(null)
 
   // Top-up flow state — surfaced only when the user tries to confirm a trade
   // they can't afford. `balanceAtCheck` is the snapshot taken when the gate
@@ -127,33 +132,57 @@ export function MarketDetailPage() {
   // callers that can't promise that must route through `handleTradeConfirm`.
   const placeOrder = useCallback(async () => {
     if (!market || !tradeSelection || !tradeAmount) return
-    const outcomeName = tradeSelection.outcomeId ?? tradeSelection.side
-    const marketId = `${market.id}-${outcomeName}`
+    setTradeSubmitStatus(null)
+    let ticket: ReturnType<typeof buildTradeTicket>
+    try {
+      ticket = buildTradeTicket({
+        market,
+        selection: tradeSelection,
+        amountSats: tradeAmount,
+        side: tradeSide,
+        orderType,
+        limitPrice,
+        orderBook: market.type === 'yesno' && tradeSelection.side === 'yes'
+          ? market.orderBook
+          : null,
+      })
+    } catch (e) {
+      const message = e instanceof TradeTicketError
+        ? e.message
+        : 'This order cannot be submitted yet.'
+      setTradeSubmitStatus({ kind: 'info', message })
+      return
+    }
+
     const ephemeral = generateEphemeralKeyPair()
     try {
-      const response = await submitOrder(marketId, {
-        outcomeId: outcomeName,
-        side: tradeSide === 'buy' ? 'Buy' : 'Sell',
-        price: orderType === 'limit' ? limitPrice : 0,
-        amountSats: tradeAmount,
-        timeInForce: 'GTC',
+      const response = await submitOrder(ticket.marketId, {
+        ...ticket.request,
         ephemeralPubkey: ephemeral.pubkey,
       })
       // Only persist the privkey once the engine has accepted the order.
       // Otherwise we accumulate orphaned keys on every failed submission.
       addPendingTrade({
         orderId: response.orderId,
-        marketId,
+        marketId: ticket.marketId,
         ephemeralPubkey: ephemeral.pubkey,
         ephemeralPrivkey: ephemeral.privkey,
         submittedAt: Date.now(),
       })
       setTradeSelection(null)
       setTradeAmount(0)
+      setTradeSubmitStatus({
+        kind: 'success',
+        message: response.status === 'resting'
+          ? 'Order posted to the book.'
+          : `Order ${response.status.replace('_', ' ')}.`,
+      })
       loadMarket()
-    } catch {
-      // Error handling — could show a toast. PR1 deliberately keeps this silent
-      // so we don't ship half a notification system.
+    } catch (e) {
+      setTradeSubmitStatus({
+        kind: 'error',
+        message: e instanceof Error ? e.message : 'Failed to submit order.',
+      })
     }
   }, [
     market,
@@ -236,18 +265,29 @@ export function MarketDetailPage() {
         limitPrice={limitPrice}
         onTimeframeChange={setChartTimeframe}
         onChartTypeChange={setChartType}
-        onTradeSelect={setTradeSelection}
+        onTradeSelect={(selection) => {
+          setTradeSelection(selection)
+          setTradeSubmitStatus(null)
+        }}
         onTradeClear={() => {
           setTradeSelection(null)
           setTradeAmount(0)
+          setTradeSubmitStatus(null)
         }}
-        onAmountChange={setTradeAmount}
+        onAmountChange={(amount) => {
+          setTradeAmount(amount)
+          setTradeSubmitStatus(null)
+        }}
         onTradeConfirm={handleTradeConfirm}
+        tradeSubmitStatus={tradeSubmitStatus}
         onShare={handleShare}
         onTradeSideChange={setTradeSide}
         onOrderTypeChange={setOrderType}
         onLimitPriceChange={setLimitPrice}
         onRelatedMarketClick={handleRelatedMarketClick}
+        onCreatorClick={(creatorId) => {
+          if (creatorId && creatorId !== 'unknown') navigate(`/user/${creatorId}`)
+        }}
         walletReady={setupComplete}
         walletBalanceSats={activeMintBalance}
       />

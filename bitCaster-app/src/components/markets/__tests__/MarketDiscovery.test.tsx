@@ -107,6 +107,23 @@ describe('MarketDiscovery', () => {
     expect(row).toContainElement(sportsChip)
   })
 
+  it('stacks discovery controls on mobile and keeps tags in their own scroll lane', () => {
+    render(
+      <MarketDiscovery
+        categoryTags={testCategoryTags}
+        markets={testMarkets}
+        selectedTags={[]}
+        sort="trending"
+        onSortChange={vi.fn()}
+      />
+    )
+
+    expect(screen.getByTestId('market-discovery-bar')).toHaveClass('flex-col')
+    expect(screen.getByTestId('market-discovery-bar')).toHaveClass('md:flex-row')
+    expect(screen.getByTestId('market-tag-bar')).toHaveClass('min-w-0')
+    expect(screen.getByTestId('market-tag-scroller')).toHaveClass('overflow-x-auto')
+  })
+
   it('forwards SortBar interactions to onSortChange (T4.2.a)', async () => {
     const user = userEvent.setup()
     const onSortChange = vi.fn()

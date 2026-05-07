@@ -65,6 +65,7 @@ export function MarketDetail({
   onTradeClear,
   onAmountChange,
   onTradeConfirm,
+  tradeSubmitStatus,
   onShare,
   onCommentPost,
   onCommentLike,
@@ -140,6 +141,7 @@ export function MarketDetail({
                   onTradeClear={onTradeClear}
                   onAmountChange={onAmountChange}
                   onTradeConfirm={onTradeConfirm}
+                  tradeSubmitStatus={tradeSubmitStatus}
                   onCommentPost={onCommentPost}
                   onTradeSideChange={onTradeSideChange}
                   onOrderTypeChange={onOrderTypeChange}
@@ -232,6 +234,7 @@ export function MarketDetail({
                   onTradeClear={onTradeClear}
                   onAmountChange={onAmountChange}
                   onTradeConfirm={onTradeConfirm}
+                  tradeSubmitStatus={tradeSubmitStatus}
                   onCommentPost={onCommentPost}
                   onTradeSideChange={onTradeSideChange}
                   onOrderTypeChange={onOrderTypeChange}
