@@ -210,7 +210,7 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync("50000");
 
-        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) })
+        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^(Buy|Place)\\s", RegexOptions.IgnoreCase) })
             .Filter(new() { Visible = true }).First;
         await Assertions.Expect(confirm).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await confirm.ClickAsync();
