@@ -32,7 +32,9 @@ Platforms like Polymarket rely on [UMA's optimistic oracle](https://docs.uma.xyz
 - **The real oracle is hidden one layer deeper.** Polymarket's markets live on Polygon, a proof-of-stake blockchain. If UMA token holders vote for an outcome that POL stakers disagree with, the stakers can fork the chain. This makes POL token holders the ultimate "oracle" — but users have no direct recourse against them and may not even realize this dependency exists.
 - **Complicated incentive model** — participants must reason about dispute bonds, voting rounds, escalation periods, and token economics just to understand how a market resolves.
 
-bitCaster's DLC approach takes the opposite stance: make it clear who is responsible for the outcome. The oracle is a named entity with a known public key. What an oracle loses when it lies varies case by case (reputation, leaked private key, contractual liability), but users always know who attested and what answer they gave.
+bitCaster's DLC approach takes the opposite stance: make it clear who is responsible for the outcome. The oracle is a named entity with a known public key. This is the same trust model used by DLCs.
+
+In bitCaster, the market creator usually acts as the DLC oracle using their [Nostr](https://nostr.com/) private key. This means that **if the oracle lies or returns an incorrect answer, accountability attaches to that Nostr identity**. Reputation information accumulates on the Nostr network, making it easier to audit who made which attestations over time.
 
 ## After Resolution
 
