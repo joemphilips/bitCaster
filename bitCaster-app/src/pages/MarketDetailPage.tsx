@@ -73,7 +73,7 @@ export function MarketDetailPage() {
         // Try to fetch order book for yesno markets
         if (detail.type === 'yesno') {
           try {
-            const ob = await fetchOrderBook(`${id}-Yes`)
+            const ob = await fetchOrderBook(`${id}-YES`)
             detail = { ...detail, orderBook: ob }
           } catch {
             // Order book fetch is best-effort

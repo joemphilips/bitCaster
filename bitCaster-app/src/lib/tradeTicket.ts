@@ -34,8 +34,8 @@ function canonicalOutcomeName(
   selection: TradeSelection,
 ): string | null {
   if (market.type === 'yesno') {
-    if (selection.side === 'yes') return 'Yes'
-    if (selection.side === 'no') return 'No'
+    if (selection.side === 'yes') return 'YES'
+    if (selection.side === 'no') return 'NO'
     return null
   }
 

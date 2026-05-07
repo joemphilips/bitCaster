@@ -194,6 +194,7 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
             {t('topUp.title')}
           </h2>
           <button
+            data-testid="top-up-close"
             onClick={onCancel}
             className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white"
           >
@@ -209,6 +210,7 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
           {t('topUp.amountSats')}
         </label>
         <input
+          data-testid="top-up-amount-input"
           type="number"
           min={deficit}
           value={amount}
@@ -224,6 +226,7 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
         )}
 
         <button
+          data-testid="top-up-continue"
           onClick={startInvoice}
           disabled={loading || amount < deficit}
           className="mt-6 w-full py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-semibold transition-colors"

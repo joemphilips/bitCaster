@@ -185,7 +185,7 @@ export function MarketDetail({
                 )}
                 <OrderBookSection
                   orderBook={market.orderBook}
-                  liveMarketId={isTradingEnabled ? `${market.id}-Yes` : undefined}
+                  liveMarketId={isTradingEnabled ? `${market.id}-YES` : undefined}
                 />
               </div>
             )}

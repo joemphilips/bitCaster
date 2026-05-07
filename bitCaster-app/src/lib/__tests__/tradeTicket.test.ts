@@ -51,9 +51,9 @@ describe('buildTradeTicket', () => {
       orderBook: market.orderBook,
     })
 
-    expect(ticket.marketId).toBe('condition-1-Yes')
+    expect(ticket.marketId).toBe('condition-1-YES')
     expect(ticket.request).toMatchObject({
-      outcomeId: 'Yes',
+      outcomeId: 'YES',
       side: 'Buy',
       price: 50,
       amountSats: 100,
