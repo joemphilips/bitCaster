@@ -761,7 +761,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed; wallet-service can mint CTF. `Credited` → wallet-service finished crediting the per-market account (terminal-success). `Failed` → invoice expired, ecash rejected, or wallet-service errored (terminal-failure).
+    /// Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed and crediting is in progress. `Credited` → the market account was credited (terminal-success). `Failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -881,7 +881,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long AmountSats { get; }
 
         /// <summary>
-        /// Opaque ecash token (Cashu V4 token blob). The wallet-service verifies the proofs and amount before crediting; Phase 1 of the engine accepts and records without verification.
+        /// Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("proofsToken")]

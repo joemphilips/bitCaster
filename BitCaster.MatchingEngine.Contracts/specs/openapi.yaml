@@ -222,8 +222,8 @@ paths:
       security:
         - nip98: []
       description: >
-        Creates a Lightning invoice via the market's dedicated LNBits wallet.
-        The returned bolt11 string contains the payment hash and all details.
+        Creates a Lightning invoice for the market. The returned bolt11 string
+        contains the payment hash and all payment details.
       parameters:
         - $ref: '#/components/parameters/MarketId'
       requestBody:
@@ -244,20 +244,20 @@ paths:
         '404':
           description: Market not found or no wallet provisioned
         '502':
-          description: LNBits backend error
+          description: Lightning invoice provider error
 
   /api/v1/markets/{conditionId}/deposit/ln-invoice:
     post:
       operationId: requestLnInvoiceDeposit
-      summary: Request a Lightning invoice to deposit liquidity into a market's CPMM bot
+      summary: Request a Lightning invoice for market liquidity
       security:
         - nip98: []
       description: >
         Issues a bolt11 invoice payable to the market's funding account. Once
-        the invoice is paid the deposit transitions to `Paid`, and the
-        wallet-service mints CTF tokens and credits the per-market account.
-        The bolt11 string is returned only in this response — the polling
-        endpoint deliberately omits bearer material.
+        the invoice is paid, the deposit advances asynchronously through the
+        deposit lifecycle until the market account is credited. The bolt11
+        string is returned only in this response — the polling endpoint
+        deliberately omits bearer material.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
       requestBody:
@@ -282,19 +282,18 @@ paths:
         '429':
           description: Per-pubkey deposit-request rate limit exceeded
         '502':
-          description: LNBits backend error
+          description: Lightning invoice provider error
 
   /api/v1/markets/{conditionId}/deposit/ecash:
     post:
       operationId: requestEcashDeposit
-      summary: Submit an ecash payment to deposit liquidity into a market's CPMM bot
+      summary: Submit an ecash payment for market liquidity
       security:
         - nip98: []
       description: >
-        Records an ecash deposit attempt. Phase 1 records the request only;
-        actual proof verification and balance mutation happens in the
-        wallet-service. Use the returned `depositId` to poll for state
-        transitions via the GET endpoint.
+        Submits an ecash deposit for asynchronous proof verification and
+        crediting. Use the returned `depositId` to poll for state transitions
+        via the GET endpoint.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
       requestBody:
@@ -388,13 +387,11 @@ paths:
         the response shape or visibility — every market visible to an anonymous
         caller is also visible to an authenticated caller and vice versa.
 
-        Source-of-truth split: mintd is authoritative for `outcomes`,
-        `creatorPubkey`, `deadline`, and (Phase 1) `attestation/close`; the
-        engine is authoritative for `state` (Open/Closed lifecycle), `volume*`,
-        `lastTradedPrice`, and `createdAt` (RegisterMarket timestamp). A market
-        registered on the engine but absent from the mintd snapshot is omitted
-        from the response, and vice versa — both sides must know about the
-        market for it to surface.
+        The response combines condition metadata (`outcomes`, `creatorPubkey`,
+        `deadline`, and oracle attestation/close metadata) with trading state
+        (`state`, `volume*`, `lastTradedPrice`, and `createdAt`). A market
+        missing either side of that public data is omitted from the catalogue
+        until both are available.
       security:
         - {}
         - nip98: []
@@ -972,10 +969,9 @@ components:
       description: >
         Lifecycle state of a single deposit. `Requested` → invoice issued or
         ecash submission accepted, awaiting payment proof. `Paid` → payment
-        confirmed; wallet-service can mint CTF. `Credited` → wallet-service
-        finished crediting the per-market account (terminal-success).
-        `Failed` → invoice expired, ecash rejected, or wallet-service errored
-        (terminal-failure).
+        confirmed and crediting is in progress. `Credited` → the market account
+        was credited (terminal-success). `Failed` → invoice expired, ecash
+        rejected, or crediting failed (terminal-failure).
 
     DepositMethod:
       type: string
@@ -1030,9 +1026,8 @@ components:
         proofsToken:
           type: string
           description: >
-            Opaque ecash token (Cashu V4 token blob). The wallet-service
-            verifies the proofs and amount before crediting; Phase 1 of the
-            engine accepts and records without verification.
+            Opaque ecash token (Cashu V4 token blob). Proofs and amount are
+            verified before crediting.
 
     RequestEcashDepositResponse:
       type: object

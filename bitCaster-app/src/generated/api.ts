@@ -150,7 +150,7 @@ export interface paths {
         put?: never;
         /**
          * Create a bolt11 payment request for a market
-         * @description Creates a Lightning invoice via the market's dedicated LNBits wallet. The returned bolt11 string contains the payment hash and all details.
+         * @description Creates a Lightning invoice for the market. The returned bolt11 string contains the payment hash and all payment details.
          */
         post: operations["createPaymentRequest"];
         delete?: never;
@@ -169,8 +169,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Request a Lightning invoice to deposit liquidity into a market's CPMM bot
-         * @description Issues a bolt11 invoice payable to the market's funding account. Once the invoice is paid the deposit transitions to `Paid`, and the wallet-service mints CTF tokens and credits the per-market account. The bolt11 string is returned only in this response — the polling endpoint deliberately omits bearer material.
+         * Request a Lightning invoice for market liquidity
+         * @description Issues a bolt11 invoice payable to the market's funding account. Once the invoice is paid, the deposit advances asynchronously through the deposit lifecycle until the market account is credited. The bolt11 string is returned only in this response — the polling endpoint deliberately omits bearer material.
          */
         post: operations["requestLnInvoiceDeposit"];
         delete?: never;
@@ -189,8 +189,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Submit an ecash payment to deposit liquidity into a market's CPMM bot
-         * @description Records an ecash deposit attempt. Phase 1 records the request only; actual proof verification and balance mutation happens in the wallet-service. Use the returned `depositId` to poll for state transitions via the GET endpoint.
+         * Submit an ecash payment for market liquidity
+         * @description Submits an ecash deposit for asynchronous proof verification and crediting. Use the returned `depositId` to poll for state transitions via the GET endpoint.
          */
         post: operations["requestEcashDeposit"];
         delete?: never;
@@ -250,7 +250,7 @@ export interface paths {
          * Catalogue proxy — list markets with filters, sort, and pagination
          * @description Returns the public market catalogue with matching-engine market state, mint condition data, and trading summary fields. This is the read endpoint the markets list page (`/markets`) and discovery surfaces consume.
          *     Anonymous by default. NIP-98 is OPTIONAL — when present, the request is authenticated and routed to a higher per-pubkey rate-limit bucket; when absent, the per-IP bucket applies. Authentication does NOT change the response shape or visibility — every market visible to an anonymous caller is also visible to an authenticated caller and vice versa.
-         *     Source-of-truth split: mintd is authoritative for `outcomes`, `creatorPubkey`, `deadline`, and (Phase 1) `attestation/close`; the engine is authoritative for `state` (Open/Closed lifecycle), `volume*`, `lastTradedPrice`, and `createdAt` (RegisterMarket timestamp). A market registered on the engine but absent from the mintd snapshot is omitted from the response, and vice versa — both sides must know about the market for it to surface.
+         *     The response combines condition metadata (`outcomes`, `creatorPubkey`, `deadline`, and oracle attestation/close metadata) with trading state (`state`, `volume*`, `lastTradedPrice`, and `createdAt`). A market missing either side of that public data is omitted from the catalogue until both are available.
          */
         get: operations["queryMarkets"];
         put?: never;
@@ -465,7 +465,7 @@ export interface components {
             markets: components["schemas"]["CreatorMarketEntry"][];
         };
         /**
-         * @description Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed; wallet-service can mint CTF. `Credited` → wallet-service finished crediting the per-market account (terminal-success). `Failed` → invoice expired, ecash rejected, or wallet-service errored (terminal-failure).
+         * @description Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed and crediting is in progress. `Credited` → the market account was credited (terminal-success). `Failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
          * @enum {string}
          */
         DepositState: "Requested" | "Paid" | "Credited" | "Failed";
@@ -501,7 +501,7 @@ export interface components {
              * @description Asserted sat value of the supplied ecash proofs.
              */
             amountSats: number;
-            /** @description Opaque ecash token (Cashu V4 token blob). The wallet-service verifies the proofs and amount before crediting; Phase 1 of the engine accepts and records without verification. */
+            /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
             proofsToken: string;
         };
         RequestEcashDepositResponse: {
@@ -944,7 +944,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description LNBits backend error */
+            /** @description Lightning invoice provider error */
             502: {
                 headers: {
                     [name: string]: unknown;
@@ -1006,7 +1006,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description LNBits backend error */
+            /** @description Lightning invoice provider error */
             502: {
                 headers: {
                     [name: string]: unknown;
