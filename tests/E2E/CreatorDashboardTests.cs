@@ -22,9 +22,9 @@ public class CreatorDashboardTests : IAsyncLifetime
         // Verify all external services are reachable before launching Playwright
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -79,7 +79,7 @@ public class CreatorDashboardTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -111,7 +111,7 @@ public class CreatorDashboardTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -140,7 +140,7 @@ public class CreatorDashboardTests : IAsyncLifetime
 
         // First navigate to /creator so the Vite origin is active, then seed
         // localStorage and reload so the Zustand persist hydrate picks it up.
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -171,7 +171,7 @@ public class CreatorDashboardTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -191,7 +191,7 @@ public class CreatorDashboardTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         // No SetupComplete — no wallet / no mnemonic
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

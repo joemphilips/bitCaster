@@ -57,13 +57,13 @@ public class TabCloseRecoveryTests : IAsyncLifetime
     {
         using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(probe, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(probe, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(probe, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(probe, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(probe, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(probe, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _engineClient = new HttpClient
         {
-            BaseAddress = new Uri($"http://localhost:{TestPorts.Server}"),
+            BaseAddress = new Uri($"{TestPorts.ServerUrl}"),
             Timeout = TimeSpan.FromSeconds(10),
         };
 
@@ -217,7 +217,7 @@ public class TabCloseRecoveryTests : IAsyncLifetime
     /// </summary>
     private static async Task NavigateToMarketsAsync(IPage page) =>
         await page.GotoAsync(
-            $"http://localhost:{TestPorts.Vite}/markets",
+            $"{TestPorts.FrontendUrl}/markets",
             new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.NetworkIdle,
@@ -271,13 +271,13 @@ public class TabCloseRecoveryTests : IAsyncLifetime
         // take effect. /setup is a stable wizard route that doesn't pull
         // the trade-hub stack on its own.
         await page.GotoAsync(
-            $"http://localhost:{TestPorts.Vite}/setup",
+            $"{TestPorts.FrontendUrl}/setup",
             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
 
         // Deterministic nsec — only used to sign the NIP-98 access token
         // for the trade hub. The mock does not verify the schnorr sig.
         const string nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
         var mnemonic = TestMnemonics.Get();
 
         await page.EvaluateAsync($@"

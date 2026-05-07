@@ -20,9 +20,9 @@ public class TradingFlowTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -45,7 +45,7 @@ public class TradingFlowTests : IAsyncLifetime
     /// queries resolve against proofs we inject below.
     /// </summary>
     private static Task SetupWalletAsync(IPage page) =>
-        TestHelpers.SetupComplete(page, TestPorts.Vite, $"http://localhost:{TestPorts.Mint}");
+        TestHelpers.SetupComplete(page, TestPorts.Vite, $"{TestPorts.MintUrl}");
 
     /// <summary>
     /// Inject a single proof directly into the IndexedDB store so
@@ -55,7 +55,7 @@ public class TradingFlowTests : IAsyncLifetime
     /// </summary>
     private static async Task SeedBalanceAsync(IPage page, int sats)
     {
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
         // Raw IDB write — we open without a version so we attach to whatever
         // schema Dexie has already materialized. But in CI, Dexie's lazy open
         // can still be in flight when we arrive here (useBalance() mounts,

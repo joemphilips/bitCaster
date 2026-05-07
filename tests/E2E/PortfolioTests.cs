@@ -11,8 +11,8 @@ public class PortfolioTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -45,9 +45,9 @@ public class PortfolioTests : IAsyncLifetime
         var consoleMessages = TestHelpers.AttachConsoleCapture(page);
 
         var mnemonic = TestMnemonics.Get();
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -78,7 +78,7 @@ public class PortfolioTests : IAsyncLifetime
             }}));
         ");
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/portfolio", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -126,9 +126,9 @@ public class PortfolioTests : IAsyncLifetime
         var page = await context.NewPageAsync();
 
         var mnemonic = TestMnemonics.Get();
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -160,7 +160,7 @@ public class PortfolioTests : IAsyncLifetime
             }}));
         ");
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/portfolio", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

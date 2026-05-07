@@ -9,9 +9,9 @@ public class PaymentEndpointTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.LnBits}/api/v1/health", "LNBits"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.LnBitsUrl}/api/v1/health", "LNBits"));
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -22,7 +22,7 @@ public class PaymentEndpointTests : IAsyncLifetime
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
         // 1. Fetch a real condition from the mint
-        var mintResponse = await httpClient.GetAsync($"http://localhost:{TestPorts.Mint}/v1/conditions");
+        var mintResponse = await httpClient.GetAsync($"{TestPorts.MintUrl}/v1/conditions");
         Assert.True(mintResponse.IsSuccessStatusCode, "Failed to fetch conditions from mint");
         var mintBody = await mintResponse.Content.ReadAsStringAsync();
         using var mintDoc = JsonDocument.Parse(mintBody);
@@ -56,7 +56,7 @@ public class PaymentEndpointTests : IAsyncLifetime
         formContent.Add(new StringContent(metadata), "metadata");
 
         var createResponse = await httpClient.PostAsync(
-            $"http://localhost:{TestPorts.Server}/api/v1/markets/{conditionId}",
+            $"{TestPorts.ServerUrl}/api/v1/markets/{conditionId}",
             formContent);
 
         // Accept 200 (created) or 409 (already exists from prior run)
@@ -68,7 +68,7 @@ public class PaymentEndpointTests : IAsyncLifetime
 
         // 3. Create a payment request (bolt11 invoice)
         var paymentReqResponse = await httpClient.PostAsJsonAsync(
-            $"http://localhost:{TestPorts.Server}/api/v1/markets/{marketId}/payment-requests",
+            $"{TestPorts.ServerUrl}/api/v1/markets/{marketId}/payment-requests",
             new { amountSats = 100 });
 
         Assert.True(paymentReqResponse.IsSuccessStatusCode,
@@ -82,7 +82,7 @@ public class PaymentEndpointTests : IAsyncLifetime
 
         // 4. Simulate payment using the dev-only endpoint
         var simulateResponse = await httpClient.PostAsJsonAsync(
-            $"http://localhost:{TestPorts.Server}/api/v1/markets/{marketId}/simulate-payment",
+            $"{TestPorts.ServerUrl}/api/v1/markets/{marketId}/simulate-payment",
             new { bolt11 });
 
         Assert.True(simulateResponse.IsSuccessStatusCode,

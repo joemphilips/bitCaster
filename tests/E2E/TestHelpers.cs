@@ -4,9 +4,10 @@ using NBitcoin;
 namespace BitCaster.E2ETest;
 
 /// <summary>
-/// Resolves per-worktree service ports from environment variables so multiple
-/// worktree processes can run E2E tests in parallel against the same shared
-/// docker-compose backend. Defaults preserve the single-worktree workflow.
+/// Resolves per-worktree service ports and service base URLs from environment
+/// variables so multiple worktree processes can run E2E tests in parallel
+/// locally, and selected tests can point at deployed staging services.
+/// Defaults preserve the single-worktree docker-compose workflow.
 ///
 /// See <c>bitCaster/plans/parallel-e2e-worktrees.md</c> for the slot model.
 /// </summary>
@@ -18,8 +19,17 @@ public static class TestPorts
     public static readonly int CashuMe = GetInt("BITCASTER_E2E_CASHU_PORT", 3000);
     public static readonly int LnBits = GetInt("BITCASTER_E2E_LNBITS_PORT", 5002);
 
+    public static readonly string FrontendUrl = GetUrl("BITCASTER_E2E_FRONTEND_URL", $"http://localhost:{Vite}");
+    public static readonly string MintUrl = GetUrl("BITCASTER_E2E_MINT_URL", $"http://localhost:{Mint}");
+    public static readonly string ServerUrl = GetUrl("BITCASTER_E2E_SERVER_URL", $"http://localhost:{Server}");
+    public static readonly string CashuMeUrl = GetUrl("BITCASTER_E2E_CASHU_URL", $"http://localhost:{CashuMe}");
+    public static readonly string LnBitsUrl = GetUrl("BITCASTER_E2E_LNBITS_URL", $"http://localhost:{LnBits}");
+
     private static int GetInt(string name, int @default) =>
         int.TryParse(Environment.GetEnvironmentVariable(name), out var v) ? v : @default;
+
+    private static string GetUrl(string name, string @default) =>
+        (Environment.GetEnvironmentVariable(name) ?? @default).TrimEnd('/');
 }
 
 /// <summary>
@@ -71,7 +81,7 @@ public static class TestHelpers
             ? string.Empty
             : query.StartsWith('?') ? query : $"?{query}";
         return page.GotoAsync(
-            $"http://localhost:{TestPorts.Vite}/markets{suffix}",
+            $"{TestPorts.FrontendUrl}/markets{suffix}",
             options ?? new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -122,7 +132,7 @@ public static class TestHelpers
         var mnemonic = TestMnemonics.Get();
         var activeMint = mintUrl ?? "http://localhost:3338";
         var mintsJson = mintUrl is null ? "[]" : $"[{{ url: '{mintUrl}' }}]";
-        await page.GotoAsync($"http://localhost:{vitePort}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,

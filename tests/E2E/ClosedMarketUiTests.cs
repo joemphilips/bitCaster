@@ -24,9 +24,9 @@ public class ClosedMarketUiTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -139,9 +139,9 @@ public class ClosedMarketUiTests : IAsyncLifetime
 
     private async Task PrimeWalletAsync(IPage page)
     {
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
         var mnemonic = TestMnemonics.Get();
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -180,7 +180,7 @@ public class ClosedMarketUiTests : IAsyncLifetime
         await PrimeWalletAsync(page);
         var (openId, _) = await StubConditions(page, "expired");
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets/{openId}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{openId}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -219,7 +219,7 @@ public class ClosedMarketUiTests : IAsyncLifetime
         await PrimeWalletAsync(page);
         var (_, closedId) = await StubConditions(page, "expired");
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets/{closedId}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{closedId}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -272,7 +272,7 @@ public class ClosedMarketUiTests : IAsyncLifetime
         await PrimeWalletAsync(page);
         var (_, closedId) = await StubConditions(page, "expired");
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets/{closedId}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{closedId}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

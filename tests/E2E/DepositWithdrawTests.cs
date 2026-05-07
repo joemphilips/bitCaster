@@ -11,8 +11,8 @@ public class DepositWithdrawTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -42,7 +42,7 @@ public class DepositWithdrawTests : IAsyncLifetime
     {
         mnemonic ??= TestMnemonics.Get();
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -56,8 +56,8 @@ public class DepositWithdrawTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: 'http://localhost:{TestPorts.Vite}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
-                    activeMintUrl: 'http://localhost:{TestPorts.Vite}',
+                    mints: [{{ url: '{TestPorts.FrontendUrl}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
+                    activeMintUrl: '{TestPorts.FrontendUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
                 }},
@@ -71,7 +71,7 @@ public class DepositWithdrawTests : IAsyncLifetime
     /// </summary>
     private async Task NavigateToPortfolio(IPage page)
     {
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/portfolio", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -328,8 +328,8 @@ public class DepositWithdrawTests : IAsyncLifetime
 
         // Setup with two mints
         var mnemonic = TestMnemonics.Get();
-        var mintUrl = $"http://localhost:{TestPorts.Vite}";
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        var mintUrl = $"{TestPorts.FrontendUrl}";
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -350,7 +350,7 @@ public class DepositWithdrawTests : IAsyncLifetime
                 version: 0
             }}));
         ");
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/portfolio", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -431,8 +431,8 @@ public class DepositWithdrawTests : IAsyncLifetime
 
         // Setup with two mints
         var mnemonic = TestMnemonics.Get();
-        var mintUrl = $"http://localhost:{TestPorts.Vite}";
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        var mintUrl = $"{TestPorts.FrontendUrl}";
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -453,7 +453,7 @@ public class DepositWithdrawTests : IAsyncLifetime
                 version: 0
             }}));
         ");
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/portfolio", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

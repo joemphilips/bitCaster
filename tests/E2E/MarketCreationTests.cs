@@ -13,9 +13,9 @@ public class MarketCreationTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -106,7 +106,7 @@ public class MarketCreationTests : IAsyncLifetime
             }));
         ");
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -204,7 +204,7 @@ public class MarketCreationTests : IAsyncLifetime
         // Deliberately not injecting bitcaster-settings — the default
         // nostrSignerMode='none' is the state under test.
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -249,7 +249,7 @@ public class MarketCreationTests : IAsyncLifetime
 
         await Assertions.Expect(page).Not.ToHaveURLAsync(new Regex("/creator/new"));
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -279,7 +279,7 @@ public class MarketCreationTests : IAsyncLifetime
         await closeBtn.ClickAsync();
         await Assertions.Expect(page).Not.ToHaveURLAsync(new Regex("/creator/new"));
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -436,7 +436,7 @@ public class MarketCreationTests : IAsyncLifetime
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
         // Fetch a real condition from the mint to use its ID
-        var mintConditionsResponse = await httpClient.GetAsync($"http://localhost:{TestPorts.Mint}/v1/conditions");
+        var mintConditionsResponse = await httpClient.GetAsync($"{TestPorts.MintUrl}/v1/conditions");
         Assert.True(mintConditionsResponse.IsSuccessStatusCode, "Failed to fetch conditions from mint");
         var mintBody = await mintConditionsResponse.Content.ReadAsStringAsync();
         using var mintDoc = System.Text.Json.JsonDocument.Parse(mintBody);
@@ -470,7 +470,7 @@ public class MarketCreationTests : IAsyncLifetime
         formContent.Add(new StringContent(metadata), "metadata");
 
         var createResponse = await httpClient.PostAsync(
-            $"http://localhost:{TestPorts.Server}/api/v1/markets/{conditionId}",
+            $"{TestPorts.ServerUrl}/api/v1/markets/{conditionId}",
             formContent);
 
         // Accept both 200 (created) and 409 (already exists from prior run)
