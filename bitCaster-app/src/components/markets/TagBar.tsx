@@ -70,7 +70,7 @@ export function TagBar({
   )
 
   if (embedded) {
-    return <div data-testid="market-tag-bar">{chips}</div>
+    return <div data-testid="market-tag-bar" className="min-w-0 flex-1">{chips}</div>
   }
 
   return (

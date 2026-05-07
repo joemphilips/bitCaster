@@ -26,6 +26,10 @@ interface TradingPanelProps {
   limitPrice?: number
   userHoldings?: number
   walletBalanceSats?: number
+  tradeSubmitStatus?: {
+    kind: 'info' | 'success' | 'error'
+    message: string
+  } | null
   onTradeSelect?: (selection: TradeSelection) => void
   onTradeClear?: () => void
   onAmountChange?: (amount: number) => void
@@ -474,6 +478,7 @@ export function TradingPanel({
   onCommentPost,
   userHoldings,
   walletBalanceSats,
+  tradeSubmitStatus,
   onTradeSideChange,
   onOrderTypeChange,
   onLimitPriceChange,
@@ -666,6 +671,22 @@ export function TradingPanel({
               feePercent={market.creator.feePercent}
               baseUnit={baseUnit}
             />
+          )}
+
+          {tradeSubmitStatus && (
+            <div
+              role="status"
+              data-testid="trade-submit-status"
+              className={`mb-4 rounded-lg border px-3 py-2 text-sm ${
+                tradeSubmitStatus.kind === 'success'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300'
+                  : tradeSubmitStatus.kind === 'error'
+                    ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-300'
+                    : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300'
+              }`}
+            >
+              {tradeSubmitStatus.message}
+            </div>
           )}
 
           {/* Optional Comment with Trade */}

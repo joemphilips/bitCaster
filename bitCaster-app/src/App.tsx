@@ -8,6 +8,7 @@ import { CreatorPage } from "@/pages/CreatorPage";
 import { MarketCreationPage } from "@/pages/MarketCreationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { MintDetailPage } from "@/pages/MintDetailPage";
+import { UserPage } from "@/pages/UserPage";
 import { WalletSetupPage } from "@/pages/WalletSetupPage";
 import { useEffect, useMemo, useRef } from "react";
 import { nip19 } from "nostr-tools";
@@ -82,6 +83,7 @@ function ShellRoutes() {
         <Route path="/creator" element={<CreatorPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/mint-details" element={<MintDetailPage />} />
+        <Route path="/user/:pubkey" element={<UserPage />} />
       </Routes>
     </AppShell>
   );

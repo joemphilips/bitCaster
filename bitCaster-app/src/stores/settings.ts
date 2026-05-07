@@ -120,6 +120,8 @@ export const useSettingsStore = create<SettingsStoreState>()(
         theme: state.theme,
         nostrSignerMode: state.nostrSignerMode,
         relays: state.relays,
+        nostrProfile: state.nostrProfile,
+        nostrProfileFetchStatus: state.nostrProfileFetchStatus,
         // Persist the decrypted nsec so the NDK signer can be rehydrated on
         // reload. Same localStorage surface as the BIP-39 mnemonic.
         nsecSecret: state.nsecSecret,

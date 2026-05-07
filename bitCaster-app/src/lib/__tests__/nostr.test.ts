@@ -5,14 +5,18 @@ const mocks = vi.hoisted(() => {
   const settingsState: {
     nostrSignerMode: 'none' | 'nsec' | 'nip07'
     nsecSecret: string | null
+    nostrProfile: { pubkey: string; displayName: string; avatar: string; nip05: string; nip05verified: boolean; bio: string } | null
     relays: { url: string }[]
     setProfile: (profile: unknown, status: string) => void
     setSignerMode: (mode: 'none' | 'nsec' | 'nip07') => void
   } = {
     nostrSignerMode: 'none',
     nsecSecret: null,
+    nostrProfile: null,
     relays: [{ url: 'wss://relay.damus.io' }],
-    setProfile: vi.fn(),
+    setProfile: vi.fn((profile, _status) => {
+      settingsState.nostrProfile = profile as typeof settingsState.nostrProfile
+    }),
     setSignerMode: vi.fn(),
   }
   return {
@@ -67,6 +71,8 @@ describe('rehydrateNostrSigner', () => {
     vi.resetModules()
     mocks.settingsState.nostrSignerMode = 'none'
     mocks.settingsState.nsecSecret = null
+    mocks.settingsState.nostrProfile = null
+    vi.mocked(mocks.settingsState.setProfile).mockClear()
     mocks.privateKeySignerCtor.mockClear()
     mocks.setPendingKormirNsecSpy.mockClear()
     nostrModule = await import('../nostr')
@@ -108,6 +114,43 @@ describe('rehydrateNostrSigner', () => {
     await nostrModule.rehydrateNostrSigner()
     expect(mocks.privateKeySignerCtor).toHaveBeenCalledTimes(2)
     expect(mocks.privateKeySignerCtor).toHaveBeenLastCalledWith('nsec1second')
+  })
+})
+
+describe('fetchAndStoreNostrProfile', () => {
+  let nostrModule: typeof import('../nostr')
+
+  beforeEach(async () => {
+    vi.resetModules()
+    mocks.settingsState.relays = [{ url: 'wss://relay.damus.io' }]
+    mocks.settingsState.nostrProfile = null
+    vi.mocked(mocks.settingsState.setProfile).mockClear()
+    nostrModule = await import('../nostr')
+  })
+
+  it('keeps a cached matching profile when relays return no fresh kind:0', async () => {
+    const cached = {
+      pubkey: 'pk',
+      displayName: 'Cached User',
+      avatar: 'https://example.com/a.png',
+      nip05: '',
+      nip05verified: false,
+      bio: '',
+    }
+    mocks.settingsState.nostrProfile = cached
+    ;(nostrModule.getNdk() as unknown as {
+      signer: unknown
+    }).signer = {
+      user: () => Promise.resolve({
+        pubkey: 'pk',
+        profile: null,
+        fetchProfile: () => Promise.resolve(),
+      }),
+    }
+
+    await nostrModule.fetchAndStoreNostrProfile()
+
+    expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(cached, 'found')
   })
 })
 

@@ -77,6 +77,14 @@ function StatusDot({ status }: { status: MintConfig['connectionStatus'] | RelayC
   )
 }
 
+function isValidWssRelayUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'wss:'
+  } catch {
+    return false
+  }
+}
+
 // ─── Collapsible Category Card ──────────────────────────────────────────────
 
 function CategoryCard({
@@ -184,6 +192,10 @@ export function Settings({
 
   const trimmedNsec = nsecValue.trim()
   const isNcryptsec = trimmedNsec.startsWith('ncryptsec1')
+  const relayError =
+    newRelayUrl.trim() && !isValidWssRelayUrl(newRelayUrl.trim())
+      ? 'Relay URL must start with wss://'
+      : null
 
   const handleNsecSubmit = async () => {
     if (!trimmedNsec) return
@@ -227,11 +239,11 @@ export function Settings({
   }
 
   const handleAddRelay = () => {
-    if (newRelayUrl.trim()) {
-      onAddRelay?.(newRelayUrl.trim())
-      setNewRelayUrl('')
-      setShowAddRelay(false)
-    }
+    const trimmed = newRelayUrl.trim()
+    if (!trimmed || !isValidWssRelayUrl(trimmed)) return
+    onAddRelay?.(trimmed)
+    setNewRelayUrl('')
+    setShowAddRelay(false)
   }
 
   return (
@@ -502,7 +514,7 @@ export function Settings({
             <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-3">
               Profile
             </h3>
-            {nostr.profileFetchStatus === 'fetching' && (
+            {nostr.profileFetchStatus === 'fetching' && !nostr.profile && (
               <div className="flex items-center gap-2 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
                 <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
                 <span className="text-sm text-slate-500 dark:text-slate-400">Fetching profile...</span>
@@ -524,7 +536,7 @@ export function Settings({
                 </button>
               </div>
             )}
-            {nostr.profileFetchStatus === 'found' && nostr.profile && (
+            {nostr.profile && (
               <div className="flex items-start gap-4 p-4 rounded-lg bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
                 <img
                   src={nostr.profile.avatar}
@@ -536,6 +548,9 @@ export function Settings({
                     <span className="font-semibold text-slate-900 dark:text-white">
                       {nostr.profile.displayName}
                     </span>
+                    {nostr.profileFetchStatus === 'fetching' && (
+                      <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
+                    )}
                     {nostr.profile.nip05verified && (
                       <BadgeCheck className="w-4 h-4 text-blue-500" />
                     )}
@@ -605,7 +620,7 @@ export function Settings({
           </div>
 
           {showAddRelay ? (
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <input
                 type="url"
                 value={newRelayUrl}
@@ -617,7 +632,8 @@ export function Settings({
               />
               <button
                 onClick={handleAddRelay}
-                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
+                disabled={!newRelayUrl.trim() || !!relayError}
+                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
               >
                 Add
               </button>
@@ -627,6 +643,11 @@ export function Settings({
               >
                 Cancel
               </button>
+              {relayError && (
+                <div className="basis-full text-xs text-red-500 dark:text-red-400">
+                  {relayError}
+                </div>
+              )}
             </div>
           ) : (
             <button

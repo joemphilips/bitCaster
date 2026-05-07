@@ -43,6 +43,11 @@ export interface MarketCreator {
   feePercent: number
 }
 
+export interface MarketMintInfo {
+  collateral: string
+  keysetCount: number
+}
+
 // =============================================================================
 // Order Book Types
 // =============================================================================
@@ -134,6 +139,7 @@ interface BaseMarketDetail {
   createdDate: string
   activeSince: string
   baseUnit: string // e.g. "sats", "USD"
+  mint?: MarketMintInfo
   creator: MarketCreator
   /**
    * Engine-side lifecycle state per ADR-009 Amendment 2026-05-04. The detail
@@ -284,6 +290,12 @@ export interface MarketDetailProps {
 
   /** Called when user confirms trade */
   onTradeConfirm?: () => void
+
+  /** Status text from the latest order-submit attempt. */
+  tradeSubmitStatus?: {
+    kind: 'info' | 'success' | 'error'
+    message: string
+  } | null
 
   /** Called when user shares the market */
   onShare?: () => void

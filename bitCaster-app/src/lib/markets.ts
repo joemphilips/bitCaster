@@ -326,6 +326,10 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     createdDate: now,
     activeSince: now,
     baseUnit: 'sats',
+    mint: {
+      collateral: firstPartition?.collateral ?? 'sat',
+      keysetCount: Object.keys(firstPartition?.keysets ?? {}).length,
+    },
     creator: {
       id: 'unknown',
       name: 'Unknown',
@@ -426,11 +430,19 @@ function mergeEngineCatalogueEntry(
 ): MarketDetail {
   if (!engineEntry) return detail
   const normalisedState = normalizeEngineMarketState(engineEntry.state)
+  const creatorPubkey = engineEntry.creatorPubkey?.trim()
   return {
     ...detail,
     state: normalisedState ?? detail.state,
     imageUrl: engineEntry.thumbnailUrl ?? detail.imageUrl,
     volume: engineEntry.volume24hSats ?? detail.volume,
+    creator: creatorPubkey
+      ? {
+          ...detail.creator,
+          id: creatorPubkey,
+          name: `${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`,
+        }
+      : detail.creator,
     // Engine surfaces the oracle attestation deadline (carried from the mintd
     // condition snapshot) as the authoritative closing date. Without this
     // override, MarketHeader's `formatTimeRemaining` would compute "in the
