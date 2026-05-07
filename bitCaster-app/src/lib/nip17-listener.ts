@@ -1,6 +1,7 @@
 import type { PaymentRequestPayload } from '@cashu/cashu-ts'
 import { deriveNostrKeyPair, subscribeNip17DMs } from './nip17'
-import { encodeToken, ensureMintRegistered, receiveToken } from './cashu'
+import { encodeToken } from './cashu'
+import { ingressReceiveCashuToken } from './walletOps'
 import { normalizeUrl } from './url'
 import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useActivityLogStore } from '@/stores/activity-log'
@@ -56,34 +57,25 @@ async function handleIncomingDM(content: string): Promise<void> {
 
   const normalizedMint = normalizeUrl(payload.mint)
 
-  // cashu.me parity: if the payer sent from a mint we haven't configured
-  // yet, auto-add it so the proofs can be redeemed and the balance shows
-  // up without the user having to manually add the mint first.
-  try {
-    await ensureMintRegistered(normalizedMint)
-  } catch (e) {
-    console.warn('[nip17-listener] addMint failed:', (e as Error).message)
-    return
-  }
-
   try {
     const token = encodeToken(payload.proofs, normalizedMint)
-    const receivedProofs = await receiveToken(token, normalizedMint)
-    const stored: StoredProof[] = receivedProofs.map((p) => ({
+    const received = await ingressReceiveCashuToken(token, 'nip17', {
+      mintUrl: normalizedMint,
+    })
+    const stored: StoredProof[] = received.proofs.map((p) => ({
       ...p,
       mintUrl: normalizedMint,
     }))
     await addProofs(stored)
-    const amount = receivedProofs.reduce((sum, p) => sum + p.amount, 0)
 
     useActivityLogStore.getState().addActivity({
       type: 'deposit',
-      amountSats: amount,
+      amountSats: received.amountSats,
       status: 'completed',
     })
 
     if (payload.id) {
-      usePaymentRequestInbox.getState().markReceived(payload.id, amount)
+      usePaymentRequestInbox.getState().markReceived(payload.id, received.amountSats)
     }
   } catch (e) {
     console.warn(

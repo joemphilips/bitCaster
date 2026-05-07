@@ -5,10 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => {
   const walletState: {
     mints: { url: string }[]
-    addMint: (url: string) => Promise<void>
   } = {
     mints: [],
-    addMint: vi.fn(async (_url: string) => {}),
   }
   return {
     walletState,
@@ -22,6 +20,13 @@ const mocks = vi.hoisted(() => {
     receiveToken: vi.fn(async (_token: string, _mintUrl: string) => [
       { secret: 'rotated-1', amount: 42, id: 'kid', C: 'C' },
     ]),
+    ingressReceiveCashuToken: vi.fn(async (_token: string, _source: string, options?: { mintUrl?: string }) => ({
+      added: !walletState.mints.some((m) => m.url === options?.mintUrl),
+      mintUrl: options?.mintUrl ?? 'http://mint.example',
+      source: 'nip17',
+      amountSats: 42,
+      proofs: [{ secret: 'rotated-1', amount: 42, id: 'kid', C: 'C' }],
+    })),
   }
 })
 
@@ -49,16 +54,10 @@ vi.mock('@/stores/paymentRequestInbox', () => ({
 
 vi.mock('../cashu', () => ({
   encodeToken: mocks.encodeToken,
-  receiveToken: mocks.receiveToken,
-  // Mirror the real helper's contract: register the mint when missing.
-  // Tests still assert against `walletState.addMint` to prove the proofs
-  // would land under a configured row.
-  ensureMintRegistered: vi.fn(async (mintUrl: string) => {
-    const has = mocks.walletState.mints.some((m) => m.url === mintUrl)
-    if (has) return false
-    await mocks.walletState.addMint(mintUrl)
-    return true
-  }),
+}))
+
+vi.mock('../walletOps', () => ({
+  ingressReceiveCashuToken: mocks.ingressReceiveCashuToken,
 }))
 
 vi.mock('../nip17', () => ({
@@ -79,12 +78,12 @@ beforeEach(() => {
   mocks.walletState.mints = []
   // Reset all hoisted spies but preserve their identity so the mock is
   // still wired to the listener module's imports.
-  ;(mocks.walletState.addMint as ReturnType<typeof vi.fn>).mockClear()
   mocks.addProofsSpy.mockClear()
   mocks.addActivitySpy.mockClear()
   mocks.markReceivedSpy.mockClear()
   mocks.encodeToken.mockClear()
   mocks.receiveToken.mockClear()
+  mocks.ingressReceiveCashuToken.mockClear()
   __resetProcessedEventsForTests()
 })
 
@@ -100,7 +99,11 @@ describe('nip17-listener', () => {
     }
     await __handleIncomingDMForTests(JSON.stringify(payload))
 
-    expect(mocks.walletState.addMint).not.toHaveBeenCalled()
+    expect(mocks.ingressReceiveCashuToken).toHaveBeenCalledWith(
+      'token:http://mint.example:42',
+      'nip17',
+      { mintUrl: 'http://mint.example' },
+    )
     expect(mocks.addProofsSpy).toHaveBeenCalledTimes(1)
     const stored = mocks.addProofsSpy.mock.calls[0][0] as { mintUrl: string }[]
     expect(stored[0].mintUrl).toBe('http://mint.example')
@@ -118,7 +121,11 @@ describe('nip17-listener', () => {
     }
     await __handleIncomingDMForTests(JSON.stringify(payload))
 
-    expect(mocks.walletState.addMint).toHaveBeenCalledWith('http://new.mint')
+    expect(mocks.ingressReceiveCashuToken).toHaveBeenCalledWith(
+      'token:http://new.mint:10',
+      'nip17',
+      { mintUrl: 'http://new.mint' },
+    )
     expect(mocks.addProofsSpy).toHaveBeenCalledTimes(1)
     expect(mocks.markReceivedSpy).toHaveBeenCalledWith('req-2', 42)
   })

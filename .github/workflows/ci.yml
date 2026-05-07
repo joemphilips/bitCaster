@@ -41,6 +41,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint:enum-discipline
+      - run: npm run lint:wallet-ops
       - run: npm run build
       - run: npm run test
 

@@ -19,15 +19,16 @@ import {
   createMintQuote,
   mintProofs,
   encodeToken,
-  decodeToken,
-  ensureMintRegistered,
-  receiveToken,
   sendProofs,
   createMeltQuote,
   meltProofs,
   waitForMintQuotePaid,
   type MintQuoteWaitResult,
 } from '@/lib/cashu'
+import {
+  ingressReceiveCashuToken,
+  type IngressReceiveCashuTokenResult,
+} from '@/lib/walletOps'
 import { useToastStore } from '@/stores/toast'
 import {
   getProofs,
@@ -105,18 +106,14 @@ export interface DepositWithdrawState {
 }
 
 /**
- * Register `mintUrl` if it's not in the configured mints list and surface a
- * toast on first add. Shared by paste/scan ecash redemption — without this,
- * proofs minted by an unknown mint (e.g. testnut.cashu.space pasted from an
- * external cashu.me wallet) are orphaned because no `StoredMint` row exists
- * for the UI to enumerate them under. addMint failures bubble — the caller's
- * existing red banner reports them.
+ * Surface a toast when ingress had to register an unknown mint before redeeming.
+ * The actual wallet mutation lives in walletOps so untrusted input cannot call
+ * the user-facing add-and-activate mint path by accident.
  */
-async function registerMintWithToast(mintUrl: string): Promise<void> {
-  const added = await ensureMintRegistered(mintUrl)
-  if (!added) return
+function toastNewMintIfAdded(result: IngressReceiveCashuTokenResult): void {
+  if (!result.added) return
   useToastStore.getState().addToast({
-    message: `Added new mint: ${safeHostname(mintUrl)}`,
+    message: `Added new mint: ${safeHostname(result.mintUrl)}`,
     type: 'info',
   })
 }
@@ -343,23 +340,20 @@ export function useDepositWithdrawState(
       // Detect if it's an ecash token or a lightning invoice
       if (currentView === 'deposit-ecash') {
         setIsLoading(true)
-        const decoded = await decodeToken(text)
-        await registerMintWithToast(decoded.mint)
-        const proofs = await receiveToken(text, decoded.mint)
-        const mintUrl = decoded.mint
-        const stored: StoredProof[] = proofs.map((p) => ({
+        const received = await ingressReceiveCashuToken(text, 'paste')
+        toastNewMintIfAdded(received)
+        const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
-          mintUrl,
+          mintUrl: received.mintUrl,
         }))
         await addProofs(stored)
-        const receivedAmount = proofs.reduce((sum, p) => sum + p.amount, 0)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
-          amountSats: receivedAmount,
+          amountSats: received.amountSats,
           status: 'completed',
         })
         setIsLoading(false)
-        setSuccessAmount(receivedAmount)
+        setSuccessAmount(received.amountSats)
         setCurrentView('success')
       } else if (currentView === 'pay-lightning') {
         setLightningInput(text)
@@ -479,21 +473,19 @@ export function useDepositWithdrawState(
     if (trimmed.toLowerCase().startsWith('cashu')) {
       setIsLoading(true)
       try {
-        const decoded = await decodeToken(trimmed)
-        await registerMintWithToast(decoded.mint)
-        const proofs = await receiveToken(trimmed, decoded.mint)
-        const stored: StoredProof[] = proofs.map((p) => ({
+        const received = await ingressReceiveCashuToken(trimmed, 'scan')
+        toastNewMintIfAdded(received)
+        const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
-          mintUrl: decoded.mint,
+          mintUrl: received.mintUrl,
         }))
         await addProofs(stored)
-        const receivedAmount = proofs.reduce((sum, p) => sum + p.amount, 0)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
-          amountSats: receivedAmount,
+          amountSats: received.amountSats,
           status: 'completed',
         })
-        setSuccessAmount(receivedAmount)
+        setSuccessAmount(received.amountSats)
         setCurrentView('success')
       } catch (e) {
         setError((e as Error).message)

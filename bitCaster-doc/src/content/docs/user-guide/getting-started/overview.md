@@ -30,6 +30,8 @@ In prediction markets, the value of a token depends on what actually happens in 
 Anyone can become an oracle. The oracle is designated when a market is created and cannot be changed afterward.
 bitCaster's protocol is designed to make oracle fraud as difficult as possible. See [Resolution](../../core-concepts/resolution/) for details.
 
+When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client.
+
 ### Become a token issuer
 
 Any user can run their own Cashu mint to issue prediction market tokens. The mint software is open-source, and the protocol specification is public. Multiple independent mints can coexist, each serving different communities or markets.

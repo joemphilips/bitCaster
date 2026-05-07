@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router'
 import { ArrowLeft, Trash2, ChevronDown, Mail, AtSign, Copy } from 'lucide-react'
 import { useWalletStore } from '@/stores/wallet'
+import { userRemoveMint } from '@/lib/walletOps'
 import { safeHostname } from '@/lib/url'
 
 /** Human-readable names for well-known NUTs (7+). */
@@ -45,7 +46,6 @@ export function MintDetailPage() {
   const [nutsExpanded, setNutsExpanded] = useState(false)
 
   const storedMint = useWalletStore((s) => s.mints.find((m) => m.url === mintUrl))
-  const removeMint = useWalletStore((s) => s.removeMint)
   const mints = useWalletStore((s) => s.mints)
 
   const info = storedMint?.info as Record<string, unknown> | undefined
@@ -66,7 +66,7 @@ export function MintDetailPage() {
 
   const handleRemove = () => {
     if (mints.length <= 1) return
-    removeMint(mintUrl)
+    userRemoveMint(mintUrl)
     navigate('/settings?category=cashu')
   }
 

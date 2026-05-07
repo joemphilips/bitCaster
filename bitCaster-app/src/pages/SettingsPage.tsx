@@ -5,6 +5,7 @@ import { useWalletStore, DEFAULT_MINT_URL } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
 import { detectMintCapabilities } from '@/lib/mints'
+import { userAddAndSelectMint, userAddRelay, userRemoveMint, userRemoveRelay } from '@/lib/walletOps'
 import {
   loginWithExtension,
   loginWithNsecOrNcryptsec,
@@ -90,7 +91,7 @@ export function SettingsPage() {
       if (status === 'failed') {
         throw new Error('Failed to connect — mint is unreachable or invalid')
       }
-      await walletStore.addMint(url)
+      await userAddAndSelectMint(url)
     },
     [walletStore],
   )
@@ -111,9 +112,9 @@ export function SettingsPage() {
 
   const handleRemoveMint = useCallback(
     (url: string) => {
-      walletStore.removeMint(url)
+      userRemoveMint(url)
     },
-    [walletStore],
+    [],
   )
 
   const handleThemeChange = useCallback(
@@ -191,8 +192,8 @@ export function SettingsPage() {
       onSignerModeChange={handleSignerModeChange}
       onNsecSubmit={handleNsecSubmit}
       onDisconnectNostr={handleDisconnectNostr}
-      onAddRelay={settingsStore.addRelay}
-      onRemoveRelay={settingsStore.removeRelay}
+      onAddRelay={userAddRelay}
+      onRemoveRelay={userRemoveRelay}
     />
   )
 }

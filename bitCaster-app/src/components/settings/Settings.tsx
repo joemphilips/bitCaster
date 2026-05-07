@@ -28,6 +28,7 @@ import {
 } from 'lucide-react'
 import { useToastStore } from '@/stores/toast'
 import { isNip07Available, fetchAndStoreNostrProfile } from '@/lib/nostr'
+import { getRelayUrlValidationError } from '@/lib/walletOps'
 import { safeHostname } from '@/lib/url'
 import { AddMintForm } from '@/components/shared/AddMintForm'
 
@@ -75,14 +76,6 @@ function StatusDot({ status }: { status: MintConfig['connectionStatus'] | RelayC
       title={status}
     />
   )
-}
-
-function isValidWssRelayUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === 'wss:'
-  } catch {
-    return false
-  }
 }
 
 // ─── Collapsible Category Card ──────────────────────────────────────────────
@@ -192,10 +185,7 @@ export function Settings({
 
   const trimmedNsec = nsecValue.trim()
   const isNcryptsec = trimmedNsec.startsWith('ncryptsec1')
-  const relayError =
-    newRelayUrl.trim() && !isValidWssRelayUrl(newRelayUrl.trim())
-      ? 'Relay URL must start with wss://'
-      : null
+  const relayError = getRelayUrlValidationError(newRelayUrl)
 
   const handleNsecSubmit = async () => {
     if (!trimmedNsec) return
@@ -240,7 +230,7 @@ export function Settings({
 
   const handleAddRelay = () => {
     const trimmed = newRelayUrl.trim()
-    if (!trimmed || !isValidWssRelayUrl(trimmed)) return
+    if (!trimmed || relayError) return
     onAddRelay?.(trimmed)
     setNewRelayUrl('')
     setShowAddRelay(false)

@@ -23,6 +23,7 @@ import { rehydrateNostrSigner } from "@/lib/nostr";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import { recoverKeysetCountersForMint } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
+import { userAddAndSelectMint } from "@/lib/walletOps";
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -244,7 +245,7 @@ function AppRoutes() {
     const runMintRehydrate = () => {
       if (mintRehydrateAttempted.current) return;
       mintRehydrateAttempted.current = true;
-      const { mints, addMint } = useWalletStore.getState();
+      const { mints } = useWalletStore.getState();
       if (mints.length === 0) {
         // Skip seeding while the wallet-setup wizard is visible — the
         // wizard owns mint configuration and `completeSetup()` adds the
@@ -255,7 +256,7 @@ function AppRoutes() {
           window.location.pathname
         );
         if (!onWizard) {
-          addMint(DEFAULT_MINT_URL).catch(() => {});
+          userAddAndSelectMint(DEFAULT_MINT_URL).catch(() => {});
         }
         return;
       }
@@ -264,7 +265,7 @@ function AppRoutes() {
         const isDefault = m.url === DEFAULT_MINT_URL;
         const missingCtfOnDefault = isDefault && nuts != null && !('CTF' in nuts);
         if (!nuts || missingCtfOnDefault) {
-          addMint(m.url).catch(() => {});
+          userAddAndSelectMint(m.url).catch(() => {});
         }
       }
     };
