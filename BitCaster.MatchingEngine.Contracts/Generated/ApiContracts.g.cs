@@ -267,6 +267,106 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RestingOrderResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RestingOrderResponse(long @amountSats, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSats, OrderSide @side, TimeInForce @timeInForce)
+        {
+            this.OrderId = @orderId;
+            this.MarketId = @marketId;
+            this.OutcomeId = @outcomeId;
+            this.Side = @side;
+            this.Price = @price;
+            this.RemainingAmountSats = @remainingAmountSats;
+            this.AmountSats = @amountSats;
+            this.TimeInForce = @timeInForce;
+            this.PlacedAt = @placedAt;
+            this.ExpiresAt = @expiresAt;
+            this.EphemeralPubkey = @ephemeralPubkey;
+        }
+
+        /// <summary>
+        /// The unique identifier assigned by the matching engine.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid OrderId { get; }
+
+        /// <summary>
+        /// The market this order belongs to.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// The outcome this order trades.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
+        public OrderSide Side { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int Price { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSats")]
+        public long RemainingAmountSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TimeInForce>))]
+        public TimeInForce TimeInForce { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("placedAt")]
+        public System.DateTimeOffset PlacedAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
+        public System.DateTimeOffset? ExpiresAt { get; }
+
+        /// <summary>
+        /// Order-level ephemeral pubkey supplied at submit time.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("ephemeralPubkey")]
+        public string EphemeralPubkey { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ListRestingOrdersResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ListRestingOrdersResponse(System.Collections.Generic.List<RestingOrderResponse> @orders)
+        {
+            this.Orders = @orders;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orders")]
+        public System.Collections.Generic.List<RestingOrderResponse> Orders { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SubmitOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]

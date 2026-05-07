@@ -31,7 +31,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List the authenticated user's resting orders
+         * @description Returns live resting orders in this market owned by the authenticated user. Used by clients that need to rebuild local order-tracking state after a restart.
+         */
+        get: operations["listRestingOrders"];
         put?: never;
         /**
          * Submit a new order
@@ -344,6 +348,31 @@ export interface components {
             filledAmountSats: components["schemas"]["Sats"];
             /** @description All fills produced against this order so far. */
             fills: components["schemas"]["Fill"][];
+        };
+        RestingOrderResponse: {
+            /**
+             * Format: uuid
+             * @description The unique identifier assigned by the matching engine.
+             */
+            orderId: string;
+            /** @description The market this order belongs to. */
+            marketId: string;
+            /** @description The outcome this order trades. */
+            outcomeId: string;
+            side: components["schemas"]["OrderSide"];
+            price: components["schemas"]["Probability"];
+            remainingAmountSats: components["schemas"]["Sats"];
+            amountSats: components["schemas"]["Sats"];
+            timeInForce: components["schemas"]["TimeInForce"];
+            /** Format: date-time */
+            placedAt: string;
+            /** Format: date-time */
+            expiresAt?: string | null;
+            /** @description Order-level ephemeral pubkey supplied at submit time. */
+            ephemeralPubkey?: string | null;
+        };
+        ListRestingOrdersResponse: {
+            orders: components["schemas"]["RestingOrderResponse"][];
         };
         SubmitOrderResponse: {
             /**
@@ -677,6 +706,36 @@ export interface operations {
                 content: {
                     "application/json": string;
                 };
+            };
+        };
+    };
+    listRestingOrders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                marketId: components["parameters"]["MarketId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resting orders owned by the authenticated user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListRestingOrdersResponse"];
+                };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

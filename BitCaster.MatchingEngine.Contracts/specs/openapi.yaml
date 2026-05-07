@@ -65,6 +65,27 @@ paths:
                 type: string
 
   /api/v1/{marketId}/orders:
+    get:
+      operationId: listRestingOrders
+      summary: List the authenticated user's resting orders
+      security:
+        - nip98: []
+      description: >
+        Returns live resting orders in this market owned by the authenticated
+        user. Used by clients that need to rebuild local order-tracking state
+        after a restart.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+      responses:
+        '200':
+          description: Resting orders owned by the authenticated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRestingOrdersResponse'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+
     post:
       operationId: submitOrder
       summary: Submit a new order
@@ -702,6 +723,62 @@ components:
           items:
             $ref: '#/components/schemas/Fill'
           description: All fills produced against this order so far.
+
+    RestingOrderResponse:
+      type: object
+      required:
+        - orderId
+        - marketId
+        - outcomeId
+        - side
+        - price
+        - remainingAmountSats
+        - amountSats
+        - timeInForce
+        - placedAt
+      properties:
+        orderId:
+          type: string
+          format: uuid
+          description: The unique identifier assigned by the matching engine.
+        marketId:
+          type: string
+          description: The market this order belongs to.
+        outcomeId:
+          type: string
+          description: The outcome this order trades.
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        price:
+          $ref: '#/components/schemas/Probability'
+        remainingAmountSats:
+          $ref: '#/components/schemas/Sats'
+        amountSats:
+          $ref: '#/components/schemas/Sats'
+        timeInForce:
+          $ref: '#/components/schemas/TimeInForce'
+        placedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        ephemeralPubkey:
+          type: string
+          nullable: true
+          pattern: '^[0-9a-fA-F]{66}$'
+          description: Order-level ephemeral pubkey supplied at submit time.
+
+    ListRestingOrdersResponse:
+      type: object
+      required:
+        - orders
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestingOrderResponse'
 
     SubmitOrderResponse:
       type: object
