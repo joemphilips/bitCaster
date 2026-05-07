@@ -20,6 +20,7 @@ import { nip19 } from "nostr-tools";
 import * as nip49 from "nostr-tools/nip49";
 import { setPendingKormirNsec } from "./kormir";
 import { useSettingsStore } from "@/stores/settings";
+import { PRODUCTION_NOSTR_RELAYS } from "./relayDefaults";
 
 // ---------------------------------------------------------------------------
 // Singleton NDK instance
@@ -27,12 +28,7 @@ import { useSettingsStore } from "@/stores/settings";
 
 export const DEFAULT_RELAYS: string[] = import.meta.env.VITE_NOSTR_RELAYS
   ? (import.meta.env.VITE_NOSTR_RELAYS as string).split(",").map((r: string) => r.trim())
-  : [
-      "wss://relay.damus.io",
-      "wss://nos.lol",
-      "wss://relay.primal.net",
-      "wss://nostr.bitcoiner.social",
-    ];
+  : [...PRODUCTION_NOSTR_RELAYS];
 
 let _ndk: NDK | null = null;
 // Snapshot of the user-relay set last reconciled into the singleton NDK.

@@ -177,6 +177,10 @@ describe('getNdk relay reconciliation', () => {
     expect(ndk.addExplicitRelay).not.toHaveBeenCalled()
   })
 
+  it('keeps search-only relays out of production defaults', () => {
+    expect(nostrModule.DEFAULT_RELAYS).not.toContain('wss://relay.nostr.band')
+  })
+
   it('reconciles new user relays added between calls without duplicating', () => {
     const ndk = nostrModule.getNdk() as unknown as {
       addExplicitRelay: ReturnType<typeof vi.fn>
