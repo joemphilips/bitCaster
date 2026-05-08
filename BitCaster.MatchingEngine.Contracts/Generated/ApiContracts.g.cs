@@ -94,7 +94,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSats, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, MatchPath @path, System.Guid @takerOrderId)
+        public Fill(long @amountSats, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, MatchPath @path, System.Guid @takerOrderId, System.Guid? @tradeId)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
@@ -103,6 +103,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.ExecutionPrice = @executionPrice;
             this.Path = @path;
             this.FilledAt = @filledAt;
+            this.TradeId = @tradeId;
             this.MakerEphemeralPubkey = @makerEphemeralPubkey;
         }
 
@@ -139,6 +140,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("filledAt")]
         public System.DateTimeOffset FilledAt { get; }
+
+        /// <summary>
+        /// Atomic-swap trade session identifier for this fill. Present on direct-match fills that require TradeHub settlement; omitted on complementary fills and legacy fills that do not have a corresponding TradeHub session.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
+        public System.Guid? TradeId { get; }
 
         /// <summary>
         /// Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders).

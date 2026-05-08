@@ -649,6 +649,14 @@ components:
           type: string
           format: date-time
           description: Timestamp when this fill was executed.
+        tradeId:
+          type: string
+          format: uuid
+          description: >
+            Atomic-swap trade session identifier for this fill. Present on
+            direct-match fills that require TradeHub settlement; omitted on
+            complementary fills and legacy fills that do not have a corresponding
+            TradeHub session.
         makerEphemeralPubkey:
           type: string
           pattern: '^[0-9a-fA-F]{66}$'

@@ -45,7 +45,12 @@ import {
   type SwapWorkKey,
 } from '@/stores/activeSwaps'
 import { useWalletStore } from '@/stores/wallet'
-import { addProofs, getProofs, type StoredProof } from '@/stores/proof-db'
+import {
+  addProofs,
+  getProofs,
+  removeProofs,
+  type StoredProof,
+} from '@/stores/proof-db'
 import { hexToBytes } from '@/lib/ecdh'
 import {
   buyerClaimSwap,
@@ -182,6 +187,7 @@ async function runSellerSendOpening(
     if (!ctx) return
     const proofs = await loadProofsForLock(mintUrl)
     const out = await sellerPrepareSwap(ctx, proofs)
+    await persistLockChange(proofs, out.changeProofs, mintUrl)
     useActiveSwapsStore
       .getState()
       .setSellerState(tradeId, { adaptorPoint: out.adaptorPoint })
@@ -216,6 +222,13 @@ function handleSwapMessage(
   recordCipher(msg.tradeId, msg.messageType, msg.ciphertext)
   const swap = useActiveSwapsStore.getState().byTradeId[msg.tradeId]
   if (!swap) return
+
+  if (
+    swap.role === 'seller' &&
+    msg.messageType === TRADE_MESSAGE_TYPES.lockedProofsBuyer
+  ) {
+    void runSettlementClaim(msg.tradeId, sendSwapMessage)
+  }
 
   if (swap.role === 'buyer' && hasAllSellerMessages(swap)) {
     void runBuyerRespond(msg.tradeId, sendSwapMessage, mintUrl)
@@ -272,6 +285,7 @@ async function runBuyerRespond(
       swap.messages.lockedProofsSeller,
       proofs,
     )
+    await persistLockChange(proofs, out.changeProofs, mintUrl)
     useActiveSwapsStore.getState().setBuyerState(tradeId, {
       ownPreSigsHex: out.preSigsHex,
       lockedSatProofs: out.lockedProofs,
@@ -313,6 +327,13 @@ async function runSettlementClaim(
   try {
     const swap = useActiveSwapsStore.getState().byTradeId[tradeId]
     if (!swap || !swap.role) return
+    if (
+      swap.step === 'awaiting-confirmation' ||
+      swap.step === 'completed' ||
+      swap.step === 'failed'
+    )
+      return
+    if (swap.role === 'seller' && !swap.messages.lockedProofsBuyer) return
     const mintUrl = useWalletStore.getState().activeMintUrl
     const ctx = buildSwapContext(swap, mintUrl)
     if (!ctx) return
@@ -385,6 +406,15 @@ async function loadProofsForLock(mintUrl: string): Promise<Proof[]> {
     throw new Error('No proofs available for atomic swap — wallet is empty')
   }
   return proofs
+}
+
+async function persistLockChange(
+  spentProofs: Proof[],
+  changeProofs: Proof[],
+  mintUrl: string,
+): Promise<void> {
+  await removeProofs(spentProofs.map((p) => p.secret))
+  await persistFreshProofs(changeProofs, mintUrl)
 }
 
 async function persistFreshProofs(

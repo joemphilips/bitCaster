@@ -64,6 +64,13 @@ export interface TradeHubActions {
 
 const SERVER_URL = resolveHubServerUrl()
 
+export function generateTradeHubAccessToken(
+  privateKey: Uint8Array,
+  hubUrl: string,
+): string {
+  return generateNip98AuthHeader(privateKey, hubUrl, 'GET').replace(/^Nostr\s+/, '')
+}
+
 /**
  * Connect to the TradeHub and register event handlers.
  *
@@ -91,7 +98,7 @@ export function useTradeHub(
       .withUrl(hubUrl, {
         transport: HttpTransportType.WebSockets,
         accessTokenFactory: () =>
-          generateNip98AuthHeader(privkey, hubUrl, 'GET'),
+          generateTradeHubAccessToken(privkey, hubUrl),
       })
       .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
       .build()

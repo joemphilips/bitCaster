@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Proof } from '@cashu/cashu-ts'
 import {
+  buildReceiveToken,
   buyerPrepareSwap,
   MIN_LOCKTIME_DELTA_SECS,
   sellerPrepareSwap,
@@ -13,6 +14,25 @@ import {
   deriveEncryptionKey,
   generateEphemeralKeypair,
 } from '../ecdh'
+
+vi.mock('@cashu/cashu-ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@cashu/cashu-ts')>()
+  return {
+    ...actual,
+    Mint: vi.fn(function MockMint() {}),
+    Wallet: vi.fn(function MockWallet() {
+      return {
+        loadMint: vi.fn().mockResolvedValue(undefined),
+        getFeesForProofs: vi.fn().mockReturnValue(0),
+        send: vi.fn().mockImplementation(async (_amount: number, proofs: Proof[]) => ({
+          send: proofs,
+          keep: [],
+        })),
+        receive: vi.fn().mockResolvedValue([]),
+      }
+    }),
+  }
+})
 
 // ---------------------------------------------------------------------------
 // validateLocktimeOrdering
@@ -96,6 +116,17 @@ describe('buyerPrepareSwap', () => {
     const sellerLocked = JSON.parse(sellerLockedPlain) as { preSigs: string[] }
     expect(buyerOut.sellerPreSigsHex).toEqual(sellerLocked.preSigs)
     expect(buyerOut.sellerPreSigsHex).toHaveLength(1)
+  })
+})
+
+describe('buildReceiveToken', () => {
+  it('sets the Cashu unit expected by the swap receive wallet', () => {
+    const p = proof('locked-1', 7)
+    expect(buildReceiveToken('https://mint.test', [p])).toEqual({
+      mint: 'https://mint.test',
+      unit: 'sat',
+      proofs: [p],
+    })
   })
 })
 

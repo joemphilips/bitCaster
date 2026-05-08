@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import {
   generateAdaptorPoint,
   preSign,
@@ -36,6 +36,10 @@ function getPubkey(privateKey: Uint8Array): Uint8Array {
       .multiply(BigInt('0x' + bytesToHex(privateKey)))
       .toHex(true),
   )
+}
+
+function getXOnlyPubkey(privateKey: Uint8Array): Uint8Array {
+  return schnorr.getPublicKey(privateKey)
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +145,19 @@ describe('adapt + extract cycle', () => {
     const sig = adapt(preSig, ap.secret)
     expect(sig).toBeInstanceOf(Uint8Array)
     expect(sig.byteLength).toBe(64)
+  })
+
+  it('adapt produces a BIP-340 signature accepted by the Cashu P2PK verifier shape', () => {
+    for (let i = 0; i < 25; i++) {
+      const sk = secp256k1.utils.randomSecretKey()
+      const pk = getXOnlyPubkey(sk)
+      const msg = randomMessage()
+      const ap = generateAdaptorPoint()
+      const preSig = preSign(sk, msg, ap.point)
+      const sig = adapt(preSig, ap.secret)
+
+      expect(schnorr.verify(sig, msg, pk)).toBe(true)
+    }
   })
 
   it('extract recovers the adaptor secret from (sig, preSig)', () => {

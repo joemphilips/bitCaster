@@ -6,6 +6,7 @@ import {
   useNotificationsStore,
 } from '@/stores/notifications'
 import { useActiveSwapsStore } from '@/stores/activeSwaps'
+import { generateNip98Header } from '@/lib/markets'
 
 export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
 
@@ -34,7 +35,11 @@ export async function fetchOrderStatus(
   marketId: string,
   orderId: string,
 ): Promise<OrderStatusResponse | null> {
-  const response = await fetch(`/api/v1/${marketId}/orders/${orderId}`)
+  const url = `${window.location.origin}/api/v1/${marketId}/orders/${orderId}`
+  const authHeader = await generateNip98Header(url, 'GET')
+  const response = await fetch(url, {
+    headers: { Authorization: authHeader },
+  })
   if (response.status === 404) return null
   if (!response.ok) {
     throw new Error(`Failed to fetch order status: ${response.status}`)

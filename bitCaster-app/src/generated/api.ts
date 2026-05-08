@@ -15,7 +15,7 @@ export interface paths {
         put?: never;
         /**
          * Register a new market on the matching engine
-         * @description Validates the condition exists in the mint, creates empty order books with CPMM pools for each outcome, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed.
+         * @description Validates the condition exists in the mint, creates market order books, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed.
          */
         post: operations["createMarket"];
         delete?: never;
@@ -94,8 +94,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get CPMM pool state
-         * @description Returns the current state of the CPMM liquidity pool for a market.
+         * Get liquidity state
+         * @description Returns the current public liquidity state for a market.
          */
         get: operations["getLiquidity"];
         put?: never;
@@ -320,7 +320,12 @@ export interface components {
              * @description Timestamp when this fill was executed.
              */
             filledAt: string;
-            /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy CPMM bootstrap orders). */
+            /**
+             * Format: uuid
+             * @description Atomic-swap trade session identifier for this fill. Present on direct-match fills that require TradeHub settlement; omitted on complementary fills and legacy fills that do not have a corresponding TradeHub session.
+             */
+            tradeId?: string;
+            /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders). */
             makerEphemeralPubkey?: string;
         };
         SubmitOrderRequest: {
@@ -419,7 +424,7 @@ export interface components {
             outcomes: components["schemas"]["CreateMarketOutcome"][];
             /**
              * Format: int64
-             * @description Initial liquidity to seed across outcome CPMM pools (in sats).
+             * @description Initial liquidity budget in satoshis.
              * @default 0
              */
             liquiditySats: number;
@@ -443,7 +448,7 @@ export interface components {
             impliedProbability: number;
             /** Format: int64 */
             totalLiquiditySats: number;
-            /** @description Number of active CPMM orders on the CLOB. */
+            /** @description Number of active liquidity orders. */
             activeOrders: number;
         };
         MarketMetadataSnapshot: {
@@ -460,7 +465,7 @@ export interface components {
             uniqueTraderCount: number;
             /**
              * Format: int64
-             * @description Total CPMM liquidity deposited in satoshis.
+             * @description Total liquidity deposited in satoshis.
              */
             totalLiquiditySats: number;
         };
@@ -893,7 +898,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Current pool state */
+            /** @description Current liquidity state */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -902,7 +907,7 @@ export interface operations {
                     "application/json": components["schemas"]["LiquidityStateResponse"];
                 };
             };
-            /** @description No CPMM pool for this market */
+            /** @description No liquidity state for this market */
             404: {
                 headers: {
                     [name: string]: unknown;

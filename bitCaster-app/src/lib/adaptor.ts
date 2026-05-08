@@ -4,8 +4,11 @@
  * Implements the adaptor signature scheme described in the atomic-swap spec:
  *
  *   Standard Schnorr:  s  = r + e·x           (e = H(R,  P, m))
- *   Adaptor pre-sig:   s' = r + e·x            (but nonce point R' = R + T)
- *                      s  = s' + t             (valid sig, nonce = R = R' - T)
+ *   Adaptor pre-sig:   s' = r + e·x            (with nonce point R' = R + T)
+ *                      s  = s' + t             (valid sig, nonce = R')
+ *
+ * If R' has odd y, the pre-signature stores that odd compressed point and uses
+ * the BIP-340 equivalent nonce -R': s' = -r + e·x and s = s' - t.
  *
  * Operations:
  *   generateAdaptorPoint()          → { secret: t, point: T }
@@ -76,25 +79,25 @@ export function preSign(
   const T = Pt.fromHex(bytesToHex(adaptorPoint))
   let R_prime = R.add(T)
 
-  // BIP-340 requires even-y for the nonce point used in the challenge.
-  // If R' has odd y, negate r so that R' flips to even y.
-  if (R_prime.toAffine().y % 2n !== 0n) {
-    r_scalar = Fn.create(ORDER - r_scalar)
-    R = Pt.BASE.multiply(r_scalar)
-    R_prime = R.add(T)
-  }
+  const nonceIsOdd = R_prime.toAffine().y % 2n !== 0n
 
-  // Signer's public key P = x·G
-  const x = Fn.create(bytesToBigInt(privateKey))
-  const P = Pt.BASE.multiply(x)
+  // Signer's public key P = x·G. BIP-340 verifies against the even-y lift of
+  // the x-only pubkey, so mirror noble's Schnorr normalization here.
+  let x = Fn.create(bytesToBigInt(privateKey))
+  let P = Pt.BASE.multiply(x)
+  if (P.toAffine().y % 2n !== 0n) {
+    x = Fn.create(ORDER - x)
+    P = Pt.BASE.multiply(x)
+  }
 
   // Challenge e = BIP340 tagged hash over (R'_x || P_x || m)
   const R_prime_x = bigIntToBytes32(R_prime.toAffine().x)
   const P_x = bigIntToBytes32(P.toAffine().x)
   const e = schnorrChallenge(R_prime_x, P_x, message)
 
-  // s' = r + e·x  (mod n)
-  const s_prime = Fn.create(r_scalar + Fn.create(e * x))
+  // s' = r + e·x when R' is even, or -r + e·x when BIP-340 will use -R'.
+  const signedNonce = nonceIsOdd ? Fn.create(ORDER - r_scalar) : r_scalar
+  const s_prime = Fn.create(signedNonce + Fn.create(e * x))
 
   const R_prime_compressed = hexToBytes(R_prime.toHex(true))  // 33 bytes
   const out = new Uint8Array(65)
@@ -123,16 +126,19 @@ export function preVerify(
   try {
     const R_prime = Pt.fromHex(bytesToHex(preSig.slice(0, 33)))
     const s_prime = bytesToBigInt(preSig.slice(33, 65))
-    const P = Pt.fromHex(bytesToHex(publicKey))
+    const P = xOnlyEvenPoint(publicKey)
     const T = Pt.fromHex(bytesToHex(adaptorPoint))
 
     const R_prime_x = bigIntToBytes32(R_prime.toAffine().x)
     const P_x = bigIntToBytes32(P.toAffine().x)
     const e = schnorrChallenge(R_prime_x, P_x, message)
 
-    // s'·G - e·P == R' - T
+    // For an even R', s'G - eP == R' - T. For an odd R', BIP-340 uses
+    // -R', and preSign used -r, so s'G - eP == T - R'.
     const lhs = Pt.BASE.multiply(Fn.create(s_prime)).subtract(P.multiply(Fn.create(e)))
-    const rhs = R_prime.subtract(T)
+    const rhs = R_prime.toAffine().y % 2n === 0n
+      ? R_prime.subtract(T)
+      : T.subtract(R_prime)
     return lhs.equals(rhs)
   } catch {
     return false
@@ -146,7 +152,10 @@ export function preVerify(
 /**
  * Complete an adaptor pre-signature into a valid Schnorr signature.
  *
- * s = s' + t  (mod n)
+ * preSign computes the challenge over R'_x, so the completed BIP-340
+ * signature must also use R'_x as its nonce coordinate. If R' is even,
+ * s'G = R' - T + eP and adding t closes the equation. If R' is odd, BIP-340
+ * uses -R' as the lifted nonce, so subtracting t closes the equation.
  *
  * @param preSig        - 65-byte pre-signature from preSign
  * @param adaptorSecret - 32-byte adaptor secret t
@@ -159,20 +168,14 @@ export function adapt(preSig: Uint8Array, adaptorSecret: Uint8Array): Uint8Array
   const s_prime = bytesToBigInt(preSig.slice(33, 65))
   const t = Fn.create(bytesToBigInt(adaptorSecret))
 
-  // Canonical nonce: R = R' - T
   const R_prime = Pt.fromHex(bytesToHex(preSig.slice(0, 33)))
-  const T = Pt.BASE.multiply(t)
-  const R = R_prime.subtract(T)
-
-  // BIP-340 requires even-y for R. If R has odd y, negate s so the
-  // verifier's reconstruction of R (from s·G - e·P) yields the even-y point.
-  let s_val = Fn.create(s_prime + t)
-  if (R.toAffine().y % 2n !== 0n) {
-    s_val = Fn.create(ORDER - s_val)
-  }
+  const nonceIsOdd = R_prime.toAffine().y % 2n !== 0n
+  const s_val = nonceIsOdd
+    ? Fn.create(s_prime - t + ORDER)
+    : Fn.create(s_prime + t)
 
   const sig = new Uint8Array(64)
-  sig.set(bigIntToBytes32(R.toAffine().x), 0)  // x-only 32 bytes
+  sig.set(bigIntToBytes32(R_prime.toAffine().x), 0)  // x-only 32 bytes
   sig.set(bigIntToBytes32(s_val), 32)
   return sig
 }
@@ -180,12 +183,8 @@ export function adapt(preSig: Uint8Array, adaptorSecret: Uint8Array): Uint8Array
 /**
  * Extract the adaptor secret from a completed signature and pre-signature.
  *
- * When R = R' - T has even y:  t = s - s'  (mod n)
- * When R = R' - T has odd y:   adapt() negated s, so s_adapted = -(s'+t),
- *                               therefore t = -s_adapted - s' = n - s - s'  (mod n)
- *
- * We disambiguate by trying both candidates and checking which gives a T
- * consistent with R' = R + T (i.e. T = R' - R for the right parity of R).
+ * Since adapt preserves R'_x as the final nonce coordinate, extraction is the
+ * scalar delta. The direction depends on whether BIP-340 used R' or -R'.
  */
 export function extract(signature: Uint8Array, preSig: Uint8Array): Uint8Array {
   if (signature.length !== 64) throw new Error('signature must be 64 bytes')
@@ -194,29 +193,10 @@ export function extract(signature: Uint8Array, preSig: Uint8Array): Uint8Array {
   const s_val = bytesToBigInt(signature.slice(32, 64))
   const s_prime = bytesToBigInt(preSig.slice(33, 65))
   const R_prime = Pt.fromHex(bytesToHex(preSig.slice(0, 33)))
-  const R_x = bytesToBigInt(signature.slice(0, 32))
-
-  // Try both candidates for t (even-y and odd-y R cases)
-  const t_even = Fn.create(s_val - s_prime + ORDER)   // even-y R case
-  const t_odd  = Fn.create(ORDER - s_val - s_prime + ORDER)  // odd-y R (s was negated)
-
-  // For each candidate, reconstruct T = t·G and check R' = R_even + T or R' = R_odd + T
-  for (const t_candidate of [t_even, t_odd]) {
-    if (t_candidate === 0n) continue
-    try {
-      const T = Pt.BASE.multiply(t_candidate)
-      // R = R' - T; check that R's x-coordinate matches the sig
-      const R_reconstructed = R_prime.subtract(T)
-      if (R_reconstructed.toAffine().x === R_x) {
-        return bigIntToBytes32(t_candidate)
-      }
-    } catch {
-      // invalid point, try next candidate
-    }
-  }
-
-  // Fallback: return the even-y candidate (caller's responsibility to verify)
-  return bigIntToBytes32(t_even)
+  const nonceIsOdd = R_prime.toAffine().y % 2n !== 0n
+  return nonceIsOdd
+    ? bigIntToBytes32(Fn.create(s_prime - s_val + ORDER))
+    : bigIntToBytes32(Fn.create(s_val - s_prime + ORDER))
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +262,21 @@ function deterministicNonce(
   data.set(message, 64 + privateKey.length)
   data.set(adaptorPoint, 64 + privateKey.length + message.length)
   return sha256(data)
+}
+
+function xOnlyEvenPoint(publicKey: Uint8Array): typeof Pt.BASE {
+  if (publicKey.length === 33) {
+    const evenCompressed = new Uint8Array(publicKey)
+    evenCompressed[0] = 0x02
+    return Pt.fromHex(bytesToHex(evenCompressed))
+  }
+  if (publicKey.length === 32) {
+    const evenCompressed = new Uint8Array(33)
+    evenCompressed[0] = 0x02
+    evenCompressed.set(publicKey, 1)
+    return Pt.fromHex(bytesToHex(evenCompressed))
+  }
+  throw new Error('publicKey must be 32-byte x-only or 33-byte compressed')
 }
 
 function bytesToBigInt(bytes: Uint8Array): bigint {

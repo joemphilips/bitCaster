@@ -17,8 +17,9 @@
  *     Step 9 — adapt Alice's pre-sigs, swap Alice's YES proofs at mint
  */
 
-import type { Proof, Token } from '@cashu/cashu-ts'
+import type { OutputConfig, Proof, Token } from '@cashu/cashu-ts'
 import { Mint as CashuMint, Wallet as CashuWallet, hashToCurve } from '@cashu/cashu-ts'
+import { schnorr } from '@noble/curves/secp256k1.js'
 import {
   type EphemeralKeypair,
   computeSharedSecret,
@@ -35,7 +36,6 @@ import {
   adapt,
   extract,
 } from './adaptor'
-import { createP2PKSecret } from './p2pk'
 
 // ---------------------------------------------------------------------------
 // Swap context
@@ -72,6 +72,12 @@ export interface SwapContext {
  * `MinLocktimeDelta` value.
  */
 export const MIN_LOCKTIME_DELTA_SECS = 5
+const CASHU_SWAP_UNIT = 'sat'
+
+interface LockedProofResult {
+  lockedProofs: Proof[]
+  changeProofs: Proof[]
+}
 
 /**
  * Validates the protocol's locktime ordering invariant before any proofs are
@@ -204,19 +210,17 @@ export async function sellerPrepareSwap(
   lockedProofsCipher: string
   adaptorPoint: AdaptorPoint
   lockedProofs: Proof[]
+  changeProofs: Proof[]
 }> {
   const adaptorPoint = generateAdaptorPoint()
 
-  // Build P2PK-locked proofs pointing to Bob's pubkey
-  const locktime = ctx.sellerLocktime
-  const lockedProofs = proofs.map((proof) => ({
-    ...proof,
-    secret: createP2PKSecret({
-      recipientPubkey: ctx.counterpartyPubkey,
-      locktime,
-      refundPubkey: ctx.ephemeralKey.publicKey,
-    }),
-  }))
+  // Ask the mint to swap Alice's proofs into P2PK-locked proofs. Rewriting a
+  // proof secret locally invalidates its mint signature (`C`).
+  const { lockedProofs, changeProofs } = await lockProofsForSwap(
+    ctx,
+    proofs,
+    ctx.sellerLocktime,
+  )
 
   // Pre-sign each proof's secret
   const privBytes = ctx.ephemeralKey.privateKey
@@ -243,7 +247,13 @@ export async function sellerPrepareSwap(
     encodeProofsMsg(lockedProofsMsg),
   )
 
-  return { adaptorPointCipher, lockedProofsCipher, adaptorPoint, lockedProofs }
+  return {
+    adaptorPointCipher,
+    lockedProofsCipher,
+    adaptorPoint,
+    lockedProofs,
+    changeProofs,
+  }
 }
 
 /**
@@ -278,27 +288,30 @@ export async function sellerClaimSwap(
   // Adapt each pre-sig
   const adaptedWitnesses = await Promise.all(
     bobProofs.map(async (proof, i) => {
+      const msgHash = await messageToHash(proof.secret)
       const preSigBytes = hexToBytes(bobPreSigsHex[i])
       const sig = adapt(preSigBytes, adaptorPoint.secret)
+      const ownSig = schnorr.sign(msgHash, ctx.ephemeralKey.privateKey)
       return {
         proof,
         adaptedSig: hexStr(sig),
+        ownSig: hexStr(ownSig),
       }
     }),
   )
 
   // Attach adapted signatures as NUT-11 witnesses
-  const inputProofs = adaptedWitnesses.map(({ proof, adaptedSig }) => ({
+  const inputProofs = adaptedWitnesses.map(({ proof, adaptedSig, ownSig }) => ({
     ...proof,
-    witness: JSON.stringify({ signatures: [adaptedSig] }),
+    witness: JSON.stringify({ signatures: [adaptedSig, ownSig] }),
   }))
 
   // Swap at mint — wrap proofs in a Token object as required by cashu-ts v3
   const mint = new CashuMint(ctx.mintUrl)
-  const wallet = new CashuWallet(mint, { unit: 'sat' })
+  const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT })
   await wallet.loadMint()
 
-  const token: Token = { mint: ctx.mintUrl, proofs: inputProofs }
+  const token = buildReceiveToken(ctx.mintUrl, inputProofs)
   return wallet.receive(token, { proofsWeHave: [] })
 }
 
@@ -322,6 +335,7 @@ export async function buyerPrepareSwap(
   lockedProofsCipher: string
   adaptorPointHex: string
   lockedProofs: Proof[]
+  changeProofs: Proof[]
   preSigsHex: string[]
   sellerPreSigsHex: string[]
 }> {
@@ -351,16 +365,11 @@ export async function buyerPrepareSwap(
     if (!valid) throw new Error(`Alice pre-sig ${i} failed verification`)
   }
 
-  // Lock Bob's sat proofs to Alice's pubkey
-  const locktime = ctx.buyerLocktime
-  const lockedProofs = satProofs.map((proof) => ({
-    ...proof,
-    secret: createP2PKSecret({
-      recipientPubkey: ctx.counterpartyPubkey,
-      locktime,
-      refundPubkey: ctx.ephemeralKey.publicKey,
-    }),
-  }))
+  const { lockedProofs, changeProofs } = await lockProofsForSwap(
+    ctx,
+    satProofs,
+    ctx.buyerLocktime,
+  )
 
   // Pre-sign Bob's proofs with the same adaptor point T
   const privBytes = ctx.ephemeralKey.privateKey
@@ -382,6 +391,7 @@ export async function buyerPrepareSwap(
     lockedProofsCipher,
     adaptorPointHex,
     lockedProofs,
+    changeProofs,
     preSigsHex,
     sellerPreSigsHex: alicePreSigsHex,
   }
@@ -462,17 +472,66 @@ export async function buyerClaimSwap(
     return hexStr(adapt(preSig, adaptorSecret))
   })
 
-  const inputProofs = aliceProofs.map((proof, i) => ({
-    ...proof,
-    witness: JSON.stringify({ signatures: [adaptedSigs[i]] }),
-  }))
+  const inputProofs = await Promise.all(
+    aliceProofs.map(async (proof, i) => ({
+      ...proof,
+      witness: JSON.stringify({
+        signatures: [
+          adaptedSigs[i],
+          hexStr(schnorr.sign(await messageToHash(proof.secret), ctx.ephemeralKey.privateKey)),
+        ],
+      }),
+    })),
+  )
 
   const mint = new CashuMint(ctx.mintUrl)
-  const wallet = new CashuWallet(mint, { unit: 'sat' })
+  const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT })
   await wallet.loadMint()
 
-  const token: Token = { mint: ctx.mintUrl, proofs: inputProofs }
+  const token = buildReceiveToken(ctx.mintUrl, inputProofs)
   return wallet.receive(token, { proofsWeHave: [] })
+}
+
+export function buildReceiveToken(mintUrl: string, proofs: Proof[]): Token {
+  return { mint: mintUrl, unit: CASHU_SWAP_UNIT, proofs }
+}
+
+async function lockProofsForSwap(
+  ctx: SwapContext,
+  sourceProofs: Proof[],
+  locktime: number,
+): Promise<LockedProofResult> {
+  const mint = new CashuMint(ctx.mintUrl)
+  const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT })
+  await wallet.loadMint()
+
+  const amount = sumProofs(sourceProofs) - wallet.getFeesForProofs(sourceProofs)
+  if (amount <= 0) throw new Error('Not enough proofs to cover Cashu swap fees')
+
+  const outputConfig: OutputConfig = {
+    send: {
+      type: 'p2pk',
+      options: {
+        pubkey: [ctx.ephemeralKey.publicKey, ctx.counterpartyPubkey],
+        requiredSignatures: 2,
+        locktime,
+        refundKeys: [ctx.ephemeralKey.publicKey],
+        sigFlag: 'SIG_INPUTS',
+      },
+    },
+    keep: { type: 'random' },
+  }
+  const { send, keep } = await wallet.send(
+    amount,
+    sourceProofs,
+    undefined,
+    outputConfig,
+  )
+  return { lockedProofs: send, changeProofs: keep }
+}
+
+function sumProofs(proofs: Proof[]): number {
+  return proofs.reduce((total, proof) => total + proof.amount, 0)
 }
 
 // ---------------------------------------------------------------------------

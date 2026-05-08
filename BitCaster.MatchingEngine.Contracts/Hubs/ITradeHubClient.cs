@@ -15,8 +15,10 @@ public interface ITradeHubClient
 
     /// <summary>
     /// Sent to both parties immediately after a trade is created from a fill.
-    /// Carries counterparty pubkeys and the engine-computed asymmetric locktimes.
+    /// Carries counterparty pubkeys, the engine-computed asymmetric locktimes,
+    /// the market id, and the matched fill amount.
     /// </summary>
     Task TradeCreated(Guid tradeId, string sellerPubkey, string buyerPubkey,
-        DateTimeOffset sellerLocktime, DateTimeOffset buyerLocktime);
+        DateTimeOffset sellerLocktime, DateTimeOffset buyerLocktime,
+        string marketId, long fillAmountSats);
 }
