@@ -48,9 +48,11 @@ import { useWalletStore } from '@/stores/wallet'
 import {
   addProofs,
   getBaseProofs,
+  getOutcomeProofs,
   removeProofs,
   type StoredProof,
 } from '@/stores/proof-db'
+import { splitMarketId } from '@/lib/orderStatus'
 import { hexToBytes } from '@/lib/ecdh'
 import {
   buyerClaimSwap,
@@ -195,9 +197,15 @@ async function runSellerSendOpening(
     const proofs = await loadProofsForLock(
       mintUrl,
       swap.outcomeFaceAmountSats ?? undefined,
+      swap.marketId,
     )
     const out = await sellerPrepareSwap(ctx, proofs)
-    await persistLockChange(proofs, out.changeProofs, mintUrl)
+    await persistLockChange(
+      proofs,
+      out.changeProofs,
+      mintUrl,
+      outcomeMetadataForMarket(swap.marketId),
+    )
     useActiveSwapsStore
       .getState()
       .setSellerState(tradeId, { adaptorPoint: out.adaptorPoint })
@@ -354,7 +362,13 @@ async function runSettlementClaim(
       swap.role === 'seller'
         ? await runSellerClaim(swap, ctx)
         : await runBuyerClaim(swap, ctx)
-    await persistFreshProofs(fresh, mintUrl)
+    await persistFreshProofs(
+      fresh,
+      mintUrl,
+      swap.role === 'buyer'
+        ? outcomeMetadataForMarket(swap.marketId)
+        : undefined,
+    )
     useActiveSwapsStore.getState().setStep(tradeId, 'awaiting-confirmation')
     await sendSwapMessage(tradeId, TRADE_MESSAGE_TYPES.settlementComplete, '')
   } catch (err) {
@@ -412,10 +426,24 @@ async function pollForAdaptorSecret(
 async function loadProofsForLock(
   mintUrl: string,
   targetSats?: number,
+  sellerMarketId?: string,
 ): Promise<Proof[]> {
-  const proofs = await getBaseProofs(mintUrl)
+  const outcome = sellerMarketId
+    ? outcomeMetadataForMarket(sellerMarketId)
+    : null
+  const proofs = outcome
+    ? await getOutcomeProofs(
+        mintUrl,
+        outcome.conditionId,
+        outcome.outcomeCollection,
+      )
+    : await getBaseProofs(mintUrl)
   if (proofs.length === 0) {
-    throw new Error('No proofs available for atomic swap — wallet is empty')
+    throw new Error(
+      outcome
+        ? `No ${outcome.outcomeCollection} outcome proofs available for atomic swap`
+        : 'No proofs available for atomic swap — wallet is empty',
+    )
   }
   if (
     targetSats === undefined ||
@@ -452,18 +480,42 @@ async function persistLockChange(
   spentProofs: Proof[],
   changeProofs: Proof[],
   mintUrl: string,
+  metadata?: OutcomeProofMetadata | null,
 ): Promise<void> {
   await removeProofs(spentProofs.map((p) => p.secret))
-  await persistFreshProofs(changeProofs, mintUrl)
+  await persistFreshProofs(changeProofs, mintUrl, metadata)
 }
 
 async function persistFreshProofs(
   proofs: Proof[],
   mintUrl: string,
+  metadata?: OutcomeProofMetadata | null,
 ): Promise<void> {
   if (proofs.length === 0) return
-  const fresh: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl }))
+  const fresh: StoredProof[] = proofs.map((p) => ({
+    ...p,
+    ...(metadata ?? {}),
+    mintUrl,
+  }))
   await addProofs(fresh)
+}
+
+interface OutcomeProofMetadata {
+  conditionId: string
+  outcomeCollection: string
+  marketId: string
+}
+
+function outcomeMetadataForMarket(
+  marketId: string,
+): OutcomeProofMetadata | null {
+  const parts = splitMarketId(marketId)
+  if (!parts) return null
+  return {
+    conditionId: parts.conditionId,
+    outcomeCollection: parts.outcomeName,
+    marketId,
+  }
 }
 
 // ---------------------------------------------------------------------------

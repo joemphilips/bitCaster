@@ -4,6 +4,12 @@ import { normalizeUrl } from '@/lib/url'
 
 export interface StoredProof extends Proof {
   mintUrl: string
+  /** NUT-CTF condition id when this proof is bound to a conditional keyset. */
+  conditionId?: string
+  /** NUT-CTF outcome collection label, e.g. "YES" or "Alice|Bob". */
+  outcomeCollection?: string
+  /** Convenience mirror for the app's per-outcome market id. */
+  marketId?: string
   /** Timestamp (ms since epoch) when this proof was added to the wallet */
   receivedAt?: number
 }
@@ -12,10 +18,14 @@ export function isCtfProof(proof: StoredProof | Proof): boolean {
   const candidate = proof as Proof & {
     conditionId?: unknown
     condition_id?: unknown
+    outcomeCollection?: unknown
+    outcome_collection?: unknown
   }
   return (
     typeof candidate.conditionId === 'string' ||
-    typeof candidate.condition_id === 'string'
+    typeof candidate.condition_id === 'string' ||
+    typeof candidate.outcomeCollection === 'string' ||
+    typeof candidate.outcome_collection === 'string'
   )
 }
 
@@ -45,6 +55,26 @@ export async function getProofs(mintUrl?: string): Promise<StoredProof[]> {
 export async function getBaseProofs(mintUrl?: string): Promise<StoredProof[]> {
   const proofs = await getProofs(mintUrl)
   return proofs.filter((p) => !isCtfProof(p))
+}
+
+export async function getOutcomeProofs(
+  mintUrl: string,
+  conditionId: string,
+  outcomeCollection: string,
+): Promise<StoredProof[]> {
+  const proofs = await getProofs(mintUrl)
+  return proofs.filter((p) => {
+    const candidate = p as StoredProof & {
+      condition_id?: string
+      outcome_collection?: string
+    }
+    const proofConditionId = candidate.conditionId ?? candidate.condition_id
+    const proofOutcome =
+      candidate.outcomeCollection ?? candidate.outcome_collection
+    return (
+      proofConditionId === conditionId && proofOutcome === outcomeCollection
+    )
+  })
 }
 
 // Central normalization point — proofs arrive from many receive paths
