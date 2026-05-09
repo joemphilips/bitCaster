@@ -27,9 +27,10 @@ import {
 } from '@/lib/walletOps'
 import { useToastStore } from '@/stores/toast'
 import {
-  getProofs,
+  getBaseProofs,
   addProofs,
   removeProofs,
+  isCtfProof,
   type StoredProof,
 } from '@/stores/proof-db'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
@@ -125,7 +126,7 @@ export function useDepositWithdrawState(
   const balancesByMint = useLiveQuery(async () => {
     const proofs = await db.proofs.toArray()
     const map: Record<string, number> = {}
-    for (const p of proofs) {
+    for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
       map[p.mintUrl] = (map[p.mintUrl] ?? 0) + p.amount
     }
     return map
@@ -251,6 +252,8 @@ export function useDepositWithdrawState(
           status: 'completed',
           lightningInvoice: quote.request,
         })
+        setSuccessAmount(requested)
+        setCurrentView('success')
       } catch (e) {
         setInvoiceStatus('error')
         setError((e as Error).message)
@@ -372,7 +375,7 @@ export function useDepositWithdrawState(
     setIsLoading(true)
     setError(null)
     try {
-      const proofs = await getProofs(selectedMintId)
+      const proofs = await getBaseProofs(selectedMintId)
       const { keep, send } = await sendProofs(amountSats, proofs, selectedMintId)
 
       // Remove original proofs, add back the kept ones
@@ -386,11 +389,6 @@ export function useDepositWithdrawState(
       const token = encodeToken(send, selectedMintId)
       setEcashToken(token)
       setCurrentView('token-display')
-      useActivityLogStore.getState().addActivity({
-        type: 'withdrawal',
-        amountSats,
-        status: 'completed',
-      })
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -422,7 +420,7 @@ export function useDepositWithdrawState(
     setMeltIsPaying(true)
     setError(null)
     try {
-      const proofs = await getProofs(selectedMintId)
+      const proofs = await getBaseProofs(selectedMintId)
       const { paid, change } = await meltProofs(meltQuote, proofs, selectedMintId)
 
       if (!paid) {

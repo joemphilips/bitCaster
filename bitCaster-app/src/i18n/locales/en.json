@@ -98,6 +98,7 @@
     "seedPhraseDesc": "Write down these 12 words in order and store them safely",
     "warning": "Write down these words in order. You will need them to recover your wallet. Never share your seed phrase.",
     "savedConfirm": "I have saved my seed phrase",
+    "copySeedPhrase": "Copy seed phrase",
     "enterSeedPhrase": "Enter Your Seed Phrase",
     "enterSeedPhraseDesc": "Enter your 12-word seed phrase to recover your wallet",
     "wordPlaceholder": "word",
@@ -170,6 +171,9 @@
     "linkCopied": "Link copied to clipboard",
     "shareFailed": "Failed to copy link",
     "oracle": "Oracle",
+    "unknownInNostr": "Unknown in Nostr",
+    "searchingNostr": "Searching Nostr...",
+    "oracleAuditHint": "Search this person in the Nostr network to make sure it's trustworthy",
     "copyOraclePubkey": "Copy oracle pubkey"
   },
   "orderBook": {
@@ -336,6 +340,8 @@
     "waitingForPayment": "Waiting for payment...",
     "paymentReceived": "Payment received!",
     "invoiceExpired": "Invoice expired",
+    "ecashTokenReady": "Ecash token ready",
+    "ecashTokenReadyHint": "Share this token with the recipient. It is a bearer Cashu token and may be redeemed in any Cashu wallet.",
     "confirmPayment": "Confirm Payment",
     "invoiceAmount": "Invoice amount",
     "networkFee": "Network fee (estimate)",
@@ -369,6 +375,7 @@
     "analyticsBadge": "In progress",
     "winningOutcomeLabel": "Winning outcome for {{title}}",
     "closeMarket": "Close market",
+    "closeMarketUnavailable": "This local creator record does not contain self-oracle metadata, so bitCaster cannot sign an oracle attestation from this browser.",
     "closingMarket": "Closing...",
     "closeMarketConfirm": "Close “{{title}}” as {{outcome}}? This publishes your oracle attestation and stops new orders after the engine observes it.",
     "attestedOutcome": "Attested: {{outcome}}",
@@ -544,6 +551,7 @@
   },
   "notification": {
     "empty": "No notifications yet.",
+    "accepted": "Order accepted on {{market}}",
     "filled": "Order filled: {{sats}} sats on {{market}}",
     "partiallyFilled": "Partial fill: {{sats}} sats filled on {{market}}, {{remaining}} remaining",
     "cancelled": "Order cancelled on {{market}}"

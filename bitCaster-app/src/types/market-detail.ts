@@ -160,6 +160,7 @@ interface BaseMarketDetail {
 export interface YesNoMarketDetail extends BaseMarketDetail {
   type: 'yesno'
   currentOdds: CurrentOdds
+  outcomeOrderBooks?: Record<'YES' | 'NO', OrderBook>
 }
 
 export interface CategoricalMarketDetail extends BaseMarketDetail {

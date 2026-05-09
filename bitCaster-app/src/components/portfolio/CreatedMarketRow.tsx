@@ -33,6 +33,10 @@ export function CreatedMarketRow({
     !market.oracle.attestationHex &&
     market.oracle.outcomes.length > 0 &&
     !!onPublishOracleAttestation
+  const showUnavailableCloseHint =
+    market.status === 'active' &&
+    !!onPublishOracleAttestation &&
+    !canPublishOracleAttestation
   const [selectedOutcome, setSelectedOutcome] = useState(
     market.oracle?.outcomes[0] ?? '',
   )
@@ -138,6 +142,19 @@ export function CreatedMarketRow({
             {isPublishingOracleAttestation
               ? t('creator.closingMarket')
               : t('creator.closeMarket')}
+          </button>
+        </div>
+      )}
+      {showUnavailableCloseHint && (
+        <div className="mt-3 flex justify-end border-t border-slate-100 pt-3 dark:border-slate-700">
+          <button
+            type="button"
+            disabled
+            title={t('creator.closeMarketUnavailable')}
+            className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-slate-200 px-3 text-sm font-semibold text-slate-500 disabled:cursor-not-allowed dark:bg-slate-700 dark:text-slate-400"
+          >
+            <CheckCircle2 className="h-4 w-4" />
+            {t('creator.closeMarket')}
           </button>
         </div>
       )}

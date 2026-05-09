@@ -1,9 +1,14 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nip19 } from 'nostr-tools'
 import { MarketHeader } from '../MarketHeader'
 import type { YesNoMarketDetail } from '@/types/market-detail'
+
+vi.mock('@/lib/nostr', () => ({
+  fetchPublicNostrProfile: vi.fn().mockResolvedValue(null),
+}))
 
 const creatorPubkey =
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
@@ -74,21 +79,31 @@ describe('MarketHeader', () => {
     }
   })
 
-  it('renders mint metadata beside the creator card', () => {
-    render(<MarketHeader market={makeMarket()} />)
+  function renderHeader(market: YesNoMarketDetail) {
+    return render(
+      <MemoryRouter>
+        <MarketHeader market={market} />
+      </MemoryRouter>,
+    )
+  }
+
+  it('renders mint metadata beside the creator card', async () => {
+    renderHeader(makeMarket())
 
     expect(screen.getByText('Mint')).toBeInTheDocument()
     expect(screen.getByText('SAT CTF - 2 keysets')).toBeInTheDocument()
+    expect(await screen.findByText('Unknown in Nostr')).toBeInTheDocument()
   })
 
-  it('renders explicit missing mint metadata degradation', () => {
-    render(<MarketHeader market={makeMarket({ mint: undefined })} />)
+  it('renders explicit missing mint metadata degradation', async () => {
+    renderHeader(makeMarket({ mint: undefined }))
 
     expect(screen.getByText('Mint')).toBeInTheDocument()
     expect(screen.getByText('Unknown')).toBeInTheDocument()
+    expect(await screen.findByText('Unknown in Nostr')).toBeInTheDocument()
   })
 
-  it('renders a shortened oracle npub and copies the full npub', async () => {
+  it('renders unavailable Nostr profile state and copies the full npub', async () => {
     const user = userEvent.setup()
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', {
@@ -96,33 +111,27 @@ describe('MarketHeader', () => {
       value: { writeText },
       writable: true,
     })
-    render(<MarketHeader market={makeMarket()} />)
+    renderHeader(makeMarket())
 
-    expect(
-      screen.getByText(
-        `${creatorNpub.slice(0, 10)}...${creatorNpub.slice(-6)}`,
-      ),
-    ).toBeInTheDocument()
+    expect(await screen.findByText('Unknown in Nostr')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Copy oracle pubkey' }))
 
     expect(writeText).toHaveBeenCalledWith(creatorNpub)
   })
 
   it('does not render a copy button when the detail has no creator pubkey', () => {
-    render(
-      <MarketHeader
-        market={makeMarket({
+    renderHeader(
+      makeMarket({
           creator: {
             id: 'unknown',
             name: 'Unknown',
             totalMarketsCreated: 0,
             feePercent: 0,
           },
-        })}
-      />,
+        }),
     )
 
-    expect(screen.getByText('Unknown')).toBeInTheDocument()
+    expect(screen.getByText('Unknown in Nostr')).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Copy oracle pubkey' }),
     ).not.toBeInTheDocument()

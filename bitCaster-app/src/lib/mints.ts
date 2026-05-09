@@ -16,6 +16,24 @@ export interface MintCapabilities {
   ctf: boolean
 }
 
+export function getMintIconUrl(
+  mintUrl: string,
+  info: Record<string, unknown> | undefined | null,
+): string | undefined {
+  const explicit =
+    typeof info?.icon_url === 'string'
+      ? info.icon_url
+      : typeof info?.iconUrl === 'string'
+        ? info.iconUrl
+        : undefined
+  if (explicit) return explicit
+  try {
+    return new URL('/favicon.ico', mintUrl).toString()
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Probe a mint's `/v1/info` response for known capabilities. Accepts either
  * a fully-typed cashu-ts response or the loosely-typed `Record<string, unknown>`

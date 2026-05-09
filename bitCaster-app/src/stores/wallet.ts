@@ -4,7 +4,7 @@ import { Mint as CashuMint, Wallet as CashuWallet, type MintKeys, type MintKeyse
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
 import { normalizeUrl } from '@/lib/url'
-import { db, getProofs, type StoredProof } from './proof-db'
+import { db, getBaseProofs, isCtfProof, type StoredProof } from './proof-db'
 import type { MintConnectionTestStatus } from '@/types/wallet-setup'
 
 export interface StoredMint {
@@ -295,12 +295,14 @@ export function useBalance(mintUrl?: string): number {
     const proofs = normalized
       ? await db.proofs.where('mintUrl').equals(normalized).toArray()
       : await db.proofs.toArray()
-    return proofs.reduce((sum, p) => sum + p.amount, 0)
+    return proofs
+      .filter((p) => !isCtfProof(p))
+      .reduce((sum, p) => sum + p.amount, 0)
   }, [normalized], 0)
   return balance ?? 0
 }
 
 export async function getBalance(mintUrl?: string): Promise<number> {
-  const proofs = await getProofs(mintUrl)
+  const proofs = await getBaseProofs(mintUrl)
   return proofs.reduce((sum: number, p: StoredProof) => sum + p.amount, 0)
 }

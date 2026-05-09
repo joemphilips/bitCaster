@@ -328,21 +328,32 @@ export function Settings({
               >
                 <StatusDot status={mint.connectionStatus} />
                 {/* Mint thumbnail or initials */}
-                <div className="w-8 h-8 rounded-full bg-white dark:bg-slate-600 flex items-center justify-center flex-shrink-0 border border-slate-200 dark:border-slate-500">
-                  <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                    {(mint.name ?? safeHostname(mint.url)).slice(0, 2).toUpperCase()}
-                  </span>
+                <div className="w-8 h-8 overflow-hidden rounded-full bg-white dark:bg-slate-600 flex items-center justify-center flex-shrink-0 border border-slate-200 dark:border-slate-500">
+                  {mint.iconUrl ? (
+                    <img
+                      src={mint.iconUrl}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                    />
+                  ) : (
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                      {(mint.name ?? safeHostname(mint.url)).slice(0, 2).toUpperCase()}
+                    </span>
+                  )}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                       {mint.name ?? safeHostname(mint.url)}
                     </span>
-                    {!mint.supportsCTF && (
-                      <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300">
-                        Ecash only
-                      </span>
-                    )}
+                    <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      mint.supportsCTF
+                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                        : 'bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300'
+                    }`}>
+                      {mint.supportsCTF ? 'CTF supported' : 'Ecash only'}
+                    </span>
                   </div>
                   <div className="font-mono text-xs text-slate-500 dark:text-slate-400 truncate">
                     {mint.url}

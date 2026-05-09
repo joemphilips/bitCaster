@@ -47,7 +47,7 @@ import {
 import { useWalletStore } from '@/stores/wallet'
 import {
   addProofs,
-  getProofs,
+  getBaseProofs,
   removeProofs,
   type StoredProof,
 } from '@/stores/proof-db'
@@ -401,7 +401,7 @@ async function pollForAdaptorSecret(
 }
 
 async function loadProofsForLock(mintUrl: string): Promise<Proof[]> {
-  const proofs = await getProofs(mintUrl)
+  const proofs = await getBaseProofs(mintUrl)
   if (proofs.length === 0) {
     throw new Error('No proofs available for atomic swap — wallet is empty')
   }

@@ -4,7 +4,7 @@ import { Settings } from '@/components/settings/Settings'
 import { useWalletStore, DEFAULT_MINT_URL } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
-import { detectMintCapabilities } from '@/lib/mints'
+import { detectMintCapabilities, getMintIconUrl } from '@/lib/mints'
 import {
   disconnectNostrIdentity,
   refreshNostrProfile,
@@ -56,6 +56,7 @@ export function SettingsPage() {
     return {
       url: m.url,
       name: info?.name as string | undefined,
+      iconUrl: getMintIconUrl(m.url, info),
       isDefault: m.url === DEFAULT_MINT_URL,
       connectionStatus:
         walletStore.mintConnectionStatuses[m.url] === 'connected'

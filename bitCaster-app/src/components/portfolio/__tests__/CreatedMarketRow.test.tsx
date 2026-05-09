@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
-import { describe, it, expect } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { describe, it, expect, vi } from 'vitest'
 import { CreatedMarketRow } from '../CreatedMarketRow'
 import type { CreatedMarket } from '@/types/portfolio'
 
@@ -26,5 +27,41 @@ describe('CreatedMarketRow', () => {
   it('renders the fee row when creatorFeePercent > 0 (future engine fee model)', () => {
     render(<CreatedMarketRow market={fixture({ creatorFeePercent: 1.5 })} />)
     expect(screen.getByText(/1\.5% fee/i)).toBeInTheDocument()
+  })
+
+  it('shows a working close-market control for active self-oracle markets', async () => {
+    const onPublishOracleAttestation = vi.fn()
+    render(
+      <CreatedMarketRow
+        market={fixture({
+          oracle: {
+            type: 'self',
+            eventId: 'event-1',
+            outcomes: ['YES', 'NO'],
+          },
+        })}
+        onPublishOracleAttestation={onPublishOracleAttestation}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /close market/i }))
+
+    expect(onPublishOracleAttestation).toHaveBeenCalledWith('m1', 'YES')
+  })
+
+  it('keeps close-market visible but disabled when local oracle metadata is missing', () => {
+    render(
+      <CreatedMarketRow
+        market={fixture()}
+        onPublishOracleAttestation={vi.fn()}
+      />,
+    )
+
+    const button = screen.getByRole('button', { name: /close market/i })
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute(
+      'title',
+      expect.stringContaining('self-oracle metadata'),
+    )
   })
 })

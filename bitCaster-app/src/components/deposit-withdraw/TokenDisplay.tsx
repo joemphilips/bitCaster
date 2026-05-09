@@ -1,6 +1,7 @@
 import { X, Copy, Check } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 interface TokenDisplayProps {
   token: string
@@ -13,6 +14,7 @@ export function TokenDisplay({
   amountSats,
   onClose,
 }: TokenDisplayProps) {
+  const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
@@ -37,6 +39,11 @@ export function TokenDisplay({
 
       {/* Content */}
       <div className="flex-1 flex flex-col items-center justify-center max-w-md mx-auto w-full px-5">
+        <div className="mb-6 flex items-center gap-2 text-emerald-400">
+          <Check className="h-5 w-5" />
+          <span className="text-sm font-semibold">{t('deposit.ecashTokenReady')}</span>
+        </div>
+
         {/* QR Code */}
         <div className="bg-white p-4 rounded-2xl">
           <QRCodeSVG
@@ -68,7 +75,7 @@ export function TokenDisplay({
 
         {/* Instruction */}
         <p className="mt-4 text-sm text-slate-400 text-center">
-          Share this token with the recipient. They can redeem it in any Cashu wallet.
+          {t('deposit.ecashTokenReadyHint')}
         </p>
       </div>
     </div>

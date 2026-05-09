@@ -98,6 +98,7 @@
     "seedPhraseDesc": "これら12ワードを順番に書き留め、安全な場所に保管してください",
     "warning": "ワードを順番に書き留めてください。ウォレットの復元に必要です。シードフレーズは絶対に他人に教えないでください。",
     "savedConfirm": "シードフレーズを保存しました",
+    "copySeedPhrase": "シードフレーズをコピー",
     "enterSeedPhrase": "シードフレーズを入力",
     "enterSeedPhraseDesc": "12ワードのシードフレーズを入力してウォレットを復元します",
     "wordPlaceholder": "ワード",
@@ -170,6 +171,9 @@
     "linkCopied": "リンクをコピーしました",
     "shareFailed": "リンクのコピーに失敗しました",
     "oracle": "オラクル",
+    "unknownInNostr": "Nostrでは不明",
+    "searchingNostr": "Nostrを検索中...",
+    "oracleAuditHint": "この人物が信頼できるか、Nostrネットワークで検索して確認してください",
     "copyOraclePubkey": "オラクル公開鍵をコピー"
   },
   "orderBook": {
@@ -336,6 +340,8 @@
     "waitingForPayment": "支払いを待っています...",
     "paymentReceived": "支払いを受け取りました！",
     "invoiceExpired": "インボイスの有効期限が切れました",
+    "ecashTokenReady": "Ecashトークンを作成しました",
+    "ecashTokenReadyHint": "このトークンを受取人に共有してください。これはBearer型のCashuトークンで、任意のCashuウォレットで受け取れます。",
     "confirmPayment": "支払いを確認",
     "invoiceAmount": "インボイス金額",
     "networkFee": "ネットワーク手数料 (概算)",
@@ -369,6 +375,7 @@
     "analyticsBadge": "対応中",
     "winningOutcomeLabel": "{{title}} の勝利アウトカム",
     "closeMarket": "マーケットをクローズ",
+    "closeMarketUnavailable": "このローカルのクリエイター記録には自己オラクルのメタデータがないため、このブラウザからオラクルアテステーションに署名できません。",
     "closingMarket": "クローズ中...",
     "closeMarketConfirm": "「{{title}}」を {{outcome}} としてクローズしますか？ オラクルアテステーションを公開し、エンジンが検知すると新規注文は停止されます。",
     "attestedOutcome": "アテスト済み: {{outcome}}",
@@ -544,6 +551,7 @@
   },
   "notification": {
     "empty": "通知はまだありません。",
+    "accepted": "{{market}} の注文が受理されました",
     "filled": "注文が約定しました: {{market}} で {{sats}} sats",
     "partiallyFilled": "一部約定: {{market}} で {{sats}} sats 約定、残り {{remaining}}",
     "cancelled": "{{market}} の注文がキャンセルされました"

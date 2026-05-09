@@ -311,6 +311,36 @@ export async function fetchAndStoreNostrProfile(): Promise<void> {
   }
 }
 
+export interface PublicNostrProfile {
+  pubkey: string;
+  displayName: string;
+  avatar: string;
+}
+
+export async function fetchPublicNostrProfile(
+  pubkey: string,
+): Promise<PublicNostrProfile | null> {
+  try {
+    const ndk = getNdk();
+    const user = ndk.getUser({ pubkey });
+    await Promise.race([
+      user.fetchProfile(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), 5000)
+      ),
+    ]).catch(() => {});
+    const profile = user.profile;
+    if (!profile) return null;
+    return {
+      pubkey,
+      displayName: profile.displayName ?? profile.name ?? pubkey.slice(0, 8),
+      avatar: profile.image ?? "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Ensure NDK is connected without a signer (read-only mode). */
 export async function connectReadOnly(): Promise<void> {
   getNdk().connect();

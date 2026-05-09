@@ -100,6 +100,19 @@ function ShellRoutes() {
   );
 }
 
+function titleForPath(pathname: string): string {
+  if (pathname === "/" || pathname === "/markets") return "bitCaster/All Markets";
+  if (pathname.startsWith("/markets/")) return "bitCaster/Market";
+  if (pathname === "/portfolio") return "bitCaster/Portfolio";
+  if (pathname === "/creator/new") return "bitCaster/Create Market";
+  if (pathname === "/creator") return "bitCaster/Creator";
+  if (pathname === "/settings") return "bitCaster/Settings";
+  if (pathname === "/mint-details") return "bitCaster/Mint Details";
+  if (pathname.startsWith("/user/")) return "bitCaster/User";
+  if (pathname === "/setup") return "bitCaster/Setup";
+  return "bitCaster";
+}
+
 /**
  * Decode an `nsec1...` (or hex) value into raw 32-byte private-key material
  * for the TradeHub NIP-98 signer. Returns null when the user has not signed
@@ -139,6 +152,10 @@ function AppRoutes() {
     [nsecSecret],
   );
   useTradeSettlement(tradeHubPrivkey);
+
+  useEffect(() => {
+    document.title = titleForPath(location.pathname);
+  }, [location.pathname]);
 
   // Re-install the Nostr signer from persisted settings after Zustand
   // hydration. The identityOps helper owns the one-shot/hydration semantics.

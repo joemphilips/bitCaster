@@ -28,6 +28,7 @@ export type MintConnectionStatus = 'connected' | 'disconnected' | 'error'
 export interface MintConfig {
   url: string
   name?: string
+  iconUrl?: string
   isDefault: boolean
   connectionStatus: MintConnectionStatus
   supportsCTF: boolean

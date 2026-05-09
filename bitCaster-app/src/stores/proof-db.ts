@@ -8,6 +8,17 @@ export interface StoredProof extends Proof {
   receivedAt?: number
 }
 
+export function isCtfProof(proof: StoredProof | Proof): boolean {
+  const candidate = proof as Proof & {
+    conditionId?: unknown
+    condition_id?: unknown
+  }
+  return (
+    typeof candidate.conditionId === 'string' ||
+    typeof candidate.condition_id === 'string'
+  )
+}
+
 class BitcasterDB extends Dexie {
   proofs!: Table<StoredProof>
 
@@ -29,6 +40,11 @@ export async function getProofs(mintUrl?: string): Promise<StoredProof[]> {
     return db.proofs.where('mintUrl').equals(normalizeUrl(mintUrl)).toArray()
   }
   return db.proofs.toArray()
+}
+
+export async function getBaseProofs(mintUrl?: string): Promise<StoredProof[]> {
+  const proofs = await getProofs(mintUrl)
+  return proofs.filter((p) => !isCtfProof(p))
 }
 
 // Central normalization point — proofs arrive from many receive paths

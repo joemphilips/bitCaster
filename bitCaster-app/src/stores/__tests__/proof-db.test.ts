@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // Mock Dexie before importing the module under test — we don't need a real
 // IndexedDB (no polyfill installed in the jsdom harness), just an object
 // that records what addProofs wrote so we can assert normalization.
-type AnyProof = { secret: string; mintUrl: string; amount: number; id?: string; C?: string; receivedAt?: number }
+type AnyProof = { secret: string; mintUrl: string; amount: number; id?: string; C?: string; receivedAt?: number; conditionId?: string }
 
 const store = new Map<string, AnyProof>()
 const txCallbacks: Array<() => Promise<void>> = []
@@ -63,7 +63,7 @@ vi.mock('dexie', () => {
 })
 
 // Import after mock so the module picks up the fake.
-import { addProofs, getProofs, normalizeStoredMintUrls } from '../proof-db'
+import { addProofs, getBaseProofs, getProofs, normalizeStoredMintUrls } from '../proof-db'
 
 beforeEach(() => {
   store.clear()
@@ -109,5 +109,16 @@ describe('proof-db normalization', () => {
     ])
     const changed = await normalizeStoredMintUrls()
     expect(changed).toBe(0)
+  })
+
+  it('getBaseProofs excludes CTF proofs from spendable ecash balances', async () => {
+    await addProofs([
+      { secret: 'base', amount: 100, id: 'id1', C: 'C1', mintUrl: 'http://m' },
+      { secret: 'ctf', amount: 200, id: 'id2', C: 'C2', mintUrl: 'http://m', conditionId: 'cond-yes' } as never,
+    ])
+
+    const rows = await getBaseProofs('http://m')
+
+    expect(rows.map((r) => r.secret)).toEqual(['base'])
   })
 })

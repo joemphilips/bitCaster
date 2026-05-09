@@ -106,9 +106,7 @@ export function WalletSetupPage() {
 
   const onSeedSavedToggle = (saved: boolean) => {
     setSeedSaved(saved)
-    if (saved) {
-      setSeedVerificationActive(true)
-    } else {
+    if (!saved) {
       setSeedVerificationActive(false)
     }
   }
@@ -216,7 +214,7 @@ export function WalletSetupPage() {
       onRecover={onRecover}
       onAddMint={handleAddMint}
       onRemoveMint={onRemoveMintHandler}
-      onContinue={onVerificationComplete}
+      onContinue={() => setSeedVerificationActive(true)}
       onBack={onBack}
       onClose={onClose}
       onFinishSetup={onFinishSetup}

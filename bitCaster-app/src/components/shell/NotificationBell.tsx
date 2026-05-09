@@ -158,6 +158,9 @@ export function NotificationBell({
 }
 
 function NotificationIcon({ kind }: { kind: Notification['kind'] }) {
+  if (kind === 'accepted') {
+    return <Check className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+  }
   if (kind === 'filled') {
     return <Check className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" />
   }
@@ -170,6 +173,9 @@ function NotificationIcon({ kind }: { kind: Notification['kind'] }) {
 function formatNotification(n: Notification, t: (key: string, opts?: Record<string, unknown>) => string): string {
   const parts = splitMarketId(n.marketId)
   const marketLabel = parts ? parts.outcomeName : n.marketId
+  if (n.kind === 'accepted') {
+    return t('notification.accepted', { market: marketLabel })
+  }
   if (n.kind === 'filled') {
     return t('notification.filled', { sats: n.filledAmountSats, market: marketLabel })
   }

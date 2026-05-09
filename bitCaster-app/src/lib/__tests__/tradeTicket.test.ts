@@ -76,6 +76,26 @@ describe('buildTradeTicket', () => {
     expect(ticket.request.timeInForce).toBe('FAK')
   })
 
+  it('prices Buy NO market orders from the selected NO order book, not complementary YES bids', () => {
+    const ticket = buildTradeTicket({
+      market,
+      selection: { side: 'no' },
+      amountSats: 100,
+      side: 'buy',
+      orderType: 'market',
+      limitPrice: 50,
+      orderBook: {
+        bids: [{ price: 40, amount: 100, total: 100 }],
+        asks: [{ price: 62, amount: 100, total: 100 }],
+        spread: 22,
+      },
+    })
+
+    expect(ticket.marketId).toBe('condition-1-NO')
+    expect(ticket.request.price).toBe(62)
+    expect(ticket.request.timeInForce).toBe('FAK')
+  })
+
   it('rejects market orders with no visible liquidity instead of emitting price 0', () => {
     expect(() =>
       buildTradeTicket({

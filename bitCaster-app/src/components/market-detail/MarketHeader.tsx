@@ -9,10 +9,15 @@ import {
   Copy,
 } from 'lucide-react'
 import { nip19 } from 'nostr-tools'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
+import { fetchPublicNostrProfile, type PublicNostrProfile } from '@/lib/nostr'
+import { getMintIconUrl } from '@/lib/mints'
 import { useBookmarkStore } from '@/stores/bookmarks'
+import { useWalletStore } from '@/stores/wallet'
 
 interface MarketHeaderProps {
   market: MarketDetail
@@ -30,9 +35,16 @@ function formatCreatorNpub(creatorId: string): string | null {
   return trimmed
 }
 
-function shortenNpub(npub: string): string {
-  if (npub.length <= 18) return npub
-  return `${npub.slice(0, 10)}...${npub.slice(-6)}`
+function creatorIdToHex(creatorId: string): string | null {
+  const trimmed = creatorId.trim()
+  if (HexPubkeyPattern.test(trimmed)) return trimmed.toLowerCase()
+  if (!trimmed.startsWith('npub1')) return null
+  try {
+    const decoded = nip19.decode(trimmed)
+    return decoded.type === 'npub' ? decoded.data : null
+  } catch {
+    return null
+  }
 }
 
 function formatTimeRemaining(
@@ -73,6 +85,9 @@ function formatTimeRemaining(
 
 export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const { t, i18n } = useTranslation()
+  const navigate = useNavigate()
+  const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
+  const activeMint = useWalletStore((s) => s.mints.find((m) => m.url === activeMintUrl))
   const isResolved = market.resolution.status === 'resolved'
   const timeRemaining = formatTimeRemaining(
     market.closingDate,
@@ -86,7 +101,13 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id))
   const toggleBookmark = useBookmarkStore((s) => s.toggle)
   const creatorNpub = formatCreatorNpub(market.creator.id)
-  const creatorLabel = creatorNpub ? shortenNpub(creatorNpub) : 'Unknown'
+  const [oracleProfile, setOracleProfile] = useState<PublicNostrProfile | null>(null)
+  const [oracleProfileLoaded, setOracleProfileLoaded] = useState(false)
+  const creatorHex = creatorIdToHex(market.creator.id)
+  const creatorLabel = oracleProfile?.displayName ?? t('market.unknownInNostr')
+  const mintIconUrl = activeMint
+    ? getMintIconUrl(activeMint.url, activeMint.info as Record<string, unknown> | undefined)
+    : undefined
   const mintLabel = market.mint
     ? `${market.mint.collateral.toUpperCase()} CTF${
         market.mint.keysetCount > 0
@@ -94,6 +115,22 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           : ''
       }`
     : 'Unknown'
+
+  useEffect(() => {
+    let cancelled = false
+    setOracleProfile(null)
+    setOracleProfileLoaded(false)
+    if (!creatorHex) {
+      setOracleProfileLoaded(true)
+      return
+    }
+    fetchPublicNostrProfile(creatorHex).then((profile) => {
+      if (cancelled) return
+      setOracleProfile(profile)
+      setOracleProfileLoaded(true)
+    })
+    return () => { cancelled = true }
+  }, [creatorHex])
 
   const resolvedDate = isResolved
     ? new Date(market.resolution.resolutionDate).toLocaleDateString(
@@ -192,11 +229,12 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           {/* Creator Info */}
           <div
             className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${market.imageUrl ? 'bg-white/10' : 'bg-slate-100 dark:bg-slate-800'}`}
+            title={t('market.oracleAuditHint')}
           >
-            {market.creator.avatarUrl ? (
+            {oracleProfile?.avatar || market.creator.avatarUrl ? (
               <img
-                src={market.creator.avatarUrl}
-                alt={market.creator.name}
+                src={oracleProfile?.avatar || market.creator.avatarUrl}
+                alt={creatorLabel}
                 className="w-10 h-10 rounded-full"
               />
             ) : (
@@ -213,7 +251,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
               <p
                 className={`truncate text-xs font-mono ${market.imageUrl ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
               >
-                {creatorLabel}
+                {oracleProfileLoaded ? creatorLabel : t('market.searchingNostr')}
               </p>
             </div>
             {creatorNpub && (
@@ -231,11 +269,22 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
             )}
           </div>
 
-          <div
-            className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${market.imageUrl ? 'bg-white/10' : 'bg-slate-100 dark:bg-slate-800'}`}
+          <button
+            type="button"
+            onClick={() => navigate(`/mint-details?mintUrl=${encodeURIComponent(activeMintUrl)}`)}
+            className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl text-left transition-colors ${market.imageUrl ? 'bg-white/10 hover:bg-white/15' : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700'}`}
           >
-            <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center text-amber-500">
-              <Landmark className="w-5 h-5" />
+            <div className="w-10 h-10 overflow-hidden rounded-full bg-amber-500/15 flex items-center justify-center text-amber-500">
+              {mintIconUrl ? (
+                <img
+                  src={mintIconUrl}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                />
+              ) : (
+                <Landmark className="w-5 h-5" />
+              )}
             </div>
             <div className="min-w-0">
               <p
@@ -249,7 +298,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
                 {mintLabel}
               </p>
             </div>
-          </div>
+          </button>
         </div>
 
         {/* Metrics Footer */}
