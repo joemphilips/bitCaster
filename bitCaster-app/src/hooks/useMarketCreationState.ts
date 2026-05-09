@@ -483,6 +483,7 @@ export function useMarketCreationState() {
             name,
             probability: draft.stepOutcomes?.outcomes?.find((o) => o.label === name)?.probability ?? 50,
           })),
+          outcomeType: draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? 'yesno',
           liquiditySats: draft.stepInitialLiquidity?.liquiditySats ?? 0,
           categoryTags,
         },

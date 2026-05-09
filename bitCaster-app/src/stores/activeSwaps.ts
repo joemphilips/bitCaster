@@ -86,6 +86,10 @@ export interface ActiveSwap {
   sellerLocktime: number | null
   /** Unix seconds — Bob's shorter locktime. */
   buyerLocktime: number | null
+  /** Face amount of outcome tokens the seller locks. */
+  outcomeFaceAmountSats: number | null
+  /** Regular sats the buyer locks. */
+  quotePaymentSats: number | null
   step: SwapStep
   messages: SwapMessages
   sellerState: SellerProtocolState | null
@@ -110,6 +114,10 @@ interface ActiveSwapsState {
     role: SwapRole,
     counterpartyPubkey: string,
     locktimes: { sellerLocktime: number; buyerLocktime: number },
+    settlementAmounts?: {
+      outcomeFaceAmountSats?: number
+      quotePaymentSats?: number
+    },
   ) => void
   recordMessage: (
     tradeId: string,
@@ -155,6 +163,8 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
         counterpartyPubkey: null,
         sellerLocktime: null,
         buyerLocktime: null,
+        outcomeFaceAmountSats: null,
+        quotePaymentSats: null,
         step: 'awaiting-trade-created',
         messages: {},
         sellerState: null,
@@ -167,7 +177,13 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
     })
   },
 
-  setRoleAndCounterparty: (tradeId, role, counterpartyPubkey, locktimes) => {
+  setRoleAndCounterparty: (
+    tradeId,
+    role,
+    counterpartyPubkey,
+    locktimes,
+    settlementAmounts,
+  ) => {
     set((s) => {
       const existing = s.byTradeId[tradeId]
       if (!existing) return s
@@ -180,9 +196,15 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
             counterpartyPubkey,
             sellerLocktime: locktimes.sellerLocktime,
             buyerLocktime: locktimes.buyerLocktime,
-            step: existing.step === 'awaiting-trade-created'
-              ? 'awaiting-counterparty'
-              : existing.step,
+            outcomeFaceAmountSats:
+              settlementAmounts?.outcomeFaceAmountSats ??
+              existing.outcomeFaceAmountSats,
+            quotePaymentSats:
+              settlementAmounts?.quotePaymentSats ?? existing.quotePaymentSats,
+            step:
+              existing.step === 'awaiting-trade-created'
+                ? 'awaiting-counterparty'
+                : existing.step,
           },
         },
       }

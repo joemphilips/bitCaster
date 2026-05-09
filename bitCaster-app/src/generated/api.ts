@@ -402,6 +402,8 @@ export interface components {
             description: string;
             /** @description The outcomes for the market (at least 2). */
             outcomes: components["schemas"]["CreateMarketOutcome"][];
+            /** @description Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end. */
+            outcomeType?: "yesno" | "categorical" | "numeric";
             /**
              * Format: int64
              * @description Initial liquidity budget in satoshis.

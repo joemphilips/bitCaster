@@ -609,7 +609,12 @@ components:
           format: uuid
           description: The resting order that was matched against.
         amountSats:
-          $ref: '#/components/schemas/Sats'
+          allOf:
+            - $ref: '#/components/schemas/Sats'
+          description: >
+            Filled conditional-token face amount. For direct atomic swaps the
+            buyer's quote payment is derived from this amount and the execution
+            price.
         executionPrice:
           $ref: '#/components/schemas/Probability'
         path:
@@ -654,7 +659,12 @@ components:
         price:
           $ref: '#/components/schemas/Probability'
         amountSats:
-          $ref: '#/components/schemas/Sats'
+          allOf:
+            - $ref: '#/components/schemas/Sats'
+          description: >
+            Limit-order size as conditional-token face amount. First release
+            requires this to be divisible by 100 sats so integer-cent prices
+            produce exact quote payments.
         timeInForce:
           $ref: '#/components/schemas/TimeInForce'
           default: GTC
@@ -864,6 +874,12 @@ components:
             $ref: '#/components/schemas/CreateMarketOutcome'
           minItems: 2
           description: The outcomes for the market (at least 2).
+        outcomeType:
+          type: string
+          enum: [yesno, categorical, numeric]
+          description: >
+            Market outcome type. Numeric creation is disabled until finite-bin
+            metadata is supported end-to-end.
         liquiditySats:
           type: integer
           format: int64

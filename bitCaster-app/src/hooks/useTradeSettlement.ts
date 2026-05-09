@@ -143,12 +143,19 @@ function handleTradeCreated(
   }
   const counterparty =
     role === 'seller' ? payload.buyerPubkey : payload.sellerPubkey
-  useActiveSwapsStore
-    .getState()
-    .setRoleAndCounterparty(payload.tradeId, role, counterparty, {
+  useActiveSwapsStore.getState().setRoleAndCounterparty(
+    payload.tradeId,
+    role,
+    counterparty,
+    {
       sellerLocktime,
       buyerLocktime,
-    })
+    },
+    {
+      outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
+      quotePaymentSats: payload.quotePaymentSats,
+    },
+  )
 
   if (role === 'seller') {
     void runSellerSendOpening(payload.tradeId, sendSwapMessage, mintUrl)
@@ -185,7 +192,10 @@ async function runSellerSendOpening(
     useActiveSwapsStore.getState().setStep(tradeId, 'driving')
     const ctx = buildSwapContext(swap, mintUrl)
     if (!ctx) return
-    const proofs = await loadProofsForLock(mintUrl)
+    const proofs = await loadProofsForLock(
+      mintUrl,
+      swap.outcomeFaceAmountSats ?? undefined,
+    )
     const out = await sellerPrepareSwap(ctx, proofs)
     await persistLockChange(proofs, out.changeProofs, mintUrl)
     useActiveSwapsStore
@@ -278,7 +288,10 @@ async function runBuyerRespond(
     useActiveSwapsStore.getState().setStep(tradeId, 'driving')
     const ctx = buildSwapContext(swap, mintUrl)
     if (!ctx) return
-    const proofs = await loadProofsForLock(mintUrl)
+    const proofs = await loadProofsForLock(
+      mintUrl,
+      swap.quotePaymentSats ?? undefined,
+    )
     const out = await buyerPrepareSwap(
       ctx,
       swap.messages.adaptorPoint,
@@ -343,11 +356,7 @@ async function runSettlementClaim(
         : await runBuyerClaim(swap, ctx)
     await persistFreshProofs(fresh, mintUrl)
     useActiveSwapsStore.getState().setStep(tradeId, 'awaiting-confirmation')
-    await sendSwapMessage(
-      tradeId,
-      TRADE_MESSAGE_TYPES.settlementComplete,
-      '',
-    )
+    await sendSwapMessage(tradeId, TRADE_MESSAGE_TYPES.settlementComplete, '')
   } catch (err) {
     failSwap(tradeId, err)
   } finally {
@@ -400,12 +409,43 @@ async function pollForAdaptorSecret(
   throw new Error('Timed out waiting for seller to spend at mint')
 }
 
-async function loadProofsForLock(mintUrl: string): Promise<Proof[]> {
+async function loadProofsForLock(
+  mintUrl: string,
+  targetSats?: number,
+): Promise<Proof[]> {
   const proofs = await getBaseProofs(mintUrl)
   if (proofs.length === 0) {
     throw new Error('No proofs available for atomic swap — wallet is empty')
   }
-  return proofs
+  if (
+    targetSats === undefined ||
+    !Number.isFinite(targetSats) ||
+    targetSats <= 0
+  ) {
+    return proofs
+  }
+  const selected = takeProofsForLock(proofs, targetSats)
+  if (!selected) {
+    throw new Error(
+      `Insufficient proofs for atomic swap — need ${targetSats} sats`,
+    )
+  }
+  return selected
+}
+
+function takeProofsForLock(
+  proofs: Proof[],
+  targetSats: number,
+): Proof[] | null {
+  const sorted = [...proofs].sort((a, b) => b.amount - a.amount)
+  const selected: Proof[] = []
+  let total = 0
+  for (const proof of sorted) {
+    if (total >= targetSats) break
+    selected.push(proof)
+    total += proof.amount
+  }
+  return total >= targetSats ? selected : null
 }
 
 async function persistLockChange(
