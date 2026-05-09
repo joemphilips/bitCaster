@@ -292,6 +292,7 @@ export interface components {
              * @description The resting order that was matched against.
              */
             makerOrderId: string;
+            /** @description Filled conditional-token face amount. For direct atomic swaps the buyer's quote payment is derived from this amount and the execution price. */
             amountSats: components["schemas"]["Sats"];
             executionPrice: components["schemas"]["Probability"];
             path: components["schemas"]["MatchPath"];
@@ -309,10 +310,11 @@ export interface components {
             makerEphemeralPubkey?: string;
         };
         SubmitOrderRequest: {
-            /** @description The outcome to trade (e.g. "Alice", "YES"). */
+            /** @description The outcome or finite outcome set to trade (e.g. "Alice", "YES", or "B|C"). Must match the outcome-set segment of marketId. */
             outcomeId: string;
             side: components["schemas"]["OrderSide"];
             price: components["schemas"]["Probability"];
+            /** @description Limit-order size as conditional-token face amount. First release requires this to be divisible by 100 sats so integer-cent prices produce exact quote payments. */
             amountSats: components["schemas"]["Sats"];
             /** @default GTC */
             timeInForce: components["schemas"]["TimeInForce"];
@@ -402,7 +404,10 @@ export interface components {
             description: string;
             /** @description The outcomes for the market (at least 2). */
             outcomes: components["schemas"]["CreateMarketOutcome"][];
-            /** @description Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end. */
+            /**
+             * @description Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end.
+             * @enum {string}
+             */
             outcomeType?: "yesno" | "categorical" | "numeric";
             /**
              * Format: int64
@@ -551,7 +556,7 @@ export interface components {
         MarketCatalogueEntry: {
             /** @description The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market. */
             conditionId: string;
-            /** @description Outcome names sourced from the mintd condition snapshot. Each outcome maps to its own per-outcome order book at `marketId = "{conditionId}-{outcomeName}"`. */
+            /** @description Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`. Finite categorical outcome-set books use multiple outcome names separated by "|", for example `"{conditionId}-B|C"`. */
             outcomes: string[];
             /** @description Optional human-readable title from market registration. Null when the creator did not supply one. */
             title?: string | null;
@@ -621,7 +626,7 @@ export interface components {
     };
     responses: never;
     parameters: {
-        /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
         MarketId: string;
         /** @description The condition identifier (hex string derived from the oracle announcement). */
         ConditionId: string;
@@ -697,7 +702,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -727,7 +732,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -770,7 +775,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
                 marketId: components["parameters"]["MarketId"];
                 /** @description The order's unique identifier. */
                 orderId: string;
@@ -809,7 +814,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
                 marketId: components["parameters"]["MarketId"];
                 /** @description The unique identifier of the order to cancel. */
                 orderId: string;
@@ -846,7 +851,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -869,7 +874,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -899,7 +904,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
+                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;

@@ -527,9 +527,11 @@ components:
       schema:
         type: string
       description: >
-        The market to trade on, in the format "{conditionId}-{outcomeName}"
-        (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own
-        independent binary order book. A marketId containing "|" is invalid.
+        The market to trade on, in the format "{conditionId}-{outcomeSet}"
+        (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite
+        categorical markets, multiple outcome names separated by "|" represent
+        the order book for that exact outcome set. Clients should URL-encode
+        the path segment when needed.
 
     ConditionId:
       name: conditionId
@@ -653,7 +655,9 @@ components:
       properties:
         outcomeId:
           type: string
-          description: The outcome to trade (e.g. "Alice", "YES").
+          description: >
+            The outcome or finite outcome set to trade (e.g. "Alice", "YES",
+            or "B|C"). Must match the outcome-set segment of marketId.
         side:
           $ref: '#/components/schemas/OrderSide'
         price:
@@ -1161,12 +1165,13 @@ components:
             announcement). Stable identifier for the market.
         outcomes:
           type: array
+          description: >
+            Outcome names sourced from the mintd condition snapshot. Singleton
+            outcome books use `marketId = "{conditionId}-{outcomeName}"`.
+            Finite categorical outcome-set books use multiple outcome names
+            separated by "|", for example `"{conditionId}-B|C"`.
           items:
             type: string
-          description: >
-            Outcome names sourced from the mintd condition snapshot. Each
-            outcome maps to its own per-outcome order book at
-            `marketId = "{conditionId}-{outcomeName}"`.
         title:
           type: string
           nullable: true

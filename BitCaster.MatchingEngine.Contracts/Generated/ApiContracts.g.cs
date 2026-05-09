@@ -125,6 +125,10 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("makerOrderId")]
         public System.Guid MakerOrderId { get; }
 
+        /// <summary>
+        /// Filled conditional-token face amount. For direct atomic swaps the buyer's quote payment is derived from this amount and the execution price.
+        /// <br/>
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
 
@@ -181,7 +185,8 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// The outcome to trade (e.g. "Alice", "YES").
+        /// The outcome or finite outcome set to trade (e.g. "Alice", "YES", or "B|C"). Must match the outcome-set segment of marketId.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
         public string OutcomeId { get; }
@@ -193,6 +198,10 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("price")]
         public int Price { get; }
 
+        /// <summary>
+        /// Limit-order size as conditional-token face amount. First release requires this to be divisible by 100 sats so integer-cent prices produce exact quote payments.
+        /// <br/>
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
 
@@ -546,11 +555,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, string @title)
+        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
             this.Outcomes = @outcomes;
+            this.OutcomeType = @outcomeType;
             this.LiquiditySats = @liquiditySats;
             this.CategoryTags = @categoryTags;
         }
@@ -572,6 +582,14 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
         public System.Collections.Generic.List<CreateMarketOutcome> Outcomes { get; }
+
+        /// <summary>
+        /// Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeType")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<CreateMarketRequestOutcomeType>))]
+        public CreateMarketRequestOutcomeType? OutcomeType { get; }
 
         /// <summary>
         /// Initial liquidity budget in satoshis.
@@ -1088,7 +1106,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ConditionId { get; }
 
         /// <summary>
-        /// Outcome names sourced from the mintd condition snapshot. Each outcome maps to its own per-outcome order book at `marketId = "{conditionId}-{outcomeName}"`.
+        /// Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`. Finite categorical outcome-set books use multiple outcome names separated by "|", for example `"{conditionId}-B|C"`.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
@@ -1311,6 +1329,21 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"New")]
         New = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum CreateMarketRequestOutcomeType
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"yesno")]
+        Yesno = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"categorical")]
+        Categorical = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"numeric")]
+        Numeric = 2,
 
     }
 

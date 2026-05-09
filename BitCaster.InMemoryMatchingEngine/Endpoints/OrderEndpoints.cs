@@ -22,9 +22,6 @@ public static class OrderEndpoints
             if (req.AmountSats <= 0)
                 return Results.BadRequest("AmountSats must be positive.");
 
-            if (marketId.Contains('|'))
-                return Results.BadRequest("Compound marketId (containing '|') is invalid.");
-
             if (!IsValidCompressedPubkey(req.EphemeralPubkey))
                 return Results.BadRequest("EphemeralPubkey must be a 66-char hex string (33-byte compressed secp256k1 pubkey).");
 
