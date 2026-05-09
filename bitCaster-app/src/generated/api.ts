@@ -143,26 +143,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/markets/{marketId}/payment-requests": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Create a bolt11 payment request for a market
-         * @description Creates a Lightning invoice for the market. The returned bolt11 string contains the payment hash and all payment details.
-         */
-        post: operations["createPaymentRequest"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/markets/{conditionId}/deposit/ln-invoice": {
         parameters: {
             query?: never;
@@ -468,15 +448,6 @@ export interface components {
              * @description Total liquidity deposited in satoshis.
              */
             totalLiquiditySats: number;
-        };
-        CreatePaymentRequestRequest: {
-            amountSats: components["schemas"]["Sats"];
-            /** @description Optional memo for the invoice. */
-            description?: string;
-        };
-        CreatePaymentRequestResponse: {
-            /** @description The bolt11-encoded Lightning invoice. */
-            bolt11: string;
         };
         CreatorMarketEntry: {
             /** @description The condition ID this market was registered under. */
@@ -962,54 +933,6 @@ export interface operations {
             };
             /** @description No thumbnail for this condition */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createPaymentRequest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own independent binary order book. A marketId containing "|" is invalid. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreatePaymentRequestRequest"];
-            };
-        };
-        responses: {
-            /** @description Invoice created */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreatePaymentRequestResponse"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Market not found or no wallet provisioned */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Lightning invoice provider error */
-            502: {
                 headers: {
                     [name: string]: unknown;
                 };

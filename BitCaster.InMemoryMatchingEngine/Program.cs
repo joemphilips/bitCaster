@@ -6,13 +6,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<InMemoryOrderBookManager>();
-builder.Services.AddSingleton<LnBitsWalletManager>();
 builder.Services.AddSingleton<InMemoryTradeRegistry>();
 builder.Services.AddHealthChecks();
 builder.Services.AddHttpClient("mint", c =>
     c.BaseAddress = new Uri(builder.Configuration["MINT_URL"] ?? "http://localhost:8085"));
-builder.Services.AddHttpClient("lnbits", c =>
-    c.BaseAddress = new Uri(builder.Configuration["LNBITS_URL"] ?? "http://localhost:5102"));
 
 // Dev/E2E only — the frontend's `useTradeHub` / `marketHub.ts` connect to
 // `VITE_SERVER_URL ?? http://localhost:5000` directly (not through the Vite
@@ -43,7 +40,6 @@ app.MapBookEndpoints();
 app.MapMetadataEndpoints();
 app.MapThumbnailEndpoints();
 app.MapLiquidityEndpoints();
-app.MapPaymentEndpoints();
 app.MapDepositEndpoints();
 
 app.Run();

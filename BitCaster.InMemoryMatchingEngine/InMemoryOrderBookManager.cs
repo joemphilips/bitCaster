@@ -155,7 +155,8 @@ public class InMemoryOrderBookManager
 
     private static Fill BuildFill(RestingOrder taker, RestingOrder maker, long amount)
     {
-        var fill = new Fill(
+        var tradeId = Guid.NewGuid();
+        return new Fill(
             amountSats: amount,
             executionPrice: maker.Price,
             filledAt: DateTimeOffset.UtcNow,
@@ -163,14 +164,8 @@ public class InMemoryOrderBookManager
             makerEphemeralPubkey: maker.EphemeralPubkey!,
             makerOrderId: maker.Id,
             path: MatchPath.Direct,
-            takerOrderId: taker.Id);
-        // Frontend reads tradeId off the Fill's open extension data — see
-        // bitCaster-app/src/lib/orderStatus.ts. The contract Fill class has no
-        // typed tradeId field; the AdditionalProperties dictionary is the
-        // forward-compatible escape hatch and serializes inline thanks to
-        // [JsonExtensionData] on the generated property.
-        fill.AdditionalProperties["tradeId"] = Guid.NewGuid().ToString();
-        return fill;
+            takerOrderId: taker.Id,
+            tradeId: tradeId);
     }
 
     private static string DeriveStatus(long requested, long remaining, TimeInForce tif, bool anyFills)

@@ -24,6 +24,8 @@ public class InMemoryTradeRegistry
         string BuyerPubkey,
         DateTimeOffset SellerLocktime,
         DateTimeOffset BuyerLocktime,
+        string MarketId,
+        long FillAmountSats,
         HashSet<string> ConfirmedBy,
         bool Confirmed);
 
@@ -37,13 +39,20 @@ public class InMemoryTradeRegistry
     /// §"Locktime Constraints". The 1h gap is arbitrary in the mock, but the
     /// ordering must match the public protocol shape.
     /// </summary>
-    public TradeRecord Register(Guid tradeId, string sellerPubkey, string buyerPubkey)
+    public TradeRecord Register(
+        Guid tradeId,
+        string sellerPubkey,
+        string buyerPubkey,
+        string marketId,
+        long fillAmountSats)
     {
         var now = DateTimeOffset.UtcNow;
         var record = new TradeRecord(
             tradeId, sellerPubkey, buyerPubkey,
             SellerLocktime: now.AddHours(2),
             BuyerLocktime: now.AddHours(1),
+            MarketId: marketId,
+            FillAmountSats: fillAmountSats,
             ConfirmedBy: [],
             Confirmed: false);
         return _trades.GetOrAdd(tradeId, record);

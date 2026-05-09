@@ -236,37 +236,6 @@ paths:
         '404':
           description: No thumbnail for this condition
 
-  /api/v1/markets/{marketId}/payment-requests:
-    post:
-      operationId: createPaymentRequest
-      summary: Create a bolt11 payment request for a market
-      security:
-        - nip98: []
-      description: >
-        Creates a Lightning invoice for the market. The returned bolt11 string
-        contains the payment hash and all payment details.
-      parameters:
-        - $ref: '#/components/parameters/MarketId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreatePaymentRequestRequest'
-      responses:
-        '200':
-          description: Invoice created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreatePaymentRequestResponse'
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '404':
-          description: Market not found or no wallet provisioned
-        '502':
-          description: Lightning invoice provider error
-
   /api/v1/markets/{conditionId}/deposit/ln-invoice:
     post:
       operationId: requestLnInvoiceDeposit
@@ -984,26 +953,6 @@ components:
           type: integer
           format: int64
           description: Total liquidity deposited in satoshis.
-
-    CreatePaymentRequestRequest:
-      type: object
-      required:
-        - amountSats
-      properties:
-        amountSats:
-          $ref: '#/components/schemas/Sats'
-        description:
-          type: string
-          description: Optional memo for the invoice.
-
-    CreatePaymentRequestResponse:
-      type: object
-      required:
-        - bolt11
-      properties:
-        bolt11:
-          type: string
-          description: The bolt11-encoded Lightning invoice.
 
     CreatorMarketEntry:
       type: object

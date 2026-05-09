@@ -46,7 +46,9 @@ public class TradeHub : Hub<ITradeHubClient>
             record.SellerPubkey,
             record.BuyerPubkey,
             record.SellerLocktime,
-            record.BuyerLocktime);
+            record.BuyerLocktime,
+            record.MarketId,
+            record.FillAmountSats);
     }
 
     /// <summary>
