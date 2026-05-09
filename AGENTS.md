@@ -39,10 +39,11 @@ client obligations. Do not mention non-public service repositories or backend
 implementation choices in `BitCaster.MatchingEngine.Contracts/`,
 `bitCaster-app/`, or `bitCaster-doc/`.
 
-### User-specific state must handled by client-side
+### User-specific state must be handled client-side
 
 - Matching engine **should NOT** store user information as much as possible. It's sole purpose is to keep the markets liquid and tradable.
-- User-specific data must be handled by client side using Nostr [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md), or simply by localStorage if user has not configured nostr pubkey
+- Private user-specific data must be handled client-side using localStorage for reload UX and encrypted NIP-44 content inside Nostr [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) replaceable events when the user has configured a Nostr key. Examples: portfolio activity history, local wallet workflow records, private oracle drafts, and anything the engine cannot verify as authoritative.
+- Creator-market discovery is not private by itself; it can be mirrored publicly or indexed by the engine for UX. Keep sensitive creator-side material out of public storage unless it is already public Nostr/oracle data.
 
 ## Monorepo Layout
 
@@ -66,8 +67,9 @@ This repo owns only the public contract, mock/dev server, frontend, and docs.
 
 ## Nostr Usage
 
-1. **Private storage** via [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) — anything in localStorage must also be mirrored to NIP-78 iff the user has configured a nostr key.
-2. **Public broadcast/fetch** for DLC oracle announcements / attestations **only** — never publish anything else (user anonymity).
+1. **Private storage** via [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) + NIP-44 self-encryption — private records in localStorage must also be mirrored to encrypted NIP-78 iff the user has configured a Nostr key.
+2. **Public app state** via NIP-78 or engine indexing — non-sensitive records like "markets this pubkey created" may be public when that improves UX.
+3. **Public broadcast/fetch** for DLC oracle announcements / attestations — these are public protocol artifacts.
 
 When you need to understand a NIP, read the spec from the `nips-protocol/` submodule (pinned upstream copy of `nostr-protocol/nips`). **Do not edit files under `nips-protocol/`** — it is an upstream reference and must stay untouched. To pull a newer revision, bump the submodule pointer with `git submodule update --remote nips-protocol` rather than editing its contents.
 

@@ -3,8 +3,9 @@
  *
  * Stores the set of markets the user has created as a parameterized
  * replaceable event (kind 30078, d-tag "bitcaster:creator-markets") so the
- * creator dashboard follows the user across devices without the matching
- * engine having to know about user identity.
+ * creator dashboard follows the user across devices. This is a UX mirror, not
+ * a privacy boundary; creator-market discovery may also move to engine-side
+ * indexing because the creator pubkey is public oracle metadata.
  *
  * Spec: https://github.com/nostr-protocol/nips/blob/master/78.md
  */
@@ -23,7 +24,9 @@ interface CreatorMarketsPayload {
   markets: StoredCreatorMarket[];
 }
 
-function isStoredCreatorOracle(value: unknown): value is StoredCreatorOracleMetadata {
+function isStoredCreatorOracle(
+  value: unknown,
+): value is StoredCreatorOracleMetadata {
   if (typeof value !== "object" || value === null) return false;
   const oracle = value as Record<string, unknown>;
   return (
@@ -31,8 +34,10 @@ function isStoredCreatorOracle(value: unknown): value is StoredCreatorOracleMeta
     typeof oracle.eventId === "string" &&
     Array.isArray(oracle.outcomes) &&
     oracle.outcomes.every((outcome) => typeof outcome === "string") &&
-    (oracle.attestationHex === undefined || typeof oracle.attestationHex === "string") &&
-    (oracle.attestedOutcome === undefined || typeof oracle.attestedOutcome === "string") &&
+    (oracle.attestationHex === undefined ||
+      typeof oracle.attestationHex === "string") &&
+    (oracle.attestedOutcome === undefined ||
+      typeof oracle.attestedOutcome === "string") &&
     (oracle.attestedAt === undefined || typeof oracle.attestedAt === "string")
   );
 }
@@ -100,7 +105,9 @@ export async function fetchNip78CreatorMarkets(
     });
     if (!event) return null;
     try {
-      const parsed = JSON.parse(event.content) as Partial<CreatorMarketsPayload>;
+      const parsed = JSON.parse(
+        event.content,
+      ) as Partial<CreatorMarketsPayload>;
       if (!Array.isArray(parsed.markets)) return null;
       return parsed.markets.filter(isStoredCreatorMarket);
     } catch {

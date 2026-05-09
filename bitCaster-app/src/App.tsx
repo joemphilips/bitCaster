@@ -1,4 +1,10 @@
-import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  useNavigate,
+  useLocation,
+} from "react-router";
 import { useTranslation } from "react-i18next";
 import { AppShell } from "@/components/shell";
 import { MarketsPage } from "@/pages/MarketsPage";
@@ -14,6 +20,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { nip19 } from "nostr-tools";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
+import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
 import { useTradeSettlement } from "@/hooks/useTradeSettlement";
 import { useSettingsStore } from "@/stores/settings";
@@ -59,7 +66,8 @@ function ShellRoutes() {
     {
       label: t("nav.markets"),
       href: "/markets",
-      isActive: location.pathname === "/" || location.pathname.startsWith("/markets"),
+      isActive:
+        location.pathname === "/" || location.pathname.startsWith("/markets"),
     },
   ];
 
@@ -101,7 +109,8 @@ function ShellRoutes() {
 }
 
 function titleForPath(pathname: string): string {
-  if (pathname === "/" || pathname === "/markets") return "bitCaster/All Markets";
+  if (pathname === "/" || pathname === "/markets")
+    return "bitCaster/All Markets";
   if (pathname.startsWith("/markets/")) return "bitCaster/Market";
   if (pathname === "/portfolio") return "bitCaster/Portfolio";
   if (pathname === "/creator/new") return "bitCaster/Create Market";
@@ -145,6 +154,7 @@ function AppRoutes() {
   const location = useLocation();
   useBookmarkSync();
   useCreatorSync();
+  useActivityLogSync();
   usePendingTradesPoller();
   const nsecSecret = useSettingsStore((s) => s.nsecSecret);
   const tradeHubPrivkey = useMemo(
@@ -218,7 +228,7 @@ function AppRoutes() {
   // view — P5 item 5 regression.
   const mnemonic = useWalletStore((s) => s.mnemonic);
   const relayUrlsKey = useSettingsStore((s) =>
-    s.relays.map((r) => r.url).join("|")
+    s.relays.map((r) => r.url).join("|"),
   );
   useEffect(() => {
     if (!mnemonic) return;
@@ -260,7 +270,7 @@ function AppRoutes() {
         // seeding (tests, power users reloading mid-wizard) and can
         // overwrite the mint info they just chose.
         const onWizard = (WIZARD_PATHS as readonly string[]).includes(
-          window.location.pathname
+          window.location.pathname,
         );
         if (!onWizard) {
           userAddAndSelectMint(DEFAULT_MINT_URL).catch(() => {});
@@ -268,9 +278,11 @@ function AppRoutes() {
         return;
       }
       for (const m of mints) {
-        const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)?.nuts;
+        const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)
+          ?.nuts;
         const isDefault = m.url === DEFAULT_MINT_URL;
-        const missingCtfOnDefault = isDefault && nuts != null && !('CTF' in nuts);
+        const missingCtfOnDefault =
+          isDefault && nuts != null && !("CTF" in nuts);
         if (!nuts || missingCtfOnDefault) {
           userAddAndSelectMint(m.url).catch(() => {});
         }
@@ -281,10 +293,14 @@ function AppRoutes() {
       return;
     }
     const unsub = useWalletStore.persist.onFinishHydration(runMintRehydrate);
-    return () => { unsub(); };
+    return () => {
+      unsub();
+    };
   }, []);
 
-  const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
+  const isWizard = (WIZARD_PATHS as readonly string[]).includes(
+    location.pathname,
+  );
   return isWizard ? <WizardRoutes /> : <ShellRoutes />;
 }
 

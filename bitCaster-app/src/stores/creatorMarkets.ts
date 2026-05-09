@@ -1,70 +1,74 @@
-import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 /**
  * Client-side record of a market the user has created via the wizard.
  *
- * The matching engine is deliberately ignorant of who created a market (see
- * "User-specific state must handled by client-side" in AGENTS.md), so the
- * dashboard builds its market list from this store and enriches each entry
- * with live volume data pulled from `GET /api/v1/creators/{pubkey}/markets`.
+ * Creator-market discovery is public enough to index server-side, but this
+ * local store remains the immediate UX source after the wizard completes. The
+ * dashboard enriches each entry with live volume data pulled from
+ * `GET /api/v1/creators/{pubkey}/markets`.
  */
 export interface StoredCreatorMarket {
   /** Condition ID the market was registered under. Stable, primary key. */
-  conditionId: string
+  conditionId: string;
   /** Human-readable title (echoed so the dashboard can render before the mint is reachable). */
-  title: string
+  title: string;
   /** Thumbnail URL returned by the matching engine, or `null` when the user skipped the upload. */
-  thumbnailUrl: string | null
+  thumbnailUrl: string | null;
   /** ISO-8601 timestamp recorded when the wizard reported a successful submission. */
-  createdAt: string
+  createdAt: string;
   /**
    * Percentage fee (0.0-1.0 scale matching `CreatedMarket.creatorFeePercent`)
    * the user chose at wizard step 5. Kept client-side because fee accrual is
    * stubbed for v1 and not tracked by the engine.
    */
-  creatorFeePercent: number
+  creatorFeePercent: number;
   /** Oracle metadata captured when the creator used their own nsec-backed DLC oracle. */
-  oracle?: StoredCreatorOracleMetadata
+  oracle?: StoredCreatorOracleMetadata;
 }
 
 export interface StoredCreatorOracleMetadata {
-  type: 'self'
+  type: "self";
   /** DLC oracle event_id passed to kormir when the announcement was created. */
-  eventId: string
+  eventId: string;
   /** Enum outcomes the oracle can attest. Numeric self-oracle markets are not supported yet. */
-  outcomes: string[]
+  outcomes: string[];
   /** Hex-encoded oracle_attestation returned by kormir after resolution signing. */
-  attestationHex?: string
+  attestationHex?: string;
   /** Outcome the creator attested. */
-  attestedOutcome?: string
+  attestedOutcome?: string;
   /** ISO-8601 timestamp recorded after kormir publishes the kind-89 attestation. */
-  attestedAt?: string
+  attestedAt?: string;
 }
 
 interface CreatorMarketsState {
-  markets: StoredCreatorMarket[]
+  markets: StoredCreatorMarket[];
   /** Insert a market created via the wizard. Deduplicates on `conditionId`. */
-  addCreatedMarket: (market: StoredCreatorMarket) => void
+  addCreatedMarket: (market: StoredCreatorMarket) => void;
   /** Mark a creator-owned oracle market as attested after publishing kind-89. */
   markOracleAttested: (
     conditionId: string,
-    attestation: { outcome: string; attestationHex: string; attestedAt: string },
-  ) => void
+    attestation: {
+      outcome: string;
+      attestationHex: string;
+      attestedAt: string;
+    },
+  ) => void;
   /** Remove a market from the local record (e.g. after a user hides it). */
-  removeCreatedMarket: (conditionId: string) => void
+  removeCreatedMarket: (conditionId: string) => void;
   /** Replace the entire set wholesale — used by `useCreatorSync` after a NIP-78 fetch. */
-  replace: (markets: StoredCreatorMarket[]) => void
+  replace: (markets: StoredCreatorMarket[]) => void;
   /** Clear all entries. Exposed primarily for tests and logout flows. */
-  clear: () => void
+  clear: () => void;
 }
 
 function creatorOracleEqual(
   a: StoredCreatorOracleMetadata | undefined,
   b: StoredCreatorOracleMetadata | undefined,
 ): boolean {
-  if (!a && !b) return true
-  if (!a || !b) return false
+  if (!a && !b) return true;
+  if (!a || !b) return false;
   return (
     a.type === b.type &&
     a.eventId === b.eventId &&
@@ -73,7 +77,7 @@ function creatorOracleEqual(
     a.attestedAt === b.attestedAt &&
     a.outcomes.length === b.outcomes.length &&
     a.outcomes.every((outcome, i) => outcome === b.outcomes[i])
-  )
+  );
 }
 
 /** Stable equality check used by the NIP-78 sync hook to skip no-op publishes. */
@@ -81,11 +85,11 @@ export function creatorMarketsEqual(
   a: readonly StoredCreatorMarket[],
   b: readonly StoredCreatorMarket[],
 ): boolean {
-  if (a.length !== b.length) return false
-  const byId = new Map(a.map((m) => [m.conditionId, m] as const))
+  if (a.length !== b.length) return false;
+  const byId = new Map(a.map((m) => [m.conditionId, m] as const));
   for (const m of b) {
-    const other = byId.get(m.conditionId)
-    if (!other) return false
+    const other = byId.get(m.conditionId);
+    if (!other) return false;
     if (
       other.title !== m.title ||
       other.thumbnailUrl !== m.thumbnailUrl ||
@@ -93,10 +97,10 @@ export function creatorMarketsEqual(
       other.creatorFeePercent !== m.creatorFeePercent ||
       !creatorOracleEqual(other.oracle, m.oracle)
     ) {
-      return false
+      return false;
     }
   }
-  return true
+  return true;
 }
 
 /**
@@ -115,16 +119,17 @@ export const useCreatorMarketsStore = create<CreatorMarketsState>()(
         set((state) => {
           const without = state.markets.filter(
             (m) => m.conditionId !== market.conditionId,
-          )
+          );
           // Newest first so the dashboard's most-recent rows match the user's
           // expectation immediately after the wizard completes.
-          return { markets: [market, ...without] }
-        })
+          return { markets: [market, ...without] };
+        });
       },
       markOracleAttested: (conditionId, attestation) => {
         set((state) => ({
           markets: state.markets.map((market) => {
-            if (market.conditionId !== conditionId || !market.oracle) return market
+            if (market.conditionId !== conditionId || !market.oracle)
+              return market;
             return {
               ...market,
               oracle: {
@@ -133,21 +138,21 @@ export const useCreatorMarketsStore = create<CreatorMarketsState>()(
                 attestedOutcome: attestation.outcome,
                 attestedAt: attestation.attestedAt,
               },
-            }
+            };
           }),
-        }))
+        }));
       },
       removeCreatedMarket: (conditionId) => {
         set((state) => ({
           markets: state.markets.filter((m) => m.conditionId !== conditionId),
-        }))
+        }));
       },
       replace: (markets) => {
-        if (creatorMarketsEqual(get().markets, markets)) return
-        set({ markets: [...markets] })
+        if (creatorMarketsEqual(get().markets, markets)) return;
+        set({ markets: [...markets] });
       },
       clear: () => set({ markets: [] }),
     }),
-    { name: 'bitcaster-creator-markets' },
+    { name: "bitcaster-creator-markets" },
   ),
-)
+);
