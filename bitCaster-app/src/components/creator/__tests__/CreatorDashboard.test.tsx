@@ -57,6 +57,7 @@ beforeEach(() => {
   mockUseCreatorDashboardState.mockReset()
   mockSignEnumAttestation.mockReset()
   mockSignEnumAttestation.mockResolvedValue('attestation-hex')
+  vi.stubGlobal('confirm', vi.fn(() => true))
   useCreatorMarketsStore.setState({ markets: [] })
   useSettingsStore.setState({
     nostrSignerMode: 'none',
@@ -231,7 +232,7 @@ describe('CreatorDashboard', () => {
 
     renderDashboard()
 
-    await user.click(screen.getByRole('button', { name: /publish attestation/i }))
+    await user.click(screen.getByRole('button', { name: /close market/i }))
 
     expect(mockSignEnumAttestation).toHaveBeenCalledWith(
       ['wss://relay.example.test'],

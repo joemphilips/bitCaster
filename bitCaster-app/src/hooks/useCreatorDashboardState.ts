@@ -41,15 +41,16 @@ interface UseCreatorDashboardStateResult {
  */
 function buildCreatedMarket(
   stored: StoredCreatorMarket,
-  volumeByConditionId: Map<string, number>,
+  backendByConditionId: Map<string, CreatorMarketEntry>,
 ): CreatedMarket {
+  const backend = backendByConditionId.get(stored.conditionId)
   return {
     id: stored.conditionId,
     title: stored.title,
     imageUrl: stored.thumbnailUrl ?? '',
-    status: 'active',
+    status: backend?.state === 'closed' ? 'resolved' : 'active',
     createdDate: stored.createdAt,
-    volume: volumeByConditionId.get(stored.conditionId) ?? 0,
+    volume: backend?.totalVolumeSats ?? 0,
     creatorFeesEarned: 0,
     creatorFeePercent: stored.creatorFeePercent,
     oracle: stored.oracle,
@@ -131,11 +132,11 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
   }, [])
 
   const markets = useMemo<CreatedMarket[]>(() => {
-    const volumeByConditionId = new Map<string, number>()
+    const backendByConditionId = new Map<string, CreatorMarketEntry>()
     for (const entry of backendMarkets) {
-      volumeByConditionId.set(entry.conditionId, entry.totalVolumeSats)
+      backendByConditionId.set(entry.conditionId, entry)
     }
-    return storedMarkets.map((m) => buildCreatedMarket(m, volumeByConditionId))
+    return storedMarkets.map((m) => buildCreatedMarket(m, backendByConditionId))
   }, [storedMarkets, backendMarkets])
 
   const stats = useMemo<DashboardStats>(() => {

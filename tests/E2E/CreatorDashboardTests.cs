@@ -54,8 +54,21 @@ public class CreatorDashboardTests : IAsyncLifetime
     /// Must be called on a page that has already navigated under the Vite origin
     /// so localStorage is writable.
     /// </summary>
-    private static async Task SeedCreatorMarketsAsync(IPage page, string conditionId, string title)
+    private static async Task SeedCreatorMarketsAsync(
+        IPage page,
+        string conditionId,
+        string title,
+        bool selfOracle = false)
     {
+        var oracleJson = selfOracle
+            ? @",
+                        oracle: {
+                            type: 'self',
+                            eventId: 'seeded_creator_market_event',
+                            outcomes: ['Yes', 'No']
+                        }"
+            : "";
+
         await page.EvaluateAsync($@"
             localStorage.setItem('bitcaster-creator-markets', JSON.stringify({{
                 state: {{
@@ -65,6 +78,7 @@ public class CreatorDashboardTests : IAsyncLifetime
                         thumbnailUrl: null,
                         createdAt: '2026-04-10T00:00:00.000Z',
                         creatorFeePercent: 0.02
+                        {oracleJson}
                     }}]
                 }},
                 version: 0
@@ -162,6 +176,33 @@ public class CreatorDashboardTests : IAsyncLifetime
         // Empty state should NOT be shown
         var emptyHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Create your first market" });
         await Assertions.Expect(emptyHeading).Not.ToBeVisibleAsync();
+    }
+
+    [Fact]
+    public async Task SeededSelfOracleMarket_ShowsCloseMarketControl()
+    {
+        const string conditionId = "deadc0de000000000000000000000000000000000000000000000000000000ab";
+        const string title = "Seeded Self Oracle Market";
+
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupComplete(page);
+
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+        await SeedCreatorMarketsAsync(page, conditionId, title, selfOracle: true);
+        await page.ReloadAsync(new PageReloadOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        await Assertions.Expect(page.GetByText(title)).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await Assertions.Expect(page.GetByLabel("Winning outcome for Seeded Self Oracle Market")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Close market" })).ToBeVisibleAsync();
     }
 
     [Fact]

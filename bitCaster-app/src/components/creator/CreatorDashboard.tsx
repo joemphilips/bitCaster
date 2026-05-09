@@ -54,7 +54,7 @@ export function CreatorDashboard() {
   const [resolvingMarketId, setResolvingMarketId] = useState<string | null>(null)
   const [resolutionError, setResolutionError] = useState<string | null>(null)
   const [resolutionSuccess, setResolutionSuccess] = useState<string | null>(null)
-  const { stats, markets, isLoading, error, pubkey } = useCreatorDashboardState()
+  const { stats, markets, isLoading, error, pubkey, refresh } = useCreatorDashboardState()
   const signerMode = useSettingsStore((s) => s.nostrSignerMode)
   const relays = useSettingsStore((s) => s.relays)
   const markOracleAttested = useCreatorMarketsStore((s) => s.markOracleAttested)
@@ -79,6 +79,10 @@ export function CreatorDashboard() {
       setResolutionError(t('creator.relayRequiredToResolve'))
       return
     }
+    const confirmed = window.confirm(
+      t('creator.closeMarketConfirm', { title: market.title, outcome }),
+    )
+    if (!confirmed) return
     setResolvingMarketId(marketId)
     try {
       const attestationHex = await signEnumAttestation(
@@ -92,6 +96,7 @@ export function CreatorDashboard() {
         attestedAt: new Date().toISOString(),
       })
       setResolutionSuccess(t('creator.attestationPublished', { outcome }))
+      refresh()
     } catch (err) {
       setResolutionError(
         err instanceof Error ? err.message : t('creator.attestationPublishFailed'),

@@ -172,7 +172,8 @@ public static partial class MarketEndpoints
                     entries.Add(new CreatorMarketEntry(
                         conditionId: conditionId,
                         createdAt: record.CreatedAt,
-                        totalVolumeSats: 0));
+                        totalVolumeSats: 0,
+                        state: CreatorMarketEntryState.Open));
                 }
             }
 

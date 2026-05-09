@@ -741,11 +741,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreatorMarketEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreatorMarketEntry(string @conditionId, System.DateTimeOffset @createdAt, long @totalVolumeSats)
+        public CreatorMarketEntry(string @conditionId, System.DateTimeOffset @createdAt, CreatorMarketEntryState @state, long @totalVolumeSats)
         {
             this.ConditionId = @conditionId;
             this.TotalVolumeSats = @totalVolumeSats;
             this.CreatedAt = @createdAt;
+            this.State = @state;
         }
 
         /// <summary>
@@ -766,6 +767,14 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
         public System.DateTimeOffset CreatedAt { get; }
+
+        /// <summary>
+        /// Engine-side lifecycle state. `open` accepts new orders; `closed` does not.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("state")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<CreatorMarketEntryState>))]
+        public CreatorMarketEntryState State { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1302,6 +1311,18 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"New")]
         New = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum CreatorMarketEntryState
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"open")]
+        Open = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"closed")]
+        Closed = 1,
 
     }
 

@@ -462,6 +462,11 @@ export interface components {
              * @description When this market was registered with the matching engine.
              */
             createdAt: string;
+            /**
+             * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not.
+             * @enum {string}
+             */
+            state: "open" | "closed";
         };
         CreatorMarketsResponse: {
             /** @description The creator pubkey this response belongs to (echoed from the path). */

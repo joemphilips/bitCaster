@@ -368,15 +368,16 @@
     "analyticsDesc": "取引高チャート、マーケット別内訳、手数料追跡は今後のリリースで提供予定です。いくつかマーケットを作成してから、集計データを確認してみてください。",
     "analyticsBadge": "対応中",
     "winningOutcomeLabel": "{{title}} の勝利アウトカム",
-    "publishAttestation": "アテステーションを公開",
-    "publishingAttestation": "公開中...",
+    "closeMarket": "マーケットをクローズ",
+    "closingMarket": "クローズ中...",
+    "closeMarketConfirm": "「{{title}}」を {{outcome}} としてクローズしますか？ オラクルアテステーションを公開し、エンジンが検知すると新規注文は停止されます。",
     "attestedOutcome": "アテスト済み: {{outcome}}",
     "nsecRequiredToResolve": "このオラクルアテステーションに署名するには、Nostr 秘密鍵 (nsec) で接続してください。",
     "relayRequiredToResolve": "オラクルアテステーションを公開する前に、設定で少なくとも 1 つの Nostr リレーを追加してください。",
     "invalidAttestationOutcome": "オラクルアテステーションを公開する前に、このマーケットでアナウンスされたアウトカムを選択してください。",
     "attestationErrorTitle": "オラクルアテステーションを公開できませんでした。",
     "attestationPublishFailed": "オラクルアテステーションの公開に失敗しました",
-    "attestationPublished": "{{outcome}} のオラクルアテステーションを公開しました。エンジンのリスナーが kind-89 イベントを検知するとマーケットはクローズします。"
+    "attestationPublished": "{{outcome}} のオラクルアテステーションを公開しました。エンジンがマーケットをクローズ済みにするまで待機しています。"
   },
   "marketCreation": {
     "getStarted": "始める",

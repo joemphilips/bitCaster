@@ -136,8 +136,8 @@ export function CreatedMarketRow({
           >
             <CheckCircle2 className="h-4 w-4" />
             {isPublishingOracleAttestation
-              ? t('creator.publishingAttestation')
-              : t('creator.publishAttestation')}
+              ? t('creator.closingMarket')
+              : t('creator.closeMarket')}
           </button>
         </div>
       )}
