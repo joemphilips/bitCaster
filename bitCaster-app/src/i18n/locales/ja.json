@@ -72,6 +72,11 @@
   "walletSetup": {
     "closeWalletSetup": "ウォレットセットアップを閉じる"
   },
+  "auth": {
+    "nostrRequiredTitle": "認証が必要です",
+    "nostrRequiredDesc": "実際にトレードする前に認証が必要です。現在はNostrのみ対応しています。注文を送信する前に設定してください。",
+    "configureNostr": "Nostrを設定"
+  },
   "welcome": {
     "title": "bitCasterへようこそ",
     "description": "予測市場でトレードを始める前に、Cashuウォレットをセットアップする必要があります。",
@@ -173,6 +178,7 @@
     "oracle": "オラクル",
     "unknownInNostr": "Nostrでは不明",
     "searchingNostr": "Nostrを検索中...",
+    "oraclePubkeyUnavailable": "オラクル公開鍵を利用できません",
     "oracleAuditHint": "この人物が信頼できるか、Nostrネットワークで検索して確認してください",
     "copyOraclePubkey": "オラクル公開鍵をコピー"
   },

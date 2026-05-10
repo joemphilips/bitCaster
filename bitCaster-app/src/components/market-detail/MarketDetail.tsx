@@ -1,51 +1,51 @@
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import type { MarketDetailProps } from '@/types/market-detail'
-import { formatBtc } from '@/lib/format'
-import { useMarketState } from '@/hooks/useMarketState'
-import { MarketHeader } from './MarketHeader'
-import { TradingPanel } from './TradingPanel'
-import { PriceChart } from './PriceChart'
-import { OrderBookSection } from './OrderBookSection'
-import { ResolutionInfo } from './ResolutionInfo'
-import { ActivityFeed } from './ActivityFeed'
-import { RelatedMarkets } from './RelatedMarkets'
-import { CommentSection } from './CommentSection'
-import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { MarketDetailProps } from "@/types/market-detail";
+import { formatBtc } from "@/lib/format";
+import { useMarketState } from "@/hooks/useMarketState";
+import { MarketHeader } from "./MarketHeader";
+import { TradingPanel } from "./TradingPanel";
+import { PriceChart } from "./PriceChart";
+import { OrderBookSection } from "./OrderBookSection";
+import { ResolutionInfo } from "./ResolutionInfo";
+import { ActivityFeed } from "./ActivityFeed";
+import { RelatedMarkets } from "./RelatedMarkets";
+import { CommentSection } from "./CommentSection";
+import { WalletRequiredModal } from "@/components/shared/WalletRequiredModal";
 
 function formatNumericPrice(value: number, unit: string): string {
-  if (unit === 'USD') return `$${value.toLocaleString()}`
-  return `${value.toLocaleString()} ${unit}`
+  if (unit === "USD") return `$${value.toLocaleString()}`;
+  return `${value.toLocaleString()} ${unit}`;
 }
 
-function computeCurrentDisplay(market: MarketDetailProps['market']): string {
-  const isResolved = market.resolution.status === 'resolved'
+function computeCurrentDisplay(market: MarketDetailProps["market"]): string {
+  const isResolved = market.resolution.status === "resolved";
 
-  if (market.type === 'numeric') {
+  if (market.type === "numeric") {
     if (isResolved && market.attestedValue != null) {
-      return `Resolved: ${formatNumericPrice(market.attestedValue, market.unit)}`
+      return `Resolved: ${formatNumericPrice(market.attestedValue, market.unit)}`;
     }
-    return formatNumericPrice(market.currentPrice, market.unit)
+    return formatNumericPrice(market.currentPrice, market.unit);
   }
 
   if (isResolved && market.resolution.finalOutcome) {
-    return `Resolved: ${market.resolution.finalOutcome}`
+    return `Resolved: ${market.resolution.finalOutcome}`;
   }
 
-  if (market.type === 'yesno') {
-    return `${market.currentOdds.yes.toFixed(1)}%`
+  if (market.type === "yesno") {
+    return `${market.currentOdds.yes.toFixed(1)}%`;
   }
 
-  if (market.type === 'categorical') {
-    const sorted = [...market.outcomes].sort((a, b) => b.odds - a.odds)
-    const leader = sorted[0]
+  if (market.type === "categorical") {
+    const sorted = [...market.outcomes].sort((a, b) => b.odds - a.odds);
+    const leader = sorted[0];
     if (leader) {
-      return `${leader.label} ${leader.odds.toFixed(1)}%`
+      return `${leader.label} ${leader.odds.toFixed(1)}%`;
     }
-    return ''
+    return "";
   }
 
-  return ''
+  return "";
 }
 
 export function MarketDetail({
@@ -79,16 +79,17 @@ export function MarketDetail({
   walletBalanceSats,
   walletReady = true,
 }: MarketDetailProps) {
-  const { t } = useTranslation()
-  const [showWalletModal, setShowWalletModal] = useState(false)
+  const { t } = useTranslation();
+  const [showWalletModal, setShowWalletModal] = useState(false);
   // Get outcomes for categorical markets
-  const outcomes = market.type === 'categorical' ? market.outcomes : undefined
+  const outcomes = market.type === "categorical" ? market.outcomes : undefined;
 
   // Get outcome-specific data for categorical markets
-  const outcomePriceHistories = market.type === 'categorical' ? market.outcomePriceHistories : undefined
+  const outcomePriceHistories =
+    market.type === "categorical" ? market.outcomePriceHistories : undefined;
 
   // Compute current display for price chart
-  const currentDisplay = computeCurrentDisplay(market)
+  const currentDisplay = computeCurrentDisplay(market);
 
   // Determine market state per ADR-009 (Amendment 2026-05-04 — detail-page
   // compliance). The detail page reads engine `state` for lifecycle
@@ -98,30 +99,34 @@ export function MarketDetail({
   // resolution-info badge — surfaced when mintd reports a resolved outcome,
   // independent of the engine's lifecycle state. `isTradingEnabled` is the
   // single closed-state gate consulted across the trade and deposit
-  // affordances; it follows the engine.
-  const isResolved = market.resolution.status === 'resolved'
-  const marketState = useMarketState(market.state)
-  const isTradingEnabled = marketState === 'Open'
+  // affordances. The engine state is primary; the engine-surfaced oracle
+  // deadline is an immediate close hint while the deadline reminder catches up.
+  const isResolved = market.resolution.status === "resolved";
+  const marketState = useMarketState(market.state);
+  const deadlineDeltaMs = new Date(market.closingDate).getTime() - Date.now();
+  const hasKnownPastDeadline =
+    Number.isFinite(deadlineDeltaMs) &&
+    Math.abs(deadlineDeltaMs) >= 60_000 &&
+    deadlineDeltaMs <= 0;
+  const isEffectivelyClosed = marketState === "Closed" || hasKnownPastDeadline;
+  const isTradingEnabled = !isEffectivelyClosed;
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
       {/* Desktop Layout: Two Columns (single column when resolved) */}
       <div className="max-w-7xl mx-auto">
-        <div className={`${isTradingEnabled ? 'lg:grid lg:grid-cols-[1fr_380px] lg:gap-6' : ''} p-4 lg:p-6`}>
+        <div
+          className={`${isTradingEnabled ? "lg:grid lg:grid-cols-[1fr_380px] lg:gap-6" : ""} p-4 lg:p-6`}
+        >
           {/* Left Column - Main Content */}
           <div className="space-y-6">
             {/* Header */}
             <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
-              <MarketHeader
-                market={market}
-                onShare={onShare}
-              />
+              <MarketHeader market={market} onShare={onShare} />
             </div>
 
             {/* Resolution Info (shown immediately after header for resolved markets) */}
-            {isResolved && (
-              <ResolutionInfo resolution={market.resolution} />
-            )}
+            {isResolved && <ResolutionInfo resolution={market.resolution} />}
 
             {/* Mobile: Trading Panel (shown at top on mobile, only for open markets) */}
             {isTradingEnabled && (
@@ -162,7 +167,7 @@ export function MarketDetail({
               outcomes={outcomes}
               currentDisplay={currentDisplay}
               comments={market.comments}
-              unit={market.type === 'numeric' ? market.unit : undefined}
+              unit={market.type === "numeric" ? market.unit : undefined}
             />
 
             {/* Order Book — only for binary yes/no markets in Phase 1.
@@ -173,27 +178,27 @@ export function MarketDetail({
                 Closed markets render the order book frozen (no live
                 subscription) so users still get last-traded context — see
                 ADR-010 P4.1. */}
-            {market.type === 'yesno' && (
+            {market.type === "yesno" && (
               <div className="relative" data-testid="order-book-section">
-                {marketState === 'Closed' && (
+                {isEffectivelyClosed && (
                   <span
                     data-testid="market-closed-badge"
                     className="absolute right-3 top-3 z-10 rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-semibold uppercase text-rose-600 dark:text-rose-400"
                   >
-                    {t('market.closed')}
+                    {t("market.closed")}
                   </span>
                 )}
                 <OrderBookSection
                   orderBook={market.orderBook}
-                  liveMarketId={isTradingEnabled ? `${market.id}-YES` : undefined}
+                  liveMarketId={
+                    isTradingEnabled ? `${market.id}-YES` : undefined
+                  }
                 />
               </div>
             )}
 
             {/* Resolution Info (in normal position for open markets) */}
-            {!isResolved && (
-              <ResolutionInfo resolution={market.resolution} />
-            )}
+            {!isResolved && <ResolutionInfo resolution={market.resolution} />}
 
             {/* Activity Feed (Trades only) */}
             <ActivityFeed
@@ -258,56 +263,60 @@ export function MarketDetail({
                   {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
                 </p>
                 <p className="text-sm font-medium text-slate-900 dark:text-white">
-                  {tradeAmount > 0 ? formatBtc(tradeAmount) : t('trade.enterAmount')}
+                  {tradeAmount > 0
+                    ? formatBtc(tradeAmount)
+                    : t("trade.enterAmount")}
                 </p>
               </div>
               <button
                 onClick={onTradeClear}
                 className="px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
               >
-                {t('common.cancel')}
+                {t("common.cancel")}
               </button>
               <button
                 onClick={() => {
                   if (!walletReady) {
-                    setShowWalletModal(true)
-                    return
+                    setShowWalletModal(true);
+                    return;
                   }
-                  onTradeConfirm?.()
+                  onTradeConfirm?.();
                 }}
                 disabled={walletReady && (!tradeAmount || tradeAmount <= 0)}
                 className={`px-6 py-2 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
                   !walletReady
-                    ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'
-                    : 'bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white'
+                    ? "bg-[#f7931a] hover:bg-[#e8850f] text-white"
+                    : "bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white"
                 }`}
               >
-                {walletReady ? t('market.confirm') : t('wallet.createWallet')}
+                {walletReady ? t("market.confirm") : t("wallet.createWallet")}
               </button>
             </div>
           ) : (
             <button
               onClick={() => {
                 if (!walletReady) {
-                  setShowWalletModal(true)
-                  return
+                  setShowWalletModal(true);
+                  return;
                 }
-                const panel = document.querySelector('[data-trading-panel]')
-                panel?.scrollIntoView({ behavior: 'smooth' })
+                const panel = document.querySelector("[data-trading-panel]");
+                panel?.scrollIntoView({ behavior: "smooth" });
               }}
               className={`w-full py-3 rounded-xl font-semibold transition-colors ${
                 !walletReady
-                  ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'
-                  : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  ? "bg-[#f7931a] hover:bg-[#e8850f] text-white"
+                  : "bg-blue-600 hover:bg-blue-700 text-white"
               }`}
             >
-              {walletReady ? t('trade.title') : t('wallet.createWallet')}
+              {walletReady ? t("trade.title") : t("wallet.createWallet")}
             </button>
           )}
         </div>
       )}
 
-      {showWalletModal && <WalletRequiredModal onClose={() => setShowWalletModal(false)} />}
+      {showWalletModal && (
+        <WalletRequiredModal onClose={() => setShowWalletModal(false)} />
+      )}
     </div>
-  )
+  );
 }
