@@ -102,4 +102,37 @@ describe('useTradeSettlement', () => {
     expect(swap.error).toMatch(/locktime ordering violates protocol invariant/i)
     expect(mockSendSwapMessage).not.toHaveBeenCalled()
   })
+
+  it('keeps completed swaps terminal when a late failed state arrives', async () => {
+    renderHook(() => useTradeSettlement(privkey))
+
+    await act(async () => {
+      useActiveSwapsStore.getState().promote({
+        tradeId: 'trade-3',
+        orderId: 'order-3',
+        marketId: 'market-1',
+        ephemeralPrivkeyHex: '11'.repeat(32),
+        ephemeralPubkeyHex: '22'.repeat(32),
+      })
+    })
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeStateChanged: (tradeId: string, newState: string) => void
+    }
+
+    await act(async () => {
+      callbacks.onTradeStateChanged('trade-3', 'Confirmed')
+    })
+    expect(useActiveSwapsStore.getState().byTradeId['trade-3'].step).toBe(
+      'completed',
+    )
+
+    await act(async () => {
+      callbacks.onTradeStateChanged('trade-3', 'Failed')
+    })
+
+    const swap = useActiveSwapsStore.getState().byTradeId['trade-3']
+    expect(swap.step).toBe('completed')
+    expect(swap.error).toBeNull()
+  })
 })

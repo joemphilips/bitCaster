@@ -17,8 +17,26 @@
  *     Step 9 — adapt Alice's pre-sigs, swap Alice's YES proofs at mint
  */
 
-import type { OutputConfig, Proof, Token } from '@cashu/cashu-ts'
-import { Mint as CashuMint, Wallet as CashuWallet, hashToCurve } from '@cashu/cashu-ts'
+import type {
+  MintKeys,
+  MintKeyset,
+  OutputConfig,
+  OutputDataLike,
+  Proof,
+  ProofState,
+  SendConfig,
+  SerializedBlindedMessage,
+  SerializedBlindedSignature,
+  SwapPreview,
+  Token,
+} from '@cashu/cashu-ts'
+import {
+  CheckStateEnum,
+  Mint as CashuMint,
+  OutputData,
+  Wallet as CashuWallet,
+  hashToCurve,
+} from '@cashu/cashu-ts'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import {
   type EphemeralKeypair,
@@ -36,6 +54,14 @@ import {
   adapt,
   extract,
 } from './adaptor'
+import {
+  getProofOperation,
+  markProofOperationCompleted,
+  prepareProofOperation,
+  type ProofOperationRecord,
+  type StoredOutputData,
+} from '../stores/proof-db'
+import { normalizeUrl } from './url'
 
 // ---------------------------------------------------------------------------
 // Swap context
@@ -77,6 +103,10 @@ const CASHU_SWAP_UNIT = 'sat'
 interface LockedProofResult {
   lockedProofs: Proof[]
   changeProofs: Proof[]
+}
+
+interface ProofOperationOptions {
+  operationId?: string
 }
 
 /**
@@ -205,6 +235,34 @@ async function decryptMsg(ctx: SwapContext, ciphertext: string): Promise<string>
 export async function sellerPrepareSwap(
   ctx: SwapContext,
   proofs: Proof[],
+  options: ProofOperationOptions = {},
+): Promise<{
+  adaptorPointCipher: string
+  lockedProofsCipher: string
+  adaptorPoint: AdaptorPoint
+  lockedProofs: Proof[]
+  changeProofs: Proof[]
+}> {
+  // Ask the mint to swap Alice's proofs into P2PK-locked proofs. Rewriting a
+  // proof secret locally invalidates its mint signature (`C`).
+  const { lockedProofs, changeProofs } = await lockProofsForSwap(
+    ctx,
+    proofs,
+    ctx.sellerLocktime,
+    options.operationId,
+  )
+  return sellerPreparePrelockedSwap(ctx, lockedProofs, changeProofs)
+}
+
+/**
+ * Seller step for proofs that were already minted with the swap P2PK lock.
+ * Used by CTF maker-as-splitter settlement, where CDK rejects normal swaps
+ * of conditional inputs but accepts P2PK conditional outputs from `/ctf/split`.
+ */
+export async function sellerPreparePrelockedSwap(
+  ctx: SwapContext,
+  lockedProofs: Proof[],
+  changeProofs: Proof[] = [],
 ): Promise<{
   adaptorPointCipher: string
   lockedProofsCipher: string
@@ -213,14 +271,6 @@ export async function sellerPrepareSwap(
   changeProofs: Proof[]
 }> {
   const adaptorPoint = generateAdaptorPoint()
-
-  // Ask the mint to swap Alice's proofs into P2PK-locked proofs. Rewriting a
-  // proof secret locally invalidates its mint signature (`C`).
-  const { lockedProofs, changeProofs } = await lockProofsForSwap(
-    ctx,
-    proofs,
-    ctx.sellerLocktime,
-  )
 
   // Pre-sign each proof's secret
   const privBytes = ctx.ephemeralKey.privateKey
@@ -266,6 +316,7 @@ export async function sellerClaimSwap(
   ctx: SwapContext,
   adaptorPoint: AdaptorPoint,
   bobLockedProofsCipher: string,
+  options: ProofOperationOptions = {},
 ): Promise<Proof[]> {
   const plaintext = await decryptMsg(ctx, bobLockedProofsCipher)
   const { proofs: bobProofs, preSigs: bobPreSigsHex } =
@@ -306,13 +357,7 @@ export async function sellerClaimSwap(
     witness: JSON.stringify({ signatures: [adaptedSig, ownSig] }),
   }))
 
-  // Swap at mint — wrap proofs in a Token object as required by cashu-ts v3
-  const mint = new CashuMint(ctx.mintUrl)
-  const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT })
-  await wallet.loadMint()
-
-  const token = buildReceiveToken(ctx.mintUrl, inputProofs)
-  return wallet.receive(token, { proofsWeHave: [] })
+  return receiveProofsAtMint(ctx.mintUrl, inputProofs, options.operationId)
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +376,7 @@ export async function buyerPrepareSwap(
   aliceAdaptorPointCipher: string,
   aliceLockedProofsCipher: string,
   satProofs: Proof[],
+  options: ProofOperationOptions = {},
 ): Promise<{
   lockedProofsCipher: string
   adaptorPointHex: string
@@ -369,6 +415,7 @@ export async function buyerPrepareSwap(
     ctx,
     satProofs,
     ctx.buyerLocktime,
+    options.operationId,
   )
 
   // Pre-sign Bob's proofs with the same adaptor point T
@@ -462,6 +509,7 @@ export async function buyerClaimSwap(
   adaptorSecret: Uint8Array,
   aliceLockedProofsCipher: string,
   alicePreSigsHex: string[],
+  options: ProofOperationOptions = {},
 ): Promise<Proof[]> {
   const lockedPlain = await decryptMsg(ctx, aliceLockedProofsCipher)
   const { proofs: aliceProofs } = decodeProofsMsg(lockedPlain)
@@ -484,12 +532,16 @@ export async function buyerClaimSwap(
     })),
   )
 
-  const mint = new CashuMint(ctx.mintUrl)
-  const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT })
-  await wallet.loadMint()
-
-  const token = buildReceiveToken(ctx.mintUrl, inputProofs)
-  return wallet.receive(token, { proofsWeHave: [] })
+  try {
+    return await receiveProofsAtMint(ctx.mintUrl, inputProofs, options.operationId)
+  } catch (error) {
+    if (!isConditionalSwapInputError(error)) throw error
+    // CDK currently rejects normal `/swap` inputs that use conditional CTF
+    // keysets. At this point Bob has valid adaptor-revealed witnesses for
+    // Alice's P2PK-locked outcome proofs, so keep those witnessed proofs as
+    // the claimed position rather than attempting an unsupported refresh.
+    return inputProofs
+  }
 }
 
 export function buildReceiveToken(mintUrl: string, proofs: Proof[]): Token {
@@ -500,12 +552,15 @@ async function lockProofsForSwap(
   ctx: SwapContext,
   sourceProofs: Proof[],
   locktime: number,
+  operationId?: string,
 ): Promise<LockedProofResult> {
   const mint = new CashuMint(ctx.mintUrl)
-  const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT })
-  await wallet.loadMint()
+  const { wallet, sendConfig, inputFeeSats } = await walletForSourceProofs(
+    mint,
+    sourceProofs,
+  )
 
-  const amount = sumProofs(sourceProofs) - wallet.getFeesForProofs(sourceProofs)
+  const amount = sumProofs(sourceProofs) - inputFeeSats
   if (amount <= 0) throw new Error('Not enough proofs to cover Cashu swap fees')
 
   const outputConfig: OutputConfig = {
@@ -521,13 +576,376 @@ async function lockProofsForSwap(
     },
     keep: { type: 'random' },
   }
-  const { send, keep } = await wallet.send(
+  if (operationId) {
+    return lockProofsWithOperation(
+      operationId,
+      ctx.mintUrl,
+      wallet,
+      amount,
+      sourceProofs,
+      sendConfig,
+      outputConfig,
+    )
+  }
+
+  const { send, keep } = await wallet.send(amount, sourceProofs, sendConfig, outputConfig)
+  return { lockedProofs: send, changeProofs: keep }
+}
+
+async function receiveProofsAtMint(
+  mintUrl: string,
+  inputProofs: Proof[],
+  operationId?: string,
+): Promise<Proof[]> {
+  const mint = new CashuMint(mintUrl)
+  const { wallet } = await walletForSourceProofs(mint, inputProofs)
+  const token = buildReceiveToken(mintUrl, inputProofs)
+  if (operationId) {
+    return receiveProofsWithOperation(operationId, mintUrl, wallet, token)
+  }
+  return wallet.receive(token, { proofsWeHave: [] })
+}
+
+async function lockProofsWithOperation(
+  operationId: string,
+  mintUrl: string,
+  wallet: CashuWallet,
+  amount: number,
+  sourceProofs: Proof[],
+  sendConfig: SendConfig | undefined,
+  outputConfig: OutputConfig,
+): Promise<LockedProofResult> {
+  const existing = await getProofOperation(operationId)
+  if (existing) {
+    assertProofOperationMatches(existing, 'swap-lock', mintUrl, sourceProofs)
+    const result = await resumeProofOperation(wallet, existing)
+    return {
+      lockedProofs: result.send ?? [],
+      changeProofs: result.keep ?? [],
+    }
+  }
+
+  const preview = await wallet.prepareSwapToSend(
     amount,
     sourceProofs,
-    undefined,
+    sendConfig,
     outputConfig,
   )
-  return { lockedProofs: send, changeProofs: keep }
+  await prepareProofOperation({
+    operationId,
+    kind: 'swap-lock',
+    mintUrl,
+    inputs: preview.inputs,
+    outputs: {
+      send: serializeOutputDataArray(preview.sendOutputs ?? []),
+      keep: serializeOutputDataArray(preview.keepOutputs ?? []),
+    },
+    metadata: swapPreviewMetadata(preview),
+  })
+
+  const result = await wallet.completeSwap(preview)
+  const final = { send: result.send, keep: result.keep }
+  await markProofOperationCompleted(operationId, final)
+  return { lockedProofs: final.send, changeProofs: final.keep }
+}
+
+async function receiveProofsWithOperation(
+  operationId: string,
+  mintUrl: string,
+  wallet: CashuWallet,
+  token: Token,
+): Promise<Proof[]> {
+  const existing = await getProofOperation(operationId)
+  if (existing) {
+    assertProofOperationMatches(existing, 'swap-claim', mintUrl, token.proofs)
+    const result = await resumeProofOperation(wallet, existing)
+    return result.keep ?? []
+  }
+
+  const preview = await wallet.prepareSwapToReceive(
+    token,
+    { proofsWeHave: [] },
+    { type: 'random' },
+  )
+  await prepareProofOperation({
+    operationId,
+    kind: 'swap-claim',
+    mintUrl,
+    inputs: preview.inputs,
+    outputs: {
+      keep: serializeOutputDataArray(preview.keepOutputs ?? []),
+    },
+    metadata: swapPreviewMetadata(preview),
+  })
+
+  const result = await wallet.completeSwap(preview)
+  const final = { keep: result.keep }
+  await markProofOperationCompleted(operationId, final)
+  return final.keep
+}
+
+async function resumeProofOperation(
+  wallet: CashuWallet,
+  entry: ProofOperationRecord,
+): Promise<Record<string, Proof[]>> {
+  if (entry.state === 'completed') {
+    return structuredClone(entry.resultProofs ?? {})
+  }
+  if (entry.state === 'failed') {
+    throw new Error(
+      `Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
+    )
+  }
+
+  const states = await wallet.checkProofsStates(
+    entry.inputs.map(({ secret }) => ({ secret })),
+  )
+  if (allStates(states, CheckStateEnum.SPENT)) {
+    const restored = await restoreOutputGroups(entry.mintUrl, entry.outputs)
+    if (entry.kind === 'swap-lock') {
+      restored.keep = [...(restored.keep ?? []), ...readUnselectedProofs(entry)]
+    }
+    await markProofOperationCompleted(entry.operationId, restored)
+    return restored
+  }
+  if (allStates(states, CheckStateEnum.UNSPENT)) {
+    const result = await wallet.completeSwap(entryToSwapPreview(entry))
+    const final: Record<string, Proof[]> =
+      entry.kind === 'swap-lock'
+        ? { send: result.send, keep: result.keep }
+        : { keep: result.keep }
+    await markProofOperationCompleted(entry.operationId, final)
+    return final
+  }
+
+  throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
+}
+
+async function walletForSourceProofs(
+  mint: CashuMint,
+  sourceProofs: Proof[],
+): Promise<{
+  wallet: CashuWallet
+  sendConfig: SendConfig | undefined
+  inputFeeSats: number
+}> {
+  const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT })
+  await wallet.loadMint()
+  try {
+    return {
+      wallet,
+      sendConfig: undefined,
+      inputFeeSats: wallet.getFeesForProofs(sourceProofs),
+    }
+  } catch (error) {
+    if (!isUnknownKeysetError(error)) throw error
+  }
+
+  const sourceKeysetId = singleProofKeysetId(sourceProofs)
+  const mintInfo = await mint.getInfo()
+  const keys = await fetchMintKeys(mint, sourceKeysetId)
+  const keyset: MintKeyset = {
+    id: sourceKeysetId,
+    unit: CASHU_SWAP_UNIT,
+    active: true,
+    input_fee_ppk: 0,
+  }
+  const conditionalWallet = new CashuWallet(mint, {
+    unit: CASHU_SWAP_UNIT,
+    keysetId: sourceKeysetId,
+    keys,
+    keysets: [keyset],
+    mintInfo,
+  })
+  // CTF conditional keyset ids are condition-derived, so cashu-ts' standard
+  // NUT-02 keyset-id verifier can clear the keys during cache load.
+  conditionalWallet.keyChain.getKeyset(sourceKeysetId).keys = keys.keys
+  return {
+    wallet: conditionalWallet,
+    sendConfig: { keysetId: sourceKeysetId },
+    inputFeeSats: 0,
+  }
+}
+
+function serializeOutputDataArray(
+  outputs: Array<Pick<OutputDataLike, 'blindedMessage' | 'blindingFactor' | 'secret'>>,
+): StoredOutputData[] {
+  return outputs.map((output) => ({
+    blindedMessage: {
+      amount: Number(output.blindedMessage.amount),
+      id: output.blindedMessage.id,
+      B_: output.blindedMessage.B_,
+    },
+    blindingFactor: output.blindingFactor.toString(16),
+    secret: bytesToHex(output.secret),
+  }))
+}
+
+function deserializeOutputGroups(
+  groups: Record<string, StoredOutputData[]>,
+): Record<string, OutputData[]> {
+  return Object.fromEntries(
+    Object.entries(groups).map(([group, outputs]) => [
+      group,
+      outputs.map(
+        (output) =>
+          new OutputData(
+            output.blindedMessage,
+            BigInt(`0x${output.blindingFactor}`),
+            hexToBytes(output.secret),
+          ),
+      ),
+    ]),
+  )
+}
+
+async function restoreOutputGroups(
+  mintUrl: string,
+  outputs: Record<string, StoredOutputData[]>,
+): Promise<Record<string, Proof[]>> {
+  const mint = new CashuMint(mintUrl)
+  const rows = Object.entries(deserializeOutputGroups(outputs)).flatMap(
+    ([group, groupOutputs]) =>
+      groupOutputs.map((output, index) => ({ group, index, output })),
+  )
+  if (rows.length === 0) return {}
+
+  const response = await mint.restore({
+    outputs: rows.map((row) => row.output.blindedMessage),
+  })
+  if (response.signatures.length !== response.outputs.length) {
+    throw new Error('Mint restore response had mismatched output/signature counts')
+  }
+  const signaturesByOutput = new Map<string, SerializedBlindedSignature>()
+  response.outputs.forEach((output, index) => {
+    signaturesByOutput.set(blindedMessageKey(output), response.signatures[index])
+  })
+
+  const keysets = new Map<string, MintKeys>()
+  const getKeyset = async (keysetId: string): Promise<MintKeys> => {
+    const cached = keysets.get(keysetId)
+    if (cached) return cached
+    const keysetResponse = await mint.getKeys(keysetId)
+    const keyset = keysetResponse.keysets.find((candidate) => candidate.id === keysetId)
+    if (!keyset) throw new Error(`Mint did not return keys for keyset ${keysetId}`)
+    keysets.set(keysetId, keyset)
+    return keyset
+  }
+
+  const restored: Record<string, Proof[]> = {}
+  for (const row of rows) {
+    const signature = signaturesByOutput.get(blindedMessageKey(row.output.blindedMessage))
+    if (!signature) {
+      throw new Error(`Mint restore did not return signature for output ${row.group}[${row.index}]`)
+    }
+    const keyset = await getKeyset(row.output.blindedMessage.id)
+    const proof = row.output.toProof(signature, keyset)
+    restored[row.group] = [...(restored[row.group] ?? []), proof]
+  }
+  return restored
+}
+
+async function fetchMintKeys(mint: CashuMint, keysetId: string): Promise<MintKeys> {
+  const response = await mint.getKeys(keysetId)
+  const keyset = response.keysets.find((candidate) => candidate.id === keysetId)
+  if (!keyset) {
+    throw new Error(`Mint did not return keys for keyset ${keysetId}`)
+  }
+  return keyset
+}
+
+function singleProofKeysetId(proofs: Proof[]): string {
+  const ids = new Set(proofs.map((proof) => proof.id).filter(Boolean))
+  if (ids.size !== 1) {
+    throw new Error('Atomic swap proof set must use exactly one keyset')
+  }
+  return [...ids][0]
+}
+
+function isUnknownKeysetError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /No keyset found|Keyset '.+' not found/i.test(message)
+}
+
+function isConditionalSwapInputError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /Inputs must use the same conditional keyset/i.test(message)
+}
+
+function assertProofOperationMatches(
+  entry: ProofOperationRecord,
+  kind: ProofOperationRecord['kind'],
+  mintUrl: string,
+  inputs: Proof[],
+): void {
+  if (
+    entry.kind !== kind ||
+    entry.mintUrl !== normalizeUrl(mintUrl) ||
+    proofInputFingerprint(entry.inputs) !== proofInputFingerprint(inputs)
+  ) {
+    throw new Error(`Proof operation ${entry.operationId} does not match this swap step`)
+  }
+}
+
+function proofInputFingerprint(proofs: Proof[]): string {
+  return JSON.stringify(
+    proofs.map((proof) => ({
+      id: proof.id,
+      amount: proof.amount,
+      secret: proof.secret,
+      C: proof.C,
+    })),
+  )
+}
+
+function allStates(states: ProofState[], expected: string): boolean {
+  return states.length > 0 && states.every((state) => state.state === expected)
+}
+
+function swapPreviewMetadata(preview: SwapPreview): Record<string, unknown> {
+  return {
+    amount: preview.amount,
+    fees: preview.fees,
+    keysetId: preview.keysetId,
+    unselectedProofs: preview.unselectedProofs ?? [],
+  }
+}
+
+function entryToSwapPreview(entry: ProofOperationRecord): SwapPreview {
+  return {
+    amount: readNumberMetadata(entry, 'amount'),
+    fees: readNumberMetadata(entry, 'fees'),
+    keysetId: readStringMetadata(entry, 'keysetId'),
+    inputs: entry.inputs,
+    sendOutputs: deserializeOutputGroups({ send: entry.outputs.send ?? [] }).send ?? [],
+    keepOutputs: deserializeOutputGroups({ keep: entry.outputs.keep ?? [] }).keep ?? [],
+    unselectedProofs: readUnselectedProofs(entry),
+  }
+}
+
+function readUnselectedProofs(entry: ProofOperationRecord): Proof[] {
+  const value = entry.metadata.unselectedProofs
+  return Array.isArray(value) ? (structuredClone(value) as Proof[]) : []
+}
+
+function readNumberMetadata(entry: ProofOperationRecord, key: string): number {
+  const value = entry.metadata[key]
+  if (typeof value !== 'number') {
+    throw new Error(`Proof operation ${entry.operationId} is missing numeric metadata ${key}`)
+  }
+  return value
+}
+
+function readStringMetadata(entry: ProofOperationRecord, key: string): string {
+  const value = entry.metadata[key]
+  if (typeof value !== 'string') {
+    throw new Error(`Proof operation ${entry.operationId} is missing string metadata ${key}`)
+  }
+  return value
+}
+
+function blindedMessageKey(output: SerializedBlindedMessage): string {
+  return `${output.id}:${output.B_}`
 }
 
 function sumProofs(proofs: Proof[]): number {

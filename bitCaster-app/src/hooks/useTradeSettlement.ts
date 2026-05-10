@@ -199,7 +199,9 @@ async function runSellerSendOpening(
       swap.outcomeFaceAmountSats ?? undefined,
       swap.marketId,
     )
-    const out = await sellerPrepareSwap(ctx, proofs)
+    const out = await sellerPrepareSwap(ctx, proofs, {
+      operationId: proofOperationId(tradeId, 'seller-lock'),
+    })
     await persistLockChange(
       proofs,
       out.changeProofs,
@@ -305,6 +307,9 @@ async function runBuyerRespond(
       swap.messages.adaptorPoint,
       swap.messages.lockedProofsSeller,
       proofs,
+      {
+        operationId: proofOperationId(tradeId, 'buyer-lock'),
+      },
     )
     await persistLockChange(proofs, out.changeProofs, mintUrl)
     useActiveSwapsStore.getState().setBuyerState(tradeId, {
@@ -389,6 +394,9 @@ async function runSellerClaim(
     ctx,
     swap.sellerState.adaptorPoint,
     swap.messages.lockedProofsBuyer,
+    {
+      operationId: proofOperationId(swap.tradeId, 'seller-claim'),
+    },
   )
 }
 
@@ -406,6 +414,9 @@ async function runBuyerClaim(swap: ActiveSwap, ctx: SwapCtx): Promise<Proof[]> {
     adaptorSecret,
     swap.messages.lockedProofsSeller,
     swap.buyerState.sellerPreSigsHex,
+    {
+      operationId: proofOperationId(swap.tradeId, 'buyer-claim'),
+    },
   )
 }
 
@@ -500,6 +511,10 @@ async function persistFreshProofs(
   await addProofs(fresh)
 }
 
+function proofOperationId(tradeId: string, step: string): string {
+  return `${tradeId}/browser/${step}`
+}
+
 interface OutcomeProofMetadata {
   conditionId: string
   outcomeCollection: string
@@ -525,6 +540,7 @@ function outcomeMetadataForMarket(
 function finishSwap(tradeId: string, outcome: 'success' | 'failed'): void {
   const swap = useActiveSwapsStore.getState().byTradeId[tradeId]
   if (!swap) return
+  if (outcome === 'failed' && swap.step === 'completed') return
   useActiveSwapsStore
     .getState()
     .setStep(tradeId, outcome === 'success' ? 'completed' : 'failed')
@@ -543,6 +559,8 @@ function finishSwap(tradeId: string, outcome: 'success' | 'failed'): void {
 }
 
 function failSwap(tradeId: string, err: unknown): void {
+  const swap = useActiveSwapsStore.getState().byTradeId[tradeId]
+  if (!swap || swap.step === 'completed') return
   const message = err instanceof Error ? err.message : String(err)
   useActiveSwapsStore.getState().setStep(tradeId, 'failed', message)
   finishSwap(tradeId, 'failed')
