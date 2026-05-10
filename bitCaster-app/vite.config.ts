@@ -67,7 +67,7 @@ export default defineConfig({
   // needed. The ~3MB .wasm sibling is loaded at runtime via the generated ES
   // shim's `fetch()` call and Vite picks it up as an asset automatically.
   server: {
-    port: parseInt(process.env.PORT || "5173"),
+    port: parseInt(process.env.PORT || "5273"),
     strictPort: true,
     host: true,
     allowedHosts: "all",
@@ -93,10 +93,12 @@ export default defineConfig({
         "/api": {
           target: serverTarget,
           changeOrigin: true,
+          xfwd: true,
         },
         "/hubs": {
           target: serverTarget,
           changeOrigin: true,
+          xfwd: true,
           ws: true,
         },
       };

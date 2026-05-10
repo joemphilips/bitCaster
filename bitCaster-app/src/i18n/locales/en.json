@@ -98,6 +98,7 @@
     "seedPhraseDesc": "Write down these 12 words in order and store them safely",
     "warning": "Write down these words in order. You will need them to recover your wallet. Never share your seed phrase.",
     "savedConfirm": "I have saved my seed phrase",
+    "copySeedPhrase": "Copy seed phrase",
     "enterSeedPhrase": "Enter Your Seed Phrase",
     "enterSeedPhraseDesc": "Enter your 12-word seed phrase to recover your wallet",
     "wordPlaceholder": "word",
@@ -168,7 +169,12 @@
     "hoursRemaining": "{{hours}}h remaining",
     "minutesRemaining": "{{minutes}}m remaining",
     "linkCopied": "Link copied to clipboard",
-    "shareFailed": "Failed to copy link"
+    "shareFailed": "Failed to copy link",
+    "oracle": "Oracle",
+    "unknownInNostr": "Unknown in Nostr",
+    "searchingNostr": "Searching Nostr...",
+    "oracleAuditHint": "Search this person in the Nostr network to make sure it's trustworthy",
+    "copyOraclePubkey": "Copy oracle pubkey"
   },
   "orderBook": {
     "title": "Order Book",
@@ -250,6 +256,7 @@
     "joined": "Joined {{date}}",
     "views": "{{count}} views",
     "claimFees": "Claim Fees",
+    "viewMarket": "View {{title}}",
     "volLabel": "Vol: {{value}}",
     "connectNostr": "Connect Nostr",
     "likedMarkets": "Liked Markets",
@@ -333,6 +340,8 @@
     "waitingForPayment": "Waiting for payment...",
     "paymentReceived": "Payment received!",
     "invoiceExpired": "Invoice expired",
+    "ecashTokenReady": "Ecash token ready",
+    "ecashTokenReadyHint": "Share this token with the recipient. It is a bearer Cashu token and may be redeemed in any Cashu wallet.",
     "confirmPayment": "Confirm Payment",
     "invoiceAmount": "Invoice amount",
     "networkFee": "Network fee (estimate)",
@@ -363,7 +372,19 @@
     "emptyDesc": "Start earning fees by creating prediction markets for others to trade.",
     "analyticsTitle": "Analytics coming soon",
     "analyticsDesc": "Volume charts, per-market breakdowns, and fee tracking will arrive in a future release. Check back after you've created a few markets to see aggregated trends.",
-    "analyticsBadge": "In progress"
+    "analyticsBadge": "In progress",
+    "winningOutcomeLabel": "Winning outcome for {{title}}",
+    "closeMarket": "Close market",
+    "closeMarketUnavailable": "This local creator record does not contain self-oracle metadata, so bitCaster cannot sign an oracle attestation from this browser.",
+    "closingMarket": "Closing...",
+    "closeMarketConfirm": "Close “{{title}}” as {{outcome}}? This publishes your oracle attestation and stops new orders after the engine observes it.",
+    "attestedOutcome": "Attested: {{outcome}}",
+    "nsecRequiredToResolve": "Connect with a Nostr private key (nsec) to sign this oracle attestation.",
+    "relayRequiredToResolve": "Add at least one Nostr relay in Settings before publishing an oracle attestation.",
+    "invalidAttestationOutcome": "Select one of this market's announced outcomes before publishing an oracle attestation.",
+    "attestationErrorTitle": "Couldn't publish oracle attestation.",
+    "attestationPublishFailed": "Failed to publish oracle attestation",
+    "attestationPublished": "Published oracle attestation for {{outcome}}. Waiting for the engine to mark the market closed."
   },
   "marketCreation": {
     "getStarted": "Get Started",
@@ -530,6 +551,7 @@
   },
   "notification": {
     "empty": "No notifications yet.",
+    "accepted": "Order accepted on {{market}}",
     "filled": "Order filled: {{sats}} sats on {{market}}",
     "partiallyFilled": "Partial fill: {{sats}} sats filled on {{market}}, {{remaining}} remaining",
     "cancelled": "Order cancelled on {{market}}"

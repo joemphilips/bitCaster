@@ -105,13 +105,13 @@ describe('useWalletStore', () => {
     })
   })
 
-  describe('removeMint', () => {
+  describe('_removeMint', () => {
     it('cannot remove the last mint', () => {
       useWalletStore.setState({
         mints: [{ url: 'http://localhost:8085' }],
         activeMintUrl: 'http://localhost:8085',
       })
-      useWalletStore.getState().removeMint('http://localhost:8085')
+      useWalletStore.getState()._removeMint('http://localhost:8085')
       expect(useWalletStore.getState().mints).toHaveLength(1)
     })
 
@@ -120,7 +120,7 @@ describe('useWalletStore', () => {
         mints: [{ url: 'http://a.com' }, { url: 'http://b.com' }],
         activeMintUrl: 'http://a.com',
       })
-      useWalletStore.getState().removeMint('http://b.com')
+      useWalletStore.getState()._removeMint('http://b.com')
       expect(useWalletStore.getState().mints).toHaveLength(1)
       expect(useWalletStore.getState().mints[0].url).toBe('http://a.com')
     })
@@ -128,7 +128,7 @@ describe('useWalletStore', () => {
 
   describe('completeSetup', () => {
     it('sets setupComplete to true', async () => {
-      // Pre-populate mints so completeSetup skips the addMint network call
+      // Pre-populate mints so completeSetup skips the internal add-mint network call
       useWalletStore.setState({ mints: [{ url: 'http://localhost:8085' }] })
       expect(useWalletStore.getState().setupComplete).toBe(false)
       await useWalletStore.getState().completeSetup()
@@ -136,8 +136,8 @@ describe('useWalletStore', () => {
     })
   })
 
-  describe('addMintWithoutActivating + setActiveMint — P8 Finding 3 split', () => {
-    // The addMint side-effect that retargets activeMintUrl is the AGENTS.md-
+  describe('_addMintWithoutActivating + _setActiveMint — P8 Finding 3 split', () => {
+    // The activating add-mint side effect that retargets activeMintUrl is the AGENTS.md-
     // documented anti-pattern that bit P8 Issue 4. These tests pin the
     // separation: untrusted-input ingress paths use addMintWithoutActivating;
     // setActiveMint is the explicit user-consent action.
@@ -148,7 +148,7 @@ describe('useWalletStore', () => {
       })
     })
 
-    it('addMintWithoutActivating registers the mint but leaves activeMintUrl untouched', async () => {
+    it('_addMintWithoutActivating registers the mint but leaves activeMintUrl untouched', async () => {
       vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
         const u = String(input)
         if (u.endsWith('/v1/info')) return new Response('{"pubkey":"abc"}')
@@ -157,18 +157,18 @@ describe('useWalletStore', () => {
         return new Response('{}')
       })
 
-      await useWalletStore.getState().addMintWithoutActivating('https://attacker.example')
+      await useWalletStore.getState()._addMintWithoutActivating('https://attacker.example')
 
       const state = useWalletStore.getState()
       expect(state.mints.map((m) => m.url)).toContain('https://attacker.example')
       // Critical assertion: untrusted-input registration MUST NOT change the
-      // user's active mint. If this assertion ever fails, the addMint anti-
+      // user's active mint. If this assertion ever fails, the activating add-mint anti-
       // pattern has been re-introduced — re-read bitcaster-coding-guideline
       // Rule 5 in the bitCaster submodule's SKILL.md.
       expect(state.activeMintUrl).toBe('http://staging.example')
     })
 
-    it('setActiveMint switches activeMintUrl only when the target is already a registered mint', () => {
+    it('_setActiveMint switches activeMintUrl only when the target is already a registered mint', () => {
       useWalletStore.setState({
         mints: [
           { url: 'http://staging.example' } as never,
@@ -176,12 +176,12 @@ describe('useWalletStore', () => {
         ],
       })
 
-      useWalletStore.getState().setActiveMint('https://other.example')
+      useWalletStore.getState()._setActiveMint('https://other.example')
       expect(useWalletStore.getState().activeMintUrl).toBe('https://other.example')
 
       // Switching to an unregistered mint is a no-op (no surprise activation
       // from a typo or stale URL).
-      useWalletStore.getState().setActiveMint('https://unknown.example')
+      useWalletStore.getState()._setActiveMint('https://unknown.example')
       expect(useWalletStore.getState().activeMintUrl).toBe('https://other.example')
     })
   })

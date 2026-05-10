@@ -72,7 +72,6 @@ export function MarketDetail({
   onLoadMoreTrades,
   onLoadMoreComments,
   onRelatedMarketClick,
-  onCreatorClick,
   onTradeSideChange,
   onOrderTypeChange,
   onLimitPriceChange,
@@ -116,7 +115,6 @@ export function MarketDetail({
               <MarketHeader
                 market={market}
                 onShare={onShare}
-                onCreatorClick={onCreatorClick}
               />
             </div>
 
@@ -187,7 +185,7 @@ export function MarketDetail({
                 )}
                 <OrderBookSection
                   orderBook={market.orderBook}
-                  liveMarketId={isTradingEnabled ? `${market.id}-Yes` : undefined}
+                  liveMarketId={isTradingEnabled ? `${market.id}-YES` : undefined}
                 />
               </div>
             )}

@@ -6,12 +6,7 @@ import type {
   MintInfo,
 } from '@/types/deposit-withdraw'
 import type { MeltQuoteResponse, MintQuoteResponse } from '@cashu/cashu-ts'
-import {
-  PaymentRequest,
-  PaymentRequestTransportType,
-} from '@cashu/cashu-ts'
 import { useWalletStore } from '@/stores/wallet'
-import { useSettingsStore } from '@/stores/settings'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/stores/proof-db'
@@ -19,23 +14,25 @@ import {
   createMintQuote,
   mintProofs,
   encodeToken,
-  decodeToken,
-  ensureMintRegistered,
-  receiveToken,
   sendProofs,
   createMeltQuote,
   meltProofs,
   waitForMintQuotePaid,
   type MintQuoteWaitResult,
 } from '@/lib/cashu'
+import {
+  ingressReceiveCashuToken,
+  userCreatePaymentRequest,
+  type IngressReceiveCashuTokenResult,
+} from '@/lib/walletOps'
 import { useToastStore } from '@/stores/toast'
 import {
-  getProofs,
+  getBaseProofs,
   addProofs,
   removeProofs,
+  isCtfProof,
   type StoredProof,
 } from '@/stores/proof-db'
-import { deriveNostrKeyPair, getNostrNprofile } from '@/lib/nip17'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
 
@@ -105,18 +102,14 @@ export interface DepositWithdrawState {
 }
 
 /**
- * Register `mintUrl` if it's not in the configured mints list and surface a
- * toast on first add. Shared by paste/scan ecash redemption — without this,
- * proofs minted by an unknown mint (e.g. testnut.cashu.space pasted from an
- * external cashu.me wallet) are orphaned because no `StoredMint` row exists
- * for the UI to enumerate them under. addMint failures bubble — the caller's
- * existing red banner reports them.
+ * Surface a toast when ingress had to register an unknown mint before redeeming.
+ * The actual wallet mutation lives in walletOps so untrusted input cannot call
+ * the user-facing add-and-activate mint path by accident.
  */
-async function registerMintWithToast(mintUrl: string): Promise<void> {
-  const added = await ensureMintRegistered(mintUrl)
-  if (!added) return
+function toastNewMintIfAdded(result: IngressReceiveCashuTokenResult): void {
+  if (!result.added) return
   useToastStore.getState().addToast({
-    message: `Added new mint: ${safeHostname(mintUrl)}`,
+    message: `Added new mint: ${safeHostname(result.mintUrl)}`,
     type: 'info',
   })
 }
@@ -133,7 +126,7 @@ export function useDepositWithdrawState(
   const balancesByMint = useLiveQuery(async () => {
     const proofs = await db.proofs.toArray()
     const map: Record<string, number> = {}
-    for (const p of proofs) {
+    for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
       map[p.mintUrl] = (map[p.mintUrl] ?? 0) + p.amount
     }
     return map
@@ -259,6 +252,8 @@ export function useDepositWithdrawState(
           status: 'completed',
           lightningInvoice: quote.request,
         })
+        setSuccessAmount(requested)
+        setCurrentView('success')
       } catch (e) {
         setInvoiceStatus('error')
         setError((e as Error).message)
@@ -343,23 +338,20 @@ export function useDepositWithdrawState(
       // Detect if it's an ecash token or a lightning invoice
       if (currentView === 'deposit-ecash') {
         setIsLoading(true)
-        const decoded = await decodeToken(text)
-        await registerMintWithToast(decoded.mint)
-        const proofs = await receiveToken(text, decoded.mint)
-        const mintUrl = decoded.mint
-        const stored: StoredProof[] = proofs.map((p) => ({
+        const received = await ingressReceiveCashuToken(text, 'paste')
+        toastNewMintIfAdded(received)
+        const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
-          mintUrl,
+          mintUrl: received.mintUrl,
         }))
         await addProofs(stored)
-        const receivedAmount = proofs.reduce((sum, p) => sum + p.amount, 0)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
-          amountSats: receivedAmount,
+          amountSats: received.amountSats,
           status: 'completed',
         })
         setIsLoading(false)
-        setSuccessAmount(receivedAmount)
+        setSuccessAmount(received.amountSats)
         setCurrentView('success')
       } else if (currentView === 'pay-lightning') {
         setLightningInput(text)
@@ -383,7 +375,7 @@ export function useDepositWithdrawState(
     setIsLoading(true)
     setError(null)
     try {
-      const proofs = await getProofs(selectedMintId)
+      const proofs = await getBaseProofs(selectedMintId)
       const { keep, send } = await sendProofs(amountSats, proofs, selectedMintId)
 
       // Remove original proofs, add back the kept ones
@@ -397,11 +389,6 @@ export function useDepositWithdrawState(
       const token = encodeToken(send, selectedMintId)
       setEcashToken(token)
       setCurrentView('token-display')
-      useActivityLogStore.getState().addActivity({
-        type: 'withdrawal',
-        amountSats,
-        status: 'completed',
-      })
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -433,7 +420,7 @@ export function useDepositWithdrawState(
     setMeltIsPaying(true)
     setError(null)
     try {
-      const proofs = await getProofs(selectedMintId)
+      const proofs = await getBaseProofs(selectedMintId)
       const { paid, change } = await meltProofs(meltQuote, proofs, selectedMintId)
 
       if (!paid) {
@@ -479,21 +466,19 @@ export function useDepositWithdrawState(
     if (trimmed.toLowerCase().startsWith('cashu')) {
       setIsLoading(true)
       try {
-        const decoded = await decodeToken(trimmed)
-        await registerMintWithToast(decoded.mint)
-        const proofs = await receiveToken(trimmed, decoded.mint)
-        const stored: StoredProof[] = proofs.map((p) => ({
+        const received = await ingressReceiveCashuToken(trimmed, 'scan')
+        toastNewMintIfAdded(received)
+        const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
-          mintUrl: decoded.mint,
+          mintUrl: received.mintUrl,
         }))
         await addProofs(stored)
-        const receivedAmount = proofs.reduce((sum, p) => sum + p.amount, 0)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
-          amountSats: receivedAmount,
+          amountSats: received.amountSats,
           status: 'completed',
         })
-        setSuccessAmount(receivedAmount)
+        setSuccessAmount(received.amountSats)
         setCurrentView('success')
       } catch (e) {
         setError((e as Error).message)
@@ -537,54 +522,16 @@ export function useDepositWithdrawState(
   const onRequest = useCallback(async () => {
     setError(null)
 
-    const mnemonic = useWalletStore.getState().mnemonic
-    if (!mnemonic) {
-      setError('Wallet not set up')
-      return
-    }
-
     try {
-      const keyPair = deriveNostrKeyPair(mnemonic)
-      // Embed the user's configured relays in the nprofile so the payer
-      // publishes to the same relay set our continuous NIP-17 listener is
-      // subscribed to (matches cashu.me's seedSignerNprofile behaviour).
-      const configuredRelays = useSettingsStore
-        .getState()
-        .relays.map((r) => r.url)
-      const nprofile = getNostrNprofile(
-        keyPair.publicKey,
-        configuredRelays.length > 0 ? configuredRelays : undefined
-      )
+      const paymentRequest = userCreatePaymentRequest(selectedMintId)
 
-      const transport = [{
-        type: PaymentRequestTransportType.NOSTR,
-        target: nprofile,
-        tags: [['n', '17']],
-      }]
-
-      // cashu-ts's PaymentRequest does NOT auto-generate an id when the
-      // arg is undefined — it just leaves it as undefined. The payer then
-      // has no id to echo back in the NIP-17 payload, and our inbox store
-      // has nothing to key on. Mirror cashu.me's scheme (first segment of
-      // a UUIDv4) so the id survives the round-trip.
-      const id = crypto.randomUUID().split('-')[0]
-      const pr = new PaymentRequest(
-        transport,
-        id,
-        undefined, // no amount
-        'sat',
-        [selectedMintId],
-        undefined, // no description
-      )
-      const encoded = pr.toEncodedRequest()
-
-      setPaymentRequestEncoded(encoded)
+      setPaymentRequestEncoded(paymentRequest.encoded)
       setPaymentRequestStatus('waiting')
       setCurrentView('payment-request-display')
       // Hand receive-detection off to the continuous listener. The
       // useEffect above flips status to 'received' when the global inbox
       // gets an entry keyed by this id.
-      setPendingRequestId(id)
+      setPendingRequestId(paymentRequest.id)
     } catch (e) {
       setError((e as Error).message)
     }

@@ -17,7 +17,7 @@
     <Exec Command="dotnet nswag run nswag.json" WorkingDirectory="$(MSBuildProjectDirectory)" />
   </Target>
 
-  <!-- Generate C# DTOs from dev-only OpenAPI spec (SimulatePaymentRequest/Response etc.) -->
+  <!-- Generate C# DTOs from dev-only OpenAPI spec when dev-only endpoints exist. -->
   <Target Name="NSwagGenerateDev" BeforeTargets="CoreCompile" Inputs="specs/openapi-dev.yaml;nswag.dev.json" Outputs="Generated/ApiContracts.Dev.g.cs">
     <Exec Command="dotnet nswag run nswag.dev.json" WorkingDirectory="$(MSBuildProjectDirectory)" />
   </Target>

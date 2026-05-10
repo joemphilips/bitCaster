@@ -18,8 +18,8 @@ paths:
       security:
         - nip98: []
       description: >
-        Validates the condition exists in the mint, creates empty order books
-        with CPMM pools for each outcome, and optionally stores a thumbnail.
+        Validates the condition exists in the mint, creates market order books,
+        and optionally stores a thumbnail.
         The authenticated pubkey from the NIP-98 header is recorded as the
         market creator — no creator field in the request body is needed.
       parameters:
@@ -65,6 +65,27 @@ paths:
                 type: string
 
   /api/v1/{marketId}/orders:
+    get:
+      operationId: listRestingOrders
+      summary: List the authenticated user's resting orders
+      security:
+        - nip98: []
+      description: >
+        Returns live resting orders in this market owned by the authenticated
+        user. Used by clients that need to rebuild local order-tracking state
+        after a restart.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+      responses:
+        '200':
+          description: Resting orders owned by the authenticated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRestingOrdersResponse'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+
     post:
       operationId: submitOrder
       summary: Submit a new order
@@ -167,19 +188,19 @@ paths:
   /api/v1/{marketId}/liquidity:
     get:
       operationId: getLiquidity
-      summary: Get CPMM pool state
-      description: Returns the current state of the CPMM liquidity pool for a market.
+      summary: Get liquidity state
+      description: Returns the current public liquidity state for a market.
       parameters:
         - $ref: '#/components/parameters/MarketId'
       responses:
         '200':
-          description: Current pool state
+          description: Current liquidity state
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/LiquidityStateResponse'
         '404':
-          description: No CPMM pool for this market
+          description: No liquidity state for this market
 
   /api/v1/{marketId}/metadata:
     get:
@@ -215,49 +236,18 @@ paths:
         '404':
           description: No thumbnail for this condition
 
-  /api/v1/markets/{marketId}/payment-requests:
-    post:
-      operationId: createPaymentRequest
-      summary: Create a bolt11 payment request for a market
-      security:
-        - nip98: []
-      description: >
-        Creates a Lightning invoice via the market's dedicated LNBits wallet.
-        The returned bolt11 string contains the payment hash and all details.
-      parameters:
-        - $ref: '#/components/parameters/MarketId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreatePaymentRequestRequest'
-      responses:
-        '200':
-          description: Invoice created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreatePaymentRequestResponse'
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '404':
-          description: Market not found or no wallet provisioned
-        '502':
-          description: LNBits backend error
-
   /api/v1/markets/{conditionId}/deposit/ln-invoice:
     post:
       operationId: requestLnInvoiceDeposit
-      summary: Request a Lightning invoice to deposit liquidity into a market's CPMM bot
+      summary: Request a Lightning invoice for market liquidity
       security:
         - nip98: []
       description: >
         Issues a bolt11 invoice payable to the market's funding account. Once
-        the invoice is paid the deposit transitions to `Paid`, and the
-        wallet-service mints CTF tokens and credits the per-market account.
-        The bolt11 string is returned only in this response — the polling
-        endpoint deliberately omits bearer material.
+        the invoice is paid, the deposit advances asynchronously through the
+        deposit lifecycle until the market account is credited. The bolt11
+        string is returned only in this response — the polling endpoint
+        deliberately omits bearer material.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
       requestBody:
@@ -282,19 +272,18 @@ paths:
         '429':
           description: Per-pubkey deposit-request rate limit exceeded
         '502':
-          description: LNBits backend error
+          description: Lightning invoice provider error
 
   /api/v1/markets/{conditionId}/deposit/ecash:
     post:
       operationId: requestEcashDeposit
-      summary: Submit an ecash payment to deposit liquidity into a market's CPMM bot
+      summary: Submit an ecash payment for market liquidity
       security:
         - nip98: []
       description: >
-        Records an ecash deposit attempt. Phase 1 records the request only;
-        actual proof verification and balance mutation happens in the
-        wallet-service. Use the returned `depositId` to poll for state
-        transitions via the GET endpoint.
+        Submits an ecash deposit for asynchronous proof verification and
+        crediting. Use the returned `depositId` to poll for state transitions
+        via the GET endpoint.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
       requestBody:
@@ -377,10 +366,10 @@ paths:
       operationId: queryMarkets
       summary: Catalogue proxy — list markets with filters, sort, and pagination
       description: >
-        Returns the public market catalogue, joining the engine's own
-        MarketRegistration projection with the mintd condition snapshot and
-        the trade-volume rollup. This is the read endpoint the markets list
-        page (`/markets`) and discovery surfaces consume.
+        Returns the public market catalogue with matching-engine market state,
+        mint condition data, and trading summary fields. This is the read
+        endpoint the markets list page (`/markets`) and discovery surfaces
+        consume.
 
         Anonymous by default. NIP-98 is OPTIONAL — when present, the request
         is authenticated and routed to a higher per-pubkey rate-limit bucket;
@@ -388,13 +377,11 @@ paths:
         the response shape or visibility — every market visible to an anonymous
         caller is also visible to an authenticated caller and vice versa.
 
-        Source-of-truth split: mintd is authoritative for `outcomes`,
-        `creatorPubkey`, `deadline`, and (Phase 1) `attestation/close`; the
-        engine is authoritative for `state` (Open/Closed lifecycle), `volume*`,
-        `lastTradedPrice`, and `createdAt` (RegisterMarket timestamp). A market
-        registered on the engine but absent from the mintd snapshot is omitted
-        from the response, and vice versa — both sides must know about the
-        market for it to surface.
+        The response combines condition metadata (`outcomes`, `creatorPubkey`,
+        `deadline`, and oracle attestation/close metadata) with trading state
+        (`state`, `volume*`, `lastTradedPrice`, and `createdAt`). A market
+        missing either side of that public data is omitted from the catalogue
+        until both are available.
       security:
         - {}
         - nip98: []
@@ -421,10 +408,10 @@ paths:
             enum: [Open, Closed, All]
             default: Open
           description: >
-            State filter against the engine's own `MarketRegistration.State`
-            field. Default is `Open`. Use `All` to include both Open and
-            Closed markets in a single response. The match is case-insensitive
-            on the wire (`open` works the same as `Open`).
+            State filter against the matching engine's lifecycle state.
+            Default is `Open`. Use `All` to include both Open and Closed
+            markets in a single response. The match is case-insensitive on
+            the wire (`open` works the same as `Open`).
         - name: creator_pubkey
           in: query
           required: false
@@ -436,7 +423,7 @@ paths:
             64-character lowercase hex Nostr pubkey. Different from
             `/api/v1/creators/{pubkey}/markets` — that endpoint returns the
             creator-dashboard volume rollup; this filter returns the full
-            catalogue projection.
+            catalogue response.
         - name: ids
           in: query
           required: false
@@ -447,6 +434,17 @@ paths:
             `?ids=abc,def,123`). Returns only the named markets that match the
             other filters. Capped at 100 ids per request — exceeding the cap
             is a 400.
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 200
+          description: >
+            Full-text market search query. When present, results are ordered by
+            relevance. The active `tag`, `state`, `creator_pubkey`, and `ids`
+            filters also constrain the search. Capped at 200 normalized
+            characters.
         - name: sort
           in: query
           required: false
@@ -529,9 +527,11 @@ components:
       schema:
         type: string
       description: >
-        The market to trade on, in the format "{conditionId}-{outcomeName}"
-        (e.g. "deadbeef…abc-Alice"). Each outcome of a condition has its own
-        independent binary order book. A marketId containing "|" is invalid.
+        The market to trade on, in the format "{conditionId}-{outcomeSet}"
+        (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite
+        categorical markets, multiple outcome names separated by "|" represent
+        the order book for that exact outcome set. Clients should URL-encode
+        the path segment when needed.
 
     ConditionId:
       name: conditionId
@@ -611,7 +611,12 @@ components:
           format: uuid
           description: The resting order that was matched against.
         amountSats:
-          $ref: '#/components/schemas/Sats'
+          allOf:
+            - $ref: '#/components/schemas/Sats'
+          description: >
+            Filled conditional-token face amount. For direct atomic swaps the
+            buyer's quote payment is derived from this amount and the execution
+            price.
         executionPrice:
           $ref: '#/components/schemas/Probability'
         path:
@@ -620,6 +625,14 @@ components:
           type: string
           format: date-time
           description: Timestamp when this fill was executed.
+        tradeId:
+          type: string
+          format: uuid
+          description: >
+            Atomic-swap trade session identifier for this fill. Present on
+            direct-match fills that require TradeHub settlement; omitted on
+            complementary fills and legacy fills that do not have a corresponding
+            TradeHub session.
         makerEphemeralPubkey:
           type: string
           pattern: '^[0-9a-fA-F]{66}$'
@@ -629,7 +642,7 @@ components:
             derive the ECDH shared secret with the maker without an extra
             round-trip through the engine. Null on complementary-match fills
             and on fills against orders that did not declare an ephemeral
-            pubkey (e.g. legacy CPMM bootstrap orders).
+            pubkey (e.g. legacy automated-liquidity orders).
 
     SubmitOrderRequest:
       type: object
@@ -642,13 +655,20 @@ components:
       properties:
         outcomeId:
           type: string
-          description: The outcome to trade (e.g. "Alice", "YES").
+          description: >
+            The outcome or finite outcome set to trade (e.g. "Alice", "YES",
+            or "B|C"). Must match the outcome-set segment of marketId.
         side:
           $ref: '#/components/schemas/OrderSide'
         price:
           $ref: '#/components/schemas/Probability'
         amountSats:
-          $ref: '#/components/schemas/Sats'
+          allOf:
+            - $ref: '#/components/schemas/Sats'
+          description: >
+            Limit-order size as conditional-token face amount. First release
+            requires this to be divisible by 100 sats so integer-cent prices
+            produce exact quote payments.
         timeInForce:
           $ref: '#/components/schemas/TimeInForce'
           default: GTC
@@ -684,8 +704,7 @@ components:
           type: string
           description: >
             One of: "resting" (on book, unmatched), "partially_filled",
-            "filled", "cancelled". The InMemoryMatchingEngine only ever
-            returns "resting" — matching semantics live in the real engine.
+            "filled", "cancelled".
         remainingAmountSats:
           $ref: '#/components/schemas/Sats'
         filledAmountSats:
@@ -695,6 +714,62 @@ components:
           items:
             $ref: '#/components/schemas/Fill'
           description: All fills produced against this order so far.
+
+    RestingOrderResponse:
+      type: object
+      required:
+        - orderId
+        - marketId
+        - outcomeId
+        - side
+        - price
+        - remainingAmountSats
+        - amountSats
+        - timeInForce
+        - placedAt
+      properties:
+        orderId:
+          type: string
+          format: uuid
+          description: The unique identifier assigned by the matching engine.
+        marketId:
+          type: string
+          description: The market this order belongs to.
+        outcomeId:
+          type: string
+          description: The outcome this order trades.
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        price:
+          $ref: '#/components/schemas/Probability'
+        remainingAmountSats:
+          $ref: '#/components/schemas/Sats'
+        amountSats:
+          $ref: '#/components/schemas/Sats'
+        timeInForce:
+          $ref: '#/components/schemas/TimeInForce'
+        placedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        ephemeralPubkey:
+          type: string
+          nullable: true
+          pattern: '^[0-9a-fA-F]{66}$'
+          description: Order-level ephemeral pubkey supplied at submit time.
+
+    ListRestingOrdersResponse:
+      type: object
+      required:
+        - orders
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestingOrderResponse'
 
     SubmitOrderResponse:
       type: object
@@ -803,12 +878,18 @@ components:
             $ref: '#/components/schemas/CreateMarketOutcome'
           minItems: 2
           description: The outcomes for the market (at least 2).
+        outcomeType:
+          type: string
+          enum: [yesno, categorical, numeric]
+          description: >
+            Market outcome type. Numeric creation is disabled until finite-bin
+            metadata is supported end-to-end.
         liquiditySats:
           type: integer
           format: int64
           minimum: 0
           default: 0
-          description: Initial liquidity to seed across outcome CPMM pools (in sats).
+          description: Initial liquidity budget in satoshis.
         categoryTags:
           type: array
           items:
@@ -864,7 +945,7 @@ components:
           format: int64
         activeOrders:
           type: integer
-          description: Number of active CPMM orders on the CLOB.
+          description: Number of active liquidity orders.
 
     MarketMetadataSnapshot:
       type: object
@@ -891,27 +972,7 @@ components:
         totalLiquiditySats:
           type: integer
           format: int64
-          description: Total CPMM liquidity deposited in satoshis.
-
-    CreatePaymentRequestRequest:
-      type: object
-      required:
-        - amountSats
-      properties:
-        amountSats:
-          $ref: '#/components/schemas/Sats'
-        description:
-          type: string
-          description: Optional memo for the invoice.
-
-    CreatePaymentRequestResponse:
-      type: object
-      required:
-        - bolt11
-      properties:
-        bolt11:
-          type: string
-          description: The bolt11-encoded Lightning invoice.
+          description: Total liquidity deposited in satoshis.
 
     CreatorMarketEntry:
       type: object
@@ -919,6 +980,7 @@ components:
         - conditionId
         - totalVolumeSats
         - createdAt
+        - state
       properties:
         conditionId:
           type: string
@@ -934,6 +996,14 @@ components:
           type: string
           format: date-time
           description: When this market was registered with the matching engine.
+        state:
+          type: string
+          enum:
+            - open
+            - closed
+          description: >
+            Engine-side lifecycle state. `open` accepts new orders; `closed`
+            does not.
 
     CreatorMarketsResponse:
       type: object
@@ -962,10 +1032,9 @@ components:
       description: >
         Lifecycle state of a single deposit. `Requested` → invoice issued or
         ecash submission accepted, awaiting payment proof. `Paid` → payment
-        confirmed; wallet-service can mint CTF. `Credited` → wallet-service
-        finished crediting the per-market account (terminal-success).
-        `Failed` → invoice expired, ecash rejected, or wallet-service errored
-        (terminal-failure).
+        confirmed and crediting is in progress. `Credited` → the market account
+        was credited (terminal-success). `Failed` → invoice expired, ecash
+        rejected, or crediting failed (terminal-failure).
 
     DepositMethod:
       type: string
@@ -1020,9 +1089,8 @@ components:
         proofsToken:
           type: string
           description: >
-            Opaque ecash token (Cashu V4 token blob). The wallet-service
-            verifies the proofs and amount before crediting; Phase 1 of the
-            engine accepts and records without verification.
+            Opaque ecash token (Cashu V4 token blob). Proofs and amount are
+            verified before crediting.
 
     RequestEcashDepositResponse:
       type: object
@@ -1097,12 +1165,13 @@ components:
             announcement). Stable identifier for the market.
         outcomes:
           type: array
+          description: >
+            Outcome names sourced from the mintd condition snapshot. Singleton
+            outcome books use `marketId = "{conditionId}-{outcomeName}"`.
+            Finite categorical outcome-set books use multiple outcome names
+            separated by "|", for example `"{conditionId}-B|C"`.
           items:
             type: string
-          description: >
-            Outcome names sourced from the mintd condition snapshot. Each
-            outcome maps to its own per-outcome order book at
-            `marketId = "{conditionId}-{outcomeName}"`.
         title:
           type: string
           nullable: true
@@ -1121,7 +1190,7 @@ components:
           description: >
             Creator's Nostr pubkey (64-char lowercase hex), captured at
             registration time via NIP-98. Null on legacy markets that
-            predate the creator-tracking projection.
+            predate creator tracking.
         deadline:
           type: string
           format: date-time
@@ -1135,14 +1204,13 @@ components:
           enum: [open, closed]
           description: >
             Engine-side lifecycle state. `open` accepts new orders; `closed`
-            does not. Source of truth is the engine's own
-            `MarketRegistration.State` field, NOT mintd's attestation status.
+            does not. Source of truth is the matching engine's lifecycle state,
+            NOT mintd's attestation status.
         createdAt:
           type: string
           format: date-time
           description: >
-            When the market was registered with the engine
-            (RegisterMarketCommand timestamp).
+            When the market was registered with the matching engine.
         volume24hSats:
           type: integer
           format: int64
@@ -1177,7 +1245,7 @@ components:
             When the engine last successfully pulled the mintd condition
             snapshot used to populate this entry's mintd-sourced fields.
             Mirrored on every entry so callers can render staleness
-            indicators per market without an additional projection.
+            indicators per market without an additional request.
 
     MarketCatalogueResponse:
       type: object
@@ -1230,4 +1298,3 @@ components:
         instance:
           type: string
           description: A URI reference identifying the specific occurrence.
-

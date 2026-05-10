@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router'
 import { ArrowLeft, Trash2, ChevronDown, Mail, AtSign, Copy } from 'lucide-react'
 import { useWalletStore } from '@/stores/wallet'
+import { userRemoveMint } from '@/lib/walletOps'
 import { safeHostname } from '@/lib/url'
+import { getMintIconUrl } from '@/lib/mints'
 
 /** Human-readable names for well-known NUTs (7+). */
 const NUT_NAMES: Record<string, string> = {
@@ -45,7 +47,6 @@ export function MintDetailPage() {
   const [nutsExpanded, setNutsExpanded] = useState(false)
 
   const storedMint = useWalletStore((s) => s.mints.find((m) => m.url === mintUrl))
-  const removeMint = useWalletStore((s) => s.removeMint)
   const mints = useWalletStore((s) => s.mints)
 
   const info = storedMint?.info as Record<string, unknown> | undefined
@@ -56,6 +57,7 @@ export function MintDetailPage() {
   const version = (info?.version as string) ?? ''
   const nuts = info?.nuts as Record<string, unknown> | undefined
   const contact = (info?.contact ?? []) as ContactEntry[]
+  const iconUrl = getMintIconUrl(mintUrl, info)
 
   // Derive supported currencies/units from NUT-4 (mint) and NUT-5 (melt) method lists.
   const methodUnits = (['4', '5'] as const).flatMap((key) => {
@@ -66,7 +68,7 @@ export function MintDetailPage() {
 
   const handleRemove = () => {
     if (mints.length <= 1) return
-    removeMint(mintUrl)
+    userRemoveMint(mintUrl)
     navigate('/settings?category=cashu')
   }
 
@@ -101,10 +103,19 @@ export function MintDetailPage() {
       <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-5 space-y-4">
         {/* Icon + Name */}
         <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center border border-slate-200 dark:border-slate-600">
-            <span className="text-xl font-bold text-slate-700 dark:text-slate-200">
-              {name.slice(0, 2).toUpperCase()}
-            </span>
+          <div className="w-14 h-14 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center border border-slate-200 dark:border-slate-600">
+            {iconUrl ? (
+              <img
+                src={iconUrl}
+                alt=""
+                className="h-full w-full object-cover"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+              />
+            ) : (
+              <span className="text-xl font-bold text-slate-700 dark:text-slate-200">
+                {name.slice(0, 2).toUpperCase()}
+              </span>
+            )}
           </div>
           <div>
             <h2 className="text-lg font-semibold text-slate-900 dark:text-white">{name}</h2>

@@ -22,9 +22,6 @@ public static class OrderEndpoints
             if (req.AmountSats <= 0)
                 return Results.BadRequest("AmountSats must be positive.");
 
-            if (marketId.Contains('|'))
-                return Results.BadRequest("Compound marketId (containing '|') is invalid.");
-
             if (!IsValidCompressedPubkey(req.EphemeralPubkey))
                 return Results.BadRequest("EphemeralPubkey must be a 66-char hex string (33-byte compressed secp256k1 pubkey).");
 
@@ -54,7 +51,7 @@ public static class OrderEndpoints
             // atomic-swap roles: Sell-side taker = seller (parts with the
             // outcome token), Buy-side taker = buyer.
             await EmitTradeCreatedForFills(
-                tradeHub, trades, result.Fills, req.Side, req.EphemeralPubkey);
+                tradeHub, trades, result.Fills, req.Side, req.EphemeralPubkey, marketId);
 
             return Results.Ok(new SubmitOrderResponse(
                 ephemeralPubkey: req.EphemeralPubkey,
@@ -110,7 +107,8 @@ public static class OrderEndpoints
         InMemoryTradeRegistry trades,
         IEnumerable<Fill> fills,
         OrderSide takerSide,
-        string takerEphemeralPubkey)
+        string takerEphemeralPubkey,
+        string marketId)
     {
         foreach (var fill in fills)
         {
@@ -126,15 +124,21 @@ public static class OrderEndpoints
             if (string.IsNullOrEmpty(sellerPubkey) || string.IsNullOrEmpty(buyerPubkey))
                 continue;
 
-            var record = trades.Register(tradeId.Value, sellerPubkey, buyerPubkey);
+            var record = trades.Register(
+                tradeId.Value,
+                sellerPubkey,
+                buyerPubkey,
+                marketId,
+                fill.AmountSats);
             await tradeHub.Clients.Group(TradeHub.GroupName(tradeId.Value))
                 .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
-                    record.SellerLocktime, record.BuyerLocktime);
+                    record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats);
         }
     }
 
     private static Guid? TryReadTradeId(Fill fill)
     {
+        if (fill.TradeId is { } typed) return typed;
         if (!fill.AdditionalProperties.TryGetValue("tradeId", out var raw) || raw is null)
             return null;
         return raw switch
@@ -148,8 +152,8 @@ public static class OrderEndpoints
     }
 
     // A 33-byte compressed secp256k1 pubkey renders as 66 hex chars, starting
-    // with 02 or 03. We're not verifying the point is on-curve here — the
-    // mock engine is a byte relay, and the real engine can do full validation.
+    // with 02 or 03. We're not verifying the point is on-curve here because
+    // the mock engine is only a byte relay.
     private static bool IsValidCompressedPubkey(string? hex)
     {
         if (string.IsNullOrEmpty(hex) || hex.Length != 66) return false;

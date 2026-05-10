@@ -24,9 +24,9 @@ public class NotificationPollerTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -104,7 +104,7 @@ public class NotificationPollerTests : IAsyncLifetime
             });
         });
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

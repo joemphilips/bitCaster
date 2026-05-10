@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type AriaRole, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 interface HorizontalPagerProps {
@@ -12,6 +12,8 @@ interface HorizontalPagerProps {
   className?: string
   /** Accessibility label for the scroll region. */
   ariaLabel?: string
+  /** Accessibility role forwarded to the scroll container. */
+  role?: AriaRole
   /**
    * data-testid forwarded to the scroll container, so consumers can
    * target it (`liked-markets-scroller`, `market-tag-bar`, ...).
@@ -30,6 +32,7 @@ export function HorizontalPager({
   children,
   className = '',
   ariaLabel,
+  role,
   scrollerTestId,
 }: HorizontalPagerProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -89,7 +92,7 @@ export function HorizontalPager({
       <div
         ref={scrollRef}
         onScroll={checkScroll}
-        role={ariaLabel ? 'region' : undefined}
+        role={role ?? (ariaLabel ? 'region' : undefined)}
         aria-label={ariaLabel}
         data-testid={scrollerTestId}
         className={`flex overflow-x-auto scrollbar-hide ${className}`}

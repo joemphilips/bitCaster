@@ -28,8 +28,7 @@ public static partial class MarketEndpoints
         app.MapPost("/api/v1/markets/{conditionId}", async (
             string conditionId,
             HttpRequest request,
-            IHttpClientFactory httpClientFactory,
-            LnBitsWalletManager walletManager) =>
+            IHttpClientFactory httpClientFactory) =>
         {
             if (!request.HasFormContentType)
                 return Results.BadRequest("Expected multipart/form-data");
@@ -153,19 +152,6 @@ public static partial class MarketEndpoints
             if (thumbnailBytes is not null)
                 ThumbnailEndpoints.Thumbnails[conditionId] = (thumbnailBytes, thumbnailContentType!);
 
-            // Create a dedicated LNBits wallet for each outcome market in parallel
-            await Task.WhenAll(marketsCreated.Select(async id =>
-            {
-                try
-                {
-                    await walletManager.CreateWallet(id);
-                }
-                catch (HttpRequestException)
-                {
-                    // LNBits unavailable — skip wallet creation in dev
-                }
-            }));
-
             return Results.Ok(response);
         });
 
@@ -186,7 +172,8 @@ public static partial class MarketEndpoints
                     entries.Add(new CreatorMarketEntry(
                         conditionId: conditionId,
                         createdAt: record.CreatedAt,
-                        totalVolumeSats: 0));
+                        totalVolumeSats: 0,
+                        state: CreatorMarketEntryState.Open));
                 }
             }
 

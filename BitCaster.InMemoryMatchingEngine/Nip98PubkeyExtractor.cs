@@ -7,12 +7,9 @@ namespace BitCaster.InMemoryMatchingEngine;
 /// header without verifying the Schnorr signature.
 ///
 /// <para>
-/// <b>MOCK ONLY — never reference from the production ApiService.</b> The
-/// real engine runs a full <c>Nip98AuthenticationHandler</c> with signature
-/// verification. This shortcut is acceptable here because
-/// <c>BitCaster.InMemoryMatchingEngine</c> is dev/E2E scaffolding that is
-/// never deployed to staging or prod, and a malicious caller can at worst
-/// impersonate themselves to a stub server.
+/// <b>MOCK ONLY.</b> This shortcut is acceptable here because
+/// <c>BitCaster.InMemoryMatchingEngine</c> is dev/E2E scaffolding, and a
+/// malicious caller can at worst impersonate themselves to a stub server.
 /// </para>
 /// </summary>
 internal static class Nip98PubkeyExtractor

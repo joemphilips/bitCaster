@@ -94,7 +94,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSats, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, MatchPath @path, System.Guid @takerOrderId)
+        public Fill(long @amountSats, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, MatchPath @path, System.Guid @takerOrderId, System.Guid? @tradeId)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
@@ -103,6 +103,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.ExecutionPrice = @executionPrice;
             this.Path = @path;
             this.FilledAt = @filledAt;
+            this.TradeId = @tradeId;
             this.MakerEphemeralPubkey = @makerEphemeralPubkey;
         }
 
@@ -124,6 +125,10 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("makerOrderId")]
         public System.Guid MakerOrderId { get; }
 
+        /// <summary>
+        /// Filled conditional-token face amount. For direct atomic swaps the buyer's quote payment is derived from this amount and the execution price.
+        /// <br/>
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
 
@@ -141,7 +146,14 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset FilledAt { get; }
 
         /// <summary>
-        /// Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy CPMM bootstrap orders).
+        /// Atomic-swap trade session identifier for this fill. Present on direct-match fills that require TradeHub settlement; omitted on complementary fills and legacy fills that do not have a corresponding TradeHub session.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
+        public System.Guid? TradeId { get; }
+
+        /// <summary>
+        /// Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders).
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("makerEphemeralPubkey")]
@@ -173,7 +185,8 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// The outcome to trade (e.g. "Alice", "YES").
+        /// The outcome or finite outcome set to trade (e.g. "Alice", "YES", or "B|C"). Must match the outcome-set segment of marketId.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
         public string OutcomeId { get; }
@@ -185,6 +198,10 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("price")]
         public int Price { get; }
 
+        /// <summary>
+        /// Limit-order size as conditional-token face amount. First release requires this to be divisible by 100 sats so integer-cent prices produce exact quote payments.
+        /// <br/>
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
 
@@ -237,7 +254,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string MarketId { get; }
 
         /// <summary>
-        /// One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled". The InMemoryMatchingEngine only ever returns "resting" — matching semantics live in the real engine.
+        /// One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled".
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("status")]
@@ -254,6 +271,106 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("fills")]
         public System.Collections.Generic.List<Fill> Fills { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RestingOrderResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RestingOrderResponse(long @amountSats, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSats, OrderSide @side, TimeInForce @timeInForce)
+        {
+            this.OrderId = @orderId;
+            this.MarketId = @marketId;
+            this.OutcomeId = @outcomeId;
+            this.Side = @side;
+            this.Price = @price;
+            this.RemainingAmountSats = @remainingAmountSats;
+            this.AmountSats = @amountSats;
+            this.TimeInForce = @timeInForce;
+            this.PlacedAt = @placedAt;
+            this.ExpiresAt = @expiresAt;
+            this.EphemeralPubkey = @ephemeralPubkey;
+        }
+
+        /// <summary>
+        /// The unique identifier assigned by the matching engine.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid OrderId { get; }
+
+        /// <summary>
+        /// The market this order belongs to.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// The outcome this order trades.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
+        public OrderSide Side { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int Price { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSats")]
+        public long RemainingAmountSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TimeInForce>))]
+        public TimeInForce TimeInForce { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("placedAt")]
+        public System.DateTimeOffset PlacedAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
+        public System.DateTimeOffset? ExpiresAt { get; }
+
+        /// <summary>
+        /// Order-level ephemeral pubkey supplied at submit time.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("ephemeralPubkey")]
+        public string EphemeralPubkey { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ListRestingOrdersResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ListRestingOrdersResponse(System.Collections.Generic.List<RestingOrderResponse> @orders)
+        {
+            this.Orders = @orders;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orders")]
+        public System.Collections.Generic.List<RestingOrderResponse> Orders { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -438,11 +555,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, string @title)
+        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
             this.Outcomes = @outcomes;
+            this.OutcomeType = @outcomeType;
             this.LiquiditySats = @liquiditySats;
             this.CategoryTags = @categoryTags;
         }
@@ -466,7 +584,15 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<CreateMarketOutcome> Outcomes { get; }
 
         /// <summary>
-        /// Initial liquidity to seed across outcome CPMM pools (in sats).
+        /// Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeType")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<CreateMarketRequestOutcomeType>))]
+        public CreateMarketRequestOutcomeType? OutcomeType { get; }
+
+        /// <summary>
+        /// Initial liquidity budget in satoshis.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
         public long? LiquiditySats { get; }
@@ -559,7 +685,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long TotalLiquiditySats { get; }
 
         /// <summary>
-        /// Number of active CPMM orders on the CLOB.
+        /// Number of active liquidity orders.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeOrders")]
         public int ActiveOrders { get; }
@@ -613,7 +739,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public int UniqueTraderCount { get; }
 
         /// <summary>
-        /// Total CPMM liquidity deposited in satoshis.
+        /// Total liquidity deposited in satoshis.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySats")]
         public long TotalLiquiditySats { get; }
@@ -630,70 +756,15 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class CreatePaymentRequestRequest
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public CreatePaymentRequestRequest(long @amountSats, string @description)
-        {
-            this.AmountSats = @amountSats;
-            this.Description = @description;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
-
-        /// <summary>
-        /// Optional memo for the invoice.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("description")]
-        public string Description { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class CreatePaymentRequestResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public CreatePaymentRequestResponse(string @bolt11)
-        {
-            this.Bolt11 = @bolt11;
-        }
-
-        /// <summary>
-        /// The bolt11-encoded Lightning invoice.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("bolt11")]
-        public string Bolt11 { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class CreatorMarketEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreatorMarketEntry(string @conditionId, System.DateTimeOffset @createdAt, long @totalVolumeSats)
+        public CreatorMarketEntry(string @conditionId, System.DateTimeOffset @createdAt, CreatorMarketEntryState @state, long @totalVolumeSats)
         {
             this.ConditionId = @conditionId;
             this.TotalVolumeSats = @totalVolumeSats;
             this.CreatedAt = @createdAt;
+            this.State = @state;
         }
 
         /// <summary>
@@ -714,6 +785,14 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
         public System.DateTimeOffset CreatedAt { get; }
+
+        /// <summary>
+        /// Engine-side lifecycle state. `open` accepts new orders; `closed` does not.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("state")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<CreatorMarketEntryState>))]
+        public CreatorMarketEntryState State { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -761,7 +840,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed; wallet-service can mint CTF. `Credited` → wallet-service finished crediting the per-market account (terminal-success). `Failed` → invoice expired, ecash rejected, or wallet-service errored (terminal-failure).
+    /// Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed and crediting is in progress. `Credited` → the market account was credited (terminal-success). `Failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -881,7 +960,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long AmountSats { get; }
 
         /// <summary>
-        /// Opaque ecash token (Cashu V4 token blob). The wallet-service verifies the proofs and amount before crediting; Phase 1 of the engine accepts and records without verification.
+        /// Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("proofsToken")]
@@ -1027,7 +1106,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ConditionId { get; }
 
         /// <summary>
-        /// Outcome names sourced from the mintd condition snapshot. Each outcome maps to its own per-outcome order book at `marketId = "{conditionId}-{outcomeName}"`.
+        /// Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`. Finite categorical outcome-set books use multiple outcome names separated by "|", for example `"{conditionId}-B|C"`.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
@@ -1048,7 +1127,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ThumbnailUrl { get; }
 
         /// <summary>
-        /// Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate the creator-tracking projection.
+        /// Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
@@ -1062,7 +1141,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset? Deadline { get; }
 
         /// <summary>
-        /// Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the engine's own `MarketRegistration.State` field, NOT mintd's attestation status.
+        /// Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("state")]
@@ -1070,7 +1149,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public MarketCatalogueEntryState State { get; }
 
         /// <summary>
-        /// When the market was registered with the engine (RegisterMarketCommand timestamp).
+        /// When the market was registered with the matching engine.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
@@ -1105,7 +1184,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<string> CategoryTags { get; }
 
         /// <summary>
-        /// When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional projection.
+        /// When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("lastSuccessfulRefreshAt")]
@@ -1250,6 +1329,33 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"New")]
         New = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum CreateMarketRequestOutcomeType
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"yesno")]
+        Yesno = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"categorical")]
+        Categorical = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"numeric")]
+        Numeric = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum CreatorMarketEntryState
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"open")]
+        Open = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"closed")]
+        Closed = 1,
 
     }
 

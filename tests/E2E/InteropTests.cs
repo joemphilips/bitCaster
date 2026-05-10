@@ -7,7 +7,7 @@ namespace BitCaster.E2ETest;
 /// Tests bidirectional ecash token exchange: cashu.me ↔ bitCaster.
 /// Both wallets use cashu-ts v3 with v1 keyset IDs.
 ///
-/// Requires: mintd (8085), frontend (5173), cashu.me (3000).
+/// Requires: mintd (8085), frontend (5273), cashu.me (3000).
 /// </summary>
 public class InteropTests : IAsyncLifetime
 {
@@ -18,9 +18,9 @@ public class InteropTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.CashuMe}", "cashu.me"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.CashuMeUrl}", "cashu.me"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -37,9 +37,9 @@ public class InteropTests : IAsyncLifetime
             ServiceWorkers = ServiceWorkerPolicy.Block,
         });
         await ctx.GrantPermissionsAsync(["clipboard-read", "clipboard-write"],
-            new() { Origin = $"http://localhost:{TestPorts.Vite}" });
+            new() { Origin = $"{TestPorts.FrontendUrl}" });
         await ctx.GrantPermissionsAsync(["clipboard-read", "clipboard-write"],
-            new() { Origin = $"http://localhost:{TestPorts.CashuMe}" });
+            new() { Origin = $"{TestPorts.CashuMeUrl}" });
         return ctx;
     }
 
@@ -53,7 +53,7 @@ public class InteropTests : IAsyncLifetime
     /// </summary>
     private async Task SetupBitCasterWallet(IPage page, string mnemonic)
     {
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -64,8 +64,8 @@ public class InteropTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: 'http://localhost:{TestPorts.Mint}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
-                    activeMintUrl: 'http://localhost:{TestPorts.Mint}',
+                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
+                    activeMintUrl: '{TestPorts.MintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
                 }},
@@ -83,13 +83,13 @@ public class InteropTests : IAsyncLifetime
     /// </summary>
     private async Task SetupCashuMe(IPage page, string mnemonic)
     {
-        await page.GotoAsync($"http://localhost:{TestPorts.CashuMe}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.CashuMeUrl}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
         });
 
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
         await page.EvaluateAsync($@"
             localStorage.setItem('cashu.welcome.showWelcome', 'false');
             localStorage.setItem('cashu.welcome.termsAccepted', 'true');
@@ -119,7 +119,7 @@ public class InteropTests : IAsyncLifetime
     private async Task CashuMeDepositViaLightning(IPage page, int amountSats, List<string> consoleMessages)
     {
         // Navigate to wallet page
-        await page.GotoAsync($"http://localhost:{TestPorts.CashuMe}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.CashuMeUrl}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -245,7 +245,7 @@ public class InteropTests : IAsyncLifetime
     private async Task<string> CashuMeSendEcashToken(IPage page, int amountSats, List<string> consoleMessages)
     {
         // Navigate to wallet page
-        await page.GotoAsync($"http://localhost:{TestPorts.CashuMe}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.CashuMeUrl}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -339,7 +339,7 @@ public class InteropTests : IAsyncLifetime
         await SetupBitCasterWallet(bitCasterPage, bitCasterMnemonic);
 
         // Navigate to bitCaster portfolio
-        await bitCasterPage.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        await bitCasterPage.GotoAsync($"{TestPorts.FrontendUrl}/portfolio", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -417,7 +417,7 @@ public class InteropTests : IAsyncLifetime
     /// </summary>
     private async Task BitCasterDepositViaLightning(IPage page, int amountSats, List<string> consoleMessages)
     {
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/portfolio", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -518,7 +518,7 @@ public class InteropTests : IAsyncLifetime
     private async Task CashuMeReceiveEcashToken(IPage page, string token, List<string> consoleMessages)
     {
         // Navigate to wallet page
-        await page.GotoAsync($"http://localhost:{TestPorts.CashuMe}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.CashuMeUrl}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -653,7 +653,7 @@ public class InteropTests : IAsyncLifetime
     /// </summary>
     private async Task SetupBitCasterWithLocalRelay(IPage page, string mnemonic)
     {
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -664,8 +664,8 @@ public class InteropTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: 'http://localhost:{TestPorts.Mint}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
-                    activeMintUrl: 'http://localhost:{TestPorts.Mint}',
+                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
+                    activeMintUrl: '{TestPorts.MintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
                 }},
@@ -693,13 +693,13 @@ public class InteropTests : IAsyncLifetime
     /// </summary>
     private async Task SetupCashuMeWithLocalRelay(IPage page, string mnemonic)
     {
-        await page.GotoAsync($"http://localhost:{TestPorts.CashuMe}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.CashuMeUrl}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
         });
 
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
         await page.EvaluateAsync($@"
             localStorage.setItem('cashu.welcome.showWelcome', 'false');
             localStorage.setItem('cashu.welcome.termsAccepted', 'true');
@@ -733,7 +733,7 @@ public class InteropTests : IAsyncLifetime
     /// </summary>
     private async Task<string> BitCasterCreatePaymentRequest(IPage page, List<string> consoleMessages)
     {
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/portfolio", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/portfolio", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -791,7 +791,7 @@ public class InteropTests : IAsyncLifetime
     private async Task CashuMePayPaymentRequest(
         IPage page, string creq, int amountSats, List<string> consoleMessages)
     {
-        await page.GotoAsync($"http://localhost:{TestPorts.CashuMe}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.CashuMeUrl}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

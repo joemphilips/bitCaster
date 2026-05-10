@@ -133,6 +133,7 @@ function YesNoOutcomes({
   return (
     <div className="grid grid-cols-2 gap-3">
       <button
+        data-testid="trade-outcome-yes"
         onClick={() => onTradeSelect?.({ side: 'yes' })}
         className={`relative p-4 rounded-xl border-2 transition-all ${
           tradeSelection?.side === 'yes'
@@ -149,6 +150,7 @@ function YesNoOutcomes({
       </button>
 
       <button
+        data-testid="trade-outcome-no"
         onClick={() => onTradeSelect?.({ side: 'no' })}
         className={`relative p-4 rounded-xl border-2 transition-all ${
           tradeSelection?.side === 'no'
@@ -579,6 +581,7 @@ export function TradingPanel({
               </span>
             )}
             <input
+              data-testid="trade-amount-input"
               type="number"
               value={tradeAmount || ''}
               onChange={(e) => onAmountChange?.(Number(e.target.value))}
@@ -708,6 +711,7 @@ export function TradingPanel({
 
           {/* Confirm Button */}
           <button
+            data-testid="trade-confirm"
             onClick={() => {
               if (!walletReady) {
                 setShowWalletModal(true)

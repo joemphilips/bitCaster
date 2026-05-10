@@ -32,16 +32,11 @@ namespace BitCaster.E2ETest;
 ///
 /// <para>
 /// Runs against the in-memory mock (Hubs/TradeHub.cs in
-/// BitCaster.InMemoryMatchingEngine) — that hub is the only TradeHub the
-/// frontend E2E suite can reach (the Sekiban-backed real engine runs
-/// inside the outer matching-engine repo's AppHost). The mock's TradeHub
-/// is byte-relay only: it does not retain prior <c>SwapMessageReceived</c>
-/// payloads, so a recovery test that drives all the way to
-/// <c>TradeStateChanged → Confirmed</c> is structurally not achievable
-/// against the current mock — that requires Sekiban-style event replay
-/// in the engine, which is in scope for the outer repo's E2E suite, not
-/// here. This test therefore narrows to the recovery primitives the
-/// plan's A.6 row actually asserts.
+/// BitCaster.InMemoryMatchingEngine). The mock's TradeHub is byte-relay only:
+/// it does not retain prior <c>SwapMessageReceived</c> payloads, so a recovery
+/// test that drives all the way to <c>TradeStateChanged → Confirmed</c> is
+/// structurally not achievable here. This test therefore narrows to the
+/// recovery primitives the plan's A.6 row actually asserts.
 /// </para>
 ///
 /// <para>
@@ -62,13 +57,13 @@ public class TabCloseRecoveryTests : IAsyncLifetime
     {
         using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(probe, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(probe, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(probe, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(probe, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(probe, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(probe, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _engineClient = new HttpClient
         {
-            BaseAddress = new Uri($"http://localhost:{TestPorts.Server}"),
+            BaseAddress = new Uri($"{TestPorts.ServerUrl}"),
             Timeout = TimeSpan.FromSeconds(10),
         };
 
@@ -222,7 +217,7 @@ public class TabCloseRecoveryTests : IAsyncLifetime
     /// </summary>
     private static async Task NavigateToMarketsAsync(IPage page) =>
         await page.GotoAsync(
-            $"http://localhost:{TestPorts.Vite}/markets",
+            $"{TestPorts.FrontendUrl}/markets",
             new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.NetworkIdle,
@@ -276,13 +271,13 @@ public class TabCloseRecoveryTests : IAsyncLifetime
         // take effect. /setup is a stable wizard route that doesn't pull
         // the trade-hub stack on its own.
         await page.GotoAsync(
-            $"http://localhost:{TestPorts.Vite}/setup",
+            $"{TestPorts.FrontendUrl}/setup",
             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
 
         // Deterministic nsec — only used to sign the NIP-98 access token
         // for the trade hub. The mock does not verify the schnorr sig.
         const string nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
         var mnemonic = TestMnemonics.Get();
 
         await page.EvaluateAsync($@"

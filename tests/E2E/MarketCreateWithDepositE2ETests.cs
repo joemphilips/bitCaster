@@ -42,9 +42,9 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -107,7 +107,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         var page = await context.NewPageAsync();
         var console = TestHelpers.AttachConsoleCapture(page);
         await SeedWizardEnvironmentAsync(page);
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator/new", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator/new", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -361,21 +361,21 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         // the engine (createMarket), even though the deposit never landed.
         // /markets reads conditions from the mint and surfaces each one
         // tagged with its description; our unique title must be visible.
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets",
+        await TestHelpers.GotoMarketsAsync(page,
             new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30_000 });
         await Assertions.Expect(page.GetByText(title))
             .ToBeVisibleAsync(new() { Timeout = 15_000 });
     }
 
-    [Fact(Skip = "Pending wallet-service StrategyLoop wiring (outer-repo Phase 6 follow-up)")]
+    [Fact(Skip = "Pending funded bot inventory/full-stack settlement harness")]
     public async Task BotAsCounterparty_FullTradeSettlement()
     {
         // Placeholder: a full bot-as-counterparty trade-settlement E2E
-        // requires the wallet-service to be wired into the AppHost AND its
-        // StrategyLoop/TradeDriver boot sequence to be complete. Both are
-        // tracked in outer-repo docs/TODO.md (Phase 4 deferred items). When
-        // those land, drop the [Skip] string and implement the test against
-        // the real bot.
+        // now has StrategyLoop/TradeDriver wiring, but still needs a harness
+        // that provisions funded bot inventory and drives the real bot as the
+        // counterparty. When that harness lands, drop the [Skip] string and
+        // assert the browser-visible trade reaches the settlement-complete
+        // state against the real bot.
         await Task.CompletedTask;
     }
 }

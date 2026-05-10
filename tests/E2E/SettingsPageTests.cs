@@ -12,9 +12,9 @@ public class SettingsPageTests : IAsyncLifetime
         // Verify all external services are reachable before launching Playwright
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         // Launch Playwright headless Chromium
         _playwright = await Playwright.CreateAsync();
@@ -42,7 +42,7 @@ public class SettingsPageTests : IAsyncLifetime
     [Fact]
     public async Task NavigateToSettings_ShowsSettingsHeading()
     {
-        var frontendUrl = $"http://localhost:{TestPorts.Vite}";
+        var frontendUrl = $"{TestPorts.FrontendUrl}";
 
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
@@ -70,8 +70,8 @@ public class SettingsPageTests : IAsyncLifetime
     private async Task SetupWithMintAndNavigateToSettings(IPage page)
     {
         var mnemonic = TestMnemonics.Get();
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        var mintUrl = $"{TestPorts.MintUrl}";
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -104,7 +104,7 @@ public class SettingsPageTests : IAsyncLifetime
                 version: 0
             }}));
         ");
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/settings", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/settings", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -163,7 +163,7 @@ public class SettingsPageTests : IAsyncLifetime
 
         // Enter the real mint URL (already running in docker-compose)
         var urlInput = page.GetByPlaceholder("https://mint.example.com");
-        await urlInput.FillAsync($"http://localhost:{TestPorts.Mint}");
+        await urlInput.FillAsync($"{TestPorts.MintUrl}");
 
         // Click Add — a spinner should appear while connecting
         var confirmAddBtn = page.GetByRole(AriaRole.Button, new() { Name = "Add", Exact = true });
@@ -172,7 +172,7 @@ public class SettingsPageTests : IAsyncLifetime
         // The input should be disabled or a loading indicator visible during validation
         var loadingIndicator = page.Locator("[class*='animate-spin']");
         // Loading might be very quick with local mint, so we just check it appeared or the mint got added
-        var mintAdded = page.Locator($"text=/localhost:{TestPorts.Mint}/");
+        var mintAdded = page.GetByText(new Uri(TestPorts.MintUrl).Authority);
         try
         {
             await Assertions.Expect(mintAdded.First).ToBeVisibleAsync(new() { Timeout = 15_000 });
@@ -250,8 +250,8 @@ public class SettingsPageTests : IAsyncLifetime
         var page = await context.NewPageAsync();
 
         var mnemonic = TestMnemonics.Get();
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        var mintUrl = $"{TestPorts.MintUrl}";
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -283,7 +283,7 @@ public class SettingsPageTests : IAsyncLifetime
                 version: 0
             }}));
         ");
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/settings?category=nostr", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/settings?category=nostr", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -325,14 +325,14 @@ public class SettingsPageTests : IAsyncLifetime
         var consoleMessages = TestHelpers.AttachConsoleCapture(page);
 
         var mnemonic = TestMnemonics.Get();
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
         // Fixed BIP-340 nsec used only for this test — there is no
         // kind-0 profile on any public relay for this pubkey, so the
         // fetch deterministically ends in 'not-found' after the 8 s
         // timeout inside fetchAndStoreNostrProfile.
         const string nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -369,7 +369,7 @@ public class SettingsPageTests : IAsyncLifetime
         ");
 
         await page.GotoAsync(
-            $"http://localhost:{TestPorts.Vite}/settings?category=nostr",
+            $"{TestPorts.FrontendUrl}/settings?category=nostr",
             new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30_000 });
 
         // The Profile section must leave 'idle' — either we're still
@@ -414,13 +414,13 @@ public class SettingsPageTests : IAsyncLifetime
         // Navigate to /settings directly (the route renders without the
         // wizard gate).
         await page.GotoAsync(
-            $"http://localhost:{TestPorts.Vite}/settings?category=cashu",
+            $"{TestPorts.FrontendUrl}/settings?category=cashu",
             new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30_000 });
 
         // The boot effect in App.tsx should call addMint(DEFAULT_MINT_URL)
         // when mints.length === 0, irrespective of setupComplete. Give
         // the round-trip to the mint a few seconds.
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
         var defaultBadge = page.GetByText("Default");
         try
         {
@@ -448,10 +448,10 @@ public class SettingsPageTests : IAsyncLifetime
         var consoleMessages = TestHelpers.AttachConsoleCapture(page);
 
         var mnemonic = TestMnemonics.Get();
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
 
         // Setup wallet first (needed for auth/state)
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -472,7 +472,7 @@ public class SettingsPageTests : IAsyncLifetime
 
         // Navigate directly to mint detail page
         await page.GotoAsync(
-            $"http://localhost:{TestPorts.Vite}/mint-details?mintUrl={Uri.EscapeDataString(mintUrl)}",
+            $"{TestPorts.FrontendUrl}/mint-details?mintUrl={Uri.EscapeDataString(mintUrl)}",
             new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30_000 });
 
         // Should show mint name (appears in both h1 header and info card)

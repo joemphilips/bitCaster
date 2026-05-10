@@ -19,7 +19,9 @@ import {
   HttpTransportType,
   type HubConnection,
 } from '@microsoft/signalr'
+import { resolveHubServerUrl } from '@/lib/hubUrl'
 import { generateNip98AuthHeader, tradeHubUrl } from '@/lib/nip98'
+import type { TradeMessageType } from '@/lib/tradeMessageTypes'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,8 +37,12 @@ export interface TradeCreatedPayload {
   tradeId: string
   sellerPubkey: string
   buyerPubkey: string
-  sellerLocktime: string  // ISO-8601 from DateTimeOffset
+  sellerLocktime: string // ISO-8601 from DateTimeOffset
   buyerLocktime: string
+  marketId?: string
+  fillAmountSats?: number
+  outcomeFaceAmountSats?: number
+  quotePaymentSats?: number
 }
 
 export interface TradeHubCallbacks {
@@ -48,7 +54,11 @@ export interface TradeHubCallbacks {
 
 export interface TradeHubActions {
   joinTrade: (tradeId: string) => Promise<void>
-  sendSwapMessage: (tradeId: string, messageType: string, ciphertext: string) => Promise<void>
+  sendSwapMessage: (
+    tradeId: string,
+    messageType: TradeMessageType,
+    ciphertext: string,
+  ) => Promise<void>
   connectionState: () => HubConnectionState
 }
 
@@ -56,7 +66,17 @@ export interface TradeHubActions {
 // Hook
 // ---------------------------------------------------------------------------
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:5000'
+const SERVER_URL = resolveHubServerUrl()
+
+export function generateTradeHubAccessToken(
+  privateKey: Uint8Array,
+  hubUrl: string,
+): string {
+  return generateNip98AuthHeader(privateKey, hubUrl, 'GET').replace(
+    /^Nostr\s+/,
+    '',
+  )
+}
 
 /**
  * Connect to the TradeHub and register event handlers.
@@ -79,20 +99,26 @@ export function useTradeHub(
     if (!ephemeralPrivkey) return
 
     const hubUrl = tradeHubUrl(SERVER_URL)
-    const privkey = ephemeralPrivkey  // stable reference for this effect run
+    const privkey = ephemeralPrivkey // stable reference for this effect run
 
     const connection = new HubConnectionBuilder()
       .withUrl(hubUrl, {
         transport: HttpTransportType.WebSockets,
-        accessTokenFactory: () =>
-          generateNip98AuthHeader(privkey, hubUrl, 'GET'),
+        accessTokenFactory: () => generateTradeHubAccessToken(privkey, hubUrl),
       })
       .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
       .build()
 
-    connection.on('SwapMessageReceived', (tradeId: string, messageType: string, ciphertext: string) => {
-      callbacksRef.current.onSwapMessageReceived?.({ tradeId, messageType, ciphertext })
-    })
+    connection.on(
+      'SwapMessageReceived',
+      (tradeId: string, messageType: string, ciphertext: string) => {
+        callbacksRef.current.onSwapMessageReceived?.({
+          tradeId,
+          messageType,
+          ciphertext,
+        })
+      },
+    )
 
     connection.on('TradeStateChanged', (tradeId: string, newState: string) => {
       callbacksRef.current.onTradeStateChanged?.(tradeId, newState)
@@ -106,6 +132,10 @@ export function useTradeHub(
         buyerPubkey: string,
         sellerLocktime: string,
         buyerLocktime: string,
+        marketId?: string,
+        fillAmountSats?: number,
+        outcomeFaceAmountSats?: number,
+        quotePaymentSats?: number,
       ) => {
         callbacksRef.current.onTradeCreated?.({
           tradeId,
@@ -113,29 +143,43 @@ export function useTradeHub(
           buyerPubkey,
           sellerLocktime,
           buyerLocktime,
+          marketId,
+          fillAmountSats,
+          outcomeFaceAmountSats,
+          quotePaymentSats,
         })
       },
     )
 
     connection.onclose((err) => {
-      if (err) callbacksRef.current.onError?.(err instanceof Error ? err : new Error(String(err)))
+      if (err)
+        callbacksRef.current.onError?.(
+          err instanceof Error ? err : new Error(String(err)),
+        )
     })
 
     connection.onreconnecting((err) => {
-      if (err) callbacksRef.current.onError?.(err instanceof Error ? err : new Error(String(err)))
+      if (err)
+        callbacksRef.current.onError?.(
+          err instanceof Error ? err : new Error(String(err)),
+        )
     })
 
     connectionRef.current = connection
 
     connection.start().catch((err: unknown) => {
-      callbacksRef.current.onError?.(err instanceof Error ? err : new Error(String(err)))
+      callbacksRef.current.onError?.(
+        err instanceof Error ? err : new Error(String(err)),
+      )
     })
 
     return () => {
-      connection.stop().catch(() => { /* ignore teardown errors */ })
+      connection.stop().catch(() => {
+        /* ignore teardown errors */
+      })
       connectionRef.current = null
     }
-  }, [ephemeralPrivkey])  // reconnect when key changes
+  }, [ephemeralPrivkey]) // reconnect when key changes
 
   /**
    * Wait up to ~10 s for the SignalR connection to reach
@@ -146,23 +190,33 @@ export function useTradeHub(
    * "TradeHub not connected", leaving the swap in a permanent `failed`
    * step that no later state change recovers.
    */
-  const waitForConnected = useCallback(async (timeoutMs = 10_000): Promise<HubConnection> => {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
-      const conn = connectionRef.current
-      if (conn?.state === HubConnectionState.Connected) return conn
-      await new Promise((r) => setTimeout(r, 100))
-    }
-    throw new Error('TradeHub not connected')
-  }, [])
+  const waitForConnected = useCallback(
+    async (timeoutMs = 10_000): Promise<HubConnection> => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const conn = connectionRef.current
+        if (conn?.state === HubConnectionState.Connected) return conn
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      throw new Error('TradeHub not connected')
+    },
+    [],
+  )
 
-  const joinTrade = useCallback(async (tradeId: string) => {
-    const conn = await waitForConnected()
-    await conn.invoke('JoinTrade', tradeId)
-  }, [waitForConnected])
+  const joinTrade = useCallback(
+    async (tradeId: string) => {
+      const conn = await waitForConnected()
+      await conn.invoke('JoinTrade', tradeId)
+    },
+    [waitForConnected],
+  )
 
   const sendSwapMessage = useCallback(
-    async (tradeId: string, messageType: string, ciphertext: string) => {
+    async (
+      tradeId: string,
+      messageType: TradeMessageType,
+      ciphertext: string,
+    ) => {
       const conn = await waitForConnected()
       await conn.invoke('SendSwapMessage', tradeId, messageType, ciphertext)
     },

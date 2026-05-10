@@ -12,9 +12,9 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -82,7 +82,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
             });
         });
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -107,7 +107,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         // Block the metadata API to simulate matching engine down
         await page.RouteAsync("**/api/v1/*/metadata", async route => await route.AbortAsync());
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -146,7 +146,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
             });
         });
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -186,7 +186,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
             await route.AbortAsync();
         });
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

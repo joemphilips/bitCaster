@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '@/stores/proof-db'
+import { db, isCtfProof } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useActivityLogStore } from '@/stores/activity-log'
@@ -139,17 +139,50 @@ export function usePortfolioState(): PortfolioState & {
     }
   }, [localProfile, nostrProfile])
 
-  const [positions] = useState<Position[]>([])
   const activity = useActivityLogStore((s) => s.items)
   const [createdMarkets] = useState<CreatedMarket[]>([])
   const plChartData = useMemo(() => buildPLChartData(activity), [activity])
 
-  // Funds: aggregate proof balances by mint from IndexedDB
+  // Positions and funds are both wallet-local. CTF proofs are market
+  // positions; base proofs are spendable ecash funds.
   const storeMints = useWalletStore((s) => s.mints)
+  const positionsFromDb = useLiveQuery(async () => {
+    const proofs = await db.proofs.toArray()
+    const byCondition = new Map<string, { amount: number; mintUrl: string }>()
+    for (const proof of proofs.filter(isCtfProof)) {
+      const conditionId =
+        (proof as typeof proof & { conditionId?: string; condition_id?: string }).conditionId ??
+        (proof as typeof proof & { condition_id?: string }).condition_id
+      if (!conditionId) continue
+      const current = byCondition.get(conditionId)
+      byCondition.set(conditionId, {
+        amount: (current?.amount ?? 0) + proof.amount,
+        mintUrl: current?.mintUrl ?? proof.mintUrl,
+      })
+    }
+    return Array.from(byCondition.entries()).map(([conditionId, entry]): Position => ({
+      id: conditionId,
+      marketId: conditionId,
+      marketTitle: `Market ${conditionId.slice(0, 8)}`,
+      marketImageUrl: '',
+      side: 'yes',
+      outcomeLabel: conditionId,
+      shares: entry.amount,
+      avgBuyPrice: 0,
+      currentPrice: 0,
+      currentValueSats: entry.amount,
+      profitLossSats: 0,
+      profitLossPercent: 0,
+      status: 'active',
+      acquiredDate: new Date(0).toISOString(),
+      mintUrl: entry.mintUrl,
+    }))
+  }, [], [] as Position[])
+  const positions: Position[] = positionsFromDb ?? []
   const fundsFromDb = useLiveQuery(async () => {
     const proofs = await db.proofs.toArray()
     const balanceByMint: Record<string, number> = {}
-    for (const p of proofs) {
+    for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
       balanceByMint[p.mintUrl] = (balanceByMint[p.mintUrl] ?? 0) + p.amount
     }
     return Object.entries(balanceByMint).map(([mintUrl, amount]) => {

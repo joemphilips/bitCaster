@@ -21,6 +21,8 @@
  */
 
 import { create } from 'zustand'
+import type { Proof } from '@cashu/cashu-ts'
+import type { AdaptorPoint } from '@/lib/adaptor'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,6 +43,21 @@ export interface SwapMessages {
   lockedProofsSeller?: string
   lockedProofsBuyer?: string
 }
+
+export interface SellerProtocolState {
+  adaptorPoint: AdaptorPoint
+}
+
+export interface BuyerProtocolState {
+  /** Bob's pre-sigs over Bob's locked sat proofs — extract `t` from these. */
+  ownPreSigsHex: string[]
+  /** The proofs Bob locked to Alice; needed for the NUT-07 poll. */
+  lockedSatProofs: Proof[]
+  /** Alice's pre-sigs from her locked-proofs message — adapted on claim. */
+  sellerPreSigsHex: string[]
+}
+
+export type SwapWorkKey = 'seller-open' | 'buyer-respond' | 'settle'
 
 /** What stage of the protocol the local driver has finished. */
 export type SwapStep =
@@ -67,10 +84,17 @@ export interface ActiveSwap {
   counterpartyPubkey: string | null
   /** Unix seconds — Alice's locktime per the protocol spec. */
   sellerLocktime: number | null
-  /** Unix seconds — Bob's longer locktime. */
+  /** Unix seconds — Bob's shorter locktime. */
   buyerLocktime: number | null
+  /** Face amount of outcome tokens the seller locks. */
+  outcomeFaceAmountSats: number | null
+  /** Regular sats the buyer locks. */
+  quotePaymentSats: number | null
   step: SwapStep
   messages: SwapMessages
+  sellerState: SellerProtocolState | null
+  buyerState: BuyerProtocolState | null
+  inFlightSteps: Partial<Record<SwapWorkKey, true>>
   /** Last error message if the swap fell into the `failed` step. */
   error: string | null
   startedAt: number
@@ -90,12 +114,21 @@ interface ActiveSwapsState {
     role: SwapRole,
     counterpartyPubkey: string,
     locktimes: { sellerLocktime: number; buyerLocktime: number },
+    settlementAmounts?: {
+      outcomeFaceAmountSats?: number
+      quotePaymentSats?: number
+    },
   ) => void
   recordMessage: (
     tradeId: string,
     messageType: keyof SwapMessages,
     ciphertext: string,
   ) => void
+  setSellerState: (tradeId: string, state: SellerProtocolState) => void
+  setBuyerState: (tradeId: string, state: BuyerProtocolState) => void
+  claimStep: (tradeId: string, key: SwapWorkKey) => boolean
+  releaseStep: (tradeId: string, key: SwapWorkKey) => void
+  clearProtocolState: (tradeId: string) => void
   setStep: (tradeId: string, step: SwapStep, error?: string) => void
   remove: (tradeId: string) => void
 }
@@ -108,7 +141,7 @@ interface ActiveSwapsState {
  * Lightweight zustand store, no middleware. Reads / writes happen from the
  * `useTradeSettlement` hook and from the SignalR callbacks fired by it.
  */
-export const useActiveSwapsStore = create<ActiveSwapsState>()((set) => ({
+export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
   byTradeId: {},
 
   promote: ({
@@ -130,8 +163,13 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set) => ({
         counterpartyPubkey: null,
         sellerLocktime: null,
         buyerLocktime: null,
+        outcomeFaceAmountSats: null,
+        quotePaymentSats: null,
         step: 'awaiting-trade-created',
         messages: {},
+        sellerState: null,
+        buyerState: null,
+        inFlightSteps: {},
         error: null,
         startedAt: Date.now(),
       }
@@ -139,7 +177,13 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set) => ({
     })
   },
 
-  setRoleAndCounterparty: (tradeId, role, counterpartyPubkey, locktimes) => {
+  setRoleAndCounterparty: (
+    tradeId,
+    role,
+    counterpartyPubkey,
+    locktimes,
+    settlementAmounts,
+  ) => {
     set((s) => {
       const existing = s.byTradeId[tradeId]
       if (!existing) return s
@@ -152,9 +196,15 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set) => ({
             counterpartyPubkey,
             sellerLocktime: locktimes.sellerLocktime,
             buyerLocktime: locktimes.buyerLocktime,
-            step: existing.step === 'awaiting-trade-created'
-              ? 'awaiting-counterparty'
-              : existing.step,
+            outcomeFaceAmountSats:
+              settlementAmounts?.outcomeFaceAmountSats ??
+              existing.outcomeFaceAmountSats,
+            quotePaymentSats:
+              settlementAmounts?.quotePaymentSats ?? existing.quotePaymentSats,
+            step:
+              existing.step === 'awaiting-trade-created'
+                ? 'awaiting-counterparty'
+                : existing.step,
           },
         },
       }
@@ -171,6 +221,84 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set) => ({
           [tradeId]: {
             ...existing,
             messages: { ...existing.messages, [messageType]: ciphertext },
+          },
+        },
+      }
+    })
+  },
+
+  setSellerState: (tradeId, sellerState) => {
+    set((s) => {
+      const existing = s.byTradeId[tradeId]
+      if (!existing) return s
+      return {
+        byTradeId: {
+          ...s.byTradeId,
+          [tradeId]: { ...existing, sellerState },
+        },
+      }
+    })
+  },
+
+  setBuyerState: (tradeId, buyerState) => {
+    set((s) => {
+      const existing = s.byTradeId[tradeId]
+      if (!existing) return s
+      return {
+        byTradeId: {
+          ...s.byTradeId,
+          [tradeId]: { ...existing, buyerState },
+        },
+      }
+    })
+  },
+
+  claimStep: (tradeId, key) => {
+    const existing = get().byTradeId[tradeId]
+    if (!existing || existing.inFlightSteps[key]) return false
+    set((s) => {
+      const current = s.byTradeId[tradeId]
+      if (!current || current.inFlightSteps[key]) return s
+      return {
+        byTradeId: {
+          ...s.byTradeId,
+          [tradeId]: {
+            ...current,
+            inFlightSteps: { ...current.inFlightSteps, [key]: true },
+          },
+        },
+      }
+    })
+    return true
+  },
+
+  releaseStep: (tradeId, key) => {
+    set((s) => {
+      const existing = s.byTradeId[tradeId]
+      if (!existing || !existing.inFlightSteps[key]) return s
+      const nextInFlight = { ...existing.inFlightSteps }
+      delete nextInFlight[key]
+      return {
+        byTradeId: {
+          ...s.byTradeId,
+          [tradeId]: { ...existing, inFlightSteps: nextInFlight },
+        },
+      }
+    })
+  },
+
+  clearProtocolState: (tradeId) => {
+    set((s) => {
+      const existing = s.byTradeId[tradeId]
+      if (!existing) return s
+      return {
+        byTradeId: {
+          ...s.byTradeId,
+          [tradeId]: {
+            ...existing,
+            sellerState: null,
+            buyerState: null,
+            inFlightSteps: {},
           },
         },
       }

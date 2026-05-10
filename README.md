@@ -72,7 +72,7 @@ git submodule update --init --recursive
 cd bitCaster-app
 cp .env.example .env          # set VITE_MINT_URL to your mint
 npm install
-npm run dev                   # → http://localhost:5173
+npm run dev                   # -> http://localhost:5273
 ```
 
 Build for production:

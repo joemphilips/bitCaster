@@ -177,6 +177,10 @@ describe('getNdk relay reconciliation', () => {
     expect(ndk.addExplicitRelay).not.toHaveBeenCalled()
   })
 
+  it('keeps search-only relays out of production defaults', () => {
+    expect(nostrModule.DEFAULT_RELAYS).not.toContain('wss://relay.nostr.band')
+  })
+
   it('reconciles new user relays added between calls without duplicating', () => {
     const ndk = nostrModule.getNdk() as unknown as {
       addExplicitRelay: ReturnType<typeof vi.fn>
@@ -201,24 +205,5 @@ describe('getNdk relay reconciliation', () => {
     ndk.addExplicitRelay.mockClear()
     nostrModule.getNdk()
     expect(ndk.addExplicitRelay).not.toHaveBeenCalled()
-  })
-})
-
-describe('App.tsx hydration gating contract', async () => {
-  // App.tsx is the actual consumer; its effect MUST gate the rehydrate on
-  // `useSettingsStore.persist.hasHydrated()` and subscribe via
-  // `onFinishHydration` when not yet hydrated. Without the gate, the
-  // rehydrate would read default state (mode='none', nsec=null), short-
-  // circuit, and the user would be stuck on "Profile not found" until
-  // full reload — see /home/joemphilips/.claude/plans/cuddly-jingling-axolotl.md
-  // Issue 2 root cause.
-  // Vite's `?raw` import gives us the source as a string without pulling
-  // in a Node-only `fs` import that breaks browser-target typecheck.
-  const appSource = (await import('../../App.tsx?raw')).default
-
-  it('uses persist.hasHydrated() before invoking rehydrateNostrSigner', () => {
-    expect(appSource).toMatch(/useSettingsStore\.persist\.hasHydrated\(\)/)
-    expect(appSource).toMatch(/useSettingsStore\.persist\.onFinishHydration\(/)
-    expect(appSource).toMatch(/rehydrateNostrSigner\(\)/)
   })
 })

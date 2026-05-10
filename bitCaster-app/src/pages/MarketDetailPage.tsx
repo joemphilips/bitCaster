@@ -13,6 +13,7 @@ import { buildTradeTicket, TradeTicketError } from '@/lib/tradeTicket'
 import { generateEphemeralKeyPair } from '@/lib/ephemeral-key'
 import { getBalance, useBalance, useWalletStore } from '@/stores/wallet'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
+import { useNotificationsStore } from '@/stores/notifications'
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -73,8 +74,15 @@ export function MarketDetailPage() {
         // Try to fetch order book for yesno markets
         if (detail.type === 'yesno') {
           try {
-            const ob = await fetchOrderBook(`${id}-Yes`)
-            detail = { ...detail, orderBook: ob }
+            const [yes, no] = await Promise.all([
+              fetchOrderBook(`${id}-YES`),
+              fetchOrderBook(`${id}-NO`),
+            ])
+            detail = {
+              ...detail,
+              orderBook: yes,
+              outcomeOrderBooks: { YES: yes, NO: no },
+            }
           } catch {
             // Order book fetch is best-effort
           }
@@ -142,8 +150,10 @@ export function MarketDetailPage() {
         side: tradeSide,
         orderType,
         limitPrice,
-        orderBook: market.type === 'yesno' && tradeSelection.side === 'yes'
-          ? market.orderBook
+        orderBook: market.type === 'yesno'
+          ? market.outcomeOrderBooks?.[
+              tradeSelection.side === 'no' ? 'NO' : 'YES'
+            ] ?? (tradeSelection.side === 'yes' ? market.orderBook : null)
           : null,
       })
     } catch (e) {
@@ -168,6 +178,16 @@ export function MarketDetailPage() {
         ephemeralPubkey: ephemeral.pubkey,
         ephemeralPrivkey: ephemeral.privkey,
         submittedAt: Date.now(),
+      })
+      useNotificationsStore.getState().add({
+        id: `${response.orderId}-accepted`,
+        kind: 'accepted',
+        orderId: response.orderId,
+        marketId: ticket.marketId,
+        filledAmountSats: Math.max(ticket.request.amountSats - response.remainingAmountSats, 0),
+        remainingAmountSats: response.remainingAmountSats,
+        occurredAt: Date.now(),
+        read: false,
       })
       setTradeSelection(null)
       setTradeAmount(0)
@@ -285,9 +305,6 @@ export function MarketDetailPage() {
         onOrderTypeChange={setOrderType}
         onLimitPriceChange={setLimitPrice}
         onRelatedMarketClick={handleRelatedMarketClick}
-        onCreatorClick={(creatorId) => {
-          if (creatorId && creatorId !== 'unknown') navigate(`/user/${creatorId}`)
-        }}
         walletReady={setupComplete}
         walletBalanceSats={activeMintBalance}
       />

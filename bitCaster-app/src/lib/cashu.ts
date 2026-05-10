@@ -295,7 +295,9 @@ export function extractMintUrlFromV4Token(tokenStr: string): string | null {
 
 // Minimal CBOR walker: read the top-level map and return the value of the
 // "m" key (the v4 cashu mint-url field). Supports the small subset of CBOR
-// that cashu v4 emits — see NUT-00 §3.2.
+// that cashu v4 emits — see NUT-00 §3.2. CBOR major types per RFC 8949 §3.1:
+// 0=uint, 1=neg-int, 2=bytes, 3=text, 4=array, 5=map, 6=tag, 7=simple/float.
+// Additional info 24/25/26 means the length follows in 1/2/4 bytes.
 function walkCborForMintUrl(b: Uint8Array): string | null {
   if ((b[0] & 0xe0) !== 0xa0) return null; // top-level must be a map
   const [n, start] = readLen(b, 0);
@@ -338,32 +340,6 @@ function skipValue(b: Uint8Array, i: number): number {
 export async function receiveToken(tokenStr: string, mintUrl?: string): Promise<Proof[]> {
   const wallet = await getWallet(mintUrl);
   return wallet.receive(tokenStr);
-}
-
-/**
- * Ensure `mintUrl` is registered in the wallet store before redeeming proofs
- * issued by it. Returns true when the mint was newly added, false when it was
- * already configured. Throws if `addMint` itself fails (network unreachable,
- * non-Cashu endpoint, etc.) — callers must surface the error to the user
- * rather than swallow it; otherwise the redeemed proofs would be orphaned.
- *
- * Mirrors the cashu.me parity behaviour the NIP-17 listener already relies
- * on: a token from an unconfigured mint silently mints under a synthetic
- * wallet (see `getWallet` fallback), and the resulting proofs never appear
- * in any UI surface because no `StoredMint` row exists to enumerate them.
- */
-export async function ensureMintRegistered(mintUrl: string): Promise<boolean> {
-  const normalized = normalizeUrl(mintUrl);
-  const store = useWalletStore.getState();
-  if (store.mints.some((m) => m.url === normalized)) return false;
-  // P8 security review Finding 3: `addMint` retargets `activeMintUrl` as a
-  // side effect. From an untrusted-input ingress (clipboard token, NIP-17
-  // DM, scanned QR), that silently switches the user's wallet to an
-  // attacker-chosen mint. Use the no-activate variant: register the mint so
-  // proofs land somewhere the UI can enumerate, but leave the active mint
-  // alone. The user can switch via Settings if they want.
-  await store.addMintWithoutActivating(normalized);
-  return true;
 }
 
 /**

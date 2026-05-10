@@ -3,9 +3,12 @@ import { useNavigate } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from 'lucide-react'
 import { formatBtc } from '@/lib/format'
+import { signEnumAttestation } from '@/lib/kormir'
 import { useCreatorDashboardState } from '@/hooks/useCreatorDashboardState'
 import { MyMarkets } from '@/components/portfolio/MyMarkets'
 import { PrimaryGradientButton } from '@/components/shared/PrimaryGradientButton'
+import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
+import { useSettingsStore } from '@/stores/settings'
 import { AnalyticsComingSoon } from './AnalyticsComingSoon'
 
 type ActiveTab = 'overview' | 'analytics'
@@ -48,10 +51,60 @@ export function CreatorDashboard() {
   const navigate = useNavigate()
   const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview')
-  const { stats, markets, isLoading, error, pubkey } = useCreatorDashboardState()
+  const [resolvingMarketId, setResolvingMarketId] = useState<string | null>(null)
+  const [resolutionError, setResolutionError] = useState<string | null>(null)
+  const [resolutionSuccess, setResolutionSuccess] = useState<string | null>(null)
+  const { stats, markets, isLoading, error, pubkey, refresh } = useCreatorDashboardState()
+  const signerMode = useSettingsStore((s) => s.nostrSignerMode)
+  const relays = useSettingsStore((s) => s.relays)
+  const markOracleAttested = useCreatorMarketsStore((s) => s.markOracleAttested)
 
   const handleCreateMarket = () => navigate('/creator/new')
   const handleViewMarket = (marketId: string) => navigate(`/markets/${marketId}`)
+  const handlePublishOracleAttestation = async (marketId: string, outcome: string) => {
+    const market = markets.find((m) => m.id === marketId)
+    if (!market?.oracle) return
+    setResolutionError(null)
+    setResolutionSuccess(null)
+    if (!market.oracle.outcomes.includes(outcome)) {
+      setResolutionError(t('creator.invalidAttestationOutcome'))
+      return
+    }
+    if (signerMode !== 'nsec') {
+      setResolutionError(t('creator.nsecRequiredToResolve'))
+      return
+    }
+    const relayUrls = relays.map((relay) => relay.url)
+    if (relayUrls.length === 0) {
+      setResolutionError(t('creator.relayRequiredToResolve'))
+      return
+    }
+    const confirmed = window.confirm(
+      t('creator.closeMarketConfirm', { title: market.title, outcome }),
+    )
+    if (!confirmed) return
+    setResolvingMarketId(marketId)
+    try {
+      const attestationHex = await signEnumAttestation(
+        relayUrls,
+        market.oracle.eventId,
+        outcome,
+      )
+      markOracleAttested(marketId, {
+        outcome,
+        attestationHex,
+        attestedAt: new Date().toISOString(),
+      })
+      setResolutionSuccess(t('creator.attestationPublished', { outcome }))
+      refresh()
+    } catch (err) {
+      setResolutionError(
+        err instanceof Error ? err.message : t('creator.attestationPublishFailed'),
+      )
+    } finally {
+      setResolvingMarketId(null)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
@@ -139,6 +192,22 @@ export function CreatorDashboard() {
               </div>
             )}
 
+            {resolutionError && (
+              <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300">
+                <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+                <div>
+                  <p className="font-semibold">{t('creator.attestationErrorTitle')}</p>
+                  <p className="mt-0.5 text-xs opacity-80">{resolutionError}</p>
+                </div>
+              </div>
+            )}
+
+            {resolutionSuccess && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                {resolutionSuccess}
+              </div>
+            )}
+
             {/* Market list */}
             <div>
               {markets.length === 0 ? (
@@ -147,6 +216,8 @@ export function CreatorDashboard() {
                 <MyMarkets
                   markets={markets}
                   onViewMarket={handleViewMarket}
+                  onPublishOracleAttestation={handlePublishOracleAttestation}
+                  publishingOracleAttestationMarketId={resolvingMarketId}
                 />
               )}
             </div>

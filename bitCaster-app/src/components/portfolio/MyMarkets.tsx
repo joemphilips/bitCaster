@@ -8,9 +8,17 @@ interface MyMarketsProps {
   markets: CreatedMarket[]
   onViewMarket?: (marketId: string) => void
   onClaimCreatorFees?: (marketId: string) => void
+  onPublishOracleAttestation?: (marketId: string, outcome: string) => void
+  publishingOracleAttestationMarketId?: string | null
 }
 
-export function MyMarkets({ markets, onViewMarket, onClaimCreatorFees }: MyMarketsProps) {
+export function MyMarkets({
+  markets,
+  onViewMarket,
+  onClaimCreatorFees,
+  onPublishOracleAttestation,
+  publishingOracleAttestationMarketId = null,
+}: MyMarketsProps) {
   const { t } = useTranslation()
   const [isOpen, setIsOpen] = useState(true)
 
@@ -36,6 +44,10 @@ export function MyMarkets({ markets, onViewMarket, onClaimCreatorFees }: MyMarke
               market={market}
               onView={onViewMarket}
               onClaimFees={onClaimCreatorFees}
+              onPublishOracleAttestation={onPublishOracleAttestation}
+              isPublishingOracleAttestation={
+                publishingOracleAttestationMarketId === market.id
+              }
             />
           ))}
         </div>

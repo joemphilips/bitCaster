@@ -20,6 +20,7 @@ import { nip19 } from "nostr-tools";
 import * as nip49 from "nostr-tools/nip49";
 import { setPendingKormirNsec } from "./kormir";
 import { useSettingsStore } from "@/stores/settings";
+import { PRODUCTION_NOSTR_RELAYS } from "./relayDefaults";
 
 // ---------------------------------------------------------------------------
 // Singleton NDK instance
@@ -27,12 +28,7 @@ import { useSettingsStore } from "@/stores/settings";
 
 export const DEFAULT_RELAYS: string[] = import.meta.env.VITE_NOSTR_RELAYS
   ? (import.meta.env.VITE_NOSTR_RELAYS as string).split(",").map((r: string) => r.trim())
-  : [
-      "wss://relay.damus.io",
-      "wss://nos.lol",
-      "wss://relay.primal.net",
-      "wss://nostr.bitcoiner.social",
-    ];
+  : [...PRODUCTION_NOSTR_RELAYS];
 
 let _ndk: NDK | null = null;
 // Snapshot of the user-relay set last reconciled into the singleton NDK.
@@ -40,6 +36,11 @@ let _ndk: NDK | null = null;
 // the snapshot lets us skip the pool walk when the user hasn't added or
 // removed a relay since the previous call.
 let _lastReconciledRelaysKey = "";
+
+type TeardownCapableSigner = NDKSigner & {
+  destroy?: () => void | Promise<void>;
+  stop?: () => void | Promise<void>;
+};
 
 /**
  * Merge user-configured relays from the settings store with the static
@@ -114,6 +115,22 @@ export function getNdk(): NDK {
   return _ndk;
 }
 
+async function teardownCurrentSigner(ndk: NDK): Promise<void> {
+  const signer = ndk.signer as TeardownCapableSigner | undefined;
+  try {
+    if (typeof signer?.destroy === "function") {
+      await signer.destroy();
+      return;
+    }
+    if (typeof signer?.stop === "function") {
+      await signer.stop();
+    }
+  } catch {
+    // Best-effort: signer replacement must still proceed if an optional
+    // teardown hook fails or belongs to an older NDK implementation.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // NIP-07 detection
 // ---------------------------------------------------------------------------
@@ -132,6 +149,7 @@ export function isNip07Available(): boolean {
 export async function loginWithExtension(): Promise<NDKSigner> {
   const signer = new NDKNip07Signer();
   const ndk = getNdk();
+  await teardownCurrentSigner(ndk);
   ndk.signer = signer;
   // Don't block login on relay connectivity — connect in background
   ndk.connect();
@@ -156,6 +174,7 @@ export async function loginWithExtension(): Promise<NDKSigner> {
 export async function loginWithNsec(nsec: string): Promise<NDKSigner> {
   const signer = new NDKPrivateKeySigner(nsec);
   const ndk = getNdk();
+  await teardownCurrentSigner(ndk);
   ndk.signer = signer;
   // Don't block login on relay connectivity — connect in background
   ndk.connect();
@@ -289,6 +308,36 @@ export async function fetchAndStoreNostrProfile(): Promise<void> {
     } else {
       settings.setProfile(null, "not-found");
     }
+  }
+}
+
+export interface PublicNostrProfile {
+  pubkey: string;
+  displayName: string;
+  avatar: string;
+}
+
+export async function fetchPublicNostrProfile(
+  pubkey: string,
+): Promise<PublicNostrProfile | null> {
+  try {
+    const ndk = getNdk();
+    const user = ndk.getUser({ pubkey });
+    await Promise.race([
+      user.fetchProfile(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), 5000)
+      ),
+    ]).catch(() => {});
+    const profile = user.profile;
+    if (!profile) return null;
+    return {
+      pubkey,
+      displayName: profile.displayName ?? profile.name ?? pubkey.slice(0, 8),
+      avatar: profile.image ?? "",
+    };
+  } catch {
+    return null;
   }
 }
 

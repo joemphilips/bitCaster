@@ -9,7 +9,8 @@ import {
   type StoredCreatorMarket,
 } from '@/stores/creatorMarkets'
 import { useWalletStore } from '@/stores/wallet'
-import type { CreatedMarket } from '@/types/portfolio'
+import { assertNever } from '@/lib/enumDiscipline'
+import type { CreatedMarket, CreatedMarketStatus } from '@/types/portfolio'
 import type { DashboardStats } from '@/types/market-management'
 
 interface UseCreatorDashboardStateResult {
@@ -27,31 +28,45 @@ interface UseCreatorDashboardStateResult {
   refresh: () => void
 }
 
+function toCreatedMarketStatus(
+  state: CreatorMarketEntry['state'] | null | undefined,
+): CreatedMarketStatus {
+  if (state == null) return 'active'
+
+  switch (state) {
+    case 'open':   return 'active'
+    case 'closed': return 'resolved'
+    default:       return assertNever(state)
+  }
+}
+
 /**
  * Derive the CreatedMarket view used by the portfolio `MyMarkets` / `CreatedMarketRow`
  * components. Each market combines:
  *
  *  - Local wizard record (title, thumbnail, createdAt, creator fee %) — always present.
- *  - Backend volume lookup by conditionId — falls back to `0` when the engine
- *    has not indexed the market yet (e.g. real engine Phase 1 stub).
+ *  - Backend volume lookup by conditionId — falls back to `0` when catalogue
+ *    volume is not available yet.
  *
  * Fees are stubbed to `0` for v1 since the matching engine does not accrue
- * them. Status is always `active` because neither the mock nor the real engine
- * exposes resolution state yet.
+ * them. Status is always `active` until the public API exposes resolution
+ * state; a local oracle attestation is metadata only, not lifecycle truth.
  */
 function buildCreatedMarket(
   stored: StoredCreatorMarket,
-  volumeByConditionId: Map<string, number>,
+  backendByConditionId: Map<string, CreatorMarketEntry>,
 ): CreatedMarket {
+  const backend = backendByConditionId.get(stored.conditionId)
   return {
     id: stored.conditionId,
     title: stored.title,
     imageUrl: stored.thumbnailUrl ?? '',
-    status: 'active',
+    status: toCreatedMarketStatus(backend?.state),
     createdDate: stored.createdAt,
-    volume: volumeByConditionId.get(stored.conditionId) ?? 0,
+    volume: backend?.totalVolumeSats ?? 0,
     creatorFeesEarned: 0,
     creatorFeePercent: stored.creatorFeePercent,
+    oracle: stored.oracle,
   }
 }
 
@@ -130,11 +145,11 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
   }, [])
 
   const markets = useMemo<CreatedMarket[]>(() => {
-    const volumeByConditionId = new Map<string, number>()
+    const backendByConditionId = new Map<string, CreatorMarketEntry>()
     for (const entry of backendMarkets) {
-      volumeByConditionId.set(entry.conditionId, entry.totalVolumeSats)
+      backendByConditionId.set(entry.conditionId, entry)
     }
-    return storedMarkets.map((m) => buildCreatedMarket(m, volumeByConditionId))
+    return storedMarkets.map((m) => buildCreatedMarket(m, backendByConditionId))
   }, [storedMarkets, backendMarkets])
 
   const stats = useMemo<DashboardStats>(() => {

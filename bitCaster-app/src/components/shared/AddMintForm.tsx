@@ -8,9 +8,10 @@ import { Loader2, Plus } from 'lucide-react'
  *
  * The form is "trigger button → expanded input row" — same shape as the
  * Settings page version. The single shared piece of state (the actual mint
- * row) lives in `useWalletStore.addMint`; this component is purely the UX
- * shell around the async call. That keeps the component dumb and the wallet
- * store the single source of truth, satisfying T5.2.c (no duplicate state).
+   * row) lives behind the callback supplied by the page-level wallet operation;
+   * this component is purely the UX shell around the async call. That keeps the
+   * component dumb and the wallet store the single source of truth, satisfying
+   * T5.2.c (no duplicate state).
  */
 interface AddMintFormProps {
   /** Async add-mint callback. Resolves on success, rejects on failure. */

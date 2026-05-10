@@ -21,8 +21,11 @@ export function useInvoiceCountdown(expiresAtSec: number | undefined): number {
     if (!expiresAtSec) return
     const id = setInterval(() => {
       const next = computeRemaining()
+      if (next <= 0) {
+        clearInterval(id)
+        return
+      }
       setRemainingMs(next)
-      if (next <= 0) clearInterval(id)
     }, 1_000)
     return () => clearInterval(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps

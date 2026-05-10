@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { ChevronDown, Check, X } from 'lucide-react'
 import type { MintInfo } from '@/types/deposit-withdraw'
 import { AddMintForm } from '@/components/shared/AddMintForm'
-import { useWalletStore } from '@/stores/wallet'
 import { normalizeUrl } from '@/lib/url'
+import { userAddAndSelectMint } from '@/lib/walletOps'
 
 interface MintSelectorProps {
   mints: MintInfo[]
@@ -17,7 +17,6 @@ export function MintSelector({
   onMintChange,
 }: MintSelectorProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const addMint = useWalletStore((s) => s.addMint)
   const selected = mints.find((m) => m.id === selectedMintId) ?? mints[0]
   if (!selected) return null
 
@@ -29,7 +28,7 @@ export function MintSelector({
    * user sees the new row land in the list.
    */
   const handleAddMint = async (rawUrl: string) => {
-    await addMint(rawUrl)
+    await userAddAndSelectMint(rawUrl)
     onMintChange?.(normalizeUrl(rawUrl))
   }
 

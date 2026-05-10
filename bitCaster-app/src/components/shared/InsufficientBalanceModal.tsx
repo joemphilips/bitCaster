@@ -63,12 +63,14 @@ export function InsufficientBalanceModal({
 
         <div className="flex gap-3">
           <button
+            data-testid="insufficient-balance-cancel"
             onClick={onCancel}
             className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
           >
             {t('common.cancel')}
           </button>
           <button
+            data-testid="insufficient-balance-top-up"
             onClick={onTopUp}
             className="flex-1 py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] text-white font-semibold transition-colors"
           >

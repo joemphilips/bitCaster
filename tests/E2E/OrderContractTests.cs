@@ -16,8 +16,8 @@ public class OrderContractTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _http = new HttpClient { BaseAddress = new Uri($"http://localhost:{TestPorts.Server}") };
-        await TestHelpers.WaitForService(_http, $"http://localhost:{TestPorts.Server}/health", "Matching Engine");
+        _http = new HttpClient { BaseAddress = new Uri($"{TestPorts.ServerUrl}") };
+        await TestHelpers.WaitForService(_http, $"{TestPorts.ServerUrl}/health", "Matching Engine");
     }
 
     public Task DisposeAsync()

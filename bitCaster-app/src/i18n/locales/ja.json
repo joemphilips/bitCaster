@@ -98,6 +98,7 @@
     "seedPhraseDesc": "これら12ワードを順番に書き留め、安全な場所に保管してください",
     "warning": "ワードを順番に書き留めてください。ウォレットの復元に必要です。シードフレーズは絶対に他人に教えないでください。",
     "savedConfirm": "シードフレーズを保存しました",
+    "copySeedPhrase": "シードフレーズをコピー",
     "enterSeedPhrase": "シードフレーズを入力",
     "enterSeedPhraseDesc": "12ワードのシードフレーズを入力してウォレットを復元します",
     "wordPlaceholder": "ワード",
@@ -168,7 +169,12 @@
     "hoursRemaining": "残り {{hours}}時間",
     "minutesRemaining": "残り {{minutes}}分",
     "linkCopied": "リンクをコピーしました",
-    "shareFailed": "リンクのコピーに失敗しました"
+    "shareFailed": "リンクのコピーに失敗しました",
+    "oracle": "オラクル",
+    "unknownInNostr": "Nostrでは不明",
+    "searchingNostr": "Nostrを検索中...",
+    "oracleAuditHint": "この人物が信頼できるか、Nostrネットワークで検索して確認してください",
+    "copyOraclePubkey": "オラクル公開鍵をコピー"
   },
   "orderBook": {
     "title": "注文板",
@@ -250,6 +256,7 @@
     "joined": "{{date}} 参加",
     "views": "{{count}} 閲覧",
     "claimFees": "手数料を受け取る",
+    "viewMarket": "{{title}} を表示",
     "volLabel": "出来高: {{value}}",
     "connectNostr": "Nostr に接続",
     "likedMarkets": "ブックマーク",
@@ -333,6 +340,8 @@
     "waitingForPayment": "支払いを待っています...",
     "paymentReceived": "支払いを受け取りました！",
     "invoiceExpired": "インボイスの有効期限が切れました",
+    "ecashTokenReady": "Ecashトークンを作成しました",
+    "ecashTokenReadyHint": "このトークンを受取人に共有してください。これはBearer型のCashuトークンで、任意のCashuウォレットで受け取れます。",
     "confirmPayment": "支払いを確認",
     "invoiceAmount": "インボイス金額",
     "networkFee": "ネットワーク手数料 (概算)",
@@ -363,7 +372,19 @@
     "emptyDesc": "他のユーザーが取引できる予測マーケットを作成して、手数料を獲得しましょう。",
     "analyticsTitle": "分析機能は近日公開",
     "analyticsDesc": "取引高チャート、マーケット別内訳、手数料追跡は今後のリリースで提供予定です。いくつかマーケットを作成してから、集計データを確認してみてください。",
-    "analyticsBadge": "対応中"
+    "analyticsBadge": "対応中",
+    "winningOutcomeLabel": "{{title}} の勝利アウトカム",
+    "closeMarket": "マーケットをクローズ",
+    "closeMarketUnavailable": "このローカルのクリエイター記録には自己オラクルのメタデータがないため、このブラウザからオラクルアテステーションに署名できません。",
+    "closingMarket": "クローズ中...",
+    "closeMarketConfirm": "「{{title}}」を {{outcome}} としてクローズしますか？ オラクルアテステーションを公開し、エンジンが検知すると新規注文は停止されます。",
+    "attestedOutcome": "アテスト済み: {{outcome}}",
+    "nsecRequiredToResolve": "このオラクルアテステーションに署名するには、Nostr 秘密鍵 (nsec) で接続してください。",
+    "relayRequiredToResolve": "オラクルアテステーションを公開する前に、設定で少なくとも 1 つの Nostr リレーを追加してください。",
+    "invalidAttestationOutcome": "オラクルアテステーションを公開する前に、このマーケットでアナウンスされたアウトカムを選択してください。",
+    "attestationErrorTitle": "オラクルアテステーションを公開できませんでした。",
+    "attestationPublishFailed": "オラクルアテステーションの公開に失敗しました",
+    "attestationPublished": "{{outcome}} のオラクルアテステーションを公開しました。エンジンがマーケットをクローズ済みにするまで待機しています。"
   },
   "marketCreation": {
     "getStarted": "始める",
@@ -530,6 +551,7 @@
   },
   "notification": {
     "empty": "通知はまだありません。",
+    "accepted": "{{market}} の注文が受理されました",
     "filled": "注文が約定しました: {{market}} で {{sats}} sats",
     "partiallyFilled": "一部約定: {{market}} で {{sats}} sats 約定、残り {{remaining}}",
     "cancelled": "{{market}} の注文がキャンセルされました"

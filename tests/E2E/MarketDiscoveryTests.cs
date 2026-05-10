@@ -12,9 +12,9 @@ public class MarketDiscoveryTests : IAsyncLifetime
         // Verify all external services are reachable before launching Playwright
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         // Launch Playwright headless Chromium
         _playwright = await Playwright.CreateAsync();
@@ -45,7 +45,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await SetupComplete(page);
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -63,12 +63,31 @@ public class MarketDiscoveryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NavigateToMarkets_WithSearch_ShowsMatchingSeededMarketOnly()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupComplete(page);
+        await TestHelpers.GotoMarketsAsync(page, "?search=NBA", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var nbaMarket = page.GetByText("2026 NBA Championship Winner");
+        await Assertions.Expect(nbaMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
+
+        var btcMarket = page.GetByText("Will Bitcoin reach $100K");
+        await Assertions.Expect(btcMarket).ToHaveCountAsync(0);
+    }
+
+    [Fact]
     public async Task ClickBuyYes_NavigatesToMarketDetail()
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await SetupComplete(page);
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -93,7 +112,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         // No SetupComplete — fresh user with no wallet
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -113,7 +132,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         // No wallet setup
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -137,7 +156,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -169,7 +188,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         });
         var page = await context.NewPageAsync();
         // No wallet setup
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -207,7 +226,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         // Block the engine markets-query proxy to simulate failure
         await page.RouteAsync("**/api/v1/markets/query*", route => route.AbortAsync());
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/markets", new PageGotoOptions
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

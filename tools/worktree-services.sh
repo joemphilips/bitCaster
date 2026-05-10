@@ -5,9 +5,9 @@
 #
 # Slot model (see bitCaster/plans/parallel-e2e-worktrees.md):
 #
-#   Slot 0 (default) -> vite 5173, engine 5000
-#   Slot 1            -> vite 5273, engine 5100
-#   Slot N            -> vite 5173 + N*100, engine 5000 + N*100
+#   Slot 0 (default) -> vite 5273, engine 5000
+#   Slot 1            -> vite 5373, engine 5100
+#   Slot N            -> vite 5273 + N*100, engine 5000 + N*100
 #
 # Docker-compose services (mintd, cashu-me, lnbits, nostr-relay, seed) are
 # shared across all slots and NOT started by this script — run
@@ -47,7 +47,7 @@ if ! [[ "$SLOT" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
-VITE_PORT=$((5173 + SLOT * 100))
+VITE_PORT=$((5273 + SLOT * 100))
 SERVER_PORT=$((5000 + SLOT * 100))
 
 # Ports consumed by the services launched here.

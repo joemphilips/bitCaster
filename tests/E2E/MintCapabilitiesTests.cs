@@ -19,9 +19,9 @@ public class MintCapabilitiesTests : IAsyncLifetime
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -56,7 +56,7 @@ public class MintCapabilitiesTests : IAsyncLifetime
             ? "{ '4': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, '5': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, 'CTF': { supported: true } }"
             : "{ '4': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, '5': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] } }";
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/setup", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
             Timeout = 30_000,
@@ -107,10 +107,10 @@ public class MintCapabilitiesTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         var consoleMessages = TestHelpers.AttachConsoleCapture(page);
 
-        var mintUrl = $"http://localhost:{TestPorts.Mint}";
+        var mintUrl = $"{TestPorts.MintUrl}";
         await PrimeWalletAsync(page, mintUrl, withCtfNuts: true, mintName: "Staging CTF Mint");
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/settings", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/settings", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -151,7 +151,7 @@ public class MintCapabilitiesTests : IAsyncLifetime
         var mintUrl = "http://localhost:9999";
         await PrimeWalletAsync(page, mintUrl, withCtfNuts: false, mintName: "Plain Mint");
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/settings", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/settings", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

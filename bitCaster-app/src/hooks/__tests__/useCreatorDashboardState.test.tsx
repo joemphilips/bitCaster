@@ -75,7 +75,12 @@ describe('useCreatorDashboardState', () => {
       pubkey: FAKE_PUBKEY,
       // Only market A has backend volume — market B should default to 0.
       markets: [
-        { conditionId: CONDITION_A, totalVolumeSats: 50_000, createdAt: '2026-04-10T00:00:00.000Z' },
+        {
+          conditionId: CONDITION_A,
+          totalVolumeSats: 50_000,
+          createdAt: '2026-04-10T00:00:00.000Z',
+          state: 'open',
+        },
       ],
     })
 
@@ -96,6 +101,49 @@ describe('useCreatorDashboardState', () => {
     expect(result.current.stats.activeMarketsCount).toBe(2)
     expect(result.current.stats.totalVolumeSats).toBe(50_000)
     expect(result.current.stats.totalFeesEarnedSats).toBe(0)
+  })
+
+  it('maps engine closed state to a resolved creator-market row', async () => {
+    useWalletStore.setState({ mnemonic: 'test mnemonic seed' })
+    useCreatorMarketsStore.setState({
+      markets: [
+        {
+          conditionId: CONDITION_A,
+          title: 'Market A',
+          thumbnailUrl: null,
+          createdAt: '2026-04-10T00:00:00.000Z',
+          creatorFeePercent: 0,
+          oracle: {
+            type: 'self',
+            eventId: 'event-1',
+            outcomes: ['Yes', 'No'],
+            attestedOutcome: 'Yes',
+            attestationHex: 'abc123',
+            attestedAt: '2026-05-09T00:00:00.000Z',
+          },
+        },
+      ],
+    })
+
+    mockFetchCreatorMarkets.mockResolvedValue({
+      pubkey: FAKE_PUBKEY,
+      markets: [
+        {
+          conditionId: CONDITION_A,
+          totalVolumeSats: 75_000,
+          createdAt: '2026-04-10T00:00:00.000Z',
+          state: 'closed',
+        },
+      ],
+    })
+
+    const { result } = renderHook(() => useCreatorDashboardState())
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    expect(result.current.markets[0].status).toBe('resolved')
+    expect(result.current.stats.activeMarketsCount).toBe(0)
+    expect(result.current.stats.resolvedMarketsCount).toBe(1)
   })
 
   it('falls back to zero volume on backend error and surfaces the error', async () => {

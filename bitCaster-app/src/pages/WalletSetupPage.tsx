@@ -4,6 +4,7 @@ import { WalletSetup } from '@/components/wallet-setup/WalletSetup'
 import { NowLoadingPage } from '@/components/wallet-setup/NowLoadingPage'
 import { useWalletStore } from '@/stores/wallet'
 import { getMarkets } from '@/lib/markets'
+import { userAddAndSelectMint, userRemoveMint } from '@/lib/walletOps'
 import * as bip39Lib from '@/lib/bip39'
 import type { SetupStep, SetupChoice, MintConnectionTest, BackgroundDataLoad } from '@/types/wallet-setup'
 
@@ -25,8 +26,6 @@ export function WalletSetupPage() {
   const mnemonic = useWalletStore((s) => s.mnemonic)
   const generateMnemonic = useWalletStore((s) => s.generateMnemonic)
   const recoverFromMnemonic = useWalletStore((s) => s.recoverFromMnemonic)
-  const addMint = useWalletStore((s) => s.addMint)
-  const removeMint = useWalletStore((s) => s.removeMint)
   const completeSetup = useWalletStore((s) => s.completeSetup)
 
   const seedWords = mnemonic ? mnemonic.split(' ') : []
@@ -107,9 +106,7 @@ export function WalletSetupPage() {
 
   const onSeedSavedToggle = (saved: boolean) => {
     setSeedSaved(saved)
-    if (saved) {
-      setSeedVerificationActive(true)
-    } else {
+    if (!saved) {
       setSeedVerificationActive(false)
     }
   }
@@ -141,7 +138,7 @@ export function WalletSetupPage() {
   const handleAddMint = async (url: string) => {
     setMintConnections((prev) => [...prev, { url, status: 'connecting' }])
     try {
-      await addMint(url)
+      await userAddAndSelectMint(url)
       setMintConnections((prev) =>
         prev.map((m) => (m.url === url ? { ...m, status: 'connected' } : m))
       )
@@ -156,7 +153,7 @@ export function WalletSetupPage() {
 
   const onRemoveMintHandler = (url: string) => {
     if (mintConnections.length <= 1) return
-    removeMint(url)
+    userRemoveMint(url)
     setMintConnections((prev) => prev.filter((m) => m.url !== url))
   }
 
@@ -217,7 +214,7 @@ export function WalletSetupPage() {
       onRecover={onRecover}
       onAddMint={handleAddMint}
       onRemoveMint={onRemoveMintHandler}
-      onContinue={onVerificationComplete}
+      onContinue={() => setSeedVerificationActive(true)}
       onBack={onBack}
       onClose={onClose}
       onFinishSetup={onFinishSetup}

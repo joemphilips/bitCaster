@@ -81,6 +81,11 @@ The engine matches Alice's sell order with Bob's buy order based on price and qu
 - Alice receives Bob's pubkey `B`
 - Bob receives Alice's pubkey `A`
 
+The matched quantity is the conditional-token face amount. The settlement
+message also carries the quote payment separately. For example, a 1,000-face-sat
+YES fill at price 37 means Alice locks 1,000 face sats of YES and Bob locks 370
+regular sats. Implementations must not use one amount for both swap legs.
+
 ### Step 3: ECDH Shared Secret
 
 Both parties independently compute the shared secret:
@@ -327,7 +332,11 @@ The privacy advantage is the key differentiator. With HTLCs, the mint sees the s
 
 ### Token Denomination Granularity
 
-Cashu uses power-of-2 denominations. A trade of 37 YES tokens at 0.6 sats each = 22.2 sats, which is not exactly representable. Implementations should define minimum trade sizes aligned to representable amounts, or use higher-precision units.
+Cashu uses integer sat amounts and power-of-2 proof denominations. The first
+bitCaster release requires limit-order face amounts to be divisible by 100 sats,
+so every integer-cent price maps to an exact quote payment. For example, 1,000
+face sats at price 37 maps to 370 quote sats. Implementations should reject
+orders that would require fractional quote sats instead of silently rounding.
 
 ### Front-Running
 

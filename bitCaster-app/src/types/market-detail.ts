@@ -160,6 +160,7 @@ interface BaseMarketDetail {
 export interface YesNoMarketDetail extends BaseMarketDetail {
   type: 'yesno'
   currentOdds: CurrentOdds
+  outcomeOrderBooks?: Record<'YES' | 'NO', OrderBook>
 }
 
 export interface CategoricalMarketDetail extends BaseMarketDetail {
@@ -314,9 +315,6 @@ export interface MarketDetailProps {
 
   /** Called when user clicks on a related market */
   onRelatedMarketClick?: (marketId: string) => void
-
-  /** Called when user clicks on creator profile */
-  onCreatorClick?: (creatorId: string) => void
 
   /** Called when user clicks back to base market (2D markets only) */
   onBaseMarketClick?: (marketId: string) => void

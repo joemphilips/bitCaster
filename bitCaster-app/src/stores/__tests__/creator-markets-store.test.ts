@@ -48,6 +48,29 @@ describe('useCreatorMarketsStore', () => {
     expect(markets[0].creatorFeePercent).toBe(0.05)
   })
 
+  it('markOracleAttested records the published creator oracle attestation', () => {
+    const market = makeMarket({
+      oracle: {
+        type: 'self',
+        eventId: 'event-1',
+        outcomes: ['Yes', 'No'],
+      },
+    })
+    useCreatorMarketsStore.setState({ markets: [market] })
+
+    useCreatorMarketsStore.getState().markOracleAttested(market.conditionId, {
+      outcome: 'Yes',
+      attestationHex: 'abc123',
+      attestedAt: '2026-05-07T00:00:00.000Z',
+    })
+
+    expect(useCreatorMarketsStore.getState().markets[0].oracle).toMatchObject({
+      attestationHex: 'abc123',
+      attestedOutcome: 'Yes',
+      attestedAt: '2026-05-07T00:00:00.000Z',
+    })
+  })
+
   it('removeCreatedMarket drops the matching entry', () => {
     const a = makeMarket({ conditionId: 'a'.repeat(64) })
     const b = makeMarket({ conditionId: 'b'.repeat(64) })
@@ -104,6 +127,25 @@ describe('creatorMarketsEqual', () => {
   it('returns false when a field differs', () => {
     const a = makeMarket({ title: 'Old' })
     const b = makeMarket({ title: 'New' })
+    expect(creatorMarketsEqual([a], [b])).toBe(false)
+  })
+
+  it('returns false when oracle metadata differs', () => {
+    const a = makeMarket({
+      oracle: {
+        type: 'self',
+        eventId: 'event-1',
+        outcomes: ['Yes', 'No'],
+      },
+    })
+    const b = makeMarket({
+      oracle: {
+        type: 'self',
+        eventId: 'event-1',
+        outcomes: ['Yes', 'No'],
+        attestedOutcome: 'Yes',
+      },
+    })
     expect(creatorMarketsEqual([a], [b])).toBe(false)
   })
 

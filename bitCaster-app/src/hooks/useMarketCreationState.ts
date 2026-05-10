@@ -409,6 +409,9 @@ export function useMarketCreationState() {
       // own oracle.
       let announcementHex: string
       let outcomes: string[]
+      let creatorOracle:
+        | { type: 'self'; eventId: string; outcomes: string[] }
+        | undefined
 
       if (choice === 'become-oracle') {
         if (nostrSignerMode !== 'nsec') {
@@ -451,6 +454,7 @@ export function useMarketCreationState() {
           outcomes,
           maturityEpoch,
         )
+        creatorOracle = { type: 'self', eventId, outcomes }
       } else {
         const announcement = oracleAnnouncements.find(
           (a) => a.id === draft.stepOracleCheck?.selectedAnnouncementId,
@@ -479,6 +483,7 @@ export function useMarketCreationState() {
             name,
             probability: draft.stepOutcomes?.outcomes?.find((o) => o.label === name)?.probability ?? 50,
           })),
+          outcomeType: draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? 'yesno',
           liquiditySats: draft.stepInitialLiquidity?.liquiditySats ?? 0,
           categoryTags,
         },
@@ -498,6 +503,7 @@ export function useMarketCreationState() {
           thumbnailUrl: createResponse.thumbnailUrl ?? null,
           createdAt: new Date().toISOString(),
           creatorFeePercent: DEFAULT_CREATOR_FEE_PERCENT,
+          oracle: creatorOracle,
         })
       } catch (storeErr) {
         console.warn(

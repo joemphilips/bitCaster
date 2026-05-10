@@ -1,4 +1,5 @@
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Check, Copy } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 interface SeedDisplayProps {
@@ -15,6 +16,15 @@ export function SeedDisplay({
   onContinue,
 }: SeedDisplayProps) {
   const { t } = useTranslation()
+  const [copied, setCopied] = useState(false)
+  const seedPhrase = seedWords.join(' ')
+
+  const handleCopySeed = async () => {
+    await navigator.clipboard.writeText(seedPhrase)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   return (
     <div className="max-w-lg mx-auto">
       <div className="text-center mb-6">
@@ -43,6 +53,14 @@ export function SeedDisplay({
             </div>
           ))}
         </div>
+        <button
+          type="button"
+          onClick={handleCopySeed}
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
+        >
+          {copied ? <Check className="h-4 w-4 text-emerald-500" /> : <Copy className="h-4 w-4" />}
+          {copied ? t('common.copied') : t('seed.copySeedPhrase')}
+        </button>
       </div>
 
       {/* Warning */}

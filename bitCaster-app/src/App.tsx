@@ -1,4 +1,10 @@
-import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  useNavigate,
+  useLocation,
+} from "react-router";
 import { useTranslation } from "react-i18next";
 import { AppShell } from "@/components/shell";
 import { MarketsPage } from "@/pages/MarketsPage";
@@ -14,15 +20,17 @@ import { useEffect, useMemo, useRef } from "react";
 import { nip19 } from "nostr-tools";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
+import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
 import { useTradeSettlement } from "@/hooks/useTradeSettlement";
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
-import { rehydrateNostrSigner } from "@/lib/nostr";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import { recoverKeysetCountersForMint } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
+import { userAddAndSelectMint } from "@/lib/walletOps";
+import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -58,7 +66,8 @@ function ShellRoutes() {
     {
       label: t("nav.markets"),
       href: "/markets",
-      isActive: location.pathname === "/" || location.pathname.startsWith("/markets"),
+      isActive:
+        location.pathname === "/" || location.pathname.startsWith("/markets"),
     },
   ];
 
@@ -73,6 +82,16 @@ function ShellRoutes() {
       navigationItems={navigationItems}
       user={user}
       onNavigate={(href) => navigate(href)}
+      onSearchChange={(query) => {
+        const trimmed = query.trim();
+        navigate(
+          {
+            pathname: "/markets",
+            search: trimmed ? `?search=${encodeURIComponent(trimmed)}` : "",
+          },
+          { replace: location.pathname.startsWith("/markets") },
+        );
+      }}
       onCreateClick={() => navigate("/creator")}
     >
       <Routes>
@@ -87,6 +106,20 @@ function ShellRoutes() {
       </Routes>
     </AppShell>
   );
+}
+
+function titleForPath(pathname: string): string {
+  if (pathname === "/" || pathname === "/markets")
+    return "bitCaster/All Markets";
+  if (pathname.startsWith("/markets/")) return "bitCaster/Market";
+  if (pathname === "/portfolio") return "bitCaster/Portfolio";
+  if (pathname === "/creator/new") return "bitCaster/Create Market";
+  if (pathname === "/creator") return "bitCaster/Creator";
+  if (pathname === "/settings") return "bitCaster/Settings";
+  if (pathname === "/mint-details") return "bitCaster/Mint Details";
+  if (pathname.startsWith("/user/")) return "bitCaster/User";
+  if (pathname === "/setup") return "bitCaster/Setup";
+  return "bitCaster";
 }
 
 /**
@@ -121,6 +154,7 @@ function AppRoutes() {
   const location = useLocation();
   useBookmarkSync();
   useCreatorSync();
+  useActivityLogSync();
   usePendingTradesPoller();
   const nsecSecret = useSettingsStore((s) => s.nsecSecret);
   const tradeHubPrivkey = useMemo(
@@ -129,30 +163,14 @@ function AppRoutes() {
   );
   useTradeSettlement(tradeHubPrivkey);
 
-  // Re-install the Nostr signer from localStorage on mount — the nsec lives
-  // in the settings store but NDK.signer is RAM-only, so after any reload
-  // the runtime signer is absent until this rehydrates it.
-  //
-  // Why defer to `onFinishHydration`: Zustand's persist middleware rehydrates
-  // asynchronously. On first render `nostrSignerMode` is its default `"none"`
-  // and `nsecSecret` is `null` — `rehydrateNostrSigner` would short-circuit
-  // and never retry, leaving the user stuck on "Profile not found on
-  // connected relays" until full reload. Mirrors the mint-rehydrate pattern
-  // immediately below.
-  const signerRehydrated = useRef(false);
   useEffect(() => {
-    if (signerRehydrated.current) return;
-    const runSignerRehydrate = () => {
-      if (signerRehydrated.current) return;
-      signerRehydrated.current = true;
-      rehydrateNostrSigner().catch(() => {});
-    };
-    if (useSettingsStore.persist.hasHydrated()) {
-      runSignerRehydrate();
-      return;
-    }
-    const unsub = useSettingsStore.persist.onFinishHydration(runSignerRehydrate);
-    return () => { unsub(); };
+    document.title = titleForPath(location.pathname);
+  }, [location.pathname]);
+
+  // Re-install the Nostr signer from persisted settings after Zustand
+  // hydration. The identityOps helper owns the one-shot/hydration semantics.
+  useEffect(() => {
+    rehydratePersistedNostrIdentity().catch(() => {});
   }, []);
 
   // One-shot migration: pre-fix proofs stored their mintUrl verbatim from
@@ -210,7 +228,7 @@ function AppRoutes() {
   // view — P5 item 5 regression.
   const mnemonic = useWalletStore((s) => s.mnemonic);
   const relayUrlsKey = useSettingsStore((s) =>
-    s.relays.map((r) => r.url).join("|")
+    s.relays.map((r) => r.url).join("|"),
   );
   useEffect(() => {
     if (!mnemonic) return;
@@ -244,7 +262,7 @@ function AppRoutes() {
     const runMintRehydrate = () => {
       if (mintRehydrateAttempted.current) return;
       mintRehydrateAttempted.current = true;
-      const { mints, addMint } = useWalletStore.getState();
+      const { mints } = useWalletStore.getState();
       if (mints.length === 0) {
         // Skip seeding while the wallet-setup wizard is visible — the
         // wizard owns mint configuration and `completeSetup()` adds the
@@ -252,19 +270,21 @@ function AppRoutes() {
         // seeding (tests, power users reloading mid-wizard) and can
         // overwrite the mint info they just chose.
         const onWizard = (WIZARD_PATHS as readonly string[]).includes(
-          window.location.pathname
+          window.location.pathname,
         );
         if (!onWizard) {
-          addMint(DEFAULT_MINT_URL).catch(() => {});
+          userAddAndSelectMint(DEFAULT_MINT_URL).catch(() => {});
         }
         return;
       }
       for (const m of mints) {
-        const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)?.nuts;
+        const nuts = (m.info as { nuts?: Record<string, unknown> } | undefined)
+          ?.nuts;
         const isDefault = m.url === DEFAULT_MINT_URL;
-        const missingCtfOnDefault = isDefault && nuts != null && !('CTF' in nuts);
+        const missingCtfOnDefault =
+          isDefault && nuts != null && !("CTF" in nuts);
         if (!nuts || missingCtfOnDefault) {
-          addMint(m.url).catch(() => {});
+          userAddAndSelectMint(m.url).catch(() => {});
         }
       }
     };
@@ -273,10 +293,14 @@ function AppRoutes() {
       return;
     }
     const unsub = useWalletStore.persist.onFinishHydration(runMintRehydrate);
-    return () => { unsub(); };
+    return () => {
+      unsub();
+    };
   }, []);
 
-  const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
+  const isWizard = (WIZARD_PATHS as readonly string[]).includes(
+    location.pathname,
+  );
   return isWizard ? <WizardRoutes /> : <ShellRoutes />;
 }
 

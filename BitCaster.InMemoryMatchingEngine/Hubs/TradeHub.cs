@@ -8,13 +8,11 @@ namespace BitCaster.InMemoryMatchingEngine.Hubs;
 /// counterparties. Mounted at <c>/hubs/trade</c>.
 ///
 /// <para>
-/// MOCK ONLY — the real engine's <c>TradeHub</c> requires a verified NIP-98
-/// auth token and authorises join calls against the trade aggregate's
-/// recorded seller/buyer user-ids. The mock parses the NIP-98 token via
+/// MOCK ONLY — parses the NIP-98 token via
 /// <see cref="Nip98PubkeyExtractor.TryExtract"/> to read the caller's pubkey
-/// but does NOT verify the schnorr signature. Anyone can join any trade —
-/// sufficient for two-browser-tab dev/E2E, unsafe in prod (enforced by
-/// keeping this hub scoped to the mock project).
+/// but does NOT verify the schnorr signature. Anyone can join any trade,
+/// which is sufficient for two-browser-tab dev/E2E and unsafe outside the
+/// mock project.
 /// </para>
 ///
 /// <para>
@@ -48,7 +46,9 @@ public class TradeHub : Hub<ITradeHubClient>
             record.SellerPubkey,
             record.BuyerPubkey,
             record.SellerLocktime,
-            record.BuyerLocktime);
+            record.BuyerLocktime,
+            record.MarketId,
+            record.FillAmountSats);
     }
 
     /// <summary>
@@ -66,7 +66,7 @@ public class TradeHub : Hub<ITradeHubClient>
         var caller = NipPubkeyOrAnonymous();
         var group = GroupName(tradeId);
 
-        if (messageType == "settlement-complete")
+        if (messageType == TradeMessageTypes.SettlementComplete)
         {
             await HandleSettlementComplete(tradeId, caller, group);
             return;
@@ -76,7 +76,7 @@ public class TradeHub : Hub<ITradeHubClient>
 
         // Flip to Settling once the buyer has answered with their locked proofs
         // — both clients then run their claim branch in `useTradeSettlement`.
-        if (messageType == "locked-proofs-buyer")
+        if (messageType == TradeMessageTypes.LockedProofsBuyer)
             await Clients.Group(group).TradeStateChanged(tradeId, "Settling");
     }
 

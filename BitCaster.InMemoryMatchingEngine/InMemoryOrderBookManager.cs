@@ -4,8 +4,8 @@ using BitCaster.MatchingEngine.Contracts;
 namespace BitCaster.InMemoryMatchingEngine;
 
 /// <summary>
-/// In-memory matching-engine stub. Implements just enough of the real engine's
-/// behaviour to keep the frontend dev/E2E loop moving:
+/// In-memory matching-engine stub. Implements just enough catalogue/order
+/// behavior to keep the frontend dev/E2E loop moving:
 ///
 /// <list type="bullet">
 /// <item>Per-market FIFO order book at each price level (price-time priority).</item>
@@ -19,8 +19,7 @@ namespace BitCaster.InMemoryMatchingEngine;
 ///
 /// <para>
 /// The mock's only state is an in-memory <see cref="ConcurrentDictionary{TKey, TValue}"/>
-/// per market — it has no Sekiban runtime and is never deployed; the
-/// production engine continues to own real persistence.
+/// per market. It is dev/E2E scaffolding, not production persistence.
 /// </para>
 ///
 /// <para>
@@ -33,6 +32,7 @@ namespace BitCaster.InMemoryMatchingEngine;
 public class InMemoryOrderBookManager
 {
     private readonly ConcurrentDictionary<string, OrderBook> _books = new();
+    private readonly ConcurrentDictionary<Guid, string> _orderMarketIndex = new();
 
     public SubmitResult SubmitOrder(
         string marketId,
@@ -75,6 +75,7 @@ public class InMemoryOrderBookManager
                 book.MarkTakerCompleted(incoming, takerStatus);
             }
         }
+        _orderMarketIndex[orderId] = marketId;
 
         var status = DeriveStatus(amountSats, remaining, tif, fills.Count > 0);
         return new SubmitResult(
@@ -88,29 +89,30 @@ public class InMemoryOrderBookManager
     public bool CancelOrder(Guid orderId, out string? marketId)
     {
         marketId = null;
-        foreach (var (id, book) in _books)
+        if (!_orderMarketIndex.TryGetValue(orderId, out var indexedMarketId) ||
+            !_books.TryGetValue(indexedMarketId, out var book))
         {
-            lock (book)
-            {
-                if (!book.Cancel(orderId)) continue;
-                marketId = id;
-                return true;
-            }
+            return false;
         }
-        return false;
+
+        lock (book)
+        {
+            if (!book.Cancel(orderId)) return false;
+            marketId = indexedMarketId;
+            return true;
+        }
     }
 
     public OrderStatusView? GetOrderStatus(Guid orderId)
     {
-        foreach (var (id, book) in _books)
+        if (!_orderMarketIndex.TryGetValue(orderId, out var marketId) ||
+            !_books.TryGetValue(marketId, out var book))
         {
-            lock (book)
-            {
-                var view = book.LookupStatus(id, orderId);
-                if (view is not null) return view;
-            }
+            return null;
         }
-        return null;
+
+        lock (book)
+            return book.LookupStatus(marketId, orderId);
     }
 
     public OrderBookSnapshot GetSnapshot(string marketId)
@@ -153,7 +155,8 @@ public class InMemoryOrderBookManager
 
     private static Fill BuildFill(RestingOrder taker, RestingOrder maker, long amount)
     {
-        var fill = new Fill(
+        var tradeId = Guid.NewGuid();
+        return new Fill(
             amountSats: amount,
             executionPrice: maker.Price,
             filledAt: DateTimeOffset.UtcNow,
@@ -161,20 +164,13 @@ public class InMemoryOrderBookManager
             makerEphemeralPubkey: maker.EphemeralPubkey!,
             makerOrderId: maker.Id,
             path: MatchPath.Direct,
-            takerOrderId: taker.Id);
-        // Frontend reads tradeId off the Fill's open extension data — see
-        // bitCaster-app/src/lib/orderStatus.ts. The contract Fill class has no
-        // typed tradeId field; the AdditionalProperties dictionary is the
-        // forward-compatible escape hatch and serializes inline thanks to
-        // [JsonExtensionData] on the generated property.
-        fill.AdditionalProperties["tradeId"] = Guid.NewGuid().ToString();
-        return fill;
+            takerOrderId: taker.Id,
+            tradeId: tradeId);
     }
 
     private static string DeriveStatus(long requested, long remaining, TimeInForce tif, bool anyFills)
     {
         if (remaining == 0) return "filled";
-        if (anyFills && tif == TimeInForce.FAK) return "partially_filled";
         if (anyFills) return "partially_filled";
         return tif == TimeInForce.FAK ? "cancelled" : "resting";
     }
@@ -187,12 +183,15 @@ public class InMemoryOrderBookManager
 /// </summary>
 internal sealed class OrderBook
 {
+    private const int RetainedOrderIndexLimit = 1000;
+
     public OrderBook(string marketId) => MarketId = marketId;
 
     public string MarketId { get; }
 
     private readonly List<RestingOrder> _resting = [];
     private readonly Dictionary<Guid, CompletedOrder> _completed = [];
+    private readonly Queue<Guid> _completedOrderRetention = [];
     /// <summary>
     /// Fills indexed by both the maker and taker orderId so a later
     /// <c>GET /orders/{id}</c> can surface the per-fill <c>tradeId</c>.
@@ -202,6 +201,7 @@ internal sealed class OrderBook
     /// match has occurred.
     /// </summary>
     private readonly Dictionary<Guid, List<Fill>> _fillsByOrderId = [];
+    private readonly Queue<Guid> _fillOrderRetention = [];
 
     public void AddResting(RestingOrder order) => _resting.Add(order);
 
@@ -211,12 +211,8 @@ internal sealed class OrderBook
     /// </summary>
     public void RecordFill(Guid takerOrderId, Guid makerOrderId, Fill fill)
     {
-        if (!_fillsByOrderId.TryGetValue(takerOrderId, out var takerFills))
-            _fillsByOrderId[takerOrderId] = takerFills = [];
-        takerFills.Add(fill);
-        if (!_fillsByOrderId.TryGetValue(makerOrderId, out var makerFills))
-            _fillsByOrderId[makerOrderId] = makerFills = [];
-        makerFills.Add(fill);
+        GetOrCreateFills(takerOrderId).Add(fill);
+        GetOrCreateFills(makerOrderId).Add(fill);
     }
 
     public IReadOnlyList<Fill> GetFills(Guid orderId)
@@ -248,7 +244,7 @@ internal sealed class OrderBook
         {
             var o = _resting[i];
             if (o.RemainingSats > 0) continue;
-            _completed[o.Id] = new CompletedOrder(o, "filled");
+            RememberCompleted(o.Id, new CompletedOrder(o, "filled"));
             _resting.RemoveAt(i);
         }
     }
@@ -260,14 +256,14 @@ internal sealed class OrderBook
     /// <see cref="RemoveCompleted"/> alone does not cover it.
     /// </summary>
     public void MarkTakerCompleted(RestingOrder taker, string status)
-        => _completed[taker.Id] = new CompletedOrder(taker, status);
+        => RememberCompleted(taker.Id, new CompletedOrder(taker, status));
 
     public bool Cancel(Guid orderId)
     {
         for (var i = 0; i < _resting.Count; i++)
         {
             if (_resting[i].Id != orderId) continue;
-            _completed[orderId] = new CompletedOrder(_resting[i], "cancelled");
+            RememberCompleted(orderId, new CompletedOrder(_resting[i], "cancelled"));
             _resting.RemoveAt(i);
             return true;
         }
@@ -308,6 +304,37 @@ internal sealed class OrderBook
             .Select(g => new LevelDto(g.Sum(o => o.RemainingSats), g.Key));
         return (descending ? grouped.OrderByDescending(l => l.Price) : grouped.OrderBy(l => l.Price))
             .ToList();
+    }
+
+    private List<Fill> GetOrCreateFills(Guid orderId)
+    {
+        if (_fillsByOrderId.TryGetValue(orderId, out var fills))
+            return fills;
+
+        fills = [];
+        _fillsByOrderId[orderId] = fills;
+        _fillOrderRetention.Enqueue(orderId);
+        while (_fillsByOrderId.Count > RetainedOrderIndexLimit &&
+               _fillOrderRetention.TryDequeue(out var oldest))
+        {
+            _fillsByOrderId.Remove(oldest);
+        }
+        return fills;
+    }
+
+    private void RememberCompleted(Guid orderId, CompletedOrder completed)
+    {
+        var isNew = !_completed.ContainsKey(orderId);
+        _completed[orderId] = completed;
+        if (!isNew) return;
+
+        _completedOrderRetention.Enqueue(orderId);
+        while (_completed.Count > RetainedOrderIndexLimit &&
+               _completedOrderRetention.TryDequeue(out var oldest))
+        {
+            _completed.Remove(oldest);
+            _fillsByOrderId.Remove(oldest);
+        }
     }
 }
 

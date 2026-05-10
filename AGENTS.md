@@ -11,13 +11,13 @@ User Browser (PWA)
   │  cashu-ts   ←→  CDK mintd (Azure Container Apps)
   │  NDK        ←→  Nostr relays (oracle announcements)
   │  NWC        ←→  Lightning wallet (top-up)
-  │  SignalR    ←→  Matching Engine (price feed)
-  │  REST       ←→  Matching Engine (order submission)
+  │  SignalR    ←→  Matching Engine API (price feed)
+  │  REST       ←→  Matching Engine API (order submission)
   │
   └─ Azure Static Web Apps (CDN)
 
-Matching Engine (private repo: bitCaster-matching-engine)
-  └─ In-memory order books (ConcurrentDictionary per market)
+Matching Engine API
+  └─ Public REST / SignalR contract defined by this repo
 
 CDK mintd
   ├─ PostgreSQL Flexible Server (state)
@@ -33,10 +33,17 @@ Every communication should be defined as an open protocol:
 - bitCaster-app ↔ cdk — defined in `nuts/`
 - bitCaster-app ↔ matching engine — defined in yaml specs under `BitCaster.MatchingEngine.Contracts/specs/`
 
-### User-specific state must handled by client-side
+Public contracts and docs in this submodule must describe only wire-visible
+behavior: endpoints, schemas, authentication, errors, state semantics, and
+client obligations. Do not mention non-public service repositories or backend
+implementation choices in `BitCaster.MatchingEngine.Contracts/`,
+`bitCaster-app/`, or `bitCaster-doc/`.
+
+### User-specific state must be handled client-side
 
 - Matching engine **should NOT** store user information as much as possible. It's sole purpose is to keep the markets liquid and tradable.
-- User-specific data must be handled by client side using Nostr [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md), or simply by localStorage if user has not configured nostr pubkey
+- Private user-specific data must be handled client-side using localStorage for reload UX and encrypted NIP-44 content inside Nostr [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) replaceable events when the user has configured a Nostr key. Examples: portfolio activity history, local wallet workflow records, private oracle drafts, and anything the engine cannot verify as authoritative.
+- Creator-market discovery is not private by itself; it can be mirrored publicly or indexed by the engine for UX. Keep sensitive creator-side material out of public storage unless it is already public Nostr/oracle data.
 
 ## Monorepo Layout
 
@@ -55,20 +62,22 @@ tools/               Dev tooling (seed scripts, worktree-services.sh, build-korm
 tests/E2E/           Playwright E2E tests (xUnit)
 ```
 
-The real CLOB matching engine is a **private repo** one level above (`bitCaster-matching-engine`); it references `BitCaster.MatchingEngine.Contracts` via submodule.
+The matching engine is an external service from this public repo's perspective.
+This repo owns only the public contract, mock/dev server, frontend, and docs.
 
 ## Nostr Usage
 
-1. **Private storage** via [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) — anything in localStorage must also be mirrored to NIP-78 iff the user has configured a nostr key.
-2. **Public broadcast/fetch** for DLC oracle announcements / attestations **only** — never publish anything else (user anonymity).
+1. **Private storage** via [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) + NIP-44 self-encryption — private records in localStorage must also be mirrored to encrypted NIP-78 iff the user has configured a Nostr key.
+2. **Public app state** via NIP-78 or engine indexing — non-sensitive records like "markets this pubkey created" may be public when that improves UX.
+3. **Public broadcast/fetch** for DLC oracle announcements / attestations — these are public protocol artifacts.
 
 When you need to understand a NIP, read the spec from the `nips-protocol/` submodule (pinned upstream copy of `nostr-protocol/nips`). **Do not edit files under `nips-protocol/`** — it is an upstream reference and must stay untouched. To pull a newer revision, bump the submodule pointer with `git submodule update --remote nips-protocol` rather than editing its contents.
 
 ## Local Dev
 
 ```bash
-docker compose up -d                 # mint:8085, server:5000, cashu-me:3000, nostr-relay, lnbits, seed
-cd bitCaster-app && npm run dev      # frontend:5173
+docker compose up -d                 # mint:8085, server:5000, cashu-me:3000, nostr-relay, lnbits:5102, seed
+cd bitCaster-app && npm run dev      # frontend:5273
 ```
 
 The frontend `.env` is pre-configured with the default ports.
@@ -92,7 +101,7 @@ When work on a branch is complete, follow these steps in order before publishing
 1. **Run /simplify** — invoke the simplify skill to review changed code for reuse, quality, and efficiency. Commit any improvements.
 2. **Run frontend tests** — `cd bitCaster-app && npm run test`
 3. **Run .NET build** — `dotnet build BitCaster.MatchingEngine.Contracts/ && dotnet build BitCaster.InMemoryMatchingEngine/`
-4. **Run E2E tests** — `docker compose up -d`, wait for mint (`curl localhost:8085/v1/info`), server (`curl localhost:5000/health`), and frontend (`curl localhost:5173`) to be healthy, then `dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7`.
+4. **Run E2E tests** — `docker compose up -d`, wait for mint (`curl localhost:8085/v1/info`), server (`curl localhost:5000/health`), and frontend (`curl localhost:5273`) to be healthy, then `dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7`.
 5. **Create a draft PR** — `gh pr create --draft`. Monitor CI. If CI fails, fix issues, push, and iterate until green.
 6. **Publish the PR** — `gh pr ready`.
 

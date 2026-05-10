@@ -22,9 +22,9 @@ public class CreatorDashboardTests : IAsyncLifetime
         // Verify all external services are reachable before launching Playwright
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         await Task.WhenAll(
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Mint}/v1/info", "Mint"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Server}/health", "Matching Engine"),
-            TestHelpers.WaitForService(httpClient, $"http://localhost:{TestPorts.Vite}", "Frontend"));
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.MintUrl}/v1/info", "Mint"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.ServerUrl}/health", "Matching Engine"),
+            TestHelpers.WaitForService(httpClient, $"{TestPorts.FrontendUrl}", "Frontend"));
 
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
@@ -54,8 +54,21 @@ public class CreatorDashboardTests : IAsyncLifetime
     /// Must be called on a page that has already navigated under the Vite origin
     /// so localStorage is writable.
     /// </summary>
-    private static async Task SeedCreatorMarketsAsync(IPage page, string conditionId, string title)
+    private static async Task SeedCreatorMarketsAsync(
+        IPage page,
+        string conditionId,
+        string title,
+        bool selfOracle = false)
     {
+        var oracleJson = selfOracle
+            ? @",
+                        oracle: {
+                            type: 'self',
+                            eventId: 'seeded_creator_market_event',
+                            outcomes: ['Yes', 'No']
+                        }"
+            : "";
+
         await page.EvaluateAsync($@"
             localStorage.setItem('bitcaster-creator-markets', JSON.stringify({{
                 state: {{
@@ -65,6 +78,7 @@ public class CreatorDashboardTests : IAsyncLifetime
                         thumbnailUrl: null,
                         createdAt: '2026-04-10T00:00:00.000Z',
                         creatorFeePercent: 0.02
+                        {oracleJson}
                     }}]
                 }},
                 version: 0
@@ -79,7 +93,7 @@ public class CreatorDashboardTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -111,7 +125,7 @@ public class CreatorDashboardTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -140,7 +154,7 @@ public class CreatorDashboardTests : IAsyncLifetime
 
         // First navigate to /creator so the Vite origin is active, then seed
         // localStorage and reload so the Zustand persist hydrate picks it up.
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -165,13 +179,40 @@ public class CreatorDashboardTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SeededSelfOracleMarket_ShowsCloseMarketControl()
+    {
+        const string conditionId = "deadc0de000000000000000000000000000000000000000000000000000000ab";
+        const string title = "Seeded Self Oracle Market";
+
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupComplete(page);
+
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+        await SeedCreatorMarketsAsync(page, conditionId, title, selfOracle: true);
+        await page.ReloadAsync(new PageReloadOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        await Assertions.Expect(page.GetByText(title)).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await Assertions.Expect(page.GetByLabel("Winning outcome for Seeded Self Oracle Market")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Close market" })).ToBeVisibleAsync();
+    }
+
+    [Fact]
     public async Task AnalyticsTab_ShowsComingSoonPlaceholder()
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -191,7 +232,7 @@ public class CreatorDashboardTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         // No SetupComplete — no wallet / no mnemonic
-        await page.GotoAsync($"http://localhost:{TestPorts.Vite}/creator", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,

@@ -4,7 +4,7 @@ import { Mint as CashuMint, Wallet as CashuWallet, type MintKeys, type MintKeyse
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
 import { normalizeUrl } from '@/lib/url'
-import { db, getProofs, type StoredProof } from './proof-db'
+import { db, getBaseProofs, isCtfProof, type StoredProof } from './proof-db'
 import type { MintConnectionTestStatus } from '@/types/wallet-setup'
 
 export interface StoredMint {
@@ -41,23 +41,18 @@ interface WalletState {
   recoverFromMnemonic: (words: string[]) => { valid: boolean; error?: string }
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>
   /**
-   * Register a mint and SET it as the active mint. Use ONLY for explicit
-   * user-initiated mint switches (setup wizard, Settings → Add Mint button).
-   * Do NOT call from untrusted-input handlers (paste/scan/NIP-17) — that
-   * silently retargets the user's active mint to an attacker-chosen URL
-   * (P8 security review Finding 3, AGENTS.md Zustand+React Patterns).
-   * For untrusted ingress, use `addMintWithoutActivating` instead.
+   * Internal walletOps primitive. Registers a mint and SETS it as active.
+   * Application code must call `userAddAndSelectMint` instead.
    */
-  addMint: (url: string) => Promise<void>
+  _addMint: (url: string) => Promise<void>
   /**
-   * Register a mint WITHOUT changing `activeMintUrl`. Used by paste/scan/NIP-17
-   * ingress to land orphaned proofs under a configured mint row while leaving
-   * the user's selected active mint untouched. The user can switch to the new
-   * mint manually via Settings if they want.
+   * Internal walletOps primitive. Registers a mint WITHOUT changing
+   * `activeMintUrl`. Application ingress must call `ingressRegisterMint` or
+   * `ingressReceiveCashuToken` instead.
    */
-  addMintWithoutActivating: (url: string) => Promise<void>
-  removeMint: (url: string) => void
-  setActiveMint: (url: string) => void
+  _addMintWithoutActivating: (url: string) => Promise<void>
+  _removeMint: (url: string) => void
+  _setActiveMint: (url: string) => void
   completeSetup: () => Promise<void>
   getWallet: (mintUrl?: string) => Promise<CashuWallet>
 }
@@ -113,7 +108,7 @@ class ZustandCounterSource implements CounterSource {
 const _counterSource = new ZustandCounterSource()
 
 /**
- * Shared body of `addMint` and `addMintWithoutActivating`. The `activate`
+ * Shared body of `_addMint` and `_addMintWithoutActivating`. The `activate`
  * flag is the only behavioural difference and exists explicitly so untrusted-
  * input ingress (paste/scan/NIP-17) can register a mint without retargeting
  * the user's `activeMintUrl` (P8 security review Finding 3).
@@ -224,15 +219,15 @@ export const useWalletStore = create<WalletState>()(
         }
       },
 
-      addMint: async (url: string) => {
+      _addMint: async (url: string) => {
         await addOrUpdateMint(url, set, /* activate */ true)
       },
 
-      addMintWithoutActivating: async (url: string) => {
+      _addMintWithoutActivating: async (url: string) => {
         await addOrUpdateMint(url, set, /* activate */ false)
       },
 
-      setActiveMint: (url: string) => {
+      _setActiveMint: (url: string) => {
         const normalized = normalizeUrl(url)
         set((s) =>
           s.mints.some((m) => m.url === normalized)
@@ -241,7 +236,7 @@ export const useWalletStore = create<WalletState>()(
         )
       },
 
-      removeMint: (url: string) => {
+      _removeMint: (url: string) => {
         const { mints } = get()
         if (mints.length <= 1) return
         set((s) => ({
@@ -255,7 +250,7 @@ export const useWalletStore = create<WalletState>()(
         // so features like CTF badge detection work on the Settings page.
         const { mints } = get()
         if (!mints.some((m) => m.url === DEFAULT_MINT_URL)) {
-          try { await get().addMint(DEFAULT_MINT_URL) } catch { /* retry on next app load */ }
+          try { await get()._addMint(DEFAULT_MINT_URL) } catch { /* retry on next app load */ }
         }
         set({ setupComplete: true })
       },
@@ -300,12 +295,14 @@ export function useBalance(mintUrl?: string): number {
     const proofs = normalized
       ? await db.proofs.where('mintUrl').equals(normalized).toArray()
       : await db.proofs.toArray()
-    return proofs.reduce((sum, p) => sum + p.amount, 0)
+    return proofs
+      .filter((p) => !isCtfProof(p))
+      .reduce((sum, p) => sum + p.amount, 0)
   }, [normalized], 0)
   return balance ?? 0
 }
 
 export async function getBalance(mintUrl?: string): Promise<number> {
-  const proofs = await getProofs(mintUrl)
+  const proofs = await getBaseProofs(mintUrl)
   return proofs.reduce((sum: number, p: StoredProof) => sum + p.amount, 0)
 }

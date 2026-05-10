@@ -12,6 +12,19 @@ const originalDescriptors = {
   scrollWidth: Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth'),
   clientWidth: Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth'),
   scrollLeft: Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollLeft'),
+  scrollBy: Object.getOwnPropertyDescriptor(HTMLDivElement.prototype, 'scrollBy'),
+}
+
+function restoreDescriptor(
+  proto: typeof HTMLElement.prototype,
+  name: 'scrollWidth' | 'clientWidth' | 'scrollLeft',
+) {
+  const original = originalDescriptors[name]
+  if (original) {
+    Object.defineProperty(proto, name, original)
+  } else {
+    delete (proto as unknown as Record<string, unknown>)[name]
+  }
 }
 
 function patchGeometry(opts: { scrollWidth: number; clientWidth: number; scrollLeft?: number }) {
@@ -37,14 +50,13 @@ describe('HorizontalPager', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
-    if (originalDescriptors.scrollWidth) {
-      Object.defineProperty(HTMLElement.prototype, 'scrollWidth', originalDescriptors.scrollWidth)
-    }
-    if (originalDescriptors.clientWidth) {
-      Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalDescriptors.clientWidth)
-    }
-    if (originalDescriptors.scrollLeft) {
-      Object.defineProperty(HTMLElement.prototype, 'scrollLeft', originalDescriptors.scrollLeft)
+    restoreDescriptor(HTMLElement.prototype, 'scrollWidth')
+    restoreDescriptor(HTMLElement.prototype, 'clientWidth')
+    restoreDescriptor(HTMLElement.prototype, 'scrollLeft')
+    if (originalDescriptors.scrollBy) {
+      Object.defineProperty(HTMLDivElement.prototype, 'scrollBy', originalDescriptors.scrollBy)
+    } else {
+      delete (HTMLDivElement.prototype as unknown as Record<string, unknown>).scrollBy
     }
   })
 
@@ -69,6 +81,16 @@ describe('HorizontalPager', () => {
     const scroller = screen.getByTestId('t')
     expect(scroller.className).toContain('scrollbar-hide')
     expect(scroller.style.scrollbarWidth).toBe('none')
+  })
+
+  it('forwards an explicit role to the scroll container', () => {
+    render(
+      <HorizontalPager scrollerTestId="t" role="list" ariaLabel="Items">
+        <span role="listitem">x</span>
+      </HorizontalPager>,
+    )
+    expect(screen.getByTestId('t')).toHaveAttribute('role', 'list')
+    expect(screen.getByTestId('t')).toHaveAttribute('aria-label', 'Items')
   })
 
   it('omits both chevrons when there is no overflow', () => {

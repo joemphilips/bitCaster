@@ -34,12 +34,15 @@ export function GetStarted({ outcomeType, onOutcomeTypeSelect, onNext }: GetStar
         {options.map(({ type, icon: Icon, labelKey, descriptionKey }) => (
           <button
             key={type}
-            onClick={() => onOutcomeTypeSelect?.(type)}
+            onClick={() => {
+              if (type !== 'numeric') onOutcomeTypeSelect?.(type)
+            }}
+            disabled={type === 'numeric'}
             className={`w-full p-5 rounded-xl border-2 transition-all text-left ${
               outcomeType === type
                 ? 'border-blue-500 bg-blue-500/10'
                 : 'border-slate-700 bg-slate-900 hover:border-slate-600'
-            }`}
+            } ${type === 'numeric' ? 'opacity-50 cursor-not-allowed hover:border-slate-700' : ''}`}
           >
             <div className="flex items-start gap-4">
               <div className={`p-2.5 rounded-lg ${outcomeType === type ? 'bg-blue-500/20' : 'bg-slate-800'}`}>
