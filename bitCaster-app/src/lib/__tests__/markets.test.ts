@@ -441,7 +441,7 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
 
     const detail = await fetchMarketDetail('abc123')
     expect(detail.creator.id).toBe(creatorPubkey)
-    expect(detail.mint).toBeUndefined()
+    expect(detail.mint).toEqual({ collateral: 'sat', keysetCount: 0 })
   })
 
   it('regression: engine state="closed" overrides mintd attestation="pending"', async () => {
