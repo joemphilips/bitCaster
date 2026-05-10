@@ -112,7 +112,9 @@ jobs:
 
       # Start dependency services via Docker.
       # Server and frontend run natively to match the local dev workflow.
-      # lnbits-init pulls in lnbits via depends_on and runs first_install so /api/v1/health returns 200.
+      # lnbits-init pulls in lnbits via depends_on and runs first_install.
+      # docker-compose.yml maps the host port to 5102 so it can coexist with
+      # the outer matching-engine AppHost, which owns 5002.
       - name: Start mint and interop services
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mintd seed cashu-me nostr-relay lnbits-init
 
@@ -153,7 +155,7 @@ jobs:
         run: |
           echo "Waiting for lnbits (post first_install)..."
           for i in $(seq 1 30); do
-            curl -sf http://localhost:5002/api/v1/health && exit 0
+            curl -sf -L http://localhost:5102/ >/dev/null && exit 0
             sleep 2
           done
           echo "lnbits not ready"
