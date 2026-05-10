@@ -7,6 +7,7 @@ import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
 import { useShareMarket } from "@/components/market-detail/useShareMarket";
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
+import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
 import { getBalance, useBalance, useWalletStore } from "@/stores/wallet";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
@@ -31,8 +32,21 @@ function hasKnownPastDeadline(market: MarketDetailType): boolean {
   );
 }
 
+function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
+  if (state == null) return false;
+
+  switch (state) {
+    case "open":
+      return false;
+    case "closed":
+      return true;
+    default:
+      return assertNever(state);
+  }
+}
+
 function isClosedForTrading(market: MarketDetailType): boolean {
-  return market.state === "closed" || hasKnownPastDeadline(market);
+  return isEngineMarketClosed(market.state) || hasKnownPastDeadline(market);
 }
 
 function outcomeLabels(market: MarketDetailType): string[] {
