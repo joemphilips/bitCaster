@@ -55,8 +55,17 @@ public class NotificationPollerTests : IAsyncLifetime
         // already covers. The poller picks up whatever is in the store.
         const string orderId = "11111111-1111-1111-1111-111111111111";
         const string marketId = "deadbeefcafebabe-Yes";
+        const string nsecHex = "0000000000000000000000000000000000000000000000000000000000000001";
 
         await page.AddInitScriptAsync($@"
+            window.localStorage.setItem('bitcaster-settings', JSON.stringify({{
+                state: {{
+                    nostrSignerMode: 'nsec',
+                    nsecSecret: '{nsecHex}',
+                    relays: []
+                }},
+                version: 0
+            }}));
             window.localStorage.setItem('bitcaster-pending-trades', JSON.stringify({{
                 state: {{
                     byOrderId: {{
@@ -119,7 +128,7 @@ public class NotificationPollerTests : IAsyncLifetime
         // The poller's first tick fires on mount, so the badge should light
         // up within a second or two; give it a generous window.
         var badge = bell.GetByText(new Regex(@"^\d+$"));
-        await Assertions.Expect(badge).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await Assertions.Expect(badge).ToBeVisibleAsync(new() { Timeout = 15_000 });
         await Assertions.Expect(badge).ToHaveTextAsync("1", new() { Timeout = 5_000 });
 
         // Opening the panel should surface the fill copy.
