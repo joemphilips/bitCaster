@@ -6,6 +6,7 @@ import {
   MIN_LOCKTIME_DELTA_SECS,
   sellerClaimSwap,
   sellerPrepareSwap,
+  type ProofOperationStore,
   type SwapContext,
   validateLocktimeOrdering,
 } from '../atomicSwap'
@@ -224,6 +225,35 @@ vi.mock('@/stores/proof-db', () => ({
   }),
 }))
 
+const proofOperationStore: ProofOperationStore = {
+  getProofOperation: async (operationId: string) =>
+    proofDbMockState.operations.get(operationId) ?? null,
+  prepareProofOperation: async (input) => {
+    const existing = proofDbMockState.operations.get(input.operationId)
+    if (existing) return existing
+    const record = {
+      ...input,
+      state: 'prepared' as const,
+      metadata: input.metadata ?? {},
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    proofDbMockState.operations.set(input.operationId, record)
+    return record
+  },
+  markProofOperationCompleted: async (operationId, resultProofs) => {
+    const existing = proofDbMockState.operations.get(operationId)
+    const record = {
+      ...existing,
+      state: 'completed' as const,
+      resultProofs,
+      updatedAt: Date.now(),
+    }
+    proofDbMockState.operations.set(operationId, record)
+    return record
+  },
+}
+
 beforeEach(() => {
   cashuMockState.failNextFeeLookup = false
   cashuMockState.loadedKeysets.length = 0
@@ -350,8 +380,14 @@ describe('browser proof operation recovery', () => {
     const { sellerCtx } = swapContexts('trade-browser-lock')
     const operationId = 'trade-browser-lock/browser/seller-lock'
 
-    await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)], { operationId })
-    await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)], { operationId })
+    await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)], {
+      operationId,
+      proofOperationStore,
+    })
+    await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)], {
+      operationId,
+      proofOperationStore,
+    })
 
     expect(cashuMockState.prepareSwapToSendCalls).toBe(1)
     expect(cashuMockState.completeSwapCalls).toBe(1)
@@ -374,7 +410,7 @@ describe('browser proof operation recovery', () => {
         sellerCtx,
         sellerOut.adaptorPoint,
         buyerOut.lockedProofsCipher,
-        { operationId },
+        { operationId, proofOperationStore },
       ),
     ).rejects.toThrow(/network closed/)
 
@@ -384,7 +420,7 @@ describe('browser proof operation recovery', () => {
       sellerCtx,
       sellerOut.adaptorPoint,
       buyerOut.lockedProofsCipher,
-      { operationId },
+      { operationId, proofOperationStore },
     )
 
     expect(cashuMockState.restoreCalls).toBe(1)
