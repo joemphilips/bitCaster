@@ -332,14 +332,10 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     createdDate: now,
     activeSince: now,
     baseUnit: 'sats',
-    ...(firstPartition
-      ? {
-          mint: {
-            collateral: firstPartition.collateral,
-            keysetCount: Object.keys(firstPartition.keysets ?? {}).length,
-          },
-        }
-      : {}),
+    mint: {
+      collateral: firstPartition?.collateral ?? 'sat',
+      keysetCount: Object.keys(firstPartition?.keysets ?? {}).length,
+    },
     creator: {
       id: 'unknown',
       name: 'Unknown',
