@@ -1,5 +1,6 @@
 using Microsoft.Playwright;
 using NBitcoin;
+using System.Globalization;
 
 namespace BitCaster.E2ETest;
 
@@ -119,6 +120,30 @@ public static class TestHelpers
             $"Error banner: {errorBanner ?? "(none)"}\n" +
             $"Console ({consoleMessages.Count} messages):\n{string.Join("\n", consoleMessages.TakeLast(30))}\n" +
             $"Page text (first 2000 chars): {bodyText[..Math.Min(bodyText.Length, 2000)]}");
+    }
+
+    /// <summary>
+    /// Wait for the portfolio/balance surface to show a credited sat amount.
+    /// The deposit overlay now transitions through a short success screen and
+    /// can auto-close before tests observe the older "Payment received!" text,
+    /// so the durable assertion is the visible wallet balance.
+    /// </summary>
+    public static async Task WaitForBalanceTextAsync(
+        IPage page,
+        int amountSats,
+        IReadOnlyList<string> consoleMessages,
+        string context)
+    {
+        var formatted = amountSats.ToString("N0", CultureInfo.InvariantCulture);
+        try
+        {
+            await Assertions.Expect(page.GetByText($"₿{formatted}").First)
+                .ToBeVisibleAsync(new() { Timeout = 30_000 });
+        }
+        catch
+        {
+            throw await BuildDiagnosticExceptionAsync(page, consoleMessages, context);
+        }
     }
 
     /// <summary>

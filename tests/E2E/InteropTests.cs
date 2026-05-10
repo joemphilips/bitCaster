@@ -445,21 +445,11 @@ public class InteropTests : IAsyncLifetime
         await Assertions.Expect(createBtn).ToBeEnabledAsync(new() { Timeout = 5_000 });
         await createBtn.ClickAsync();
 
-        // Wait for auto-payment via fakewallet
-        var paymentReceived = page.GetByText("Payment received!");
-        try
-        {
-            await Assertions.Expect(paymentReceived).ToBeVisibleAsync(new() { Timeout = 30_000 });
-        }
-        catch
-        {
-            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
-                $"BitCaster Lightning deposit ({amountSats} sats) was not paid by fakewallet.");
-        }
-
-        // Close the invoice display overlay
-        var overlayCloseBtn = page.Locator(".fixed button").First;
-        await overlayCloseBtn.ClickAsync(new() { Timeout = 5_000 });
+        await TestHelpers.WaitForBalanceTextAsync(
+            page,
+            amountSats,
+            consoleMessages,
+            $"BitCaster Lightning deposit ({amountSats} sats) did not credit the visible wallet balance.");
         await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
     }
 

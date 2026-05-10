@@ -125,9 +125,11 @@ public class DepositWithdrawTests : IAsyncLifetime
             throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages, "Invoice not found.");
         }
 
-        // With fakewallet, the quote is auto-paid, so we should see "Payment received!"
-        var paymentReceived = page.GetByText("Payment received!");
-        await Assertions.Expect(paymentReceived).ToBeVisibleAsync(new() { Timeout = 30_000 });
+        await TestHelpers.WaitForBalanceTextAsync(
+            page,
+            100,
+            consoleMessages,
+            "DepositLightning: credited balance of 100 sats did not appear after fakewallet payment.");
     }
 
     [Fact]
@@ -252,22 +254,11 @@ public class DepositWithdrawTests : IAsyncLifetime
         await Assertions.Expect(createBtn).ToBeEnabledAsync(new() { Timeout = 5_000 });
         await createBtn.ClickAsync();
 
-        // Wait for auto-payment via fakewallet
-        var paymentReceived = page.GetByText("Payment received!");
-        try
-        {
-            await Assertions.Expect(paymentReceived).ToBeVisibleAsync(new() { Timeout = 30_000 });
-        }
-        catch
-        {
-            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages, $"DepositViaMint({amountSats}): Payment not received.");
-        }
-
-        // Close the invoice display overlay — click the X button inside the overlay
-        var overlayCloseBtn = page.Locator(".fixed button").First;
-        await overlayCloseBtn.ClickAsync(new() { Timeout = 5_000 });
-
-        // Wait for overlay to close
+        await TestHelpers.WaitForBalanceTextAsync(
+            page,
+            amountSats,
+            consoleMessages,
+            $"DepositViaMint({amountSats}): credited balance did not appear after fakewallet payment.");
         await Assertions.Expect(depositBtn).ToBeVisibleAsync(new() { Timeout = 10_000 });
     }
 
