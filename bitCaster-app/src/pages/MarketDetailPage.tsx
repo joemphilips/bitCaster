@@ -26,10 +26,9 @@ import type {
 type TopUpStage = "closed" | "modal" | "overlay";
 
 function hasKnownPastDeadline(market: MarketDetailType): boolean {
+  if (!market.closingDate) return false;
   const deltaMs = new Date(market.closingDate).getTime() - Date.now();
-  return (
-    Number.isFinite(deltaMs) && Math.abs(deltaMs) >= 60_000 && deltaMs <= 0
-  );
+  return Number.isFinite(deltaMs) && deltaMs <= 0;
 }
 
 function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {

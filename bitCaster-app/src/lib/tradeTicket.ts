@@ -114,6 +114,12 @@ export function buildTradeTicket(params: {
       "Enter an amount greater than zero.",
     );
   }
+  if (!Number.isInteger(amountSats) || amountSats % 100 !== 0) {
+    throw new TradeTicketError(
+      "invalid-amount",
+      "Enter an amount in 100 sat increments.",
+    );
+  }
 
   const outcomeName = canonicalOutcomeName(market, selection);
   if (!outcomeName) {

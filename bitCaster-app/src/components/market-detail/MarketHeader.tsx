@@ -53,21 +53,16 @@ function creatorIdToHex(creatorId: string): string | null {
 }
 
 function formatTimeRemaining(
-  closingDate: string,
+  closingDate: string | null,
   t: (key: string, opts?: Record<string, unknown>) => string,
   locale: string,
 ): string {
+  if (!closingDate) return "";
+
   const now = new Date();
   const close = new Date(closingDate);
   const diff = close.getTime() - now.getTime();
 
-  // `mapConditionToMarketDetail` defaults `closingDate` to the page-load time
-  // when neither mintd nor the engine catalogue surfaces a real deadline. Treat
-  // any |diff| under 60s as that "unknown deadline" sentinel and hide the row,
-  // rather than rendering a misleading "Closed" badge. Once `engineEntry.deadline`
-  // is wired through `mergeEngineCatalogueEntry`, real deadlines fall into the
-  // normal "in the past → Closed" / "in the future → countdown" branches below.
-  if (Math.abs(diff) < 60_000) return "";
   if (diff < 0) return t("market.closed");
 
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
@@ -103,6 +98,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   );
   const isClosingSoon =
     !isResolved &&
+    market.closingDate != null &&
     new Date(market.closingDate).getTime() - Date.now() <
       7 * 24 * 60 * 60 * 1000;
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id));

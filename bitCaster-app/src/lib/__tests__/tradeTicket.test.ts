@@ -76,6 +76,20 @@ describe("buildTradeTicket", () => {
     expect(ticket.request.timeInForce).toBe("FAK");
   });
 
+  it("rejects amounts outside the first-release 100 sat settlement tick", () => {
+    expect(() =>
+      buildTradeTicket({
+        market,
+        selection: { side: "yes" },
+        amountSats: 150,
+        side: "buy",
+        orderType: "limit",
+        limitPrice: 50,
+        orderBook: market.orderBook,
+      }),
+    ).toThrow("Enter an amount in 100 sat increments.");
+  });
+
   it("prefers direct asks for Buy NO market orders when available", () => {
     const ticket = buildTradeTicket({
       market,

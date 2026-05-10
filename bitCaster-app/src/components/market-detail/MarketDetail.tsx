@@ -103,10 +103,12 @@ export function MarketDetail({
   // deadline is an immediate close hint while the deadline reminder catches up.
   const isResolved = market.resolution.status === "resolved";
   const marketState = useMarketState(market.state);
-  const deadlineDeltaMs = new Date(market.closingDate).getTime() - Date.now();
+  const deadlineDeltaMs = market.closingDate
+    ? new Date(market.closingDate).getTime() - Date.now()
+    : null;
   const hasKnownPastDeadline =
+    deadlineDeltaMs != null &&
     Number.isFinite(deadlineDeltaMs) &&
-    Math.abs(deadlineDeltaMs) >= 60_000 &&
     deadlineDeltaMs <= 0;
   const isEffectivelyClosed = marketState === "Closed" || hasKnownPastDeadline;
   const isTradingEnabled = !isEffectivelyClosed;
