@@ -49,6 +49,9 @@ import {
   addProofs,
   getBaseProofs,
   getOutcomeProofs,
+  getProofOperation,
+  markProofOperationCompleted,
+  prepareProofOperation,
   removeProofs,
   type StoredProof,
 } from '@/stores/proof-db'
@@ -61,6 +64,7 @@ import {
   sellerClaimSwap,
   sellerPrepareSwap,
   validateLocktimeOrdering,
+  type ProofOperationStore,
 } from '@/lib/atomicSwap'
 import { useToastStore } from '@/stores/toast'
 import {
@@ -73,6 +77,12 @@ import {
 // ---------------------------------------------------------------------------
 // Public hook
 // ---------------------------------------------------------------------------
+
+const proofOperationStore: ProofOperationStore = {
+  getProofOperation,
+  prepareProofOperation,
+  markProofOperationCompleted,
+}
 
 /**
  * Mount once near the app root. The hook owns no DOM and renders nothing.
@@ -201,6 +211,7 @@ async function runSellerSendOpening(
     )
     const out = await sellerPrepareSwap(ctx, proofs, {
       operationId: proofOperationId(tradeId, 'seller-lock'),
+      proofOperationStore,
     })
     await persistLockChange(
       proofs,
@@ -309,6 +320,7 @@ async function runBuyerRespond(
       proofs,
       {
         operationId: proofOperationId(tradeId, 'buyer-lock'),
+        proofOperationStore,
       },
     )
     await persistLockChange(proofs, out.changeProofs, mintUrl)
@@ -396,6 +408,7 @@ async function runSellerClaim(
     swap.messages.lockedProofsBuyer,
     {
       operationId: proofOperationId(swap.tradeId, 'seller-claim'),
+      proofOperationStore,
     },
   )
 }
@@ -416,6 +429,7 @@ async function runBuyerClaim(swap: ActiveSwap, ctx: SwapCtx): Promise<Proof[]> {
     swap.buyerState.sellerPreSigsHex,
     {
       operationId: proofOperationId(swap.tradeId, 'buyer-claim'),
+      proofOperationStore,
     },
   )
 }

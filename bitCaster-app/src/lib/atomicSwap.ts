@@ -54,13 +54,6 @@ import {
   adapt,
   extract,
 } from './adaptor'
-import {
-  getProofOperation,
-  markProofOperationCompleted,
-  prepareProofOperation,
-  type ProofOperationRecord,
-  type StoredOutputData,
-} from '../stores/proof-db'
 import { normalizeUrl } from './url'
 
 // ---------------------------------------------------------------------------
@@ -105,8 +98,50 @@ interface LockedProofResult {
   changeProofs: Proof[]
 }
 
+export interface StoredOutputData {
+  blindedMessage: SerializedBlindedMessage
+  blindingFactor: string
+  secret: string
+}
+
+export type ProofOperationKind = 'swap-lock' | 'swap-claim'
+export type ProofOperationState = 'prepared' | 'completed' | 'failed'
+
+export interface ProofOperationRecord {
+  operationId: string
+  kind: ProofOperationKind
+  state: ProofOperationState
+  mintUrl: string
+  inputs: Proof[]
+  outputs: Record<string, StoredOutputData[]>
+  metadata: Record<string, unknown>
+  resultProofs?: Record<string, Proof[]>
+  lastError?: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface PrepareProofOperationInput {
+  operationId: string
+  kind: ProofOperationKind
+  mintUrl: string
+  inputs: Proof[]
+  outputs: Record<string, StoredOutputData[]>
+  metadata?: Record<string, unknown>
+}
+
+export interface ProofOperationStore {
+  getProofOperation(operationId: string): Promise<ProofOperationRecord | null>
+  prepareProofOperation(input: PrepareProofOperationInput): Promise<ProofOperationRecord>
+  markProofOperationCompleted(
+    operationId: string,
+    resultProofs: Record<string, Proof[]>,
+  ): Promise<ProofOperationRecord>
+}
+
 interface ProofOperationOptions {
   operationId?: string
+  proofOperationStore?: ProofOperationStore
 }
 
 /**
@@ -250,6 +285,7 @@ export async function sellerPrepareSwap(
     proofs,
     ctx.sellerLocktime,
     options.operationId,
+    options.proofOperationStore,
   )
   return sellerPreparePrelockedSwap(ctx, lockedProofs, changeProofs)
 }
@@ -357,7 +393,12 @@ export async function sellerClaimSwap(
     witness: JSON.stringify({ signatures: [adaptedSig, ownSig] }),
   }))
 
-  return receiveProofsAtMint(ctx.mintUrl, inputProofs, options.operationId)
+  return receiveProofsAtMint(
+    ctx.mintUrl,
+    inputProofs,
+    options.operationId,
+    options.proofOperationStore,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -416,6 +457,7 @@ export async function buyerPrepareSwap(
     satProofs,
     ctx.buyerLocktime,
     options.operationId,
+    options.proofOperationStore,
   )
 
   // Pre-sign Bob's proofs with the same adaptor point T
@@ -533,7 +575,12 @@ export async function buyerClaimSwap(
   )
 
   try {
-    return await receiveProofsAtMint(ctx.mintUrl, inputProofs, options.operationId)
+    return await receiveProofsAtMint(
+      ctx.mintUrl,
+      inputProofs,
+      options.operationId,
+      options.proofOperationStore,
+    )
   } catch (error) {
     if (!isConditionalSwapInputError(error)) throw error
     // CDK currently rejects normal `/swap` inputs that use conditional CTF
@@ -553,6 +600,7 @@ async function lockProofsForSwap(
   sourceProofs: Proof[],
   locktime: number,
   operationId?: string,
+  proofOperationStore?: ProofOperationStore,
 ): Promise<LockedProofResult> {
   const mint = new CashuMint(ctx.mintUrl)
   const { wallet, sendConfig, inputFeeSats } = await walletForSourceProofs(
@@ -585,6 +633,7 @@ async function lockProofsForSwap(
       sourceProofs,
       sendConfig,
       outputConfig,
+      requiredProofOperationStore(operationId, proofOperationStore),
     )
   }
 
@@ -596,12 +645,19 @@ async function receiveProofsAtMint(
   mintUrl: string,
   inputProofs: Proof[],
   operationId?: string,
+  proofOperationStore?: ProofOperationStore,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl)
   const { wallet } = await walletForSourceProofs(mint, inputProofs)
   const token = buildReceiveToken(mintUrl, inputProofs)
   if (operationId) {
-    return receiveProofsWithOperation(operationId, mintUrl, wallet, token)
+    return receiveProofsWithOperation(
+      operationId,
+      mintUrl,
+      wallet,
+      token,
+      requiredProofOperationStore(operationId, proofOperationStore),
+    )
   }
   return wallet.receive(token, { proofsWeHave: [] })
 }
@@ -614,11 +670,12 @@ async function lockProofsWithOperation(
   sourceProofs: Proof[],
   sendConfig: SendConfig | undefined,
   outputConfig: OutputConfig,
+  proofOperationStore: ProofOperationStore,
 ): Promise<LockedProofResult> {
-  const existing = await getProofOperation(operationId)
+  const existing = await proofOperationStore.getProofOperation(operationId)
   if (existing) {
     assertProofOperationMatches(existing, 'swap-lock', mintUrl, sourceProofs)
-    const result = await resumeProofOperation(wallet, existing)
+    const result = await resumeProofOperation(wallet, existing, proofOperationStore)
     return {
       lockedProofs: result.send ?? [],
       changeProofs: result.keep ?? [],
@@ -631,7 +688,7 @@ async function lockProofsWithOperation(
     sendConfig,
     outputConfig,
   )
-  await prepareProofOperation({
+  await proofOperationStore.prepareProofOperation({
     operationId,
     kind: 'swap-lock',
     mintUrl,
@@ -645,7 +702,7 @@ async function lockProofsWithOperation(
 
   const result = await wallet.completeSwap(preview)
   const final = { send: result.send, keep: result.keep }
-  await markProofOperationCompleted(operationId, final)
+  await proofOperationStore.markProofOperationCompleted(operationId, final)
   return { lockedProofs: final.send, changeProofs: final.keep }
 }
 
@@ -654,11 +711,12 @@ async function receiveProofsWithOperation(
   mintUrl: string,
   wallet: CashuWallet,
   token: Token,
+  proofOperationStore: ProofOperationStore,
 ): Promise<Proof[]> {
-  const existing = await getProofOperation(operationId)
+  const existing = await proofOperationStore.getProofOperation(operationId)
   if (existing) {
     assertProofOperationMatches(existing, 'swap-claim', mintUrl, token.proofs)
-    const result = await resumeProofOperation(wallet, existing)
+    const result = await resumeProofOperation(wallet, existing, proofOperationStore)
     return result.keep ?? []
   }
 
@@ -667,7 +725,7 @@ async function receiveProofsWithOperation(
     { proofsWeHave: [] },
     { type: 'random' },
   )
-  await prepareProofOperation({
+  await proofOperationStore.prepareProofOperation({
     operationId,
     kind: 'swap-claim',
     mintUrl,
@@ -680,13 +738,14 @@ async function receiveProofsWithOperation(
 
   const result = await wallet.completeSwap(preview)
   const final = { keep: result.keep }
-  await markProofOperationCompleted(operationId, final)
+  await proofOperationStore.markProofOperationCompleted(operationId, final)
   return final.keep
 }
 
 async function resumeProofOperation(
   wallet: CashuWallet,
   entry: ProofOperationRecord,
+  proofOperationStore: ProofOperationStore,
 ): Promise<Record<string, Proof[]>> {
   if (entry.state === 'completed') {
     return structuredClone(entry.resultProofs ?? {})
@@ -705,7 +764,7 @@ async function resumeProofOperation(
     if (entry.kind === 'swap-lock') {
       restored.keep = [...(restored.keep ?? []), ...readUnselectedProofs(entry)]
     }
-    await markProofOperationCompleted(entry.operationId, restored)
+    await proofOperationStore.markProofOperationCompleted(entry.operationId, restored)
     return restored
   }
   if (allStates(states, CheckStateEnum.UNSPENT)) {
@@ -714,11 +773,21 @@ async function resumeProofOperation(
       entry.kind === 'swap-lock'
         ? { send: result.send, keep: result.keep }
         : { keep: result.keep }
-    await markProofOperationCompleted(entry.operationId, final)
+    await proofOperationStore.markProofOperationCompleted(entry.operationId, final)
     return final
   }
 
   throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
+}
+
+function requiredProofOperationStore(
+  operationId: string,
+  proofOperationStore: ProofOperationStore | undefined,
+): ProofOperationStore {
+  if (!proofOperationStore) {
+    throw new Error(`Proof operation ${operationId} requires a proofOperationStore`)
+  }
+  return proofOperationStore
 }
 
 async function walletForSourceProofs(
