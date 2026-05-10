@@ -9,7 +9,8 @@ import {
   type StoredCreatorMarket,
 } from '@/stores/creatorMarkets'
 import { useWalletStore } from '@/stores/wallet'
-import type { CreatedMarket } from '@/types/portfolio'
+import { assertNever } from '@/lib/enumDiscipline'
+import type { CreatedMarket, CreatedMarketStatus } from '@/types/portfolio'
 import type { DashboardStats } from '@/types/market-management'
 
 interface UseCreatorDashboardStateResult {
@@ -25,6 +26,18 @@ interface UseCreatorDashboardStateResult {
   error: string | null
   /** Manually re-fetch backend volume data (e.g. on a retry button). */
   refresh: () => void
+}
+
+function toCreatedMarketStatus(
+  state: CreatorMarketEntry['state'] | null | undefined,
+): CreatedMarketStatus {
+  if (state == null) return 'active'
+
+  switch (state) {
+    case 'open':   return 'active'
+    case 'closed': return 'resolved'
+    default:       return assertNever(state)
+  }
 }
 
 /**
@@ -48,7 +61,7 @@ function buildCreatedMarket(
     id: stored.conditionId,
     title: stored.title,
     imageUrl: stored.thumbnailUrl ?? '',
-    status: backend?.state === 'closed' ? 'resolved' : 'active',
+    status: toCreatedMarketStatus(backend?.state),
     createdDate: stored.createdAt,
     volume: backend?.totalVolumeSats ?? 0,
     creatorFeesEarned: 0,
