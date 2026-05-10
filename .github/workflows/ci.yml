@@ -179,7 +179,7 @@ jobs:
           cd bitCaster-app && npm ci && npx vite --host &
           echo "Waiting for frontend..."
           for i in $(seq 1 30); do
-            curl -sf http://localhost:5173 && exit 0
+            curl -sf http://localhost:5273 && exit 0
             sleep 2
           done
           echo "Frontend not ready"
