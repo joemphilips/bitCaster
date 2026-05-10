@@ -328,7 +328,7 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     volume: 0,
     liquidity: 0,
     traderCount: 0,
-    closingDate: now,
+    closingDate: null,
     createdDate: now,
     activeSince: now,
     baseUnit: 'sats',
@@ -453,11 +453,9 @@ function mergeEngineCatalogueEntry(
           name: `${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`,
         }
       : detail.creator,
-    // Engine surfaces the oracle attestation deadline (carried from the mintd
-    // condition snapshot) as the authoritative closing date. Without this
-    // override, MarketHeader's `formatTimeRemaining` would compute "in the
-    // past" against the `mapConditionToMarketDetail` placeholder and render a
-    // bogus "Closed" badge (P8 §market detail page regression).
+    // Engine surfaces the oracle attestation deadline as the authoritative
+    // closing date. A null deadline means "unknown"; do not synthesize a
+    // page-load timestamp because that decays into a bogus Closed state.
     closingDate: engineEntry.deadline ?? detail.closingDate,
   }
 }
@@ -529,7 +527,12 @@ export async function submitOrder(
     body: bodyText,
   })
   if (!response.ok) {
-    throw new Error(`Failed to submit order: ${response.status}`)
+    const detail = await response.text()
+    throw new Error(
+      detail.trim()
+        ? `Failed to submit order: ${response.status} ${detail.trim()}`
+        : `Failed to submit order: ${response.status}`,
+    )
   }
   return response.json()
 }

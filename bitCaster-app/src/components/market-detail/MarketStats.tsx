@@ -45,7 +45,9 @@ function getTimeRemaining(
 
 export function MarketStats({ market }: MarketStatsProps) {
   const { t, i18n } = useTranslation()
-  const timeRemaining = getTimeRemaining(market.closingDate, t)
+  const timeRemaining = market.closingDate
+    ? getTimeRemaining(market.closingDate, t)
+    : null
 
   const stats = [
     {
@@ -78,13 +80,17 @@ export function MarketStats({ market }: MarketStatsProps) {
       value: formatDate(market.activeSince, i18n.language),
       color: 'text-emerald-500',
     },
-    {
-      icon: Clock,
-      label: t('market.timeLeft'),
-      value: timeRemaining.text,
-      color: timeRemaining.isUrgent ? 'text-amber-500' : 'text-slate-400',
-      highlight: timeRemaining.isUrgent,
-    },
+    ...(timeRemaining
+      ? [
+          {
+            icon: Clock,
+            label: t('market.timeLeft'),
+            value: timeRemaining.text,
+            color: timeRemaining.isUrgent ? 'text-amber-500' : 'text-slate-400',
+            highlight: timeRemaining.isUrgent,
+          },
+        ]
+      : []),
   ]
 
   return (

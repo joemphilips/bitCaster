@@ -534,12 +534,9 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
     expect(detail.closingDate).toBe('2030-12-31T23:59:59Z')
   })
 
-  it('keeps the placeholder closingDate when engine.deadline is null (MarketHeader hides the row instead of lying)', async () => {
+  it('keeps closingDate null when engine.deadline is null so unknown deadlines never decay into Closed', async () => {
     // Default engineQueryResponse already has deadline: null
     const detail = await fetchMarketDetail('abc123')
-    // closingDate is still the page-load "now"; MarketHeader hides the time
-    // row when |closingDate - now| < 60s rather than rendering "Closed".
-    const closingMs = new Date(detail.closingDate).getTime()
-    expect(Math.abs(closingMs - Date.now())).toBeLessThan(60_000)
+    expect(detail.closingDate).toBeNull()
   })
 })

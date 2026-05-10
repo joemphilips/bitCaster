@@ -114,9 +114,11 @@ public class WalletSetupTests : IAsyncLifetime
     /// </summary>
     private static async Task CheckSeedSavedAsync(IPage page)
     {
-        await page.EvaluateAsync("document.querySelector('input[type=\"checkbox\"]').click()");
-        // Wait for verification UI to appear
-        await Assertions.Expect(page.GetByText("Verify Your Seed Phrase")).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await page.Locator("input[type=\"checkbox\"]").ClickAsync(new() { Force = true });
+        var continueBtn = page.GetByRole(AriaRole.Button, new() { Name = "Continue" });
+        await Assertions.Expect(continueBtn).ToBeEnabledAsync(new() { Timeout = 5_000 });
+        await continueBtn.ClickAsync();
+        await Assertions.Expect(page.GetByText("Enter word #3")).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
     /// <summary>

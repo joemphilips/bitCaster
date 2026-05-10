@@ -72,6 +72,11 @@
   "walletSetup": {
     "closeWalletSetup": "Close wallet setup"
   },
+  "auth": {
+    "nostrRequiredTitle": "Authentication required",
+    "nostrRequiredDesc": "You must authenticate before actual trading. Right now Nostr is the only way we offer. Please configure it before submitting an order.",
+    "configureNostr": "Configure Nostr"
+  },
   "welcome": {
     "title": "Welcome to bitCaster",
     "description": "You must set up your Cashu wallet before you can start trading on prediction markets.",
@@ -173,6 +178,7 @@
     "oracle": "Oracle",
     "unknownInNostr": "Unknown in Nostr",
     "searchingNostr": "Searching Nostr...",
+    "oraclePubkeyUnavailable": "Oracle pubkey unavailable",
     "oracleAuditHint": "Search this person in the Nostr network to make sure it's trustworthy",
     "copyOraclePubkey": "Copy oracle pubkey"
   },
