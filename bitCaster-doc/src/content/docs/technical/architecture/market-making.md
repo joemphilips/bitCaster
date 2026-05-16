@@ -50,9 +50,10 @@ From a trader's perspective, CPMM orders are indistinguishable from orders place
 
 1. Creator fills the market creation wizard (oracle, outcomes, liquidity amount)
 2. Frontend registers the condition and partition with CDK mintd
-3. Frontend calls CTF split: L sats collateral → L outcome-A tokens + L outcome-B tokens
-4. Frontend registers the liquidity with the matching engine
-5. Matching engine creates a CPMM pool and places initial limit orders
+3. Frontend registers the market with the matching engine
+4. Creator funds the CPMM bot through the deposit flow (Lightning invoice or Cashu token)
+5. The deposit is verified, the complete CTF outcome-token inventory is minted, and the bot account is credited
+6. Matching engine creates or updates the CPMM pool and places initial limit orders
 
 As real traders arrive and professional market makers join, the CPMM's share of the book decreases naturally. The creator can withdraw CPMM liquidity at any time.
 
@@ -121,7 +122,7 @@ The CPMM deploys capital uniformly across all price levels. When the market pric
 
 ### Adverse Selection
 
-Informed traders systematically trade against the CPMM when it misprice outcomes, extracting value from the liquidity pool. This is the fundamental cost of providing automated liquidity. Fees (collected by the matching engine) partially offset this cost.
+Informed traders systematically trade against the CPMM when it misprices outcomes, extracting value from the liquidity pool. This is the fundamental cost of providing automated liquidity. Mint fees and any maker surplus from price improvement may partially offset this cost, but v1 does not insert the matching engine into the Cashu atomic swap to collect a separate in-swap fee.
 
 ### Endgame Bleed
 

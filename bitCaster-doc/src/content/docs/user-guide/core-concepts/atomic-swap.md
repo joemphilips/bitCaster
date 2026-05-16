@@ -10,14 +10,17 @@ sidebar:
 Trading on bitCaster involves two broad steps:
 
 1. You submit an order and the matching engine finds a match.
-2. Based on the result, an atomic swap is executed if needed.
+2. The matched parties settle with an atomic swap through the mint.
 
-Complementary matches do not require an atomic swap.
+This is true for both direct and complementary matches. A complementary match
+may first require one side to split regular sats into a complete set of outcome
+tokens, but the matched trade still settles through the same trustless atomic
+swap protocol.
 
 ## Complementary vs non-complementary matches
 
-- **Complementary match** — a YES buyer is matched directly with a NO buyer. The mint can settle this on its own because the two positions perfectly offset. No swap is needed; the mint simply issues conditional tokens to each side.
-- **Non-complementary match** — for example, someone selling YES tokens they already hold to another participant who wants to buy them with sats. Here the two parties need to exchange tokens directly, and neither should have to trust the other to go first.
+- **Complementary match** — a YES buyer is matched with a NO buyer, or in a categorical market a buyer of one outcome set is matched with a buyer of the exact complementary set. The maker creates or selects the complete outcome-token set, keeps the side they wanted, and atomically swaps the complementary side to the taker for sats.
+- **Non-complementary match** — for example, someone selling YES tokens they already hold to another participant who wants to buy them with sats. The seller already has the outcome tokens, so no pre-trade split is needed, but the exchange still uses the same atomic-swap safety rule.
 
 ## Why atomic swaps matter
 
@@ -25,7 +28,7 @@ An atomic swap guarantees that **either both sides of the trade complete, or nei
 
 - You never send your tokens hoping the other party will send theirs.
 - If anything goes wrong (the other party disappears, a network issue occurs), your tokens are automatically returned to you after a short timeout.
-- The matching engine relays encrypted messages between the two parties but **never holds custody** of any funds.[^1]
+- The matching engine relays encrypted messages between the two parties but **never holds custody** of any funds.
 
 ## How it works (simplified)
 
@@ -40,5 +43,3 @@ The entire process happens in seconds and requires no on-chain transactions — 
 ## Further reading
 
 For the full cryptographic protocol, see the [technical specification](/technical/protocol/atomic-swap/).
-
-[^1]: There is an exception to this: when a market creator supplies initial liquidity, they may deposit assets with the matching engine to bootstrap early trading activity.

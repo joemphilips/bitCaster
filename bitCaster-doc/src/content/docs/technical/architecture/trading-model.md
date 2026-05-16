@@ -13,7 +13,7 @@ bitCaster uses a central limit order book (CLOB). Limit orders rest on the book,
 
 A resting limit order is an online commitment. The maker must keep a browser tab or bot process connected until the order is filled, cancelled, or expired. When a taker matches the order, the maker must be able to answer the TradeHub messages and lock proofs before the swap timeout.
 
-Professional market makers should run a bot rather than rely on an occasional browser session. A future `bitCaster-cli` should use the same swap protocol library as the browser and wallet-service so non-browser makers can participate without changing the wire protocol.
+Professional market makers should run a bot rather than rely on an occasional browser session. A future `bitCaster-cli` should use the same documented swap protocol as the browser so non-browser makers can participate without changing the wire protocol.
 
 ## Direct Matching
 
