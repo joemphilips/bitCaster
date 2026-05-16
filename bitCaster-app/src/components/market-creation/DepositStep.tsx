@@ -10,6 +10,14 @@ import {
   type DepositState,
   type RequestLnInvoiceDepositResponse,
 } from '@/lib/markets'
+import { createMeltQuote, meltProofs } from '@/lib/cashu'
+import {
+  addProofs,
+  getBaseProofs,
+  removeProofs,
+  type StoredProof,
+} from '@/stores/proof-db'
+import { useWalletStore } from '@/stores/wallet'
 
 interface DepositStepProps {
   /** The just-created market's condition id, returned by `createMarket`. */
@@ -47,6 +55,8 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
   const [ecashToken, setEcashToken] = useState('')
   const [state, setState] = useState<DepositState | null>(null)
   const [stateUpdatedAt, setStateUpdatedAt] = useState<string | null>(null)
+  const [payingInvoice, setPayingInvoice] = useState(false)
+  const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
 
   // Polling driver — kicks off when `depositId` is set, stops on terminal state.
   // The terminal check runs inside the tick (not in the effect deps) so each
@@ -85,6 +95,51 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
     }
   }, [conditionId, depositId, t])
 
+  const payBolt11FromWallet = useCallback(async (
+    invoice: string,
+    options: { surfaceInsufficientBalance: boolean },
+  ): Promise<boolean> => {
+    setPayingInvoice(true)
+    try {
+      const quote = await createMeltQuote(invoice, activeMintUrl)
+      const proofs = await getBaseProofs(activeMintUrl)
+      const available = proofs.reduce((sum, proof) => sum + proof.amount, 0)
+      const required = quote.amount + quote.fee_reserve
+      if (available < required) {
+        if (options.surfaceInsufficientBalance) {
+          setError(t('marketCreation.depositWalletInsufficient', { sats: required }))
+        }
+        return false
+      }
+
+      const { paid, change } = await meltProofs(quote, proofs, activeMintUrl)
+      if (!paid) {
+        if (options.surfaceInsufficientBalance) {
+          setError(t('marketCreation.depositWalletPayFailed'))
+        }
+        return false
+      }
+
+      await removeProofs(proofs.map((p) => p.secret))
+      if (change.length > 0) {
+        const storedChange: StoredProof[] = change.map((p) => ({
+          ...p,
+          mintUrl: activeMintUrl,
+        }))
+        await addProofs(storedChange)
+      }
+      setState('Paid')
+      return true
+    } catch (err) {
+      if (options.surfaceInsufficientBalance) {
+        setError(err instanceof Error ? err.message : t('marketCreation.depositWalletPayFailed'))
+      }
+      return false
+    } finally {
+      setPayingInvoice(false)
+    }
+  }, [activeMintUrl, t])
+
   const onRequestLn = useCallback(async () => {
     setSubmitting(true)
     setError(null)
@@ -94,12 +149,13 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
       setBolt11(res.bolt11)
       setBolt11ExpiresAt(res.expiresAt)
       setState('Requested')
+      void payBolt11FromWallet(res.bolt11, { surfaceInsufficientBalance: false })
     } catch (err) {
       setError(err instanceof Error ? err.message : t('marketCreation.lnRequestError'))
     } finally {
       setSubmitting(false)
     }
-  }, [conditionId, amountSats, t])
+  }, [conditionId, amountSats, payBolt11FromWallet, t])
 
   const onSubmitEcash = useCallback(async () => {
     if (ecashToken.trim().length === 0) {
@@ -123,6 +179,12 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
     if (!bolt11) return
     void navigator.clipboard.writeText(bolt11)
   }, [bolt11])
+
+  const onPayBolt11 = useCallback(() => {
+    if (!bolt11) return
+    setError(null)
+    void payBolt11FromWallet(bolt11, { surfaceInsufficientBalance: true })
+  }, [bolt11, payBolt11FromWallet])
 
   const onContinue = useCallback(() => {
     navigate(`/markets/${conditionId}`)
@@ -230,6 +292,18 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
               {t('marketCreation.expiresAt', { date: new Date(bolt11ExpiresAt).toLocaleString() })}
             </p>
           )}
+          {!credited && !failed && (
+            <button
+              data-testid="pay-ln-from-wallet"
+              type="button"
+              disabled={payingInvoice}
+              onClick={onPayBolt11}
+              className="mt-4 w-full px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              {payingInvoice ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+              {payingInvoice ? t('marketCreation.payingFromWallet') : t('marketCreation.payFromWallet')}
+            </button>
+          )}
         </div>
       )}
 
@@ -281,6 +355,17 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
           className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors"
         >
           {t('marketCreation.continueToMarket')}
+        </button>
+      )}
+
+      {!credited && (
+        <button
+          data-testid="skip-liquidity"
+          type="button"
+          onClick={onContinue}
+          className="mt-3 w-full px-4 py-3 rounded-lg border border-slate-700 text-slate-200 hover:bg-slate-800 transition-colors"
+        >
+          {t('marketCreation.skipLiquidityProvisioning')}
         </button>
       )}
     </div>

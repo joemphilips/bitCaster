@@ -4,6 +4,20 @@ import { MemoryRouter, Routes, Route } from 'react-router'
 import userEvent from '@testing-library/user-event'
 import { DepositStep } from '../DepositStep'
 
+const {
+  mockCreateMeltQuote,
+  mockMeltProofs,
+  mockGetBaseProofs,
+  mockRemoveProofs,
+  mockAddProofs,
+} = vi.hoisted(() => ({
+  mockCreateMeltQuote: vi.fn(),
+  mockMeltProofs: vi.fn(),
+  mockGetBaseProofs: vi.fn(),
+  mockRemoveProofs: vi.fn(),
+  mockAddProofs: vi.fn(),
+}))
+
 // The deposit step depends on the API client. Mock the surface.
 vi.mock('@/lib/markets', async (importOriginal) => {
   const mod = await importOriginal<typeof import('@/lib/markets')>()
@@ -14,6 +28,22 @@ vi.mock('@/lib/markets', async (importOriginal) => {
     getDepositStatus: vi.fn(),
   }
 })
+
+vi.mock('@/lib/cashu', () => ({
+  createMeltQuote: (...args: unknown[]) => mockCreateMeltQuote(...args),
+  meltProofs: (...args: unknown[]) => mockMeltProofs(...args),
+}))
+
+vi.mock('@/stores/proof-db', () => ({
+  getBaseProofs: (...args: unknown[]) => mockGetBaseProofs(...args),
+  removeProofs: (...args: unknown[]) => mockRemoveProofs(...args),
+  addProofs: (...args: unknown[]) => mockAddProofs(...args),
+}))
+
+vi.mock('@/stores/wallet', () => ({
+  useWalletStore: (selector: (s: { activeMintUrl: string }) => unknown) =>
+    selector({ activeMintUrl: 'http://mint.test' }),
+}))
 
 import {
   requestLnInvoiceDeposit,
@@ -43,6 +73,18 @@ function renderStep(props?: Partial<{ conditionId: string; defaultAmountSats: nu
 describe('DepositStep', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCreateMeltQuote.mockResolvedValue({
+      quote: 'melt-q',
+      amount: 1000,
+      fee_reserve: 0,
+      state: 'UNPAID',
+      expiry: 0,
+      payment_preimage: null,
+    })
+    mockGetBaseProofs.mockResolvedValue([])
+    mockMeltProofs.mockResolvedValue({ paid: true, change: [] })
+    mockRemoveProofs.mockResolvedValue(undefined)
+    mockAddProofs.mockResolvedValue(undefined)
   })
 
   it('renders the new market id and the two payment-method tabs', () => {
@@ -154,5 +196,16 @@ describe('DepositStep', () => {
   it('prevents amount < 1', () => {
     renderStep({ defaultAmountSats: 0 })
     expect(screen.getByTestId('request-ln-invoice')).toBeDisabled()
+  })
+
+  it('lets creators skip optional liquidity provisioning', async () => {
+    const user = userEvent.setup()
+    renderStep()
+
+    await user.click(screen.getByTestId('skip-liquidity'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('market-detail-page')).toBeInTheDocument()
+    })
   })
 })

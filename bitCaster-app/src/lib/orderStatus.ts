@@ -188,7 +188,8 @@ export function usePendingTradesPoller(): void {
             if (
               !isTerminal &&
               current === 'partially_filled' &&
-              hasNewFills
+              hasNewFills &&
+              status.filledAmountSats > 0
             ) {
               addNotification({
                 id: `${trade.orderId}-partially_filled-${fillCount}`,
