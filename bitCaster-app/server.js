@@ -49,12 +49,21 @@ if (BACKEND_URL) {
     target: BACKEND_URL, changeOrigin: true, xfwd: true, pathFilter: '/api/**',
     on: { error: proxyErrorHandler },
   }));
+  // Wallet-service callbacks use the same frontend-to-backend private path as
+  // browser API calls. The backend still authenticates /internal/** with the
+  // WalletService Entra-MI bearer scheme; this proxy is transport reachability,
+  // not authorization.
+  app.use(createProxyMiddleware({
+    target: BACKEND_URL, changeOrigin: true, xfwd: true, pathFilter: '/internal/**',
+    on: { error: proxyErrorHandler },
+  }));
   hubsProxy = createProxyMiddleware({
     target: BACKEND_URL, changeOrigin: true, xfwd: true, pathFilter: '/hubs/**', ws: true,
     on: { error: proxyErrorHandler },
   });
   app.use(hubsProxy);
   console.log(`/api/* -> ${BACKEND_URL}`);
+  console.log(`/internal/* -> ${BACKEND_URL}`);
   console.log(`/hubs/* -> ${BACKEND_URL} (ws)`);
 }
 
