@@ -43,6 +43,9 @@ export interface TradeCreatedPayload {
   fillAmountSats?: number
   outcomeFaceAmountSats?: number
   quotePaymentSats?: number
+  settlementKind?: string | null
+  sellerKeepOutcomeSetId?: string | null
+  sellerLockOutcomeSetId?: string | null
 }
 
 export interface TradeHubCallbacks {
@@ -136,6 +139,9 @@ export function useTradeHub(
         fillAmountSats?: number,
         outcomeFaceAmountSats?: number,
         quotePaymentSats?: number,
+        settlementKind?: string | null,
+        sellerKeepOutcomeSetId?: string | null,
+        sellerLockOutcomeSetId?: string | null,
       ) => {
         callbacksRef.current.onTradeCreated?.({
           tradeId,
@@ -147,6 +153,9 @@ export function useTradeHub(
           fillAmountSats,
           outcomeFaceAmountSats,
           quotePaymentSats,
+          settlementKind,
+          sellerKeepOutcomeSetId,
+          sellerLockOutcomeSetId,
         })
       },
     )

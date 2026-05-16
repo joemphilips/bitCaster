@@ -64,6 +64,51 @@ paths:
               schema:
                 type: string
 
+  /api/v1/markets/{conditionId}/oracle-attestation:
+    post:
+      operationId: submitOracleAttestation
+      summary: Submit a signed oracle attestation directly to the engine
+      description: >
+        Accepts a Nostr kind-89 DLC oracle attestation event and closes any
+        open market identified by conditionId when the event and embedded
+        kormir/rust-dlc attestation verify against that market's registered
+        oracle. Nostr relay publication is optional: this endpoint is the
+        direct closure path for bitCaster markets. The payload is
+        self-authenticating, so no NIP-98 header is required.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OracleNostrEvent'
+      responses:
+        '200':
+          description: >
+            Attestation accepted. Result is "Closed", "AlreadyClosed", or
+            "DuplicateReplay".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OracleAttestationResponse'
+        '400':
+          description: >
+            The submitted event is not a valid kind-89 oracle attestation, or
+            its signatures/payload do not verify.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OracleAttestationResponse'
+        '404':
+          description: >
+            The attestation verified, but no open market is registered for the
+            attesting oracle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OracleAttestationResponse'
+
   /api/v1/{marketId}/orders:
     get:
       operationId: listRestingOrders
@@ -608,6 +653,58 @@ components:
         - Direct
         - Complementary
       description: How two orders were matched together.
+
+    OracleNostrEvent:
+      type: object
+      required:
+        - id
+        - pubkey
+        - createdAt
+        - kind
+        - content
+        - sig
+      properties:
+        id:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: NIP-01 event id of the kind-89 attestation.
+        pubkey:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: X-only BIP-340/Nostr public key of the oracle.
+        createdAt:
+          type: integer
+          format: int64
+          description: NIP-01 created_at timestamp in Unix seconds.
+        kind:
+          type: integer
+          enum:
+            - 89
+          description: Nostr event kind for DLC oracle attestations.
+        content:
+          type: string
+          description: Base64-encoded kormir/rust-dlc oracle_attestation payload.
+        sig:
+          type: string
+          pattern: '^[0-9a-fA-F]{128}$'
+          description: BIP-340 Schnorr signature over the NIP-01 event id.
+
+    OracleAttestationResponse:
+      type: object
+      required:
+        - result
+      properties:
+        result:
+          type: string
+          enum:
+            - Closed
+            - AlreadyClosed
+            - DuplicateReplay
+            - WrongKind
+            - InvalidSignature
+            - InvalidPayload
+            - NoMatchingMarket
+          description: Engine processing result for the submitted attestation.
 
     Fill:
       type: object

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router'
 import { Loader2, Zap, Coins, CheckCircle2, AlertCircle, Copy } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { QRCodeSVG } from 'qrcode.react'
 import {
   requestLnInvoiceDeposit,
   requestEcashDeposit,
@@ -217,6 +218,11 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
             >
               <Copy className="w-3 h-3" /> {t('common.copy')}
             </button>
+          </div>
+          <div className="mb-3 flex justify-center">
+            <div className="rounded-lg bg-white p-3" data-testid="bolt11-qr">
+              <QRCodeSVG value={bolt11} size={192} level="M" />
+            </div>
           </div>
           <p className="text-xs font-mono text-slate-300 break-all">{bolt11}</p>
           {bolt11ExpiresAt && (

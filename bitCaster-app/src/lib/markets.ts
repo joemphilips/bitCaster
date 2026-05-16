@@ -21,6 +21,9 @@ export type CreateMarketResponse = components['schemas']['CreateMarketResponse']
 export type CreatorMarketEntry = components['schemas']['CreatorMarketEntry']
 export type CreatorMarketsResponse =
   components['schemas']['CreatorMarketsResponse']
+export type OracleNostrEvent = components['schemas']['OracleNostrEvent']
+export type OracleAttestationResponse =
+  components['schemas']['OracleAttestationResponse']
 
 // CDK mint response types
 
@@ -720,6 +723,32 @@ export async function createMarket(
     throw new Error(`[Matching Engine] Failed to create market: ${detail}`)
   }
   return response.json()
+}
+
+export async function submitOracleAttestation(
+  conditionId: string,
+  event: OracleNostrEvent,
+): Promise<OracleAttestationResponse> {
+  const response = await fetch(
+    `/api/v1/markets/${encodeURIComponent(conditionId)}/oracle-attestation`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    },
+  )
+  const body = (await response.json().catch(() => null)) as
+    | OracleAttestationResponse
+    | null
+  if (!response.ok) {
+    throw new Error(
+      body?.result
+        ? `Oracle attestation rejected: ${body.result}`
+        : `Oracle attestation rejected: HTTP ${response.status}`,
+    )
+  }
+  if (!body) throw new Error('Oracle attestation response was empty')
+  return body
 }
 
 export async function fetchThumbnailUrl(

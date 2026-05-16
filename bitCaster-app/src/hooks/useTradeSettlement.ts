@@ -59,16 +59,23 @@ import {
   type StoredProof,
 } from '@/stores/proof-db'
 import { splitMarketId } from '@/lib/orderStatus'
-import { hexToBytes } from '@/lib/ecdh'
+import { hexToBytes } from '@bitcaster/swap-protocol/ecdh'
 import {
   buyerClaimSwap,
   buyerExtractSecret,
   buyerPrepareSwap,
   sellerClaimSwap,
+  sellerPreparePrelockedSwap,
   sellerPrepareSwap,
   validateLocktimeOrdering,
   type ProofOperationStore,
-} from '@/lib/atomicSwap'
+} from '@bitcaster/swap-protocol/atomicSwap'
+import {
+  selectCollateralForCtfSplit,
+  splitRootCompleteSetForSwap,
+  type CtfProofOperationRecord,
+  type CtfProofOperationStore,
+} from '@/lib/ctfSplit'
 import { useToastStore } from '@/stores/toast'
 import {
   TRADE_MESSAGE_TYPES,
@@ -85,6 +92,18 @@ const proofOperationStore: ProofOperationStore = {
   getProofOperation,
   prepareProofOperation,
   markProofOperationCompleted,
+}
+
+const ctfProofOperationStore: CtfProofOperationStore = {
+  getProofOperation: async (operationId) =>
+    (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
+  prepareProofOperation: async (input) =>
+    (await prepareProofOperation(input)) as CtfProofOperationRecord,
+  markProofOperationCompleted: async (operationId, resultProofs) =>
+    (await markProofOperationCompleted(
+      operationId,
+      resultProofs,
+    )) as CtfProofOperationRecord,
 }
 
 /**
@@ -194,6 +213,9 @@ async function handleTradeCreated(
     {
       outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
       quotePaymentSats: payload.quotePaymentSats,
+      settlementKind: payload.settlementKind,
+      sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId,
+      sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId,
     },
   )
 
@@ -256,21 +278,15 @@ async function runSellerSendOpening(
     useActiveSwapsStore.getState().setStep(tradeId, 'driving')
     const ctx = buildSwapContext(swap, mintUrl)
     if (!ctx) return
-    const proofs = await loadProofsForLock(
-      mintUrl,
-      swap.outcomeFaceAmountSats ?? undefined,
-      swap.marketId,
-    )
-    const out = await sellerPrepareSwap(ctx, proofs, {
-      operationId: proofOperationId(tradeId, 'seller-lock'),
-      proofOperationStore,
-    })
-    await persistLockChange(
-      proofs,
-      out.changeProofs,
-      mintUrl,
-      outcomeMetadataForMarket(swap.marketId),
-    )
+    const complementarySplit = complementarySellerSplit(swap, ctx)
+    const out = complementarySplit
+      ? await prepareComplementarySellerOpening(
+          swap,
+          ctx,
+          mintUrl,
+          complementarySplit,
+        )
+      : await prepareDirectSellerOpening(swap, ctx, mintUrl)
     useActiveSwapsStore
       .getState()
       .setSellerState(tradeId, { adaptorPoint: out.adaptorPoint })
@@ -288,6 +304,115 @@ async function runSellerSendOpening(
     failSwap(tradeId, err)
   } finally {
     releaseStep(tradeId, 'seller-open')
+  }
+}
+
+type SellerOpening = Awaited<ReturnType<typeof sellerPrepareSwap>>
+
+interface ComplementarySellerSplit {
+  conditionId: string
+  keepOutcomeSetId: string
+  lockOutcomeSetId: string
+}
+
+async function prepareDirectSellerOpening(
+  swap: ActiveSwap,
+  ctx: SwapCtx,
+  mintUrl: string,
+): Promise<SellerOpening> {
+  const proofs = await loadProofsForLock(
+    mintUrl,
+    swap.outcomeFaceAmountSats ?? undefined,
+    swap.marketId,
+  )
+  const out = await sellerPrepareSwap(ctx, proofs, {
+    operationId: proofOperationId(swap.tradeId, 'seller-lock'),
+    proofOperationStore,
+  })
+  await persistLockChange(
+    proofs,
+    out.changeProofs,
+    mintUrl,
+    outcomeMetadataForMarket(swap.marketId),
+  )
+  return out
+}
+
+async function prepareComplementarySellerOpening(
+  swap: ActiveSwap,
+  ctx: SwapCtx,
+  mintUrl: string,
+  split: ComplementarySellerSplit,
+): Promise<SellerOpening> {
+  const amountSats = swap.outcomeFaceAmountSats
+  if (
+    amountSats === null ||
+    !Number.isSafeInteger(amountSats) ||
+    amountSats <= 0
+  ) {
+    throw new Error('Complementary swap is missing a positive outcome face amount')
+  }
+
+  const operationId = proofOperationId(
+    swap.tradeId,
+    'seller-complementary-ctf-split',
+  )
+  const existingOperation = await getProofOperation(operationId)
+  const collateralProofs = existingOperation
+    ? existingOperation.inputs
+    : (
+        await selectCollateralForCtfSplit(
+          mintUrl,
+          await getBaseProofs(mintUrl),
+          amountSats,
+        )
+      ).inputs
+
+  const splitResult = await splitRootCompleteSetForSwap({
+    mintUrl,
+    conditionId: split.conditionId,
+    collateralProofs,
+    amountSats,
+    lockOutcomeSetId: split.lockOutcomeSetId,
+    keepOutcomeSetId: split.keepOutcomeSetId,
+    p2pk: {
+      pubkey: [ctx.ephemeralKey.publicKey, ctx.counterpartyPubkey],
+      requiredSignatures: 2,
+      locktime: ctx.sellerLocktime,
+      refundKeys: [ctx.ephemeralKey.publicKey],
+      sigFlag: 'SIG_INPUTS',
+    },
+    operationId,
+    proofOperationStore: ctfProofOperationStore,
+  })
+
+  await removeProofs(splitResult.spentSatProofs.map((p) => p.secret))
+  await persistFreshProofs(
+    splitResult.keepProofs,
+    mintUrl,
+    outcomeMetadataForCondition(split.conditionId, split.keepOutcomeSetId),
+  )
+
+  return sellerPreparePrelockedSwap(ctx, splitResult.lockedProofs)
+}
+
+function complementarySellerSplit(
+  swap: ActiveSwap,
+  ctx: SwapCtx,
+): ComplementarySellerSplit | null {
+  if (ctx.role !== 'seller') return null
+  if (swap.settlementKind !== 'ComplementarySplit') return null
+  if (!swap.sellerKeepOutcomeSetId || !swap.sellerLockOutcomeSetId) {
+    throw new Error('Complementary split trade is missing seller outcome metadata')
+  }
+  const market = splitMarketId(swap.marketId)
+  if (!market) {
+    throw new Error(`Invalid complementary split market id ${swap.marketId}`)
+  }
+  return {
+    conditionId: market.conditionId,
+    keepOutcomeSetId: swap.sellerKeepOutcomeSetId,
+    lockOutcomeSetId: swap.sellerLockOutcomeSetId,
   }
 }
 
@@ -592,10 +717,17 @@ function outcomeMetadataForMarket(
 ): OutcomeProofMetadata | null {
   const parts = splitMarketId(marketId)
   if (!parts) return null
+  return outcomeMetadataForCondition(parts.conditionId, parts.outcomeName)
+}
+
+function outcomeMetadataForCondition(
+  conditionId: string,
+  outcomeCollection: string,
+): OutcomeProofMetadata {
   return {
-    conditionId: parts.conditionId,
-    outcomeCollection: parts.outcomeName,
-    marketId,
+    conditionId,
+    outcomeCollection,
+    marketId: `${conditionId}-${outcomeCollection}`,
   }
 }
 

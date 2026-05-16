@@ -148,25 +148,48 @@ export function usePortfolioState(): PortfolioState & {
   const storeMints = useWalletStore((s) => s.mints)
   const positionsFromDb = useLiveQuery(async () => {
     const proofs = await db.proofs.toArray()
-    const byCondition = new Map<string, { amount: number; mintUrl: string }>()
+    const byOutcome = new Map<
+      string,
+      {
+        conditionId: string
+        outcomeCollection: string
+        amount: number
+        mintUrl: string
+        firstReceivedAt: number
+      }
+    >()
     for (const proof of proofs.filter(isCtfProof)) {
-      const conditionId =
-        (proof as typeof proof & { conditionId?: string; condition_id?: string }).conditionId ??
-        (proof as typeof proof & { condition_id?: string }).condition_id
-      if (!conditionId) continue
-      const current = byCondition.get(conditionId)
-      byCondition.set(conditionId, {
+      const candidate = proof as typeof proof & {
+        conditionId?: string
+        condition_id?: string
+        outcomeCollection?: string
+        outcome_collection?: string
+      }
+      const conditionId = candidate.conditionId ?? candidate.condition_id
+      const outcomeCollection =
+        candidate.outcomeCollection ?? candidate.outcome_collection
+      if (!conditionId || !outcomeCollection) continue
+      const key = `${conditionId}:${outcomeCollection}`
+      const current = byOutcome.get(key)
+      byOutcome.set(key, {
+        conditionId,
+        outcomeCollection,
         amount: (current?.amount ?? 0) + proof.amount,
         mintUrl: current?.mintUrl ?? proof.mintUrl,
+        firstReceivedAt: Math.min(
+          current?.firstReceivedAt ?? Number.POSITIVE_INFINITY,
+          proof.receivedAt ?? Date.now(),
+        ),
       })
     }
-    return Array.from(byCondition.entries()).map(([conditionId, entry]): Position => ({
-      id: conditionId,
-      marketId: conditionId,
-      marketTitle: `Market ${conditionId.slice(0, 8)}`,
+    return Array.from(byOutcome.values()).map((entry): Position => ({
+      id: `${entry.conditionId}-${entry.outcomeCollection}`,
+      marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
+      marketTitle: `Market ${entry.conditionId.slice(0, 8)}`,
       marketImageUrl: '',
-      side: 'yes',
-      outcomeLabel: conditionId,
+      side: entry.outcomeCollection.toUpperCase() === 'YES' ? 'yes' : 'no',
+      outcomeId: entry.outcomeCollection,
+      outcomeLabel: entry.outcomeCollection,
       shares: entry.amount,
       avgBuyPrice: 0,
       currentPrice: 0,
@@ -174,7 +197,7 @@ export function usePortfolioState(): PortfolioState & {
       profitLossSats: 0,
       profitLossPercent: 0,
       status: 'active',
-      acquiredDate: new Date(0).toISOString(),
+      acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
       mintUrl: entry.mintUrl,
     }))
   }, [], [] as Position[])

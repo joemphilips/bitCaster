@@ -1,11 +1,13 @@
 ---
-title: "マーケットメイキングと初期流動性"
+title: "CPMM Bot と初期流動性"
 description: "bitCasterのCLOB上でのCPMMベースの初期流動性に関する設計根拠、HI/LO数値市場の注意点を含む。"
 sidebar:
-  order: 2
+  order: 3
 ---
 
-# マーケットメイキングと初期流動性
+# CPMM Bot と初期流動性
+
+このページは、新しいマーケットを立ち上げるための自動 CPMM Bot について説明します。人間またはプロのマーケットメイカーの取引モデル、オンライン要件、補完マッチング、手数料方針については [取引モデルと人間のマーケットメイカー](/ja/technical/architecture/trading-model/) を参照してください。
 
 ## コールドスタート問題
 

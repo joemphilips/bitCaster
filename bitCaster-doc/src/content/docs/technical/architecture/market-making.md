@@ -1,11 +1,13 @@
 ---
-title: "Market Making & Initial Liquidity"
+title: "CPMM Bot & Initial Liquidity"
 description: "Design rationale for CPMM-based initial liquidity on bitCaster's CLOB, including caveats for HI/LO numeric markets."
 sidebar:
-  order: 2
+  order: 3
 ---
 
-# Market Making & Initial Liquidity
+# CPMM Bot & Initial Liquidity
+
+This page covers the automated CPMM bot used to bootstrap a new market. For the human/professional market-maker trading model, online requirements, complementary matching, and fee policy, see [Trading Model & Human Market Makers](/technical/architecture/trading-model/).
 
 ## The Cold-Start Problem
 

@@ -20,7 +20,7 @@ export interface StoredOutputData {
   secret: string
 }
 
-export type ProofOperationKind = 'swap-lock' | 'swap-claim'
+export type ProofOperationKind = 'swap-lock' | 'swap-claim' | 'ctf-split'
 export type ProofOperationState = 'prepared' | 'completed' | 'failed'
 
 export interface ProofOperationRecord {

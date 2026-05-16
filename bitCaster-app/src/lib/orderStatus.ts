@@ -6,6 +6,7 @@ import {
   useNotificationsStore,
 } from '@/stores/notifications'
 import { useActiveSwapsStore } from '@/stores/activeSwaps'
+import { useToastStore } from '@/stores/toast'
 import { generateNip98Header } from '@/lib/markets'
 
 export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
@@ -96,6 +97,10 @@ export function promoteFillsToActiveSwaps(
     promoted += 1
   }
   return promoted
+}
+
+function shortOrderId(orderId: string): string {
+  return orderId.length > 12 ? `${orderId.slice(0, 8)}...` : orderId
 }
 
 /**
@@ -213,6 +218,12 @@ export function usePendingTradesPoller(): void {
                 occurredAt: Date.now(),
                 read: false,
               })
+              if (current === 'filled') {
+                useToastStore.getState().addToast({
+                  type: 'success',
+                  message: `All your amount for order ${shortOrderId(trade.orderId)} has been filled. 0 sats remaining.`,
+                })
+              }
               removePendingTrade(trade.orderId)
               lastFillCountRef.current.delete(trade.orderId)
 

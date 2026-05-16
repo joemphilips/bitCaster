@@ -24,6 +24,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/markets/{conditionId}/oracle-attestation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit a signed oracle attestation directly to the engine
+         * @description Accepts a Nostr kind-89 DLC oracle attestation event and closes any open market identified by conditionId when the event and embedded kormir/rust-dlc attestation verify against that market's registered oracle. Nostr relay publication is optional: this endpoint is the direct closure path for bitCaster markets. The payload is self-authenticating, so no NIP-98 header is required.
+         */
+        post: operations["submitOracleAttestation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/{marketId}/orders": {
         parameters: {
             query?: never;
@@ -296,6 +316,33 @@ export interface components {
          * @enum {string}
          */
         MatchPath: "Direct" | "Complementary";
+        OracleNostrEvent: {
+            /** @description NIP-01 event id of the kind-89 attestation. */
+            id: string;
+            /** @description X-only BIP-340/Nostr public key of the oracle. */
+            pubkey: string;
+            /**
+             * Format: int64
+             * @description NIP-01 created_at timestamp in Unix seconds.
+             */
+            createdAt: number;
+            /**
+             * @description Nostr event kind for DLC oracle attestations.
+             * @enum {integer}
+             */
+            kind: 89;
+            /** @description Base64-encoded kormir/rust-dlc oracle_attestation payload. */
+            content: string;
+            /** @description BIP-340 Schnorr signature over the NIP-01 event id. */
+            sig: string;
+        };
+        OracleAttestationResponse: {
+            /**
+             * @description Engine processing result for the submitted attestation.
+             * @enum {string}
+             */
+            result: "Closed" | "AlreadyClosed" | "DuplicateReplay" | "WrongKind" | "InvalidSignature" | "InvalidPayload" | "NoMatchingMarket";
+        };
         Fill: {
             /**
              * Format: uuid
@@ -722,6 +769,51 @@ export interface operations {
                 };
                 content: {
                     "application/json": string;
+                };
+            };
+        };
+    };
+    submitOracleAttestation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OracleNostrEvent"];
+            };
+        };
+        responses: {
+            /** @description Attestation accepted. Result is "Closed", "AlreadyClosed", or "DuplicateReplay". */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OracleAttestationResponse"];
+                };
+            };
+            /** @description The submitted event is not a valid kind-89 oracle attestation, or its signatures/payload do not verify. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OracleAttestationResponse"];
+                };
+            };
+            /** @description The attestation verified, but no open market is registered for the attesting oracle. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OracleAttestationResponse"];
                 };
             };
         };
