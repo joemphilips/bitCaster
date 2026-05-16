@@ -70,6 +70,34 @@ export interface TradeHubActions {
 // ---------------------------------------------------------------------------
 
 const SERVER_URL = resolveHubServerUrl()
+const INITIAL_START_RETRY_DELAYS_MS = [0, 1_000, 2_000, 5_000, 10_000]
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function startWithInitialRetry(
+  connection: HubConnection,
+  onError: (err: Error) => void,
+  isStopped: () => boolean,
+): Promise<void> {
+  let attempt = 0
+  while (!isStopped()) {
+    try {
+      await connection.start()
+      return
+    } catch (err) {
+      if (isStopped()) return
+      onError(err instanceof Error ? err : new Error(String(err)))
+      const delay =
+        INITIAL_START_RETRY_DELAYS_MS[
+          Math.min(attempt, INITIAL_START_RETRY_DELAYS_MS.length - 1)
+        ]
+      attempt += 1
+      if (delay > 0) await sleep(delay)
+    }
+  }
+}
 
 export function generateTradeHubAccessToken(
   privateKey: Uint8Array,
@@ -103,6 +131,7 @@ export function useTradeHub(
 
     const hubUrl = tradeHubUrl(SERVER_URL)
     const privkey = ephemeralPrivkey // stable reference for this effect run
+    let stopped = false
 
     const connection = new HubConnectionBuilder()
       .withUrl(hubUrl, {
@@ -176,13 +205,14 @@ export function useTradeHub(
 
     connectionRef.current = connection
 
-    connection.start().catch((err: unknown) => {
-      callbacksRef.current.onError?.(
-        err instanceof Error ? err : new Error(String(err)),
-      )
-    })
+    void startWithInitialRetry(
+      connection,
+      (err) => callbacksRef.current.onError?.(err),
+      () => stopped,
+    )
 
     return () => {
+      stopped = true
       connection.stop().catch(() => {
         /* ignore teardown errors */
       })
