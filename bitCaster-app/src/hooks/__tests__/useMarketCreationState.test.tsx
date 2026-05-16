@@ -153,6 +153,9 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(mockRegisterCondition).toHaveBeenCalledOnce()
     expect(mockRegisterPartition).toHaveBeenCalledWith('test-cond-id', ['Yes', 'No'])
     expect(mockCreateMarket).toHaveBeenCalledOnce()
+    expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
+      oracleAnnouncementHex: 'ann-hex-123',
+    })
   })
 
   it('stops and sets error if registerCondition fails', async () => {

@@ -100,8 +100,17 @@ describe('DepositStep', () => {
       bolt11: 'lnbcrt1000n1pq...',
       expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
     })
-    // Polling resolves directly to Credited so the test is fast.
-    vi.mocked(getDepositStatus).mockResolvedValue({
+    // Keep the invoice visible for the first assertion, then advance to
+    // Credited on the next poll so the test is still fast.
+    vi.mocked(getDepositStatus).mockResolvedValueOnce({
+      depositId: 'd-1',
+      conditionId: 'cond-test-abc123',
+      state: 'Requested',
+      method: 'LightningInvoice',
+      amountSats: 1000,
+      requestedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }).mockResolvedValue({
       depositId: 'd-1',
       conditionId: 'cond-test-abc123',
       state: 'Credited',
@@ -116,9 +125,11 @@ describe('DepositStep', () => {
 
     await user.click(screen.getByTestId('request-ln-invoice'))
 
-    // Bolt11 bearer string is shown.
+    // Bolt11 bearer string is shown by the same full-screen invoice UI used
+    // for wallet deposits/top-ups.
     await waitFor(() => {
-      expect(screen.getByTestId('bolt11-display')).toHaveTextContent('lnbcrt1000n1pq...')
+      expect(screen.getByRole('heading', { name: 'Lightning Invoice' })).toBeInTheDocument()
+      expect(screen.getByText('lnbcrt1000n1pq...')).toBeInTheDocument()
     })
 
     // Polling resolves Credited; the green panel + Continue button appear.
@@ -190,7 +201,7 @@ describe('DepositStep', () => {
     await waitFor(() => {
       expect(screen.getByText(/engine 502/i)).toBeInTheDocument()
     })
-    expect(screen.queryByTestId('bolt11-display')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Lightning Invoice' })).not.toBeInTheDocument()
   })
 
   it('prevents amount < 1', () => {

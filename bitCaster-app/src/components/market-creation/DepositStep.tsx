@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router'
-import { Loader2, Zap, Coins, CheckCircle2, AlertCircle, Copy } from 'lucide-react'
+import { Loader2, Zap, Coins, CheckCircle2, AlertCircle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { QRCodeSVG } from 'qrcode.react'
+import { InvoiceDisplay } from '@/components/deposit-withdraw/InvoiceDisplay'
 import {
   requestLnInvoiceDeposit,
   requestEcashDeposit,
@@ -10,14 +10,6 @@ import {
   type DepositState,
   type RequestLnInvoiceDepositResponse,
 } from '@/lib/markets'
-import { createMeltQuote, meltProofs } from '@/lib/cashu'
-import {
-  addProofs,
-  getBaseProofs,
-  removeProofs,
-  type StoredProof,
-} from '@/stores/proof-db'
-import { useWalletStore } from '@/stores/wallet'
 
 interface DepositStepProps {
   /** The just-created market's condition id, returned by `createMarket`. */
@@ -55,8 +47,6 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
   const [ecashToken, setEcashToken] = useState('')
   const [state, setState] = useState<DepositState | null>(null)
   const [stateUpdatedAt, setStateUpdatedAt] = useState<string | null>(null)
-  const [payingInvoice, setPayingInvoice] = useState(false)
-  const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
 
   // Polling driver — kicks off when `depositId` is set, stops on terminal state.
   // The terminal check runs inside the tick (not in the effect deps) so each
@@ -95,51 +85,6 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
     }
   }, [conditionId, depositId, t])
 
-  const payBolt11FromWallet = useCallback(async (
-    invoice: string,
-    options: { surfaceInsufficientBalance: boolean },
-  ): Promise<boolean> => {
-    setPayingInvoice(true)
-    try {
-      const quote = await createMeltQuote(invoice, activeMintUrl)
-      const proofs = await getBaseProofs(activeMintUrl)
-      const available = proofs.reduce((sum, proof) => sum + proof.amount, 0)
-      const required = quote.amount + quote.fee_reserve
-      if (available < required) {
-        if (options.surfaceInsufficientBalance) {
-          setError(t('marketCreation.depositWalletInsufficient', { sats: required }))
-        }
-        return false
-      }
-
-      const { paid, change } = await meltProofs(quote, proofs, activeMintUrl)
-      if (!paid) {
-        if (options.surfaceInsufficientBalance) {
-          setError(t('marketCreation.depositWalletPayFailed'))
-        }
-        return false
-      }
-
-      await removeProofs(proofs.map((p) => p.secret))
-      if (change.length > 0) {
-        const storedChange: StoredProof[] = change.map((p) => ({
-          ...p,
-          mintUrl: activeMintUrl,
-        }))
-        await addProofs(storedChange)
-      }
-      setState('Paid')
-      return true
-    } catch (err) {
-      if (options.surfaceInsufficientBalance) {
-        setError(err instanceof Error ? err.message : t('marketCreation.depositWalletPayFailed'))
-      }
-      return false
-    } finally {
-      setPayingInvoice(false)
-    }
-  }, [activeMintUrl, t])
-
   const onRequestLn = useCallback(async () => {
     setSubmitting(true)
     setError(null)
@@ -149,13 +94,12 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
       setBolt11(res.bolt11)
       setBolt11ExpiresAt(res.expiresAt)
       setState('Requested')
-      void payBolt11FromWallet(res.bolt11, { surfaceInsufficientBalance: false })
     } catch (err) {
       setError(err instanceof Error ? err.message : t('marketCreation.lnRequestError'))
     } finally {
       setSubmitting(false)
     }
-  }, [conditionId, amountSats, payBolt11FromWallet, t])
+  }, [conditionId, amountSats, t])
 
   const onSubmitEcash = useCallback(async () => {
     if (ecashToken.trim().length === 0) {
@@ -175,24 +119,41 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
     }
   }, [conditionId, amountSats, ecashToken, t])
 
-  const onCopyBolt11 = useCallback(() => {
-    if (!bolt11) return
-    void navigator.clipboard.writeText(bolt11)
-  }, [bolt11])
-
-  const onPayBolt11 = useCallback(() => {
-    if (!bolt11) return
-    setError(null)
-    void payBolt11FromWallet(bolt11, { surfaceInsufficientBalance: true })
-  }, [bolt11, payBolt11FromWallet])
-
   const onContinue = useCallback(() => {
     navigate(`/markets/${conditionId}`)
   }, [navigate, conditionId])
 
+  const onRegenerateLn = useCallback(() => {
+    setDepositId(null)
+    setBolt11(null)
+    setBolt11ExpiresAt(null)
+    setState(null)
+    setStateUpdatedAt(null)
+    setError(null)
+  }, [])
+
   const isTerminal = state ? TERMINAL_STATES.includes(state) : false
   const credited = state === 'Credited'
   const failed = state === 'Failed'
+  const invoiceExpiresAtSec = bolt11ExpiresAt
+    ? Math.floor(new Date(bolt11ExpiresAt).getTime() / 1000)
+    : undefined
+  const invoiceStatus =
+    failed ? 'error' : state === 'Paid' || credited ? 'paid' : 'pending'
+
+  if (bolt11 && !credited) {
+    return (
+      <InvoiceDisplay
+        bolt11={bolt11}
+        amountSats={amountSats}
+        status={invoiceStatus}
+        expiresAtSec={invoiceExpiresAtSec}
+        errorMessage={error}
+        onClose={() => setBolt11(null)}
+        onRegenerate={onRegenerateLn}
+      />
+    )
+  }
 
   return (
     <div className="w-full max-w-xl">
@@ -267,44 +228,6 @@ export function DepositStep({ conditionId, defaultAmountSats }: DepositStepProps
             </>
           )}
         </>
-      )}
-
-      {bolt11 && (
-        <div data-testid="bolt11-display" className="mb-4 p-4 rounded-lg bg-slate-900 border border-slate-700">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-xs text-slate-400">{t('marketCreation.payThisInvoice')}</p>
-            <button
-              type="button"
-              onClick={onCopyBolt11}
-              className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
-            >
-              <Copy className="w-3 h-3" /> {t('common.copy')}
-            </button>
-          </div>
-          <div className="mb-3 flex justify-center">
-            <div className="rounded-lg bg-white p-3" data-testid="bolt11-qr">
-              <QRCodeSVG value={bolt11} size={192} level="M" />
-            </div>
-          </div>
-          <p className="text-xs font-mono text-slate-300 break-all">{bolt11}</p>
-          {bolt11ExpiresAt && (
-            <p className="text-xs text-slate-500 mt-2">
-              {t('marketCreation.expiresAt', { date: new Date(bolt11ExpiresAt).toLocaleString() })}
-            </p>
-          )}
-          {!credited && !failed && (
-            <button
-              data-testid="pay-ln-from-wallet"
-              type="button"
-              disabled={payingInvoice}
-              onClick={onPayBolt11}
-              className="mt-4 w-full px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium transition-colors flex items-center justify-center gap-2"
-            >
-              {payingInvoice ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-              {payingInvoice ? t('marketCreation.payingFromWallet') : t('marketCreation.payFromWallet')}
-            </button>
-          )}
-        </div>
       )}
 
       {state && !credited && !failed && (

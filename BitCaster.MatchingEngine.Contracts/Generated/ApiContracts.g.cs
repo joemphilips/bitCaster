@@ -555,7 +555,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
+        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title, string @oracleAnnouncementHex)
         {
             this.Title = @title;
             this.Description = @description;
@@ -563,6 +563,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.OutcomeType = @outcomeType;
             this.LiquiditySats = @liquiditySats;
             this.CategoryTags = @categoryTags;
+            this.OracleAnnouncementHex = @oracleAnnouncementHex;
         }
 
         /// <summary>
@@ -602,6 +603,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("categoryTags")]
         public System.Collections.Generic.List<string> CategoryTags { get; }
+
+        /// <summary>
+        /// Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("oracleAnnouncementHex")]
+        public string OracleAnnouncementHex { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 

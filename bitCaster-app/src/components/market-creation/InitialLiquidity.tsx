@@ -5,6 +5,7 @@ interface InitialLiquidityProps {
   liquiditySats: number
   onLiquiditySatsChange?: (sats: number) => void
   onNext?: () => void
+  onSkip?: () => void
 }
 
 const quickAmounts = [1_000, 5_000, 10_000, 50_000]
@@ -13,6 +14,7 @@ export function InitialLiquidity({
   liquiditySats,
   onLiquiditySatsChange,
   onNext,
+  onSkip,
 }: InitialLiquidityProps) {
   const { t } = useTranslation()
   const canProceed = liquiditySats > 0
@@ -78,6 +80,15 @@ export function InitialLiquidity({
         }`}
       >
         {t('common.next')}
+      </button>
+
+      <button
+        data-testid="skip-liquidity"
+        type="button"
+        onClick={() => onSkip?.()}
+        className="mt-3 w-full py-3 rounded-full border border-slate-700 text-sm font-semibold text-slate-200 hover:bg-slate-800 transition-colors"
+      >
+        {t('marketCreation.skipLiquidityProvisioning')}
       </button>
     </div>
   )

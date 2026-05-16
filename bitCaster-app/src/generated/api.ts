@@ -493,6 +493,8 @@ export interface components {
             liquiditySats: number;
             /** @description Optional category tags for the market. */
             categoryTags?: string[];
+            /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */
+            oracleAnnouncementHex?: string | null;
         };
         CreateMarketResponse: {
             /** @description The condition ID this market was registered for. */

@@ -486,6 +486,7 @@ export function useMarketCreationState() {
           outcomeType: draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? 'yesno',
           liquiditySats: draft.stepInitialLiquidity?.liquiditySats ?? 0,
           categoryTags,
+          oracleAnnouncementHex: announcementHex,
         },
         thumbnailFile,
       )

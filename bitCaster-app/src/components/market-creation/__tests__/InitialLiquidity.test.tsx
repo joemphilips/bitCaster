@@ -56,6 +56,14 @@ describe('InitialLiquidity', () => {
     expect(onNext).toHaveBeenCalledOnce()
   })
 
+  it('allows the creator to skip optional liquidity at zero', async () => {
+    const user = userEvent.setup()
+    const onSkip = vi.fn()
+    render(<InitialLiquidity liquiditySats={0} onSkip={onSkip} />)
+    await user.click(screen.getByTestId('skip-liquidity'))
+    expect(onSkip).toHaveBeenCalledOnce()
+  })
+
   it('highlights the selected quick amount button', () => {
     render(<InitialLiquidity liquiditySats={5000} />)
     const btn5k = screen.getByRole('button', { name: '5,000' })

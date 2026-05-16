@@ -1028,6 +1028,14 @@ components:
           items:
             type: string
           description: Optional category tags for the market.
+        oracleAnnouncementHex:
+          type: string
+          nullable: true
+          description: >
+            Hex-encoded DLC oracle announcement TLV registered with the mint
+            for this condition. The engine persists its oracle pubkey, DLC
+            event id, and maturity time so direct oracle attestations can
+            close the market.
 
     CreateMarketResponse:
       type: object

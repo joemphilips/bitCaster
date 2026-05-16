@@ -61,7 +61,7 @@ describe("buildTradeTicket", () => {
     });
   });
 
-  it("uses the best ask for executable market buys", () => {
+  it("uses aggressive FAK pricing for executable market buys", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -72,7 +72,7 @@ describe("buildTradeTicket", () => {
       orderBook: market.orderBook,
     });
 
-    expect(ticket.request.price).toBe(53);
+    expect(ticket.request.price).toBe(99);
     expect(ticket.request.timeInForce).toBe("FAK");
   });
 
@@ -111,11 +111,11 @@ describe("buildTradeTicket", () => {
     });
 
     expect(ticket.marketId).toBe("condition-1-NO");
-    expect(ticket.request.price).toBe(62);
+    expect(ticket.request.price).toBe(99);
     expect(ticket.request.timeInForce).toBe("FAK");
   });
 
-  it("prices Buy NO market orders from complementary YES bids when direct asks are absent", () => {
+  it("uses aggressive FAK pricing for Buy NO market orders when complementary YES bids are available", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "no" },
@@ -136,7 +136,7 @@ describe("buildTradeTicket", () => {
     });
 
     expect(ticket.marketId).toBe("condition-1-NO");
-    expect(ticket.request.price).toBe(50);
+    expect(ticket.request.price).toBe(99);
     expect(ticket.request.timeInForce).toBe("FAK");
   });
 

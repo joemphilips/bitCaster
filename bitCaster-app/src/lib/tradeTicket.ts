@@ -58,14 +58,15 @@ function marketPriceFor(
   complementaryOrderBook: OrderBook | null | undefined,
 ): number {
   const direct = side === "buy" ? orderBook?.asks[0] : orderBook?.bids[0];
-  if (direct) return direct.price;
+  if (direct) return side === "buy" ? 99 : 1;
 
   // Buy-side complementary matching: buying outcome A can execute against a
-  // resting buy for not-A when the two bid prices sum to at least 100. The
-  // taker's limit price is therefore the complement of the best opposite bid.
+  // resting buy for not-A when the two bid prices sum to at least 100. Market
+  // orders are encoded as aggressive FAK limits so a one-tick bot reprice
+  // between refresh and submit does not cancel an otherwise executable order.
   if (side === "buy") {
     const complementaryBid = complementaryOrderBook?.bids[0];
-    if (complementaryBid) return 100 - complementaryBid.price;
+    if (complementaryBid) return 99;
   }
 
   if (!orderBook && !complementaryOrderBook) {
