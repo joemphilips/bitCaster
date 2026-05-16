@@ -26,6 +26,10 @@ type PendingTradeForPromotion = {
   ephemeralPrivkey: string
 }
 
+type FillLike = {
+  tradeId?: string
+}
+
 const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set([
   'filled',
   'cancelled',
@@ -50,12 +54,13 @@ export async function fetchOrderStatus(
 const POLL_INTERVAL_MS = 5_000
 
 /**
- * Promote any fills carrying a `tradeId` to the in-progress swap store. Direct
- * matches surface the `tradeId` on every produced fill once the engine creates
- * the Trade aggregate. Complementary reservations are promoted from the
- * TradeHub `TradeCreated` push before a fill exists; CPMM-bootstrap fills with
- * no `tradeId` are ignored here. Idempotent — `promote()` is a no-op for
- * tradeIds already present in `activeSwaps`.
+ * Promote any fill/reservation carrying a `tradeId` to the in-progress swap
+ * store. Direct matches surface the `tradeId` on produced fills once the
+ * engine creates the Trade aggregate; complementary reservations surface a
+ * fill-shaped settlement handle before final fill commit so clients can join
+ * TradeHub even if they missed the one-shot `TradeCreated` push. Legacy CPMM
+ * bootstrap fills with no `tradeId` are ignored here. Idempotent — `promote()`
+ * is a no-op for tradeIds already present in `activeSwaps`.
  *
  * Captures the ephemeral keypair from `pendingTrades` at promote-time so the
  * swap-driver keeps working after the pending-trade entry is evicted on a
@@ -66,13 +71,20 @@ export function promoteNewFillsToActiveSwaps(
   trade: PendingTradeForPromotion,
   lastFillCount: number,
 ): number {
-  if (status.fills.length <= lastFillCount) return 0
+  return promoteFillsToActiveSwaps(status.fills, trade, lastFillCount)
+}
+
+export function promoteFillsToActiveSwaps(
+  fills: readonly FillLike[],
+  trade: PendingTradeForPromotion,
+  lastFillCount = 0,
+): number {
+  if (fills.length <= lastFillCount) return 0
 
   const promote = useActiveSwapsStore.getState().promote
   let promoted = 0
-  for (const fill of status.fills.slice(lastFillCount)) {
-    const fillWithTrade = fill as typeof fill & { tradeId?: string }
-    const tradeId = fillWithTrade.tradeId
+  for (const fill of fills.slice(lastFillCount)) {
+    const tradeId = fill.tradeId
     if (!tradeId) continue
     promote({
       tradeId,
@@ -159,10 +171,9 @@ export function usePendingTradesPoller(): void {
             const lastFillCount =
               lastFillCountRef.current.get(trade.orderId) ?? 0
 
-            // Hand any fresh direct-match fills to useTradeSettlement so the
-            // atomic-swap driver can pick them up. Complementary reservations
-            // arrive through TradeHub before a fill exists; legacy CPMM
-            // bootstrap fills without a tradeId are skipped here.
+            // Hand any fresh direct-match fills or complementary reservations
+            // to useTradeSettlement so the atomic-swap driver can pick them up.
+            // Legacy CPMM bootstrap fills without a tradeId are skipped here.
             const hasNewFills = fillCount > lastFillCount
             promoteNewFillsToActiveSwaps(status, trade, lastFillCount)
 

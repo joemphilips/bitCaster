@@ -312,7 +312,7 @@ export interface components {
              * @description The resting order that was matched against.
              */
             makerOrderId: string;
-            /** @description Filled conditional-token face amount. For direct atomic swaps the buyer's quote payment is derived from this amount and the execution price. */
+            /** @description Conditional-token face amount matched for settlement. DCB complementary reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session. */
             amountSats: components["schemas"]["Sats"];
             executionPrice: components["schemas"]["Probability"];
             path: components["schemas"]["MatchPath"];
@@ -323,7 +323,7 @@ export interface components {
             filledAt: string;
             /**
              * Format: uuid
-             * @description Atomic-swap trade session identifier for this fill. Present on direct-match fills that require TradeHub settlement; omitted on complementary fills and legacy fills that do not have a corresponding TradeHub session.
+             * @description Atomic-swap trade session identifier for this fill or DCB reservation. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
              */
             tradeId?: string;
             /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders). */

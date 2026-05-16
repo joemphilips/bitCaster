@@ -6,6 +6,7 @@ import { NostrAuthRequiredModal } from "@/components/shared/NostrAuthRequiredMod
 import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
 import { useShareMarket } from "@/components/market-detail/useShareMarket";
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
+import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
@@ -284,6 +285,12 @@ export function MarketDetailPage() {
         ephemeralPubkey: ephemeral.pubkey,
         ephemeralPrivkey: ephemeral.privkey,
         submittedAt: Date.now(),
+      });
+      promoteFillsToActiveSwaps(response.fills ?? [], {
+        orderId: response.orderId,
+        marketId: ticket.marketId,
+        ephemeralPubkey: ephemeral.pubkey,
+        ephemeralPrivkey: ephemeral.privkey,
       });
       useNotificationsStore.getState().add({
         id: `${response.orderId}-accepted`,
