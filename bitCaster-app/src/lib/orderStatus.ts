@@ -52,9 +52,10 @@ const POLL_INTERVAL_MS = 5_000
 /**
  * Promote any fills carrying a `tradeId` to the in-progress swap store. Direct
  * matches surface the `tradeId` on every produced fill once the engine creates
- * the Trade aggregate; complementary matches and CPMM-bootstrap fills come
- * with no `tradeId` and are ignored here. Idempotent — `promote()` is a no-op
- * for tradeIds already present in `activeSwaps`.
+ * the Trade aggregate. Complementary reservations are promoted from the
+ * TradeHub `TradeCreated` push before a fill exists; CPMM-bootstrap fills with
+ * no `tradeId` are ignored here. Idempotent — `promote()` is a no-op for
+ * tradeIds already present in `activeSwaps`.
  *
  * Captures the ephemeral keypair from `pendingTrades` at promote-time so the
  * swap-driver keeps working after the pending-trade entry is evicted on a
@@ -159,9 +160,9 @@ export function usePendingTradesPoller(): void {
               lastFillCountRef.current.get(trade.orderId) ?? 0
 
             // Hand any fresh direct-match fills to useTradeSettlement so the
-            // atomic-swap driver can pick them up. Fills without a tradeId
-            // (complementary matches, legacy CPMM bootstrap fills) are
-            // skipped — they don't produce a Trade aggregate on the engine.
+            // atomic-swap driver can pick them up. Complementary reservations
+            // arrive through TradeHub before a fill exists; legacy CPMM
+            // bootstrap fills without a tradeId are skipped here.
             const hasNewFills = fillCount > lastFillCount
             promoteNewFillsToActiveSwaps(status, trade, lastFillCount)
 

@@ -22,8 +22,10 @@ import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
+import { heartbeatMakerSession } from "@/lib/markets";
 import { useTradeSettlement } from "@/hooks/useTradeSettlement";
 import { useSettingsStore } from "@/stores/settings";
+import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
@@ -156,12 +158,31 @@ function AppRoutes() {
   useCreatorSync();
   useActivityLogSync();
   usePendingTradesPoller();
+  const pendingTradeCount = usePendingTradesStore(
+    (s) => Object.keys(s.byOrderId).length,
+  );
   const nsecSecret = useSettingsStore((s) => s.nsecSecret);
   const tradeHubPrivkey = useMemo(
     () => decodeNsecToPrivkey(nsecSecret),
     [nsecSecret],
   );
   useTradeSettlement(tradeHubPrivkey);
+
+  useEffect(() => {
+    if (pendingTradeCount === 0) return;
+
+    let stopped = false;
+    const beat = () => {
+      if (stopped) return;
+      heartbeatMakerSession().catch(() => {});
+    };
+    beat();
+    const interval = window.setInterval(beat, 20_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [pendingTradeCount]);
 
   useEffect(() => {
     document.title = titleForPath(location.pathname);

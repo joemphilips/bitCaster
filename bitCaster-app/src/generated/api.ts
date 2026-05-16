@@ -48,6 +48,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/maker/session/heartbeat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh the authenticated maker's online session
+         * @description Records that the authenticated user currently has a browser or bot session available to settle limit orders. Public complementary matching requires a fresh heartbeat before a GTC order can rest on the DCB book. The POST body is empty; clients still include the NIP-98 `payload` tag for the SHA-256 hash of the empty byte string.
+         */
+        post: operations["heartbeatMakerSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/{marketId}/orders/{orderId}": {
         parameters: {
             query?: never;
@@ -374,6 +394,15 @@ export interface components {
             fills: components["schemas"]["Fill"][];
             /** @description Echoes the ephemeralPubkey the client submitted. Lets clients confirm round-trip before they discard the corresponding privkey. */
             ephemeralPubkey: string;
+        };
+        MakerSessionHeartbeatResponse: {
+            /** @description Whether the engine considers the maker session online. */
+            online: boolean;
+            /**
+             * Format: date-time
+             * @description Server time when the heartbeat was recorded.
+             */
+            lastSeenAt: string;
         };
         /** @description A single price level in the order book depth. */
         LevelDto: {
@@ -759,6 +788,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": string;
+                };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    heartbeatMakerSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Maker session refreshed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MakerSessionHeartbeatResponse"];
                 };
             };
             /** @description Missing or invalid NIP-98 authentication */

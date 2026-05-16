@@ -2,14 +2,16 @@
  * Drives the bitCaster atomic-swap protocol from MATCHED to CONFIRMED.
  *
  * Mounted once at the application root alongside `usePendingTradesPoller`. The
- * poller surfaces fills with a `tradeId` to `activeSwaps`; this hook reacts
- * to each entry, connects the TradeHub, joins the channel, and runs the
- * seller or buyer branch of `atomicSwap.ts` as the engine relays the
- * counterparty's encrypted messages.
+ * poller surfaces direct fills with a `tradeId` to `activeSwaps`; for
+ * complementary reservations the engine can also push `TradeCreated` directly
+ * to the user's TradeHub connection before a fill exists. This hook handles
+ * both entry points, joins the channel, and runs the seller or buyer branch of
+ * `atomicSwap.ts` as the engine relays the counterparty's encrypted messages.
  *
  * Lifecycle per swap:
- *   1. `activeSwaps.promote()` — populated by the order poller when a fill
- *      with a tradeId is observed. We pick it up via store subscription.
+ *   1. `activeSwaps.promote()` — populated either by order-status polling when
+ *      a direct fill with a tradeId is observed, or by matching a pushed
+ *      complementary `TradeCreated` event to a pending order's ephemeral key.
  *   2. `joinTrade(tradeId)` — register interest with the engine.
  *   3. `TradeCreated` — decide the local role from sellerPubkey vs our
  *      ephemeralPubkey, and remember locktimes.
@@ -44,6 +46,7 @@ import {
   type SwapRole,
   type SwapWorkKey,
 } from '@/stores/activeSwaps'
+import { usePendingTradesStore } from '@/stores/pendingTrades'
 import { useWalletStore } from '@/stores/wallet'
 import {
   addProofs,
@@ -93,15 +96,24 @@ const proofOperationStore: ProofOperationStore = {
  */
 export function useTradeSettlement(ephemeralPrivkey: Uint8Array | null): void {
   const swapsByTradeId = useActiveSwapsStore((s) => s.byTradeId)
+  const pendingTradeCount = usePendingTradesStore(
+    (s) => Object.keys(s.byOrderId).length,
+  )
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
     (swap) => swap.step !== 'completed' && swap.step !== 'failed',
   )
-  const tradeHubPrivkey = hasActiveSwapWork ? ephemeralPrivkey : null
+  const tradeHubPrivkey =
+    hasActiveSwapWork || pendingTradeCount > 0 ? ephemeralPrivkey : null
 
   const { joinTrade, sendSwapMessage } = useTradeHub(tradeHubPrivkey, {
     onTradeCreated: (payload) =>
-      handleTradeCreated(payload, sendSwapMessage, activeMintUrl),
+      void handleTradeCreated(
+        payload,
+        joinTrade,
+        sendSwapMessage,
+        activeMintUrl,
+      ),
     onSwapMessageReceived: (msg) =>
       handleSwapMessage(msg, sendSwapMessage, activeMintUrl),
     onTradeStateChanged: (tradeId, newState) =>
@@ -124,13 +136,29 @@ export function useTradeSettlement(ephemeralPrivkey: Uint8Array | null): void {
 // TradeCreated → assign role + drive seller's first messages
 // ---------------------------------------------------------------------------
 
-function handleTradeCreated(
+async function handleTradeCreated(
   payload: TradeCreatedPayload,
+  joinTrade: (tradeId: string) => Promise<void>,
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
-): void {
-  const swap = useActiveSwapsStore.getState().byTradeId[payload.tradeId]
+): Promise<void> {
+  let swap: ActiveSwap | null =
+    useActiveSwapsStore.getState().byTradeId[payload.tradeId] ?? null
+  const promotedFromPending = !swap
+  if (!swap) {
+    swap = promotePendingTradeFromTradeCreated(payload)
+  }
   if (!swap) return
+
+  if (promotedFromPending) {
+    try {
+      await joinTrade(payload.tradeId)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      useActiveSwapsStore.getState().setStep(payload.tradeId, 'failed', message)
+      return
+    }
+  }
 
   // Defense-in-depth: refuse to lock proofs if the engine's TradeCreated
   // payload violates `T_YES > T_sat + Δ`. Mirrors the wallet-service guard.
@@ -172,6 +200,30 @@ function handleTradeCreated(
   if (role === 'seller') {
     void runSellerSendOpening(payload.tradeId, sendSwapMessage, mintUrl)
   }
+}
+
+function promotePendingTradeFromTradeCreated(
+  payload: TradeCreatedPayload,
+): ActiveSwap | null {
+  const sellerPubkey = payload.sellerPubkey.toLowerCase()
+  const buyerPubkey = payload.buyerPubkey.toLowerCase()
+  const pendingTrade = Object.values(
+    usePendingTradesStore.getState().byOrderId,
+  ).find((trade) => {
+    const pubkey = trade.ephemeralPubkey.toLowerCase()
+    return pubkey === sellerPubkey || pubkey === buyerPubkey
+  })
+  if (!pendingTrade) return null
+
+  useActiveSwapsStore.getState().promote({
+    tradeId: payload.tradeId,
+    orderId: pendingTrade.orderId,
+    marketId: payload.marketId ?? pendingTrade.marketId,
+    ephemeralPrivkeyHex: pendingTrade.ephemeralPrivkey,
+    ephemeralPubkeyHex: pendingTrade.ephemeralPubkey,
+  })
+
+  return useActiveSwapsStore.getState().byTradeId[payload.tradeId] ?? null
 }
 
 function decideRole(

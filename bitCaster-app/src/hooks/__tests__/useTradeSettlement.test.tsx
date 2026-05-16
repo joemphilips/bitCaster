@@ -1,6 +1,7 @@
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useActiveSwapsStore } from '@/stores/activeSwaps'
+import { usePendingTradesStore } from '@/stores/pendingTrades'
 
 const { mockUseTradeHub, mockJoinTrade, mockSendSwapMessage } = vi.hoisted(
   () => ({
@@ -26,6 +27,7 @@ const privkey = new Uint8Array(32).fill(7)
 beforeEach(() => {
   vi.clearAllMocks()
   useActiveSwapsStore.setState({ byTradeId: {} })
+  usePendingTradesStore.setState({ byOrderId: {} })
   mockJoinTrade.mockResolvedValue(undefined)
   mockSendSwapMessage.mockResolvedValue(undefined)
   mockUseTradeHub.mockReturnValue({
@@ -61,6 +63,58 @@ describe('useTradeSettlement', () => {
       expect.any(Object),
     )
     expect(mockJoinTrade).toHaveBeenCalledWith('trade-1')
+  })
+
+  it('promotes an unsolicited TradeCreated event for a pending complementary order', async () => {
+    usePendingTradesStore.getState().add({
+      orderId: 'order-pending',
+      marketId: 'cond-YES',
+      ephemeralPrivkey: '11'.repeat(32),
+      ephemeralPubkey: '02' + '22'.repeat(32),
+      submittedAt: Date.now(),
+    })
+
+    renderHook(() => useTradeSettlement(privkey))
+
+    expect(mockUseTradeHub).toHaveBeenLastCalledWith(
+      privkey,
+      expect.any(Object),
+    )
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string
+        sellerPubkey: string
+        buyerPubkey: string
+        sellerLocktime: string
+        buyerLocktime: string
+        marketId?: string
+        outcomeFaceAmountSats?: number
+        quotePaymentSats?: number
+      }) => void
+    }
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: 'trade-pending',
+        sellerPubkey: '02' + '33'.repeat(32),
+        buyerPubkey: '02' + '22'.repeat(32),
+        sellerLocktime: '2026-05-07T12:01:00Z',
+        buyerLocktime: '2026-05-07T12:00:00Z',
+        marketId: 'cond-NO',
+        outcomeFaceAmountSats: 100,
+        quotePaymentSats: 50,
+      })
+    })
+
+    await waitFor(() =>
+      expect(mockJoinTrade).toHaveBeenCalledWith('trade-pending'),
+    )
+    const swap = useActiveSwapsStore.getState().byTradeId['trade-pending']
+    expect(swap.orderId).toBe('order-pending')
+    expect(swap.marketId).toBe('cond-NO')
+    expect(swap.role).toBe('buyer')
+    expect(swap.outcomeFaceAmountSats).toBe(100)
+    expect(swap.quotePaymentSats).toBe(50)
   })
 
   it('fails the swap before role assignment when TradeCreated locktimes are inverted', async () => {

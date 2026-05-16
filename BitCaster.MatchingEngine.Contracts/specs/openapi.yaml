@@ -116,6 +116,28 @@ paths:
         '401':
           description: Missing or invalid NIP-98 authentication
 
+  /api/v1/maker/session/heartbeat:
+    post:
+      operationId: heartbeatMakerSession
+      summary: Refresh the authenticated maker's online session
+      security:
+        - nip98: []
+      description: >
+        Records that the authenticated user currently has a browser or bot
+        session available to settle limit orders. Public complementary matching
+        requires a fresh heartbeat before a GTC order can rest on the DCB book.
+        The POST body is empty; clients still include the NIP-98 `payload` tag
+        for the SHA-256 hash of the empty byte string.
+      responses:
+        '200':
+          description: Maker session refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MakerSessionHeartbeatResponse'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+
   /api/v1/{marketId}/orders/{orderId}:
     get:
       operationId: getOrderStatus
@@ -801,6 +823,20 @@ components:
           description: >
             Echoes the ephemeralPubkey the client submitted. Lets clients
             confirm round-trip before they discard the corresponding privkey.
+
+    MakerSessionHeartbeatResponse:
+      type: object
+      required:
+        - online
+        - lastSeenAt
+      properties:
+        online:
+          type: boolean
+          description: Whether the engine considers the maker session online.
+        lastSeenAt:
+          type: string
+          format: date-time
+          description: Server time when the heartbeat was recorded.
 
     LevelDto:
       type: object

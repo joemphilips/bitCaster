@@ -7,10 +7,47 @@ import {
   getTagValues,
   extractCategoryTagIds,
   getMarketThumbnail,
+  heartbeatMakerSession,
   mapCatalogueEntryToMarket,
+  submitOrder,
 } from '../markets'
 import type { MarketCatalogueEntry } from '../markets'
 import type { FilterState, Market } from '@/types/market'
+
+vi.mock('@/lib/nostr', () => ({
+  getNdk: () => ({
+    signer: {
+      sign: vi.fn(),
+    },
+  }),
+}))
+
+vi.mock('@nostr-dev-kit/ndk', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@nostr-dev-kit/ndk')>()
+  return {
+    ...mod,
+    NDKEvent: class MockNDKEvent {
+      kind = 0
+      created_at = 0
+      content = ''
+      tags: string[][] = []
+      async sign() {
+        // no-op
+      }
+      rawEvent() {
+        return {
+          kind: this.kind,
+          created_at: this.created_at,
+          content: this.content,
+          tags: this.tags,
+          id: 'mock',
+          pubkey: 'mock',
+          sig: 'mock',
+        }
+      }
+    },
+  }
+})
 
 const yesNoEntry: MarketCatalogueEntry = {
   conditionId: 'abc123',
@@ -282,6 +319,64 @@ describe('legacy mintd-list path (markets list) is fully removed', () => {
     expect(
       Object.prototype.hasOwnProperty.call(mod, 'mapConditionToMarket'),
     ).toBe(false)
+  })
+})
+
+describe('maker session heartbeat', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let originalFetch: typeof globalThis.fetch
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ online: true }), { status: 200 }),
+      ),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('posts an authenticated heartbeat to keep resting maker orders settle-capable', async () => {
+    await heartbeatMakerSession()
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/api/v1/maker/session/heartbeat')
+    expect(init.method).toBe('POST')
+    expect((init.headers as Record<string, string>).Authorization).toMatch(
+      /^Nostr /,
+    )
+  })
+
+  it('refreshes the maker session before submitting an order', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ online: true }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ orderId: 'order-1' }), { status: 200 }),
+      )
+
+    await submitOrder('cond-123-YES', {
+      outcomeId: 'YES',
+      side: 'Buy',
+      price: 50,
+      amountSats: 100,
+      timeInForce: 'GTC',
+      ephemeralPubkey: '02'.padEnd(66, 'a'),
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain(
+      '/api/v1/maker/session/heartbeat',
+    )
+    expect((fetchMock.mock.calls[1] as [string, RequestInit])[0]).toContain(
+      '/api/v1/cond-123-YES/orders',
+    )
   })
 })
 

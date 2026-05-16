@@ -45,6 +45,13 @@ implementation choices in `BitCaster.MatchingEngine.Contracts/`,
 - Private user-specific data must be handled client-side using localStorage for reload UX and encrypted NIP-44 content inside Nostr [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) replaceable events when the user has configured a Nostr key. Examples: portfolio activity history, local wallet workflow records, private oracle drafts, and anything the engine cannot verify as authoritative.
 - Creator-market discovery is not private by itself; it can be mirrored publicly or indexed by the engine for UX. Keep sensitive creator-side material out of public storage unless it is already public Nostr/oracle data.
 
+### Live Market Values
+
+All market price and position-value surfaces must update from the real-time
+price feed without requiring a page reload. This includes market-detail prices,
+order-book visible depth after reservations/fills, portfolio active/closed
+position values, and claim-time position displays.
+
 ## Monorepo Layout
 
 ```
