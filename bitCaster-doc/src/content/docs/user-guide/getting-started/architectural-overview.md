@@ -26,6 +26,8 @@ The user-facing progressive web app (PWA). It runs entirely in your browser and 
 
 The matching engine maintains a central limit order book (CLOB) for each market. It matches buy and sell orders and broadcasts real-time price updates. It also connects to the Nostr oracle network, watches the oracle announcements and attestations relevant to registered markets, verifies them, and coordinates market closure when an attestation arrives.
 
+For everyday market pages, the app reads market state, deadlines, outcomes, and order-book data from the matching engine first. Treat that as a fast cache of the mint's condition data: it is what keeps list and detail pages responsive. When a user performs a critical action that can move funds, the app or protocol must still rely on mint-enforced checks or a fresh mint comparison before the action becomes final.
+
 This is the only centralized component — it exists because order matching is inherently a coordination problem that benefits from a single sequencer.
 
 ## Oracle Network

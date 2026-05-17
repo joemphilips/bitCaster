@@ -231,6 +231,16 @@ let _installedNsec: string | null = null;
 export async function rehydrateNostrSigner(): Promise<void> {
   const settings = useSettingsStore.getState();
   const { nostrSignerMode, nsecSecret } = settings;
+  if (nostrSignerMode === "nip07") {
+    try {
+      await loginWithExtension();
+      fetchAndStoreNostrProfile().catch(() => {});
+    } catch {
+      settings.setProfile(null, "not-found");
+      settings.setSignerMode("none");
+    }
+    return;
+  }
   if (nostrSignerMode !== "nsec" || !nsecSecret) return;
   // Identity-binding guard (P04): only short-circuit when the live NDK
   // signer is in fact the private-key one. A mode-switch nsec → nip07 →

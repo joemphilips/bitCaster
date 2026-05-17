@@ -52,6 +52,12 @@ price feed without requiring a page reload. This includes market-detail prices,
 order-book visible depth after reservations/fills, portfolio active/closed
 position values, and claim-time position displays.
 
+For lifecycle transitions that do not affect live price/value display, prefer
+event-driven updates or explicit user refresh/reload over background polling.
+Do not introduce long polling for eventual consistency unless the event source
+is unavailable and the bounded polling behavior is documented as a temporary
+release tradeoff.
+
 ## Monorepo Layout
 
 ```

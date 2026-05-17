@@ -49,9 +49,24 @@ namespace BitCaster.E2ETest;
 /// </summary>
 public class TabCloseRecoveryTests : IAsyncLifetime
 {
+    private const string TestNsec =
+        "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
+    private const string TestNostrPubkey =
+        "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e";
+    private const string TestNcryptsec =
+        "ncryptsec1qggxf7xvgcrpn0dwsy8uwxa5cv9vkts4khj8lmw7s5829066ehwzd4lu05g82psmatyqyyekwh4q3w5hsn5ldap9cf4ndhnrndessu938p32vshwt8dnmjlrle4nnuec4k4rhqhlumsednnapytahw07";
+    private const string TestNcryptsecPassphrase = "test-passphrase";
+
     private IPlaywright? _playwright;
     private IBrowser? _browser;
     private HttpClient? _engineClient;
+
+    public static IEnumerable<object[]> BrowserSignerModes()
+    {
+        yield return [BrowserNostrSignerMode.Nsec];
+        yield return [BrowserNostrSignerMode.Ncryptsec];
+        yield return [BrowserNostrSignerMode.Nip07];
+    }
 
     public async Task InitializeAsync()
     {
@@ -74,9 +89,11 @@ public class TabCloseRecoveryTests : IAsyncLifetime
         });
     }
 
-    [Fact]
+    [Theory]
+    [MemberData(nameof(BrowserSignerModes))]
     [Trait("Case", "A.6")]
-    public async Task TabClose_RecoversPendingTradeAndRejoinsTradeHub()
+    public async Task TabClose_RecoversPendingTradeAndRejoinsTradeHub(
+        BrowserNostrSignerMode signerMode)
     {
         Assert.NotNull(_browser);
         Assert.NotNull(_engineClient);
@@ -110,7 +127,7 @@ public class TabCloseRecoveryTests : IAsyncLifetime
 
         // -------- 2. Original buyer context — drives JoinTrade once ------
         var firstTradeCreated = await OpenContextAndCaptureTradeCreatedAsync(
-            buyer, buyerOrderId, marketId, tradeId!.Value, expectClose: true);
+            buyer, buyerOrderId, marketId, tradeId!.Value, signerMode, expectClose: true);
 
         // -------- 3. Persist & verify the recovery payload ---------------
         Assert.Equal(buyer.Pubkey, firstTradeCreated.BuyerPubkey);
@@ -123,7 +140,7 @@ public class TabCloseRecoveryTests : IAsyncLifetime
         // the recovery is forced through the persisted-order → poller →
         // promote → joinTrade pipeline rather than any in-memory residue.
         var secondTradeCreated = await OpenContextAndCaptureTradeCreatedAsync(
-            buyer, buyerOrderId, marketId, tradeId.Value, expectClose: false);
+            buyer, buyerOrderId, marketId, tradeId.Value, signerMode, expectClose: false);
 
         // -------- 5. Recovery assertions --------------------------------
         // P07 — same per-order ephemeral pubkey reused on the rejoin: the
@@ -150,6 +167,7 @@ public class TabCloseRecoveryTests : IAsyncLifetime
         Guid buyerOrderId,
         string marketId,
         Guid tradeId,
+        BrowserNostrSignerMode signerMode,
         bool expectClose)
     {
         Assert.NotNull(_browser);
@@ -163,7 +181,7 @@ public class TabCloseRecoveryTests : IAsyncLifetime
             var consoleMessages = TestHelpers.AttachConsoleCapture(page);
             var sniffer = AttachTradeCreatedSniffer(page);
 
-            await SeedBuyerLocalStorageAsync(page, buyer, buyerOrderId, marketId);
+            await SeedBuyerLocalStorageAsync(page, buyer, buyerOrderId, marketId, signerMode);
             await NavigateToMarketsAsync(page);
 
             var received = await AwaitTradeCreatedAsync(
@@ -265,8 +283,12 @@ public class TabCloseRecoveryTests : IAsyncLifetime
         IPage page,
         EphemeralKeyPair buyer,
         Guid buyerOrderId,
-        string marketId)
+        string marketId,
+        BrowserNostrSignerMode signerMode)
     {
+        if (signerMode == BrowserNostrSignerMode.Nip07)
+            await InstallFakeNip07SignerAsync(page);
+
         // We must be on the same origin as Vite before localStorage writes
         // take effect. /setup is a stable wizard route that doesn't pull
         // the trade-hub stack on its own.
@@ -274,21 +296,33 @@ public class TabCloseRecoveryTests : IAsyncLifetime
             $"{TestPorts.FrontendUrl}/setup",
             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
 
-        // Deterministic nsec — only used to sign the NIP-98 access token
-        // for the trade hub. The mock does not verify the schnorr sig.
-        const string nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
+        var signerSettings = signerMode switch
+        {
+            BrowserNostrSignerMode.Nsec => $"""
+                    nostrSignerMode: 'nsec',
+                    nsecSecret: '{TestNsec}',
+                """,
+            BrowserNostrSignerMode.Ncryptsec => """
+                    nostrSignerMode: 'none',
+                    nsecSecret: null,
+                """,
+            BrowserNostrSignerMode.Nip07 => """
+                    nostrSignerMode: 'nip07',
+                    nsecSecret: null,
+                """,
+            _ => throw new ArgumentOutOfRangeException(nameof(signerMode), signerMode, null),
+        };
         var mintUrl = $"{TestPorts.MintUrl}";
         var mnemonic = TestMnemonics.Get();
 
         await page.EvaluateAsync($@"
             localStorage.setItem('bitcaster-settings', JSON.stringify({{
                 state: {{
-                    activeCategory: 'general',
+                    activeCategory: 'nostr',
                     baseCurrency: 'BTC',
                     language: 'en',
                     theme: 'dark',
-                    nostrSignerMode: 'nsec',
-                    nsecSecret: '{nsec}',
+{signerSettings}
                     nostrProfile: null,
                     nostrProfileFetchStatus: 'idle',
                     relays: []
@@ -320,6 +354,64 @@ public class TabCloseRecoveryTests : IAsyncLifetime
                 version: 0
             }}));
         ");
+
+        if (signerMode == BrowserNostrSignerMode.Ncryptsec)
+            await ConnectNcryptsecThroughSettingsAsync(page);
+    }
+
+    private static async Task InstallFakeNip07SignerAsync(IPage page)
+    {
+        await page.AddInitScriptAsync($$"""
+            Object.defineProperty(window, 'nostr', {
+              configurable: true,
+              value: {
+                async getPublicKey() {
+                  return '{{TestNostrPubkey}}';
+                },
+                async signEvent(event) {
+                  return {
+                    ...event,
+                    pubkey: '{{TestNostrPubkey}}',
+                    id: '0'.repeat(64),
+                    sig: '0'.repeat(128),
+                  };
+                },
+              },
+            });
+        """);
+    }
+
+    private static async Task ConnectNcryptsecThroughSettingsAsync(IPage page)
+    {
+        await page.GotoAsync(
+            $"{TestPorts.FrontendUrl}/settings?category=nostr",
+            new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.NetworkIdle,
+                Timeout = 30_000,
+            });
+
+        await page.GetByRole(AriaRole.Button, new() { Name = "Connect with Private Key" })
+            .ClickAsync();
+        await page.GetByPlaceholder("nsec1... or ncryptsec1...").FillAsync(TestNcryptsec);
+        await page.GetByPlaceholder("Decrypt passphrase (NIP-49)")
+            .FillAsync(TestNcryptsecPassphrase);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Decrypt & Connect" })
+            .ClickAsync();
+
+        await page.WaitForFunctionAsync(
+            """
+            () => {
+              const raw = localStorage.getItem('bitcaster-settings');
+              if (!raw) return false;
+              const parsed = JSON.parse(raw);
+              return parsed.state?.nostrSignerMode === 'nsec'
+                && typeof parsed.state?.nsecSecret === 'string'
+                && parsed.state.nsecSecret.startsWith('nsec1');
+            }
+            """,
+            null,
+            new PageWaitForFunctionOptions { Timeout = 10_000 });
     }
 
     /// <summary>
@@ -442,6 +534,13 @@ public class TabCloseRecoveryTests : IAsyncLifetime
     // -----------------------------------------------------------------------
 
     private sealed record EphemeralKeyPair(string Privkey, string Pubkey);
+
+    public enum BrowserNostrSignerMode
+    {
+        Nsec,
+        Ncryptsec,
+        Nip07,
+    }
 
     private static EphemeralKeyPair GenerateEphemeralKeyPair()
     {

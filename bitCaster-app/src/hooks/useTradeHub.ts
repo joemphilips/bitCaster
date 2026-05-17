@@ -20,7 +20,8 @@ import {
   type HubConnection,
 } from '@microsoft/signalr'
 import { resolveHubServerUrl } from '@/lib/hubUrl'
-import { generateNip98AuthHeader, tradeHubUrl } from '@/lib/nip98'
+import { tradeHubUrl } from '@/lib/nip98'
+import { generateNip98Header } from '@/lib/markets'
 import type { TradeMessageType } from '@/lib/tradeMessageTypes'
 
 // ---------------------------------------------------------------------------
@@ -99,26 +100,22 @@ async function startWithInitialRetry(
   }
 }
 
-export function generateTradeHubAccessToken(
-  privateKey: Uint8Array,
-  hubUrl: string,
-): string {
-  return generateNip98AuthHeader(privateKey, hubUrl, 'GET').replace(
-    /^Nostr\s+/,
-    '',
-  )
+export async function generateTradeHubAccessToken(hubUrl: string): Promise<string> {
+  return (await generateNip98Header(hubUrl, 'GET')).replace(/^Nostr\s+/, '')
 }
 
 /**
  * Connect to the TradeHub and register event handlers.
  *
- * @param ephemeralPrivkey - 32-byte private key used for NIP-98 token signing.
- *   Pass `null` to defer connection (e.g. while the wallet is not yet set up).
+ * @param enabled - Pass false to defer connection until a Nostr signer is
+ *   configured and there is pending swap work. Authentication uses the same
+ *   configured signer path as REST order submission, so NIP-07 users can
+ *   settle trades without exposing a raw nsec to the page.
  * @param callbacks - event handlers wired to the SignalR hub events
  * @returns { joinTrade, sendSwapMessage, connectionState }
  */
 export function useTradeHub(
-  ephemeralPrivkey: Uint8Array | null,
+  enabled: boolean,
   callbacks: TradeHubCallbacks,
 ): TradeHubActions {
   const connectionRef = useRef<HubConnection | null>(null)
@@ -127,16 +124,15 @@ export function useTradeHub(
   callbacksRef.current = callbacks
 
   useEffect(() => {
-    if (!ephemeralPrivkey) return
+    if (!enabled) return
 
     const hubUrl = tradeHubUrl(SERVER_URL)
-    const privkey = ephemeralPrivkey // stable reference for this effect run
     let stopped = false
 
     const connection = new HubConnectionBuilder()
       .withUrl(hubUrl, {
         transport: HttpTransportType.WebSockets,
-        accessTokenFactory: () => generateTradeHubAccessToken(privkey, hubUrl),
+        accessTokenFactory: () => generateTradeHubAccessToken(hubUrl),
       })
       .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
       .build()
@@ -218,7 +214,7 @@ export function useTradeHub(
       })
       connectionRef.current = null
     }
-  }, [ephemeralPrivkey]) // reconnect when key changes
+  }, [enabled]) // connect only while swap work exists and a signer is configured
 
   /**
    * Wait up to ~60 s for the SignalR connection to reach

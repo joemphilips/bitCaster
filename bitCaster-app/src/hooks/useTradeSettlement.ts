@@ -109,11 +109,12 @@ const ctfProofOperationStore: CtfProofOperationStore = {
 /**
  * Mount once near the app root. The hook owns no DOM and renders nothing.
  *
- * @param ephemeralPrivkey - Driver-level identity used to authenticate to the
- *   TradeHub. Pass `null` until the user has a wallet/identity available;
- *   without it we cannot sign the NIP-98 access token.
+ * @param canAuthenticateTradeHub - True once the app has a configured Nostr
+ *   signer. TradeHub authentication uses the same NIP-98 signer path as REST
+ *   order submission; swap ECDH still uses the per-order ephemeral key stored
+ *   with each pending trade.
  */
-export function useTradeSettlement(ephemeralPrivkey: Uint8Array | null): void {
+export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   const swapsByTradeId = useActiveSwapsStore((s) => s.byTradeId)
   const pendingTradeCount = usePendingTradesStore(
     (s) => Object.keys(s.byOrderId).length,
@@ -122,10 +123,10 @@ export function useTradeSettlement(ephemeralPrivkey: Uint8Array | null): void {
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
     (swap) => swap.step !== 'completed' && swap.step !== 'failed',
   )
-  const tradeHubPrivkey =
-    hasActiveSwapWork || pendingTradeCount > 0 ? ephemeralPrivkey : null
+  const tradeHubEnabled =
+    canAuthenticateTradeHub && (hasActiveSwapWork || pendingTradeCount > 0)
 
-  const { joinTrade, sendSwapMessage } = useTradeHub(tradeHubPrivkey, {
+  const { joinTrade, sendSwapMessage } = useTradeHub(tradeHubEnabled, {
     onTradeCreated: (payload) =>
       void handleTradeCreated(
         payload,
@@ -140,7 +141,7 @@ export function useTradeSettlement(ephemeralPrivkey: Uint8Array | null): void {
   })
 
   useEffect(() => {
-    if (!tradeHubPrivkey) return
+    if (!tradeHubEnabled) return
     for (const swap of Object.values(swapsByTradeId)) {
       if (swap.step !== 'awaiting-trade-created') continue
       joinTrade(swap.tradeId).catch((err) => {
@@ -148,7 +149,7 @@ export function useTradeSettlement(ephemeralPrivkey: Uint8Array | null): void {
         useActiveSwapsStore.getState().setStep(swap.tradeId, 'failed', message)
       })
     }
-  }, [swapsByTradeId, tradeHubPrivkey, joinTrade, sendSwapMessage])
+  }, [swapsByTradeId, tradeHubEnabled, joinTrade, sendSwapMessage])
 }
 
 // ---------------------------------------------------------------------------

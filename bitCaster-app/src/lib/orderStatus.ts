@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { components } from '@/generated/api'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
 import {
+  type Notification,
   type NotificationKind,
   useNotificationsStore,
 } from '@/stores/notifications'
@@ -99,6 +100,56 @@ export function promoteFillsToActiveSwaps(
   return promoted
 }
 
+export function buildOrderStatusNotifications(
+  status: OrderStatusResponse,
+  trade: PendingTradeForPromotion,
+  lastFillCount: number,
+  now = Date.now(),
+): Notification[] {
+  const current = status.status as OrderStatus
+  const isTerminal = TERMINAL_STATUSES.has(current)
+  const fillCount = status.fills.length
+  const hasNewFills = fillCount > lastFillCount
+
+  if (
+    !isTerminal &&
+    current === 'partially_filled' &&
+    hasNewFills &&
+    status.filledAmountSats > 0
+  ) {
+    return [
+      {
+        id: `${trade.orderId}-partially_filled-${fillCount}`,
+        kind: 'partially_filled',
+        orderId: trade.orderId,
+        marketId: trade.marketId,
+        filledAmountSats: status.filledAmountSats,
+        remainingAmountSats: status.remainingAmountSats,
+        occurredAt: now,
+        read: false,
+      },
+    ]
+  }
+
+  if (isTerminal) {
+    const kind = current as NotificationKind
+    return [
+      {
+        id: `${trade.orderId}-${kind}`,
+        kind,
+        orderId: trade.orderId,
+        marketId: trade.marketId,
+        filledAmountSats: status.filledAmountSats,
+        remainingAmountSats: status.remainingAmountSats,
+        occurredAt: now,
+        read: false,
+      },
+    ]
+  }
+
+  return []
+}
+
 function shortOrderId(orderId: string): string {
   return orderId.length > 12 ? `${orderId.slice(0, 8)}...` : orderId
 }
@@ -185,22 +236,13 @@ export function usePendingTradesPoller(): void {
             // Terminal status short-circuits partial-fill: a "filled" that
             // also has new fills shouldn't generate two separate bell entries
             // for the same settlement.
-            if (
-              !isTerminal &&
-              current === 'partially_filled' &&
-              hasNewFills &&
-              status.filledAmountSats > 0
-            ) {
-              addNotification({
-                id: `${trade.orderId}-partially_filled-${fillCount}`,
-                kind: 'partially_filled',
-                orderId: trade.orderId,
-                marketId: trade.marketId,
-                filledAmountSats: status.filledAmountSats,
-                remainingAmountSats: status.remainingAmountSats,
-                occurredAt: Date.now(),
-                read: false,
-              })
+            const notifications = buildOrderStatusNotifications(
+              status,
+              trade,
+              lastFillCount,
+            )
+            for (const notification of notifications) {
+              addNotification(notification)
             }
 
             if (!isTerminal && hasNewFills) {
@@ -208,17 +250,6 @@ export function usePendingTradesPoller(): void {
             }
 
             if (isTerminal) {
-              const kind = current as NotificationKind
-              addNotification({
-                id: `${trade.orderId}-${kind}`,
-                kind,
-                orderId: trade.orderId,
-                marketId: trade.marketId,
-                filledAmountSats: status.filledAmountSats,
-                remainingAmountSats: status.remainingAmountSats,
-                occurredAt: Date.now(),
-                read: false,
-              })
               if (current === 'filled') {
                 useToastStore.getState().addToast({
                   type: 'success',

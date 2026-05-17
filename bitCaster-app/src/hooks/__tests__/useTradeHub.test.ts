@@ -1,10 +1,16 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { connections, connectedState, disconnectedState } = vi.hoisted(() => ({
+const {
+  connections,
+  connectedState,
+  disconnectedState,
+  mockGenerateNip98Header,
+} = vi.hoisted(() => ({
   connections: [] as FakeConnection[],
   connectedState: 'Connected',
   disconnectedState: 'Disconnected',
+  mockGenerateNip98Header: vi.fn(),
 }))
 
 type FakeConnection = {
@@ -38,6 +44,10 @@ vi.mock('@microsoft/signalr', () => ({
   },
 }))
 
+vi.mock('@/lib/markets', () => ({
+  generateNip98Header: mockGenerateNip98Header,
+}))
+
 import { generateTradeHubAccessToken, useTradeHub } from '../useTradeHub'
 
 function makeConnection(failInitialStarts = 0): FakeConnection {
@@ -65,21 +75,20 @@ function makeConnection(failInitialStarts = 0): FakeConnection {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockGenerateNip98Header.mockResolvedValue('Nostr signed-token')
   connections.length = 0
 })
 
 describe('generateTradeHubAccessToken', () => {
-  it('returns the raw NIP-98 token for SignalR Bearer transport', () => {
-    const privateKey = new Uint8Array(32)
-    privateKey[31] = 1
-
-    const token = generateTradeHubAccessToken(
-      privateKey,
-      'https://example.com/hubs/trade',
-    )
+  it('returns the raw NIP-98 token for SignalR Bearer transport', async () => {
+    const token = await generateTradeHubAccessToken('https://example.com/hubs/trade')
 
     expect(token).not.toMatch(/^Nostr\s+/)
-    expect(() => JSON.parse(atob(token))).not.toThrow()
+    expect(token).toBe('signed-token')
+    expect(mockGenerateNip98Header).toHaveBeenCalledWith(
+      'https://example.com/hubs/trade',
+      'GET',
+    )
   })
 })
 
@@ -89,7 +98,7 @@ describe('useTradeHub', () => {
     connections.push(connection)
     const onError = vi.fn()
 
-    renderHook(() => useTradeHub(new Uint8Array(32).fill(1), { onError }))
+    renderHook(() => useTradeHub(true, { onError }))
 
     await waitFor(() => expect(connection.start).toHaveBeenCalledTimes(2))
     expect(onError).toHaveBeenCalledWith(expect.any(Error))

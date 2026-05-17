@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -69,6 +69,7 @@ describe("MarketHeader", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     if (originalClipboard === undefined) {
       delete (navigator as unknown as NavigatorMutable).clipboard;
     } else {
@@ -110,6 +111,29 @@ describe("MarketHeader", () => {
     expect(screen.getAllByText("Closed").length).toBeGreaterThan(0);
     expect(screen.queryByText(/remaining/i)).not.toBeInTheDocument();
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
+  it("updates the remaining-time label while the market stays open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-17T12:00:00Z"));
+
+    renderHeader(
+      makeMarket({
+        closingDate: "2026-05-17T13:30:00Z",
+        resolution: {
+          ...makeMarket().resolution,
+          resolutionDate: "2026-05-17T13:30:00Z",
+        },
+      }),
+    );
+
+    expect(screen.getByText("1h remaining")).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(31 * 60 * 1000);
+    });
+
+    expect(screen.getByText("59m remaining")).toBeInTheDocument();
   });
 
   it("renders unavailable Nostr profile state and copies the full npub", async () => {

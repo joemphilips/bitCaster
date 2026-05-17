@@ -453,6 +453,23 @@ function mergeEngineCatalogueEntry(
   if (!engineEntry) return detail
   const normalisedState = normalizeEngineMarketState(engineEntry.state)
   const creatorPubkey = engineEntry.creatorPubkey?.trim()
+  const closedAt = engineEntry.closedAt ?? null
+  const isClosed = normalisedState === 'closed'
+  const resolution =
+    detail.resolution.status === 'resolved'
+      ? detail.resolution
+      : isClosed && closedAt
+        ? {
+            ...detail.resolution,
+            resolutionDate: closedAt,
+          }
+        : engineEntry.deadline
+          ? {
+              ...detail.resolution,
+              resolutionDate: engineEntry.deadline,
+            }
+          : detail.resolution
+
   return {
     ...detail,
     state: normalisedState ?? detail.state,
@@ -469,13 +486,7 @@ function mergeEngineCatalogueEntry(
     // closing date. A null deadline means "unknown"; do not synthesize a
     // page-load timestamp because that decays into a bogus Closed state.
     closingDate: engineEntry.deadline ?? detail.closingDate,
-    resolution:
-      detail.resolution.status === 'resolved' || !engineEntry.deadline
-        ? detail.resolution
-        : {
-            ...detail.resolution,
-            resolutionDate: engineEntry.deadline,
-          },
+    resolution,
   }
 }
 

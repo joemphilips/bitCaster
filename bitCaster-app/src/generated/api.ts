@@ -399,8 +399,9 @@ export interface components {
             /** @description One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled". */
             status: string;
             remainingAmountSats: components["schemas"]["Sats"];
+            /** @description Conditional-token face amount already consumed by fills or active DCB complementary reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake. */
             filledAmountSats: components["schemas"]["Sats"];
-            /** @description All fills produced against this order so far. */
+            /** @description All fills and active DCB complementary reservation handles produced against this order so far. */
             fills: components["schemas"]["Fill"][];
         };
         RestingOrderResponse: {
@@ -647,6 +648,11 @@ export interface components {
              * @description Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.
              */
             deadline?: string | null;
+            /**
+             * Format: date-time
+             * @description Engine-side close timestamp. Null while the market is open. Closed market detail pages use this value as the resolution date; deadline remains the scheduled oracle maturity time.
+             */
+            closedAt?: string | null;
             /**
              * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
              * @enum {string}

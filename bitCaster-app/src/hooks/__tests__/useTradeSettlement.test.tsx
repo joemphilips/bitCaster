@@ -22,8 +22,6 @@ vi.mock('@/stores/wallet', () => ({
 
 const { useTradeSettlement } = await import('../useTradeSettlement')
 
-const privkey = new Uint8Array(32).fill(7)
-
 beforeEach(() => {
   vi.clearAllMocks()
   useActiveSwapsStore.setState({ byTradeId: {} })
@@ -39,14 +37,14 @@ beforeEach(() => {
 
 describe('useTradeSettlement', () => {
   it('does not start the private TradeHub when no swap is active', () => {
-    renderHook(() => useTradeSettlement(privkey))
+    renderHook(() => useTradeSettlement(true))
 
-    expect(mockUseTradeHub).toHaveBeenCalledWith(null, expect.any(Object))
+    expect(mockUseTradeHub).toHaveBeenCalledWith(false, expect.any(Object))
     expect(mockJoinTrade).not.toHaveBeenCalled()
   })
 
   it('connects and joins only after an active swap is promoted', async () => {
-    renderHook(() => useTradeSettlement(privkey))
+    renderHook(() => useTradeSettlement(true))
 
     await act(async () => {
       useActiveSwapsStore.getState().promote({
@@ -59,7 +57,7 @@ describe('useTradeSettlement', () => {
     })
 
     expect(mockUseTradeHub).toHaveBeenLastCalledWith(
-      privkey,
+      true,
       expect.any(Object),
     )
     expect(mockJoinTrade).toHaveBeenCalledWith('trade-1')
@@ -74,10 +72,10 @@ describe('useTradeSettlement', () => {
       submittedAt: Date.now(),
     })
 
-    renderHook(() => useTradeSettlement(privkey))
+    renderHook(() => useTradeSettlement(true))
 
     expect(mockUseTradeHub).toHaveBeenLastCalledWith(
-      privkey,
+      true,
       expect.any(Object),
     )
     const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
@@ -118,7 +116,7 @@ describe('useTradeSettlement', () => {
   })
 
   it('fails the swap before role assignment when TradeCreated locktimes are inverted', async () => {
-    renderHook(() => useTradeSettlement(privkey))
+    renderHook(() => useTradeSettlement(true))
 
     await act(async () => {
       useActiveSwapsStore.getState().promote({
@@ -158,7 +156,7 @@ describe('useTradeSettlement', () => {
   })
 
   it('keeps completed swaps terminal when a late failed state arrives', async () => {
-    renderHook(() => useTradeSettlement(privkey))
+    renderHook(() => useTradeSettlement(true))
 
     await act(async () => {
       useActiveSwapsStore.getState().promote({

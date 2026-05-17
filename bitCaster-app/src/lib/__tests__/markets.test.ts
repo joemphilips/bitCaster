@@ -494,6 +494,7 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
             thumbnailUrl,
             creatorPubkey,
             deadline: null,
+            closedAt: null,
             state,
             createdAt: '2026-01-01T00:00:00Z',
             volume24hSats: 5000,
@@ -678,5 +679,23 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
     // Default engineQueryResponse already has deadline: null
     const detail = await fetchMarketDetail('abc123')
     expect(detail.closingDate).toBeNull()
+  })
+
+  it('uses engine.closedAt as the closed-market resolution date', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse()
+      if (url.includes('/api/v1/markets/query')) {
+        const body = await engineQueryResponse('closed', null).json()
+        body.markets[0].deadline = '2030-12-31T23:59:59Z'
+        body.markets[0].closedAt = '2031-01-01T00:05:00Z'
+        return new Response(JSON.stringify(body), { status: 200 })
+      }
+      return emptyMetadataResponse()
+    })
+
+    const detail = await fetchMarketDetail('abc123')
+
+    expect(detail.state).toBe('closed')
+    expect(detail.resolution.resolutionDate).toBe('2031-01-01T00:05:00Z')
   })
 })

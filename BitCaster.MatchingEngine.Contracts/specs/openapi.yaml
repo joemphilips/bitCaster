@@ -828,11 +828,18 @@ components:
           $ref: '#/components/schemas/Sats'
         filledAmountSats:
           $ref: '#/components/schemas/Sats'
+          description: >
+            Conditional-token face amount already consumed by fills or active
+            DCB complementary reservations. A reservation is exposed here
+            before final settlement so clients can notify makers and start
+            the atomic-swap handshake.
         fills:
           type: array
           items:
             $ref: '#/components/schemas/Fill'
-          description: All fills produced against this order so far.
+          description: >
+            All fills and active DCB complementary reservation handles
+            produced against this order so far.
 
     RestingOrderResponse:
       type: object
@@ -1340,6 +1347,14 @@ components:
             Oracle attestation deadline carried from the mintd condition
             snapshot. The market auto-closes at this instant when the kind-89
             attestation has not yet been observed.
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Engine-side close timestamp. Null while the market is open. Closed
+            market detail pages use this value as the resolution date; deadline
+            remains the scheduled oracle maturity time.
         state:
           type: string
           enum: [open, closed]
