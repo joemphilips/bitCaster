@@ -393,18 +393,26 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
  */
 async function fetchEngineCatalogueEntry(
   conditionId: string,
+  attempts = 5,
 ): Promise<MarketCatalogueEntry | null> {
-  try {
-    const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`
-    const response = await fetch(url, {
-      headers: { Accept: 'application/json' },
-    })
-    if (!response.ok) return null
-    const body: MarketCatalogueResponse = await response.json()
-    return body.markets.find((m) => m.conditionId === conditionId) ?? null
-  } catch {
-    return null
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) return null
+      const body: MarketCatalogueResponse = await response.json()
+      const entry = body.markets.find((m) => m.conditionId === conditionId)
+      if (entry) return entry
+    } catch {
+      return null
+    }
+    if (attempt < attempts - 1) {
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 500))
+    }
   }
+  return null
 }
 
 /**
