@@ -104,6 +104,14 @@ describe("MarketHeader", () => {
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
   });
 
+  it("renders engine-closed markets as closed even before mint attestation catches up", async () => {
+    renderHeader(makeMarket({ state: "closed" }));
+
+    expect(screen.getAllByText("Closed").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/remaining/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
   it("renders unavailable Nostr profile state and copies the full npub", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);

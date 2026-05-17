@@ -49,6 +49,10 @@ function isClosedForTrading(market: MarketDetailType): boolean {
   return isEngineMarketClosed(market.state) || hasKnownPastDeadline(market);
 }
 
+function needsEngineDetailRefresh(market: MarketDetailType): boolean {
+  return market.closingDate == null || market.state == null;
+}
+
 function outcomeLabels(market: MarketDetailType): string[] {
   if (market.type === "yesno") return ["YES", "NO"];
   if (market.type === "categorical") return market.outcomes.map((o) => o.label);
@@ -157,6 +161,49 @@ export function MarketDetailPage() {
   useEffect(() => {
     loadMarket();
   }, [loadMarket]);
+
+  useEffect(() => {
+    if (!id || !market || !needsEngineDetailRefresh(market)) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 10;
+    let timeoutId: number | null = null;
+
+    const refresh = async () => {
+      attempts += 1;
+      try {
+        const latest = await fetchMarketDetailWithBooks(id);
+        if (cancelled) return;
+        setMarket((current) => {
+          if (!current || !marketShapeMatches(current, latest)) return current;
+          if (
+            current.closingDate === latest.closingDate &&
+            current.state === latest.state &&
+            needsEngineDetailRefresh(latest)
+          ) {
+            return current;
+          }
+          return latest;
+        });
+        if (!needsEngineDetailRefresh(latest) || attempts >= maxAttempts) {
+          return;
+        }
+      } catch {
+        if (attempts >= maxAttempts) return;
+      }
+
+      if (!cancelled) {
+        timeoutId = window.setTimeout(refresh, 2_000);
+      }
+    };
+
+    timeoutId = window.setTimeout(refresh, 2_000);
+    return () => {
+      cancelled = true;
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+    };
+  }, [id, market?.id, market?.closingDate, market?.state]);
 
   // Computed trade preview
   const tradePreview = useMemo<TradePreview | null>(() => {

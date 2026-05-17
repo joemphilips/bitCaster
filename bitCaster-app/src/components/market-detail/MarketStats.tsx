@@ -1,4 +1,5 @@
 import { TrendingUp, Droplets, Users, Calendar, Clock, CheckCircle } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
@@ -17,9 +18,9 @@ function formatDate(dateStr: string, locale: string): string {
 
 function getTimeRemaining(
   closingDate: string,
+  now: Date,
   t: (key: string, opts?: Record<string, unknown>) => string,
 ): { text: string; isUrgent: boolean } {
-  const now = new Date()
   const close = new Date(closingDate)
   const diff = close.getTime() - now.getTime()
 
@@ -45,9 +46,17 @@ function getTimeRemaining(
 
 export function MarketStats({ market }: MarketStatsProps) {
   const { t, i18n } = useTranslation()
+  const [now, setNow] = useState(() => new Date())
   const timeRemaining = market.closingDate
-    ? getTimeRemaining(market.closingDate, t)
+    ? getTimeRemaining(market.closingDate, now, t)
     : null
+
+  useEffect(() => {
+    if (!market.closingDate) return
+    setNow(new Date())
+    const intervalId = window.setInterval(() => setNow(new Date()), 30_000)
+    return () => window.clearInterval(intervalId)
+  }, [market.closingDate])
 
   const stats = [
     {
