@@ -179,17 +179,6 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
-  readonly __wbg_kormir_free: (a: number) => void;
-  readonly kormir_create_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
-  readonly kormir_create_numeric_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
-  readonly kormir_decode_announcement: (a: number, b: number) => number;
-  readonly kormir_decode_attestation: (a: number, b: number) => number;
-  readonly kormir_get_public_key: (a: number, b: number) => void;
-  readonly kormir_list_events: (a: number) => number;
-  readonly kormir_new: (a: number, b: number) => number;
-  readonly kormir_restore: (a: number, b: number) => number;
-  readonly kormir_sign_enum_event: (a: number, b: number, c: number, d: number, e: number) => number;
-  readonly kormir_sign_numeric_event: (a: number, b: number, c: number, d: number) => number;
   readonly __wbg_announcement_free: (a: number) => void;
   readonly __wbg_attestation_free: (a: number) => void;
   readonly __wbg_eventdata_free: (a: number) => void;
@@ -205,16 +194,27 @@ export interface InitOutput {
   readonly announcement_value: (a: number) => number;
   readonly attestation_oracle_public_key: (a: number, b: number) => void;
   readonly attestation_outcomes: (a: number, b: number) => void;
-  readonly attestation_signatures: (a: number, b: number) => void;
   readonly attestation_value: (a: number) => number;
-  readonly eventdata_announcement: (a: number, b: number) => void;
   readonly eventdata_announcement_event_id: (a: number, b: number) => void;
   readonly eventdata_attestation: (a: number, b: number) => void;
   readonly eventdata_attestation_event_id: (a: number, b: number) => void;
   readonly eventdata_event_name: (a: number, b: number) => void;
   readonly eventdata_observed_outcome: (a: number, b: number) => void;
-  readonly eventdata_outcomes: (a: number, b: number) => void;
   readonly eventdata_value: (a: number) => number;
+  readonly eventdata_announcement: (a: number, b: number) => void;
+  readonly attestation_signatures: (a: number, b: number) => void;
+  readonly eventdata_outcomes: (a: number, b: number) => void;
+  readonly __wbg_kormir_free: (a: number) => void;
+  readonly kormir_create_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+  readonly kormir_create_numeric_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
+  readonly kormir_decode_announcement: (a: number, b: number) => number;
+  readonly kormir_decode_attestation: (a: number, b: number) => number;
+  readonly kormir_get_public_key: (a: number, b: number) => void;
+  readonly kormir_list_events: (a: number) => number;
+  readonly kormir_new: (a: number, b: number) => number;
+  readonly kormir_restore: (a: number, b: number) => number;
+  readonly kormir_sign_enum_event: (a: number, b: number, c: number, d: number, e: number) => number;
+  readonly kormir_sign_numeric_event: (a: number, b: number, c: number, d: number) => number;
   readonly main_js: () => void;
   readonly rustsecp256k1zkp_v0_10_0_default_error_callback_fn: (a: number, b: number) => void;
   readonly rustsecp256k1zkp_v0_10_0_default_illegal_callback_fn: (a: number, b: number) => void;
@@ -226,14 +226,13 @@ export interface InitOutput {
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_export_2: WebAssembly.Table;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
-  readonly _dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h925bbafd4e26be24: (a: number, b: number, c: number, d: number) => void;
-  readonly _dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hff380f89cc476fc2: (a: number, b: number, c: number) => void;
-  readonly _dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h656cf39a09048fe6: (a: number, b: number, c: number) => void;
-  readonly _dyn_core__ops__function__FnMut_____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__he5d6b834a0297551: (a: number, b: number) => void;
-  readonly _dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h76ccbf0a19f13928: (a: number, b: number, c: number) => void;
+  readonly _dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hde63078dad085ba2: (a: number, b: number, c: number, d: number) => void;
+  readonly _dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hd49328b02eda7772: (a: number, b: number, c: number) => void;
+  readonly _dyn_core__ops__function__FnMut_____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h6e23e6acea90564f: (a: number, b: number) => void;
+  readonly _dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h02c7d9d8ab8173fa: (a: number, b: number, c: number) => void;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_exn_store: (a: number) => void;
-  readonly wasm_bindgen__convert__closures__invoke2_mut__habfe0d4f3d4e00c1: (a: number, b: number, c: number, d: number) => void;
+  readonly wasm_bindgen__convert__closures__invoke2_mut__hd304671d96792a2a: (a: number, b: number, c: number, d: number) => void;
   readonly __wbindgen_start: () => void;
 }
 

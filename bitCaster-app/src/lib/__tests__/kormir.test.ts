@@ -18,6 +18,7 @@ interface FakeKormir {
   instanceId: number
   create_enum_event: ReturnType<typeof vi.fn>
   sign_enum_event: ReturnType<typeof vi.fn>
+  list_events: ReturnType<typeof vi.fn>
   get_public_key: ReturnType<typeof vi.fn>
 }
 
@@ -31,6 +32,7 @@ function buildFakeModule() {
       instanceId: nextId,
       create_enum_event: vi.fn().mockResolvedValue('deadbeef'),
       sign_enum_event: vi.fn().mockResolvedValue('beeff00d'),
+      list_events: vi.fn().mockResolvedValue([]),
       get_public_key: vi.fn().mockReturnValue('02abc'),
     }
     return fake
@@ -212,6 +214,24 @@ describe('kormir wrapper', () => {
     expect(hex).toBe('beeff00d')
     const instance = (await getKormir(['wss://a'])) as unknown as FakeKormir
     expect(instance.sign_enum_event).toHaveBeenCalledWith('event_1', 'Yes')
+  })
+
+  it('signEnumAttestation falls back to the locally stored attestation when relay publishing fails', async () => {
+    const { module } = buildFakeModule()
+    __setKormirModuleForTest(module)
+
+    const instance = (await getKormir(['wss://a'])) as unknown as FakeKormir
+    instance.sign_enum_event.mockRejectedValueOnce('relay publish failed')
+    instance.list_events.mockResolvedValueOnce([
+      {
+        event_name: 'event_1',
+        attestation: 'f00dbabe',
+      },
+    ])
+
+    const hex = await signEnumAttestation(['wss://a'], 'event_1', 'Yes')
+
+    expect(hex).toBe('f00dbabe')
   })
 
   it('getOraclePublicKey returns the key from the kormir instance', async () => {
