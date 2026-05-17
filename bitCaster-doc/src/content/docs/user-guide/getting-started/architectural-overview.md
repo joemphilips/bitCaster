@@ -30,11 +30,11 @@ This is the only centralized component — it exists because order matching is i
 
 ## Oracle Network
 
-Oracles publish announcements and attestations to Nostr relays. Those relays act as an untrusted public network: they can transport, cache, or withhold events, but they cannot make an invalid announcement or attestation valid. The matching engine treats the network as a source of signed DLC oracle data and verifies signatures before trusting anything it receives.
+Oracles can publish announcements and attestations to Nostr relays. Those relays act as an untrusted public network: they can transport, cache, or withhold events, but they cannot make an invalid announcement or attestation valid. bitCaster treats Nostr as a discovery and audit channel, not a trust anchor; signed DLC oracle data can also be submitted directly to the mint or matching engine and is verified before use.
 
 ## Oracle
 
-An oracle is an entity from [Discreet Log Contracts (DLC)](https://www.dci.mit.edu/projects/discreet-log-contracts) that announces real-world events and later attests to their outcomes. Oracles publish announcements and attestations as Nostr events, making them publicly verifiable. Any bitCaster App can read oracle announcements directly from the Nostr network — no special server is needed.
+An oracle is an entity from [Discreet Log Contracts (DLC)](https://www.dci.mit.edu/projects/discreet-log-contracts) that announces real-world events and later attests to their outcomes. Oracles may publish announcements and attestations as Nostr events, making them publicly discoverable and auditable. Any bitCaster App can read oracle announcements directly from the Nostr network — no special server is needed.
 
 Importantly, oracles are completely independent of bitCaster — they don't need to know about the app or ecash at all. They simply attest to real-world facts using the DLC protocol.
 
