@@ -7,8 +7,10 @@ import {
   getTagValues,
   extractCategoryTagIds,
   getMarketThumbnail,
+  getDepositStatus,
   heartbeatMakerSession,
   mapCatalogueEntryToMarket,
+  requestEcashDeposit,
   submitOrder,
 } from '../markets'
 import type { MarketCatalogueEntry } from '../markets'
@@ -319,6 +321,49 @@ describe('legacy mintd-list path (markets list) is fully removed', () => {
     expect(
       Object.prototype.hasOwnProperty.call(mod, 'mapConditionToMarket'),
     ).toBe(false)
+  })
+})
+
+describe('deposit API normalization', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let originalFetch: typeof globalThis.fetch
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    fetchMock = vi.fn()
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('normalizes camel-case engine deposit states to the generated contract shape', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      depositId: '7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a',
+      conditionId: 'deadbeef',
+      state: 'credited',
+      method: 'lightningInvoice',
+      amountSats: 1000,
+      requestedAt: '2026-05-17T06:05:06.200Z',
+      updatedAt: '2026-05-17T06:05:10.660Z',
+      expiresAt: '2026-05-17T06:20:06.200Z',
+      failureReason: null,
+    }), { status: 200 }))
+
+    await expect(getDepositStatus('deadbeef', '7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a'))
+      .resolves.toMatchObject({ state: 'Credited' })
+  })
+
+  it('normalizes ecash deposit creation state', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      depositId: '7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a',
+      state: 'requested',
+    }), { status: 200 }))
+
+    await expect(requestEcashDeposit('deadbeef', 1000, 'cashu-token'))
+      .resolves.toMatchObject({ state: 'Requested' })
   })
 })
 

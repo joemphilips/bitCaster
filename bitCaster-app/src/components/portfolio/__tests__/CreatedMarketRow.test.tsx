@@ -66,4 +66,10 @@ describe("CreatedMarketRow", () => {
 
     expect(screen.queryByRole("button", { name: /close market/i })).toBeNull();
   });
+
+  it("marks closed market thumbnails as Closed", () => {
+    render(<CreatedMarketRow market={fixture({ status: "resolved" })} />);
+
+    expect(screen.getByText("Closed")).toBeInTheDocument();
+  });
 });

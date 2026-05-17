@@ -10,6 +10,7 @@ import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
+import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
 import { getBalance, useBalance, useWalletStore } from "@/stores/wallet";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
@@ -339,18 +340,13 @@ export function MarketDetailPage() {
         ephemeralPubkey: ephemeral.pubkey,
         ephemeralPrivkey: ephemeral.privkey,
       });
-      useNotificationsStore.getState().add({
-        id: `${response.orderId}-accepted`,
-        kind: "accepted",
+      addOrderSubmitNotifications({
+        add: useNotificationsStore.getState().add,
         orderId: response.orderId,
         marketId: ticket.marketId,
-        filledAmountSats: Math.max(
-          ticket.request.amountSats - response.remainingAmountSats,
-          0,
-        ),
+        requestedAmountSats: ticket.request.amountSats,
         remainingAmountSats: response.remainingAmountSats,
-        occurredAt: Date.now(),
-        read: false,
+        fillCount: response.fills?.length ?? 0,
       });
       setTradeSelection(null);
       setTradeAmount(0);

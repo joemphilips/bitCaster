@@ -24,6 +24,7 @@ function makeMarket(id: string, title = `Market ${id}`): Market {
     id,
     title,
     type: 'yesno',
+    state: 'open',
     imageUrl: '',
     categoryTags: [],
     metaTags: [],

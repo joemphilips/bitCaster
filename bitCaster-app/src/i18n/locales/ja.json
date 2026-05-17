@@ -533,7 +533,8 @@
     "within30Days": "30日以内",
     "within90Days": "90日以内",
     "within6Months": "6ヶ月以内",
-    "within1Year": "1年以内"
+    "within1Year": "1年以内",
+    "includeClosed": "クローズ済みを含める"
   },
   "terms": {
     "title": "利用規約",

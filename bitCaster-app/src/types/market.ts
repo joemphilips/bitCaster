@@ -49,6 +49,7 @@ export interface CategoricalYesNoCompositeOdds {
 interface BaseMarket {
   id: string
   title: string
+  state: 'open' | 'closed'
   imageUrl: string
   categoryTags: string[]
   metaTags: string[]
@@ -121,6 +122,7 @@ export interface FilterState {
   marketTypes: MarketType[]
   volumeRange: VolumeRange
   closingInDays?: number
+  includeClosed?: boolean
 }
 
 // =============================================================================
@@ -176,6 +178,7 @@ export interface MarketDiscoveryProps {
 
   /** Called when user changes closing date filter */
   onClosingDateChange?: (days?: number) => void
+  onIncludeClosedChange?: (includeClosed: boolean) => void
 
   /** Called when user navigates to market detail page */
   onViewMarket?: (marketId: string) => void

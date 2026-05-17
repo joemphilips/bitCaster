@@ -52,15 +52,18 @@ describe('FilterControls', () => {
     const onMarketTypeChange = vi.fn()
     const onVolumeRangeChange = vi.fn()
     const onClosingDateChange = vi.fn()
+    const onIncludeClosedChange = vi.fn()
 
     render(
       <FilterControls
         isVisible={true}
         selectedMarketTypes={['yesno']}
         volumeRange={{}}
+        includeClosed={true}
         onMarketTypeChange={onMarketTypeChange}
         onVolumeRangeChange={onVolumeRangeChange}
         onClosingDateChange={onClosingDateChange}
+        onIncludeClosedChange={onIncludeClosedChange}
       />
     )
 
@@ -71,5 +74,24 @@ describe('FilterControls', () => {
     expect(onMarketTypeChange).toHaveBeenCalledWith([])
     expect(onVolumeRangeChange).toHaveBeenCalledWith({})
     expect(onClosingDateChange).toHaveBeenCalledWith(undefined)
+    expect(onIncludeClosedChange).toHaveBeenCalledWith(false)
+  })
+
+  it('calls onIncludeClosedChange when the closed-market toggle changes', async () => {
+    const user = userEvent.setup()
+    const onIncludeClosedChange = vi.fn()
+
+    render(
+      <FilterControls
+        isVisible={true}
+        selectedMarketTypes={[]}
+        volumeRange={{}}
+        onIncludeClosedChange={onIncludeClosedChange}
+      />
+    )
+
+    await user.click(screen.getByLabelText('Include closed'))
+
+    expect(onIncludeClosedChange).toHaveBeenCalledWith(true)
   })
 })

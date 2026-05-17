@@ -74,11 +74,9 @@ interface ConditionsResponse {
 }
 
 /**
- * Fetch the full mintd condition catalogue. Per ADR-009 only the
- * market-detail page (`/markets/{conditionId}`) consumes this directly —
- * it MUST reach mintd to verify a market exists before the user can place
- * deposits or orders. The markets-list page goes through the engine's
- * `/api/v1/markets/query` proxy (`getMarkets()` below).
+ * Fetch the full mintd condition catalogue. ADR-009 now keeps routine
+ * list/detail rendering engine-first, but operation-time checks may still
+ * call mintd directly before value is spent, locked, claimed, or resolved.
  */
 export async function fetchConditions(): Promise<ConditionInfo[]> {
   const response = await fetch('/v1/conditions')
@@ -186,6 +184,7 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const base = {
     id: entry.conditionId,
     title,
+    state: normalizeEngineMarketState(entry.state) ?? 'open',
     imageUrl,
     categoryTags: entry.categoryTags ?? [],
     metaTags: [],
@@ -226,8 +225,8 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
 /**
  * Fetch a page of markets from the matching-engine catalogue API
  * (`GET /api/v1/markets/query`). The frontend trust contract (ADR-009) is:
- * the markets-list page may rely on this response, but the market-detail page
- * MUST verify market existence directly against mintd.
+ * routine list/detail rendering is engine-first; critical operations must
+ * fail closed or perform a later mint-authority check before funds move.
  */
 export async function getMarkets(
   params: GetMarketsParams = {},
@@ -348,7 +347,9 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     resolution: {
       criteria: title,
       source: 'oracle' as const,
-      resolutionDate: now,
+      resolutionDate: c.attestation.attested_at
+        ? new Date(c.attestation.attested_at * 1000).toISOString()
+        : now,
       status: isResolved ? ('resolved' as const) : ('open' as const),
       finalOutcome: c.attestation.winning_outcome ?? undefined,
     },
@@ -460,6 +461,13 @@ function mergeEngineCatalogueEntry(
     // closing date. A null deadline means "unknown"; do not synthesize a
     // page-load timestamp because that decays into a bogus Closed state.
     closingDate: engineEntry.deadline ?? detail.closingDate,
+    resolution:
+      detail.resolution.status === 'resolved' || !engineEntry.deadline
+        ? detail.resolution
+        : {
+            ...detail.resolution,
+            resolutionDate: engineEntry.deadline,
+          },
   }
 }
 
@@ -800,6 +808,25 @@ export type GetDepositResponseDto =
 export type DepositState = components['schemas']['DepositState']
 export type DepositMethod = components['schemas']['DepositMethod']
 
+function normalizeDepositState(state: unknown): DepositState {
+  switch (state) {
+    case 'Requested':
+    case 'requested':
+      return 'Requested'
+    case 'Paid':
+    case 'paid':
+      return 'Paid'
+    case 'Credited':
+    case 'credited':
+      return 'Credited'
+    case 'Failed':
+    case 'failed':
+      return 'Failed'
+    default:
+      throw new Error(`Unknown deposit state: ${String(state)}`)
+  }
+}
+
 /**
  * Request a Lightning invoice for a market's CPMM bot deposit. The returned
  * `bolt11` is bearer material — it appears only in this immediate response,
@@ -854,7 +881,8 @@ export async function requestEcashDeposit(
       `[Matching Engine] Failed to submit ecash deposit: ${response.status} ${await response.text()}`,
     )
   }
-  return response.json()
+  const result = await response.json() as RequestEcashDepositResponse
+  return { ...result, state: normalizeDepositState(result.state) }
 }
 
 /**
@@ -873,7 +901,8 @@ export async function getDepositStatus(
   if (!response.ok) {
     throw new Error(`Failed to read deposit status: ${response.status}`)
   }
-  return response.json()
+  const result = await response.json() as GetDepositResponseDto
+  return { ...result, state: normalizeDepositState(result.state) }
 }
 
 /**

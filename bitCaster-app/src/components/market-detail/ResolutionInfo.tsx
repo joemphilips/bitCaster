@@ -1,45 +1,13 @@
-import { Info, CheckCircle2, AlertCircle, Clock, AlertTriangle } from 'lucide-react'
+import { Info, AlertTriangle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { ResolutionDetails, ResolutionSource, ResolutionStatus } from '@/types/market-detail'
+import type { ResolutionDetails } from '@/types/market-detail'
 
 interface ResolutionInfoProps {
   resolution: ResolutionDetails
 }
 
-const SOURCE_KEYS: Record<ResolutionSource, string> = {
-  oracle: 'resolutionSource.oracle',
-  manual: 'resolutionSource.manual',
-  community: 'resolutionSource.community',
-  smart_contract: 'resolutionSource.smart_contract',
-}
-
-const STATUS_META: Record<ResolutionStatus, { labelKey: string; icon: typeof CheckCircle2; color: string }> = {
-  open: {
-    labelKey: 'resolutionStatus.open',
-    icon: Clock,
-    color: 'text-blue-500 bg-blue-500/10 border-blue-500/30',
-  },
-  pending_resolution: {
-    labelKey: 'resolutionStatus.pending_resolution',
-    icon: AlertCircle,
-    color: 'text-amber-500 bg-amber-500/10 border-amber-500/30',
-  },
-  resolved: {
-    labelKey: 'resolutionStatus.resolved',
-    icon: CheckCircle2,
-    color: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/30',
-  },
-  disputed: {
-    labelKey: 'resolutionStatus.disputed',
-    icon: AlertTriangle,
-    color: 'text-red-500 bg-red-500/10 border-red-500/30',
-  },
-}
-
 export function ResolutionInfo({ resolution }: ResolutionInfoProps) {
   const { t, i18n } = useTranslation()
-  const statusMeta = STATUS_META[resolution.status]
-  const StatusIcon = statusMeta.icon
 
   function formatDate(dateStr: string): string {
     return new Date(dateStr).toLocaleDateString(i18n.language, {
@@ -53,16 +21,10 @@ export function ResolutionInfo({ resolution }: ResolutionInfoProps) {
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5">
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4">
         <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
           {t('market.resolution')}
         </h3>
-
-        {/* Status Badge */}
-        <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border ${statusMeta.color}`}>
-          <StatusIcon className="w-3.5 h-3.5" />
-          {t(statusMeta.labelKey)}
-        </span>
       </div>
 
       {/* Final Outcome (if resolved) */}
@@ -90,24 +52,7 @@ export function ResolutionInfo({ resolution }: ResolutionInfoProps) {
         </p>
       </div>
 
-      {/* Source & Date */}
-      <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-200 dark:border-slate-700">
-        <div>
-          <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-            {t('market.source')}
-          </p>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-slate-900 dark:text-white">
-              {t(SOURCE_KEYS[resolution.source])}
-            </span>
-            {resolution.sourceDescription && (
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                ({resolution.sourceDescription})
-              </span>
-            )}
-          </div>
-        </div>
-
+      <div className="pt-4 border-t border-slate-200 dark:border-slate-700">
         <div>
           <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
             {t('market.resolutionDate')}

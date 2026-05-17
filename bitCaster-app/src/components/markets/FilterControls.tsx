@@ -7,9 +7,11 @@ interface FilterControlsProps {
   selectedMarketTypes: MarketType[]
   volumeRange: VolumeRange
   closingInDays?: number
+  includeClosed?: boolean
   onMarketTypeChange?: (types: MarketType[]) => void
   onVolumeRangeChange?: (range: VolumeRange) => void
   onClosingDateChange?: (days?: number) => void
+  onIncludeClosedChange?: (includeClosed: boolean) => void
 }
 
 const MARKET_TYPE_OPTIONS: { value: MarketType; labelKey: string }[] = [
@@ -41,9 +43,11 @@ export function FilterControls({
   selectedMarketTypes,
   volumeRange,
   closingInDays,
+  includeClosed = false,
   onMarketTypeChange,
   onVolumeRangeChange,
   onClosingDateChange,
+  onIncludeClosedChange,
 }: FilterControlsProps) {
   const { t } = useTranslation()
 
@@ -121,10 +125,21 @@ export function FilterControls({
             ))}
           </select>
 
+          <label className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={includeClosed}
+              onChange={(e) => onIncludeClosedChange?.(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-900"
+            />
+            {t('filter.includeClosed')}
+          </label>
+
           {/* Active Filter Count */}
           {(selectedMarketTypes.length > 0 ||
             volumeRange.min !== undefined ||
-            closingInDays !== undefined) && (
+            closingInDays !== undefined ||
+            includeClosed) && (
             <div className="ml-auto flex items-center gap-2">
               <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">
                 {t('common.active_filters', {
@@ -132,6 +147,7 @@ export function FilterControls({
                     selectedMarketTypes.length > 0 ? 1 : 0,
                     volumeRange.min !== undefined ? 1 : 0,
                     closingInDays !== undefined ? 1 : 0,
+                    includeClosed ? 1 : 0,
                   ].reduce((a, b) => a + b, 0),
                 })}
               </span>
@@ -140,6 +156,7 @@ export function FilterControls({
                   onMarketTypeChange?.([])
                   onVolumeRangeChange?.({})
                   onClosingDateChange?.(undefined)
+                  onIncludeClosedChange?.(false)
                 }}
                 className="text-xs font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 underline"
               >

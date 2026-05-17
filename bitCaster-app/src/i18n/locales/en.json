@@ -533,7 +533,8 @@
     "within30Days": "Within 30 days",
     "within90Days": "Within 90 days",
     "within6Months": "Within 6 months",
-    "within1Year": "Within 1 year"
+    "within1Year": "Within 1 year",
+    "includeClosed": "Include closed"
   },
   "terms": {
     "title": "Terms of Service",
