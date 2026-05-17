@@ -49,7 +49,9 @@ const browserFacingProto = (req, host) => {
 };
 
 const setBrowserForwardedHeaders = (proxyReq, req) => {
-  const host = firstHeaderValue(req.headers['x-forwarded-host']) || firstHeaderValue(req.headers.host);
+  // Use the frontend request Host, not a client-supplied X-Forwarded-Host.
+  // NIP-98 URL binding should reflect the origin the browser actually opened.
+  const host = firstHeaderValue(req.headers.host);
   if (host) proxyReq.setHeader('x-forwarded-host', host);
   proxyReq.setHeader('x-forwarded-proto', browserFacingProto(req, host));
 };
