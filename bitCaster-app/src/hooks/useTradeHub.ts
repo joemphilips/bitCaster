@@ -221,7 +221,7 @@ export function useTradeHub(
   }, [ephemeralPrivkey]) // reconnect when key changes
 
   /**
-   * Wait up to ~10 s for the SignalR connection to reach
+   * Wait up to ~60 s for the SignalR connection to reach
    * {@link HubConnectionState.Connected}. The connection lifecycle is async
    * (negotiation may take several seconds, transient failures retry via
    * `withAutomaticReconnect`); a caller that fires immediately on store
@@ -230,7 +230,7 @@ export function useTradeHub(
    * step that no later state change recovers.
    */
   const waitForConnected = useCallback(
-    async (timeoutMs = 10_000): Promise<HubConnection> => {
+    async (timeoutMs = 60_000): Promise<HubConnection> => {
       const deadline = Date.now() + timeoutMs
       while (Date.now() < deadline) {
         const conn = connectionRef.current
