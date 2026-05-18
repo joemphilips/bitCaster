@@ -113,6 +113,35 @@ describe("MarketHeader", () => {
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
   });
 
+  it("does not render an open engine market as closed only because its deadline is stale", async () => {
+    renderHeader(
+      makeMarket({
+        state: "open",
+        closingDate: "1970-01-12T13:46:40Z",
+      }),
+    );
+
+    expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
+  it("renders the final answer prominently when closed with an outcome", async () => {
+    renderHeader(
+      makeMarket({
+        state: "closed",
+        resolution: {
+          ...makeMarket().resolution,
+          status: "resolved",
+          finalOutcome: "Yes",
+        },
+      }),
+    );
+
+    expect(screen.getByText("Final Outcome")).toBeInTheDocument();
+    expect(screen.getByText("Yes")).toBeInTheDocument();
+    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
   it("updates the remaining-time label while the market stays open", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-17T12:00:00Z"));

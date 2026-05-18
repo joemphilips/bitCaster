@@ -426,11 +426,10 @@ describe('maker session heartbeat', () => {
 })
 
 /**
- * Phase 2 + Phase 7 of the P7 staging-fix plan: `fetchMarketDetail` consults
- * mintd for existence and outcome metadata, AND the engine catalogue for
- * lifecycle (`state`) and thumbnail (`imageUrl`). The test wires up a fake
- * `fetch` that returns canned mintd + engine responses and asserts the
- * merged `MarketDetail` carries the engine-side state + thumbnail.
+ * Phase 2 + Phase 7 of the P7 staging-fix plan, tightened after the P18 local
+ * smoke: `fetchMarketDetail` renders from the engine catalogue first and uses
+ * mintd only as fallback/enrichment. Stale mint rows must never override the
+ * engine's public title, lifecycle (`state`), or thumbnail (`imageUrl`).
  */
 describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -491,10 +490,12 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
             conditionId: 'abc123',
             outcomes: ['Yes', 'No'],
             title: 'Will BTC hit 100K?',
+            description: 'Creator supplied detailed resolution rules.',
             thumbnailUrl,
             creatorPubkey,
             deadline: null,
             closedAt: null,
+            finalOutcome: null,
             state,
             createdAt: '2026-01-01T00:00:00Z',
             volume24hSats: 5000,
@@ -545,6 +546,42 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
   it('keeps mint display metadata from the mintd partition', async () => {
     const detail = await fetchMarketDetail('abc123')
     expect(detail.mint).toEqual({ collateral: 'sat', keysetCount: 2 })
+  })
+
+  it('renders engine detail when mintd has a stale row for the same condition id', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) {
+        return new Response(
+          JSON.stringify({
+            conditions: [
+              {
+                condition_id: 'abc123',
+                tags: [['description', 'Stale mint title']],
+                threshold: 1,
+                announcements: ['ann1'],
+                partitions: defaultPartitions,
+                attestation: {
+                  status: 'attested',
+                  winning_outcome: 'No',
+                  attested_at: 1,
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        )
+      }
+      if (url.includes('/api/v1/markets/query'))
+        return engineQueryResponse('open', '/api/v1/abc123/thumbnail')
+      return emptyMetadataResponse()
+    })
+
+    const detail = await fetchMarketDetail('abc123')
+
+    expect(detail.title).toBe('Will BTC hit 100K?')
+    expect(detail.state).toBe('open')
+    expect(detail.resolution.status).toBe('open')
+    expect(detail.resolution.finalOutcome).toBeUndefined()
   })
 
   it('maps engine creatorPubkey into the detail creator card identity', async () => {
@@ -697,5 +734,30 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
 
     expect(detail.state).toBe('closed')
     expect(detail.resolution.resolutionDate).toBe('2031-01-01T00:05:00Z')
+  })
+
+  it('uses engine registration description as resolution criteria', async () => {
+    const detail = await fetchMarketDetail('abc123')
+    expect(detail.resolution.criteria).toBe(
+      'Creator supplied detailed resolution rules.',
+    )
+  })
+
+  it('surfaces engine finalOutcome for oracle-closed markets', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) return mintdConditionsResponse()
+      if (url.includes('/api/v1/markets/query')) {
+        const body = await engineQueryResponse('closed', null).json()
+        body.markets[0].closedAt = '2031-01-01T00:05:00Z'
+        body.markets[0].finalOutcome = 'Yes'
+        return new Response(JSON.stringify(body), { status: 200 })
+      }
+      return emptyMetadataResponse()
+    })
+
+    const detail = await fetchMarketDetail('abc123')
+
+    expect(detail.resolution.status).toBe('resolved')
+    expect(detail.resolution.finalOutcome).toBe('Yes')
   })
 })

@@ -4,1340 +4,1443 @@
  */
 
 export interface paths {
-    "/api/v1/markets/{conditionId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Register a new market on the matching engine
-         * @description Validates the condition exists in the mint, creates market order books, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed.
-         */
-        post: operations["createMarket"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+  "/api/v1/markets/{conditionId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/markets/{conditionId}/oracle-attestation": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Submit a signed oracle attestation directly to the engine
-         * @description Accepts a Nostr kind-89 DLC oracle attestation event and closes any open market identified by conditionId when the event and embedded kormir/rust-dlc attestation verify against that market's registered oracle. Nostr relay publication is optional: this endpoint is the direct closure path for bitCaster markets. The payload is self-authenticating, so no NIP-98 header is required.
-         */
-        post: operations["submitOracleAttestation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    /**
+     * Register a new market on the matching engine
+     * @description Validates the condition exists in the mint, creates market order books, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed.
+     */
+    post: operations["createMarket"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/markets/{conditionId}/oracle-attestation": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/{marketId}/orders": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List the authenticated user's resting orders
-         * @description Returns live resting orders in this market owned by the authenticated user. Used by clients that need to rebuild local order-tracking state after a restart.
-         */
-        get: operations["listRestingOrders"];
-        put?: never;
-        /**
-         * Submit a new order
-         * @description Submit a limit or market order to the matching engine.
-         */
-        post: operations["submitOrder"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    /**
+     * Submit a signed oracle attestation directly to the engine
+     * @description Accepts a Nostr kind-89 DLC oracle attestation event and closes any open market identified by conditionId when the event and embedded kormir/rust-dlc attestation verify against that market's registered oracle. Nostr relay publication is optional: this endpoint is the direct closure path for bitCaster markets. The payload is self-authenticating, so no NIP-98 header is required.
+     */
+    post: operations["submitOracleAttestation"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conditions/{conditionId}/attestation": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/maker/session/heartbeat": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Refresh the authenticated maker's online session
-         * @description Records that the authenticated user currently has a browser or bot session available to settle limit orders. Public complementary matching requires a fresh heartbeat before a GTC order can rest on the DCB book. The POST body is empty; clients still include the NIP-98 `payload` tag for the SHA-256 hash of the empty byte string.
-         */
-        post: operations["heartbeatMakerSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * Fetch the verified oracle witness for a closed condition
+     * @description Returns the oracle witness persisted when the engine closed the market from a verified DLC oracle attestation. Clients use this witness as input to the mint's `POST /v1/redeem_outcome` endpoint. The mint still verifies the witness before paying out; this endpoint is a convenience cache for already-closed bitCaster conditions, not the payout authority.
+     */
+    get: operations["getConditionAttestation"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/{marketId}/orders": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/{marketId}/orders/{orderId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Fetch the current state of an order
-         * @description Returns the order's live status, remaining/filled amounts, and the list of fills produced so far. Clients poll this endpoint to observe async state changes (fills, cancellation, expiry) without holding an open connection. Only the order's owner (matching the authenticated pubkey) may query its status.
-         */
-        get: operations["getOrderStatus"];
-        put?: never;
-        post?: never;
-        /** Cancel an existing order */
-        delete: operations["cancelOrder"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * List the authenticated user's resting orders
+     * @description Returns live resting orders in this market owned by the authenticated user. Used by clients that need to rebuild local order-tracking state after a restart.
+     */
+    get: operations["listRestingOrders"];
+    put?: never;
+    /**
+     * Submit a new order
+     * @description Submit a limit or market order to the matching engine.
+     */
+    post: operations["submitOrder"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/maker/session/heartbeat": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/{marketId}/orderbook": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get the current order book snapshot */
-        get: operations["getOrderBook"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    /**
+     * Refresh the authenticated maker's online session
+     * @description Records that the authenticated user currently has a browser or bot session available to settle limit orders. Public complementary matching requires a fresh heartbeat before a GTC order can rest on the DCB book. The POST body is empty; clients still include the NIP-98 `payload` tag for the SHA-256 hash of the empty byte string.
+     */
+    post: operations["heartbeatMakerSession"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/{marketId}/orders/{orderId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/{marketId}/liquidity": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get liquidity state
-         * @description Returns the current public liquidity state for a market.
-         */
-        get: operations["getLiquidity"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * Fetch the current state of an order
+     * @description Returns the order's live status, remaining/filled amounts, and the list of fills produced so far. Clients poll this endpoint to observe async state changes (fills, cancellation, expiry) without holding an open connection. Only the order's owner (matching the authenticated pubkey) may query its status.
+     */
+    get: operations["getOrderStatus"];
+    put?: never;
+    post?: never;
+    /** Cancel an existing order */
+    delete: operations["cancelOrder"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/{marketId}/orderbook": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/{marketId}/metadata": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get market metadata
-         * @description Returns aggregated metadata for a market including trading volume, trade count, unique trader count, and liquidity.
-         */
-        get: operations["getMarketMetadata"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Get the current order book snapshot */
+    get: operations["getOrderBook"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/{marketId}/liquidity": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/{conditionId}/thumbnail": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get the thumbnail image for a condition */
-        get: operations["getThumbnail"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * Get liquidity state
+     * @description Returns the current public liquidity state for a market.
+     */
+    get: operations["getLiquidity"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/{marketId}/metadata": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/markets/{conditionId}/deposit/ln-invoice": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Request a Lightning invoice for market liquidity
-         * @description Issues a bolt11 invoice payable to the market's funding account. Once the invoice is paid, the deposit advances asynchronously through the deposit lifecycle until the market account is credited. The bolt11 string is returned only in this response — the polling endpoint deliberately omits bearer material.
-         */
-        post: operations["requestLnInvoiceDeposit"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * Get market metadata
+     * @description Returns aggregated metadata for a market including trading volume, trade count, unique trader count, and liquidity.
+     */
+    get: operations["getMarketMetadata"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/{conditionId}/thumbnail": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/markets/{conditionId}/deposit/ecash": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Submit an ecash payment for market liquidity
-         * @description Submits an ecash deposit for asynchronous proof verification and crediting. Use the returned `depositId` to poll for state transitions via the GET endpoint.
-         */
-        post: operations["requestEcashDeposit"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Get the thumbnail image for a condition */
+    get: operations["getThumbnail"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/markets/{conditionId}/deposit/ln-invoice": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/markets/{conditionId}/deposit/{depositId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Read the current state of a deposit
-         * @description Polling-friendly read of a single deposit's lifecycle state. Bearer payment instruments (bolt11) and proof material are deliberately excluded from the response — they appear only in the original request response. Public; no authentication required.
-         */
-        get: operations["getDepositStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    /**
+     * Request a Lightning invoice for market liquidity
+     * @description Issues a bolt11 invoice payable to the market's funding account. Once the invoice is paid, the deposit advances asynchronously through the deposit lifecycle until the market account is credited. The bolt11 string is returned only in this response — the polling endpoint deliberately omits bearer material.
+     */
+    post: operations["requestLnInvoiceDeposit"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/markets/{conditionId}/deposit/ecash": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/creators/{pubkey}/markets": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List markets created by a given Nostr pubkey
-         * @description Returns every market whose creator (authenticated via NIP-98 at registration time) matches the supplied pubkey, along with aggregated volume data so the creator dashboard can render totals without additional round-trips.
-         */
-        get: operations["listCreatorMarkets"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    /**
+     * Submit an ecash payment for market liquidity
+     * @description Submits an ecash deposit for asynchronous proof verification and crediting. Use the returned `depositId` to poll for state transitions via the GET endpoint.
+     */
+    post: operations["requestEcashDeposit"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/markets/{conditionId}/deposit/{depositId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/markets/query": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Catalogue proxy — list markets with filters, sort, and pagination
-         * @description Returns the public market catalogue with matching-engine market state, mint condition data, and trading summary fields. This is the read endpoint the markets list page (`/markets`) and discovery surfaces consume.
-         *     Anonymous by default. NIP-98 is OPTIONAL — when present, the request is authenticated and routed to a higher per-pubkey rate-limit bucket; when absent, the per-IP bucket applies. Authentication does NOT change the response shape or visibility — every market visible to an anonymous caller is also visible to an authenticated caller and vice versa.
-         *     The response combines condition metadata (`outcomes`, `creatorPubkey`, `deadline`, and oracle attestation/close metadata) with trading state (`state`, `volume*`, `lastTradedPrice`, and `createdAt`). A market missing either side of that public data is omitted from the catalogue until both are available.
-         */
-        get: operations["queryMarkets"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * Read the current state of a deposit
+     * @description Polling-friendly read of a single deposit's lifecycle state. Bearer payment instruments (bolt11) and proof material are deliberately excluded from the response — they appear only in the original request response. Public; no authentication required.
+     */
+    get: operations["getDepositStatus"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/creators/{pubkey}/markets": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
+    /**
+     * List markets created by a given Nostr pubkey
+     * @description Returns every market whose creator (authenticated via NIP-98 at registration time) matches the supplied pubkey, along with aggregated volume data so the creator dashboard can render totals without additional round-trips.
+     */
+    get: operations["listCreatorMarkets"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/markets/query": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Catalogue proxy — list markets with filters, sort, and pagination
+     * @description Returns the public market catalogue with matching-engine market state, mint condition data, and trading summary fields. This is the read endpoint the markets list page (`/markets`) and discovery surfaces consume.
+     *     Anonymous by default. NIP-98 is OPTIONAL — when present, the request is authenticated and routed to a higher per-pubkey rate-limit bucket; when absent, the per-IP bucket applies. Authentication does NOT change the response shape or visibility — every market visible to an anonymous caller is also visible to an authenticated caller and vice versa.
+     *     The response combines condition metadata (`outcomes`, `creatorPubkey`, `deadline`, and oracle attestation/close metadata) with trading state (`state`, `volume*`, `lastTradedPrice`, and `createdAt`). A market missing either side of that public data is omitted from the catalogue until both are available.
+     */
+    get: operations["queryMarkets"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
-    schemas: {
-        /**
-         * Format: int64
-         * @description A non-negative amount of satoshis.
-         */
-        Sats: number;
-        /** @description A probability price representing a percentage chance [1, 99]. */
-        Probability: number;
-        /**
-         * @description Direction of an order relative to the outcome token.
-         * @enum {string}
-         */
-        OrderSide: "Buy" | "Sell";
-        /**
-         * @description Execution semantics of an order.
-         * @enum {string}
-         */
-        OrderType: "Limit" | "Market";
-        /**
-         * @description Time-in-force policy. GTC = Good-Till-Cancel (rests on book), FOK = Fill-Or-Kill (reject if not fully filled), FAK = Fill-And-Kill (cancel remaining after partial fill).
-         * @enum {string}
-         */
-        TimeInForce: "GTC" | "FOK" | "FAK";
-        /**
-         * @description How two orders were matched together.
-         * @enum {string}
-         */
-        MatchPath: "Direct" | "Complementary";
-        OracleNostrEvent: {
-            /** @description NIP-01 event id of the kind-89 attestation. */
-            id: string;
-            /** @description X-only BIP-340/Nostr public key of the oracle. */
-            pubkey: string;
-            /**
-             * Format: int64
-             * @description NIP-01 created_at timestamp in Unix seconds.
-             */
-            createdAt: number;
-            /**
-             * @description Nostr event kind for DLC oracle attestations.
-             * @enum {integer}
-             */
-            kind: 89;
-            /** @description Base64-encoded kormir/rust-dlc oracle_attestation payload. */
-            content: string;
-            /** @description BIP-340 Schnorr signature over the NIP-01 event id. */
-            sig: string;
-        };
-        OracleAttestationResponse: {
-            /**
-             * @description Engine processing result for the submitted attestation.
-             * @enum {string}
-             */
-            result: "Closed" | "AlreadyClosed" | "DuplicateReplay" | "WrongKind" | "InvalidSignature" | "InvalidPayload" | "NoMatchingMarket";
-        };
-        Fill: {
-            /**
-             * Format: uuid
-             * @description Unique fill identifier.
-             */
-            id: string;
-            /**
-             * Format: uuid
-             * @description The incoming (aggressor) order that triggered this fill.
-             */
-            takerOrderId: string;
-            /**
-             * Format: uuid
-             * @description The resting order that was matched against.
-             */
-            makerOrderId: string;
-            /** @description Conditional-token face amount matched for settlement. DCB complementary reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session. */
-            amountSats: components["schemas"]["Sats"];
-            executionPrice: components["schemas"]["Probability"];
-            path: components["schemas"]["MatchPath"];
-            /**
-             * Format: date-time
-             * @description Timestamp when this fill was executed.
-             */
-            filledAt: string;
-            /**
-             * Format: uuid
-             * @description Atomic-swap trade session identifier for this fill or DCB reservation. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
-             */
-            tradeId?: string;
-            /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders). */
-            makerEphemeralPubkey?: string;
-        };
-        SubmitOrderRequest: {
-            /** @description The outcome or finite outcome set to trade (e.g. "Alice", "YES", or "B|C"). Must match the outcome-set segment of marketId. */
-            outcomeId: string;
-            side: components["schemas"]["OrderSide"];
-            price: components["schemas"]["Probability"];
-            /** @description Limit-order size as conditional-token face amount. First release requires this to be divisible by 100 sats so integer-cent prices produce exact quote payments. */
-            amountSats: components["schemas"]["Sats"];
-            /** @default GTC */
-            timeInForce: components["schemas"]["TimeInForce"];
-            /** @description Hex-encoded compressed secp256k1 pubkey (33 bytes, 66 hex chars) generated by the client per-order. Used by the matching engine to route the counterparty's encrypted atomic-swap messages back to this order's submitter. The corresponding private key stays on the client and is the only thing that can decrypt and sign swap payloads — the engine never sees it. */
-            ephemeralPubkey: string;
-        };
-        OrderStatusResponse: {
-            /**
-             * Format: uuid
-             * @description The order's unique identifier.
-             */
-            orderId: string;
-            /** @description The market this order belongs to. */
-            marketId: string;
-            /** @description One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled". */
-            status: string;
-            remainingAmountSats: components["schemas"]["Sats"];
-            /** @description Conditional-token face amount already consumed by fills or active DCB complementary reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake. */
-            filledAmountSats: components["schemas"]["Sats"];
-            /** @description All fills and active DCB complementary reservation handles produced against this order so far. */
-            fills: components["schemas"]["Fill"][];
-        };
-        RestingOrderResponse: {
-            /**
-             * Format: uuid
-             * @description The unique identifier assigned by the matching engine.
-             */
-            orderId: string;
-            /** @description The market this order belongs to. */
-            marketId: string;
-            /** @description The outcome this order trades. */
-            outcomeId: string;
-            side: components["schemas"]["OrderSide"];
-            price: components["schemas"]["Probability"];
-            remainingAmountSats: components["schemas"]["Sats"];
-            amountSats: components["schemas"]["Sats"];
-            timeInForce: components["schemas"]["TimeInForce"];
-            /** Format: date-time */
-            placedAt: string;
-            /** Format: date-time */
-            expiresAt?: string | null;
-            /** @description Order-level ephemeral pubkey supplied at submit time. */
-            ephemeralPubkey?: string | null;
-        };
-        ListRestingOrdersResponse: {
-            orders: components["schemas"]["RestingOrderResponse"][];
-        };
-        SubmitOrderResponse: {
-            /**
-             * Format: uuid
-             * @description The unique identifier assigned to this order.
-             */
-            orderId: string;
-            /** @description One of: "filled", "partially_filled", "resting", "cancelled". */
-            status: string;
-            remainingAmountSats: components["schemas"]["Sats"];
-            /** @description List of fills produced by this order. Empty if no matches. */
-            fills: components["schemas"]["Fill"][];
-            /** @description Echoes the ephemeralPubkey the client submitted. Lets clients confirm round-trip before they discard the corresponding privkey. */
-            ephemeralPubkey: string;
-        };
-        MakerSessionHeartbeatResponse: {
-            /** @description Whether the engine considers the maker session online. */
-            online: boolean;
-            /**
-             * Format: date-time
-             * @description Server time when the heartbeat was recorded.
-             */
-            lastSeenAt: string;
-        };
-        /** @description A single price level in the order book depth. */
-        LevelDto: {
-            price: components["schemas"]["Probability"];
-            amount: components["schemas"]["Sats"];
-        };
-        OrderBookSnapshot: {
-            /** @description The market ID in the format "{conditionId}-{outcomeName}". */
-            marketId: string;
-            /** @description Buy-side levels sorted by price descending (best bid first). */
-            bids: components["schemas"]["LevelDto"][];
-            /** @description Sell-side levels sorted by price ascending (best ask first). */
-            asks: components["schemas"]["LevelDto"][];
-            /** @description Difference between best ask and best bid. Null if either side is empty. */
-            spread?: number | null;
-        };
-        CreateMarketOutcome: {
-            /** @description Outcome label (e.g. "Yes", "Alice"). */
-            name: string;
-            /** @description Initial implied probability for this outcome [1, 99]. */
-            probability: number;
-        };
-        /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. */
-        CreateMarketRequest: {
-            /** @description Human-readable market title. */
-            title: string;
-            /** @description Detailed market description. */
-            description: string;
-            /** @description The outcomes for the market (at least 2). */
-            outcomes: components["schemas"]["CreateMarketOutcome"][];
-            /**
-             * @description Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end.
-             * @enum {string}
-             */
-            outcomeType?: "yesno" | "categorical" | "numeric";
-            /**
-             * Format: int64
-             * @description Initial liquidity budget in satoshis.
-             * @default 0
-             */
-            liquiditySats: number;
-            /** @description Optional category tags for the market. */
-            categoryTags?: string[];
-            /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */
-            oracleAnnouncementHex?: string | null;
-        };
-        CreateMarketResponse: {
-            /** @description The condition ID this market was registered for. */
-            conditionId: string;
-            /** @description List of per-outcome market IDs created (format: "{conditionId}-{outcomeName}"). */
-            marketsCreated: string[];
-            /** @description URL to the uploaded thumbnail, or null if none was provided. */
-            thumbnailUrl?: string | null;
-        };
-        LiquidityStateResponse: {
-            marketId: string;
-            /** Format: int64 */
-            reserveA: number;
-            /** Format: int64 */
-            reserveB: number;
-            impliedProbability: number;
-            /** Format: int64 */
-            totalLiquiditySats: number;
-            /** @description Number of active liquidity orders. */
-            activeOrders: number;
-        };
-        MarketMetadataSnapshot: {
-            /** @description The market ID. */
-            marketId: string;
-            /**
-             * Format: int64
-             * @description Total trading volume in satoshis across all fills.
-             */
-            totalVolumeSats: number;
-            /** @description Total number of fills (trades) executed. */
-            totalTrades: number;
-            /** @description Number of unique user IDs that have submitted orders. */
-            uniqueTraderCount: number;
-            /**
-             * Format: int64
-             * @description Total liquidity deposited in satoshis.
-             */
-            totalLiquiditySats: number;
-        };
-        CreatorMarketEntry: {
-            /** @description The condition ID this market was registered under. */
-            conditionId: string;
-            /**
-             * Format: int64
-             * @description Aggregated trading volume in satoshis across every per-outcome market belonging to this condition.
-             */
-            totalVolumeSats: number;
-            /**
-             * Format: date-time
-             * @description When this market was registered with the matching engine.
-             */
-            createdAt: string;
-            /**
-             * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not.
-             * @enum {string}
-             */
-            state: "open" | "closed";
-        };
-        CreatorMarketsResponse: {
-            /** @description The creator pubkey this response belongs to (echoed from the path). */
-            pubkey: string;
-            /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
-            markets: components["schemas"]["CreatorMarketEntry"][];
-        };
-        /**
-         * @description Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed and crediting is in progress. `Credited` → the market account was credited (terminal-success). `Failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
-         * @enum {string}
-         */
-        DepositState: "Requested" | "Paid" | "Credited" | "Failed";
-        /**
-         * @description How the funder is paying the deposit.
-         * @enum {string}
-         */
-        DepositMethod: "LightningInvoice" | "Ecash";
-        RequestLnInvoiceDepositRequest: {
-            /**
-             * Format: int64
-             * @description Amount of sats the funder intends to deposit.
-             */
-            amountSats: number;
-        };
-        RequestLnInvoiceDepositResponse: {
-            /**
-             * Format: uuid
-             * @description Identifier for polling the deposit's lifecycle state.
-             */
-            depositId: string;
-            /** @description Bolt11 invoice the funder pays. Bearer material — never echoed from the polling endpoint. */
-            bolt11: string;
-            /**
-             * Format: date-time
-             * @description When the bolt11 stops being payable.
-             */
-            expiresAt: string;
-        };
-        RequestEcashDepositRequest: {
-            /**
-             * Format: int64
-             * @description Asserted sat value of the supplied ecash proofs.
-             */
-            amountSats: number;
-            /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
-            proofsToken: string;
-        };
-        RequestEcashDepositResponse: {
-            /**
-             * Format: uuid
-             * @description Identifier for polling the deposit's lifecycle state.
-             */
-            depositId: string;
-            state: components["schemas"]["DepositState"];
-        };
-        GetDepositResponseDto: {
-            /** Format: uuid */
-            depositId: string;
-            /** @description Condition the deposit funds. */
-            conditionId: string;
-            state: components["schemas"]["DepositState"];
-            method: components["schemas"]["DepositMethod"];
-            /** Format: int64 */
-            amountSats: number;
-            /** Format: date-time */
-            requestedAt: string;
-            /**
-             * Format: date-time
-             * @description Most recent state-change timestamp.
-             */
-            updatedAt: string;
-            /**
-             * Format: date-time
-             * @description For LN deposits, when the bolt11 stops being payable.
-             */
-            expiresAt?: string | null;
-            /** @description Populated only when `state == Failed`. */
-            failureReason?: string | null;
-        };
-        MarketCatalogueEntry: {
-            /** @description The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market. */
-            conditionId: string;
-            /** @description Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`. Finite categorical outcome-set books use multiple outcome names separated by "|", for example `"{conditionId}-B|C"`. */
-            outcomes: string[];
-            /** @description Optional human-readable title from market registration. Null when the creator did not supply one. */
-            title?: string | null;
-            /** @description Optional thumbnail URL. Null when no thumbnail was uploaded. */
-            thumbnailUrl?: string | null;
-            /** @description Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking. */
-            creatorPubkey?: string | null;
-            /**
-             * Format: date-time
-             * @description Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.
-             */
-            deadline?: string | null;
-            /**
-             * Format: date-time
-             * @description Engine-side close timestamp. Null while the market is open. Closed market detail pages use this value as the resolution date; deadline remains the scheduled oracle maturity time.
-             */
-            closedAt?: string | null;
-            /**
-             * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
-             * @enum {string}
-             */
-            state: "open" | "closed";
-            /**
-             * Format: date-time
-             * @description When the market was registered with the matching engine.
-             */
-            createdAt: string;
-            /**
-             * Format: int64
-             * @description Trading volume over the last 24 hours in satoshis. Drives the `Trending` sort dimension.
-             */
-            volume24hSats: number;
-            /**
-             * Format: int64
-             * @description Trading volume over the last 30 days in satoshis. Drives the `Popular` sort dimension.
-             */
-            volume30dSats: number;
-            /** @description Most recent execution price (probability in `[1, 99]`), null if the market has never traded. */
-            lastTradedPrice?: number | null;
-            /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
-            categoryTags: string[];
-            /**
-             * Format: date-time
-             * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
-             */
-            lastSuccessfulRefreshAt: string;
-        };
-        MarketCatalogueResponse: {
-            /** @description Page of markets matching the supplied filters, ordered by the requested `sort` dimension. Empty when no markets match. */
-            markets: components["schemas"]["MarketCatalogueEntry"][];
-            /** @description Opaque (HMAC-signed) pagination cursor for the next page. Null when this is the last page. Pass back as `?cursor=...` to continue. */
-            nextCursor?: string | null;
-            /**
-             * Format: date-time
-             * @description Top-level mirror of the mintd-mirror's most recent successful refresh time. Useful for rendering a single staleness banner covering the whole catalogue when the mintd poller has been failing.
-             */
-            lastSuccessfulRefreshAt: string;
-        };
-        /** @description RFC 7807 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover. */
-        ProblemDetails: {
-            /** @description A URI reference identifying the problem type. */
-            type?: string;
-            /** @description A short, human-readable summary of the problem. */
-            title?: string;
-            /** @description The HTTP status code generated for this occurrence. */
-            status?: number;
-            /** @description A human-readable explanation specific to this occurrence. */
-            detail?: string;
-            /** @description A URI reference identifying the specific occurrence. */
-            instance?: string;
-        };
+  schemas: {
+    /**
+     * Format: int64
+     * @description A non-negative amount of satoshis.
+     */
+    Sats: number;
+    /** @description A probability price representing a percentage chance [1, 99]. */
+    Probability: number;
+    /**
+     * @description Direction of an order relative to the outcome token.
+     * @enum {string}
+     */
+    OrderSide: "Buy" | "Sell";
+    /**
+     * @description Execution semantics of an order.
+     * @enum {string}
+     */
+    OrderType: "Limit" | "Market";
+    /**
+     * @description Time-in-force policy. GTC = Good-Till-Cancel (rests on book), FOK = Fill-Or-Kill (reject if not fully filled), FAK = Fill-And-Kill (cancel remaining after partial fill).
+     * @enum {string}
+     */
+    TimeInForce: "GTC" | "FOK" | "FAK";
+    /**
+     * @description How two orders were matched together.
+     * @enum {string}
+     */
+    MatchPath: "Direct" | "Complementary";
+    /**
+     * @description Lifecycle status of a fill-shaped order execution row. `Matched` means a DCB reservation exists and atomic-swap settlement is still pending; `Filled` means settlement committed; `Released` means a reservation failed or timed out and no longer consumes order depth.
+     * @enum {string}
+     */
+    FillStatus: "Matched" | "Filled" | "Released";
+    OracleNostrEvent: {
+      /** @description NIP-01 event id of the kind-89 attestation. */
+      id: string;
+      /** @description X-only BIP-340/Nostr public key of the oracle. */
+      pubkey: string;
+      /**
+       * Format: int64
+       * @description NIP-01 created_at timestamp in Unix seconds.
+       */
+      createdAt: number;
+      /**
+       * @description Nostr event kind for DLC oracle attestations.
+       * @enum {integer}
+       */
+      kind: 89;
+      /** @description Base64-encoded kormir/rust-dlc oracle_attestation payload. */
+      content: string;
+      /** @description BIP-340 Schnorr signature over the NIP-01 event id. */
+      sig: string;
     };
-    responses: never;
-    parameters: {
-        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
-        MarketId: string;
-        /** @description The condition identifier (hex string derived from the oracle announcement). */
-        ConditionId: string;
+    OracleAttestationResponse: {
+      /**
+       * @description Engine processing result for the submitted attestation.
+       * @enum {string}
+       */
+      result:
+        | "Closed"
+        | "AlreadyClosed"
+        | "DuplicateReplay"
+        | "WrongKind"
+        | "InvalidSignature"
+        | "InvalidPayload"
+        | "NoMatchingMarket";
     };
-    requestBodies: never;
-    headers: never;
-    pathItems: never;
+    ConditionAttestationResponse: {
+      /** @description bitCaster condition id for the closed market. */
+      conditionId: string;
+      /** @description The single outcome attested by the DLC oracle. */
+      attestedOutcome: string;
+      oracleWitness: components["schemas"]["OracleWitness"];
+    };
+    ConditionAttestationProblem: {
+      /** @enum {string} */
+      result:
+        | "InvalidConditionId"
+        | "MarketNotFound"
+        | "AttestationNotAvailable";
+    };
+    OracleWitness: {
+      oracle_sigs: components["schemas"]["OracleWitnessSig"][];
+    };
+    OracleWitnessSig: {
+      /** @description X-only BIP-340 oracle public key. */
+      oracle_pubkey: string;
+      /** @description Oracle signature over the attested outcome. */
+      oracle_sig: string;
+      /** @description Outcome string signed by the oracle. */
+      outcome: string;
+    };
+    Fill: {
+      /**
+       * Format: uuid
+       * @description Unique fill identifier.
+       */
+      id: string;
+      /**
+       * Format: uuid
+       * @description The incoming (aggressor) order that triggered this fill.
+       */
+      takerOrderId: string;
+      /**
+       * Format: uuid
+       * @description The resting order that was matched against.
+       */
+      makerOrderId: string;
+      /** @description Conditional-token face amount matched for settlement. DCB complementary reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session. */
+      amountSats: components["schemas"]["Sats"];
+      executionPrice: components["schemas"]["Probability"];
+      path: components["schemas"]["MatchPath"];
+      status: components["schemas"]["FillStatus"];
+      /**
+       * Format: date-time
+       * @description Timestamp when this fill was executed.
+       */
+      filledAt: string;
+      /**
+       * Format: uuid
+       * @description Atomic-swap trade session identifier for this fill or DCB reservation. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
+       */
+      tradeId?: string;
+      /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders). */
+      makerEphemeralPubkey?: string;
+    };
+    SubmitOrderRequest: {
+      /** @description The outcome or finite outcome set to trade (e.g. "Alice", "YES", or "B|C"). Must match the outcome-set segment of marketId. */
+      outcomeId: string;
+      side: components["schemas"]["OrderSide"];
+      price: components["schemas"]["Probability"];
+      /** @description Limit-order size as conditional-token face amount. First release requires this to be divisible by 100 sats so integer-cent prices produce exact quote payments. */
+      amountSats: components["schemas"]["Sats"];
+      /** @default GTC */
+      timeInForce: components["schemas"]["TimeInForce"];
+      /** @description Hex-encoded compressed secp256k1 pubkey (33 bytes, 66 hex chars) generated by the client per-order. Used by the matching engine to route the counterparty's encrypted atomic-swap messages back to this order's submitter. The corresponding private key stays on the client and is the only thing that can decrypt and sign swap payloads — the engine never sees it. */
+      ephemeralPubkey: string;
+    };
+    OrderStatusResponse: {
+      /**
+       * Format: uuid
+       * @description The order's unique identifier.
+       */
+      orderId: string;
+      /** @description The market this order belongs to. */
+      marketId: string;
+      /** @description One of: "resting" (on book, unmatched), "matched" (reserved for atomic-swap settlement), "partially_filled", "filled", "cancelled". */
+      status: string;
+      remainingAmountSats: components["schemas"]["Sats"];
+      /** @description Conditional-token face amount already consumed by fills or active DCB complementary reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake. */
+      filledAmountSats: components["schemas"]["Sats"];
+      /** @description All fills and active DCB complementary reservation handles produced against this order so far. */
+      fills: components["schemas"]["Fill"][];
+    };
+    RestingOrderResponse: {
+      /**
+       * Format: uuid
+       * @description The unique identifier assigned by the matching engine.
+       */
+      orderId: string;
+      /** @description The market this order belongs to. */
+      marketId: string;
+      /** @description The outcome this order trades. */
+      outcomeId: string;
+      side: components["schemas"]["OrderSide"];
+      price: components["schemas"]["Probability"];
+      remainingAmountSats: components["schemas"]["Sats"];
+      amountSats: components["schemas"]["Sats"];
+      timeInForce: components["schemas"]["TimeInForce"];
+      /** Format: date-time */
+      placedAt: string;
+      /** Format: date-time */
+      expiresAt?: string | null;
+      /** @description Order-level ephemeral pubkey supplied at submit time. */
+      ephemeralPubkey?: string | null;
+    };
+    ListRestingOrdersResponse: {
+      orders: components["schemas"]["RestingOrderResponse"][];
+    };
+    SubmitOrderResponse: {
+      /**
+       * Format: uuid
+       * @description The unique identifier assigned to this order.
+       */
+      orderId: string;
+      /** @description One of: "filled", "matched" (reserved for atomic-swap settlement), "partially_filled", "resting", "cancelled". */
+      status: string;
+      remainingAmountSats: components["schemas"]["Sats"];
+      /** @description List of fills produced by this order. Empty if no matches. */
+      fills: components["schemas"]["Fill"][];
+      /** @description Echoes the ephemeralPubkey the client submitted. Lets clients confirm round-trip before they discard the corresponding privkey. */
+      ephemeralPubkey: string;
+    };
+    MakerSessionHeartbeatResponse: {
+      /** @description Whether the engine considers the maker session online. */
+      online: boolean;
+      /**
+       * Format: date-time
+       * @description Server time when the heartbeat was recorded.
+       */
+      lastSeenAt: string;
+    };
+    /** @description A single price level in the order book depth. */
+    LevelDto: {
+      price: components["schemas"]["Probability"];
+      amount: components["schemas"]["Sats"];
+    };
+    OrderBookSnapshot: {
+      /** @description The market ID in the format "{conditionId}-{outcomeName}". */
+      marketId: string;
+      /** @description Buy-side levels sorted by price descending (best bid first). */
+      bids: components["schemas"]["LevelDto"][];
+      /** @description Sell-side levels sorted by price ascending (best ask first). */
+      asks: components["schemas"]["LevelDto"][];
+      /** @description Difference between best ask and best bid. Null if either side is empty. */
+      spread?: number | null;
+    };
+    CreateMarketOutcome: {
+      /** @description Outcome label (e.g. "Yes", "Alice"). */
+      name: string;
+      /** @description Initial implied probability for this outcome [1, 99]. */
+      probability: number;
+    };
+    /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. */
+    CreateMarketRequest: {
+      /** @description Human-readable market title. */
+      title: string;
+      /** @description Detailed market description. */
+      description: string;
+      /** @description The outcomes for the market (at least 2). */
+      outcomes: components["schemas"]["CreateMarketOutcome"][];
+      /**
+       * @description Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end.
+       * @enum {string}
+       */
+      outcomeType?: "yesno" | "categorical" | "numeric";
+      /**
+       * Format: int64
+       * @description Initial liquidity budget in satoshis.
+       * @default 0
+       */
+      liquiditySats: number;
+      /** @description Optional category tags for the market. */
+      categoryTags?: string[];
+      /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */
+      oracleAnnouncementHex?: string | null;
+    };
+    CreateMarketResponse: {
+      /** @description The condition ID this market was registered for. */
+      conditionId: string;
+      /** @description List of per-outcome market IDs created (format: "{conditionId}-{outcomeName}"). */
+      marketsCreated: string[];
+      /** @description URL to the uploaded thumbnail, or null if none was provided. */
+      thumbnailUrl?: string | null;
+    };
+    LiquidityStateResponse: {
+      marketId: string;
+      /** Format: int64 */
+      reserveA: number;
+      /** Format: int64 */
+      reserveB: number;
+      impliedProbability: number;
+      /** Format: int64 */
+      totalLiquiditySats: number;
+      /** @description Number of active liquidity orders. */
+      activeOrders: number;
+    };
+    MarketMetadataSnapshot: {
+      /** @description The market ID. */
+      marketId: string;
+      /**
+       * Format: int64
+       * @description Total trading volume in satoshis across all fills.
+       */
+      totalVolumeSats: number;
+      /** @description Total number of fills (trades) executed. */
+      totalTrades: number;
+      /** @description Number of unique user IDs that have submitted orders. */
+      uniqueTraderCount: number;
+      /**
+       * Format: int64
+       * @description Total liquidity deposited in satoshis.
+       */
+      totalLiquiditySats: number;
+    };
+    CreatorMarketEntry: {
+      /** @description The condition ID this market was registered under. */
+      conditionId: string;
+      /**
+       * Format: int64
+       * @description Aggregated trading volume in satoshis across every per-outcome market belonging to this condition.
+       */
+      totalVolumeSats: number;
+      /**
+       * Format: date-time
+       * @description When this market was registered with the matching engine.
+       */
+      createdAt: string;
+      /**
+       * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not.
+       * @enum {string}
+       */
+      state: "open" | "closed";
+    };
+    CreatorMarketsResponse: {
+      /** @description The creator pubkey this response belongs to (echoed from the path). */
+      pubkey: string;
+      /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
+      markets: components["schemas"]["CreatorMarketEntry"][];
+    };
+    /**
+     * @description Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed and crediting is in progress. `Credited` → the market account was credited (terminal-success). `Failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
+     * @enum {string}
+     */
+    DepositState: "Requested" | "Paid" | "Credited" | "Failed";
+    /**
+     * @description How the funder is paying the deposit.
+     * @enum {string}
+     */
+    DepositMethod: "LightningInvoice" | "Ecash";
+    RequestLnInvoiceDepositRequest: {
+      /**
+       * Format: int64
+       * @description Amount of sats the funder intends to deposit.
+       */
+      amountSats: number;
+    };
+    RequestLnInvoiceDepositResponse: {
+      /**
+       * Format: uuid
+       * @description Identifier for polling the deposit's lifecycle state.
+       */
+      depositId: string;
+      /** @description Bolt11 invoice the funder pays. Bearer material — never echoed from the polling endpoint. */
+      bolt11: string;
+      /**
+       * Format: date-time
+       * @description When the bolt11 stops being payable.
+       */
+      expiresAt: string;
+    };
+    RequestEcashDepositRequest: {
+      /**
+       * Format: int64
+       * @description Asserted sat value of the supplied ecash proofs.
+       */
+      amountSats: number;
+      /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
+      proofsToken: string;
+    };
+    RequestEcashDepositResponse: {
+      /**
+       * Format: uuid
+       * @description Identifier for polling the deposit's lifecycle state.
+       */
+      depositId: string;
+      state: components["schemas"]["DepositState"];
+    };
+    GetDepositResponseDto: {
+      /** Format: uuid */
+      depositId: string;
+      /** @description Condition the deposit funds. */
+      conditionId: string;
+      state: components["schemas"]["DepositState"];
+      method: components["schemas"]["DepositMethod"];
+      /** Format: int64 */
+      amountSats: number;
+      /** Format: date-time */
+      requestedAt: string;
+      /**
+       * Format: date-time
+       * @description Most recent state-change timestamp.
+       */
+      updatedAt: string;
+      /**
+       * Format: date-time
+       * @description For LN deposits, when the bolt11 stops being payable.
+       */
+      expiresAt?: string | null;
+      /** @description Populated only when `state == Failed`. */
+      failureReason?: string | null;
+    };
+    MarketCatalogueEntry: {
+      /** @description The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market. */
+      conditionId: string;
+      /** @description Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`. Finite categorical outcome-set books use multiple outcome names separated by "|", for example `"{conditionId}-B|C"`. */
+      outcomes: string[];
+      /** @description Optional human-readable title from market registration. Null when the creator did not supply one. */
+      title?: string | null;
+      /** @description Detailed market description supplied by the creator at registration time. Market detail pages render this as the resolution criteria text. */
+      description?: string | null;
+      /** @description Optional thumbnail URL. Null when no thumbnail was uploaded. */
+      thumbnailUrl?: string | null;
+      /** @description Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking. */
+      creatorPubkey?: string | null;
+      /**
+       * Format: date-time
+       * @description Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.
+       */
+      deadline?: string | null;
+      /**
+       * Format: date-time
+       * @description Engine-side close timestamp. Null while the market is open. Closed market detail pages use this value as the resolution date; deadline remains the scheduled oracle maturity time.
+       */
+      closedAt?: string | null;
+      /** @description Winning outcome known to the engine after an oracle attestation close. Null for deadline-only closes or markets that have not yet resolved. */
+      finalOutcome?: string | null;
+      /**
+       * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
+       * @enum {string}
+       */
+      state: "open" | "closed";
+      /**
+       * Format: date-time
+       * @description When the market was registered with the matching engine.
+       */
+      createdAt: string;
+      /**
+       * Format: int64
+       * @description Trading volume over the last 24 hours in satoshis. Drives the `Trending` sort dimension.
+       */
+      volume24hSats: number;
+      /**
+       * Format: int64
+       * @description Trading volume over the last 30 days in satoshis. Drives the `Popular` sort dimension.
+       */
+      volume30dSats: number;
+      /** @description Most recent execution price (probability in `[1, 99]`), null if the market has never traded. */
+      lastTradedPrice?: number | null;
+      /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
+      categoryTags: string[];
+      /**
+       * Format: date-time
+       * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
+       */
+      lastSuccessfulRefreshAt: string;
+    };
+    MarketCatalogueResponse: {
+      /** @description Page of markets matching the supplied filters, ordered by the requested `sort` dimension. Empty when no markets match. */
+      markets: components["schemas"]["MarketCatalogueEntry"][];
+      /** @description Opaque (HMAC-signed) pagination cursor for the next page. Null when this is the last page. Pass back as `?cursor=...` to continue. */
+      nextCursor?: string | null;
+      /**
+       * Format: date-time
+       * @description Top-level mirror of the mintd-mirror's most recent successful refresh time. Useful for rendering a single staleness banner covering the whole catalogue when the mintd poller has been failing.
+       */
+      lastSuccessfulRefreshAt: string;
+    };
+    /** @description RFC 7807 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover. */
+    ProblemDetails: {
+      /** @description A URI reference identifying the problem type. */
+      type?: string;
+      /** @description A short, human-readable summary of the problem. */
+      title?: string;
+      /** @description The HTTP status code generated for this occurrence. */
+      status?: number;
+      /** @description A human-readable explanation specific to this occurrence. */
+      detail?: string;
+      /** @description A URI reference identifying the specific occurrence. */
+      instance?: string;
+    };
+  };
+  responses: never;
+  parameters: {
+    /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+    MarketId: string;
+    /** @description The condition identifier (hex string derived from the oracle announcement). */
+    ConditionId: string;
+  };
+  requestBodies: never;
+  headers: never;
+  pathItems: never;
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    createMarket: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": {
-                    /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, liquidity, and category tags. */
-                    metadata: string;
-                    /**
-                     * Format: binary
-                     * @description Optional thumbnail image (JPEG, PNG, or WebP, max 5 MB).
-                     */
-                    thumbnail?: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Market created */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreateMarketResponse"];
-                };
-            };
-            /** @description Validation error */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Market already exists for this condition */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-        };
+  createMarket: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components["parameters"]["ConditionId"];
+      };
+      cookie?: never;
     };
-    submitOracleAttestation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
+    requestBody: {
+      content: {
+        "multipart/form-data": {
+          /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, liquidity, and category tags. */
+          metadata: string;
+          /**
+           * Format: binary
+           * @description Optional thumbnail image (JPEG, PNG, or WebP, max 5 MB).
+           */
+          thumbnail?: string;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OracleNostrEvent"];
-            };
-        };
-        responses: {
-            /** @description Attestation accepted. Result is "Closed", "AlreadyClosed", or "DuplicateReplay". */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OracleAttestationResponse"];
-                };
-            };
-            /** @description The submitted event is not a valid kind-89 oracle attestation, or its signatures/payload do not verify. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OracleAttestationResponse"];
-                };
-            };
-            /** @description The attestation verified, but no open market is registered for the attesting oracle. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OracleAttestationResponse"];
-                };
-            };
-        };
+      };
     };
-    listRestingOrders: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
+    responses: {
+      /** @description Market created */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Resting orders owned by the authenticated user */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListRestingOrdersResponse"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+        content: {
+          "application/json": components["schemas"]["CreateMarketResponse"];
         };
+      };
+      /** @description Validation error */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": string;
+        };
+      };
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Market already exists for this condition */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": string;
+        };
+      };
     };
-    submitOrder: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SubmitOrderRequest"];
-            };
-        };
-        responses: {
-            /** @description Order accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SubmitOrderResponse"];
-                };
-            };
-            /** @description Validation error */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+  };
+  submitOracleAttestation: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components["parameters"]["ConditionId"];
+      };
+      cookie?: never;
     };
-    heartbeatMakerSession: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Maker session refreshed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MakerSessionHeartbeatResponse"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OracleNostrEvent"];
+      };
     };
-    getOrderStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
-                marketId: components["parameters"]["MarketId"];
-                /** @description The order's unique identifier. */
-                orderId: string;
-            };
-            cookie?: never;
+    responses: {
+      /** @description Attestation accepted. Result is "Closed", "AlreadyClosed", or "DuplicateReplay". */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Current order status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderStatusResponse"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Order not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+        content: {
+          "application/json": components["schemas"]["OracleAttestationResponse"];
         };
+      };
+      /** @description The submitted event is not a valid kind-89 oracle attestation, or its signatures/payload do not verify. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OracleAttestationResponse"];
+        };
+      };
+      /** @description The attestation verified, but no open market is registered for the attesting oracle. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OracleAttestationResponse"];
+        };
+      };
     };
-    cancelOrder: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
-                marketId: components["parameters"]["MarketId"];
-                /** @description The unique identifier of the order to cancel. */
-                orderId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Order cancelled */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Order not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+  };
+  getConditionAttestation: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components["parameters"]["ConditionId"];
+      };
+      cookie?: never;
     };
-    getOrderBook: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Verified oracle witness for the resolved condition */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Current order book */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderBookSnapshot"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["ConditionAttestationResponse"];
         };
+      };
+      /** @description Invalid condition id */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ConditionAttestationProblem"];
+        };
+      };
+      /** @description Market not found, market not closed by oracle resolution, or no redeemable oracle witness is stored for the closed market. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ConditionAttestationProblem"];
+        };
+      };
     };
-    getLiquidity: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current liquidity state */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LiquidityStateResponse"];
-                };
-            };
-            /** @description No liquidity state for this market */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+  };
+  listRestingOrders: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+        marketId: components["parameters"]["MarketId"];
+      };
+      cookie?: never;
     };
-    getMarketMetadata: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Resting orders owned by the authenticated user */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Market metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MarketMetadataSnapshot"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["ListRestingOrdersResponse"];
         };
+      };
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
-    getThumbnail: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The thumbnail image */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "image/*": string;
-                };
-            };
-            /** @description No thumbnail for this condition */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+  };
+  submitOrder: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+        marketId: components["parameters"]["MarketId"];
+      };
+      cookie?: never;
     };
-    requestLnInvoiceDeposit: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RequestLnInvoiceDepositRequest"];
-            };
-        };
-        responses: {
-            /** @description Invoice issued; deposit recorded in `Requested` state */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RequestLnInvoiceDepositResponse"];
-                };
-            };
-            /** @description Validation error (e.g. non-positive amount) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Market not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Per-pubkey deposit-request rate limit exceeded */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Lightning invoice provider error */
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SubmitOrderRequest"];
+      };
     };
-    requestEcashDeposit: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
+    responses: {
+      /** @description Order accepted */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RequestEcashDepositRequest"];
-            };
+        content: {
+          "application/json": components["schemas"]["SubmitOrderResponse"];
         };
-        responses: {
-            /** @description Deposit recorded; verification proceeds asynchronously */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RequestEcashDepositResponse"];
-                };
-            };
-            /** @description Validation error (e.g. malformed proofs token, non-positive amount) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Market not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Per-pubkey deposit-request rate limit exceeded */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+      };
+      /** @description Validation error */
+      400: {
+        headers: {
+          [name: string]: unknown;
         };
+        content: {
+          "application/json": string;
+        };
+      };
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
-    getDepositStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-                /** @description Deposit identifier returned by the request endpoint. */
-                depositId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Deposit found */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GetDepositResponseDto"];
-                };
-            };
-            /** @description No deposit with this id for this condition */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+  };
+  heartbeatMakerSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    listCreatorMarkets: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Nostr pubkey (hex) of the market creator. */
-                pubkey: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Maker session refreshed */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description List of markets created by this pubkey */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreatorMarketsResponse"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["MakerSessionHeartbeatResponse"];
         };
+      };
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
-    queryMarkets: {
-        parameters: {
-            query?: {
-                /** @description Repeatable category tag filter (e.g. `?tag=politics&tag=tech`). A market matches when at least one of its category tags matches at least one supplied tag (OR semantics across the supplied tags). */
-                tag?: string[];
-                /** @description State filter against the matching engine's lifecycle state. Default is `Open`. Use `All` to include both Open and Closed markets in a single response. The match is case-insensitive on the wire (`open` works the same as `Open`). */
-                state?: "Open" | "Closed" | "All";
-                /** @description Restrict the result to markets whose creator pubkey matches. 64-character lowercase hex Nostr pubkey. Different from `/api/v1/creators/{pubkey}/markets` — that endpoint returns the creator-dashboard volume rollup; this filter returns the full catalogue response. */
-                creator_pubkey?: string;
-                /** @description Comma-separated list of conditionIds to bulk-fetch (e.g. `?ids=abc,def,123`). Returns only the named markets that match the other filters. Capped at 100 ids per request — exceeding the cap is a 400. */
-                ids?: string;
-                /** @description Full-text market search query. When present, results are ordered by relevance. The active `tag`, `state`, `creator_pubkey`, and `ids` filters also constrain the search. Capped at 200 normalized characters. */
-                search?: string;
-                /** @description Sort dimension. `Trending` orders by 24h trading volume descending; `Popular` orders by 30d trading volume descending; `New` orders by RegisterMarket timestamp descending. Ties on the sort dimension break by `conditionId` ascending so paginated streams remain deterministic. */
-                sort?: "Trending" | "Popular" | "New";
-                /** @description Opaque pagination token returned in `nextCursor` from a previous page. The engine HMAC-signs cursors before returning them and verifies the signature before reading the underlying boundary — tampered or unsigned cursors are 400. Omit for the first page. */
-                cursor?: string;
-                /** @description Page size cap. Default 20, hard cap 50 — exceeding the cap is a 400. Page sizes below 1 are also a 400. */
-                page_size?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated catalogue of markets matching the filters. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MarketCatalogueResponse"];
-                };
-            };
-            /** @description Invalid query parameters — typo'd `state`/`sort` value, malformed `creator_pubkey`, `ids` over the 100-cap, `page_size` outside `[1, 50]`, or a tampered/malformed `cursor`. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description NIP-98 token was supplied but rejected (e.g. expired, signature mismatch, body-payload mismatch). Anonymous callers do NOT see 401 from this route. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Rate limit exceeded. Anonymous callers share a per-IP bucket; NIP-98-authenticated callers have their own per-pubkey bucket with a higher permit ceiling. The engine returns this when the applicable bucket is empty. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+  };
+  getOrderStatus: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+        marketId: components["parameters"]["MarketId"];
+        /** @description The order's unique identifier. */
+        orderId: string;
+      };
+      cookie?: never;
     };
+    requestBody?: never;
+    responses: {
+      /** @description Current order status */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OrderStatusResponse"];
+        };
+      };
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Order not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  cancelOrder: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+        marketId: components["parameters"]["MarketId"];
+        /** @description The unique identifier of the order to cancel. */
+        orderId: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Order cancelled */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Order not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  getOrderBook: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+        marketId: components["parameters"]["MarketId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current order book */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OrderBookSnapshot"];
+        };
+      };
+    };
+  };
+  getLiquidity: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+        marketId: components["parameters"]["MarketId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current liquidity state */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LiquidityStateResponse"];
+        };
+      };
+      /** @description No liquidity state for this market */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  getMarketMetadata: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+        marketId: components["parameters"]["MarketId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Market metadata */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MarketMetadataSnapshot"];
+        };
+      };
+    };
+  };
+  getThumbnail: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components["parameters"]["ConditionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The thumbnail image */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "image/*": string;
+        };
+      };
+      /** @description No thumbnail for this condition */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  requestLnInvoiceDeposit: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components["parameters"]["ConditionId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RequestLnInvoiceDepositRequest"];
+      };
+    };
+    responses: {
+      /** @description Invoice issued; deposit recorded in `Requested` state */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RequestLnInvoiceDepositResponse"];
+        };
+      };
+      /** @description Validation error (e.g. non-positive amount) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Market not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Per-pubkey deposit-request rate limit exceeded */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Lightning invoice provider error */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  requestEcashDeposit: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components["parameters"]["ConditionId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RequestEcashDepositRequest"];
+      };
+    };
+    responses: {
+      /** @description Deposit recorded; verification proceeds asynchronously */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RequestEcashDepositResponse"];
+        };
+      };
+      /** @description Validation error (e.g. malformed proofs token, non-positive amount) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Market not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Per-pubkey deposit-request rate limit exceeded */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  getDepositStatus: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components["parameters"]["ConditionId"];
+        /** @description Deposit identifier returned by the request endpoint. */
+        depositId: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Deposit found */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GetDepositResponseDto"];
+        };
+      };
+      /** @description No deposit with this id for this condition */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  listCreatorMarkets: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Nostr pubkey (hex) of the market creator. */
+        pubkey: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description List of markets created by this pubkey */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CreatorMarketsResponse"];
+        };
+      };
+    };
+  };
+  queryMarkets: {
+    parameters: {
+      query?: {
+        /** @description Repeatable category tag filter (e.g. `?tag=politics&tag=tech`). A market matches when at least one of its category tags matches at least one supplied tag (OR semantics across the supplied tags). */
+        tag?: string[];
+        /** @description State filter against the matching engine's lifecycle state. Default is `Open`. Use `All` to include both Open and Closed markets in a single response. The match is case-insensitive on the wire (`open` works the same as `Open`). */
+        state?: "Open" | "Closed" | "All";
+        /** @description Restrict the result to markets whose creator pubkey matches. 64-character lowercase hex Nostr pubkey. Different from `/api/v1/creators/{pubkey}/markets` — that endpoint returns the creator-dashboard volume rollup; this filter returns the full catalogue response. */
+        creator_pubkey?: string;
+        /** @description Comma-separated list of conditionIds to bulk-fetch (e.g. `?ids=abc,def,123`). Returns only the named markets that match the other filters. Capped at 100 ids per request — exceeding the cap is a 400. */
+        ids?: string;
+        /** @description Full-text market search query. When present, results are ordered by relevance. The active `tag`, `state`, `creator_pubkey`, and `ids` filters also constrain the search. Capped at 200 normalized characters. */
+        search?: string;
+        /** @description Sort dimension. `Trending` orders by 24h trading volume descending; `Popular` orders by 30d trading volume descending; `New` orders by RegisterMarket timestamp descending. Ties on the sort dimension break by `conditionId` ascending so paginated streams remain deterministic. */
+        sort?: "Trending" | "Popular" | "New";
+        /** @description Opaque pagination token returned in `nextCursor` from a previous page. The engine HMAC-signs cursors before returning them and verifies the signature before reading the underlying boundary — tampered or unsigned cursors are 400. Omit for the first page. */
+        cursor?: string;
+        /** @description Page size cap. Default 20, hard cap 50 — exceeding the cap is a 400. Page sizes below 1 are also a 400. */
+        page_size?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Paginated catalogue of markets matching the filters. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MarketCatalogueResponse"];
+        };
+      };
+      /** @description Invalid query parameters — typo'd `state`/`sort` value, malformed `creator_pubkey`, `ids` over the 100-cap, `page_size` outside `[1, 50]`, or a tampered/malformed `cursor`. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description NIP-98 token was supplied but rejected (e.g. expired, signature mismatch, body-payload mismatch). Anonymous callers do NOT see 401 from this route. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Rate limit exceeded. Anonymous callers share a per-IP bucket; NIP-98-authenticated callers have their own per-pubkey bucket with a higher permit ceiling. The engine returns this when the applicable bucket is empty. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
 }

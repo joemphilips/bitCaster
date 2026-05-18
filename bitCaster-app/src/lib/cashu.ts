@@ -9,25 +9,42 @@
  */
 
 import {
+  CheckStateEnum,
   Mint as CashuMint,
+  OutputData,
   Wallet as CashuWallet,
   getEncodedTokenV4,
   getDecodedToken,
+  type MintKeys,
   type Proof,
   type MintQuoteResponse,
   type MeltQuoteResponse,
   type PartialMintQuoteResponse,
+  type SerializedBlindedMessage,
+  type SerializedBlindedSignature,
   type Token,
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 import { normalizeUrl } from "@/lib/url";
-import { addProofs, type StoredProof } from "@/stores/proof-db";
+import { hexToBytes } from "@/lib/ecdh";
+import {
+  addProofs,
+  getProofOperation,
+  markProofOperationCompleted,
+  prepareProofOperation,
+  removeProofs,
+  type ProofOperationRecord,
+  type StoredOutputData,
+  type StoredProof,
+} from "@/stores/proof-db";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? "http://localhost:8085");
+const DEFAULT_MINT_URL = normalizeUrl(
+  import.meta.env.VITE_MINT_URL ?? "http://localhost:8085",
+);
 
 /**
  * Small sats buffer added to top-up prefills to cover NUT-05 melt fees and
@@ -72,7 +89,7 @@ export async function getWallet(mintUrl?: string): Promise<CashuWallet> {
 /** Request a Lightning invoice to fund the wallet. */
 export async function createMintQuote(
   amountSats: number,
-  mintUrl?: string
+  mintUrl?: string,
 ): Promise<MintQuoteResponse> {
   const wallet = await getWallet(mintUrl);
   return wallet.createMintQuote(amountSats);
@@ -100,7 +117,7 @@ export async function createMintQuote(
 export async function mintProofs(
   amountSats: number,
   quote: MintQuoteResponse,
-  mintUrl?: string
+  mintUrl?: string,
 ): Promise<Proof[]> {
   const wallet = await getWallet(mintUrl);
   try {
@@ -111,7 +128,9 @@ export async function mintProofs(
     // collisions — their secrets are random. Re-throw so the caller sees
     // the real error rather than a swallowed retry.
     if (!useWalletStore.getState().mnemonic) throw err;
-    const url = normalizeUrl(mintUrl ?? useWalletStore.getState().activeMintUrl);
+    const url = normalizeUrl(
+      mintUrl ?? useWalletStore.getState().activeMintUrl,
+    );
     const result = await recoverKeysetCountersForMint(url, { force: true });
     if (!result.scannedKeysets.length) {
       // Recovery couldn't scan ANY keyset (network down, mint unreachable,
@@ -139,13 +158,22 @@ export async function mintProofs(
  */
 function isCdkDuplicateOutputsError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
-  const e = err as { message?: unknown; code?: unknown; status?: unknown; name?: unknown };
+  const e = err as {
+    message?: unknown;
+    code?: unknown;
+    status?: unknown;
+    name?: unknown;
+  };
   const msg = typeof e.message === "string" ? e.message : "";
   if (!msg.includes("Invoice already paid or pending")) return false;
   // Structural sanity check: cashu-ts surfaces this as `MintOperationError`
   // with status 400. If neither shape matches, the error is some other code
   // path (e.g. a wrapped fetch failure) using the same human string — skip.
-  return e.name === "MintOperationError" || e.status === 400 || typeof e.code === "number";
+  return (
+    e.name === "MintOperationError" ||
+    e.status === 400 ||
+    typeof e.code === "number"
+  );
 }
 
 export interface KeysetRecoveryResult {
@@ -184,10 +212,12 @@ export async function recoverKeysetCountersForMint(
   // store can be days behind; the duplicate-error path needs to scan
   // whatever keyset the wallet is actually trying to mint against right now.
   const fresh = await wallet.mint.getKeySets().catch(() => null);
-  const keysets = fresh?.keysets ?? store.mints.find((m) => m.url === url)?.keysets ?? [];
+  const keysets =
+    fresh?.keysets ?? store.mints.find((m) => m.url === url)?.keysets ?? [];
   const scanned: string[] = [];
   for (const keyset of keysets) {
-    const recovered = useWalletStore.getState().keysetCountersRecovered[keyset.id];
+    const recovered =
+      useWalletStore.getState().keysetCountersRecovered[keyset.id];
     if (!opts.force && recovered) continue;
     try {
       const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
@@ -196,14 +226,18 @@ export async function recoverKeysetCountersForMint(
         0,
         keyset.id,
       );
-      const next = lastCounterWithSignature !== undefined
-        ? lastCounterWithSignature + 1
-        : 0;
+      const next =
+        lastCounterWithSignature !== undefined
+          ? lastCounterWithSignature + 1
+          : 0;
       const current = useWalletStore.getState().keysetCounters[keyset.id] ?? 0;
       const advanced = Math.max(current, next);
       useWalletStore.setState((s) => ({
         keysetCounters: { ...s.keysetCounters, [keyset.id]: advanced },
-        keysetCountersRecovered: { ...s.keysetCountersRecovered, [keyset.id]: true },
+        keysetCountersRecovered: {
+          ...s.keysetCountersRecovered,
+          [keyset.id]: true,
+        },
       }));
       // CRITICAL: batchRestore returns ALL deterministic proofs the mint
       // ever signed for this seed, including SPENT ones. Persisting spent
@@ -212,10 +246,15 @@ export async function recoverKeysetCountersForMint(
       // only UNSPENT. PENDING is also excluded — those are mid-flight on
       // another device and will resolve to SPENT or UNSPENT shortly.
       if (proofs.length > 0) {
-        const grouped = await wallet.groupProofsByState(proofs).catch(() => null);
+        const grouped = await wallet
+          .groupProofsByState(proofs)
+          .catch(() => null);
         const safe = grouped?.unspent ?? [];
         if (safe.length > 0) {
-          const stored: StoredProof[] = safe.map((p) => ({ ...p, mintUrl: url }));
+          const stored: StoredProof[] = safe.map((p) => ({
+            ...p,
+            mintUrl: url,
+          }));
           await addProofs(stored);
         }
       }
@@ -228,7 +267,6 @@ export async function recoverKeysetCountersForMint(
   }
   return { scannedKeysets: scanned };
 }
-
 
 /** Encode proofs as a cashuV4 token string ready to share. */
 export function encodeToken(proofs: Proof[], mintUrl?: string): string {
@@ -247,8 +285,8 @@ export async function decodeToken(tokenStr: string): Promise<Token> {
     // v1 short keyset IDs need expansion — try all configured mints' stored keysets first
     const store = useWalletStore.getState();
     const allStoredKeysetIds = store.mints
-      .flatMap(m => m.keysets ?? [])
-      .map(k => k.id);
+      .flatMap((m) => m.keysets ?? [])
+      .map((k) => k.id);
 
     if (allStoredKeysetIds.length > 0) {
       try {
@@ -267,7 +305,7 @@ export async function decodeToken(tokenStr: string): Promise<Token> {
     const mintUrl = mintFromToken ?? store.activeMintUrl ?? _mintUrl;
     const mint = new CashuMint(mintUrl);
     const { keysets } = await mint.getKeySets();
-    const keysetIds = keysets.map(k => k.id);
+    const keysetIds = keysets.map((k) => k.id);
     return getDecodedToken(tokenStr, keysetIds);
   }
 }
@@ -315,7 +353,11 @@ function readLen(b: Uint8Array, i: number): [number, number] {
   if (ai < 24) return [ai, i + 1];
   if (ai === 24) return [b[i + 1], i + 2];
   if (ai === 25) return [(b[i + 1] << 8) | b[i + 2], i + 3];
-  if (ai === 26) return [((b[i + 1] << 24) | (b[i + 2] << 16) | (b[i + 3] << 8) | b[i + 4]) >>> 0, i + 5];
+  if (ai === 26)
+    return [
+      ((b[i + 1] << 24) | (b[i + 2] << 16) | (b[i + 3] << 8) | b[i + 4]) >>> 0,
+      i + 5,
+    ];
   throw new Error("CBOR len > uint32");
 }
 
@@ -329,15 +371,34 @@ function readString(b: Uint8Array, i: number): [string, number] {
 function skipValue(b: Uint8Array, i: number): number {
   const major = b[i] >> 5;
   if (major === 0 || major === 1 || major === 7) return readLen(b, i)[1];
-  if (major === 2 || major === 3) { const [len, j] = readLen(b, i); return j + len; }
-  if (major === 4) { const [n, j] = readLen(b, i); let p = j; for (let k = 0; k < n; k++) p = skipValue(b, p); return p; }
-  if (major === 5) { const [n, j] = readLen(b, i); let p = j; for (let k = 0; k < n; k++) { p = skipValue(b, p); p = skipValue(b, p); } return p; }
+  if (major === 2 || major === 3) {
+    const [len, j] = readLen(b, i);
+    return j + len;
+  }
+  if (major === 4) {
+    const [n, j] = readLen(b, i);
+    let p = j;
+    for (let k = 0; k < n; k++) p = skipValue(b, p);
+    return p;
+  }
+  if (major === 5) {
+    const [n, j] = readLen(b, i);
+    let p = j;
+    for (let k = 0; k < n; k++) {
+      p = skipValue(b, p);
+      p = skipValue(b, p);
+    }
+    return p;
+  }
   if (major === 6) return skipValue(b, readLen(b, i)[1]);
   throw new Error("CBOR major " + major);
 }
 
 /** Receive a cashu token string and return the redeemed proofs. */
-export async function receiveToken(tokenStr: string, mintUrl?: string): Promise<Proof[]> {
+export async function receiveToken(
+  tokenStr: string,
+  mintUrl?: string,
+): Promise<Proof[]> {
   const wallet = await getWallet(mintUrl);
   return wallet.receive(tokenStr);
 }
@@ -349,7 +410,7 @@ export async function receiveToken(tokenStr: string, mintUrl?: string): Promise<
 export async function sendProofs(
   amountSats: number,
   proofs: Proof[],
-  mintUrl?: string
+  mintUrl?: string,
 ): Promise<{ keep: Proof[]; send: Proof[] }> {
   const wallet = await getWallet(mintUrl);
   return wallet.send(amountSats, proofs);
@@ -358,7 +419,7 @@ export async function sendProofs(
 /** Create a melt quote for a Lightning invoice. */
 export async function createMeltQuote(
   invoice: string,
-  mintUrl?: string
+  mintUrl?: string,
 ): Promise<MeltQuoteResponse> {
   const wallet = await getWallet(mintUrl);
   return wallet.createMeltQuote(invoice);
@@ -368,7 +429,7 @@ export async function createMeltQuote(
 export async function meltProofs(
   quote: MeltQuoteResponse,
   proofs: Proof[],
-  mintUrl?: string
+  mintUrl?: string,
 ): Promise<{ paid: boolean; change: Proof[] }> {
   const wallet = await getWallet(mintUrl);
   const response = await wallet.meltProofs(quote, proofs);
@@ -381,7 +442,7 @@ export async function meltProofs(
 /** Check the status of a mint quote. */
 export async function checkMintQuote(
   quoteId: string,
-  mintUrl?: string
+  mintUrl?: string,
 ): Promise<PartialMintQuoteResponse> {
   const wallet = await getWallet(mintUrl);
   return wallet.checkMintQuote(quoteId);
@@ -436,7 +497,7 @@ export async function waitForMintQuotePaid(
   quote: MintQuoteResponse,
   onResult: (result: MintQuoteWaitResult) => void,
   options: WaitForMintQuoteOptions = {},
-  mintUrl?: string
+  mintUrl?: string,
 ): Promise<() => void> {
   const wallet = await getWallet(mintUrl);
   const expiresAtSec = options.expiresAtSec ?? quote.expiry;
@@ -452,7 +513,14 @@ export async function waitForMintQuotePaid(
 
   const wsUnsub = subscribeWsForPaid(wallet, quote.quote, fire, isDone);
   const expiryTimer = scheduleExpiryTimer(expiresAtSec, fire);
-  const pollHandle = startMintQuotePoll(wallet, quote.quote, pollIntervalMs, fire, isDone, options.onTransientError);
+  const pollHandle = startMintQuotePoll(
+    wallet,
+    quote.quote,
+    pollIntervalMs,
+    fire,
+    isDone,
+    options.onTransientError,
+  );
 
   return () => {
     done = true;
@@ -465,7 +533,9 @@ export async function waitForMintQuotePaid(
 /** Map a poll-observed MintQuoteState into a terminal result, or `null` if
  *  we should keep polling. Total mapping — a new upstream variant breaks
  *  compilation, not silently. */
-function classifyPollState(q: PartialMintQuoteResponse): MintQuoteWaitResult | null {
+function classifyPollState(
+  q: PartialMintQuoteResponse,
+): MintQuoteWaitResult | null {
   switch (q.state) {
     case "PAID":
       return { status: "PAID", quote: q };
@@ -474,7 +544,7 @@ function classifyPollState(q: PartialMintQuoteResponse): MintQuoteWaitResult | n
         status: "ERROR",
         quote: q,
         error: new Error(
-          "Mint reports quote already issued — proofs were minted elsewhere; request a new invoice."
+          "Mint reports quote already issued — proofs were minted elsewhere; request a new invoice.",
         ),
       };
     case "UNPAID":
@@ -490,7 +560,7 @@ function startMintQuotePoll(
   intervalMs: number,
   fire: (r: MintQuoteWaitResult) => void,
   isDone: () => boolean,
-  onTransientError?: (e: Error) => void
+  onTransientError?: (e: Error) => void,
 ): { cancel: () => void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const tick = async () => {
@@ -498,21 +568,28 @@ function startMintQuotePoll(
     try {
       const q = await wallet.checkMintQuote(quoteId);
       const terminal = classifyPollState(q);
-      if (terminal) { fire(terminal); return; }
+      if (terminal) {
+        fire(terminal);
+        return;
+      }
     } catch (e) {
       onTransientError?.(e as Error);
     }
     if (!isDone()) timer = setTimeout(tick, intervalMs);
   };
   timer = setTimeout(tick, intervalMs);
-  return { cancel: () => { if (timer) clearTimeout(timer); } };
+  return {
+    cancel: () => {
+      if (timer) clearTimeout(timer);
+    },
+  };
 }
 
 function subscribeWsForPaid(
   wallet: CashuWallet,
   quoteId: string,
   fire: (r: MintQuoteWaitResult) => void,
-  isDone: () => boolean
+  isDone: () => boolean,
 ): { cancel: () => void } {
   let unsub: (() => void) | null = null;
   wallet.on
@@ -524,21 +601,24 @@ function subscribeWsForPaid(
         // Surface as a transient error — polling will continue and may still
         // resolve to PAID or EXPIRED. Don't fire a terminal ERROR on a WS hiccup.
         console.warn("[cashu] mintQuotePaid WS error", error);
-      }
+      },
     )
     .then((u) => {
       if (isDone()) u();
       else unsub = u;
     })
     .catch((e) => {
-      console.warn("[cashu] mintQuotePaid WS subscribe failed, polling only", e);
+      console.warn(
+        "[cashu] mintQuotePaid WS subscribe failed, polling only",
+        e,
+      );
     });
   return { cancel: () => unsub?.() };
 }
 
 function scheduleExpiryTimer(
   expiresAtSec: number | undefined,
-  fire: (r: MintQuoteWaitResult) => void
+  fire: (r: MintQuoteWaitResult) => void,
 ): ReturnType<typeof setTimeout> | null {
   if (!expiresAtSec || !Number.isFinite(expiresAtSec)) return null;
   const msUntilExpiry = expiresAtSec * 1000 - Date.now();
@@ -582,8 +662,10 @@ export interface CtfProof extends Proof {
  */
 export interface MarketPosition {
   conditionId: ConditionId;
-  proofs: CtfProof[];
+  proofs: Proof[];
   amountSats: number;
+  mintUrl?: string;
+  outcomeCollection?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -603,7 +685,7 @@ export interface MarketPosition {
 export async function mintCtfProofs(
   conditionId: ConditionId,
   amountSats: number,
-  quote: MintQuoteResponse
+  quote: MintQuoteResponse,
 ): Promise<CtfProof[]> {
   const wallet = await getWallet();
   // NUT-CTF extends CashuWallet with a conditionId option on mintProofs.
@@ -623,14 +705,365 @@ export async function mintCtfProofs(
  * @returns regular Cashu proofs redeemable as sats
  */
 export async function settleCtfPosition(
-  position: MarketPosition
+  position: MarketPosition,
 ): Promise<Proof[]> {
-  // Placeholder: NUT-CTF settlement will use a dedicated mint endpoint.
-  // For now we swap the proofs normally (mint verifies condition internally).
-  const wallet = await getWallet();
-  const { send: settled } = await wallet.send(
-    position.amountSats,
-    position.proofs
+  validateRedeemPosition(position);
+  const mintUrl = normalizeUrl(
+    position.mintUrl ?? useWalletStore.getState().activeMintUrl,
   );
+  const operationId = buildCtfRedeemOperationId(position);
+  const existing = await getProofOperation(operationId);
+  if (existing) {
+    return resumeCtfRedeem(existing);
+  }
+
+  const { outputData, requestOutputs, keyset } =
+    await prepareRegularRedeemOutputs(mintUrl, position.amountSats);
+  await prepareProofOperation({
+    operationId,
+    kind: "ctf-redeem",
+    mintUrl,
+    inputs: position.proofs,
+    outputs: { regular: serializeOutputDataArray(outputData) },
+    metadata: {
+      conditionId: position.conditionId,
+      amountSats: position.amountSats,
+      outcomeCollection: position.outcomeCollection ?? null,
+    },
+  });
+
+  const witness = await fetchConditionOracleWitness(position.conditionId);
+  const response = await postRedeemOutcome(mintUrl, {
+    inputs: withOracleWitness(position.proofs, witness),
+    outputs: requestOutputs,
+  });
+  const settled = buildProofsFromRedeemResponse(
+    outputData,
+    response.signatures,
+    keyset,
+  );
+  await completeCtfRedeem(operationId, mintUrl, position.proofs, settled);
   return settled;
+}
+
+interface ConditionAttestationResponse {
+  conditionId: string;
+  attestedOutcome: string;
+  oracleWitness: unknown;
+}
+
+interface RedeemOutcomeRequest {
+  inputs: Proof[];
+  outputs: SerializedBlindedMessage[];
+}
+
+interface RedeemOutcomeResponse {
+  signatures: SerializedBlindedSignature[];
+}
+
+interface RedeemOutputData {
+  blindedMessage: SerializedBlindedMessage;
+  blindingFactor: bigint;
+  secret: Uint8Array;
+  toProof(signature: SerializedBlindedSignature, keyset: MintKeys): Proof;
+}
+
+function validateRedeemPosition(position: MarketPosition): void {
+  if (!/^[0-9a-fA-F]{64}$/.test(position.conditionId)) {
+    throw new Error(
+      "conditionId must be a 64-character hex string for CTF redeem",
+    );
+  }
+  if (!Number.isSafeInteger(position.amountSats) || position.amountSats <= 0) {
+    throw new Error("amountSats must be a positive safe integer");
+  }
+  if (position.proofs.length === 0) {
+    throw new Error("CTF redeem requires at least one proof");
+  }
+  const proofTotal = position.proofs.reduce(
+    (sum, proof) => sum + proof.amount,
+    0,
+  );
+  if (proofTotal !== position.amountSats) {
+    throw new Error(
+      `CTF redeem proof total ${proofTotal} sats does not match position amount ${position.amountSats}`,
+    );
+  }
+}
+
+function buildCtfRedeemOperationId(position: MarketPosition): string {
+  const secrets = position.proofs
+    .map((proof) => proof.secret)
+    .sort()
+    .join("|");
+  return [
+    "ctf-redeem",
+    position.conditionId.toLowerCase(),
+    position.outcomeCollection ?? "",
+    secrets,
+  ].join(":");
+}
+
+async function prepareRegularRedeemOutputs(
+  mintUrl: string,
+  amountSats: number,
+): Promise<{
+  outputData: RedeemOutputData[];
+  requestOutputs: SerializedBlindedMessage[];
+  keyset: MintKeys;
+}> {
+  const wallet = await getWallet(mintUrl);
+  const keyset = await getActiveRegularKeyset(wallet);
+  const outputData = OutputData.createRandomData(amountSats, keyset);
+  return {
+    outputData,
+    requestOutputs: outputData.map((output) => output.blindedMessage),
+    keyset,
+  };
+}
+
+async function getActiveRegularKeyset(wallet: CashuWallet): Promise<MintKeys> {
+  const response = await wallet.mint.getKeys();
+  const keyset =
+    response.keysets.find(
+      (candidate) => candidate.unit === "sat" && candidate.active !== false,
+    ) ??
+    response.keysets.find((candidate) => candidate.unit === "sat") ??
+    response.keysets[0];
+  if (!keyset) throw new Error("Mint did not return a regular keyset");
+  return keyset;
+}
+
+async function fetchConditionOracleWitness(
+  conditionId: string,
+): Promise<string> {
+  const response = await fetch(
+    `/api/v1/conditions/${conditionId}/attestation`,
+    {
+      headers: { accept: "application/json" },
+    },
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Condition attestation lookup failed with HTTP ${response.status}: ${body}`,
+    );
+  }
+  const body = (await response.json()) as ConditionAttestationResponse;
+  if (body.conditionId.toLowerCase() !== conditionId.toLowerCase()) {
+    throw new Error(
+      "Condition attestation response did not match requested condition",
+    );
+  }
+  if (body.oracleWitness == null) {
+    throw new Error(
+      "Condition attestation response did not include an oracle witness",
+    );
+  }
+  return JSON.stringify(body.oracleWitness);
+}
+
+async function postRedeemOutcome(
+  mintUrl: string,
+  request: RedeemOutcomeRequest,
+): Promise<RedeemOutcomeResponse> {
+  const response = await fetch(joinUrl(mintUrl, "/v1/redeem_outcome"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`CTF redeem failed with HTTP ${response.status}: ${body}`);
+  }
+  return (await response.json()) as RedeemOutcomeResponse;
+}
+
+function withOracleWitness(proofs: Proof[], witnessJson: string): Proof[] {
+  return proofs.map((proof) => ({ ...proof, witness: witnessJson }));
+}
+
+function buildProofsFromRedeemResponse(
+  outputData: RedeemOutputData[],
+  signatures: SerializedBlindedSignature[],
+  keyset: MintKeys,
+): Proof[] {
+  if (signatures.length !== outputData.length) {
+    throw new Error(
+      `Mint returned ${signatures.length} redeem signatures, expected ${outputData.length}`,
+    );
+  }
+  return outputData.map((output, index) => {
+    const signature = signatures[index];
+    validateRedeemSignature(output.blindedMessage, signature);
+    return output.toProof(signature, keyset);
+  });
+}
+
+function validateRedeemSignature(
+  output: SerializedBlindedMessage,
+  signature: SerializedBlindedSignature,
+): void {
+  if (signature.id !== output.id || signature.amount !== output.amount) {
+    throw new Error("Mint returned a redeem signature for the wrong output");
+  }
+}
+
+async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
+  if (entry.kind !== "ctf-redeem") {
+    throw new Error(`proof operation ${entry.operationId} is not a CTF redeem`);
+  }
+  if (entry.state === "completed") {
+    return structuredClone(entry.resultProofs?.regular ?? []);
+  }
+  if (entry.state === "failed") {
+    throw new Error(
+      `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
+    );
+  }
+
+  const wallet = await getWallet(entry.mintUrl);
+  if (!wallet.checkProofsStates) {
+    throw new Error(
+      "Cashu wallet adapter does not support proof-state recovery checks",
+    );
+  }
+  const states = await wallet.checkProofsStates(
+    entry.inputs.map(({ secret }) => ({ secret })),
+  );
+  if (
+    states.length > 0 &&
+    states.every((state) => state.state === CheckStateEnum.SPENT)
+  ) {
+    const restored = await restoreRedeemOutputs(
+      entry.mintUrl,
+      entry.outputs.regular ?? [],
+    );
+    await completeCtfRedeem(
+      entry.operationId,
+      entry.mintUrl,
+      entry.inputs,
+      restored,
+    );
+    return restored;
+  }
+  if (
+    states.length > 0 &&
+    states.every((state) => state.state === CheckStateEnum.UNSPENT)
+  ) {
+    const metadata = entry.metadata as {
+      conditionId?: string;
+      amountSats?: number;
+    };
+    if (!metadata.conditionId || !metadata.amountSats) {
+      throw new Error(
+        `proof operation ${entry.operationId} is missing CTF redeem metadata`,
+      );
+    }
+    const outputData = deserializeOutputDataArray(entry.outputs.regular ?? []);
+    const keyset = await getKeyset(
+      entry.mintUrl,
+      outputData[0]?.blindedMessage.id,
+    );
+    const witness = await fetchConditionOracleWitness(metadata.conditionId);
+    const response = await postRedeemOutcome(entry.mintUrl, {
+      inputs: withOracleWitness(entry.inputs, witness),
+      outputs: outputData.map((output) => output.blindedMessage),
+    });
+    const settled = buildProofsFromRedeemResponse(
+      outputData,
+      response.signatures,
+      keyset,
+    );
+    await completeCtfRedeem(
+      entry.operationId,
+      entry.mintUrl,
+      entry.inputs,
+      settled,
+    );
+    return settled;
+  }
+
+  throw new Error(
+    `Proof operation ${entry.operationId} is still pending at the mint`,
+  );
+}
+
+async function restoreRedeemOutputs(
+  mintUrl: string,
+  storedOutputs: StoredOutputData[],
+): Promise<Proof[]> {
+  const outputData = deserializeOutputDataArray(storedOutputs);
+  if (outputData.length === 0) return [];
+  const mint = new CashuMint(mintUrl);
+  const response = await mint.restore({
+    outputs: outputData.map((output) => output.blindedMessage),
+  });
+  if (response.signatures.length !== outputData.length) {
+    throw new Error(
+      "Mint restore response had mismatched output/signature counts",
+    );
+  }
+  const keyset = await getKeyset(mintUrl, outputData[0].blindedMessage.id);
+  return buildProofsFromRedeemResponse(outputData, response.signatures, keyset);
+}
+
+async function getKeyset(
+  mintUrl: string,
+  keysetId?: string,
+): Promise<MintKeys> {
+  if (!keysetId)
+    throw new Error("Missing keyset id for restored redeem output");
+  const mint = new CashuMint(mintUrl);
+  const response = await mint.getKeys(keysetId);
+  const keyset = response.keysets.find(
+    (candidate) => candidate.id === keysetId,
+  );
+  if (!keyset)
+    throw new Error(`Mint did not return keys for keyset ${keysetId}`);
+  return keyset;
+}
+
+async function completeCtfRedeem(
+  operationId: string,
+  mintUrl: string,
+  inputs: Proof[],
+  regularProofs: Proof[],
+): Promise<void> {
+  await addProofs(regularProofs.map((proof) => ({ ...proof, mintUrl })));
+  await removeProofs(inputs.map((proof) => proof.secret));
+  await markProofOperationCompleted(operationId, { regular: regularProofs });
+}
+
+function serializeOutputDataArray(
+  outputs: RedeemOutputData[],
+): StoredOutputData[] {
+  return outputs.map((output) => ({
+    blindedMessage: output.blindedMessage,
+    blindingFactor: output.blindingFactor.toString(16),
+    secret: bytesToHex(output.secret),
+  }));
+}
+
+function deserializeOutputDataArray(
+  outputs: StoredOutputData[],
+): RedeemOutputData[] {
+  return outputs.map(
+    (output) =>
+      new OutputData(
+        output.blindedMessage,
+        BigInt(`0x${output.blindingFactor}`),
+        hexToBytes(output.secret),
+      ),
+  );
+}
+
+function joinUrl(baseUrl: string, path: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }

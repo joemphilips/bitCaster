@@ -164,6 +164,7 @@ public class InMemoryOrderBookManager
             makerEphemeralPubkey: maker.EphemeralPubkey!,
             makerOrderId: maker.Id,
             path: MatchPath.Direct,
+            status: FillStatus.Filled,
             takerOrderId: taker.Id,
             tradeId: tradeId);
     }

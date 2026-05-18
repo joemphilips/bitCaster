@@ -381,6 +381,97 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   }
 }
 
+function mapCatalogueEntryToMarketDetail(
+  entry: MarketCatalogueEntry,
+  mintCondition: ConditionInfo | null,
+): MarketDetail {
+  const firstPartition = mintCondition?.partitions[0]
+  const outcomes =
+    entry.outcomes && entry.outcomes.length > 0
+      ? entry.outcomes
+      : (firstPartition?.partition ?? [])
+  const now = new Date().toISOString()
+  const createdAt = entry.createdAt ?? now
+  const title = entry.title?.trim() || 'Untitled Market'
+  const description = entry.description?.trim()
+  const creatorPubkey = entry.creatorPubkey?.trim()
+  const normalisedState = normalizeEngineMarketState(entry.state)
+  const finalOutcome = entry.finalOutcome?.trim() || undefined
+  const resolutionDate = entry.closedAt ?? entry.deadline ?? createdAt
+  const isYesNo =
+    outcomes.length === 2 &&
+    outcomes[0].toLowerCase() === 'yes' &&
+    outcomes[1].toLowerCase() === 'no'
+
+  const base = {
+    id: entry.conditionId,
+    title,
+    state: normalisedState ?? undefined,
+    imageUrl: entry.thumbnailUrl ?? undefined,
+    categoryTags: (entry.categoryTags ?? []).map((id) => ({
+      id,
+      label: id,
+      marketCount: 0,
+    })),
+    volume: entry.volume24hSats ?? 0,
+    liquidity: 0,
+    traderCount: 0,
+    closingDate: entry.deadline ?? null,
+    createdDate: createdAt,
+    activeSince: createdAt,
+    baseUnit: 'sats',
+    mint: {
+      collateral: firstPartition?.collateral ?? 'sat',
+      keysetCount: Object.keys(firstPartition?.keysets ?? {}).length,
+    },
+    creator: creatorPubkey
+      ? {
+          id: creatorPubkey,
+          name: `${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`,
+          totalMarketsCreated: 0,
+          feePercent: 0,
+        }
+      : {
+          id: 'unknown',
+          name: 'Unknown',
+          totalMarketsCreated: 0,
+          feePercent: 0,
+        },
+    resolution: {
+      criteria: description || title,
+      source: 'oracle' as const,
+      resolutionDate,
+      status: finalOutcome ? ('resolved' as const) : ('open' as const),
+      finalOutcome,
+    },
+    priceHistory: { data: [], timeframe: '7d' as const },
+    orderBook: { bids: [], asks: [], spread: 0 },
+    recentTrades: [],
+    comments: [],
+    relatedMarkets: [],
+  }
+
+  if (isYesNo) {
+    return {
+      ...base,
+      type: 'yesno',
+      currentOdds: { yes: 50, no: 50 },
+    }
+  }
+
+  return {
+    ...base,
+    type: 'categorical',
+    outcomes: outcomes.map((label, i) => ({
+      id: `outcome-${i}`,
+      label,
+      odds: 100 / Math.max(outcomes.length, 1),
+    })),
+    outcomePriceHistories: {},
+    outcomeOrderBooks: {},
+  }
+}
+
 /**
  * Resolve the engine catalogue entry for a single `conditionId`. Used by the
  * detail page to read engine-authoritative fields (`state`, `thumbnailUrl`,
@@ -439,74 +530,27 @@ function normalizeEngineMarketState(
   return null
 }
 
-/**
- * Merge engine catalogue fields into a mintd-derived `MarketDetail`. Engine
- * is authoritative for lifecycle (`state`), analytics (volume), and thumbnail.
- * Mintd-derived fields (title, outcomes, resolution metadata) survive
- * untouched. Idempotent; safe to call when the engine entry is `null`
- * (returns the detail unchanged so the caller need not branch).
- */
-function mergeEngineCatalogueEntry(
-  detail: MarketDetail,
-  engineEntry: MarketCatalogueEntry | null,
-): MarketDetail {
-  if (!engineEntry) return detail
-  const normalisedState = normalizeEngineMarketState(engineEntry.state)
-  const creatorPubkey = engineEntry.creatorPubkey?.trim()
-  const closedAt = engineEntry.closedAt ?? null
-  const isClosed = normalisedState === 'closed'
-  const resolution =
-    detail.resolution.status === 'resolved'
-      ? detail.resolution
-      : isClosed && closedAt
-        ? {
-            ...detail.resolution,
-            resolutionDate: closedAt,
-          }
-        : engineEntry.deadline
-          ? {
-              ...detail.resolution,
-              resolutionDate: engineEntry.deadline,
-            }
-          : detail.resolution
-
-  return {
-    ...detail,
-    state: normalisedState ?? detail.state,
-    imageUrl: engineEntry.thumbnailUrl ?? detail.imageUrl,
-    volume: engineEntry.volume24hSats ?? detail.volume,
-    creator: creatorPubkey
-      ? {
-          ...detail.creator,
-          id: creatorPubkey,
-          name: `${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`,
-        }
-      : detail.creator,
-    // Engine surfaces the oracle attestation deadline as the authoritative
-    // closing date. A null deadline means "unknown"; do not synthesize a
-    // page-load timestamp because that decays into a bogus Closed state.
-    closingDate: engineEntry.deadline ?? detail.closingDate,
-    resolution,
-  }
-}
-
 export async function fetchMarketDetail(
   conditionId: string,
 ): Promise<MarketDetail> {
-  const conditions = await fetchConditions()
-  const condition = conditions.find((c) => c.condition_id === conditionId)
+  // Routine detail rendering is engine-first. Mintd can lag or contain stale
+  // mirrored rows during local/staging smoke; use it only as a fallback and
+  // as mint/keyset enrichment once the engine has the public catalogue row.
+  const [engineEntry, conditionsResult, meta] = await Promise.all([
+    fetchEngineCatalogueEntry(conditionId),
+    fetchConditions().catch(() => [] as ConditionInfo[]),
+    fetchMarketMetadata(conditionId),
+  ])
+  const condition = conditionsResult.find((c) => c.condition_id === conditionId)
+  if (engineEntry) {
+    const detail = mapCatalogueEntryToMarketDetail(engineEntry, condition ?? null)
+    return meta ? applyMetadata(detail, meta) : detail
+  }
   if (!condition) {
     throw new Error(`Condition not found: ${conditionId}`)
   }
-  // Run the engine catalogue lookup in parallel with the metadata lookup —
-  // the two are independent and both feed the rendered detail.
-  const [engineEntry, meta] = await Promise.all([
-    fetchEngineCatalogueEntry(conditionId),
-    fetchMarketMetadata(conditionId),
-  ])
   const detail = mapConditionToMarketDetail(condition)
-  const withEngine = mergeEngineCatalogueEntry(detail, engineEntry)
-  return meta ? applyMetadata(withEngine, meta) : withEngine
+  return meta ? applyMetadata(detail, meta) : detail
 }
 
 export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {

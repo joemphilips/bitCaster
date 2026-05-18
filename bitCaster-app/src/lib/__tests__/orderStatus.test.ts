@@ -94,9 +94,10 @@ describe('promoteNewFillsToActiveSwaps', () => {
 })
 
 describe('buildOrderStatusNotifications', () => {
-  it('notifies on a complementary reservation-shaped partial fill', () => {
+  it('notifies on a complementary reservation-shaped match', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
+      status: 'matched',
       remainingAmountSats: 100,
       filledAmountSats: 100,
     } as OrderStatusResponse
@@ -110,8 +111,8 @@ describe('buildOrderStatusNotifications', () => {
 
     expect(notifications).toHaveLength(1)
     expect(notifications[0]).toMatchObject({
-      id: 'order-1-partially_filled-1',
-      kind: 'partially_filled',
+      id: 'order-1-matched-1',
+      kind: 'matched',
       filledAmountSats: 100,
       remainingAmountSats: 100,
       occurredAt: 123,

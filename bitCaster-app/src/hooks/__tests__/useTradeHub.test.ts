@@ -104,4 +104,20 @@ describe('useTradeHub', () => {
     expect(onError).toHaveBeenCalledWith(expect.any(Error))
     expect(connection.state).toBe(connectedState)
   })
+
+  it('invokes JoinOrder after the connection is established', async () => {
+    const connection = makeConnection()
+    connections.push(connection)
+
+    const { result } = renderHook(() => useTradeHub(true, {}))
+
+    await waitFor(() => expect(connection.state).toBe(connectedState))
+    await result.current.joinOrder('cond-YES', 'order-1')
+
+    expect(connection.invoke).toHaveBeenCalledWith(
+      'JoinOrder',
+      'cond-YES',
+      'order-1',
+    )
+  })
 })

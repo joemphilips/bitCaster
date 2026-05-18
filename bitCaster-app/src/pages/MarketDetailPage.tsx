@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router";
 import { MarketDetail } from "@/components/market-detail";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
@@ -27,12 +27,6 @@ import type {
 
 type TopUpStage = "closed" | "modal" | "overlay";
 
-function hasKnownPastDeadline(market: MarketDetailType): boolean {
-  if (!market.closingDate) return false;
-  const deltaMs = new Date(market.closingDate).getTime() - Date.now();
-  return Number.isFinite(deltaMs) && deltaMs <= 0;
-}
-
 function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
   if (state == null) return false;
 
@@ -47,7 +41,7 @@ function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
 }
 
 function isClosedForTrading(market: MarketDetailType): boolean {
-  return isEngineMarketClosed(market.state) || hasKnownPastDeadline(market);
+  return isEngineMarketClosed(market.state);
 }
 
 function needsEngineDetailRefresh(market: MarketDetailType): boolean {
@@ -132,6 +126,8 @@ export function MarketDetailPage() {
     kind: "info" | "success" | "error";
     message: string;
   } | null>(null);
+  const [isTradeSubmitting, setIsTradeSubmitting] = useState(false);
+  const tradeSubmitInFlightRef = useRef(false);
 
   // Top-up flow state — surfaced only when the user tries to confirm a trade
   // they can't afford. `balanceAtCheck` is the snapshot taken when the gate
@@ -248,6 +244,9 @@ export function MarketDetailPage() {
   // callers that can't promise that must route through `handleTradeConfirm`.
   const placeOrder = useCallback(async () => {
     if (!market || !tradeSelection || !tradeAmount) return;
+    if (tradeSubmitInFlightRef.current) return;
+    tradeSubmitInFlightRef.current = true;
+    setIsTradeSubmitting(true);
     setTradeSubmitStatus(null);
     let latestMarket: MarketDetailType;
     try {
@@ -258,6 +257,8 @@ export function MarketDetailPage() {
         kind: "error",
         message: "Could not refresh market status before submitting the order.",
       });
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
       return;
     }
     if (isClosedForTrading(latestMarket)) {
@@ -265,6 +266,8 @@ export function MarketDetailPage() {
         kind: "error",
         message: "This market is closed and no longer accepts orders.",
       });
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
       return;
     }
     if (!marketShapeMatches(market, latestMarket)) {
@@ -273,6 +276,8 @@ export function MarketDetailPage() {
         message:
           "Market metadata changed before submission. Review the market and try again.",
       });
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
       return;
     }
 
@@ -316,6 +321,8 @@ export function MarketDetailPage() {
           ? e.message
           : "This order cannot be submitted yet.";
       setTradeSubmitStatus({ kind: "info", message });
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
       return;
     }
 
@@ -347,6 +354,7 @@ export function MarketDetailPage() {
         requestedAmountSats: ticket.request.amountSats,
         remainingAmountSats: response.remainingAmountSats,
         fillCount: response.fills?.length ?? 0,
+        status: response.status,
       });
       setTradeSelection(null);
       setTradeAmount(0);
@@ -364,12 +372,17 @@ export function MarketDetailPage() {
         e.message.includes("No Nostr signer configured")
       ) {
         setShowNostrAuthModal(true);
+        tradeSubmitInFlightRef.current = false;
+        setIsTradeSubmitting(false);
         return;
       }
       setTradeSubmitStatus({
         kind: "error",
         message: e instanceof Error ? e.message : "Failed to submit order.",
       });
+    } finally {
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
     }
   }, [
     market,
@@ -387,12 +400,29 @@ export function MarketDetailPage() {
   // subscription after a top-up.
   const handleTradeConfirm = useCallback(async () => {
     if (!market || !tradeSelection || !tradeAmount) return;
+    if (tradeSubmitInFlightRef.current) return;
+    tradeSubmitInFlightRef.current = true;
     const requiredSats = tradeAmount; // totalCost for FAK today; PR2+ refines
-    const current = await getBalance(activeMintUrl);
-    if (current < requiredSats) {
-      setBalanceAtCheck(current);
-      setTopUpStage("modal");
+    setIsTradeSubmitting(true);
+    try {
+      const current = await getBalance(activeMintUrl);
+      if (current < requiredSats) {
+        setBalanceAtCheck(current);
+        setTopUpStage("modal");
+        return;
+      }
+    } catch (error) {
+      setTradeSubmitStatus({
+        kind: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not check wallet balance before submitting the order.",
+      });
       return;
+    } finally {
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
     }
     await placeOrder();
   }, [market, tradeSelection, tradeAmount, activeMintUrl, placeOrder]);
@@ -470,6 +500,7 @@ export function MarketDetailPage() {
         }}
         onTradeConfirm={handleTradeConfirm}
         tradeSubmitStatus={tradeSubmitStatus}
+        isTradeSubmitting={isTradeSubmitting}
         onShare={handleShare}
         onTradeSideChange={setTradeSide}
         onOrderTypeChange={setOrderType}

@@ -3,13 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useActiveSwapsStore } from '@/stores/activeSwaps'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
 
-const { mockUseTradeHub, mockJoinTrade, mockSendSwapMessage } = vi.hoisted(
-  () => ({
+const { mockUseTradeHub, mockJoinOrder, mockJoinTrade, mockSendSwapMessage } =
+  vi.hoisted(() => ({
     mockUseTradeHub: vi.fn(),
+    mockJoinOrder: vi.fn(),
     mockJoinTrade: vi.fn(),
     mockSendSwapMessage: vi.fn(),
-  }),
-)
+  }))
 
 vi.mock('@/hooks/useTradeHub', () => ({
   useTradeHub: mockUseTradeHub,
@@ -26,9 +26,11 @@ beforeEach(() => {
   vi.clearAllMocks()
   useActiveSwapsStore.setState({ byTradeId: {} })
   usePendingTradesStore.setState({ byOrderId: {} })
+  mockJoinOrder.mockResolvedValue(undefined)
   mockJoinTrade.mockResolvedValue(undefined)
   mockSendSwapMessage.mockResolvedValue(undefined)
   mockUseTradeHub.mockReturnValue({
+    joinOrder: mockJoinOrder,
     joinTrade: mockJoinTrade,
     sendSwapMessage: mockSendSwapMessage,
     connectionState: vi.fn(),
@@ -40,6 +42,7 @@ describe('useTradeSettlement', () => {
     renderHook(() => useTradeSettlement(true))
 
     expect(mockUseTradeHub).toHaveBeenCalledWith(false, expect.any(Object))
+    expect(mockJoinOrder).not.toHaveBeenCalled()
     expect(mockJoinTrade).not.toHaveBeenCalled()
   })
 
@@ -61,6 +64,22 @@ describe('useTradeSettlement', () => {
       expect.any(Object),
     )
     expect(mockJoinTrade).toHaveBeenCalledWith('trade-1')
+  })
+
+  it('joins pending order groups so resting makers can receive TradeCreated', async () => {
+    usePendingTradesStore.getState().add({
+      orderId: 'order-pending',
+      marketId: 'cond-YES',
+      ephemeralPrivkey: '11'.repeat(32),
+      ephemeralPubkey: '02' + '22'.repeat(32),
+      submittedAt: Date.now(),
+    })
+
+    renderHook(() => useTradeSettlement(true))
+
+    await waitFor(() =>
+      expect(mockJoinOrder).toHaveBeenCalledWith('cond-YES', 'order-pending'),
+    )
   })
 
   it('promotes an unsolicited TradeCreated event for a pending complementary order', async () => {
@@ -113,6 +132,42 @@ describe('useTradeSettlement', () => {
     expect(swap.role).toBe('buyer')
     expect(swap.outcomeFaceAmountSats).toBe(100)
     expect(swap.quotePaymentSats).toBe(50)
+  })
+
+  it('ignores duplicate TradeCreated events after role assignment', async () => {
+    usePendingTradesStore.getState().add({
+      orderId: 'order-pending',
+      marketId: 'cond-YES',
+      ephemeralPrivkey: '11'.repeat(32),
+      ephemeralPubkey: '02' + '22'.repeat(32),
+      submittedAt: Date.now(),
+    })
+
+    renderHook(() => useTradeSettlement(true))
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string
+        sellerPubkey: string
+        buyerPubkey: string
+        sellerLocktime: string
+        buyerLocktime: string
+        marketId?: string
+      }) => void
+    }
+    const payload = {
+      tradeId: 'trade-duplicate',
+      sellerPubkey: '02' + '33'.repeat(32),
+      buyerPubkey: '02' + '22'.repeat(32),
+      sellerLocktime: '2026-05-07T12:01:00Z',
+      buyerLocktime: '2026-05-07T12:00:00Z',
+      marketId: 'cond-NO',
+    }
+
+    await act(async () => callbacks.onTradeCreated(payload))
+    await act(async () => callbacks.onTradeCreated(payload))
+
+    expect(mockJoinTrade).toHaveBeenCalledTimes(1)
   })
 
   it('fails the swap before role assignment when TradeCreated locktimes are inverted', async () => {

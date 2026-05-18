@@ -224,6 +224,7 @@
     "confirmSell": "Sell {{side}} for {{amount}}",
     "confirmLimitBuy": "Place Limit Order for {{amount}}",
     "confirmLimitSell": "Place Sell Limit Order for {{amount}}",
+    "submittingOrder": "Submitting order...",
     "recentTrades": "Recent Trades",
     "noTrades": "No trades yet",
     "loadMoreTrades": "Load more trades",
@@ -564,6 +565,7 @@
   "notification": {
     "empty": "No notifications yet.",
     "accepted": "Order accepted on {{market}}",
+    "matched": "Order matched: {{sats}} sats reserved on {{market}}",
     "filled": "Order filled: {{sats}} sats on {{market}}",
     "partiallyFilled": "Partial fill: {{sats}} sats filled on {{market}}, {{remaining}} remaining",
     "cancelled": "Order cancelled on {{market}}"

@@ -132,6 +132,7 @@ public static class MarketQueryEndpoint
         var open = string.Equals(c.AttestationStatus, "pending", StringComparison.OrdinalIgnoreCase);
         return new MarketCatalogueEntry(
             categoryTags: c.CategoryTags,
+            closedAt: null,
             conditionId: c.ConditionId,
             createdAt: refreshedAt,
             // NSwag generates these reference-typed fields as non-nullable
@@ -139,6 +140,8 @@ public static class MarketQueryEndpoint
             // so C# compiles and the JSON serialiser still emits `null`.
             creatorPubkey: null!,
             deadline: null,
+            description: null!,
+            finalOutcome: null!,
             lastSuccessfulRefreshAt: refreshedAt,
             lastTradedPrice: null,
             outcomes: c.Outcomes,

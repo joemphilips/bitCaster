@@ -5,6 +5,7 @@ import { useWalletStore } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { safeHostname } from '@/lib/url'
+import type { MarketCatalogueEntry, MarketCatalogueResponse } from '@/lib/markets'
 import type {
   WalletState,
   BaseCurrency,
@@ -117,6 +118,54 @@ function computeStats(positions: Position[], fundsBalance: number): PortfolioSta
   }
 }
 
+function parseOutcomeCollection(value: string): string[] {
+  const outcomes: string[] = []
+  let current = ''
+  let escaped = false
+  for (const ch of value) {
+    if (escaped) {
+      current += ch
+      escaped = false
+    } else if (ch === '\\') {
+      escaped = true
+    } else if (ch === '|') {
+      outcomes.push(current)
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  outcomes.push(current)
+  return outcomes.filter((outcome) => outcome.length > 0)
+}
+
+function positionSide(outcomeCollection: string): Position['side'] {
+  const normalized = outcomeCollection.toUpperCase()
+  if (normalized === 'YES') return 'yes'
+  if (normalized === 'NO') return 'no'
+  return 'outcome'
+}
+
+async function loadMarketCatalogue(
+  conditionIds: string[],
+): Promise<Map<string, MarketCatalogueEntry>> {
+  if (conditionIds.length === 0) return new Map()
+  try {
+    const search = new URLSearchParams()
+    search.set('ids', conditionIds.join(','))
+    search.set('state', 'All')
+    search.set('page_size', String(Math.min(Math.max(conditionIds.length, 1), 50)))
+    const response = await fetch(`/api/v1/markets/query?${search.toString()}`, {
+      headers: { Accept: 'application/json' },
+    })
+    if (!response.ok) return new Map()
+    const body = (await response.json()) as MarketCatalogueResponse
+    return new Map((body.markets ?? []).map((market) => [market.conditionId, market]))
+  } catch {
+    return new Map()
+  }
+}
+
 export function usePortfolioState(): PortfolioState & {
   setSelectedTimeRange: (range: PLTimeSelector) => void
   setPositionsTab: (tab: 'active' | 'closed') => void
@@ -182,24 +231,51 @@ export function usePortfolioState(): PortfolioState & {
         ),
       })
     }
-    return Array.from(byOutcome.values()).map((entry): Position => ({
-      id: `${entry.conditionId}-${entry.outcomeCollection}`,
-      marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
-      marketTitle: `Market ${entry.conditionId.slice(0, 8)}`,
-      marketImageUrl: '',
-      side: entry.outcomeCollection.toUpperCase() === 'YES' ? 'yes' : 'no',
-      outcomeId: entry.outcomeCollection,
-      outcomeLabel: entry.outcomeCollection,
-      shares: entry.amount,
-      avgBuyPrice: 0,
-      currentPrice: 0,
-      currentValueSats: entry.amount,
-      profitLossSats: 0,
-      profitLossPercent: 0,
-      status: 'active',
-      acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
-      mintUrl: entry.mintUrl,
-    }))
+    const entries = Array.from(byOutcome.values())
+    const catalogue = await loadMarketCatalogue([
+      ...new Set(entries.map((entry) => entry.conditionId)),
+    ])
+    return entries.map((entry): Position => {
+      const market = catalogue.get(entry.conditionId)
+      const finalOutcome = market?.finalOutcome?.trim()
+      const isClosed = String(market?.state ?? '').toLowerCase() === 'closed'
+      const isWinner =
+        isClosed &&
+        !!finalOutcome &&
+        parseOutcomeCollection(entry.outcomeCollection).some(
+          (held) => held.toLowerCase() === finalOutcome.toLowerCase(),
+        )
+      const isLoser = isClosed && !!finalOutcome && !isWinner
+      const status = isClosed ? 'closed' : 'active'
+      const currentValueSats = isWinner
+        ? entry.amount
+        : isLoser
+          ? 0
+          : entry.amount
+      return {
+        id: `${entry.conditionId}-${entry.outcomeCollection}`,
+        marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
+        marketTitle: market?.title ?? `Market ${entry.conditionId.slice(0, 8)}`,
+        marketImageUrl: market?.thumbnailUrl ?? '',
+        side: positionSide(entry.outcomeCollection),
+        outcomeId: entry.outcomeCollection,
+        outcomeLabel: entry.outcomeCollection,
+        shares: entry.amount,
+        avgBuyPrice: 0,
+        currentPrice: isClosed ? (isWinner ? 100 : 0) : 0,
+        currentValueSats,
+        profitLossSats: isClosed ? currentValueSats : 0,
+        profitLossPercent: isClosed
+          ? isWinner
+            ? 100
+            : -100
+          : 0,
+        status,
+        closedDate: isClosed ? (market?.closedAt ?? undefined) : undefined,
+        acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
+        mintUrl: entry.mintUrl,
+      }
+    })
   }, [], [] as Position[])
   const positions: Position[] = positionsFromDb ?? []
   const fundsFromDb = useLiveQuery(async () => {

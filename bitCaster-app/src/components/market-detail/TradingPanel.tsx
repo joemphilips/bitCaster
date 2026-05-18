@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { X, ChevronUp, ChevronDown } from 'lucide-react'
+import { X, ChevronUp, ChevronDown, Loader2 } from 'lucide-react'
 import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import type {
   MarketDetail,
@@ -30,6 +30,7 @@ interface TradingPanelProps {
     kind: 'info' | 'success' | 'error'
     message: string
   } | null
+  isTradeSubmitting?: boolean
   onTradeSelect?: (selection: TradeSelection) => void
   onTradeClear?: () => void
   onAmountChange?: (amount: number) => void
@@ -481,6 +482,7 @@ export function TradingPanel({
   userHoldings,
   walletBalanceSats,
   tradeSubmitStatus,
+  isTradeSubmitting = false,
   onTradeSideChange,
   onOrderTypeChange,
   onLimitPriceChange,
@@ -495,6 +497,7 @@ export function TradingPanel({
 
   // Build confirm button text
   const getConfirmText = () => {
+    if (isTradeSubmitting) return t('trade.submittingOrder')
     if (!walletReady) return t('wallet.createWallet')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
@@ -723,14 +726,19 @@ export function TradingPanel({
                 setTradeComment('')
               }
             }}
-            disabled={walletReady && (!tradeAmount || tradeAmount <= 0)}
+            disabled={
+              isTradeSubmitting || (walletReady && (!tradeAmount || tradeAmount <= 0))
+            }
             className={`w-full py-3 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
               !walletReady
                 ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'
                 : 'bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white'
             }`}
           >
-            {getConfirmText()}
+            <span className="inline-flex items-center justify-center gap-2">
+              {isTradeSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+              {getConfirmText()}
+            </span>
           </button>
         </div>
       )}

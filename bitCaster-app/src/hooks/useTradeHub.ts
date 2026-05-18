@@ -9,7 +9,8 @@
  *   TradeCreated         — initial trade details (pubkeys + locktimes)
  *
  * The hook manages reconnection automatically via SignalR's built-in
- * BackoffRetryPolicy and exposes `joinTrade` / `sendSwapMessage` to callers.
+ * BackoffRetryPolicy and exposes `joinOrder` / `joinTrade` /
+ * `sendSwapMessage` to callers.
  */
 
 import { useEffect, useRef, useCallback } from 'react'
@@ -57,6 +58,7 @@ export interface TradeHubCallbacks {
 }
 
 export interface TradeHubActions {
+  joinOrder: (marketId: string, orderId: string) => Promise<void>
   joinTrade: (tradeId: string) => Promise<void>
   sendSwapMessage: (
     tradeId: string,
@@ -112,7 +114,7 @@ export async function generateTradeHubAccessToken(hubUrl: string): Promise<strin
  *   configured signer path as REST order submission, so NIP-07 users can
  *   settle trades without exposing a raw nsec to the page.
  * @param callbacks - event handlers wired to the SignalR hub events
- * @returns { joinTrade, sendSwapMessage, connectionState }
+ * @returns { joinOrder, joinTrade, sendSwapMessage, connectionState }
  */
 export function useTradeHub(
   enabled: boolean,
@@ -246,6 +248,14 @@ export function useTradeHub(
     [waitForConnected],
   )
 
+  const joinOrder = useCallback(
+    async (marketId: string, orderId: string) => {
+      const conn = await waitForConnected()
+      await conn.invoke('JoinOrder', marketId, orderId)
+    },
+    [waitForConnected],
+  )
+
   const sendSwapMessage = useCallback(
     async (
       tradeId: string,
@@ -262,5 +272,5 @@ export function useTradeHub(
     return connectionRef.current?.state ?? HubConnectionState.Disconnected
   }, [])
 
-  return { joinTrade, sendSwapMessage, connectionState }
+  return { joinOrder, joinTrade, sendSwapMessage, connectionState }
 }

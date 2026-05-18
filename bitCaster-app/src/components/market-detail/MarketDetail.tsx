@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Loader2 } from "lucide-react";
 import type { MarketDetailProps } from "@/types/market-detail";
 import { formatBtc } from "@/lib/format";
 import { useMarketState } from "@/hooks/useMarketState";
@@ -66,6 +67,7 @@ export function MarketDetail({
   onAmountChange,
   onTradeConfirm,
   tradeSubmitStatus,
+  isTradeSubmitting,
   onShare,
   onCommentPost,
   onCommentLike,
@@ -99,18 +101,12 @@ export function MarketDetail({
   // resolution-info badge — surfaced when mintd reports a resolved outcome,
   // independent of the engine's lifecycle state. `isTradingEnabled` is the
   // single closed-state gate consulted across the trade and deposit
-  // affordances. The engine state is primary; the engine-surfaced oracle
-  // deadline is an immediate close hint while the deadline reminder catches up.
+  // affordances. The engine state is authoritative for routine rendering; a
+  // stale or backfilled deadline must not hide the trade pane while the engine
+  // still says the market is open.
   const isResolved = market.resolution.status === "resolved";
   const marketState = useMarketState(market.state);
-  const deadlineDeltaMs = market.closingDate
-    ? new Date(market.closingDate).getTime() - Date.now()
-    : null;
-  const hasKnownPastDeadline =
-    deadlineDeltaMs != null &&
-    Number.isFinite(deadlineDeltaMs) &&
-    deadlineDeltaMs <= 0;
-  const isEffectivelyClosed = marketState === "Closed" || hasKnownPastDeadline;
+  const isEffectivelyClosed = marketState === "Closed";
   const isTradingEnabled = !isEffectivelyClosed;
 
   return (
@@ -147,6 +143,7 @@ export function MarketDetail({
                   onAmountChange={onAmountChange}
                   onTradeConfirm={onTradeConfirm}
                   tradeSubmitStatus={tradeSubmitStatus}
+                  isTradeSubmitting={isTradeSubmitting}
                   onCommentPost={onCommentPost}
                   onTradeSideChange={onTradeSideChange}
                   onOrderTypeChange={onOrderTypeChange}
@@ -240,6 +237,7 @@ export function MarketDetail({
                   onAmountChange={onAmountChange}
                   onTradeConfirm={onTradeConfirm}
                   tradeSubmitStatus={tradeSubmitStatus}
+                  isTradeSubmitting={isTradeSubmitting}
                   onCommentPost={onCommentPost}
                   onTradeSideChange={onTradeSideChange}
                   onOrderTypeChange={onOrderTypeChange}
@@ -284,14 +282,24 @@ export function MarketDetail({
                   }
                   onTradeConfirm?.();
                 }}
-                disabled={walletReady && (!tradeAmount || tradeAmount <= 0)}
+                disabled={
+                  isTradeSubmitting ||
+                  (walletReady && (!tradeAmount || tradeAmount <= 0))
+                }
                 className={`px-6 py-2 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
                   !walletReady
                     ? "bg-[#f7931a] hover:bg-[#e8850f] text-white"
                     : "bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white"
                 }`}
               >
-                {walletReady ? t("market.confirm") : t("wallet.createWallet")}
+                <span className="inline-flex items-center justify-center gap-2">
+                  {isTradeSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {isTradeSubmitting
+                    ? t("trade.submittingOrder")
+                    : walletReady
+                      ? t("market.confirm")
+                      : t("wallet.createWallet")}
+                </span>
               </button>
             </div>
           ) : (

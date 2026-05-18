@@ -50,7 +50,7 @@ export interface PortfolioStats {
 // =============================================================================
 
 export type PositionStatus = 'active' | 'closed'
-export type PositionSide = 'yes' | 'no'
+export type PositionSide = 'yes' | 'no' | 'outcome'
 
 export interface Position {
   id: string

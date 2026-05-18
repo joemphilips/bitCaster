@@ -33,7 +33,7 @@
  * the wallet — only the fresh proofs returned by the mint.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { Proof } from '@cashu/cashu-ts'
 import {
   useTradeHub,
@@ -106,6 +106,9 @@ const ctfProofOperationStore: CtfProofOperationStore = {
     )) as CtfProofOperationRecord,
 }
 
+const tradeCreatedInFlight = new Set<string>()
+const joinedTradeIds = new Set<string>()
+
 /**
  * Mount once near the app root. The hook owns no DOM and renders nothing.
  *
@@ -116,17 +119,17 @@ const ctfProofOperationStore: CtfProofOperationStore = {
  */
 export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   const swapsByTradeId = useActiveSwapsStore((s) => s.byTradeId)
-  const pendingTradeCount = usePendingTradesStore(
-    (s) => Object.keys(s.byOrderId).length,
-  )
+  const pendingTradesByOrderId = usePendingTradesStore((s) => s.byOrderId)
+  const joinedOrderKeysRef = useRef<Set<string>>(new Set())
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
     (swap) => swap.step !== 'completed' && swap.step !== 'failed',
   )
+  const pendingTrades = Object.values(pendingTradesByOrderId)
   const tradeHubEnabled =
-    canAuthenticateTradeHub && (hasActiveSwapWork || pendingTradeCount > 0)
+    canAuthenticateTradeHub && (hasActiveSwapWork || pendingTrades.length > 0)
 
-  const { joinTrade, sendSwapMessage } = useTradeHub(tradeHubEnabled, {
+  const { joinOrder, joinTrade, sendSwapMessage } = useTradeHub(tradeHubEnabled, {
     onTradeCreated: (payload) =>
       void handleTradeCreated(
         payload,
@@ -144,12 +147,36 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     if (!tradeHubEnabled) return
     for (const swap of Object.values(swapsByTradeId)) {
       if (swap.step !== 'awaiting-trade-created') continue
+      if (joinedTradeIds.has(swap.tradeId)) continue
+      joinedTradeIds.add(swap.tradeId)
       joinTrade(swap.tradeId).catch((err) => {
+        joinedTradeIds.delete(swap.tradeId)
         const message = err instanceof Error ? err.message : String(err)
         useActiveSwapsStore.getState().setStep(swap.tradeId, 'failed', message)
       })
     }
   }, [swapsByTradeId, tradeHubEnabled, joinTrade, sendSwapMessage])
+
+  useEffect(() => {
+    if (!tradeHubEnabled) return
+
+    const liveKeys = new Set(
+      pendingTrades.map((trade) => `${trade.marketId}:${trade.orderId}`),
+    )
+    for (const key of joinedOrderKeysRef.current) {
+      if (!liveKeys.has(key)) joinedOrderKeysRef.current.delete(key)
+    }
+
+    for (const trade of pendingTrades) {
+      const key = `${trade.marketId}:${trade.orderId}`
+      if (joinedOrderKeysRef.current.has(key)) continue
+      joinedOrderKeysRef.current.add(key)
+      void joinOrder(trade.marketId, trade.orderId).catch(() => {
+        // Polling order status is the recovery path if the one-shot
+        // maker notification group cannot be joined.
+      })
+    }
+  }, [pendingTrades, tradeHubEnabled, joinOrder])
 }
 
 // ---------------------------------------------------------------------------
@@ -162,8 +189,24 @@ async function handleTradeCreated(
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
 ): Promise<void> {
+  if (tradeCreatedInFlight.has(payload.tradeId)) return
+  tradeCreatedInFlight.add(payload.tradeId)
+  try {
+    await handleTradeCreatedOnce(payload, joinTrade, sendSwapMessage, mintUrl)
+  } finally {
+    tradeCreatedInFlight.delete(payload.tradeId)
+  }
+}
+
+async function handleTradeCreatedOnce(
+  payload: TradeCreatedPayload,
+  joinTrade: (tradeId: string) => Promise<void>,
+  sendSwapMessage: SendSwapMessageFn,
+  mintUrl: string,
+): Promise<void> {
   let swap: ActiveSwap | null =
     useActiveSwapsStore.getState().byTradeId[payload.tradeId] ?? null
+  if (swap?.role) return
   const promotedFromPending = !swap
   if (!swap) {
     swap = promotePendingTradeFromTradeCreated(payload)
@@ -171,9 +214,12 @@ async function handleTradeCreated(
   if (!swap) return
 
   if (promotedFromPending) {
+    if (joinedTradeIds.has(payload.tradeId)) return
+    joinedTradeIds.add(payload.tradeId)
     try {
       await joinTrade(payload.tradeId)
     } catch (err) {
+      joinedTradeIds.delete(payload.tradeId)
       const message = err instanceof Error ? err.message : String(err)
       useActiveSwapsStore.getState().setStep(payload.tradeId, 'failed', message)
       return

@@ -224,6 +224,7 @@
     "confirmSell": "{{side}} を {{amount}} で売る",
     "confirmLimitBuy": "{{amount}} の指値注文を出す",
     "confirmLimitSell": "{{amount}} の売り指値注文を出す",
+    "submittingOrder": "注文を送信中...",
     "recentTrades": "最近の取引",
     "noTrades": "まだ取引がありません",
     "loadMoreTrades": "さらに取引を表示",
@@ -564,6 +565,7 @@
   "notification": {
     "empty": "通知はまだありません。",
     "accepted": "{{market}} の注文が受理されました",
+    "matched": "注文がマッチしました: {{market}} で {{sats}} sats 予約済み",
     "filled": "注文が約定しました: {{market}} で {{sats}} sats",
     "partiallyFilled": "一部約定: {{market}} で {{sats}} sats 約定、残り {{remaining}}",
     "cancelled": "{{market}} の注文がキャンセルされました"

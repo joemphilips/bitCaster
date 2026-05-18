@@ -51,6 +51,31 @@ describe('addOrderSubmitNotifications', () => {
     })
   })
 
+  it('adds accepted plus matched notification for a pending reservation', () => {
+    const add = vi.fn<(notification: Notification) => void>()
+
+    addOrderSubmitNotifications({
+      add,
+      orderId: 'order-1',
+      marketId: 'cond-YES',
+      requestedAmountSats: 100,
+      remainingAmountSats: 0,
+      fillCount: 1,
+      status: 'matched',
+      now: 123,
+    })
+
+    expect(add.mock.calls.map(([notification]) => notification.kind)).toEqual([
+      'accepted',
+      'matched',
+    ])
+    expect(add.mock.calls[1][0]).toMatchObject({
+      id: 'order-1-matched-1',
+      filledAmountSats: 100,
+      remainingAmountSats: 0,
+    })
+  })
+
   it('does not invent a fill notification for a resting order', () => {
     const add = vi.fn<(notification: Notification) => void>()
 

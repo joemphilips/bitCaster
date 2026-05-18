@@ -109,6 +109,40 @@ paths:
               schema:
                 $ref: '#/components/schemas/OracleAttestationResponse'
 
+  /api/v1/conditions/{conditionId}/attestation:
+    get:
+      operationId: getConditionAttestation
+      summary: Fetch the verified oracle witness for a closed condition
+      description: >
+        Returns the oracle witness persisted when the engine closed the market
+        from a verified DLC oracle attestation. Clients use this witness as
+        input to the mint's `POST /v1/redeem_outcome` endpoint. The mint still
+        verifies the witness before paying out; this endpoint is a convenience
+        cache for already-closed bitCaster conditions, not the payout authority.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      responses:
+        '200':
+          description: Verified oracle witness for the resolved condition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConditionAttestationResponse'
+        '400':
+          description: Invalid condition id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConditionAttestationProblem'
+        '404':
+          description: >
+            Market not found, market not closed by oracle resolution, or no
+            redeemable oracle witness is stored for the closed market.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConditionAttestationProblem'
+
   /api/v1/{marketId}/orders:
     get:
       operationId: listRestingOrders
@@ -654,6 +688,18 @@ components:
         - Complementary
       description: How two orders were matched together.
 
+    FillStatus:
+      type: string
+      enum:
+        - Matched
+        - Filled
+        - Released
+      description: >
+        Lifecycle status of a fill-shaped order execution row. `Matched`
+        means a DCB reservation exists and atomic-swap settlement is still
+        pending; `Filled` means settlement committed; `Released` means a
+        reservation failed or timed out and no longer consumes order depth.
+
     OracleNostrEvent:
       type: object
       required:
@@ -706,6 +752,63 @@ components:
             - NoMatchingMarket
           description: Engine processing result for the submitted attestation.
 
+    ConditionAttestationResponse:
+      type: object
+      required:
+        - conditionId
+        - attestedOutcome
+        - oracleWitness
+      properties:
+        conditionId:
+          type: string
+          description: bitCaster condition id for the closed market.
+        attestedOutcome:
+          type: string
+          description: The single outcome attested by the DLC oracle.
+        oracleWitness:
+          $ref: '#/components/schemas/OracleWitness'
+
+    ConditionAttestationProblem:
+      type: object
+      required:
+        - result
+      properties:
+        result:
+          type: string
+          enum:
+            - InvalidConditionId
+            - MarketNotFound
+            - AttestationNotAvailable
+
+    OracleWitness:
+      type: object
+      required:
+        - oracle_sigs
+      properties:
+        oracle_sigs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OracleWitnessSig'
+
+    OracleWitnessSig:
+      type: object
+      required:
+        - oracle_pubkey
+        - oracle_sig
+        - outcome
+      properties:
+        oracle_pubkey:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: X-only BIP-340 oracle public key.
+        oracle_sig:
+          type: string
+          pattern: '^[0-9a-fA-F]{128}$'
+          description: Oracle signature over the attested outcome.
+        outcome:
+          type: string
+          description: Outcome string signed by the oracle.
+
     Fill:
       type: object
       required:
@@ -716,6 +819,7 @@ components:
         - executionPrice
         - path
         - filledAt
+        - status
       properties:
         id:
           type: string
@@ -740,6 +844,8 @@ components:
           $ref: '#/components/schemas/Probability'
         path:
           $ref: '#/components/schemas/MatchPath'
+        status:
+          $ref: '#/components/schemas/FillStatus'
         filledAt:
           type: string
           format: date-time
@@ -822,8 +928,9 @@ components:
         status:
           type: string
           description: >
-            One of: "resting" (on book, unmatched), "partially_filled",
-            "filled", "cancelled".
+            One of: "resting" (on book, unmatched), "matched" (reserved for
+            atomic-swap settlement), "partially_filled", "filled",
+            "cancelled".
         remainingAmountSats:
           $ref: '#/components/schemas/Sats'
         filledAmountSats:
@@ -913,7 +1020,8 @@ components:
         status:
           type: string
           description: >
-            One of: "filled", "partially_filled", "resting", "cancelled".
+            One of: "filled", "matched" (reserved for atomic-swap
+            settlement), "partially_filled", "resting", "cancelled".
         remainingAmountSats:
           $ref: '#/components/schemas/Sats'
         fills:
@@ -1326,6 +1434,13 @@ components:
           description: >
             Optional human-readable title from market registration. Null when
             the creator did not supply one.
+        description:
+          type: string
+          nullable: true
+          description: >
+            Detailed market description supplied by the creator at
+            registration time. Market detail pages render this as the
+            resolution criteria text.
         thumbnailUrl:
           type: string
           nullable: true
@@ -1355,6 +1470,13 @@ components:
             Engine-side close timestamp. Null while the market is open. Closed
             market detail pages use this value as the resolution date; deadline
             remains the scheduled oracle maturity time.
+        finalOutcome:
+          type: string
+          nullable: true
+          description: >
+            Winning outcome known to the engine after an oracle attestation
+            close. Null for deadline-only closes or markets that have not yet
+            resolved.
         state:
           type: string
           enum: [open, closed]

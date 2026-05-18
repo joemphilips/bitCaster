@@ -7,6 +7,7 @@ interface OrderSubmitNotificationInput {
   requestedAmountSats: number
   remainingAmountSats: number
   fillCount: number
+  status?: string
   now?: number
 }
 
@@ -17,6 +18,7 @@ export function addOrderSubmitNotifications({
   requestedAmountSats,
   remainingAmountSats,
   fillCount,
+  status,
   now = Date.now(),
 }: OrderSubmitNotificationInput): void {
   const filledAmountSats = Math.max(requestedAmountSats - remainingAmountSats, 0)
@@ -34,6 +36,20 @@ export function addOrderSubmitNotifications({
   if (fillCount <= 0 || filledAmountSats <= 0) return
 
   const fullyFilled = remainingAmountSats <= 0
+  if (status === 'matched') {
+    add({
+      id: `${orderId}-matched-${fillCount}`,
+      kind: 'matched',
+      orderId,
+      marketId,
+      filledAmountSats,
+      remainingAmountSats,
+      occurredAt: now,
+      read: false,
+    })
+    return
+  }
+
   add({
     id: fullyFilled ? `${orderId}-filled` : `${orderId}-partially_filled-${fillCount}`,
     kind: fullyFilled ? 'filled' : 'partially_filled',

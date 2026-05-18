@@ -17,6 +17,7 @@ export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
  */
 export type OrderStatus =
   | 'resting'
+  | 'matched'
   | 'partially_filled'
   | 'filled'
   | 'cancelled'
@@ -113,14 +114,15 @@ export function buildOrderStatusNotifications(
 
   if (
     !isTerminal &&
-    current === 'partially_filled' &&
+    (current === 'matched' || current === 'partially_filled') &&
     hasNewFills &&
     status.filledAmountSats > 0
   ) {
+    const kind = current === 'matched' ? 'matched' : 'partially_filled'
     return [
       {
-        id: `${trade.orderId}-partially_filled-${fillCount}`,
-        kind: 'partially_filled',
+        id: `${trade.orderId}-${kind}-${fillCount}`,
+        kind,
         orderId: trade.orderId,
         marketId: trade.marketId,
         filledAmountSats: status.filledAmountSats,
