@@ -3,6 +3,7 @@ import {
   Share2,
   Clock,
   CheckCircle2,
+  TrendingUp,
   Droplet,
   Users,
   Landmark,
@@ -345,22 +346,27 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           <div
             className="flex items-center gap-1 font-mono font-semibold text-amber-600 dark:text-amber-400"
             title={t("market.volume")}
+            aria-label={t("market.volume")}
           >
-            <span className="font-sans font-medium text-slate-500 dark:text-slate-400">
-              {t("market.volume")}
-            </span>
-            <span>{formatBtc(market.volume)}</span>
+            <TrendingUp className="w-3.5 h-3.5" />
+            <span>{formatBtc(market.volumeLifetimeSats)}</span>
           </div>
-          <div className="flex items-center gap-1" title={t("market.liquidity")}>
+          <div
+            className="flex items-center gap-1"
+            title={t("market.liquidity")}
+            aria-label={t("market.liquidity")}
+          >
             <Droplet className="w-3.5 h-3.5" />
-            <span>{t("market.liquidity")}</span>
             <span className="font-mono font-medium">
-              {formatBtc(market.liquidity)}
+              {formatBtc(market.liquiditySats)}
             </span>
           </div>
-          <div className="flex items-center gap-1" title={t("market.traders")}>
+          <div
+            className="flex items-center gap-1"
+            title={t("market.traders")}
+            aria-label={t("market.traders")}
+          >
             <Users className="w-3.5 h-3.5" />
-            <span>{t("market.traders")}</span>
             <span className="font-mono font-medium">
               {market.traderCount.toLocaleString()}
             </span>

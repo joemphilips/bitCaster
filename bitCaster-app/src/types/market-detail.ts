@@ -134,7 +134,9 @@ interface BaseMarketDetail {
   categoryTags: CategoryTag[]
   volume: number
   liquidity: number
+  liquiditySats: number
   traderCount: number
+  volumeLifetimeSats: number
   closingDate: string | null
   createdDate: string
   activeSince: string

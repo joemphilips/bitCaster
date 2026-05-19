@@ -55,7 +55,9 @@ interface BaseMarket {
   metaTags: string[]
   volume: number
   liquidity: number
+  liquiditySats: number
   traderCount: number
+  volumeLifetimeSats: number
   closingDate: string
   createdDate: string
   activeSince: string

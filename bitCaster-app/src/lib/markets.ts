@@ -100,13 +100,21 @@ export async function fetchMarketMetadata(
 }
 
 function applyMetadata<
-  T extends { volume: number; liquidity: number; traderCount: number },
+  T extends {
+    volume: number
+    liquidity: number
+    liquiditySats: number
+    traderCount: number
+    volumeLifetimeSats: number
+  },
 >(base: T, meta: MarketMetadataSnapshot): T {
   return {
     ...base,
     volume: meta.totalVolumeSats,
     liquidity: meta.totalLiquiditySats,
+    liquiditySats: meta.totalLiquiditySats,
     traderCount: meta.uniqueTraderCount,
+    volumeLifetimeSats: meta.totalVolumeSats,
   }
 }
 
@@ -188,14 +196,11 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     imageUrl,
     categoryTags: entry.categoryTags ?? [],
     metaTags: [],
-    // 24h drives the Trending sort; the wire format also exposes 30d but the
-    // existing `Market` shape only carries one rolling-volume number. The
-    // sort dimension itself is hoisted up to the engine, so all three
-    // ordering dimensions are correct — `Market.volume` is now a UI display
-    // hint, not a tie-breaker.
-    volume: entry.volume24hSats ?? 0,
-    liquidity: 0,
-    traderCount: 0,
+    volume: entry.volumeLifetimeSats ?? 0,
+    liquidity: entry.liquiditySats ?? 0,
+    liquiditySats: entry.liquiditySats ?? 0,
+    traderCount: entry.traderCount ?? 0,
+    volumeLifetimeSats: entry.volumeLifetimeSats ?? 0,
     closingDate,
     createdDate: entry.createdAt,
     activeSince: entry.createdAt,
@@ -338,7 +343,9 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     })),
     volume: 0,
     liquidity: 0,
+    liquiditySats: 0,
     traderCount: 0,
+    volumeLifetimeSats: 0,
     closingDate: null,
     createdDate: now,
     activeSince: now,
@@ -423,9 +430,11 @@ function mapCatalogueEntryToMarketDetail(
       label: id,
       marketCount: 0,
     })),
-    volume: entry.volume24hSats ?? 0,
-    liquidity: 0,
-    traderCount: 0,
+    volume: entry.volumeLifetimeSats ?? 0,
+    liquidity: entry.liquiditySats ?? 0,
+    liquiditySats: entry.liquiditySats ?? 0,
+    traderCount: entry.traderCount ?? 0,
+    volumeLifetimeSats: entry.volumeLifetimeSats ?? 0,
     closingDate: entry.deadline ?? null,
     createdDate: createdAt,
     activeSince: createdAt,
@@ -481,7 +490,8 @@ function mapCatalogueEntryToMarketDetail(
 /**
  * Resolve the engine catalogue entry for a single `conditionId`. Used by the
  * detail page to read engine-authoritative fields (`state`, `thumbnailUrl`,
- * `volume24hSats`) that mintd does not carry. ADR-009 Amendment 2026-05-04
+ * `volumeLifetimeSats`, `liquiditySats`, `traderCount`) that mintd does not
+ * carry. ADR-009 Amendment 2026-05-04
  * splits the trust contract: mintd is the existence + outcome-metadata
  * authority; the engine is the lifecycle + analytics + thumbnail authority.
  * Returns `null` when the engine has no record of the market or the request
@@ -550,7 +560,7 @@ export async function fetchMarketDetail(
   const condition = conditionsResult.find((c) => c.condition_id === conditionId)
   if (engineEntry) {
     const detail = mapCatalogueEntryToMarketDetail(engineEntry, condition ?? null)
-    return meta ? applyMetadata(detail, meta) : detail
+    return detail
   }
   if (!condition) {
     throw new Error(`Condition not found: ${conditionId}`)

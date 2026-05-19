@@ -62,13 +62,13 @@ export function MarketStats({ market }: MarketStatsProps) {
     {
       icon: TrendingUp,
       label: t('market.volume'),
-      value: formatBtc(market.volume),
+      value: formatBtc(market.volumeLifetimeSats),
       color: 'text-blue-500',
     },
     {
       icon: Droplets,
       label: t('market.liquidity'),
-      value: formatBtc(market.liquidity),
+      value: formatBtc(market.liquiditySats),
       color: 'text-cyan-500',
     },
     {
@@ -119,9 +119,8 @@ export function MarketStats({ market }: MarketStatsProps) {
             }`}
           >
             <div className="flex items-center gap-2 mb-1">
-              <stat.icon className={`w-4 h-4 ${stat.color}`} />
-              <span className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                {stat.label}
+              <span aria-label={stat.label} title={stat.label}>
+                <stat.icon className={`w-4 h-4 ${stat.color}`} />
               </span>
             </div>
             <p className={`text-lg font-semibold ${
