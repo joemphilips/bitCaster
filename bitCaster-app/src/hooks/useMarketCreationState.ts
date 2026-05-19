@@ -397,9 +397,11 @@ export function useMarketCreationState() {
     try {
       const choice = draft.stepOracleCheck?.choice
       const title = draft.stepBasicInfo?.title ?? ''
+      const description = draft.stepReviewAndCreate?.description ?? ''
       const categoryTags = draft.stepBasicInfo?.categoryTags ?? []
       const tags: string[][] = [
-        ['description', title],
+        ['title', title],
+        ['description', description],
         ...categoryTags.map((t) => ['t', t] as string[]),
       ]
 
@@ -453,6 +455,8 @@ export function useMarketCreationState() {
           eventId,
           outcomes,
           maturityEpoch,
+          title,
+          description,
         )
         creatorOracle = { type: 'self', eventId, outcomes }
       } else {
@@ -478,7 +482,7 @@ export function useMarketCreationState() {
         condition_id,
         {
           title,
-          description: draft.stepReviewAndCreate?.description ?? '',
+          description,
           outcomes: outcomes.map((name) => ({
             name,
             probability: draft.stepOutcomes?.outcomes?.find((o) => o.label === name)?.probability ?? 50,

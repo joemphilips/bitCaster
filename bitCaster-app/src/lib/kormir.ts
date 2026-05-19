@@ -41,6 +41,8 @@ type StoredKormirEvent = {
   attestation?: unknown
 }
 
+const NIP88_TITLE_MAX_CHARS = 100
+
 let modulePromise: Promise<KormirModule> | null = null
 let instancePromise: Promise<KormirType> | null = null
 // Relay list used to build the currently-cached Kormir instance. Tracked so
@@ -168,6 +170,14 @@ export function resetKormir(): void {
   instanceRelayKey = null
 }
 
+function plainTextTagValue(value: string): string {
+  return value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function truncateNip88Title(title: string): string {
+  return Array.from(plainTextTagValue(title)).slice(0, NIP88_TITLE_MAX_CHARS).join('')
+}
+
 /**
  * Create an enum oracle event, publish its announcement to the connected
  * relays, and return the announcement encoded as a hex string (the shape
@@ -177,16 +187,26 @@ export function resetKormir(): void {
  * @param eventId - DLC event_id (slug derived from the market title)
  * @param outcomes - list of possible outcome strings
  * @param maturityEpoch - Unix timestamp (seconds) when the event matures
+ * @param title - short plain-text market title for the kind-88 NIP-88 title tag
+ * @param description - plain-text market summary for the kind-88 NIP-88 description tag
  */
 export async function createEnumAnnouncement(
   relays: string[],
   eventId: string,
   outcomes: string[],
   maturityEpoch: number,
+  title = eventId,
+  description = title,
 ): Promise<string> {
   const kormir = await getKormir(relays)
   try {
-    return await kormir.create_enum_event(eventId, outcomes, maturityEpoch)
+    return await kormir.create_enum_event(
+      eventId,
+      outcomes,
+      maturityEpoch,
+      truncateNip88Title(title),
+      plainTextTagValue(description),
+    )
   } catch (err) {
     throw new Error(`Failed to create DLC oracle announcement: ${describeThrown(err)}`)
   }

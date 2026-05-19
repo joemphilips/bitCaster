@@ -194,6 +194,8 @@ describe('kormir wrapper', () => {
       'what_is_the_bitcoin_price',
       ['Yes', 'No'],
       1_750_000_000,
+      'What is the Bitcoin price?',
+      'Resolve based on the reference exchange close.',
     )
 
     expect(hex).toBe('deadbeef')
@@ -202,6 +204,8 @@ describe('kormir wrapper', () => {
       'what_is_the_bitcoin_price',
       ['Yes', 'No'],
       1_750_000_000,
+      'What is the Bitcoin price?',
+      'Resolve based on the reference exchange close.',
     )
   })
 

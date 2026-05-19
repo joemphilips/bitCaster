@@ -134,9 +134,11 @@ export class Kormir {
 * @param {string} event_id
 * @param {(string)[]} outcomes
 * @param {number} event_maturity_epoch
+* @param {string} title
+* @param {string} description
 * @returns {Promise<string>}
 */
-  create_enum_event(event_id: string, outcomes: (string)[], event_maturity_epoch: number): Promise<string>;
+  create_enum_event(event_id: string, outcomes: (string)[], event_maturity_epoch: number, title: string, description: string): Promise<string>;
 /**
 * @param {string} str
 * @returns {Promise<Attestation>}
@@ -205,7 +207,7 @@ export interface InitOutput {
   readonly attestation_signatures: (a: number, b: number) => void;
   readonly eventdata_outcomes: (a: number, b: number) => void;
   readonly __wbg_kormir_free: (a: number) => void;
-  readonly kormir_create_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+  readonly kormir_create_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
   readonly kormir_create_numeric_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
   readonly kormir_decode_announcement: (a: number, b: number) => number;
   readonly kormir_decode_attestation: (a: number, b: number) => number;

@@ -27,7 +27,7 @@ export function eventdata_announcement(a: number, b: number): void;
 export function attestation_signatures(a: number, b: number): void;
 export function eventdata_outcomes(a: number, b: number): void;
 export function __wbg_kormir_free(a: number): void;
-export function kormir_create_enum_event(a: number, b: number, c: number, d: number, e: number, f: number): number;
+export function kormir_create_enum_event(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number): number;
 export function kormir_create_numeric_event(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number): number;
 export function kormir_decode_announcement(a: number, b: number): number;
 export function kormir_decode_attestation(a: number, b: number): number;

@@ -462,7 +462,11 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
         conditions: [
           {
             condition_id: 'abc123',
-            tags: [['description', 'Will BTC hit 100K?']],
+            tags: [
+              ['title', 'Will BTC hit 100K?'],
+              ['description', 'Resolve YES only if BTC trades above $100,000 before close.'],
+              ['t', 'crypto'],
+            ],
             threshold: 1,
             announcements: ['ann1'],
             partitions,
@@ -659,9 +663,10 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
             conditions: [
               {
                 condition_id: 'abc123',
-                description: 'Will BTC hit 100K?',
                 tags: [
+                  ['title', 'Will BTC hit 100K?'],
                   ['description', 'Resolve YES only if the oracle attests BTC traded above $100,000 before close.'],
+                  ['t', 'crypto'],
                 ],
                 threshold: 1,
                 announcements: ['ann1'],
