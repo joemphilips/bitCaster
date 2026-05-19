@@ -90,11 +90,13 @@ For complementary matches, the order book first creates a reservation, not a
 final fill. The public order status exposes that row as `status: matched` with a
 `tradeId`; once both parties complete the atomic swap the reservation commits
 and becomes `status: filled`. If the settlement timeout expires first, the
-engine fails the trade, releases the reservation as `status: released`, and
-cancels the consumed orders so their per-order ephemeral keys cannot be reused
-for another swap. The timeout must be scheduled after the seller-side locktime
-plus a grace window; timing out at the buyer-side locktime can abort a swap that
-is still valid on the protocol timeline.
+engine fails the trade and releases the reservation as `status: released`.
+Release is time-in-force aware: GTC/GTD quantity may return to the book under
+the same order-level ephemeral key because reuse across partial fills of the
+same order is allowed, while FAK/FOK orders are cancelled instead of resting
+again. The timeout must be scheduled after the seller-side locktime plus a
+grace window; timing out at the buyer-side locktime can abort a swap that is
+still valid on the protocol timeline.
 
 ### Step 3: ECDH Shared Secret
 
