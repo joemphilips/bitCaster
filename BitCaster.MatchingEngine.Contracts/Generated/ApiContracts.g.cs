@@ -1363,7 +1363,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSats, long @volume30dSats)
+        public MarketCatalogueEntry(System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySats, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, int @traderCount, long @volume24hSats, long @volume30dSats, long @volumeLifetimeSats)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -1378,6 +1378,9 @@ namespace BitCaster.MatchingEngine.Contracts
             this.CreatedAt = @createdAt;
             this.Volume24hSats = @volume24hSats;
             this.Volume30dSats = @volume30dSats;
+            this.LiquiditySats = @liquiditySats;
+            this.TraderCount = @traderCount;
+            this.VolumeLifetimeSats = @volumeLifetimeSats;
             this.LastTradedPrice = @lastTradedPrice;
             this.CategoryTags = @categoryTags;
             this.LastSuccessfulRefreshAt = @lastSuccessfulRefreshAt;
@@ -1474,6 +1477,27 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volume30dSats")]
         public long Volume30dSats { get; }
+
+        /// <summary>
+        /// Total face amount in sats of currently-resting orders across the market's order books.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
+        public long LiquiditySats { get; }
+
+        /// <summary>
+        /// Number of distinct traders that have settled a trade in this market.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("traderCount")]
+        public int TraderCount { get; }
+
+        /// <summary>
+        /// Cumulative settled collateral face amount of all fills in the market's history.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("volumeLifetimeSats")]
+        public long VolumeLifetimeSats { get; }
 
         /// <summary>
         /// Most recent execution price (probability in `[1, 99]`), null if the market has never traded.

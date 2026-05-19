@@ -1411,6 +1411,9 @@ components:
         - createdAt
         - volume24hSats
         - volume30dSats
+        - liquiditySats
+        - traderCount
+        - volumeLifetimeSats
         - categoryTags
         - lastSuccessfulRefreshAt
       properties:
@@ -1503,6 +1506,27 @@ components:
           description: >
             Trading volume over the last 30 days in satoshis. Drives the
             `Popular` sort dimension.
+        liquiditySats:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Total face amount in sats of currently-resting orders across the
+            market's order books.
+        traderCount:
+          type: integer
+          format: int32
+          minimum: 0
+          description: >
+            Number of distinct traders that have settled a trade in this
+            market.
+        volumeLifetimeSats:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Cumulative settled collateral face amount of all fills in the
+            market's history.
         lastTradedPrice:
           type: number
           nullable: true

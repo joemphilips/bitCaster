@@ -144,12 +144,32 @@ public static class MarketQueryEndpoint
             finalOutcome: null!,
             lastSuccessfulRefreshAt: refreshedAt,
             lastTradedPrice: null,
+            liquiditySats: StubLiquiditySats(c),
             outcomes: c.Outcomes,
             state: open ? MarketCatalogueEntryState.Open : MarketCatalogueEntryState.Closed,
             thumbnailUrl: null!,
             title: c.Title,
+            traderCount: StubTraderCount(c),
             volume24hSats: 0,
-            volume30dSats: 0);
+            volume30dSats: 0,
+            volumeLifetimeSats: StubVolumeLifetimeSats(c));
+    }
+
+    private static long StubLiquiditySats(MintdConditionDto c) =>
+        25_000L + (StableBucket(c.ConditionId, modulo: 12) * 5_000L);
+
+    private static int StubTraderCount(MintdConditionDto c) =>
+        2 + StableBucket(c.ConditionId, modulo: 8);
+
+    private static long StubVolumeLifetimeSats(MintdConditionDto c) =>
+        StubLiquiditySats(c) * (2 + StableBucket(c.ConditionId, modulo: 4));
+
+    private static int StableBucket(string value, int modulo)
+    {
+        var hash = 0;
+        foreach (var ch in value)
+            hash = unchecked((hash * 31) + ch);
+        return Math.Abs(hash % modulo);
     }
 
     private static async Task<List<MintdConditionDto>> TryReadConditionsAsync(IHttpClientFactory factory)

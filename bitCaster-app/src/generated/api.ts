@@ -735,6 +735,21 @@ export interface components {
        * @description Trading volume over the last 30 days in satoshis. Drives the `Popular` sort dimension.
        */
       volume30dSats: number;
+      /**
+       * Format: int64
+       * @description Total face amount in sats of currently-resting orders across the market's order books.
+       */
+      liquiditySats: number;
+      /**
+       * Format: int32
+       * @description Number of distinct traders that have settled a trade in this market.
+       */
+      traderCount: number;
+      /**
+       * Format: int64
+       * @description Cumulative settled collateral face amount of all fills in the market's history.
+       */
+      volumeLifetimeSats: number;
       /** @description Most recent execution price (probability in `[1, 99]`), null if the market has never traded. */
       lastTradedPrice?: number | null;
       /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
