@@ -13,6 +13,7 @@ import {
   Wallet as CashuWallet,
 } from '@cashu/cashu-ts'
 import { hexToBytes } from './ecdh'
+import { parseOutcomeSetId } from './outcomeSets'
 import { normalizeUrl } from './url'
 
 export interface CtfSplitRequest {
@@ -94,6 +95,8 @@ export interface SplitCollateralSelection {
 }
 
 export interface ComplementarySplitForSwapResult {
+  resolvedLockOutcomeSetId: string
+  resolvedKeepOutcomeSetId: string
   lockedProofs: Proof[]
   keepProofs: Proof[]
   spentSatProofs: Proof[]
@@ -154,6 +157,16 @@ export async function splitRootCompleteSetForSwap(
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
   )
+  const resolvedLockOutcomeSetId = resolveMintOutcomeSetKey(
+    params.lockOutcomeSetId,
+    outcomeCollectionKeysets,
+    'lock',
+  )
+  const resolvedKeepOutcomeSetId = resolveMintOutcomeSetKey(
+    params.keepOutcomeSetId,
+    outcomeCollectionKeysets,
+    'keep',
+  )
   const proofsByCollection = await splitCompleteSetWithOperation({
     mintUrl: params.mintUrl,
     operationId: params.operationId,
@@ -164,20 +177,22 @@ export async function splitRootCompleteSetForSwap(
     amountSats: params.amountSats,
     proofOperationStore: params.proofOperationStore,
     makeOutputs: ({ collection, amountSats, keyset }) =>
-      collection === params.lockOutcomeSetId
+      collection === resolvedLockOutcomeSetId
         ? OutputData.createP2PKData(params.p2pk, amountSats, keyset)
         : OutputData.createRandomData(amountSats, keyset),
   })
 
   return {
+    resolvedLockOutcomeSetId,
+    resolvedKeepOutcomeSetId,
     lockedProofs: requireOutcomeProofs(
       proofsByCollection,
-      params.lockOutcomeSetId,
+      resolvedLockOutcomeSetId,
       params.operationId,
     ),
     keepProofs: requireOutcomeProofs(
       proofsByCollection,
-      params.keepOutcomeSetId,
+      resolvedKeepOutcomeSetId,
       params.operationId,
     ),
     spentSatProofs: params.collateralProofs,
@@ -637,6 +652,39 @@ function requireOutcomeProofs(
     )
   }
   return proofs
+}
+
+function resolveMintOutcomeSetKey(
+  engineOutcomeSetId: string,
+  outcomeCollectionKeysets: Record<string, string>,
+  branch: 'lock' | 'keep',
+): string {
+  const engineSet = parseOutcomeSetToComparableSet(engineOutcomeSetId)
+  const matches = Object.keys(outcomeCollectionKeysets).filter((mintKey) =>
+    outcomeSetsEqual(engineSet, parseOutcomeSetToComparableSet(mintKey)),
+  )
+  if (matches.length !== 1) {
+    throw new Error(
+      `CTF split ${branch} outcome ${engineOutcomeSetId} matched ${matches.length} mint keyset-map keys; expected exactly one`,
+    )
+  }
+  return matches[0]
+}
+
+function parseOutcomeSetToComparableSet(outcomeSetId: string): Set<string> {
+  const elements = parseOutcomeSetId(outcomeSetId)
+  if (elements.length === 0) {
+    throw new Error('CTF split outcome-set id cannot be empty')
+  }
+  return new Set(elements)
+}
+
+function outcomeSetsEqual(left: Set<string>, right: Set<string>): boolean {
+  if (left.size !== right.size) return false
+  for (const value of left) {
+    if (!right.has(value)) return false
+  }
+  return true
 }
 
 function blindedMessageKey(output: SerializedBlindedMessage): string {

@@ -437,7 +437,10 @@ async function prepareComplementarySellerOpening(
   await persistFreshProofs(
     splitResult.keepProofs,
     mintUrl,
-    outcomeMetadataForCondition(split.conditionId, split.keepOutcomeSetId),
+    outcomeMetadataForCondition(
+      split.conditionId,
+      splitResult.resolvedKeepOutcomeSetId,
+    ),
   )
 
   return sellerPreparePrelockedSwap(ctx, splitResult.lockedProofs)
