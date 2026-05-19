@@ -3,7 +3,6 @@ import {
   Share2,
   Clock,
   CheckCircle2,
-  Droplet,
   Users,
   Landmark,
   Copy,
@@ -350,13 +349,6 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
               {t("market.volume")}
             </span>
             <span>{formatBtc(market.volume)}</span>
-          </div>
-          <div className="flex items-center gap-1" title={t("market.liquidity")}>
-            <Droplet className="w-3.5 h-3.5" />
-            <span>{t("market.liquidity")}</span>
-            <span className="font-mono font-medium">
-              {formatBtc(market.liquidity)}
-            </span>
           </div>
           <div className="flex items-center gap-1" title={t("market.traders")}>
             <Users className="w-3.5 h-3.5" />

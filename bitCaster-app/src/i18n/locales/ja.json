@@ -356,7 +356,8 @@
     "scanQrCode": "QRコードをスキャン",
     "tapToScan": "アドレスをスキャンするにはタップ",
     "lightningAddressOrInvoice": "Lightningアドレスまたはインボイス",
-    "autoClose": "自動的に閉じます..."
+    "autoClose": "自動的に閉じます...",
+    "autoCloseProgress": "自動遷移のカウントダウン"
   },
   "creator": {
     "title": "あなたのマーケット",
@@ -492,6 +493,10 @@
     "openSettings": "設定を開く",
     "closeMarketCreation": "マーケット作成を閉じる",
     "dismissResumeBanner": "再開バナーを閉じる",
+    "ammTbdTitle": "AMM 流動性は今後対応予定",
+    "ammTbdDesc": "これらのマーケットでは、まだ自動マーケットメイクを有効にしていません。流動性を追加せずに続行してください。",
+    "ammTbdPanelTitle": "流動性の支払いは不要です",
+    "ammTbdPanelDesc": "マーケットはこのまま作成できます。カテゴリカルマーケットに対応した後、流動性提供フローを再度有効化します。",
     "depositTitle": "資金を入金",
     "depositSubtitle": "任意です。Bot 流動性に資金を入れると、マーケット開始時から bid/ask が提示されます。スキップして人間のメイカーによる流動性提供を待つこともできます。",
     "marketCreatedLabel": "マーケットを作成しました",

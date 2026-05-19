@@ -61,7 +61,7 @@ export function getTagValues(tags: string[][], key: string): string[] {
   return tag ? tag.slice(1) : []
 }
 
-const KNOWN_TAG_KEYS = new Set(['description', 'n'])
+const KNOWN_TAG_KEYS = new Set(['description', 'title', 'n'])
 
 export function extractCategoryTagIds(tags: string[][]): string[] {
   return tags
@@ -315,8 +315,12 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   const attestationStatus = normalizeMintdStatus(c.attestation.status)
   const isResolved = isAttestationResolved(attestationStatus)
   const tags = c.tags ?? []
+  const description = getTagValue(tags, 'description')?.trim()
   const title =
-    getTagValue(tags, 'description') ?? c.description ?? 'Untitled Market'
+    getTagValue(tags, 'title')?.trim() ??
+    c.description?.trim() ??
+    description ??
+    'Untitled Market'
 
   const base = {
     id: c.condition_id,
@@ -345,7 +349,7 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
       feePercent: 0,
     },
     resolution: {
-      criteria: title,
+      criteria: description || title,
       source: 'oracle' as const,
       resolutionDate: c.attestation.attested_at
         ? new Date(c.attestation.attested_at * 1000).toISOString()

@@ -356,7 +356,8 @@
     "scanQrCode": "Scan QR Code",
     "tapToScan": "Tap to scan an address",
     "lightningAddressOrInvoice": "Lightning address or invoice",
-    "autoClose": "Closing automatically..."
+    "autoClose": "Closing automatically...",
+    "autoCloseProgress": "Auto-advance countdown"
   },
   "creator": {
     "title": "Your Markets",
@@ -492,6 +493,10 @@
     "openSettings": "Open Settings",
     "closeMarketCreation": "Close market creation",
     "dismissResumeBanner": "Dismiss resume banner",
+    "ammTbdTitle": "AMM liquidity is TBD",
+    "ammTbdDesc": "Automated market making is not enabled for these markets yet. Continue without adding liquidity.",
+    "ammTbdPanelTitle": "No liquidity payment required",
+    "ammTbdPanelDesc": "The market can be created now. Liquidity provisioning will return after the AMM flow supports categorical markets.",
     "depositTitle": "Deposit funds",
     "depositSubtitle": "Optional. Funding bot liquidity gives the market initial bid/ask quotes. You can skip this step and let human makers provide liquidity.",
     "marketCreatedLabel": "Market created",

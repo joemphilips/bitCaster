@@ -651,6 +651,45 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
     expect(detail.imageUrl).toBeUndefined()
   })
 
+  it('uses the mintd description tag as resolution criteria when rendering mintd-only detail', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/conditions')) {
+        return new Response(
+          JSON.stringify({
+            conditions: [
+              {
+                condition_id: 'abc123',
+                description: 'Will BTC hit 100K?',
+                tags: [
+                  ['description', 'Resolve YES only if the oracle attests BTC traded above $100,000 before close.'],
+                ],
+                threshold: 1,
+                announcements: ['ann1'],
+                partitions: defaultPartitions,
+                attestation: {
+                  status: 'pending',
+                  winning_outcome: null,
+                  attested_at: null,
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        )
+      }
+      if (url.includes('/api/v1/markets/query'))
+        return new Response('boom', { status: 500 })
+      return emptyMetadataResponse()
+    })
+
+    const detail = await fetchMarketDetail('abc123')
+
+    expect(detail.title).toBe('Will BTC hit 100K?')
+    expect(detail.resolution.criteria).toBe(
+      'Resolve YES only if the oracle attests BTC traded above $100,000 before close.',
+    )
+  })
+
   it('queries the engine catalogue with state=All so closed markets surface', async () => {
     await fetchMarketDetail('abc123')
     const calls = fetchMock.mock.calls.map((c) => c[0] as string)

@@ -1,4 +1,4 @@
-import { TrendingUp, Droplets, Users, Calendar, Clock, CheckCircle } from 'lucide-react'
+import { TrendingUp, Users, Calendar, Clock, CheckCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
@@ -64,12 +64,6 @@ export function MarketStats({ market }: MarketStatsProps) {
       label: t('market.volume'),
       value: formatBtc(market.volume),
       color: 'text-blue-500',
-    },
-    {
-      icon: Droplets,
-      label: t('market.liquidity'),
-      value: formatBtc(market.liquidity),
-      color: 'text-cyan-500',
     },
     {
       icon: Users,
