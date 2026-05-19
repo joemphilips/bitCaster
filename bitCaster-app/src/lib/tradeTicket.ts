@@ -6,6 +6,7 @@ import type {
   TradeSelection,
   TradeSide,
 } from "@/types/market-detail";
+import { resolveOutcomeSets } from "@/lib/outcomeSets";
 
 export interface TradeTicket {
   marketId: string;
@@ -15,7 +16,6 @@ export interface TradeTicket {
 export type TradeTicketErrorCode =
   | "missing-selection"
   | "invalid-amount"
-  | "unsupported-market"
   | "no-market-liquidity"
   | "missing-order-book";
 
@@ -33,23 +33,7 @@ function canonicalOutcomeName(
   market: MarketDetail,
   selection: TradeSelection,
 ): string | null {
-  if (market.type === "yesno") {
-    if (selection.side === "yes") return "YES";
-    if (selection.side === "no") return "NO";
-    return null;
-  }
-
-  if (market.type === "categorical") {
-    const selected = market.outcomes.find((o) => o.id === selection.outcomeId);
-    return selected?.label ?? null;
-  }
-
-  if (market.type === "numeric") {
-    if (selection.side === "hi") return "HI";
-    if (selection.side === "lo") return "LO";
-  }
-
-  return null;
+  return resolveOutcomeSets(market, selection)?.selectedOutcomeSetId ?? null;
 }
 
 function marketPriceFor(
@@ -125,8 +109,8 @@ export function buildTradeTicket(params: {
   const outcomeName = canonicalOutcomeName(market, selection);
   if (!outcomeName) {
     throw new TradeTicketError(
-      "unsupported-market",
-      "This market type is not supported by the trading form yet.",
+      "missing-selection",
+      "Choose an outcome before placing an order.",
     );
   }
 
