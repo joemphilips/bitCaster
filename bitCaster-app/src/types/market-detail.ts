@@ -141,6 +141,7 @@ interface BaseMarketDetail {
   baseUnit: string // e.g. "sats", "USD"
   mint?: MarketMintInfo
   creator: MarketCreator
+  outcomes?: Outcome[]
   /**
    * Engine-side lifecycle state per ADR-009 Amendment 2026-05-04. The detail
    * page reads this — NOT mintd's `attestation.status` — to decide Open /
@@ -152,6 +153,7 @@ interface BaseMarketDetail {
   resolution: ResolutionDetails
   priceHistory: PriceHistory
   orderBook: OrderBook
+  outcomeOrderBooks?: Record<string, OrderBook>
   recentTrades: Trade[]
   comments: Comment[]
   relatedMarkets: RelatedMarket[]
@@ -160,7 +162,7 @@ interface BaseMarketDetail {
 export interface YesNoMarketDetail extends BaseMarketDetail {
   type: 'yesno'
   currentOdds: CurrentOdds
-  outcomeOrderBooks?: Record<'YES' | 'NO', OrderBook>
+  outcomeOrderBooks?: Record<string, OrderBook>
 }
 
 export interface CategoricalMarketDetail extends BaseMarketDetail {

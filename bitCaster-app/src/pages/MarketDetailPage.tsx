@@ -11,6 +11,12 @@ import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
+import {
+  outcomeLabels,
+  outcomeSetIdsForMarketBooks,
+  outcomeSetMarketId,
+  resolveOutcomeSets,
+} from "@/lib/outcomeSets";
 import { getBalance, useBalance, useWalletStore } from "@/stores/wallet";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
@@ -48,13 +54,6 @@ function needsEngineDetailRefresh(market: MarketDetailType): boolean {
   return market.closingDate == null || market.state == null;
 }
 
-function outcomeLabels(market: MarketDetailType): string[] {
-  if (market.type === "yesno") return ["YES", "NO"];
-  if (market.type === "categorical") return market.outcomes.map((o) => o.label);
-  if (market.type === "numeric") return ["HI", "LO"];
-  return [];
-}
-
 function categoryTagIds(market: MarketDetailType): string[] {
   return market.categoryTags.map((tag) => tag.id).sort();
 }
@@ -73,21 +72,27 @@ function marketShapeMatches(
   );
 }
 
-async function fetchMarketDetailWithBooks(
+export async function fetchMarketDetailWithBooks(
   conditionId: string,
 ): Promise<MarketDetailType> {
   let detail = await fetchMarketDetail(conditionId);
-  if (detail.type !== "yesno") return detail;
+  const outcomeSetIds = outcomeSetIdsForMarketBooks(detail);
+  if (outcomeSetIds.length === 0) return detail;
 
   try {
-    const [yes, no] = await Promise.all([
-      fetchOrderBook(`${conditionId}-YES`),
-      fetchOrderBook(`${conditionId}-NO`),
-    ]);
+    const entries = await Promise.all(
+      outcomeSetIds.map(async (outcomeSetId) => [
+        outcomeSetId,
+        await fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId)),
+      ] as const),
+    );
+    const outcomeOrderBooks = Object.fromEntries(entries);
+    const defaultOrderBook =
+      outcomeOrderBooks[outcomeSetIds[0]] ?? detail.orderBook;
     detail = {
       ...detail,
-      orderBook: yes,
-      outcomeOrderBooks: { YES: yes, NO: no },
+      orderBook: defaultOrderBook,
+      outcomeOrderBooks,
     };
   } catch {
     // Order book fetch is best-effort; limit orders can still rest.
@@ -283,18 +288,13 @@ export function MarketDetailPage() {
 
     let ticket: ReturnType<typeof buildTradeTicket>;
     try {
-      const selectedOutcome =
-        market.type === "yesno"
-          ? tradeSelection.side === "no"
-            ? "NO"
-            : "YES"
-          : null;
-      const complementaryOutcome =
-        selectedOutcome === "YES"
-          ? "NO"
-          : selectedOutcome === "NO"
-            ? "YES"
-            : null;
+      const outcomeSets = resolveOutcomeSets(latestMarket, tradeSelection);
+      if (!outcomeSets) {
+        throw new TradeTicketError(
+          "missing-selection",
+          "Choose an outcome before placing an order.",
+        );
+      }
       ticket = buildTradeTicket({
         market: latestMarket,
         selection: tradeSelection,
@@ -302,18 +302,14 @@ export function MarketDetailPage() {
         side: tradeSide,
         orderType,
         limitPrice,
-        orderBook: selectedOutcome
-          ? latestMarket.type === "yesno"
-            ? (latestMarket.outcomeOrderBooks?.[selectedOutcome] ??
-              (selectedOutcome === "YES" ? latestMarket.orderBook : null))
-            : null
-          : null,
-        complementaryOrderBook: complementaryOutcome
-          ? latestMarket.type === "yesno"
-            ? (latestMarket.outcomeOrderBooks?.[complementaryOutcome] ??
-              (complementaryOutcome === "YES" ? latestMarket.orderBook : null))
-            : null
-          : null,
+        orderBook:
+          latestMarket.outcomeOrderBooks?.[
+            outcomeSets.selectedOutcomeSetId
+          ] ?? null,
+        complementaryOrderBook:
+          latestMarket.outcomeOrderBooks?.[
+            outcomeSets.complementOutcomeSetId
+          ] ?? null,
       });
     } catch (e) {
       const message =

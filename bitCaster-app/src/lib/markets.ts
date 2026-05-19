@@ -300,6 +300,11 @@ export function filterMarkets(
 function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   const firstPartition = c.partitions[0]
   const outcomes = firstPartition?.partition ?? []
+  const mappedOutcomes = outcomes.map((label, i) => ({
+    id: `outcome-${i}`,
+    label,
+    odds: 100 / Math.max(outcomes.length, 1),
+  }))
   const now = new Date().toISOString()
 
   const isYesNo =
@@ -348,6 +353,7 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
       totalMarketsCreated: 0,
       feePercent: 0,
     },
+    outcomes: mappedOutcomes,
     resolution: {
       criteria: description || title,
       source: 'oracle' as const,
@@ -375,11 +381,6 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   return {
     ...base,
     type: 'categorical',
-    outcomes: outcomes.map((label, i) => ({
-      id: `outcome-${i}`,
-      label,
-      odds: 100 / outcomes.length,
-    })),
     outcomePriceHistories: {},
     outcomeOrderBooks: {},
   }
@@ -394,6 +395,11 @@ function mapCatalogueEntryToMarketDetail(
     entry.outcomes && entry.outcomes.length > 0
       ? entry.outcomes
       : (firstPartition?.partition ?? [])
+  const mappedOutcomes = outcomes.map((label, i) => ({
+    id: `outcome-${i}`,
+    label,
+    odds: 100 / Math.max(outcomes.length, 1),
+  }))
   const now = new Date().toISOString()
   const createdAt = entry.createdAt ?? now
   const title = entry.title?.trim() || 'Untitled Market'
@@ -441,6 +447,7 @@ function mapCatalogueEntryToMarketDetail(
           totalMarketsCreated: 0,
           feePercent: 0,
         },
+    outcomes: mappedOutcomes,
     resolution: {
       criteria: description || title,
       source: 'oracle' as const,
@@ -466,11 +473,6 @@ function mapCatalogueEntryToMarketDetail(
   return {
     ...base,
     type: 'categorical',
-    outcomes: outcomes.map((label, i) => ({
-      id: `outcome-${i}`,
-      label,
-      odds: 100 / Math.max(outcomes.length, 1),
-    })),
     outcomePriceHistories: {},
     outcomeOrderBooks: {},
   }
