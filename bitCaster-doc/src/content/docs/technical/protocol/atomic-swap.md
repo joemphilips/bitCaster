@@ -92,7 +92,9 @@ final fill. The public order status exposes that row as `status: matched` with a
 and becomes `status: filled`. If the settlement timeout expires first, the
 engine fails the trade, releases the reservation as `status: released`, and
 cancels the consumed orders so their per-order ephemeral keys cannot be reused
-for another swap.
+for another swap. The timeout must be scheduled after the seller-side locktime
+plus a grace window; timing out at the buyer-side locktime can abort a swap that
+is still valid on the protocol timeline.
 
 ### Step 3: ECDH Shared Secret
 
