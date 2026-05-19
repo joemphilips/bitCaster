@@ -42,10 +42,9 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        // Per ADR-009 the markets-list page now reads volume / state from the
-        // engine's catalogue proxy directly (`MarketCatalogueEntry.volume24hSats`).
-        // Intercept the engine endpoint with a known volume so we can verify the
-        // card renders the engine-derived value. The deprecated per-market
+        // The markets-list page reads visible metrics and state from the
+        // catalogue proxy. Intercept the endpoint with known values so we can
+        // verify the card renders the catalogue-derived values. The deprecated per-market
         // /api/v1/{id}/metadata fetch is no longer issued from this page; for
         // backward compat we leave a stub in place that returns deterministic
         // values in case any future feature re-introduces a per-card detail
@@ -71,6 +70,9 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
                             createdAt = "2026-01-01T00:00:00Z",
                             volume24hSats = 50_000L,
                             volume30dSats = 200_000L,
+                            liquiditySats = 150_000L,
+                            traderCount = 100,
+                            volumeLifetimeSats = 750_000L,
                             lastTradedPrice = (double?)null,
                             categoryTags = new[] { "crypto" },
                             lastSuccessfulRefreshAt = "2026-05-02T09:58:00Z",
@@ -88,12 +90,12 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        // The card displays the volume from the engine. 50_000 sats renders
-        // as "50K" via the formatBtc helper used in MarketCard.tsx.
+        // The card displays lifetime volume from the catalogue. 750_000 sats
+        // renders as "750.0K" via the formatBtc helper used in MarketCard.tsx.
         var btcMarket = page.GetByText("Will Bitcoin reach $100K");
         await Assertions.Expect(btcMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
-        var volumeBadge = page.GetByText("50.0K", new() { Exact = false });
+        var volumeBadge = page.GetByText("750.0K", new() { Exact = false });
         await Assertions.Expect(volumeBadge.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 

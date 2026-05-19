@@ -119,6 +119,9 @@ public class ClosedMarketUiTests : IAsyncLifetime
                     ""createdAt"": ""2026-01-01T00:00:00Z"",
                     ""volume24hSats"": 0,
                     ""volume30dSats"": 0,
+                    ""liquiditySats"": 25000,
+                    ""traderCount"": 3,
+                    ""volumeLifetimeSats"": 50000,
                     ""lastTradedPrice"": null,
                     ""categoryTags"": [],
                     ""lastSuccessfulRefreshAt"": ""2026-05-04T00:00:00Z""

@@ -1,0 +1,18 @@
+---
+title: マーケットカタログAPI
+description: "/api/v1/markets/query マーケットカタログエンドポイントが返す公開フィールド。"
+sidebar:
+  order: 4
+---
+
+`/api/v1/markets/query` エンドポイントは、マーケット一覧や検索フローで使う公開マーケットカタログを返します。各項目は `MarketCatalogueEntry` で、マーケット識別子、アウトカム、ライフサイクル状態、作成者が設定した表示メタデータ、カテゴリタグ、取引サマリ指標を含みます。
+
+カタログは、表示用の累計指標として次の3つを公開します。
+
+| フィールド | 型 | 意味 |
+| --- | --- | --- |
+| `liquiditySats` | `int64` | そのマーケットの注文板に現在残っている注文の額面合計（sats）。 |
+| `traderCount` | `int32` | そのマーケットで約定済み取引を決済した重複なしのトレーダー数。 |
+| `volumeLifetimeSats` | `int64` | そのマーケットの履歴全体における全約定の決済済み担保額面の累計。 |
+
+レスポンスには、ローリング出来高やソート用の `volume24hSats` と `volume30dSats` も含まれます。クライアントがマーケットの Volume、Liquidity、Traders 指標を表示する場合は、`volumeLifetimeSats`、`liquiditySats`、`traderCount` を使ってください。
