@@ -63,6 +63,20 @@ export function getTagValues(tags: string[][], key: string): string[] {
 
 const KNOWN_TAG_KEYS = new Set(['description', 'title', 'n'])
 
+/**
+ * Identify the canonical two-outcome `Yes`/`No` universe so the mappers can
+ * branch on the dedicated `type: 'yesno'` shape. P19 made outcome labels
+ * oracle-verbatim, so this is a deliberate label match (`yes`/`no`,
+ * case-insensitive) rather than a count-only test.
+ */
+function isYesNoUniverse(outcomes: readonly string[]): boolean {
+  return (
+    outcomes.length === 2 &&
+    outcomes[0]?.toLowerCase() === 'yes' &&
+    outcomes[1]?.toLowerCase() === 'no'
+  )
+}
+
 export function extractCategoryTagIds(tags: string[][]): string[] {
   return tags
     .filter((t) => t.length >= 2 && !KNOWN_TAG_KEYS.has(t[0]))
@@ -180,10 +194,7 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
  */
 export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const outcomes = entry.outcomes ?? []
-  const isYesNo =
-    outcomes.length === 2 &&
-    outcomes[0]?.toLowerCase() === 'yes' &&
-    outcomes[1]?.toLowerCase() === 'no'
+  const isYesNo = isYesNoUniverse(outcomes)
 
   const closingDate = entry.deadline ?? entry.createdAt
   const title = entry.title ?? 'Untitled Market'
@@ -312,10 +323,7 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   }))
   const now = new Date().toISOString()
 
-  const isYesNo =
-    outcomes.length === 2 &&
-    outcomes[0].toLowerCase() === 'yes' &&
-    outcomes[1].toLowerCase() === 'no'
+  const isYesNo = isYesNoUniverse(outcomes)
 
   // Mintd attestation is reduced to outcome metadata per ADR-009 Amendment
   // 2026-05-04. Lifecycle (Open / Closed) reads engine `state` and is merged
@@ -415,10 +423,7 @@ function mapCatalogueEntryToMarketDetail(
   const normalisedState = normalizeEngineMarketState(entry.state)
   const finalOutcome = entry.finalOutcome?.trim() || undefined
   const resolutionDate = entry.closedAt ?? entry.deadline ?? createdAt
-  const isYesNo =
-    outcomes.length === 2 &&
-    outcomes[0].toLowerCase() === 'yes' &&
-    outcomes[1].toLowerCase() === 'no'
+  const isYesNo = isYesNoUniverse(outcomes)
 
   const base = {
     id: entry.conditionId,
