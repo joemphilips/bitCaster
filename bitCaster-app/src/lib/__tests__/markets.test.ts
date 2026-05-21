@@ -8,7 +8,6 @@ import {
   extractCategoryTagIds,
   getMarketThumbnail,
   getDepositStatus,
-  heartbeatMakerSession,
   mapCatalogueEntryToMarket,
   requestEcashDeposit,
   submitOrder,
@@ -380,7 +379,7 @@ describe('deposit API normalization', () => {
   })
 })
 
-describe('maker session heartbeat', () => {
+describe('submitOrder', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   let originalFetch: typeof globalThis.fetch
 
@@ -388,7 +387,7 @@ describe('maker session heartbeat', () => {
     originalFetch = globalThis.fetch
     fetchMock = vi.fn(() =>
       Promise.resolve(
-        new Response(JSON.stringify({ online: true }), { status: 200 }),
+        new Response(JSON.stringify({ orderId: 'order-1' }), { status: 200 }),
       ),
     )
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
@@ -399,26 +398,7 @@ describe('maker session heartbeat', () => {
     vi.restoreAllMocks()
   })
 
-  it('posts an authenticated heartbeat to keep resting maker orders settle-capable', async () => {
-    await heartbeatMakerSession()
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toContain('/api/v1/maker/session/heartbeat')
-    expect(init.method).toBe('POST')
-    expect((init.headers as Record<string, string>).Authorization).toMatch(
-      /^Nostr /,
-    )
-  })
-
-  it('refreshes the maker session before submitting an order', async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ online: true }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ orderId: 'order-1' }), { status: 200 }),
-      )
-
+  it('submits an authenticated order without a maker heartbeat preflight', async () => {
     await submitOrder('cond-123-YES', {
       outcomeId: 'YES',
       side: 'Buy',
@@ -428,12 +408,14 @@ describe('maker session heartbeat', () => {
       ephemeralPubkey: '02'.padEnd(66, 'a'),
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain(
-      '/api/v1/maker/session/heartbeat',
-    )
-    expect((fetchMock.mock.calls[1] as [string, RequestInit])[0]).toContain(
       '/api/v1/cond-123-YES/orders',
+    )
+    const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1]
+    expect(init.method).toBe('POST')
+    expect((init.headers as Record<string, string>).Authorization).toMatch(
+      /^Nostr /,
     )
   })
 })

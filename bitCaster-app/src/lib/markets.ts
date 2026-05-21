@@ -607,10 +607,6 @@ export async function submitOrder(
   marketId: string,
   params: SubmitOrderRequest,
 ): Promise<SubmitOrderResponse> {
-  await heartbeatMakerSession().catch(() => {
-    // The order request itself will return a precise auth/session error if the
-    // heartbeat cannot be recorded. Keep the submit path's error surface single.
-  })
   const url = `${window.location.origin}/api/v1/${marketId}/orders`
   // Bind the NIP-98 token to the exact body bytes the server will hash.
   const bodyText = JSON.stringify(params)
@@ -634,24 +630,6 @@ export async function submitOrder(
     )
   }
   return response.json()
-}
-
-export async function heartbeatMakerSession(): Promise<void> {
-  const url = `${window.location.origin}/api/v1/maker/session/heartbeat`
-  const emptyHash = await sha256Hex(new TextEncoder().encode(''))
-  const authHeader = await generateNip98Header(url, 'POST', emptyHash)
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: authHeader },
-  })
-  if (!response.ok) {
-    const detail = await response.text()
-    throw new Error(
-      detail.trim()
-        ? `Failed to refresh maker session: ${response.status} ${detail.trim()}`
-        : `Failed to refresh maker session: ${response.status}`,
-    )
-  }
 }
 
 // =============================================================================
