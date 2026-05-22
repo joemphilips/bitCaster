@@ -22,6 +22,7 @@ import type {
   MintKeyset,
   OutputConfig,
   OutputDataLike,
+  P2PKOptions,
   Proof,
   ProofState,
   SendConfig,
@@ -319,9 +320,18 @@ export async function sellerPrepareSwap(
 }
 
 /**
- * Seller step for proofs that were already minted with the swap P2PK lock.
- * Used by CTF maker-as-splitter settlement, where CDK rejects normal swaps
- * of conditional inputs but accepts P2PK conditional outputs from `/ctf/split`.
+ * Seller step for proofs that were **already** minted with the swap P2PK lock.
+ *
+ * Precondition: every proof in `lockedProofs` must carry a NUT-10 P2PK secret
+ * 2-of-2-locked to the swap's ephemeral + counterparty keys. This helper only
+ * pre-signs — it never locks — so handing it raw, unlocked outcome proofs would
+ * make the atomic swap non-atomic. Callers holding unlocked CTF outcome proofs
+ * must run {@link sellerLockOutcomeProofs} first; callers using
+ * `splitRootCompleteSetForSwap` already receive P2PK-locked proofs.
+ *
+ * The precondition is verified by {@link assertProofsAtomicSwapLocked}; that
+ * check is wired in as a hard guard together with the Phase 1 seller
+ * call-site cutover (see docs/plans/p19-cashu-ts-ctf-native.md).
  */
 export async function sellerPreparePrelockedSwap(
   ctx: SwapContext,
@@ -438,6 +448,260 @@ export async function splitProofsForExactSend(params: {
     changeProofs: result.keep,
     spentProofs: params.sourceProofs,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Conditional-keyset (CTF) swap primitives
+// ---------------------------------------------------------------------------
+
+/** One labelled group of outputs for a {@link conditionalKeysetSwap}. */
+export interface ConditionalSwapOutputGroup {
+  /** Caller-chosen key the returned proofs are grouped under. */
+  label: string;
+  /** `"p2pk"` mints NUT-11 P2PK-locked outputs; `"random"` mints plain outputs. */
+  kind: "p2pk" | "random";
+  /** Total sat value of this group. */
+  amount: number;
+  /** Required when `kind === "p2pk"`. */
+  p2pk?: P2PKOptions;
+}
+
+/**
+ * Keyset-pinned NUT-03 swap for CTF conditional proofs.
+ *
+ * Every input proof must belong to a single conditional keyset `K`; every
+ * output blinded message is minted against `K`. CDK permits this because all
+ * inputs and outputs share `(condition_id, outcome_collection_id)` — a regular
+ * NUT-03 swap within one conditional keyset. This deliberately bypasses
+ * cashu-ts's `Wallet`, whose keyset auto-selection would mint the outputs on
+ * the regular sat keyset and trip CDK error 13016
+ * ("Inputs must use the same conditional keyset").
+ *
+ * @returns proofs grouped by {@link ConditionalSwapOutputGroup.label}
+ */
+export async function conditionalKeysetSwap(
+  mintUrl: string,
+  sourceProofs: Proof[],
+  groups: ConditionalSwapOutputGroup[],
+): Promise<Record<string, Proof[]>> {
+  if (sourceProofs.length === 0) {
+    throw new Error("conditionalKeysetSwap requires at least one source proof");
+  }
+  if (groups.length === 0) {
+    throw new Error("conditionalKeysetSwap requires at least one output group");
+  }
+  const keysetId = singleProofKeysetId(sourceProofs);
+  const mint = new CashuMint(mintUrl);
+  const keyset = await fetchMintKeys(mint, keysetId);
+
+  const feeSats = conditionalInputFee(sourceProofs.length, keyset);
+  const grossInput = sumProofs(sourceProofs);
+  const groupTotal = groups.reduce((sum, group) => sum + group.amount, 0);
+  if (groupTotal !== grossInput - feeSats) {
+    throw new Error(
+      `conditionalKeysetSwap: output total ${groupTotal} != input ${grossInput} - fee ${feeSats}`,
+    );
+  }
+
+  const built = groups.map((group) => {
+    if (!Number.isSafeInteger(group.amount) || group.amount <= 0) {
+      throw new Error(
+        `conditionalKeysetSwap: group ${group.label} has invalid amount ${group.amount}`,
+      );
+    }
+    const data =
+      group.kind === "p2pk"
+        ? OutputData.createP2PKData(requireGroupP2PK(group), group.amount, keyset)
+        : OutputData.createRandomData(group.amount, keyset);
+    return { label: group.label, data };
+  });
+
+  const flatOutputs = built.flatMap((group) => group.data);
+  const { signatures } = await mint.swap({
+    inputs: sourceProofs.map(stripLocalProofMetadata),
+    outputs: flatOutputs.map((output) => output.blindedMessage),
+  });
+  if (signatures.length !== flatOutputs.length) {
+    throw new Error(
+      `conditionalKeysetSwap: mint returned ${signatures.length} signatures, ` +
+        `expected ${flatOutputs.length}`,
+    );
+  }
+
+  const result: Record<string, Proof[]> = {};
+  let cursor = 0;
+  for (const group of built) {
+    const proofs: Proof[] = [];
+    for (const output of group.data) {
+      const signature = signatures[cursor];
+      cursor += 1;
+      if (signature.id !== keysetId) {
+        throw new Error(
+          `conditionalKeysetSwap: mint signed an output with keyset ${signature.id}, ` +
+            `expected the source conditional keyset ${keysetId}`,
+        );
+      }
+      proofs.push(output.toProof(signature, keyset));
+    }
+    result[group.label] = proofs;
+  }
+  return result;
+}
+
+/**
+ * Convert unlocked CTF outcome proofs into genuinely NUT-11 P2PK 2-of-2-locked
+ * outcome proofs for the atomic swap, staying on the source conditional keyset.
+ *
+ * Handles oversized inventory: when the proofs net more than `amount`, the
+ * surplus is returned as `changeProofs` (same conditional keyset, unlocked) in
+ * the same single mint round-trip. This is the one correct seller-lock path for
+ * conditional proofs — callers must never hand raw, unlocked outcome proofs to
+ * {@link sellerPreparePrelockedSwap}.
+ */
+export async function sellerLockOutcomeProofs(
+  ctx: SwapContext,
+  outcomeProofs: Proof[],
+  amount: number,
+): Promise<LockedProofResult> {
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    throw new Error("sellerLockOutcomeProofs: amount must be a positive integer");
+  }
+  if (outcomeProofs.length === 0) {
+    throw new Error("sellerLockOutcomeProofs requires outcome proofs to lock");
+  }
+  const keysetId = singleProofKeysetId(outcomeProofs);
+  const mint = new CashuMint(ctx.mintUrl);
+  const keyset = await fetchMintKeys(mint, keysetId);
+  const feeSats = conditionalInputFee(outcomeProofs.length, keyset);
+  const netInput = sumProofs(outcomeProofs) - feeSats;
+  if (netInput < amount) {
+    throw new Error(
+      `sellerLockOutcomeProofs: outcome proofs net ${netInput} sats, need ${amount} to lock`,
+    );
+  }
+
+  const p2pk: P2PKOptions = {
+    pubkey: [ctx.ephemeralKey.publicKey, ctx.counterpartyPubkey],
+    requiredSignatures: 2,
+    locktime: ctx.sellerLocktime,
+    refundKeys: [ctx.ephemeralKey.publicKey],
+    sigFlag: "SIG_INPUTS",
+  };
+  const groups: ConditionalSwapOutputGroup[] = [
+    { label: "lock", kind: "p2pk", amount, p2pk },
+  ];
+  const changeAmount = netInput - amount;
+  if (changeAmount > 0) {
+    groups.push({ label: "change", kind: "random", amount: changeAmount });
+  }
+
+  const swapped = await conditionalKeysetSwap(ctx.mintUrl, outcomeProofs, groups);
+  return {
+    lockedProofs: swapped.lock ?? [],
+    changeProofs: swapped.change ?? [],
+  };
+}
+
+function requireGroupP2PK(group: ConditionalSwapOutputGroup): P2PKOptions {
+  if (!group.p2pk) {
+    throw new Error(
+      `conditionalKeysetSwap: group ${group.label} is kind "p2pk" but has no p2pk options`,
+    );
+  }
+  return group.p2pk;
+}
+
+/** Input fee in sats for a swap whose inputs all share one keyset. */
+function conditionalInputFee(proofCount: number, keyset: MintKeys): number {
+  const feePpk = keyset.input_fee_ppk ?? 0;
+  return Math.ceil((proofCount * feePpk) / 1000);
+}
+
+interface P2PKLock {
+  pubkeys: string[];
+  requiredSignatures: number;
+}
+
+/**
+ * Parse a NUT-10 `P2PK` well-known secret. Returns the locked pubkey set and
+ * required-signature count, or `null` when the secret is not a P2PK condition
+ * (e.g. a plain random secret on an unlocked proof).
+ */
+function parseP2PKLock(secret: string): P2PKLock | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(secret);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed[0] !== "P2PK") return null;
+  const body = parsed[1] as { data?: unknown; tags?: unknown };
+  if (typeof body?.data !== "string") return null;
+  const pubkeys = [body.data];
+  let requiredSignatures = 1;
+  const tags = Array.isArray(body.tags) ? body.tags : [];
+  for (const tag of tags) {
+    if (!Array.isArray(tag) || tag.length < 2) continue;
+    if (tag[0] === "pubkeys") {
+      for (const pk of tag.slice(1)) {
+        if (typeof pk === "string") pubkeys.push(pk);
+      }
+    } else if (tag[0] === "n_sigs") {
+      const n = Number(tag[1]);
+      if (Number.isInteger(n) && n > 0) requiredSignatures = n;
+    }
+  }
+  return { pubkeys, requiredSignatures };
+}
+
+/**
+ * Assert every proof carries a NUT-10 P2PK secret 2-of-2-locked to exactly
+ * `[ctx.ephemeralKey.publicKey, ctx.counterpartyPubkey]`.
+ *
+ * This is the hard precondition of {@link sellerPreparePrelockedSwap}: that
+ * helper only pre-signs proof secrets, it never locks them. Handing it raw,
+ * unlocked outcome proofs would make the atomic swap non-atomic — a taker could
+ * claim the seller's outcome proofs without ever paying (P03 violation). Lock
+ * outcome proofs through {@link sellerLockOutcomeProofs} first.
+ */
+export function assertProofsAtomicSwapLocked(
+  ctx: SwapContext,
+  proofs: Proof[],
+): void {
+  if (proofs.length === 0) {
+    throw new Error("assertProofsAtomicSwapLocked: no proofs to verify");
+  }
+  const expected = new Set(
+    [ctx.ephemeralKey.publicKey, ctx.counterpartyPubkey].map((k) =>
+      k.toLowerCase(),
+    ),
+  );
+  for (const proof of proofs) {
+    const lock = parseP2PKLock(proof.secret);
+    if (!lock) {
+      throw new Error(
+        "sellerPreparePrelockedSwap requires P2PK-locked proofs — received a " +
+          "proof with no NUT-10 P2PK spending condition. Lock outcome proofs " +
+          "via sellerLockOutcomeProofs before pre-signing.",
+      );
+    }
+    if (lock.requiredSignatures !== 2) {
+      throw new Error(
+        `sellerPreparePrelockedSwap requires a 2-of-2 P2PK lock; proof ` +
+          `requires ${lock.requiredSignatures} signature(s)`,
+      );
+    }
+    const got = new Set(lock.pubkeys.map((k) => k.toLowerCase()));
+    if (
+      got.size !== expected.size ||
+      [...expected].some((k) => !got.has(k))
+    ) {
+      throw new Error(
+        "sellerPreparePrelockedSwap: proof is P2PK-locked to the wrong pubkey " +
+          "set — expected the swap's ephemeral and counterparty keys",
+      );
+    }
+  }
 }
 
 /**
