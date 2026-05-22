@@ -10,6 +10,7 @@ type AnyProof = {
   id?: string
   C?: string
   receivedAt?: number
+  reservedBy?: string
   conditionId?: string
   condition_id?: string
   outcomeCollection?: string
@@ -27,14 +28,37 @@ vi.mock('dexie', () => {
     async bulkDelete(keys: string[]): Promise<void> {
       for (const k of keys) store.delete(k)
     }
+    async bulkGet(keys: string[]): Promise<Array<AnyProof | undefined>> {
+      return keys.map((key) => store.get(key))
+    }
     async toArray(): Promise<AnyProof[]> {
       return Array.from(store.values())
     }
-    where(_field: string) {
+    filter(predicate: (row: AnyProof) => boolean) {
       return {
-        equals: (v: string) => ({
+        toArray: async () => Array.from(store.values()).filter(predicate),
+      }
+    }
+    where(field: string) {
+      return {
+        equals: (v: string | [string, string, string]) => ({
           toArray: async () =>
-            Array.from(store.values()).filter((r) => r.mintUrl === v),
+            Array.from(store.values()).filter((r) => {
+              if (field === 'mintUrl') return r.mintUrl === v
+              if (field === '[mintUrl+conditionId+outcomeCollection]') {
+                const [mintUrl, conditionId, outcomeCollection] = v as [
+                  string,
+                  string,
+                  string,
+                ]
+                return (
+                  r.mintUrl === mintUrl &&
+                  r.conditionId === conditionId &&
+                  r.outcomeCollection === outcomeCollection
+                )
+              }
+              return false
+            }),
         }),
       }
     }
@@ -79,7 +103,11 @@ import {
   getBaseProofs,
   getOutcomeProofs,
   getProofs,
+  getReservedProofs,
   normalizeStoredMintUrls,
+  releaseProofReservation,
+  releaseProofReservationsBySecret,
+  reserveProofs,
 } from '../proof-db'
 
 beforeEach(() => {
@@ -184,5 +212,59 @@ describe('proof-db normalization', () => {
     const rows = await getOutcomeProofs('http://m', 'cond', 'YES')
 
     expect(rows.map((r) => r.secret)).toEqual(['yes'])
+  })
+
+  it('hides reserved proofs from spendable base and outcome queries', async () => {
+    await addProofs([
+      { secret: 'base-free', amount: 100, id: 'id1', C: 'C1', mintUrl: 'http://m' },
+      { secret: 'base-reserved', amount: 100, id: 'id2', C: 'C2', mintUrl: 'http://m' },
+      {
+        secret: 'yes-free',
+        amount: 100,
+        id: 'id3',
+        C: 'C3',
+        mintUrl: 'http://m',
+        conditionId: 'cond',
+        outcomeCollection: 'YES',
+      },
+      {
+        secret: 'yes-reserved',
+        amount: 100,
+        id: 'id4',
+        C: 'C4',
+        mintUrl: 'http://m',
+        conditionId: 'cond',
+        outcomeCollection: 'YES',
+      },
+    ])
+    await reserveProofs(['base-reserved', 'yes-reserved'], 'order-1')
+
+    expect((await getBaseProofs('http://m')).map((r) => r.secret)).toEqual([
+      'base-free',
+    ])
+    expect((await getOutcomeProofs('http://m', 'cond', 'YES')).map((r) => r.secret)).toEqual([
+      'yes-free',
+    ])
+    expect((await getReservedProofs('order-1')).map((r) => r.secret)).toEqual([
+      'base-reserved',
+      'yes-reserved',
+    ])
+  })
+
+  it('releases reserved proofs by owner or selected secret', async () => {
+    await addProofs([
+      { secret: 's1', amount: 100, id: 'id1', C: 'C1', mintUrl: 'http://m' },
+      { secret: 's2', amount: 100, id: 'id2', C: 'C2', mintUrl: 'http://m' },
+    ])
+    await reserveProofs(['s1', 's2'], 'order-1')
+    await releaseProofReservationsBySecret(['s1'])
+
+    expect((await getProofs('http://m')).map((r) => r.secret)).toEqual(['s1'])
+
+    await releaseProofReservation('order-1')
+    expect((await getProofs('http://m')).map((r) => r.secret)).toEqual([
+      's1',
+      's2',
+    ])
   })
 })

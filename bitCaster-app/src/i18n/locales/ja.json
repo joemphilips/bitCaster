@@ -205,6 +205,7 @@
     "sellLower": "安値売り",
     "buyLower": "安値買い",
     "limitPrice": "指値価格",
+    "preflightSplit": "事前スプリット",
     "sharesIfFilled": "約定時のシェア数",
     "creatorFee": "作成者手数料 ({{percent}}%)",
     "totalCost": "合計金額",

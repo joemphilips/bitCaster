@@ -109,6 +109,22 @@ describe("buildTradeTicket", () => {
     ).toThrow("Enter an amount in 100 sat increments.");
   });
 
+  it("builds sell orders after same-outcome CTF swaps are supported", () => {
+    const ticket = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSats: 100,
+      side: "sell",
+      orderType: "limit",
+      limitPrice: 50,
+      orderBook: market.orderBook,
+    });
+
+    expect(ticket.request.side).toBe("Sell");
+    expect(ticket.request.outcomeId).toBe("Yes");
+    expect(ticket.request.price).toBe(50);
+  });
+
   it("prefers direct asks for Buy NO market orders when available", () => {
     const ticket = buildTradeTicket({
       market,

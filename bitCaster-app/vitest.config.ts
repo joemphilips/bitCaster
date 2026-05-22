@@ -18,6 +18,14 @@ export default defineConfig({
     alias: [
       { find: "@", replacement: "/src" },
       {
+        find: /^@bitcaster\/client-sdk\/(.+)$/,
+        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/$1"),
+      },
+      {
+        find: /^@bitcaster\/client-sdk$/,
+        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/index.ts"),
+      },
+      {
         find: /^@bitcaster\/swap-protocol\/(.+)$/,
         replacement: path.resolve(__dirname, "../bitCaster-swap-protocol/src/$1"),
       },

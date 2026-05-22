@@ -9,11 +9,10 @@ namespace BitCaster.InMemoryMatchingEngine;
 ///
 /// <list type="bullet">
 /// <item>Per-market FIFO order book at each price level (price-time priority).</item>
-/// <item>Direct match only — same outcome, opposite side. No complementary
-/// matching across the conditional-token complement (taking only what the
-/// frontend exercises).</item>
-/// <item>GTC + FAK time-in-force — what <c>MarketDetailPage</c> actually
-/// submits today. FOK / GTD treated as GTC; the OpenAPI gate keeps unknown
+/// <item>Direct same-outcome opposite-side matching plus YES/NO and finite
+/// categorical complementary buy/buy matching for CLI/daemon settlement E2E.</item>
+/// <item>GTC, FAK, and FOK time-in-force semantics for the browser/CLI
+/// development stack. GTD is treated as GTC; the OpenAPI gate keeps unknown
 /// values out.</item>
 /// </list>
 ///
@@ -33,6 +32,7 @@ public class InMemoryOrderBookManager
 {
     private readonly ConcurrentDictionary<string, OrderBook> _books = new();
     private readonly ConcurrentDictionary<Guid, string> _orderMarketIndex = new();
+    private readonly object _matchingGate = new();
 
     public SubmitResult SubmitOrder(
         string marketId,
@@ -54,25 +54,38 @@ public class InMemoryOrderBookManager
 
         List<Fill> fills;
         long remaining;
-        lock (book)
+        lock (_matchingGate)
         {
-            fills = MatchAgainstBook(book, incoming);
-            remaining = incoming.RemainingSats;
+            lock (book)
+            {
+                if (tif == TimeInForce.FOK && FillableSats(marketId, book, incoming) < incoming.AmountSats)
+                {
+                    fills = [];
+                    remaining = incoming.RemainingSats;
+                    book.MarkTakerCompleted(incoming, "cancelled");
+                }
+                else
+                {
+                    fills = MatchAgainstBook(book, incoming);
+                    if (incoming.RemainingSats > 0)
+                        fills.AddRange(MatchAgainstComplementaryBooks(marketId, book, incoming));
+                    remaining = incoming.RemainingSats;
 
-            // FAK: never rest the unfilled remainder. GTC: rest if anything left.
-            // (FOK isn't exercised by the mock — we treat it as GTC.)
-            if (tif != TimeInForce.FAK && remaining > 0)
-            {
-                book.AddResting(incoming);
-            }
-            else if (fills.Count > 0)
-            {
-                // Fully-filled taker (or FAK with any fills) is not in
-                // _resting and would otherwise be invisible to GET /orders/{id}.
-                // Park it in _completed so the order-status poller can read
-                // back the per-fill tradeIds and wake the swap-driver.
-                var takerStatus = remaining == 0 ? "filled" : "cancelled";
-                book.MarkTakerCompleted(incoming, takerStatus);
+                    // FAK/FOK never rest the unfilled remainder. GTC/GTD rest if anything remains.
+                    if (tif is not (TimeInForce.FAK or TimeInForce.FOK) && remaining > 0)
+                    {
+                        book.AddResting(incoming);
+                    }
+                    else if (fills.Count > 0 || tif is TimeInForce.FAK or TimeInForce.FOK)
+                    {
+                        // Fully-filled takers and killed takers do not enter
+                        // _resting and would otherwise be invisible to GET /orders/{id}.
+                        // Park them in _completed so the order-status poller can read
+                        // back per-fill tradeIds and wake the swap driver.
+                        var takerStatus = remaining == 0 ? "filled" : "cancelled";
+                        book.MarkTakerCompleted(incoming, takerStatus);
+                    }
+                }
             }
         }
         _orderMarketIndex[orderId] = marketId;
@@ -153,6 +166,90 @@ public class InMemoryOrderBookManager
         return fills;
     }
 
+    private long FillableSats(string marketId, OrderBook currentBook, RestingOrder incoming)
+    {
+        var fillable = FillableAgainstBook(currentBook, incoming, incoming.AmountSats);
+        if (fillable >= incoming.AmountSats || incoming.Side != OrderSide.Buy) return fillable;
+
+        var parsed = MarketParts.TryParse(marketId);
+        if (parsed is null) return fillable;
+        foreach (var candidate in ComplementaryBooks(parsed))
+        {
+            if (fillable >= incoming.AmountSats) break;
+            lock (candidate.Book)
+            {
+                foreach (var maker in candidate.Book.ComplementaryBuyMakers(incoming, candidate.OutcomeSetId))
+                {
+                    fillable += Math.Min(maker.RemainingSats, incoming.AmountSats - fillable);
+                    if (fillable >= incoming.AmountSats) break;
+                }
+            }
+        }
+
+        return fillable;
+    }
+
+    private static long FillableAgainstBook(OrderBook book, RestingOrder incoming, long requestedSats)
+    {
+        var fillable = 0L;
+        foreach (var maker in book.MatchableAgainst(incoming))
+        {
+            fillable += Math.Min(maker.RemainingSats, requestedSats - fillable);
+            if (fillable >= requestedSats) break;
+        }
+
+        return fillable;
+    }
+
+    private List<Fill> MatchAgainstComplementaryBooks(string marketId, OrderBook currentBook, RestingOrder incoming)
+    {
+        if (incoming.Side != OrderSide.Buy) return [];
+        var parsed = MarketParts.TryParse(marketId);
+        if (parsed is null) return [];
+        var fills = new List<Fill>();
+        foreach (var candidate in ComplementaryBooks(parsed))
+        {
+            if (incoming.RemainingSats <= 0) break;
+            lock (candidate.Book)
+            {
+                foreach (var maker in candidate.Book.ComplementaryBuyMakers(incoming, candidate.OutcomeSetId))
+                {
+                    if (incoming.RemainingSats <= 0) break;
+                    var fillAmount = Math.Min(incoming.RemainingSats, maker.RemainingSats);
+                    if (fillAmount <= 0) continue;
+
+                    incoming.RemainingSats -= fillAmount;
+                    maker.RemainingSats -= fillAmount;
+                    var fill = BuildComplementaryFill(
+                        incoming,
+                        maker,
+                        fillAmount,
+                        marketId,
+                        sellerKeepOutcomeSetId: candidate.OutcomeSetId,
+                        sellerLockOutcomeSetId: parsed.OutcomeSetId);
+                    fills.Add(fill);
+                    currentBook.RecordFillForOrder(incoming.Id, fill);
+                    candidate.Book.RecordFillForOrder(maker.Id, fill);
+                }
+                candidate.Book.RemoveCompleted();
+            }
+        }
+        return fills;
+    }
+
+    private IEnumerable<(string OutcomeSetId, OrderBook Book)> ComplementaryBooks(MarketParts incoming)
+    {
+        return _books
+            .Select(entry => (Parts: MarketParts.TryParse(entry.Key), entry.Value))
+            .Where(entry =>
+                entry.Parts is not null
+                && entry.Parts.ConditionId == incoming.ConditionId
+                && entry.Parts.OutcomeSetId != incoming.OutcomeSetId
+                && OutcomeSetComplement.AreComplements(incoming.OutcomeSetId, entry.Parts.OutcomeSetId))
+            .OrderBy(entry => entry.Parts!.OutcomeSetId, StringComparer.Ordinal)
+            .Select(entry => (entry.Parts!.OutcomeSetId, entry.Value));
+    }
+
     private static Fill BuildFill(RestingOrder taker, RestingOrder maker, long amount)
     {
         var tradeId = Guid.NewGuid();
@@ -169,11 +266,41 @@ public class InMemoryOrderBookManager
             tradeId: tradeId);
     }
 
+    private static Fill BuildComplementaryFill(
+        RestingOrder taker,
+        RestingOrder maker,
+        long amount,
+        string settlementMarketId,
+        string sellerKeepOutcomeSetId,
+        string sellerLockOutcomeSetId)
+    {
+        var tradeId = Guid.NewGuid();
+        var quotePaymentSats = amount * taker.Price / 100;
+        var fill = new Fill(
+            amountSats: amount,
+            executionPrice: taker.Price,
+            filledAt: DateTimeOffset.UtcNow,
+            id: Guid.NewGuid(),
+            makerEphemeralPubkey: maker.EphemeralPubkey!,
+            makerOrderId: maker.Id,
+            path: MatchPath.Complementary,
+            status: FillStatus.Filled,
+            takerOrderId: taker.Id,
+            tradeId: tradeId);
+        fill.AdditionalProperties["settlementMarketId"] = settlementMarketId;
+        fill.AdditionalProperties["settlementKind"] = "ComplementarySplit";
+        fill.AdditionalProperties["outcomeFaceAmountSats"] = amount;
+        fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSats;
+        fill.AdditionalProperties["sellerKeepOutcomeSetId"] = sellerKeepOutcomeSetId;
+        fill.AdditionalProperties["sellerLockOutcomeSetId"] = sellerLockOutcomeSetId;
+        return fill;
+    }
+
     private static string DeriveStatus(long requested, long remaining, TimeInForce tif, bool anyFills)
     {
         if (remaining == 0) return "filled";
         if (anyFills) return "partially_filled";
-        return tif == TimeInForce.FAK ? "cancelled" : "resting";
+        return tif is TimeInForce.FAK or TimeInForce.FOK ? "cancelled" : "resting";
     }
 }
 
@@ -216,6 +343,9 @@ internal sealed class OrderBook
         GetOrCreateFills(makerOrderId).Add(fill);
     }
 
+    public void RecordFillForOrder(Guid orderId, Fill fill)
+        => GetOrCreateFills(orderId).Add(fill);
+
     public IReadOnlyList<Fill> GetFills(Guid orderId)
         => _fillsByOrderId.TryGetValue(orderId, out var fills)
             ? fills
@@ -236,6 +366,20 @@ internal sealed class OrderBook
         return _resting
             .Where(Crosses)
             .OrderBy(o => incoming.Side == OrderSide.Buy ? o.Price : -o.Price)
+            .ThenBy(o => o.PlacedAt);
+    }
+
+    public IEnumerable<RestingOrder> ComplementaryBuyMakers(
+        RestingOrder incoming,
+        string outcomeSetId)
+    {
+        return _resting
+            .Where(o =>
+                o.Side == OrderSide.Buy &&
+                o.OutcomeId == outcomeSetId &&
+                o.RemainingSats > 0 &&
+                o.Price + incoming.Price >= 100)
+            .OrderByDescending(o => o.Price)
             .ThenBy(o => o.PlacedAt);
     }
 
@@ -368,6 +512,47 @@ internal sealed class RestingOrder
 }
 
 internal sealed record CompletedOrder(RestingOrder Order, string Status);
+
+internal sealed record MarketParts(string ConditionId, string OutcomeSetId)
+{
+    public static MarketParts? TryParse(string marketId)
+    {
+        var index = marketId.IndexOf('-');
+        if (index <= 0 || index == marketId.Length - 1) return null;
+        return new MarketParts(marketId[..index], marketId[(index + 1)..]);
+    }
+}
+
+internal static class OutcomeSetComplement
+{
+    public static bool AreComplements(string leftOutcomeSetId, string rightOutcomeSetId)
+    {
+        if (IsBinaryComplement(leftOutcomeSetId, rightOutcomeSetId)) return true;
+
+        var left = ParseOutcomeSet(leftOutcomeSetId);
+        var right = ParseOutcomeSet(rightOutcomeSetId);
+        if (left.Count == 0 || right.Count == 0) return false;
+        if (left.Count == 1 && right.Count == 1) return false;
+        return !left.Overlaps(right);
+    }
+
+    private static bool IsBinaryComplement(string leftOutcomeSetId, string rightOutcomeSetId)
+    {
+        var left = leftOutcomeSetId.ToUpperInvariant();
+        var right = rightOutcomeSetId.ToUpperInvariant();
+        return (left, right) switch
+        {
+            ("YES", "NO") => true,
+            ("NO", "YES") => true,
+            _ => false
+        };
+    }
+
+    private static HashSet<string> ParseOutcomeSet(string outcomeSetId) =>
+        outcomeSetId
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.Ordinal);
+}
 
 public record SubmitResult(
     Guid OrderId,

@@ -98,6 +98,24 @@ again. The timeout must be scheduled after the seller-side locktime plus a
 grace window; timing out at the buyer-side locktime can abort a swap that is
 still valid on the protocol timeline.
 
+For a resting buy that can become the complementary maker, clients SHOULD
+pre-flight split before order submission. The maker selects regular sats,
+submits a CTF split to the mint for the complete outcome set, stores the
+resulting outcome proofs in local wallet state, and reserves both the keep side
+and the complementary lock side under the order. If the mint is unavailable or
+the client cannot reserve enough collateral within the user-visible submission
+window, the client SHOULD fail submission or cancel/release the order path
+rather than publish a maker order that cannot settle. Implementations may expose
+an explicit opt-out, such as `--no-preflight-split`, but then they must reserve
+regular collateral and fail closed if it is unavailable when the match arrives.
+
+Pre-flight split is a wallet-local safety mechanism, not a different wire
+protocol. When a complementary match arrives, the maker still acts as Alice in
+the seller branch below: the reserved complementary outcome proofs are locked to
+the taker, while the maker's kept outcome proofs become visible only for the
+matched quantity. For partial fills, remaining pre-split proofs must stay
+reserved for the unfilled order quantity.
+
 ### Step 3: ECDH Shared Secret
 
 Both parties independently compute the shared secret:

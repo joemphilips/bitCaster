@@ -4,6 +4,8 @@ import { normalizeUrl } from "../lib/url";
 
 export interface StoredProof extends Proof {
   mintUrl: string;
+  /** Local-only reservation owner. Reserved proofs are hidden from spendable balances. */
+  reservedBy?: string;
   /** NUT-CTF condition id when this proof is bound to a conditional keyset. */
   conditionId?: string;
   /** NUT-CTF outcome collection label, e.g. "YES" or "Alice|Bob". */
@@ -24,7 +26,9 @@ export type ProofOperationKind =
   | "swap-lock"
   | "swap-claim"
   | "ctf-split"
-  | "ctf-redeem";
+  | "ctf-redeem"
+  | "regular-split"
+  | "proof-split";
 export type ProofOperationState = "prepared" | "completed" | "failed";
 
 export interface ProofOperationRecord {
@@ -91,11 +95,16 @@ class BitcasterDB extends Dexie {
 
 export const db = new BitcasterDB();
 
-export async function getProofs(mintUrl?: string): Promise<StoredProof[]> {
+export async function getProofs(
+  mintUrl?: string,
+  options: { includeReserved?: boolean } = {},
+): Promise<StoredProof[]> {
   if (mintUrl) {
-    return db.proofs.where("mintUrl").equals(normalizeUrl(mintUrl)).toArray();
+    const rows = await db.proofs.where("mintUrl").equals(normalizeUrl(mintUrl)).toArray();
+    return options.includeReserved ? rows : rows.filter((p) => !p.reservedBy);
   }
-  return db.proofs.toArray();
+  const rows = await db.proofs.toArray();
+  return options.includeReserved ? rows : rows.filter((p) => !p.reservedBy);
 }
 
 export async function getBaseProofs(mintUrl?: string): Promise<StoredProof[]> {
@@ -107,15 +116,20 @@ export async function getOutcomeProofs(
   mintUrl: string,
   conditionId: string,
   outcomeCollection: string,
+  options: { includeReserved?: boolean } = {},
 ): Promise<StoredProof[]> {
   const normalizedMintUrl = normalizeUrl(mintUrl);
   const indexed = await db.proofs
     .where("[mintUrl+conditionId+outcomeCollection]")
     .equals([normalizedMintUrl, conditionId, outcomeCollection])
     .toArray();
-  if (indexed.length > 0) return indexed;
+  if (indexed.length > 0) {
+    return options.includeReserved
+      ? indexed
+      : indexed.filter((proof) => !proof.reservedBy);
+  }
 
-  const proofs = await getProofs(normalizedMintUrl);
+  const proofs = await getProofs(normalizedMintUrl, options);
   return proofs.filter((p) => {
     const candidate = p as StoredProof & {
       condition_id?: string;
@@ -147,6 +161,46 @@ export async function addProofs(proofs: StoredProof[]): Promise<void> {
 
 export async function removeProofs(secrets: string[]): Promise<void> {
   await db.proofs.bulkDelete(secrets);
+}
+
+export async function reserveProofs(
+  secrets: string[],
+  reservedBy: string,
+): Promise<void> {
+  const secretSet = new Set(secrets);
+  await db.transaction("rw", db.proofs, async () => {
+    const rows = await db.proofs.bulkGet(secrets);
+    await db.proofs.bulkPut(
+      rows
+        .filter((row): row is StoredProof => !!row && secretSet.has(row.secret))
+        .map((row) => ({ ...row, reservedBy })),
+    );
+  });
+}
+
+export async function releaseProofReservation(reservedBy: string): Promise<void> {
+  const rows = await db.proofs
+    .filter((proof) => proof.reservedBy === reservedBy)
+    .toArray();
+  if (rows.length === 0) return;
+  await db.proofs.bulkPut(rows.map(({ reservedBy: _reservedBy, ...row }) => row));
+}
+
+export async function releaseProofReservationsBySecret(
+  secrets: string[],
+): Promise<void> {
+  const rows = await db.proofs.bulkGet(secrets);
+  const changed = rows
+    .filter((row): row is StoredProof => !!row)
+    .map(({ reservedBy: _reservedBy, ...row }) => row);
+  if (changed.length === 0) return;
+  await db.proofs.bulkPut(changed);
+}
+
+export async function getReservedProofs(
+  reservedBy: string,
+): Promise<StoredProof[]> {
+  return db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
 }
 
 // One-shot migration: existing rows may have un-normalized mintUrl values

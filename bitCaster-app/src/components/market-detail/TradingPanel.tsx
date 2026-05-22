@@ -38,6 +38,8 @@ interface TradingPanelProps {
   onCommentPost?: (content: string) => void
   onTradeSideChange?: (side: TradeSide) => void
   onOrderTypeChange?: (type: OrderType) => void
+  preflightSplit?: boolean
+  onPreflightSplitChange?: (enabled: boolean) => void
   onLimitPriceChange?: (price: number) => void
   walletReady?: boolean
 }
@@ -485,6 +487,8 @@ export function TradingPanel({
   isTradeSubmitting = false,
   onTradeSideChange,
   onOrderTypeChange,
+  preflightSplit = true,
+  onPreflightSplitChange,
   onLimitPriceChange,
   walletReady = true,
 }: TradingPanelProps) {
@@ -636,6 +640,18 @@ export function TradingPanel({
               baseUnit={baseUnit}
               onLimitPriceChange={onLimitPriceChange}
             />
+          )}
+
+          {!isSell && isLimit && (
+            <label className="mb-4 flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={preflightSplit}
+                onChange={(event) => onPreflightSplitChange?.(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span>{t('trade.preflightSplit')}</span>
+            </label>
           )}
 
           {/* Market Order Preview */}

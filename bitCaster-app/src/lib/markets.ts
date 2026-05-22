@@ -2,6 +2,10 @@ import type { Market, FilterState } from '@/types/market'
 import type { MarketDetail, OrderBook, Order } from '@/types/market-detail'
 import type { MarketSort } from '@/hooks/useMarketSort'
 import type { components } from '@/generated/api'
+import {
+  BitcasterEngineClient,
+  type SubmitOrderRequest as SdkSubmitOrderRequest,
+} from '@bitcaster/client-sdk/engineClient'
 import { getNdk } from '@/lib/nostr'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { bytesToHex } from 'nostr-tools/utils'
@@ -595,41 +599,32 @@ export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
 }
 
 export async function fetchOrderBook(marketId: string): Promise<OrderBook> {
-  const response = await fetch(`/api/v1/${marketId}/orderbook`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch order book: ${response.status}`)
-  }
-  const snapshot: OrderBookSnapshot = await response.json()
-  return mapSnapshotToOrderBook(snapshot)
+  const snapshot = await new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+  }).getOrderBook(marketId)
+  return mapSnapshotToOrderBook(snapshot as OrderBookSnapshot)
 }
 
 export async function submitOrder(
   marketId: string,
   params: SubmitOrderRequest,
 ): Promise<SubmitOrderResponse> {
-  const url = `${window.location.origin}/api/v1/${marketId}/orders`
-  // Bind the NIP-98 token to the exact body bytes the server will hash.
-  const bodyText = JSON.stringify(params)
-  const bodyBytes = new TextEncoder().encode(bodyText)
-  const payloadHash = await sha256Hex(bodyBytes)
-  const authHeader = await generateNip98Header(url, 'POST', payloadHash)
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: authHeader,
+  return (await createAuthenticatedBrowserEngineClient().submitOrder(
+    marketId,
+    params as SdkSubmitOrderRequest,
+  )) as SubmitOrderResponse
+}
+
+export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient {
+  return new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+    authorization: async ({ url, method, bodyText }) => {
+      const payloadHash = bodyText
+        ? await sha256Hex(new TextEncoder().encode(bodyText))
+        : undefined
+      return generateNip98Header(url, method, payloadHash)
     },
-    body: bodyText,
   })
-  if (!response.ok) {
-    const detail = await response.text()
-    throw new Error(
-      detail.trim()
-        ? `Failed to submit order: ${response.status} ${detail.trim()}`
-        : `Failed to submit order: ${response.status}`,
-    )
-  }
-  return response.json()
 }
 
 // =============================================================================

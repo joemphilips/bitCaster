@@ -151,13 +151,12 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     private static async Task AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(IPage page)
     {
         await page.GetByRole(AriaRole.Button, new() { Name = "Next" }).ClickAsync();
-        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Initial Liquidity" });
+        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "AMM liquidity is TBD" });
         await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
-    private static async Task AdvanceStep5ToStep6_PickQuickLiquidityAsync(IPage page)
+    private static async Task AdvanceStep5ToStep6_ContinueWithoutLiquidityAsync(IPage page)
     {
-        await page.GetByRole(AriaRole.Button, new() { Name = "1,000" }).ClickAsync();
         await page.GetByRole(AriaRole.Button, new() { Name = "Next" }).ClickAsync();
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Review & Create" });
         await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
@@ -248,7 +247,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         await AdvanceStep2ToStep3_YesNoAsync(page);
         await AdvanceStep3ToStep4_FillBasicsAsync(page, title);
         await AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(page);
-        await AdvanceStep5ToStep6_PickQuickLiquidityAsync(page);
+        await AdvanceStep5ToStep6_ContinueWithoutLiquidityAsync(page);
         var conditionId = await CreateMarketAndReadConditionIdAsync(page, description, console);
         return (page, conditionId);
     }
@@ -261,27 +260,17 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task DepositStep_LightningHappyPath_CreditsAndContinuesToMarket()
+    public async Task DepositStep_AmmDisabled_ContinuesToMarket()
     {
         await using var context = await NewIsolatedContextAsync();
-        var title = UniqueTitle("E2E Deposit LN");
+        var title = UniqueTitle("E2E AMM TBD");
         var (page, conditionId) = await NavigateThroughWizardToDepositStepAsync(
-            context, title, "E2E happy-path Lightning deposit");
+            context, title, "E2E AMM disabled continue path");
 
-        // Lightning tab is the default; click Request Lightning invoice.
-        await page.GetByTestId("tab-ln").ClickAsync();
-        await page.GetByTestId("request-ln-invoice").ClickAsync();
-
-        var bolt11 = page.GetByTestId("bolt11-display");
-        await Assertions.Expect(bolt11).ToBeVisibleAsync(new() { Timeout = 10_000 });
-        var bolt11Text = await bolt11.InnerTextAsync();
-        Assert.False(string.IsNullOrWhiteSpace(bolt11Text),
-            "bolt11-display rendered without an invoice string");
-
-        // The mock walks Requested → Paid → Credited on a ~2s cadence per
-        // step; give it generous headroom for the polling UI to converge.
-        await Assertions.Expect(page.GetByTestId("deposit-credited"))
-            .ToBeVisibleAsync(new() { Timeout = 15_000 });
+        await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "AMM liquidity is TBD" }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("No liquidity payment required"))
+            .ToBeVisibleAsync();
 
         await page.GetByTestId("continue-to-market").ClickAsync();
         await Assertions.Expect(page).ToHaveURLAsync(
@@ -289,55 +278,29 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DepositStep_EcashFlow_CreditsAndContinuesToMarket()
+    public async Task DepositStep_AmmDisabled_DoesNotRenderPaymentControls()
     {
         await using var context = await NewIsolatedContextAsync();
-        var title = UniqueTitle("E2E Deposit EC");
-        var (page, conditionId) = await NavigateThroughWizardToDepositStepAsync(
-            context, title, "E2E happy-path ecash deposit");
+        var title = UniqueTitle("E2E Deposit No Pay");
+        var (page, _) = await NavigateThroughWizardToDepositStepAsync(
+            context, title, "E2E disabled payment controls");
 
-        await page.GetByTestId("tab-ecash").ClickAsync();
-        // Plausible-shape token; the mock skips proof verification.
-        await page.GetByTestId("ecash-token-input")
-            .FillAsync("cashuBoMockedTokenForE2eDepositTest");
-        await page.GetByTestId("submit-ecash").ClickAsync();
-
-        // Ecash starts at Paid in the mock (Requested is skipped) and reaches
-        // Credited ~2s later — same headroom as the Lightning path.
-        await Assertions.Expect(page.GetByTestId("deposit-credited"))
-            .ToBeVisibleAsync(new() { Timeout = 15_000 });
-
-        await page.GetByTestId("continue-to-market").ClickAsync();
-        await Assertions.Expect(page).ToHaveURLAsync(
-            new Regex($"/markets/{Regex.Escape(conditionId)}$"));
+        await Assertions.Expect(page.GetByTestId("tab-ln")).Not.ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("tab-ecash")).Not.ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("request-ln-invoice")).Not.ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("continue-to-market")).ToBeEnabledAsync();
     }
 
     [Fact]
-    public async Task DepositStep_AmountValidation_ClampsZeroToMinimumAndKeepsButtonEnabled()
+    public async Task DepositStep_AmmDisabled_HasNoAmountInputAndKeepsContinueEnabled()
     {
-        // The implementation prevents 0-sat deposit requests via input
-        // clamping (Math.max(1, parseInt(...))). The user-protective
-        // invariant — you cannot dispatch a request for 0 sats — holds via a
-        // different mechanism than disabling the button. We assert both
-        // sides of that invariant.
         await using var context = await NewIsolatedContextAsync();
         var title = UniqueTitle("E2E Deposit Amt");
         var (page, _) = await NavigateThroughWizardToDepositStepAsync(
-            context, title, "E2E amount-validation test");
+            context, title, "E2E disabled amount-input test");
 
-        var amountInput = page.GetByTestId("amount-input");
-        await amountInput.ClearAsync();
-        await amountInput.FillAsync("0");
-
-        // Clamp: state can never go below 1 — the value attribute reflects
-        // React state.
-        await Assertions.Expect(amountInput).ToHaveValueAsync("1");
-
-        // Because the clamp keeps amount at 1, the request button stays
-        // enabled. If the implementation ever drops the clamp in favour of a
-        // disabled-button check, this assertion is the canary.
-        await Assertions.Expect(page.GetByTestId("request-ln-invoice"))
-            .ToBeEnabledAsync();
+        await Assertions.Expect(page.GetByTestId("amount-input")).Not.ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("continue-to-market")).ToBeEnabledAsync();
     }
 
     [Fact]
@@ -348,11 +311,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         var (page, _) = await NavigateThroughWizardToDepositStepAsync(
             context, title, "E2E close-mid-deposit test");
 
-        await page.GetByTestId("request-ln-invoice").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("bolt11-display"))
-            .ToBeVisibleAsync(new() { Timeout = 10_000 });
-
-        // Close the wizard before the auto-credit timer reaches Credited.
+        // Close the wizard before continuing to the market detail page.
         await page.GetByRole(AriaRole.Button, new() { Name = "Close market creation" })
             .ClickAsync();
         await Assertions.Expect(page).Not.ToHaveURLAsync(new Regex("/creator/new"));

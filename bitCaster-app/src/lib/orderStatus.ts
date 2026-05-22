@@ -9,6 +9,7 @@ import {
 import { useActiveSwapsStore } from '@/stores/activeSwaps'
 import { useToastStore } from '@/stores/toast'
 import { generateNip98Header } from '@/lib/markets'
+import { BitcasterEngineClient } from '@bitcaster/client-sdk/engineClient'
 
 export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
 
@@ -42,16 +43,10 @@ export async function fetchOrderStatus(
   marketId: string,
   orderId: string,
 ): Promise<OrderStatusResponse | null> {
-  const url = `${window.location.origin}/api/v1/${marketId}/orders/${orderId}`
-  const authHeader = await generateNip98Header(url, 'GET')
-  const response = await fetch(url, {
-    headers: { Authorization: authHeader },
-  })
-  if (response.status === 404) return null
-  if (!response.ok) {
-    throw new Error(`Failed to fetch order status: ${response.status}`)
-  }
-  return response.json()
+  return (await new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+    authorization: ({ url, method }) => generateNip98Header(url, method),
+  }).getOrderStatus(marketId, orderId)) as OrderStatusResponse | null
 }
 
 const POLL_INTERVAL_MS = 5_000

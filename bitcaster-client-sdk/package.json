@@ -1,0 +1,32 @@
+{
+  "name": "@bitcaster/client-sdk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./ctfSplit": "./src/ctfSplit.ts",
+    "./engineClient": "./src/engineClient.ts",
+    "./orderValidation": "./src/orderValidation.ts",
+    "./outcomeSets": "./src/outcomeSets.ts",
+    "./proofSelection": "./src/proofSelection.ts",
+    "./settlementSupport": "./src/settlementSupport.ts",
+    "./tradeFlow": "./src/tradeFlow.ts",
+    "./tradeSession": "./src/tradeSession.ts",
+    "./tradeTicket": "./src/tradeTicket.ts",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cashu/cashu-ts": "^3.5.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

@@ -18,11 +18,13 @@
     "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"],
     "paths": {
       "@/*": ["./src/*"],
+      "@bitcaster/client-sdk": ["../bitcaster-client-sdk/src/index.ts"],
+      "@bitcaster/client-sdk/*": ["../bitcaster-client-sdk/src/*"],
       "@bitcaster/swap-protocol/*": ["../bitCaster-swap-protocol/src/*"],
       "@cashu/cashu-ts": ["./node_modules/@cashu/cashu-ts/lib/types/index.d.ts"],
       "@noble/curves/*": ["./node_modules/@noble/curves/*"],
       "@noble/hashes/*": ["./node_modules/@noble/hashes/*"]
     }
   },
-  "include": ["src", "../bitCaster-swap-protocol/src"]
+  "include": ["src", "../bitCaster-swap-protocol/src", "../bitcaster-client-sdk/src"]
 }

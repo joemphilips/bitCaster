@@ -1,0 +1,29 @@
+{
+  "name": "@bitcaster/swap-protocol",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    "./atomicSwap": "./src/atomicSwap.ts",
+    "./ecdh": "./src/ecdh.ts",
+    "./adaptor": "./src/adaptor.ts",
+    "./p2pk": "./src/p2pk.ts",
+    "./url": "./src/url.ts"
+  },
+  "dependencies": {
+    "@cashu/cashu-ts": "^3.5.0",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "typescript": "^5.7.2"
+  }
+}

@@ -13,7 +13,7 @@ bitCaster uses a central limit order book (CLOB). Limit orders rest on the book,
 
 A resting limit order is an online commitment. The maker must keep a browser tab or bot process connected until the order is filled, cancelled, or expired. When a taker matches the order, the maker must be able to answer the TradeHub messages and lock proofs before the swap timeout.
 
-Professional market makers should run a bot rather than rely on an occasional browser session. A future `bitCaster-cli` should use the same documented swap protocol as the browser so non-browser makers can participate without changing the wire protocol.
+Professional market makers should run a bot rather than rely on an occasional browser session. `bitcaster-cli` uses `bitcaster-daemon` as its long-running wallet and swap process so non-browser makers can participate without changing the wire protocol.
 
 ## Direct Matching
 
@@ -39,6 +39,14 @@ The maker acts as the splitter:
 
 This is why complementary settlement does not require the maker to already own the taker's outcome token. The maker only needs enough regular collateral to create the complete set, including mint input fees.
 
+## Pre-Flight Split and Local Reservation
+
+For resting limit buys that can become complementary maker orders, bitCaster defaults to a pre-flight split. Before the order rests, the client splits regular sats into the complete CTF outcome set, stores the resulting outcome proofs locally, and reserves the keep and lock sides for that order.
+
+This keeps the live order honest: if the mint is unavailable or the wallet cannot select enough regular collateral, the client should fail the submission or cancel the order path instead of leaving a maker quote that cannot settle. When a complementary taker later matches the order, the maker locks only the matched amount of the reserved complementary side and releases only the matched amount of the kept side as an active position. Remaining reserved proofs stay attached to the unfilled order quantity.
+
+The browser exposes this as a default-on **Pre-flight split** checkbox for limit buys. The CLI uses the same default; `bitcaster-cli order submit ... --no-preflight-split` opts out for operators who intentionally want the split to happen at match time. Opting out increases settlement-failure risk if collateral is spent, reserved elsewhere, or the mint is slow when the match arrives.
+
 ## Fees and Maker Surplus
 
 First-release fee policy is fee-first with maker surplus:
@@ -52,4 +60,4 @@ Example: if a maker rests `Buy YES 50 / 100` and a taker submits `Buy NO 49 / 10
 
 ## Operational Guidance
 
-Human makers should keep only the collateral they are willing to commit to live orders in the wallet, cancel orders before going offline, and expect the browser to fail settlement if the tab is closed mid-trade. Bot makers should monitor stale orders, swap failures, inventory, and mint fee changes.
+Human makers should keep only the collateral they are willing to commit to live orders in the wallet, cancel orders before going offline, and expect the browser to fail settlement if the tab is closed mid-trade. Bot and daemon makers should monitor stale orders, swap failures, reserved inventory, and mint fee changes.

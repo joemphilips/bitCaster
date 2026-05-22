@@ -22,6 +22,8 @@ swap protocol.
 - **Complementary match** — a YES buyer is matched with a NO buyer, or in a categorical market a buyer of one outcome set is matched with a buyer of the exact complementary set. The maker creates or selects the complete outcome-token set, keeps the side they wanted, and atomically swaps the complementary side to the taker for sats.
 - **Non-complementary match** — for example, someone selling YES tokens they already hold to another participant who wants to buy them with sats. The seller already has the outcome tokens, so no pre-trade split is needed, but the exchange still uses the same atomic-swap safety rule.
 
+For limit buys that may rest on the book, bitCaster enables **Pre-flight split** by default. The wallet asks the mint to split the needed regular sats into the complete outcome set before the order becomes live, then reserves those proofs locally for that order. If the split cannot finish quickly, the order should not remain live. Advanced CLI users can opt out with `--no-preflight-split`, but then settlement depends on regular collateral still being available when a later match arrives.
+
 ## Why atomic swaps matter
 
 An atomic swap guarantees that **either both sides of the trade complete, or neither does**. This is critical for trustless peer-to-peer trading:

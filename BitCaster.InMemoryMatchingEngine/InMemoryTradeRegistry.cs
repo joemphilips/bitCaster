@@ -17,6 +17,7 @@ namespace BitCaster.InMemoryMatchingEngine;
 public class InMemoryTradeRegistry
 {
     private readonly ConcurrentDictionary<Guid, TradeRecord> _trades = new();
+    private readonly ConcurrentDictionary<Guid, List<SwapMessageRecord>> _messages = new();
 
     public sealed record TradeRecord(
         Guid TradeId,
@@ -26,8 +27,18 @@ public class InMemoryTradeRegistry
         DateTimeOffset BuyerLocktime,
         string MarketId,
         long FillAmountSats,
+        long? OutcomeFaceAmountSats,
+        long? QuotePaymentSats,
+        string? SettlementKind,
+        string? SellerKeepOutcomeSetId,
+        string? SellerLockOutcomeSetId,
         HashSet<string> ConfirmedBy,
         bool Confirmed);
+
+    public sealed record SwapMessageRecord(
+        string SenderPubkey,
+        string MessageType,
+        string Ciphertext);
 
     /// <summary>
     /// Register a freshly-matched trade. Sets asymmetric locktimes that match
@@ -44,7 +55,12 @@ public class InMemoryTradeRegistry
         string sellerPubkey,
         string buyerPubkey,
         string marketId,
-        long fillAmountSats)
+        long fillAmountSats,
+        long? outcomeFaceAmountSats = null,
+        long? quotePaymentSats = null,
+        string? settlementKind = null,
+        string? sellerKeepOutcomeSetId = null,
+        string? sellerLockOutcomeSetId = null)
     {
         var now = DateTimeOffset.UtcNow;
         var record = new TradeRecord(
@@ -53,6 +69,11 @@ public class InMemoryTradeRegistry
             BuyerLocktime: now.AddHours(1),
             MarketId: marketId,
             FillAmountSats: fillAmountSats,
+            OutcomeFaceAmountSats: outcomeFaceAmountSats,
+            QuotePaymentSats: quotePaymentSats,
+            SettlementKind: settlementKind,
+            SellerKeepOutcomeSetId: sellerKeepOutcomeSetId,
+            SellerLockOutcomeSetId: sellerLockOutcomeSetId,
             ConfirmedBy: [],
             Confirmed: false);
         return _trades.GetOrAdd(tradeId, record);
@@ -61,11 +82,33 @@ public class InMemoryTradeRegistry
     public TradeRecord? TryGet(Guid tradeId)
         => _trades.TryGetValue(tradeId, out var r) ? r : null;
 
+    public void RecordSwapMessage(Guid tradeId, string senderPubkey, string messageType, string ciphertext)
+    {
+        if (!_trades.ContainsKey(tradeId)) return;
+        var messages = _messages.GetOrAdd(tradeId, _ => []);
+        lock (messages)
+        {
+            messages.Add(new SwapMessageRecord(senderPubkey, messageType, ciphertext));
+        }
+    }
+
+    public IReadOnlyList<SwapMessageRecord> GetSwapMessages(Guid tradeId)
+    {
+        if (!_messages.TryGetValue(tradeId, out var messages)) return [];
+        lock (messages)
+        {
+            return messages.ToArray();
+        }
+    }
+
     /// <summary>
-    /// Record a <c>settlement-complete</c> confirmation from one party. Returns
-    /// true when this call completes the trade (both parties have now
-    /// confirmed) so the hub knows whether to broadcast
-    /// <c>TradeStateChanged → Confirmed</c>. Idempotent per pubkey.
+    /// Record a <c>settlement-complete</c> confirmation from one caller.
+    /// Returns true when two distinct mock-auth callers have confirmed so the
+    /// hub knows whether to broadcast <c>TradeStateChanged → Confirmed</c>.
+    /// The mock authenticates hub callers by NIP-98 identity while trades are
+    /// keyed by ephemeral order pubkeys, so it cannot compare directly to
+    /// <see cref="TradeRecord.SellerPubkey"/> / <see cref="TradeRecord.BuyerPubkey"/>.
+    /// Production performs owner authorization against engine state.
     /// </summary>
     public bool ConfirmAndMaybeFinalize(Guid tradeId, string fromPubkey)
     {
@@ -74,9 +117,7 @@ public class InMemoryTradeRegistry
         {
             if (existing.Confirmed) return false;
             existing.ConfirmedBy.Add(fromPubkey);
-            var bothIn = existing.ConfirmedBy.Contains(existing.SellerPubkey)
-                         && existing.ConfirmedBy.Contains(existing.BuyerPubkey);
-            if (!bothIn) return false;
+            if (existing.ConfirmedBy.Count < 2) return false;
 
             _trades[tradeId] = existing with { Confirmed = true };
             return true;

@@ -167,14 +167,14 @@ public class MarketCreationTests : IAsyncLifetime
         nextBtn = page.GetByRole(AriaRole.Button, new() { Name = "Next" });
         await nextBtn.ClickAsync();
 
-        // Wait for step 5
-        var liquidityHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Initial Liquidity" });
+        // Wait for step 5. AMM liquidity provisioning is currently disabled,
+        // so the wizard shows a static informational step and lets creators
+        // continue without choosing an amount.
+        var liquidityHeading = page.GetByRole(AriaRole.Heading, new() { Name = "AMM liquidity is TBD" });
         await Assertions.Expect(liquidityHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
         if (targetStep <= 5) return;
 
-        // Step 5 → 6: Set liquidity
-        var quickBtn = page.GetByRole(AriaRole.Button, new() { Name = "1,000" });
-        await quickBtn.ClickAsync();
+        // Step 5 → 6: Continue without AMM liquidity.
         nextBtn = page.GetByRole(AriaRole.Button, new() { Name = "Next" });
         await nextBtn.ClickAsync();
 
@@ -389,22 +389,23 @@ public class MarketCreationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task WizardStep5_NextDisabledWhenLiquidityZero()
+    public async Task WizardStep5_CanContinueWithoutLiquidityWhileAmmIsDisabled()
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await NavigateToStep(page, 5);
 
-        // Next should be disabled initially (liquidity = 0)
+        await Assertions.Expect(page.GetByText("No liquidity payment required"))
+            .ToBeVisibleAsync();
+
+        // AMM liquidity is currently disabled, so creators can continue
+        // without selecting a funding amount.
         var nextBtn = page.GetByRole(AriaRole.Button, new() { Name = "Next" });
-        await Assertions.Expect(nextBtn).ToBeDisabledAsync();
-
-        // Click the 1,000 quick amount button
-        var quickBtn = page.GetByRole(AriaRole.Button, new() { Name = "1,000" });
-        await quickBtn.ClickAsync();
-
-        // Next should now be enabled
         await Assertions.Expect(nextBtn).ToBeEnabledAsync();
+
+        await nextBtn.ClickAsync();
+        var reviewHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Review & Create" });
+        await Assertions.Expect(reviewHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
     [Fact]

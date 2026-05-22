@@ -45,7 +45,7 @@ import {
   encrypt,
   decrypt,
   hexToBytes,
-} from "./ecdh";
+} from "./ecdh.ts";
 import {
   type AdaptorPoint,
   generateAdaptorPoint,
@@ -53,8 +53,8 @@ import {
   preVerify,
   adapt,
   extract,
-} from "./adaptor";
-import { normalizeUrl } from "./url";
+} from "./adaptor.ts";
+import { normalizeUrl } from "./url.ts";
 
 // ---------------------------------------------------------------------------
 // Swap context
@@ -92,6 +92,8 @@ export interface SwapContext {
  */
 export const MIN_LOCKTIME_DELTA_SECS = 5;
 const CASHU_SWAP_UNIT = "sat";
+const DIRECT_CONDITIONAL_SELL_UNSUPPORTED =
+  "Direct sell-side locking of existing CTF outcome proofs is unsupported by the current mint. Use a prelocked CTF split flow such as complementary maker-as-splitter settlement.";
 
 interface LockedProofResult {
   lockedProofs: Proof[];
@@ -108,7 +110,8 @@ export type ProofOperationKind =
   | "swap-lock"
   | "swap-claim"
   | "ctf-split"
-  | "ctf-redeem";
+  | "ctf-redeem"
+  | "proof-split";
 export type ProofOperationState = "prepared" | "completed" | "failed";
 
 export interface ProofOperationRecord {
@@ -148,6 +151,12 @@ export interface ProofOperationStore {
 interface ProofOperationOptions {
   operationId?: string;
   proofOperationStore?: ProofOperationStore;
+}
+
+export interface ExactProofSplitResult {
+  sendProofs: Proof[];
+  changeProofs: Proof[];
+  spentProofs: Proof[];
 }
 
 /**
@@ -292,13 +301,20 @@ export async function sellerPrepareSwap(
 }> {
   // Ask the mint to swap Alice's proofs into P2PK-locked proofs. Rewriting a
   // proof secret locally invalidates its mint signature (`C`).
-  const { lockedProofs, changeProofs } = await lockProofsForSwap(
-    ctx,
-    proofs,
-    ctx.sellerLocktime,
-    options.operationId,
-    options.proofOperationStore,
-  );
+  let lockedProofs: Proof[];
+  let changeProofs: Proof[];
+  try {
+    ({ lockedProofs, changeProofs } = await lockProofsForSwap(
+      ctx,
+      proofs,
+      ctx.sellerLocktime,
+      options.operationId,
+      options.proofOperationStore,
+    ));
+  } catch (error) {
+    if (!isConditionalSwapInputError(error)) throw error;
+    throw new Error(DIRECT_CONDITIONAL_SELL_UNSUPPORTED);
+  }
   return sellerPreparePrelockedSwap(ctx, lockedProofs, changeProofs);
 }
 
@@ -318,12 +334,13 @@ export async function sellerPreparePrelockedSwap(
   lockedProofs: Proof[];
   changeProofs: Proof[];
 }> {
+  const protocolLockedProofs = lockedProofs.map(stripLocalProofMetadata);
   const adaptorPoint = generateAdaptorPoint();
 
   // Pre-sign each proof's secret
   const privBytes = ctx.ephemeralKey.privateKey;
   const preSigs = await Promise.all(
-    lockedProofs.map(async (proof) => {
+    protocolLockedProofs.map(async (proof) => {
       const msgHash = await messageToHash(proof.secret);
       const sig = preSign(privBytes, msgHash, adaptorPoint.point);
       return hexStr(sig);
@@ -334,7 +351,10 @@ export async function sellerPreparePrelockedSwap(
     point: hexStr(adaptorPoint.point),
   };
 
-  const lockedProofsMsg: LockedProofsMsg = { proofs: lockedProofs, preSigs };
+  const lockedProofsMsg: LockedProofsMsg = {
+    proofs: protocolLockedProofs,
+    preSigs,
+  };
 
   const adaptorPointCipher = await encryptMsg(
     ctx,
@@ -349,8 +369,74 @@ export async function sellerPreparePrelockedSwap(
     adaptorPointCipher,
     lockedProofsCipher,
     adaptorPoint,
-    lockedProofs,
+    lockedProofs: protocolLockedProofs,
     changeProofs,
+  };
+}
+
+export async function splitProofsForExactSend(params: {
+  mintUrl: string;
+  sourceProofs: Proof[];
+  amountSats: number;
+  preserveSourceKeyset?: boolean;
+  operationId?: string;
+  proofOperationStore?: ProofOperationStore;
+}): Promise<ExactProofSplitResult> {
+  if (!Number.isSafeInteger(params.amountSats) || params.amountSats <= 0) {
+    throw new Error("amountSats must be a positive safe integer");
+  }
+  if (params.sourceProofs.length === 0) {
+    throw new Error("Exact proof split requires source proofs");
+  }
+
+  const mint = new CashuMint(params.mintUrl);
+  const preserveSourceKeyset =
+    params.preserveSourceKeyset ??
+    params.sourceProofs.some(hasLocalCtfProofMetadata);
+  const { wallet, sendConfig } = await walletForSourceProofs(
+    mint,
+    params.sourceProofs,
+    {
+      preserveSourceKeyset,
+      fallbackToSourceKeysetOnUnknown: preserveSourceKeyset,
+    },
+  );
+  const outputConfig: OutputConfig = {
+    send: { type: "random" },
+    keep: { type: "random" },
+  };
+
+  if (params.operationId) {
+    const result = await splitProofsForExactSendWithOperation(
+      params.operationId,
+      params.mintUrl,
+      wallet,
+      params.amountSats,
+      params.sourceProofs,
+      sendConfig,
+      outputConfig,
+      requiredProofOperationStore(
+        params.operationId,
+        params.proofOperationStore,
+      ),
+    );
+    return {
+      sendProofs: result.send,
+      changeProofs: result.keep,
+      spentProofs: params.sourceProofs,
+    };
+  }
+
+  const result = await wallet.send(
+    params.amountSats,
+    params.sourceProofs,
+    sendConfig,
+    outputConfig,
+  );
+  return {
+    sendProofs: result.send,
+    changeProofs: result.keep,
+    spentProofs: params.sourceProofs,
   };
 }
 
@@ -605,6 +691,12 @@ export async function buyerClaimSwap(
     // keysets. At this point Bob has valid adaptor-revealed witnesses for
     // Alice's P2PK-locked outcome proofs, so keep those witnessed proofs as
     // the claimed position rather than attempting an unsupported refresh.
+    if (options.operationId && options.proofOperationStore) {
+      await options.proofOperationStore.markProofOperationCompleted(
+        options.operationId,
+        { keep: inputProofs },
+      );
+    }
     return inputProofs;
   }
 }
@@ -734,6 +826,54 @@ async function lockProofsWithOperation(
   return { lockedProofs: final.send, changeProofs: final.keep };
 }
 
+async function splitProofsForExactSendWithOperation(
+  operationId: string,
+  mintUrl: string,
+  wallet: CashuWallet,
+  amount: number,
+  sourceProofs: Proof[],
+  sendConfig: SendConfig | undefined,
+  outputConfig: OutputConfig,
+  proofOperationStore: ProofOperationStore,
+): Promise<{ send: Proof[]; keep: Proof[] }> {
+  const existing = await proofOperationStore.getProofOperation(operationId);
+  if (existing) {
+    assertProofOperationMatches(existing, "proof-split", mintUrl, sourceProofs);
+    const result = await resumeProofOperation(
+      wallet,
+      existing,
+      proofOperationStore,
+    );
+    return {
+      send: result.send ?? [],
+      keep: result.keep ?? [],
+    };
+  }
+
+  const preview = await wallet.prepareSwapToSend(
+    amount,
+    sourceProofs,
+    sendConfig,
+    outputConfig,
+  );
+  await proofOperationStore.prepareProofOperation({
+    operationId,
+    kind: "proof-split",
+    mintUrl,
+    inputs: preview.inputs,
+    outputs: {
+      send: serializeOutputDataArray(preview.sendOutputs ?? []),
+      keep: serializeOutputDataArray(preview.keepOutputs ?? []),
+    },
+    metadata: swapPreviewMetadata(preview),
+  });
+
+  const result = await wallet.completeSwap(preview);
+  const final = { send: result.send, keep: result.keep };
+  await proofOperationStore.markProofOperationCompleted(operationId, final);
+  return final;
+}
+
 async function receiveProofsWithOperation(
   operationId: string,
   mintUrl: string,
@@ -793,7 +933,7 @@ async function resumeProofOperation(
   );
   if (allStates(states, CheckStateEnum.SPENT)) {
     const restored = await restoreOutputGroups(entry.mintUrl, entry.outputs);
-    if (entry.kind === "swap-lock") {
+    if (operationKeepsUnselectedInputs(entry.kind)) {
       restored.keep = [
         ...(restored.keep ?? []),
         ...readUnselectedProofs(entry),
@@ -808,7 +948,7 @@ async function resumeProofOperation(
   if (allStates(states, CheckStateEnum.UNSPENT)) {
     const result = await wallet.completeSwap(entryToSwapPreview(entry));
     const final: Record<string, Proof[]> =
-      entry.kind === "swap-lock"
+      operationReturnsSendProofs(entry.kind)
         ? { send: result.send, keep: result.keep }
         : { keep: result.keep };
     await proofOperationStore.markProofOperationCompleted(
@@ -821,6 +961,14 @@ async function resumeProofOperation(
   throw new Error(
     `Proof operation ${entry.operationId} is still pending at the mint`,
   );
+}
+
+function operationReturnsSendProofs(kind: ProofOperationKind): boolean {
+  return kind === "swap-lock" || kind === "proof-split";
+}
+
+function operationKeepsUnselectedInputs(kind: ProofOperationKind): boolean {
+  return operationReturnsSendProofs(kind);
 }
 
 function requiredProofOperationStore(
@@ -838,6 +986,10 @@ function requiredProofOperationStore(
 async function walletForSourceProofs(
   mint: CashuMint,
   sourceProofs: Proof[],
+  options: {
+    preserveSourceKeyset?: boolean;
+    fallbackToSourceKeysetOnUnknown?: boolean;
+  } = {},
 ): Promise<{
   wallet: CashuWallet;
   sendConfig: SendConfig | undefined;
@@ -845,6 +997,9 @@ async function walletForSourceProofs(
 }> {
   const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT });
   await wallet.loadMint();
+  if (options.preserveSourceKeyset) {
+    return walletForConditionalSourceKeyset(mint, sourceProofs);
+  }
   try {
     return {
       wallet,
@@ -855,6 +1010,25 @@ async function walletForSourceProofs(
     if (!isUnknownKeysetError(error)) throw error;
   }
 
+  if (options.fallbackToSourceKeysetOnUnknown === false) {
+    return {
+      wallet,
+      sendConfig: undefined,
+      inputFeeSats: 0,
+    };
+  }
+
+  return walletForConditionalSourceKeyset(mint, sourceProofs);
+}
+
+async function walletForConditionalSourceKeyset(
+  mint: CashuMint,
+  sourceProofs: Proof[],
+): Promise<{
+  wallet: CashuWallet;
+  sendConfig: SendConfig;
+  inputFeeSats: number;
+}> {
   const sourceKeysetId = singleProofKeysetId(sourceProofs);
   const mintInfo = await mint.getInfo();
   const keys = await fetchMintKeys(mint, sourceKeysetId);
@@ -879,6 +1053,21 @@ async function walletForSourceProofs(
     sendConfig: { keysetId: sourceKeysetId },
     inputFeeSats: 0,
   };
+}
+
+function hasLocalCtfProofMetadata(proof: Proof): boolean {
+  const candidate = proof as Proof & {
+    conditionId?: unknown;
+    condition_id?: unknown;
+    outcomeCollection?: unknown;
+    outcome_collection?: unknown;
+  };
+  return (
+    typeof candidate.conditionId === "string" ||
+    typeof candidate.condition_id === "string" ||
+    typeof candidate.outcomeCollection === "string" ||
+    typeof candidate.outcome_collection === "string"
+  );
 }
 
 function serializeOutputDataArray(
@@ -1001,8 +1190,32 @@ function isUnknownKeysetError(error: unknown): boolean {
 }
 
 function isConditionalSwapInputError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /Inputs must use the same conditional keyset/i.test(message);
+  const candidate = error as {
+    message?: unknown;
+    detail?: unknown;
+    code?: unknown;
+    status?: unknown;
+  };
+  const message = [
+    error instanceof Error ? error.message : String(error),
+    typeof candidate?.detail === "string" ? candidate.detail : "",
+  ].join(" ");
+  return (
+    /Inputs must use the same conditional keyset/i.test(message) ||
+    /Witness is not a p2pk witness/i.test(message) ||
+    candidate?.code === 13016 ||
+    (candidate?.status === 400 && /conditional keyset/i.test(message))
+  );
+}
+
+function stripLocalProofMetadata(proof: Proof): Proof {
+  return {
+    id: proof.id,
+    amount: proof.amount,
+    secret: proof.secret,
+    C: proof.C,
+    ...(proof.witness ? { witness: proof.witness } : {}),
+  };
 }
 
 function assertProofOperationMatches(

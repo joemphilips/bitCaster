@@ -29,6 +29,16 @@ export interface PendingTrade {
   ephemeralPrivkey: string
   /** Unix ms when the order was submitted — useful for TTL/expiry handling. */
   submittedAt: number
+  /** Reserved complete-set proofs created before a complementary-maker buy rests. */
+  preflightSplit?: PendingPreflightSplit
+}
+
+export interface PendingPreflightSplit {
+  reservationId: string
+  conditionId: string
+  keepOutcomeSetId: string
+  lockOutcomeSetId: string
+  amountSats: number
 }
 
 interface PendingTradeState {

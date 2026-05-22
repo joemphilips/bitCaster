@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Proof } from '@cashu/cashu-ts'
 import {
+  splitRootCompleteSetForPreflightOrder,
   splitRootCompleteSetForSwap,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
@@ -182,6 +183,37 @@ describe('splitRootCompleteSetForSwap', () => {
     expect(result.resolvedKeepOutcomeSetId).toBe('Alice')
     expect(result.lockedProofs[0].id).toBe('keyset-not-alice')
     expect(result.keepProofs[0].id).toBe('keyset-alice')
+  })
+
+  it('pre-flight splits both outcome branches as regular proofs for later reservation', async () => {
+    mockConditionFetch({
+      NO: 'keyset-no',
+      YES: 'keyset-yes',
+    })
+
+    const result = await splitRootCompleteSetForPreflightOrder({
+      mintUrl: 'https://mint.example',
+      conditionId,
+      collateralProofs: [inputProof],
+      amountSats: 100,
+      lockOutcomeSetId: 'NO',
+      keepOutcomeSetId: 'YES',
+      operationId: 'op-preflight',
+      proofOperationStore: proofOperationStore(),
+    })
+
+    const postBody = JSON.parse(
+      String(
+        vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')?.[1]
+          ?.body,
+      ),
+    ) as { outputs: Record<string, Array<{ B_: string }>> }
+    expect(postBody.outputs.NO[0].B_).toBe('random-keyset-no')
+    expect(postBody.outputs.YES[0].B_).toBe('random-keyset-yes')
+    expect(result.lockProofs[0].id).toBe('keyset-no')
+    expect(result.keepProofs[0].id).toBe('keyset-yes')
+    expect(result.proofsByCollection.NO[0].secret).toBe('proof-random-keyset-no')
+    expect(result.proofsByCollection.YES[0].secret).toBe('proof-random-keyset-yes')
   })
 
   it('throws before posting when an engine outcome-set id matches multiple mint keys', async () => {

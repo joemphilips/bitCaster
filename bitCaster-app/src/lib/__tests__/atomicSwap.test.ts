@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Proof } from '@cashu/cashu-ts'
 import {
   buildReceiveToken,
+  buyerClaimSwap,
   buyerPrepareSwap,
   MIN_LOCKTIME_DELTA_SECS,
   sellerClaimSwap,
+  sellerPreparePrelockedSwap,
   sellerPrepareSwap,
+  splitProofsForExactSend,
   type ProofOperationStore,
   type SwapContext,
   validateLocktimeOrdering,
@@ -20,10 +23,13 @@ import {
 const cashuMockState = vi.hoisted(() => ({
   failNextFeeLookup: false,
   loadedKeysets: [] as Array<{ keys: Record<number, string> }>,
+  prepareSwapToSendAmounts: [] as number[],
+  prepareSwapToSendConfigs: [] as unknown[],
   prepareSwapToSendCalls: 0,
   prepareSwapToReceiveCalls: 0,
   completeSwapCalls: 0,
   restoreCalls: 0,
+  sendError: null as Error | null,
   completeSwapError: null as Error | null,
   proofState: 'UNSPENT' as 'UNSPENT' | 'SPENT' | 'PENDING',
 }))
@@ -72,11 +78,11 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
     }
   }
   let outputCounter = 0
-  const output = (amount: number, group: string) =>
+  const output = (amount: number, group: string, keysetId = 'test-keyset') =>
     new MockOutputData(
       {
         amount,
-        id: 'test-keyset',
+        id: keysetId,
         B_: `02${group}${outputCounter++}`.padEnd(66, '0'),
       },
       1n,
@@ -135,20 +141,28 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
           }
           return 0
         }),
-        send: vi.fn().mockImplementation(async (_amount: number, proofs: Proof[]) => ({
-          send: proofs,
-          keep: [],
-        })),
+        send: vi.fn().mockImplementation(async (_amount: number, proofs: Proof[]) => {
+          if (cashuMockState.sendError) throw cashuMockState.sendError
+          return {
+            send: proofs,
+            keep: [],
+          }
+        }),
         prepareSwapToSend: vi.fn().mockImplementation(
-          async (amount: number, proofs: Proof[]) => {
+          async (amount: number, proofs: Proof[], config?: { keysetId?: string }) => {
             cashuMockState.prepareSwapToSendCalls++
+            cashuMockState.prepareSwapToSendAmounts.push(amount)
+            cashuMockState.prepareSwapToSendConfigs.push(config)
+            const inputTotal = proofs.reduce((sum, proof) => sum + proof.amount, 0)
+            const change = Math.max(0, inputTotal - amount)
+            const outputKeysetId = config?.keysetId ?? 'test-keyset'
             return {
               amount,
               fees: 0,
               keysetId: proofs[0]?.id ?? 'test-keyset',
               inputs: proofs,
-              sendOutputs: [output(amount, 'send')],
-              keepOutputs: [],
+              sendOutputs: [output(amount, 'send', outputKeysetId)],
+              keepOutputs: change > 0 ? [output(change, 'keep', outputKeysetId)] : [],
               unselectedProofs: [],
             }
           },
@@ -257,10 +271,13 @@ const proofOperationStore: ProofOperationStore = {
 beforeEach(() => {
   cashuMockState.failNextFeeLookup = false
   cashuMockState.loadedKeysets.length = 0
+  cashuMockState.prepareSwapToSendAmounts.length = 0
+  cashuMockState.prepareSwapToSendConfigs.length = 0
   cashuMockState.prepareSwapToSendCalls = 0
   cashuMockState.prepareSwapToReceiveCalls = 0
   cashuMockState.completeSwapCalls = 0
   cashuMockState.restoreCalls = 0
+  cashuMockState.sendError = null
   cashuMockState.completeSwapError = null
   cashuMockState.proofState = 'UNSPENT'
   proofDbMockState.operations.clear()
@@ -349,6 +366,171 @@ describe('buyerPrepareSwap', () => {
     expect(buyerOut.sellerPreSigsHex).toEqual(sellerLocked.preSigs)
     expect(buyerOut.sellerPreSigsHex).toHaveLength(1)
   })
+
+  it('does not receive seller local proof metadata from prelocked openings', async () => {
+    const { sellerCtx, buyerCtx } = swapContexts('trade-prelocked-metadata')
+    const sellerOut = await sellerPreparePrelockedSwap(sellerCtx, [
+      {
+        ...proof('alice-prelocked', 7),
+        reservedBy: 'order-preflight:local-only',
+        marketId: 'condition-YES',
+      } as Proof & { reservedBy: string; marketId: string },
+    ])
+
+    const buyerOut = await buyerPrepareSwap(
+      buyerCtx,
+      sellerOut.adaptorPointCipher,
+      sellerOut.lockedProofsCipher,
+      [proof('bob-1', 7)],
+    )
+
+    const sharedKey = await deriveEncryptionKey(
+      computeSharedSecret(buyerCtx.ephemeralKey.privateKey, sellerCtx.ephemeralKey.publicKey),
+    )
+    const sellerLockedPlain = await decrypt(sharedKey, sellerOut.lockedProofsCipher)
+    const sellerLocked = JSON.parse(sellerLockedPlain) as {
+      proofs: Array<Proof & { reservedBy?: string; marketId?: string }>
+    }
+    expect(sellerLocked.proofs[0].reservedBy).toBeUndefined()
+    expect(sellerLocked.proofs[0].marketId).toBeUndefined()
+    expect(buyerOut.sellerPreSigsHex).toHaveLength(1)
+  })
+})
+
+describe('buyerClaimSwap', () => {
+  it('keeps witnessed conditional proofs when CDK rejects claim refresh by detail code', async () => {
+    const { sellerCtx, buyerCtx } = swapContexts('trade-browser-conditional-claim')
+    const sellerOut = await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)])
+    const buyerOut = await buyerPrepareSwap(
+      buyerCtx,
+      sellerOut.adaptorPointCipher,
+      sellerOut.lockedProofsCipher,
+      [proof('bob-1', 7)],
+    )
+    const operationId = 'trade-browser-conditional-claim/browser/buyer-claim'
+    cashuMockState.completeSwapError = Object.assign(new Error('Token swap failed'), {
+      code: 13016,
+      status: 400,
+      detail: 'Inputs must use the same conditional keyset',
+    })
+
+    const claimed = await buyerClaimSwap(
+      buyerCtx,
+      sellerOut.adaptorPoint.secret,
+      sellerOut.lockedProofsCipher,
+      buyerOut.sellerPreSigsHex,
+      { operationId, proofOperationStore },
+    )
+
+    expect(claimed).toEqual([
+      expect.objectContaining({
+        amount: 7,
+        secret: expect.any(String),
+        witness: expect.stringContaining('signatures'),
+      }),
+    ])
+    expect(proofDbMockState.operations.get(operationId)).toEqual(
+      expect.objectContaining({
+        state: 'completed',
+        resultProofs: { keep: claimed },
+      }),
+    )
+  })
+
+  it('keeps witnessed conditional proofs when a mock mint reports non-P2PK witness refresh', async () => {
+    const { sellerCtx, buyerCtx } = swapContexts('trade-browser-mock-claim')
+    const sellerOut = await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)])
+    const buyerOut = await buyerPrepareSwap(
+      buyerCtx,
+      sellerOut.adaptorPointCipher,
+      sellerOut.lockedProofsCipher,
+      [proof('bob-1', 7)],
+    )
+    cashuMockState.completeSwapError = new Error('Witness is not a p2pk witness')
+
+    const claimed = await buyerClaimSwap(
+      buyerCtx,
+      sellerOut.adaptorPoint.secret,
+      sellerOut.lockedProofsCipher,
+      buyerOut.sellerPreSigsHex,
+      {
+        operationId: 'trade-browser-mock-claim/browser/buyer-claim',
+        proofOperationStore,
+      },
+    )
+
+    expect(claimed).toHaveLength(1)
+    expect(claimed[0].witness).toContain('signatures')
+  })
+})
+
+describe('splitProofsForExactSend', () => {
+  it('splits an oversized reserved proof into exact send proofs and change', async () => {
+    const split = await splitProofsForExactSend({
+      mintUrl: 'https://mint.test',
+      sourceProofs: [proof('reserved-no-136', 136)],
+      amountSats: 100,
+      operationId: 'trade-browser-preflight-overpay/browser/preflight-lock-exact',
+      proofOperationStore,
+    })
+
+    expect(cashuMockState.prepareSwapToSendAmounts).toEqual([100])
+    expect(split.sendProofs).toEqual([
+      expect.objectContaining({ amount: 100 }),
+    ])
+    expect(split.changeProofs).toEqual([
+      expect.objectContaining({ amount: 36 }),
+    ])
+    expect(split.spentProofs).toEqual([
+      expect.objectContaining({ secret: 'reserved-no-136' }),
+    ])
+  })
+
+  it('preserves the conditional keyset when exact-splitting CTF outcome proofs', async () => {
+    const split = await splitProofsForExactSend({
+      mintUrl: 'https://mint.test',
+      sourceProofs: [
+        {
+          ...proof('reserved-no-136', 136, 'conditional-keyset'),
+          conditionId: 'condition-1',
+          outcomeCollection: 'NO',
+        } as Proof,
+      ],
+      amountSats: 100,
+      operationId: 'trade-browser-preflight-overpay/browser/preflight-lock-exact-v2',
+      proofOperationStore,
+    })
+
+    expect(cashuMockState.prepareSwapToSendConfigs).toEqual([
+      { keysetId: 'conditional-keyset' },
+    ])
+    expect(split.sendProofs).toEqual([
+      expect.objectContaining({ amount: 100, id: 'conditional-keyset' }),
+    ])
+    expect(split.changeProofs).toEqual([
+      expect.objectContaining({ amount: 36, id: 'conditional-keyset' }),
+    ])
+  })
+
+  it('does not treat regular proofs with an uncached keyset as conditional CTF inputs', async () => {
+    cashuMockState.failNextFeeLookup = true
+
+    const split = await splitProofsForExactSend({
+      mintUrl: 'https://mint.test',
+      sourceProofs: [proof('regular-e2e-seed', 210, 'keyset-00')],
+      amountSats: 100,
+      operationId: 'trade-browser-regular-preflight/browser/preflight-lock-exact-v2',
+      proofOperationStore,
+    })
+
+    expect(cashuMockState.prepareSwapToSendConfigs).toEqual([undefined])
+    expect(split.sendProofs).toEqual([
+      expect.objectContaining({ amount: 100, id: 'test-keyset' }),
+    ])
+    expect(split.changeProofs).toEqual([
+      expect.objectContaining({ amount: 110, id: 'test-keyset' }),
+    ])
+  })
 })
 
 describe('sellerPrepareSwap', () => {
@@ -372,6 +554,27 @@ describe('sellerPrepareSwap', () => {
     expect(cashuMockState.loadedKeysets.at(-1)?.keys).toEqual({
       1: '02'.padEnd(66, '1'),
     })
+  })
+
+  it('fails closed when the mint rejects direct locking of CTF outcome proofs', async () => {
+    cashuMockState.failNextFeeLookup = true
+    cashuMockState.sendError = new Error('Inputs must use the same conditional keyset')
+
+    const sellerKey = generateEphemeralKeypair()
+    const buyerKey = generateEphemeralKeypair()
+    const ctx: SwapContext = {
+      tradeId: 'trade-direct-ctf-unsupported',
+      role: 'seller',
+      ephemeralKey: sellerKey,
+      counterpartyPubkey: buyerKey.publicKey,
+      sellerLocktime: 1_700_000_100,
+      buyerLocktime: 1_700_000_000,
+      mintUrl: 'https://mint.test',
+    }
+
+    await expect(
+      sellerPrepareSwap(ctx, [proof('conditional-proof', 1, 'conditional-keyset')]),
+    ).rejects.toThrow(/Direct sell-side locking of existing CTF outcome proofs is unsupported/)
   })
 })
 
