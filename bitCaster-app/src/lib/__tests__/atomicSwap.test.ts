@@ -21,18 +21,7 @@ import {
   deriveEncryptionKey,
   generateEphemeralKeypair,
 } from '../ecdh'
-
-function amountToNumber(amount: unknown): number {
-  if (
-    amount &&
-    typeof amount === 'object' &&
-    'toNumber' in amount &&
-    typeof amount.toNumber === 'function'
-  ) {
-    return amount.toNumber()
-  }
-  return Number(amount)
-}
+import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 
 const cashuMockState = vi.hoisted(() => ({
   failNextFeeLookup: false,

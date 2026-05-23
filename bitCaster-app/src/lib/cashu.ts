@@ -39,6 +39,7 @@ import {
   type StoredOutputData,
   type StoredProof,
 } from "@/stores/proof-db";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -282,7 +283,7 @@ export function encodeToken(proofs: Proof[], mintUrl?: string): string {
 export async function decodeToken(tokenStr: string): Promise<Token> {
   // First try without keysets (works for v0 keyset IDs and full-length IDs)
   try {
-    return getDecodedToken(tokenStr);
+    return getDecodedToken(tokenStr, []);
   } catch {
     // v1 short keyset IDs need expansion — try all configured mints' stored keysets first
     const store = useWalletStore.getState();
@@ -880,28 +881,6 @@ function validateRedeemSignature(
   ) {
     throw new Error("Mint returned a redeem signature for the wrong output");
   }
-}
-
-function amountToNumber(amount: unknown): number {
-  if (typeof amount === "number") return amount;
-  if (typeof amount === "bigint") return Number(amount);
-  if (typeof amount === "string") return Number(amount);
-  if (
-    amount &&
-    typeof amount === "object" &&
-    "toNumber" in amount &&
-    typeof (amount as { toNumber: () => number }).toNumber === "function"
-  ) {
-    return Number((amount as { toNumber: () => number }).toNumber());
-  }
-  if (amount && typeof amount === "object" && "value" in amount) {
-    return amountToNumber((amount as { value: unknown }).value);
-  }
-  const parsed = Number(amount);
-  if (!Number.isSafeInteger(parsed)) {
-    throw new Error("Mint returned a value with an invalid amount");
-  }
-  return parsed;
 }
 
 async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {

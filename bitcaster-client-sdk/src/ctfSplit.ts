@@ -12,6 +12,7 @@ import {
   type SerializedBlindedSignature,
   type SwapPreview,
 } from '@cashu/cashu-ts'
+import { amountToNumber } from './proofSelection.ts'
 
 export interface CtfSplitRequest {
   condition_id: string
@@ -878,24 +879,6 @@ function toWireBlindedMessage(output: SerializedBlindedMessage): SerializedBlind
     ...output,
     amount: amountToNumber(output.amount),
   } as unknown as SerializedBlindedMessage
-}
-
-function amountToNumber(amount: unknown): number {
-  if (typeof amount === 'number') return amount
-  if (typeof amount === 'bigint') return Number(amount)
-  if (typeof amount === 'string') return Number(amount)
-  if (
-    amount &&
-    typeof amount === 'object' &&
-    'toNumber' in amount &&
-    typeof amount.toNumber === 'function'
-  ) {
-    return Number(amount.toNumber())
-  }
-  if (amount && typeof amount === 'object' && 'value' in amount) {
-    return amountToNumber((amount as { value: unknown }).value)
-  }
-  return Number(amount)
 }
 
 function normalizeProof(proof: Proof): Proof {

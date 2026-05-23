@@ -88,19 +88,26 @@ function proofKey(p: AmountProofLike): string {
 }
 
 export function amountToNumber(amount: unknown): number {
-  if (typeof amount === 'number') return amount
-  if (typeof amount === 'bigint') return Number(amount)
-  if (typeof amount === 'string') return Number(amount)
+  if (typeof amount === 'number') return validateAmountNumber(amount)
+  if (typeof amount === 'bigint') return validateAmountNumber(Number(amount))
+  if (typeof amount === 'string') return validateAmountNumber(Number(amount))
   if (
     amount &&
     typeof amount === 'object' &&
     'toNumber' in amount &&
     typeof amount.toNumber === 'function'
   ) {
-    return Number(amount.toNumber())
+    return validateAmountNumber(Number(amount.toNumber()))
   }
   if (amount && typeof amount === 'object' && 'value' in amount) {
     return amountToNumber((amount as { value: unknown }).value)
   }
-  return Number(amount)
+  return validateAmountNumber(Number(amount))
+}
+
+function validateAmountNumber(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Cashu amount must be a non-negative safe integer')
+  }
+  return value
 }

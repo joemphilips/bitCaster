@@ -6,6 +6,7 @@ import {
   decideTradeStateChanged,
   isSettlementCompleteMessage,
 } from '../../bitcaster-client-sdk/src/tradeFlow.ts'
+import { amountToNumber } from '../../bitcaster-client-sdk/src/proofSelection.ts'
 import { ensureProfileDir, profileDir } from './profile.ts'
 
 export interface CashuProofRecord {
@@ -978,24 +979,6 @@ function normalizeCashuProofRecord(proof: CashuProofRecord): CashuProofRecord {
     ...structuredClone(proof),
     amount: amountToNumber(proof.amount),
   }
-}
-
-function amountToNumber(amount: unknown): number {
-  if (typeof amount === 'number') return amount
-  if (typeof amount === 'bigint') return Number(amount)
-  if (typeof amount === 'string') return Number(amount)
-  if (
-    amount &&
-    typeof amount === 'object' &&
-    'toNumber' in amount &&
-    typeof amount.toNumber === 'function'
-  ) {
-    return Number(amount.toNumber())
-  }
-  if (amount && typeof amount === 'object' && 'value' in amount) {
-    return amountToNumber((amount as { value: unknown }).value)
-  }
-  return Number(amount)
 }
 
 function addAmount(

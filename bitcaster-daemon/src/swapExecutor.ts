@@ -1,4 +1,4 @@
-import { takeProofsForLock } from '../../bitcaster-client-sdk/src/proofSelection.ts'
+import { amountToNumber, takeProofsForLock } from '../../bitcaster-client-sdk/src/proofSelection.ts'
 import { TRADE_MESSAGE_TYPES } from '../../bitcaster-client-sdk/src/tradeSession.ts'
 import type { DaemonProfile } from './profile.ts'
 import { readProfile } from './profile.ts'
@@ -1079,24 +1079,6 @@ function removeProofsBySecret(
 
 function sumProofRows(rows: StoredProofRecord[]): number {
   return rows.reduce((sum, row) => sum + amountToNumber(row.proof.amount), 0)
-}
-
-function amountToNumber(amount: unknown): number {
-  if (typeof amount === 'number') return amount
-  if (typeof amount === 'bigint') return Number(amount)
-  if (typeof amount === 'string') return Number(amount)
-  if (
-    amount &&
-    typeof amount === 'object' &&
-    'toNumber' in amount &&
-    typeof amount.toNumber === 'function'
-  ) {
-    return Number(amount.toNumber())
-  }
-  if (amount && typeof amount === 'object' && 'value' in amount) {
-    return amountToNumber((amount as { value: unknown }).value)
-  }
-  return Number(amount)
 }
 
 function releaseReservedProofs(

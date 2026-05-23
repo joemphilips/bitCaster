@@ -23,6 +23,7 @@ import {
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
 } from '../../bitcaster-client-sdk/src/ctfSplit.ts'
+import { amountToNumber } from '../../bitcaster-client-sdk/src/proofSelection.ts'
 import {
   addAvailableProofs,
   completeReservedSatSend,
@@ -158,7 +159,7 @@ async function decodeTokenForProfile(
   deps: WalletOpsDependencies,
 ): Promise<ReturnType<typeof getDecodedToken>> {
   try {
-    return getDecodedToken(token)
+    return getDecodedToken(token, [])
   } catch (err) {
     if (!/short keyset ID/i.test(errorMessage(err))) throw err
     const keysetIds = await getDecodeKeysetIds(profile.mintUrl, asset, deps)
@@ -640,24 +641,6 @@ function hexToBytes(hex: string): Uint8Array {
 
 function blindedMessageKey(output: SerializedBlindedMessage): string {
   return `${output.id}:${output.B_}`
-}
-
-function amountToNumber(amount: unknown): number {
-  if (typeof amount === 'number') return amount
-  if (typeof amount === 'bigint') return Number(amount)
-  if (typeof amount === 'string') return Number(amount)
-  if (
-    amount &&
-    typeof amount === 'object' &&
-    'toNumber' in amount &&
-    typeof amount.toNumber === 'function'
-  ) {
-    return Number(amount.toNumber())
-  }
-  if (amount && typeof amount === 'object' && 'value' in amount) {
-    return amountToNumber((amount as { value: unknown }).value)
-  }
-  return Number(amount)
 }
 
 async function receiveOutcomeToken(

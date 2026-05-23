@@ -55,10 +55,12 @@ const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(() 
       return [new MockOutputData('random', amount, keyset)]
     }
 
-    toProof(signature: { id: string; amount: number; C_: string }) {
+    toProof(signature: { id: string; amount: unknown; C_: string }) {
+      const amount =
+        signature.amount instanceof MockAmount ? signature.amount.toNumber() : Number(signature.amount)
       return {
         id: signature.id,
-        amount: Number(signature.amount),
+        amount,
         secret: `proof-${this.blindedMessage.B_}`,
         C: signature.C_,
       }
