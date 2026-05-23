@@ -17,6 +17,7 @@ import type { MarketDetail } from "@/types/market-detail";
 import { formatBtc } from "@/lib/format";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
 import { getMintIconUrl } from "@/lib/mints";
+import { assertNever } from "@/lib/enumDiscipline";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { useWalletStore } from "@/stores/wallet";
 
@@ -84,6 +85,19 @@ function formatTimeRemaining(
   return t("market.minutesRemaining", { minutes });
 }
 
+function isEngineMarketClosed(state: MarketDetail["state"]): boolean {
+  if (state == null) return false;
+
+  switch (state) {
+    case "open":
+      return false;
+    case "closed":
+      return true;
+    default:
+      return assertNever(state);
+  }
+}
+
 export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -92,7 +106,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
     s.mints.find((m) => m.url === activeMintUrl),
   );
   const isResolved = market.resolution.status === "resolved";
-  const isEngineClosed = market.state === "closed";
+  const isEngineClosed = isEngineMarketClosed(market.state);
   const isClosed = isResolved || isEngineClosed;
   const [now, setNow] = useState(() => new Date());
   const timeRemaining =
