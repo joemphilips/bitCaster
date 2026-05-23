@@ -21,6 +21,7 @@ import {
   type MintQuoteResponse,
   type MeltQuoteResponse,
   type PartialMintQuoteResponse,
+  type OutputDataLike,
   type SerializedBlindedMessage,
   type SerializedBlindedSignature,
   type Token,
@@ -718,8 +719,10 @@ export async function settleCtfPosition(
     return resumeCtfRedeem(existing);
   }
 
-  const { outputData, requestOutputs, keyset } =
-    await prepareRegularRedeemOutputs(mintUrl, position.amountSats);
+  const outputData = await prepareRegularRedeemOutputs(
+    mintUrl,
+    position.amountSats,
+  );
   await prepareProofOperation({
     operationId,
     kind: "ctf-redeem",
@@ -734,14 +737,10 @@ export async function settleCtfPosition(
   });
 
   const witness = await fetchConditionOracleWitness(position.conditionId);
-  const response = await postRedeemOutcome(mintUrl, {
-    inputs: withOracleWitness(position.proofs, witness),
-    outputs: requestOutputs,
-  });
-  const settled = buildProofsFromRedeemResponse(
+  const settled = await redeemOutcomeProofsAtMint(
+    mintUrl,
+    withOracleWitness(position.proofs, witness),
     outputData,
-    response.signatures,
-    keyset,
   );
   await completeCtfRedeem(operationId, mintUrl, position.proofs, settled);
   return settled;
@@ -753,21 +752,7 @@ interface ConditionAttestationResponse {
   oracleWitness: unknown;
 }
 
-interface RedeemOutcomeRequest {
-  inputs: Proof[];
-  outputs: SerializedBlindedMessage[];
-}
-
-interface RedeemOutcomeResponse {
-  signatures: SerializedBlindedSignature[];
-}
-
-interface RedeemOutputData {
-  blindedMessage: SerializedBlindedMessage;
-  blindingFactor: bigint;
-  secret: Uint8Array;
-  toProof(signature: SerializedBlindedSignature, keyset: MintKeys): Proof;
-}
+type RedeemOutputData = OutputDataLike;
 
 function validateRedeemPosition(position: MarketPosition): void {
   if (!/^[0-9a-fA-F]{64}$/.test(position.conditionId)) {
@@ -808,19 +793,10 @@ function buildCtfRedeemOperationId(position: MarketPosition): string {
 async function prepareRegularRedeemOutputs(
   mintUrl: string,
   amountSats: number,
-): Promise<{
-  outputData: RedeemOutputData[];
-  requestOutputs: SerializedBlindedMessage[];
-  keyset: MintKeys;
-}> {
+): Promise<RedeemOutputData[]> {
   const wallet = await getWallet(mintUrl);
   const keyset = await getActiveRegularKeyset(wallet);
-  const outputData = OutputData.createRandomData(Amount.from(amountSats), keyset);
-  return {
-    outputData,
-    requestOutputs: outputData.map((output) => output.blindedMessage),
-    keyset,
-  };
+  return OutputData.createRandomData(Amount.from(amountSats), keyset);
 }
 
 async function getActiveRegularKeyset(wallet: CashuWallet): Promise<MintKeys> {
@@ -864,13 +840,13 @@ async function fetchConditionOracleWitness(
   return JSON.stringify(body.oracleWitness);
 }
 
-async function postRedeemOutcome(
+async function redeemOutcomeProofsAtMint(
   mintUrl: string,
-  request: RedeemOutcomeRequest,
-): Promise<RedeemOutcomeResponse> {
-  const mint = new CashuMint(mintUrl);
-  const response = await mint.redeemOutcome(request);
-  return { signatures: response.signatures };
+  inputs: Proof[],
+  outputs: RedeemOutputData[],
+): Promise<Proof[]> {
+  const wallet = await getWallet(mintUrl);
+  return wallet.redeemOutcomeProofs({ inputs, outputs });
 }
 
 function withOracleWitness(proofs: Proof[], witnessJson: string): Proof[] {
@@ -980,19 +956,11 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
       );
     }
     const outputData = deserializeOutputDataArray(entry.outputs.regular ?? []);
-    const keyset = await getKeyset(
-      entry.mintUrl,
-      outputData[0]?.blindedMessage.id,
-    );
     const witness = await fetchConditionOracleWitness(metadata.conditionId);
-    const response = await postRedeemOutcome(entry.mintUrl, {
-      inputs: withOracleWitness(entry.inputs, witness),
-      outputs: outputData.map((output) => output.blindedMessage),
-    });
-    const settled = buildProofsFromRedeemResponse(
+    const settled = await redeemOutcomeProofsAtMint(
+      entry.mintUrl,
+      withOracleWitness(entry.inputs, witness),
       outputData,
-      response.signatures,
-      keyset,
     );
     await completeCtfRedeem(
       entry.operationId,

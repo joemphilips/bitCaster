@@ -29,6 +29,7 @@ import type {
   SerializedBlindedSignature,
   SwapPreview,
   Token,
+  ConditionalSwapPreview,
 } from "@cashu/cashu-ts";
 import {
   Amount,
@@ -493,12 +494,6 @@ export interface ConditionalSwapOutputGroup {
   p2pk?: P2PKOptions;
 }
 
-interface PreparedConditionalKeysetSwap {
-  keysetId: string;
-  inputs: Proof[];
-  outputDataByLabel: Record<string, SwapOutputData[]>;
-}
-
 type SwapOutputData = OutputDataLike & {
   toProof(signature: SerializedBlindedSignature, keyset: MintKeys): Proof;
 };
@@ -509,10 +504,9 @@ type SwapOutputData = OutputDataLike & {
  * Every input proof must belong to a single conditional keyset `K`; every
  * output blinded message is minted against `K`. CDK permits this because all
  * inputs and outputs share `(condition_id, outcome_collection_id)` — a regular
- * NUT-03 swap within one conditional keyset. This deliberately bypasses
- * cashu-ts's `Wallet`, whose keyset auto-selection would mint the outputs on
- * the regular sat keyset and trip CDK error 13016
- * ("Inputs must use the same conditional keyset").
+ * NUT-03 swap within one conditional keyset. The cashu-ts CTF wallet API owns
+ * the keyset-pinned output construction; this wrapper only adds bitCaster's
+ * proof-operation persistence and grouped return shape.
  *
  * @returns proofs grouped by {@link ConditionalSwapOutputGroup.label}
  */
@@ -528,17 +522,15 @@ export async function conditionalKeysetSwap(
   if (groups.length === 0) {
     throw new Error("conditionalKeysetSwap requires at least one output group");
   }
-  const mint = new CashuMint(mintUrl);
-  const wallet = new CashuWallet(mint, {
+  const wallet = new CashuWallet(new CashuMint(mintUrl), {
     unit: CASHU_SWAP_UNIT,
-  }) as CashuWallet;
+    enableCtf: true,
+  });
   const prepare = async () =>
-    prepareConditionalKeysetSwapPreview(
-      wallet,
-      mint,
-      sourceProofs.map(stripLocalProofMetadata),
-      groups,
-    );
+    wallet.prepareConditionalSwap({
+      inputs: sourceProofs.map(stripLocalProofMetadata),
+      outputs: groups,
+    });
   if (options.operationId) {
     const proofOperationStore = requiredProofOperationStore(
       options.operationId,
@@ -571,7 +563,6 @@ export async function conditionalKeysetSwap(
     });
     const result = await completeConditionalKeysetSwapPreview(
       wallet,
-      mint,
       preview,
     );
     await proofOperationStore.markProofOperationCompleted(
@@ -581,119 +572,23 @@ export async function conditionalKeysetSwap(
     return result;
   }
   const preview = await prepare();
-  return completeConditionalKeysetSwapPreview(wallet, mint, preview);
-}
-
-async function prepareConditionalKeysetSwapPreview(
-  wallet: CashuWallet,
-  mint: CashuMint,
-  sourceProofs: Proof[],
-  groups: ConditionalSwapOutputGroup[],
-): Promise<PreparedConditionalKeysetSwap> {
-  const walletWithCtf = wallet as unknown as {
-    prepareConditionalSwap?: (options: {
-      inputs: Proof[];
-      outputs: ConditionalSwapOutputGroup[];
-    }) => Promise<PreparedConditionalKeysetSwap>;
-  };
-  if (walletWithCtf.prepareConditionalSwap) {
-    return walletWithCtf.prepareConditionalSwap({
-      inputs: sourceProofs,
-      outputs: groups,
-    });
-  }
-
-  const keysetId = singleProofKeysetId(sourceProofs);
-  const keyset = await fetchMintKeys(mint, keysetId);
-  const feeSats = conditionalInputFee(sourceProofs.length, keyset);
-  const grossInput = sumProofs(sourceProofs);
-  const groupTotal = groups.reduce((sum, group) => sum + group.amount, 0);
-  if (groupTotal !== grossInput - feeSats) {
-    throw new Error(
-      `conditionalKeysetSwap: output total ${groupTotal} != input ${grossInput} - fee ${feeSats}`,
-    );
-  }
-
-  const outputDataByLabel: Record<string, SwapOutputData[]> = {};
-  for (const group of groups) {
-    if (!Number.isSafeInteger(group.amount) || group.amount <= 0) {
-      throw new Error(
-        `conditionalKeysetSwap: group ${group.label} has invalid amount ${group.amount}`,
-      );
-    }
-    outputDataByLabel[group.label] =
-      group.kind === "p2pk"
-        ? OutputData.createP2PKData(
-            requireGroupP2PK(group),
-            ctfAmount(group.amount),
-            keyset,
-          )
-        : OutputData.createRandomData(ctfAmount(group.amount), keyset);
-  }
-
-  return { keysetId, inputs: sourceProofs, outputDataByLabel };
+  return completeConditionalKeysetSwapPreview(wallet, preview);
 }
 
 async function completeConditionalKeysetSwapPreview(
   wallet: CashuWallet,
-  mint: CashuMint,
-  preview: PreparedConditionalKeysetSwap,
+  preview: ConditionalSwapPreview,
 ): Promise<Record<string, Proof[]>> {
-  const walletWithCtf = wallet as unknown as {
-    completeConditionalSwap?: (
-      preview: PreparedConditionalKeysetSwap,
-    ) => Promise<Record<string, Proof[]>>;
-  };
-  if (walletWithCtf.completeConditionalSwap) {
-    try {
-      return normalizeProofGroups(
-        await walletWithCtf.completeConditionalSwap(preview),
-      );
-    } catch (error) {
-      throw enrichConditionalSwapError(error, preview);
-    }
-  }
-
-  const keyset = await fetchMintKeys(mint, preview.keysetId);
-  const rows = Object.entries(preview.outputDataByLabel).flatMap(
-    ([label, data]) => data.map((output) => ({ label, output })),
-  );
-  let signatures: SerializedBlindedSignature[];
   try {
-    ({ signatures } = await mint.swap({
-      inputs: preview.inputs,
-      outputs: rows.map((row) => toWireBlindedMessage(row.output.blindedMessage)),
-    }));
+    return normalizeProofGroups(await wallet.completeConditionalSwap(preview));
   } catch (error) {
     throw enrichConditionalSwapError(error, preview);
   }
-  if (signatures.length !== rows.length) {
-    throw new Error(
-      `conditionalKeysetSwap: mint returned ${signatures.length} signatures, ` +
-        `expected ${rows.length}`,
-    );
-  }
-
-  const result: Record<string, Proof[]> = {};
-  rows.forEach((row, index) => {
-    const signature = signatures[index];
-    if (signature.id !== preview.keysetId) {
-      throw new Error(
-        `conditionalKeysetSwap: mint signed an output with keyset ${signature.id}, ` +
-          `expected the source conditional keyset ${preview.keysetId}`,
-      );
-    }
-    result[row.label] = [
-      ...(result[row.label] ?? []),
-      normalizeProof(row.output.toProof(normalizeCtfSignature(signature), keyset)),
-    ];
-  });
-  return normalizeProofGroups(result);
 }
 
 function enrichConditionalSwapError(
   error: unknown,
-  preview: PreparedConditionalKeysetSwap,
+  preview: ConditionalSwapPreview,
 ): Error {
   const rows = Object.entries(preview.outputDataByLabel).flatMap(
     ([label, outputs]) =>
@@ -771,15 +666,6 @@ export async function sellerLockOutcomeProofs(
     lockedProofs: swapped.lock ?? [],
     changeProofs: swapped.change ?? [],
   };
-}
-
-function requireGroupP2PK(group: ConditionalSwapOutputGroup): P2PKOptions {
-  if (!group.p2pk) {
-    throw new Error(
-      `conditionalKeysetSwap: group ${group.label} is kind "p2pk" but has no p2pk options`,
-    );
-  }
-  return group.p2pk;
 }
 
 /** Input fee in sats for a swap whose inputs all share one keyset. */
@@ -1439,7 +1325,6 @@ async function resumeConditionalKeysetSwap(
         : singleProofKeysetId(entry.inputs);
     const result = await completeConditionalKeysetSwapPreview(
       wallet,
-      new CashuMint(entry.mintUrl),
       {
         keysetId,
         inputs: entry.inputs,
@@ -1489,20 +1374,10 @@ async function walletForSourceProofs(
 }> {
   const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT });
   await wallet.loadMint();
-  try {
-    return {
-      wallet,
-      sendConfig: undefined,
-      inputFeeSats: amountToNumber(wallet.getFeesForProofs(sourceProofs)),
-    };
-  } catch (error) {
-    if (!isUnknownKeysetError(error)) throw error;
-  }
-
   return {
     wallet,
     sendConfig: undefined,
-    inputFeeSats: 0,
+    inputFeeSats: amountToNumber(wallet.getFeesForProofs(sourceProofs)),
   };
 }
 
@@ -1683,11 +1558,6 @@ function singleProofKeysetId(proofs: Proof[]): string {
     throw new Error("Atomic swap proof set must use exactly one keyset");
   }
   return [...ids][0];
-}
-
-function isUnknownKeysetError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /No keyset found|Keyset '.+' not found/i.test(message);
 }
 
 function stripLocalProofMetadata(proof: Proof): Proof {

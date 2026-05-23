@@ -267,7 +267,7 @@ export async function splitRootCompleteSetForSwap(
     proofOperationStore: CtfProofOperationStore
   },
 ): Promise<ComplementarySplitForSwapResult> {
-  const transport = new HttpCtfSplitTransport(params.mintUrl)
+  const transport = new CashuMintCtfSplitTransport(params.mintUrl)
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
   )
@@ -326,7 +326,7 @@ export async function splitRootCompleteSetForPreflightOrder(
     proofOperationStore: CtfProofOperationStore
   },
 ): Promise<PreflightCompleteSetSplitResult> {
-  const transport = new HttpCtfSplitTransport(params.mintUrl)
+  const transport = new CashuMintCtfSplitTransport(params.mintUrl)
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
   )
@@ -463,7 +463,7 @@ export async function splitCompleteSet(
   return proofsByCollection
 }
 
-export class HttpCtfSplitTransport implements CtfSplitTransport {
+export class CashuMintCtfSplitTransport implements CtfSplitTransport {
   private readonly mint: CashuMint & {
     getCtfCondition(conditionId: string): Promise<CtfConditionInfo>
     ctfSplit(request: CtfSplitRequest): Promise<CtfSplitResponse>

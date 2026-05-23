@@ -9,7 +9,7 @@ import {
   type Proof,
 } from '@cashu/cashu-ts'
 import {
-  HttpCtfSplitTransport,
+  CashuMintCtfSplitTransport,
   splitRootCompleteSet,
 } from '../../bitcaster-client-sdk/src/ctfSplit.ts'
 
@@ -31,7 +31,7 @@ if (mode === 'sats') {
 } else if (mode === 'outcome') {
   if (!conditionId || !outcomeSetId) usage()
   const split = await splitRootCompleteSet(
-    new HttpCtfSplitTransport(mintUrl),
+    new CashuMintCtfSplitTransport(mintUrl),
     conditionId,
     sats,
     amountSats,

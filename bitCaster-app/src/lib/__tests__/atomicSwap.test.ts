@@ -297,6 +297,55 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
             unselectedProofs: [],
           }
         }),
+        prepareConditionalSwap: vi.fn().mockImplementation(async (options: {
+          inputs: Proof[]
+          outputs: Array<{
+            label: string
+            kind: 'random' | 'p2pk'
+            amount: number
+            p2pk?: {
+              pubkey: string[]
+              requiredSignatures?: number
+              locktime?: number
+              refundKeys?: string[]
+              sigFlag?: string
+            }
+          }>
+        }) => ({
+          keysetId: options.inputs[0]?.id ?? 'conditional-keyset',
+          inputs: options.inputs,
+          outputDataByLabel: Object.fromEntries(
+            options.outputs.map((group) => [
+              group.label,
+              group.kind === 'p2pk'
+                ? MockOutputData.createP2PKData(
+                    group.p2pk ?? { pubkey: ['02'.padEnd(66, '2')] },
+                    group.amount,
+                    { id: options.inputs[0]?.id ?? 'conditional-keyset' },
+                  )
+                : MockOutputData.createRandomData(
+                    group.amount,
+                    { id: options.inputs[0]?.id ?? 'conditional-keyset' },
+                  ),
+            ]),
+          ),
+        })),
+        completeConditionalSwap: vi.fn().mockImplementation(async (preview: {
+          outputDataByLabel: Record<string, MockOutputData[]>
+        }) => {
+          cashuMockState.mintSwapCalls++
+          if (cashuMockState.conditionalSwapError) {
+            throw cashuMockState.conditionalSwapError
+          }
+          return Object.fromEntries(
+            Object.entries(preview.outputDataByLabel).map(([label, outputs]) => [
+              label,
+              outputs.map((o, index) =>
+                o.toProof({ C_: `02conditional${label}${index}`.padEnd(66, '9') }),
+              ),
+            ]),
+          )
+        }),
         completeSwap: vi.fn().mockImplementation(async (preview: {
           sendOutputs?: Array<{
             blindedMessage: { amount: number; id: string }
@@ -1003,30 +1052,24 @@ describe('splitProofsForExactSend', () => {
     ])
   })
 
-  it('does not treat regular proofs with an uncached keyset as conditional CTF inputs', async () => {
+  it('fails closed when regular proof fees cannot be calculated from loaded keysets', async () => {
     cashuMockState.failNextFeeLookup = true
 
-    const split = await splitProofsForExactSend({
-      mintUrl: 'https://mint.test',
-      sourceProofs: [proof('regular-e2e-seed', 210, 'keyset-00')],
-      amountSats: 100,
-      operationId: 'trade-browser-regular-preflight/browser/preflight-lock-exact-v2',
-      proofOperationStore,
-    })
-
-    expect(cashuMockState.prepareSwapToSendConfigs).toEqual([undefined])
-    expect(split.sendProofs).toEqual([
-      expect.objectContaining({ amount: 100, id: 'test-keyset' }),
-    ])
-    expect(split.changeProofs).toEqual([
-      expect.objectContaining({ amount: 110, id: 'test-keyset' }),
-    ])
+    await expect(
+      splitProofsForExactSend({
+        mintUrl: 'https://mint.test',
+        sourceProofs: [proof('regular-e2e-seed', 210, 'keyset-00')],
+        amountSats: 100,
+        operationId: 'trade-browser-regular-preflight/browser/preflight-lock-exact-v2',
+        proofOperationStore,
+      }),
+    ).rejects.toThrow("Keyset 'conditional-keyset' not found")
+    expect(cashuMockState.mintSwapCalls).toBe(0)
   })
 })
 
 describe('sellerPrepareSwap', () => {
-  it('surfaces mint errors when direct locking fails', async () => {
-    cashuMockState.failNextFeeLookup = true
+  it('surfaces mint errors when regular direct locking fails', async () => {
     cashuMockState.sendError = new Error('Inputs must use the same conditional keyset')
 
     const sellerKey = generateEphemeralKeypair()
@@ -1042,7 +1085,7 @@ describe('sellerPrepareSwap', () => {
     }
 
     await expect(
-      sellerPrepareSwap(ctx, [proof('conditional-proof', 1, 'conditional-keyset')]),
+      sellerPrepareSwap(ctx, [proof('regular-proof', 1)]),
     ).rejects.toThrow(/Inputs must use the same conditional keyset/)
   })
 })

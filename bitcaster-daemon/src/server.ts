@@ -23,7 +23,7 @@ import {
 import { validateOrderIntent } from '../../bitcaster-client-sdk/src/orderValidation.ts'
 import { checkOrderSettlementSupport } from '../../bitcaster-client-sdk/src/settlementSupport.ts'
 import {
-  HttpCtfSplitTransport,
+  CashuMintCtfSplitTransport,
   splitCompleteSetWithOperation,
   splitRootCompleteSetForPreflightOrder,
   type CtfProofOperationRecord,
@@ -116,7 +116,7 @@ async function splitWalletCompleteSet(input: {
     `${input.operationId}:regular-split`,
     input.secrets,
   )
-  const transport = new HttpCtfSplitTransport(input.mintUrl)
+  const transport = new CashuMintCtfSplitTransport(input.mintUrl)
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     input.conditionId,
   )
