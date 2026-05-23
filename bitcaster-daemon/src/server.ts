@@ -6,7 +6,7 @@ import {
 } from 'node:http'
 import { createConnection } from 'node:net'
 import { unlink } from 'node:fs/promises'
-import { OutputData } from '@cashu/cashu-ts'
+import { Amount, OutputData } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
   type OrderBookSnapshot,
@@ -130,7 +130,7 @@ async function splitWalletCompleteSet(input: {
     amountSats: input.amountSats,
     proofOperationStore: ctfProofOperationStore,
     makeOutputs: ({ amountSats, keyset }) =>
-      OutputData.createRandomData(amountSats, keyset),
+      OutputData.createRandomData(Amount.from(amountSats), keyset),
   })
   await updateState((state, now) => {
     removeProofsBySecretFromState(state, input.mintUrl, [

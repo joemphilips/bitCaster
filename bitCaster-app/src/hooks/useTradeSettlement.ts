@@ -71,6 +71,7 @@ import {
   buyerExtractSecret,
   buyerPrepareSwap,
   sellerClaimSwap,
+  sellerLockOutcomeProofs,
   sellerPreparePrelockedSwap,
   sellerPrepareSwap,
   splitProofsForExactSend,
@@ -94,7 +95,10 @@ import {
   decideTradeCreated,
   decideTradeStateChanged,
 } from "@bitcaster/client-sdk/tradeFlow";
-import { takeProofsForLock } from "@bitcaster/client-sdk/proofSelection";
+import {
+  amountToNumber,
+  takeProofsForLock,
+} from "@bitcaster/client-sdk/proofSelection";
 
 // ---------------------------------------------------------------------------
 // Public hook
@@ -188,7 +192,8 @@ async function prepareRegularCollateralForCtfSplit(input: {
     throw new Error("No regular collateral proofs are available for CTF split.");
   }
   const grossCtfInputSats =
-    input.faceAmountSats + wallet.getFeesForProofs([selected.send[0]]);
+    input.faceAmountSats +
+    amountToNumber(wallet.getFeesForProofs([selected.send[0]]));
   const regularSplit = await splitRegularProofsWithOperation({
     mintUrl: input.mintUrl,
     operationId: input.operationId,
@@ -584,17 +589,20 @@ async function prepareDirectSellerOpening(
     swap.outcomeFaceAmountSats ?? undefined,
     swap.marketId,
   );
-  const out = await sellerPrepareSwap(ctx, proofs, {
-    operationId: proofOperationId(swap.tradeId, "seller-lock"),
+  const amountSats =
+    swap.outcomeFaceAmountSats ??
+    proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
+  const locked = await sellerLockOutcomeProofs(ctx, proofs, amountSats, {
+    operationId: proofOperationId(swap.tradeId, "seller-direct-lock"),
     proofOperationStore,
   });
   await persistLockChange(
     proofs,
-    out.changeProofs,
+    locked.changeProofs,
     mintUrl,
     outcomeMetadataForMarket(swap.marketId),
   );
-  return out;
+  return sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
 }
 
 async function prepareComplementarySellerOpening(
@@ -624,30 +632,29 @@ async function prepareComplementarySellerOpening(
     pendingTrade.preflightSplit.conditionId === split.conditionId
   ) {
     const preflight = pendingTrade.preflightSplit;
-    const lockProofs = await prepareReservedPreflightExactProofs({
-      mintUrl,
-      reservationId: preflight.reservationId,
-      conditionId: split.conditionId,
-      outcomeSetId: preflight.lockOutcomeSetId,
+    const selectedLock = await selectReservedPreflightProofs(
+      preflight.reservationId,
+      split.conditionId,
+      preflight.lockOutcomeSetId,
       amountSats,
-      operationId: proofOperationId(
-        swap.tradeId,
-        "seller-preflight-lock-exact-v2",
-      ),
+    );
+    const locked = await sellerLockOutcomeProofs(ctx, selectedLock, amountSats, {
+      operationId: proofOperationId(swap.tradeId, "seller-preflight-lock"),
+      proofOperationStore,
     });
-    const out = await sellerPreparePrelockedSwap(ctx, lockProofs.exactProofs);
-    await removeProofs(lockProofs.spentProofs.map((proof) => proof.secret));
+    const out = await sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
+    await removeProofs(selectedLock.map((proof) => proof.secret));
     await persistFreshProofs(
-      lockProofs.changeProofs,
+      locked.changeProofs,
       mintUrl,
       outcomeMetadataForCondition(
         split.conditionId,
         preflight.lockOutcomeSetId,
       ),
     );
-    if (lockProofs.changeProofs.length > 0) {
+    if (locked.changeProofs.length > 0) {
       await reserveProofs(
-        lockProofs.changeProofs.map((proof) => proof.secret),
+        locked.changeProofs.map((proof) => proof.secret),
         preflight.reservationId,
       );
     }
@@ -671,15 +678,18 @@ async function prepareComplementarySellerOpening(
     split.lockOutcomeSetId,
   );
   const selectedOutcome = takeProofsForLock(availableOutcome, amountSats);
-  if (selectedOutcome && selectedOutcome.reduce((sum, proof) => sum + proof.amount, 0) === amountSats) {
-    const out = await sellerPreparePrelockedSwap(ctx, selectedOutcome);
+  if (selectedOutcome) {
+    const locked = await sellerLockOutcomeProofs(ctx, selectedOutcome, amountSats, {
+      operationId: proofOperationId(swap.tradeId, "seller-inventory-lock"),
+      proofOperationStore,
+    });
     await removeProofs(selectedOutcome.map((proof) => proof.secret));
     await persistFreshProofs(
-      out.changeProofs,
+      locked.changeProofs,
       mintUrl,
       outcomeMetadataForCondition(split.conditionId, split.lockOutcomeSetId),
     );
-    return out;
+    return sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
   }
 
   const existingOperation = await getProofOperation(operationId);
@@ -738,7 +748,8 @@ async function selectReservedPreflightProofs(
         proof.outcomeCollection === outcomeSetId,
     );
   const selected = takeProofsForLock(candidates, amountSats);
-  const total = selected?.reduce((sum, proof) => sum + proof.amount, 0) ?? 0;
+  const total =
+    selected?.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0) ?? 0;
   if (!selected || total < amountSats) {
     throw new Error(
       `Pre-flight split has ${total} reserved ${outcomeSetId} sats, expected ${amountSats}`,
@@ -761,7 +772,10 @@ async function prepareReservedPreflightExactProofs(input: {
     input.outcomeSetId,
     input.amountSats,
   );
-  const total = selected.reduce((sum, proof) => sum + proof.amount, 0);
+  const total = selected.reduce(
+    (sum, proof) => sum + amountToNumber(proof.amount),
+    0,
+  );
   if (total === input.amountSats) {
     return {
       exactProofs: selected,

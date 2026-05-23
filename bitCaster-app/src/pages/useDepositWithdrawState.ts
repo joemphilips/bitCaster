@@ -35,6 +35,7 @@ import {
 } from '@/stores/proof-db'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
+import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 
 export type ExtendedView =
   | DepositWithdrawView
@@ -127,7 +128,7 @@ export function useDepositWithdrawState(
     const proofs = await db.proofs.toArray()
     const map: Record<string, number> = {}
     for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-      map[p.mintUrl] = (map[p.mintUrl] ?? 0) + p.amount
+      map[p.mintUrl] = (map[p.mintUrl] ?? 0) + amountToNumber(p.amount)
     }
     return map
   }, [mintUrls.join(',')], {} as Record<string, number>)
@@ -298,7 +299,7 @@ export function useDepositWithdrawState(
       const quote = mintQuoteRef.current ?? await createMintQuote(requested, mintUrl)
       mintQuoteRef.current = quote
       setBolt11(quote.request)
-      setInvoiceExpiresAtSec(quote.expiry)
+      setInvoiceExpiresAtSec(quote.expiry ?? undefined)
       setCurrentView('invoice-display')
 
       const unsub = await waitForMintQuotePaid(
@@ -440,11 +441,11 @@ export function useDepositWithdrawState(
 
       useActivityLogStore.getState().addActivity({
         type: 'withdrawal',
-        amountSats: meltQuote.amount,
+        amountSats: amountToNumber(meltQuote.amount),
         status: 'completed',
         lightningInvoice: lightningInput,
       })
-      setSuccessAmount(meltQuote.amount)
+      setSuccessAmount(amountToNumber(meltQuote.amount))
       setCurrentView('success')
     } catch (e) {
       setError((e as Error).message)

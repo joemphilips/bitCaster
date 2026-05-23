@@ -10,7 +10,7 @@ import { ensureProfileDir, profileDir } from './profile.ts'
 
 export interface CashuProofRecord {
   id?: string
-  amount: number
+  amount: unknown
   secret: string
   C: string
   witness?: unknown
@@ -30,6 +30,7 @@ export interface StoredOutputData {
 export type ProofOperationKind =
   | 'swap-lock'
   | 'swap-claim'
+  | 'conditional-keyset-swap'
   | 'ctf-split'
   | 'ctf-redeem'
   | 'regular-split'
@@ -269,7 +270,7 @@ export async function writeState(state: DaemonState): Promise<void> {
     dir,
     `.daemon-state.${process.pid}.${Date.now()}.${stateWriteSequence}.tmp`,
   )
-  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 })
+  await writeFile(tmp, `${JSON.stringify(toJsonSafe(state), null, 2)}\n`, { mode: 0o600 })
   await rename(tmp, target)
 }
 
@@ -307,7 +308,7 @@ export async function addAvailableProofs(
       if (existingSecrets.has(proof.secret)) continue
       existingSecrets.add(proof.secret)
       const record: StoredProofRecord = {
-        proof: structuredClone(proof),
+        proof: normalizeCashuProofRecord(proof),
         mintUrl,
         state: 'available',
         asset: structuredClone(asset),
@@ -346,7 +347,7 @@ export async function replaceSentSatProofs(input: {
       if (existingSecrets.has(proof.secret)) continue
       existingSecrets.add(proof.secret)
       const record: StoredProofRecord = {
-        proof: structuredClone(proof),
+        proof: normalizeCashuProofRecord(proof),
         mintUrl: input.mintUrl,
         state: 'available',
         asset: { kind: 'sats' },
@@ -375,11 +376,11 @@ export async function reserveAvailableSatProofsForSend(input: {
           record.state === 'available' &&
           record.asset.kind === 'sats',
       )
-      .sort((a, b) => b.proof.amount - a.proof.amount)
+      .sort((a, b) => amountToNumber(b.proof.amount) - amountToNumber(a.proof.amount))
 
     for (const record of candidates) {
       selected.push(record)
-      total += record.proof.amount
+      total += amountToNumber(record.proof.amount)
       if (total >= input.amountSats) break
     }
     if (total < input.amountSats) {
@@ -417,7 +418,7 @@ export async function completeReservedSatSend(input: {
       if (existingSecrets.has(proof.secret)) continue
       existingSecrets.add(proof.secret)
       const record: StoredProofRecord = {
-        proof: structuredClone(proof),
+        proof: normalizeCashuProofRecord(proof),
         mintUrl: input.mintUrl,
         state: 'available',
         asset: { kind: 'sats' },
@@ -466,7 +467,7 @@ export async function prepareProofOperation(
       kind: input.kind,
       state: 'prepared',
       mintUrl: input.mintUrl,
-      inputs: structuredClone(input.inputs),
+      inputs: input.inputs.map(normalizeCashuProofRecord),
       outputs: structuredClone(input.outputs),
       metadata: structuredClone(input.metadata ?? {}),
       resultProofs: undefined,
@@ -491,7 +492,7 @@ export async function markProofOperationCompleted(
     const updated: ProofOperationRecord = {
       ...existing,
       state: 'completed',
-      resultProofs: structuredClone(resultProofs),
+      resultProofs: normalizeProofRecordGroups(resultProofs),
       lastError: null,
       updatedAt: Date.now(),
     }
@@ -518,7 +519,7 @@ export function summarizeWalletBalance(state: DaemonState): WalletBalance {
   >()
 
   for (const proof of state.wallet.proofs) {
-    const amount = proof.proof.amount
+    const amount = amountToNumber(proof.proof.amount)
     const mint = getOrCreate(byMint, proof.mintUrl, () => ({
       mintUrl: proof.mintUrl,
       availableSats: 0,
@@ -629,7 +630,7 @@ function summarizeProofOperation(
     state: operation.state,
     mintUrl: operation.mintUrl,
     inputAmountSats: operation.inputs.reduce(
-      (sum, proof) => sum + proof.amount,
+      (sum, proof) => sum + amountToNumber(proof.amount),
       0,
     ),
     inputCount: operation.inputs.length,
@@ -835,7 +836,10 @@ function normalizeState(value: unknown): DaemonState {
     version: 1,
     wallet: isRecord(value.wallet) && Array.isArray(value.wallet.proofs)
       ? {
-          proofs: value.wallet.proofs as StoredProofRecord[],
+          proofs: (value.wallet.proofs as StoredProofRecord[]).map((record) => ({
+            ...record,
+            proof: normalizeCashuProofRecord(record.proof),
+          })),
           keysetCounters: isRecord(value.wallet.keysetCounters)
             ? normalizeCounterMap(value.wallet.keysetCounters)
             : {},
@@ -897,7 +901,9 @@ function normalizeProofOperation(
       kind,
       state,
       mintUrl,
-      inputs: Array.isArray(raw.inputs) ? (raw.inputs as CashuProofRecord[]) : [],
+      inputs: Array.isArray(raw.inputs)
+        ? (raw.inputs as CashuProofRecord[]).map(normalizeCashuProofRecord)
+        : [],
       outputs: isRecord(raw.outputs)
         ? (raw.outputs as Record<string, StoredOutputData[]>)
         : {},
@@ -905,7 +911,7 @@ function normalizeProofOperation(
         ? (raw.metadata as Record<string, unknown>)
         : {},
       resultProofs: isRecord(raw.resultProofs)
-        ? (raw.resultProofs as Record<string, CashuProofRecord[]>)
+        ? normalizeProofRecordGroups(raw.resultProofs as Record<string, CashuProofRecord[]>)
         : undefined,
       lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
       createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
@@ -956,6 +962,42 @@ function getOrCreate<K, V>(map: Map<K, V>, key: K, create: () => V): V {
   return fresh
 }
 
+function normalizeProofRecordGroups(
+  groups: Record<string, CashuProofRecord[]>,
+): Record<string, CashuProofRecord[]> {
+  return Object.fromEntries(
+    Object.entries(groups).map(([label, proofs]) => [
+      label,
+      proofs.map(normalizeCashuProofRecord),
+    ]),
+  )
+}
+
+function normalizeCashuProofRecord(proof: CashuProofRecord): CashuProofRecord {
+  return {
+    ...structuredClone(proof),
+    amount: amountToNumber(proof.amount),
+  }
+}
+
+function amountToNumber(amount: unknown): number {
+  if (typeof amount === 'number') return amount
+  if (typeof amount === 'bigint') return Number(amount)
+  if (typeof amount === 'string') return Number(amount)
+  if (
+    amount &&
+    typeof amount === 'object' &&
+    'toNumber' in amount &&
+    typeof amount.toNumber === 'function'
+  ) {
+    return Number(amount.toNumber())
+  }
+  if (amount && typeof amount === 'object' && 'value' in amount) {
+    return amountToNumber((amount as { value: unknown }).value)
+  }
+  return Number(amount)
+}
+
 function addAmount(
   target: { availableSats: number; reservedSats: number; lockedSats: number },
   state: StoredProofRecord['state'],
@@ -987,11 +1029,29 @@ function isProofOperationKind(value: unknown): value is ProofOperationKind {
   return (
     value === 'swap-lock' ||
     value === 'swap-claim' ||
+    value === 'conditional-keyset-swap' ||
     value === 'ctf-split' ||
     value === 'ctf-redeem' ||
     value === 'regular-split' ||
     value === 'wallet-send' ||
     value === 'proof-split'
+  )
+}
+
+function toJsonSafe(value: unknown): unknown {
+  if (typeof value === 'bigint') return Number(value)
+  if (
+    value &&
+    typeof value === 'object' &&
+    'toNumber' in value &&
+    typeof value.toNumber === 'function'
+  ) {
+    return value.toNumber()
+  }
+  if (Array.isArray(value)) return value.map(toJsonSafe)
+  if (!isRecord(value)) return value
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nested]) => [key, toJsonSafe(nested)]),
   )
 }
 

@@ -18,7 +18,7 @@
     "./url": "./src/url.ts"
   },
   "dependencies": {
-    "@cashu/cashu-ts": "^3.5.0",
+    "@cashu/cashu-ts": "file:../cashu-ts",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.0.0"
   },

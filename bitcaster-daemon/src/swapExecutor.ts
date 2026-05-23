@@ -71,6 +71,11 @@ interface ReservedExactProofs {
   wasSplit: boolean
 }
 
+export interface LockedOutcomeProofResult {
+  lockedProofs: CashuProofRecord[]
+  changeProofs: CashuProofRecord[]
+}
+
 export interface DaemonSwapOps {
   splitProofsForExactSend(params: {
     mintUrl: string
@@ -87,6 +92,12 @@ export interface DaemonSwapOps {
     ctx: DaemonSwapContext,
     lockedProofs: CashuProofRecord[],
   ): Promise<SellerOpenResult>
+  sellerLockOutcomeProofs(
+    ctx: DaemonSwapContext,
+    outcomeProofs: CashuProofRecord[],
+    amountSats: number,
+    operationId: string,
+  ): Promise<LockedOutcomeProofResult>
   sellerOpenComplementary(
     ctx: DaemonSwapContext,
     params: {
@@ -310,14 +321,41 @@ export class DaemonSwapExecutor {
       if (!selected) {
         throw new Error(`insufficient outcome proofs for seller open (${amount} sats)`)
       }
-      const result = await this.ops.sellerOpen(
+      const locked = await this.ops.sellerLockOutcomeProofs(
         ctx,
-        selected.map((row) => row.proof),
+        selected.map(proofWithOutcomeMetadata),
+        amount,
+        `${tradeId}:seller-lock`,
+      )
+      const result = await this.ops.sellerOpenPrelocked(
+        ctx,
+        locked.lockedProofs,
       )
       await updateState((state, now) => {
         const live = state.swaps[tradeId]
         if (!live || isTerminal(live)) return
-        markProofs(state, selected, 'locked', tradeId, now)
+        removeProofsBySecret(
+          state,
+          profile.mintUrl,
+          selected.map((row) => row.proof),
+        )
+        addProofs(
+          state,
+          profile.mintUrl,
+          result.lockedProofs,
+          'locked',
+          asset,
+          now,
+          tradeId,
+        )
+        addProofs(
+          state,
+          profile.mintUrl,
+          locked.changeProofs,
+          'available',
+          asset,
+          now,
+        )
         addProofs(state, profile.mintUrl, result.changeProofs, 'available', asset, now)
         live.messages = {
           ...live.messages,
@@ -374,22 +412,42 @@ export class DaemonSwapExecutor {
         proof.asset.outcomeSetId === split.lockOutcomeSetId,
       amount,
     )
-    if (
-      availableOutcome &&
-      sumProofRows(availableOutcome) === amount
-    ) {
+    if (availableOutcome) {
+      const locked = await this.ops.sellerLockOutcomeProofs(
+        ctx,
+        availableOutcome.map(proofWithOutcomeMetadata),
+        amount,
+        `${tradeId}:seller-inventory-lock`,
+      )
       const result = await this.ops.sellerOpenPrelocked(
         ctx,
-        availableOutcome.map((row) => row.proof),
+        locked.lockedProofs,
       )
       await updateState((state, now) => {
         const live = state.swaps[tradeId]
         if (!live || isTerminal(live)) return
-        markProofs(state, availableOutcome, 'locked', tradeId, now)
+        removeProofsBySecret(
+          state,
+          mintUrl,
+          availableOutcome.map((row) => row.proof),
+        )
         addProofs(
           state,
           mintUrl,
-          result.changeProofs,
+          result.lockedProofs,
+          'locked',
+          {
+            kind: 'outcome',
+            conditionId: split.conditionId,
+            outcomeSetId: split.lockOutcomeSetId,
+          },
+          now,
+          tradeId,
+        )
+        addProofs(
+          state,
+          mintUrl,
+          locked.changeProofs,
           'available',
           {
             kind: 'outcome',
@@ -552,11 +610,11 @@ export class DaemonSwapExecutor {
       )
     }
 
-    const lockProofs = await this.prepareReservedExactProofs(
-      mintUrl,
-      selectedLock,
+    const locked = await this.ops.sellerLockOutcomeProofs(
+      ctx,
+      selectedLock.map(proofWithOutcomeMetadata),
       amount,
-      `${tradeId}:seller-preflight-lock-exact-v2`,
+      `${tradeId}:seller-preflight-lock`,
     )
     const keepProofs = await this.prepareReservedExactProofs(
       mintUrl,
@@ -566,24 +624,28 @@ export class DaemonSwapExecutor {
     )
     const result = await this.ops.sellerOpenPrelocked(
       ctx,
-      lockProofs.exactProofs,
+      locked.lockedProofs,
     )
     await updateState((state, now) => {
       const live = state.swaps[tradeId]
       if (!live || isTerminal(live)) return
-      applyReservedLockProofs(
+      removeProofsBySecret(
         state,
         mintUrl,
-        selectedLock,
-        lockProofs,
+        selectedLock.map((row) => row.proof),
+      )
+      addProofs(
+        state,
+        mintUrl,
+        result.lockedProofs,
+        'locked',
         {
           kind: 'outcome',
           conditionId: split.conditionId,
           outcomeSetId: preflight.lockOutcomeSetId,
         },
-        tradeId,
-        preflight.reservationId,
         now,
+        tradeId,
       )
       applyReservedKeepProofs(
         state,
@@ -601,7 +663,7 @@ export class DaemonSwapExecutor {
       addProofs(
         state,
         mintUrl,
-        result.changeProofs,
+        locked.changeProofs,
         'reserved',
         {
           kind: 'outcome',
@@ -962,26 +1024,6 @@ function markProofs(
   }
 }
 
-function applyReservedLockProofs(
-  state: DaemonState,
-  mintUrl: string,
-  selectedRows: StoredProofRecord[],
-  split: ReservedExactProofs,
-  asset: OutcomeAsset,
-  tradeId: string,
-  reservationId: string,
-  now: string,
-): void {
-  if (!split.wasSplit) {
-    markProofs(state, selectedRows, 'locked', tradeId, now)
-    return
-  }
-
-  removeProofsBySecret(state, mintUrl, split.spentProofs)
-  addProofs(state, mintUrl, split.exactProofs, 'locked', asset, now, tradeId)
-  addProofs(state, mintUrl, split.changeProofs, 'reserved', asset, now, reservationId)
-}
-
 function applyReservedKeepProofs(
   state: DaemonState,
   mintUrl: string,
@@ -1036,7 +1078,25 @@ function removeProofsBySecret(
 }
 
 function sumProofRows(rows: StoredProofRecord[]): number {
-  return rows.reduce((sum, row) => sum + row.proof.amount, 0)
+  return rows.reduce((sum, row) => sum + amountToNumber(row.proof.amount), 0)
+}
+
+function amountToNumber(amount: unknown): number {
+  if (typeof amount === 'number') return amount
+  if (typeof amount === 'bigint') return Number(amount)
+  if (typeof amount === 'string') return Number(amount)
+  if (
+    amount &&
+    typeof amount === 'object' &&
+    'toNumber' in amount &&
+    typeof amount.toNumber === 'function'
+  ) {
+    return Number(amount.toNumber())
+  }
+  if (amount && typeof amount === 'object' && 'value' in amount) {
+    return amountToNumber((amount as { value: unknown }).value)
+  }
+  return Number(amount)
 }
 
 function releaseReservedProofs(
@@ -1130,6 +1190,15 @@ function isTerminal(swap: LocalSwapRecord): boolean {
   return ['confirmed', 'refunded', 'failed'].includes(swap.step)
 }
 
+function proofWithOutcomeMetadata(row: StoredProofRecord): CashuProofRecord {
+  if (row.asset.kind !== 'outcome') return row.proof
+  return {
+    ...row.proof,
+    conditionId: row.asset.conditionId,
+    outcomeCollection: row.asset.outcomeSetId,
+  } as CashuProofRecord
+}
+
 function isRetryableSwapStepError(message: string): boolean {
   return (
     /Proof operation .+ is still pending at the mint/i.test(message) ||
@@ -1153,6 +1222,7 @@ function unsupportedSwapOps(): DaemonSwapOps {
     splitProofsForExactSend: unsupported,
     sellerOpen: unsupported,
     sellerOpenPrelocked: unsupported,
+    sellerLockOutcomeProofs: unsupported,
     sellerOpenComplementary: unsupported,
     buyerRespond: unsupported,
     sellerClaim: unsupported,

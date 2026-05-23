@@ -24,7 +24,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cashu/cashu-ts": "^3.5.0"
+    "@cashu/cashu-ts": "file:../cashu-ts"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

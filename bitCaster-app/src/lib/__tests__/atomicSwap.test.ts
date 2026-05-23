@@ -4,8 +4,10 @@ import {
   buildReceiveToken,
   buyerClaimSwap,
   buyerPrepareSwap,
+  conditionalKeysetSwap,
   MIN_LOCKTIME_DELTA_SECS,
   sellerClaimSwap,
+  sellerLockOutcomeProofs,
   sellerPreparePrelockedSwap,
   sellerPrepareSwap,
   splitProofsForExactSend,
@@ -20,6 +22,18 @@ import {
   generateEphemeralKeypair,
 } from '../ecdh'
 
+function amountToNumber(amount: unknown): number {
+  if (
+    amount &&
+    typeof amount === 'object' &&
+    'toNumber' in amount &&
+    typeof amount.toNumber === 'function'
+  ) {
+    return amount.toNumber()
+  }
+  return Number(amount)
+}
+
 const cashuMockState = vi.hoisted(() => ({
   failNextFeeLookup: false,
   loadedKeysets: [] as Array<{ keys: Record<number, string> }>,
@@ -28,10 +42,13 @@ const cashuMockState = vi.hoisted(() => ({
   prepareSwapToSendCalls: 0,
   prepareSwapToReceiveCalls: 0,
   completeSwapCalls: 0,
+  mintSwapCalls: 0,
   restoreCalls: 0,
   sendError: null as Error | null,
   completeSwapError: null as Error | null,
+  conditionalSwapError: null as Error | null,
   proofState: 'UNSPENT' as 'UNSPENT' | 'SPENT' | 'PENDING',
+  proofAmountAsBigInt: false,
 }))
 
 const proofDbMockState = vi.hoisted(() => ({
@@ -51,7 +68,7 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
       amount,
       secret,
       C,
-    }) as Proof
+    }) as unknown as Proof
 
   class MockOutputData {
     blindedMessage: { amount: number; id: string; B_: string }
@@ -70,15 +87,86 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
 
     toProof(signature: { C_?: string }): Proof {
       return makeProof(
-        `restored-${Array.from(this.secret).join('-')}`,
-        Number(this.blindedMessage.amount),
+        new TextDecoder().decode(this.secret) ||
+          `restored-${Array.from(this.secret).join('-')}`,
+        cashuMockState.proofAmountAsBigInt
+          ? (BigInt(this.blindedMessage.amount) as never)
+          : Number(this.blindedMessage.amount),
         this.blindedMessage.id,
         signature.C_ ?? '02'.padEnd(66, '9'),
       )
     }
+
+    static createRandomData(
+      amount: number,
+      keyset: { id: string },
+    ): MockOutputData[] {
+      return [output(amount, 'random', keyset.id)]
+    }
+
+    static createP2PKData(
+      p2pk: {
+        pubkey: string[]
+        requiredSignatures?: number
+        locktime?: number
+        refundKeys?: string[]
+        sigFlag?: string
+      },
+      amount: number,
+      keyset: { id: string },
+    ): MockOutputData[] {
+      const tags: string[][] = [
+        ['n_sigs', String(p2pk.requiredSignatures ?? 1)],
+      ]
+      if (p2pk.pubkey.length > 1) tags.push(['pubkeys', ...p2pk.pubkey.slice(1)])
+      if (p2pk.locktime !== undefined) tags.push(['locktime', String(p2pk.locktime)])
+      if (p2pk.refundKeys?.length) tags.push(['refund', ...p2pk.refundKeys])
+      if (p2pk.sigFlag) tags.push(['sigflag', p2pk.sigFlag])
+      return [
+        output(
+          amount,
+          'p2pk',
+          keyset.id,
+          JSON.stringify([
+            'P2PK',
+            {
+              nonce: '00'.repeat(32),
+              data: p2pk.pubkey[0],
+              tags,
+            },
+          ]),
+        ),
+      ]
+    }
   }
   let outputCounter = 0
-  const output = (amount: number, group: string, keysetId = 'test-keyset') =>
+  const p2pkSecret = (p2pk: {
+    pubkey: string[]
+    requiredSignatures?: number
+    locktime?: number
+    refundKeys?: string[]
+    sigFlag?: string
+  }) => {
+    const tags: string[][] = [['n_sigs', String(p2pk.requiredSignatures ?? 1)]]
+    if (p2pk.pubkey.length > 1) tags.push(['pubkeys', ...p2pk.pubkey.slice(1)])
+    if (p2pk.locktime !== undefined) tags.push(['locktime', String(p2pk.locktime)])
+    if (p2pk.refundKeys?.length) tags.push(['refund', ...p2pk.refundKeys])
+    if (p2pk.sigFlag) tags.push(['sigflag', p2pk.sigFlag])
+    return JSON.stringify([
+      'P2PK',
+      {
+        nonce: '00'.repeat(32),
+        data: p2pk.pubkey[0],
+        tags,
+      },
+    ])
+  }
+  const output = (
+    amount: number,
+    group: string,
+    keysetId = 'test-keyset',
+    secret = `mock-${group}-${outputCounter + 1}`,
+  ) =>
     new MockOutputData(
       {
         amount,
@@ -86,10 +174,11 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
         B_: `02${group}${outputCounter++}`.padEnd(66, '0'),
       },
       1n,
-      new Uint8Array([outputCounter]),
+      new TextEncoder().encode(secret),
     )
   return {
     ...actual,
+    CheckStateEnum: { SPENT: 'SPENT', UNSPENT: 'UNSPENT' },
     OutputData: MockOutputData,
     Mint: vi.fn(function MockMint() {
       return {
@@ -124,6 +213,19 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
             })),
           }
         }),
+        swap: vi.fn(async ({ outputs }: { outputs: Array<{ amount: number; id: string }> }) => {
+          cashuMockState.mintSwapCalls++
+          if (cashuMockState.conditionalSwapError) {
+            throw cashuMockState.conditionalSwapError
+          }
+          return {
+            signatures: outputs.map((o, index) => ({
+              amount: o.amount,
+              id: o.id,
+              C_: `02swap${index}`.padEnd(66, '9'),
+            })),
+          }
+        }),
       }
     }),
     Wallet: vi.fn(function MockWallet() {
@@ -141,27 +243,40 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
           }
           return 0
         }),
-        send: vi.fn().mockImplementation(async (_amount: number, proofs: Proof[]) => {
+        send: vi.fn().mockImplementation(async (_amount: number, proofs: Proof[], _config?: unknown, outputConfig?: any) => {
           if (cashuMockState.sendError) throw cashuMockState.sendError
+          const send = outputConfig?.send?.type === 'p2pk'
+            ? proofs.map((p) => ({
+                ...p,
+                secret: p2pkSecret(outputConfig.send.options),
+              }))
+            : proofs
           return {
-            send: proofs,
+            send,
             keep: [],
           }
         }),
         prepareSwapToSend: vi.fn().mockImplementation(
-          async (amount: number, proofs: Proof[], config?: { keysetId?: string }) => {
+          async (amount: number, proofs: Proof[], config?: { keysetId?: string }, outputConfig?: any) => {
             cashuMockState.prepareSwapToSendCalls++
             cashuMockState.prepareSwapToSendAmounts.push(amount)
             cashuMockState.prepareSwapToSendConfigs.push(config)
-            const inputTotal = proofs.reduce((sum, proof) => sum + proof.amount, 0)
+            const inputTotal = proofs.reduce(
+              (sum, proof) => sum + amountToNumber(proof.amount),
+              0,
+            )
             const change = Math.max(0, inputTotal - amount)
             const outputKeysetId = config?.keysetId ?? 'test-keyset'
+            const sendSecret =
+              outputConfig?.send?.type === 'p2pk'
+                ? p2pkSecret(outputConfig.send.options)
+                : undefined
             return {
               amount,
               fees: 0,
               keysetId: proofs[0]?.id ?? 'test-keyset',
               inputs: proofs,
-              sendOutputs: [output(amount, 'send', outputKeysetId)],
+              sendOutputs: [output(amount, 'send', outputKeysetId, sendSecret)],
               keepOutputs: change > 0 ? [output(change, 'keep', outputKeysetId)] : [],
               unselectedProofs: [],
             }
@@ -169,7 +284,10 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
         ),
         prepareSwapToReceive: vi.fn().mockImplementation(async (token: { proofs: Proof[] }) => {
           cashuMockState.prepareSwapToReceiveCalls++
-          const amount = token.proofs.reduce((sum, p) => sum + p.amount, 0)
+          const amount = token.proofs.reduce(
+            (sum, p) => sum + amountToNumber(p.amount),
+            0,
+          )
           return {
             amount,
             fees: 0,
@@ -180,8 +298,14 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
           }
         }),
         completeSwap: vi.fn().mockImplementation(async (preview: {
-          sendOutputs?: Array<{ blindedMessage: { amount: number; id: string } }>
-          keepOutputs?: Array<{ blindedMessage: { amount: number; id: string } }>
+          sendOutputs?: Array<{
+            blindedMessage: { amount: number; id: string }
+            toProof?: (signature: { C_?: string }) => Proof
+          }>
+          keepOutputs?: Array<{
+            blindedMessage: { amount: number; id: string }
+            toProof?: (signature: { C_?: string }) => Proof
+          }>
         }) => {
           cashuMockState.completeSwapCalls++
           if (cashuMockState.completeSwapError) {
@@ -189,10 +313,14 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
           }
           return {
             send: (preview.sendOutputs ?? []).map((o, index) =>
-              makeProof(`send-${index}`, Number(o.blindedMessage.amount), o.blindedMessage.id),
+              o.toProof
+                ? o.toProof({ C_: `02send${index}`.padEnd(66, '9') })
+                : makeProof(`send-${index}`, Number(o.blindedMessage.amount), o.blindedMessage.id),
             ),
             keep: (preview.keepOutputs ?? []).map((o, index) =>
-              makeProof(`keep-${index}`, Number(o.blindedMessage.amount), o.blindedMessage.id),
+              o.toProof
+                ? o.toProof({ C_: `02keep${index}`.padEnd(66, '9') })
+                : makeProof(`keep-${index}`, Number(o.blindedMessage.amount), o.blindedMessage.id),
             ),
           }
         }),
@@ -204,6 +332,214 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
           })),
         ),
         receive: vi.fn().mockResolvedValue([]),
+      }
+    }),
+  }
+})
+
+vi.mock('../../../../cashu-ts/lib/cashu-ts.es.js', () => {
+  const makeProof = (
+    secret: string,
+    amount: number,
+    id = 'test-keyset',
+    C = '02'.padEnd(66, '0'),
+  ): Proof =>
+    ({
+      id,
+      amount,
+      secret,
+      C,
+    }) as unknown as Proof
+
+  class MockCtfAmount {
+    private readonly value: number
+
+    constructor(value: unknown) {
+      this.value = Number(value)
+    }
+
+    static from(value: unknown): MockCtfAmount {
+      return value instanceof MockCtfAmount ? value : new MockCtfAmount(value)
+    }
+
+    equals(other: unknown): boolean {
+      return this.value === Number(other instanceof MockCtfAmount ? other.value : other)
+    }
+
+    isZero(): boolean {
+      return this.value === 0
+    }
+
+    toNumber(): number {
+      return this.value
+    }
+
+    toString(): string {
+      return String(this.value)
+    }
+
+    toJSON(): number {
+      return this.value
+    }
+  }
+
+  class MockCtfOutputData {
+    blindedMessage: { amount: MockCtfAmount; id: string; B_: string }
+    blindingFactor: bigint
+    secret: Uint8Array
+
+    constructor(
+      blindedMessage: { amount: unknown; id: string; B_: string },
+      blindingFactor: bigint,
+      secret: Uint8Array,
+    ) {
+      if (typeof (blindedMessage.amount as { isZero?: unknown })?.isZero !== 'function') {
+        throw new TypeError('amount.isZero is not a function')
+      }
+      this.blindedMessage = {
+        ...blindedMessage,
+        amount: MockCtfAmount.from(blindedMessage.amount),
+      }
+      this.blindingFactor = blindingFactor
+      this.secret = secret
+    }
+
+    toProof(signature: { C_?: string }): Proof {
+      return makeProof(
+        new TextDecoder().decode(this.secret) ||
+          `restored-${Array.from(this.secret).join('-')}`,
+        this.blindedMessage.amount.toNumber(),
+        this.blindedMessage.id,
+        signature.C_ ?? '02'.padEnd(66, '9'),
+      )
+    }
+
+    static createRandomData(
+      amount: MockCtfAmount,
+      keyset: { id: string },
+    ): MockCtfOutputData[] {
+      if (typeof amount?.isZero !== 'function') {
+        throw new TypeError('amount.isZero is not a function')
+      }
+      return [ctfOutput(amount, 'random', keyset.id)]
+    }
+
+    static createP2PKData(
+      p2pk: {
+        pubkey: string[]
+        requiredSignatures?: number
+        locktime?: number
+        refundKeys?: string[]
+        sigFlag?: string
+      },
+      amount: MockCtfAmount,
+      keyset: { id: string },
+    ): MockCtfOutputData[] {
+      if (typeof amount?.isZero !== 'function') {
+        throw new TypeError('amount.isZero is not a function')
+      }
+      const tags: string[][] = [
+        ['n_sigs', String(p2pk.requiredSignatures ?? 1)],
+      ]
+      if (p2pk.pubkey.length > 1) tags.push(['pubkeys', ...p2pk.pubkey.slice(1)])
+      if (p2pk.locktime !== undefined) tags.push(['locktime', String(p2pk.locktime)])
+      if (p2pk.refundKeys?.length) tags.push(['refund', ...p2pk.refundKeys])
+      if (p2pk.sigFlag) tags.push(['sigflag', p2pk.sigFlag])
+      return [
+        ctfOutput(
+          amount,
+          'p2pk',
+          keyset.id,
+          JSON.stringify([
+            'P2PK',
+            {
+              nonce: '00'.repeat(32),
+              data: p2pk.pubkey[0],
+              tags,
+            },
+          ]),
+        ),
+      ]
+    }
+  }
+
+  let outputCounter = 0
+  const ctfOutput = (
+    amount: MockCtfAmount,
+    group: string,
+    keysetId = 'test-keyset',
+    secret = `mock-ctf-${group}-${outputCounter + 1}`,
+  ) =>
+    new MockCtfOutputData(
+      {
+        amount,
+        id: keysetId,
+        B_: `02ctf${group}${outputCounter++}`.padEnd(66, '0'),
+      },
+      1n,
+      new TextEncoder().encode(secret),
+    )
+
+  return {
+    Amount: MockCtfAmount,
+    Mint: vi.fn(function MockCtfMint() {
+      return {
+        getInfo: vi.fn().mockResolvedValue({
+          name: 'test mint',
+          pubkey: '02'.padEnd(66, '0'),
+          version: 'test',
+          contact: [],
+          nuts: {
+            '4': { methods: [], disabled: false },
+            '5': { methods: [], disabled: false },
+          },
+        }),
+        getKeys: vi.fn(async (keysetId: string) => ({
+          keysets: [
+            {
+              id: keysetId,
+              unit: 'sat',
+              active: true,
+              keys: { 1: '02'.padEnd(66, '1') },
+            },
+          ],
+        })),
+        restore: vi.fn(async ({ outputs }: { outputs: Array<{ amount: unknown; id: string }> }) => {
+          cashuMockState.restoreCalls++
+          return {
+            outputs,
+            signatures: outputs.map((o, index) => ({
+              amount: MockCtfAmount.from(o.amount),
+              id: o.id,
+              C_: `02restored${index}`.padEnd(66, '9'),
+            })),
+          }
+        }),
+        swap: vi.fn(async ({ outputs }: { outputs: Array<{ amount: unknown; id: string }> }) => {
+          cashuMockState.mintSwapCalls++
+          if (cashuMockState.conditionalSwapError) {
+            throw cashuMockState.conditionalSwapError
+          }
+          return {
+            signatures: outputs.map((o, index) => ({
+              amount: MockCtfAmount.from(o.amount),
+              id: o.id,
+              C_: `02swap${index}`.padEnd(66, '9'),
+            })),
+          }
+        }),
+      }
+    }),
+    OutputData: MockCtfOutputData,
+    Wallet: vi.fn(function MockCtfWallet() {
+      return {
+        checkProofsStates: vi.fn().mockImplementation(async (proofs: Proof[]) =>
+          proofs.map((p) => ({
+            Y: p.secret,
+            state: cashuMockState.proofState,
+            witness: null,
+          })),
+        ),
       }
     }),
   }
@@ -276,10 +612,13 @@ beforeEach(() => {
   cashuMockState.prepareSwapToSendCalls = 0
   cashuMockState.prepareSwapToReceiveCalls = 0
   cashuMockState.completeSwapCalls = 0
+  cashuMockState.mintSwapCalls = 0
   cashuMockState.restoreCalls = 0
   cashuMockState.sendError = null
   cashuMockState.completeSwapError = null
+  cashuMockState.conditionalSwapError = null
   cashuMockState.proofState = 'UNSPENT'
+  cashuMockState.proofAmountAsBigInt = false
   proofDbMockState.operations.clear()
 })
 
@@ -371,10 +710,10 @@ describe('buyerPrepareSwap', () => {
     const { sellerCtx, buyerCtx } = swapContexts('trade-prelocked-metadata')
     const sellerOut = await sellerPreparePrelockedSwap(sellerCtx, [
       {
-        ...proof('alice-prelocked', 7),
+        ...p2pkLockedProof('alice-prelocked', 7, sellerCtx),
         reservedBy: 'order-preflight:local-only',
         marketId: 'condition-YES',
-      } as Proof & { reservedBy: string; marketId: string },
+      } as unknown as Proof & { reservedBy: string; marketId: string },
     ])
 
     const buyerOut = await buyerPrepareSwap(
@@ -395,10 +734,165 @@ describe('buyerPrepareSwap', () => {
     expect(sellerLocked.proofs[0].marketId).toBeUndefined()
     expect(buyerOut.sellerPreSigsHex).toHaveLength(1)
   })
+
+  it('rejects raw outcome proofs passed to the prelocked seller opening', async () => {
+    const { sellerCtx } = swapContexts('trade-prelocked-raw-proof')
+
+    await expect(
+      sellerPreparePrelockedSwap(sellerCtx, [proof('raw-outcome-proof', 100)]),
+    ).rejects.toThrow(/requires P2PK-locked proofs/i)
+  })
+})
+
+describe('conditionalKeysetSwap', () => {
+  it('mints every output on the source conditional keyset and persists the operation', async () => {
+    const outputs = await conditionalKeysetSwap(
+      'https://mint.test',
+      [proof('conditional-source', 136, 'conditional-keyset')],
+      [
+        { label: 'lock', kind: 'random', amount: 100 },
+        { label: 'change', kind: 'random', amount: 36 },
+      ],
+      {
+        operationId: 'trade-conditional/browser/conditional-keyset-swap',
+        proofOperationStore,
+      },
+    )
+
+    expect(outputs.lock).toEqual([
+      expect.objectContaining({ amount: 100, id: 'conditional-keyset' }),
+    ])
+    expect(outputs.change).toEqual([
+      expect.objectContaining({ amount: 36, id: 'conditional-keyset' }),
+    ])
+    expect(cashuMockState.mintSwapCalls).toBe(1)
+    expect(
+      proofDbMockState.operations.get(
+        'trade-conditional/browser/conditional-keyset-swap',
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        kind: 'conditional-keyset-swap',
+        state: 'completed',
+        resultProofs: outputs,
+      }),
+    )
+  })
+
+  it('normalizes cashu-ts BigInt proof amounts before persisting operations', async () => {
+    cashuMockState.proofAmountAsBigInt = true
+
+    const outputs = await conditionalKeysetSwap(
+      'https://mint.test',
+      [proof('conditional-source', 136, 'conditional-keyset')],
+      [
+        { label: 'lock', kind: 'random', amount: 100 },
+        { label: 'change', kind: 'random', amount: 36 },
+      ],
+      {
+        operationId: 'trade-conditional/browser/bigint-proof-amount',
+        proofOperationStore,
+      },
+    )
+
+    expect(outputs.lock?.[0]?.amount).toBe(100)
+    expect(outputs.change?.[0]?.amount).toBe(36)
+    expect(() =>
+      JSON.stringify(
+        proofDbMockState.operations.get(
+          'trade-conditional/browser/bigint-proof-amount',
+        )?.resultProofs,
+      ),
+    ).not.toThrow()
+  })
+
+  it('restores prepared conditional outputs when inputs are already spent', async () => {
+    await expect(
+      conditionalKeysetSwap(
+        'https://mint.test',
+        [proof('conditional-source', 136, 'conditional-keyset')],
+        [
+          { label: 'lock', kind: 'random', amount: 100 },
+          { label: 'change', kind: 'random', amount: 36 },
+        ],
+        {
+          operationId: 'trade-conditional/browser/restore',
+          proofOperationStore,
+        },
+      ),
+    ).resolves.toBeTruthy()
+    const prepared = proofDbMockState.operations.get(
+      'trade-conditional/browser/restore',
+    )
+    proofDbMockState.operations.set('trade-conditional/browser/restore', {
+      ...prepared,
+      state: 'prepared',
+      resultProofs: undefined,
+    })
+    cashuMockState.mintSwapCalls = 0
+    cashuMockState.proofState = 'SPENT'
+
+    const restored = await conditionalKeysetSwap(
+      'https://mint.test',
+      [proof('conditional-source', 136, 'conditional-keyset')],
+      [
+        { label: 'lock', kind: 'random', amount: 100 },
+        { label: 'change', kind: 'random', amount: 36 },
+      ],
+      {
+        operationId: 'trade-conditional/browser/restore',
+        proofOperationStore,
+      },
+    )
+
+    expect(cashuMockState.mintSwapCalls).toBe(0)
+    expect(cashuMockState.restoreCalls).toBe(1)
+    expect(restored.lock).toEqual([
+      expect.objectContaining({ amount: 100, id: 'conditional-keyset' }),
+    ])
+  })
+})
+
+describe('sellerLockOutcomeProofs', () => {
+  it('locks the requested amount and returns unlocked conditional-keyset change', async () => {
+    const { sellerCtx } = swapContexts('trade-seller-lock-outcome')
+
+    const locked = await sellerLockOutcomeProofs(
+      sellerCtx,
+      [proof('outcome-136', 136, 'conditional-keyset')],
+      100,
+      {
+        operationId: 'trade-seller-lock-outcome/browser/seller-inventory-lock',
+        proofOperationStore,
+      },
+    )
+
+    expect(locked.lockedProofs).toEqual([
+      expect.objectContaining({
+        amount: 100,
+        id: 'conditional-keyset',
+        secret: expect.stringContaining('"P2PK"'),
+      }),
+    ])
+    expect(locked.changeProofs).toEqual([
+      expect.objectContaining({
+        amount: 36,
+        id: 'conditional-keyset',
+        secret: expect.stringContaining('random'),
+      }),
+    ])
+    await expect(
+      sellerPreparePrelockedSwap(sellerCtx, locked.lockedProofs),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        lockedProofs: locked.lockedProofs,
+      }),
+    )
+  })
 })
 
 describe('buyerClaimSwap', () => {
-  it('keeps witnessed conditional proofs when CDK rejects claim refresh by detail code', async () => {
+  it('refreshes witnessed conditional proofs with a same-keyset claim swap', async () => {
     const { sellerCtx, buyerCtx } = swapContexts('trade-browser-conditional-claim')
     const sellerOut = await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)])
     const buyerOut = await buyerPrepareSwap(
@@ -408,11 +902,6 @@ describe('buyerClaimSwap', () => {
       [proof('bob-1', 7)],
     )
     const operationId = 'trade-browser-conditional-claim/browser/buyer-claim'
-    cashuMockState.completeSwapError = Object.assign(new Error('Token swap failed'), {
-      code: 13016,
-      status: 400,
-      detail: 'Inputs must use the same conditional keyset',
-    })
 
     const claimed = await buyerClaimSwap(
       buyerCtx,
@@ -425,10 +914,12 @@ describe('buyerClaimSwap', () => {
     expect(claimed).toEqual([
       expect.objectContaining({
         amount: 7,
+        id: 'test-keyset',
         secret: expect.any(String),
-        witness: expect.stringContaining('signatures'),
       }),
     ])
+    expect(claimed[0].witness).toBeUndefined()
+    expect(cashuMockState.mintSwapCalls).toBe(1)
     expect(proofDbMockState.operations.get(operationId)).toEqual(
       expect.objectContaining({
         state: 'completed',
@@ -437,8 +928,8 @@ describe('buyerClaimSwap', () => {
     )
   })
 
-  it('keeps witnessed conditional proofs when a mock mint reports non-P2PK witness refresh', async () => {
-    const { sellerCtx, buyerCtx } = swapContexts('trade-browser-mock-claim')
+  it('fails loudly when the mint rejects same-keyset conditional refresh', async () => {
+    const { sellerCtx, buyerCtx } = swapContexts('trade-browser-conditional-claim-fallback')
     const sellerOut = await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)])
     const buyerOut = await buyerPrepareSwap(
       buyerCtx,
@@ -446,21 +937,22 @@ describe('buyerClaimSwap', () => {
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
     )
-    cashuMockState.completeSwapError = new Error('Witness is not a p2pk witness')
-
-    const claimed = await buyerClaimSwap(
-      buyerCtx,
-      sellerOut.adaptorPoint.secret,
-      sellerOut.lockedProofsCipher,
-      buyerOut.sellerPreSigsHex,
-      {
-        operationId: 'trade-browser-mock-claim/browser/buyer-claim',
-        proofOperationStore,
-      },
+    cashuMockState.conditionalSwapError = new Error(
+      'Inputs must use the same conditional keyset',
     )
 
-    expect(claimed).toHaveLength(1)
-    expect(claimed[0].witness).toContain('signatures')
+    await expect(
+      buyerClaimSwap(
+        buyerCtx,
+        sellerOut.adaptorPoint.secret,
+        sellerOut.lockedProofsCipher,
+        buyerOut.sellerPreSigsHex,
+        {
+          operationId: 'trade-browser-conditional-claim-fallback/browser/buyer-claim',
+          proofOperationStore,
+        },
+      ),
+    ).rejects.toThrow('Inputs must use the same conditional keyset')
   })
 })
 
@@ -494,16 +986,15 @@ describe('splitProofsForExactSend', () => {
           ...proof('reserved-no-136', 136, 'conditional-keyset'),
           conditionId: 'condition-1',
           outcomeCollection: 'NO',
-        } as Proof,
+        } as unknown as Proof,
       ],
       amountSats: 100,
       operationId: 'trade-browser-preflight-overpay/browser/preflight-lock-exact-v2',
       proofOperationStore,
     })
 
-    expect(cashuMockState.prepareSwapToSendConfigs).toEqual([
-      { keysetId: 'conditional-keyset' },
-    ])
+    expect(cashuMockState.prepareSwapToSendConfigs).toEqual([])
+    expect(cashuMockState.mintSwapCalls).toBe(1)
     expect(split.sendProofs).toEqual([
       expect.objectContaining({ amount: 100, id: 'conditional-keyset' }),
     ])
@@ -534,29 +1025,7 @@ describe('splitProofsForExactSend', () => {
 })
 
 describe('sellerPrepareSwap', () => {
-  it('loads mint-returned keys for condition-derived CTF keysets', async () => {
-    cashuMockState.failNextFeeLookup = true
-
-    const sellerKey = generateEphemeralKeypair()
-    const buyerKey = generateEphemeralKeypair()
-    const ctx: SwapContext = {
-      tradeId: 'trade-conditional-keyset',
-      role: 'seller',
-      ephemeralKey: sellerKey,
-      counterpartyPubkey: buyerKey.publicKey,
-      sellerLocktime: 1_700_000_100,
-      buyerLocktime: 1_700_000_000,
-      mintUrl: 'https://mint.test',
-    }
-
-    await sellerPrepareSwap(ctx, [proof('conditional-proof', 1, 'conditional-keyset')])
-
-    expect(cashuMockState.loadedKeysets.at(-1)?.keys).toEqual({
-      1: '02'.padEnd(66, '1'),
-    })
-  })
-
-  it('fails closed when the mint rejects direct locking of CTF outcome proofs', async () => {
+  it('surfaces mint errors when direct locking fails', async () => {
     cashuMockState.failNextFeeLookup = true
     cashuMockState.sendError = new Error('Inputs must use the same conditional keyset')
 
@@ -574,7 +1043,7 @@ describe('sellerPrepareSwap', () => {
 
     await expect(
       sellerPrepareSwap(ctx, [proof('conditional-proof', 1, 'conditional-keyset')]),
-    ).rejects.toThrow(/Direct sell-side locking of existing CTF outcome proofs is unsupported/)
+    ).rejects.toThrow(/Inputs must use the same conditional keyset/)
   })
 })
 
@@ -630,7 +1099,7 @@ describe('browser proof operation recovery', () => {
     expect(restored).toEqual([
       expect.objectContaining({
         amount: 7,
-        secret: expect.stringMatching(/^restored-/),
+        secret: expect.any(String),
       }),
     ])
   })
@@ -682,5 +1151,31 @@ function proof(
     amount,
     secret,
     C,
-  } as Proof
+  } as unknown as Proof
+}
+
+function p2pkLockedProof(
+  label: string,
+  amount: number,
+  ctx: SwapContext,
+  id = 'test-keyset',
+): Proof {
+  return proof(
+    JSON.stringify([
+      'P2PK',
+      {
+        nonce: label,
+        data: ctx.ephemeralKey.publicKey,
+        tags: [
+          ['pubkeys', ctx.counterpartyPubkey],
+          ['n_sigs', '2'],
+          ['locktime', String(ctx.sellerLocktime)],
+          ['refund', ctx.ephemeralKey.publicKey],
+          ['sigflag', 'SIG_INPUTS'],
+        ],
+      },
+    ]),
+    amount,
+    id,
+  )
 }

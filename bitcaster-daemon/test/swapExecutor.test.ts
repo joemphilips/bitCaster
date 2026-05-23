@@ -77,8 +77,15 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
     assert.equal(persisted?.swaps['trade-1'].step, 'seller-opened')
     assert.equal(persisted?.swaps['trade-1'].sellerAdaptorSecretHex, 'aa')
     assert.equal(persisted?.swaps['trade-1'].sellerAdaptorPointHex, 'bb')
-    assert.equal(persisted?.wallet.proofs[0].state, 'locked')
-    assert.equal(persisted?.wallet.proofs[0].reservedBy, 'trade-1')
+    assert.equal(
+      persisted?.wallet.proofs.some((row) => row.proof.secret === 'secret-100'),
+      false,
+    )
+    const lockedSellerProof = persisted?.wallet.proofs.find(
+      (row) => row.proof.secret === 'seller-locked',
+    )
+    assert.equal(lockedSellerProof?.state, 'locked')
+    assert.equal(lockedSellerProof?.reservedBy, 'trade-1')
     assert.deepEqual(sent, [
       'trade-1:adaptor-point:cipher-adaptor',
       'trade-1:locked-proofs-seller:cipher-seller',
@@ -201,7 +208,7 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
       connection: fakeConnection([]),
       ops: {
         ...fakeOps(),
-        async sellerOpen() {
+        async sellerLockOutcomeProofs() {
           throw new Error('Proof operation trade-pending/seller-lock is still pending at the mint')
         },
       },
@@ -535,8 +542,15 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for complementary selle
       connection: fakeConnection(sent),
       ops: {
         ...fakeOps(),
-        async sellerOpenPrelocked(_ctx, proofs) {
+        async sellerLockOutcomeProofs(_ctx, proofs) {
           assert.equal(proofs[0].secret, 'reserved-lock-no')
+          return {
+            lockedProofs: [cashuProof(100, 'lock-locked-100')],
+            changeProofs: [],
+          }
+        },
+        async sellerOpenPrelocked(_ctx, proofs) {
+          assert.equal(proofs[0].secret, 'lock-locked-100')
           return {
             adaptorPointCipher: 'cipher-adaptor',
             lockedProofsCipher: 'cipher-seller',
@@ -568,9 +582,13 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for complementary selle
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-preflight'].step, 'seller-opened')
     assert.equal(
-      persisted?.wallet.proofs.find((row) => row.proof.secret === 'reserved-lock-no')
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'seller-locked')
         ?.state,
       'locked',
+    )
+    assert.equal(
+      persisted?.wallet.proofs.some((row) => row.proof.secret === 'reserved-lock-no'),
+      false,
     )
     const keep = persisted?.wallet.proofs.find(
       (row) => row.proof.secret === 'reserved-keep-yes',
@@ -646,13 +664,20 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       connection: fakeConnection(sent),
       ops: {
         ...fakeOps(),
+        async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
+          assert.equal(amount, 100)
+          assert.match(operationId, /seller-preflight-lock$/)
+          assert.equal(proofs[0].secret, 'reserved-lock-no-136')
+          return {
+            lockedProofs: [cashuProof(100, 'lock-locked-100')],
+            changeProofs: [cashuProof(36, 'lock-change-36')],
+          }
+        },
         async splitProofsForExactSend(params) {
           assert.equal(params.amountSats, 100)
           assert.equal(params.preserveSourceKeyset, true)
-          assert.match(params.operationId, /seller-preflight-(lock|keep)-exact-v2$/)
-          const prefix = params.sourceProofs[0].secret.includes('lock')
-            ? 'lock'
-            : 'keep'
+          assert.match(params.operationId, /seller-preflight-keep-exact-v2$/)
+          const prefix = 'keep'
           return {
             sendProofs: [cashuProof(100, `${prefix}-exact-100`)],
             changeProofs: [cashuProof(36, `${prefix}-change-36`)],
@@ -660,7 +685,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
           }
         },
         async sellerOpenPrelocked(_ctx, proofs) {
-          assert.equal(proofs[0].secret, 'lock-exact-100')
+          assert.equal(proofs[0].secret, 'lock-locked-100')
           return {
             adaptorPointCipher: 'cipher-adaptor',
             lockedProofsCipher: 'cipher-seller',
@@ -696,7 +721,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       persisted?.swaps['trade-preflight-overpay'].error,
     )
     assert.equal(
-      persisted?.wallet.proofs.find((row) => row.proof.secret === 'lock-exact-100')
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'lock-locked-100')
         ?.state,
       'locked',
     )
@@ -861,6 +886,10 @@ function fakeOps(): DaemonSwapOps {
       throw new Error('proof split path unused in this test')
     },
     async sellerOpen() {
+      throw new Error('raw seller open path unused in this test')
+    },
+    async sellerOpenPrelocked(_ctx, proofs) {
+      assert.equal(proofs[0].secret, 'direct-lock-100')
       return {
         adaptorPointCipher: 'cipher-adaptor',
         lockedProofsCipher: 'cipher-seller',
@@ -870,8 +899,14 @@ function fakeOps(): DaemonSwapOps {
         changeProofs: [],
       }
     },
-    async sellerOpenPrelocked() {
-      throw new Error('prelocked seller path unused in this test')
+    async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
+      assert.equal(proofs[0].secret, 'secret-100')
+      assert.equal(amount, 100)
+      assert.match(operationId, /seller-lock$/)
+      return {
+        lockedProofs: [cashuProof(100, 'direct-lock-100')],
+        changeProofs: [],
+      }
     },
     async buyerRespond() {
       throw new Error('buyer path unused in this test')
@@ -898,6 +933,9 @@ function buyerFakeOps(): DaemonSwapOps {
     },
     async sellerOpenPrelocked() {
       throw new Error('prelocked seller path unused in this test')
+    },
+    async sellerLockOutcomeProofs() {
+      throw new Error('outcome lock path unused in this test')
     },
     async buyerRespond() {
       return {
@@ -930,6 +968,9 @@ function complementaryFakeOps(): DaemonSwapOps {
     },
     async sellerOpenPrelocked() {
       throw new Error('prelocked seller path unused in this test')
+    },
+    async sellerLockOutcomeProofs() {
+      throw new Error('outcome lock path unused in this test')
     },
     async sellerOpenComplementary(_ctx, params, collateralProofs) {
       assert.deepEqual(params, {

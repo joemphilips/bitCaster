@@ -39,8 +39,13 @@ const {
   mockReserveProofs: vi.fn(),
 }));
 
-const { mockSellerPreparePrelockedSwap, mockSplitProofsForExactSend } =
+const {
+  mockSellerLockOutcomeProofs,
+  mockSellerPreparePrelockedSwap,
+  mockSplitProofsForExactSend,
+} =
   vi.hoisted(() => ({
+    mockSellerLockOutcomeProofs: vi.fn(),
     mockSellerPreparePrelockedSwap: vi.fn(),
     mockSplitProofsForExactSend: vi.fn(),
   }));
@@ -75,6 +80,7 @@ vi.mock("@bitcaster/swap-protocol/atomicSwap", async (importOriginal) => {
     await importOriginal<typeof import("@bitcaster/swap-protocol/atomicSwap")>();
   return {
     ...actual,
+    sellerLockOutcomeProofs: mockSellerLockOutcomeProofs,
     sellerPreparePrelockedSwap: mockSellerPreparePrelockedSwap,
     splitProofsForExactSend: mockSplitProofsForExactSend,
   };
@@ -112,6 +118,10 @@ beforeEach(() => {
     lockedProofs: [],
     changeProofs: [],
   });
+  mockSellerLockOutcomeProofs.mockImplementation(async (_ctx, proofs) => ({
+    lockedProofs: [proof(100, `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-locked-100`)],
+    changeProofs: [proof(36, `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-change-36`)],
+  }));
   mockSplitProofsForExactSend.mockImplementation(async (params) => {
     const source = params.sourceProofs[0];
     const prefix = source.secret.includes("lock") ? "lock" : "keep";
@@ -414,19 +424,17 @@ describe("useTradeSettlement", () => {
       });
     });
 
-    await waitFor(() => expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(2));
-    expect(mockSplitProofsForExactSend).toHaveBeenNthCalledWith(
-      1,
+    await waitFor(() => expect(mockSellerLockOutcomeProofs).toHaveBeenCalledTimes(1));
+    expect(mockSellerLockOutcomeProofs).toHaveBeenCalledWith(
+      expect.objectContaining({ tradeId: "trade-preflight-overpay" }),
+      [expect.objectContaining({ secret: "reserved-lock-no-136" })],
+      100,
       expect.objectContaining({
-        amountSats: 100,
-        operationId:
-          "trade-preflight-overpay/browser/seller-preflight-lock-exact-v2",
-        preserveSourceKeyset: true,
-        sourceProofs: [expect.objectContaining({ secret: "reserved-lock-no-136" })],
+        operationId: "trade-preflight-overpay/browser/seller-preflight-lock",
       }),
     );
-    expect(mockSplitProofsForExactSend).toHaveBeenNthCalledWith(
-      2,
+    expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(1);
+    expect(mockSplitProofsForExactSend).toHaveBeenCalledWith(
       expect.objectContaining({
         amountSats: 100,
         operationId:
@@ -437,7 +445,7 @@ describe("useTradeSettlement", () => {
     );
     expect(mockSellerPreparePrelockedSwap).toHaveBeenCalledWith(
       expect.objectContaining({ tradeId: "trade-preflight-overpay" }),
-      [expect.objectContaining({ secret: "lock-exact-100" })],
+      [expect.objectContaining({ secret: "lock-locked-100" })],
     );
     expect(mockRemoveProofs).toHaveBeenCalledWith(["reserved-lock-no-136"]);
     expect(mockRemoveProofs).toHaveBeenCalledWith(["reserved-keep-yes-136"]);

@@ -9,6 +9,7 @@
  */
 
 import {
+  Amount,
   CheckStateEnum,
   Mint as CashuMint,
   OutputData,
@@ -500,7 +501,7 @@ export async function waitForMintQuotePaid(
   mintUrl?: string,
 ): Promise<() => void> {
   const wallet = await getWallet(mintUrl);
-  const expiresAtSec = options.expiresAtSec ?? quote.expiry;
+  const expiresAtSec = options.expiresAtSec ?? quote.expiry ?? undefined;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 
   let done = false;
@@ -781,7 +782,7 @@ function validateRedeemPosition(position: MarketPosition): void {
     throw new Error("CTF redeem requires at least one proof");
   }
   const proofTotal = position.proofs.reduce(
-    (sum, proof) => sum + proof.amount,
+    (sum, proof) => sum + amountToNumber(proof.amount),
     0,
   );
   if (proofTotal !== position.amountSats) {
@@ -814,7 +815,7 @@ async function prepareRegularRedeemOutputs(
 }> {
   const wallet = await getWallet(mintUrl);
   const keyset = await getActiveRegularKeyset(wallet);
-  const outputData = OutputData.createRandomData(amountSats, keyset);
+  const outputData = OutputData.createRandomData(Amount.from(amountSats), keyset);
   return {
     outputData,
     requestOutputs: outputData.map((output) => output.blindedMessage),
@@ -867,16 +868,9 @@ async function postRedeemOutcome(
   mintUrl: string,
   request: RedeemOutcomeRequest,
 ): Promise<RedeemOutcomeResponse> {
-  const response = await fetch(joinUrl(mintUrl, "/v1/redeem_outcome"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(request),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`CTF redeem failed with HTTP ${response.status}: ${body}`);
-  }
-  return (await response.json()) as RedeemOutcomeResponse;
+  const mint = new CashuMint(mintUrl);
+  const response = await mint.redeemOutcome(request);
+  return { signatures: response.signatures };
 }
 
 function withOracleWitness(proofs: Proof[], witnessJson: string): Proof[] {
@@ -904,9 +898,34 @@ function validateRedeemSignature(
   output: SerializedBlindedMessage,
   signature: SerializedBlindedSignature,
 ): void {
-  if (signature.id !== output.id || signature.amount !== output.amount) {
+  if (
+    signature.id !== output.id ||
+    amountToNumber(signature.amount) !== amountToNumber(output.amount)
+  ) {
     throw new Error("Mint returned a redeem signature for the wrong output");
   }
+}
+
+function amountToNumber(amount: unknown): number {
+  if (typeof amount === "number") return amount;
+  if (typeof amount === "bigint") return Number(amount);
+  if (typeof amount === "string") return Number(amount);
+  if (
+    amount &&
+    typeof amount === "object" &&
+    "toNumber" in amount &&
+    typeof (amount as { toNumber: () => number }).toNumber === "function"
+  ) {
+    return Number((amount as { toNumber: () => number }).toNumber());
+  }
+  if (amount && typeof amount === "object" && "value" in amount) {
+    return amountToNumber((amount as { value: unknown }).value);
+  }
+  const parsed = Number(amount);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error("Mint returned a value with an invalid amount");
+  }
+  return parsed;
 }
 
 async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
@@ -929,7 +948,7 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
     );
   }
   const states = await wallet.checkProofsStates(
-    entry.inputs.map(({ secret }) => ({ secret })),
+    entry.inputs.map(({ id, secret }) => ({ id, secret })),
   );
   if (
     states.length > 0 &&
@@ -1039,7 +1058,11 @@ function serializeOutputDataArray(
   outputs: RedeemOutputData[],
 ): StoredOutputData[] {
   return outputs.map((output) => ({
-    blindedMessage: output.blindedMessage,
+    blindedMessage: {
+      amount: amountToNumber(output.blindedMessage.amount),
+      id: output.blindedMessage.id,
+      B_: output.blindedMessage.B_,
+    },
     blindingFactor: output.blindingFactor.toString(16),
     secret: bytesToHex(output.secret),
   }));
@@ -1051,15 +1074,14 @@ function deserializeOutputDataArray(
   return outputs.map(
     (output) =>
       new OutputData(
-        output.blindedMessage,
+        {
+          ...output.blindedMessage,
+          amount: Amount.from(output.blindedMessage.amount),
+        },
         BigInt(`0x${output.blindingFactor}`),
         hexToBytes(output.secret),
       ),
   );
-}
-
-function joinUrl(baseUrl: string, path: string): string {
-  return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
 
 function bytesToHex(bytes: Uint8Array): string {

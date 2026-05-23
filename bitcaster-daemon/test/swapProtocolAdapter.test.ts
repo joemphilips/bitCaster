@@ -92,6 +92,15 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
               changeProofs: [],
             }
           },
+          async sellerLockOutcomeProofs(ctx, outcomeProofs, amountSats, options) {
+            calls.push(
+              `sellerLockOutcome:${options?.operationId}:${ctx.tradeId}:${amountSats}:${outcomeProofs[0].secret}`,
+            )
+            return {
+              lockedProofs: [proof(amountSats, 'outcome-locked')],
+              changeProofs: [proof(1, 'outcome-change')],
+            }
+          },
           async buyerPrepareSwap(
             ctx,
             adaptorPointCipher,
@@ -187,6 +196,14 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
     )
     assert.deepEqual(buyerRespond.preSigsHex, ['pre-b'])
 
+    const sellerLockedOutcome = await ops.sellerLockOutcomeProofs(
+      ctx('seller'),
+      [proof(101, 'outcome-input')],
+      100,
+      'trade-1/seller-inventory-lock',
+    )
+    assert.equal(sellerLockedOutcome.lockedProofs[0].secret, 'outcome-locked')
+
     const complementary = await ops.sellerOpenComplementary(
       ctx('seller'),
       {
@@ -212,6 +229,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       'sellerPrepare:trade-1/seller-lock:32:seller-input',
       'sellerPrelocked:trade-1:prelocked-input',
       'buyerPrepare:trade-1/buyer-lock:buyer:cipher-a:cipher-s:buyer-input',
+      'sellerLockOutcome:trade-1/seller-inventory-lock:trade-1:100:outcome-input',
       'ctfSplit:trade-1/seller-complementary-ctf-split:cond:YES:NO:2',
       'sellerPrelocked:trade-1:lock-proof',
       'sellerClaim:trade-1/seller-claim:trade-1:170:187:cipher-b',

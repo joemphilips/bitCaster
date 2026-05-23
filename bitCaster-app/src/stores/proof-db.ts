@@ -1,5 +1,6 @@
 import Dexie, { type Table } from "dexie";
-import type { Proof, SerializedBlindedMessage } from "@cashu/cashu-ts";
+import type { Proof } from "@cashu/cashu-ts";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { normalizeUrl } from "../lib/url";
 
 export interface StoredProof extends Proof {
@@ -17,7 +18,11 @@ export interface StoredProof extends Proof {
 }
 
 export interface StoredOutputData {
-  blindedMessage: SerializedBlindedMessage;
+  blindedMessage: {
+    amount: number;
+    id: string;
+    B_: string;
+  };
   blindingFactor: string;
   secret: string;
 }
@@ -25,6 +30,7 @@ export interface StoredOutputData {
 export type ProofOperationKind =
   | "swap-lock"
   | "swap-claim"
+  | "conditional-keyset-swap"
   | "ctf-split"
   | "ctf-redeem"
   | "regular-split"
@@ -101,10 +107,16 @@ export async function getProofs(
 ): Promise<StoredProof[]> {
   if (mintUrl) {
     const rows = await db.proofs.where("mintUrl").equals(normalizeUrl(mintUrl)).toArray();
-    return options.includeReserved ? rows : rows.filter((p) => !p.reservedBy);
+    const normalized = rows.map(normalizeStoredProof);
+    return options.includeReserved
+      ? normalized
+      : normalized.filter((p) => !p.reservedBy);
   }
   const rows = await db.proofs.toArray();
-  return options.includeReserved ? rows : rows.filter((p) => !p.reservedBy);
+  const normalized = rows.map(normalizeStoredProof);
+  return options.includeReserved
+    ? normalized
+    : normalized.filter((p) => !p.reservedBy);
 }
 
 export async function getBaseProofs(mintUrl?: string): Promise<StoredProof[]> {
@@ -124,9 +136,10 @@ export async function getOutcomeProofs(
     .equals([normalizedMintUrl, conditionId, outcomeCollection])
     .toArray();
   if (indexed.length > 0) {
+    const normalized = indexed.map(normalizeStoredProof);
     return options.includeReserved
-      ? indexed
-      : indexed.filter((proof) => !proof.reservedBy);
+      ? normalized
+      : normalized.filter((proof) => !proof.reservedBy);
   }
 
   const proofs = await getProofs(normalizedMintUrl, options);
@@ -151,9 +164,8 @@ export async function getOutcomeProofs(
 // trailing-slash / protocol-case drift.
 export async function addProofs(proofs: StoredProof[]): Promise<void> {
   const now = Date.now();
-  const stamped = proofs.map((p) => ({
+  const stamped = proofs.map((p) => normalizeStoredProof({
     ...p,
-    mintUrl: normalizeUrl(p.mintUrl),
     receivedAt: p.receivedAt ?? now,
   }));
   await db.proofs.bulkPut(stamped);
@@ -173,7 +185,7 @@ export async function reserveProofs(
     await db.proofs.bulkPut(
       rows
         .filter((row): row is StoredProof => !!row && secretSet.has(row.secret))
-        .map((row) => ({ ...row, reservedBy })),
+        .map((row) => normalizeStoredProof({ ...row, reservedBy })),
     );
   });
 }
@@ -183,7 +195,9 @@ export async function releaseProofReservation(reservedBy: string): Promise<void>
     .filter((proof) => proof.reservedBy === reservedBy)
     .toArray();
   if (rows.length === 0) return;
-  await db.proofs.bulkPut(rows.map(({ reservedBy: _reservedBy, ...row }) => row));
+  await db.proofs.bulkPut(
+    rows.map(({ reservedBy: _reservedBy, ...row }) => normalizeStoredProof(row)),
+  );
 }
 
 export async function releaseProofReservationsBySecret(
@@ -192,7 +206,7 @@ export async function releaseProofReservationsBySecret(
   const rows = await db.proofs.bulkGet(secrets);
   const changed = rows
     .filter((row): row is StoredProof => !!row)
-    .map(({ reservedBy: _reservedBy, ...row }) => row);
+    .map(({ reservedBy: _reservedBy, ...row }) => normalizeStoredProof(row));
   if (changed.length === 0) return;
   await db.proofs.bulkPut(changed);
 }
@@ -200,7 +214,8 @@ export async function releaseProofReservationsBySecret(
 export async function getReservedProofs(
   reservedBy: string,
 ): Promise<StoredProof[]> {
-  return db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
+  const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
+  return rows.map(normalizeStoredProof);
 }
 
 // One-shot migration: existing rows may have un-normalized mintUrl values
@@ -219,6 +234,14 @@ export async function normalizeStoredMintUrls(): Promise<number> {
     }
   });
   return changed;
+}
+
+function normalizeStoredProof(proof: StoredProof): StoredProof {
+  return {
+    ...proof,
+    amount: amountToNumber(proof.amount) as never,
+    mintUrl: normalizeUrl(proof.mintUrl),
+  };
 }
 
 export async function getProofOperation(

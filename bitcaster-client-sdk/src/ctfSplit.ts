@@ -1,7 +1,8 @@
 import {
+  Amount,
   CheckStateEnum,
   Mint as CashuMint,
-  OutputData,
+  OutputData as RegularOutputData,
   Wallet as CashuWallet,
   type MintKeys,
   type P2PKOptions,
@@ -41,7 +42,11 @@ export interface CtfSplitOutputData {
 }
 
 export interface StoredOutputData {
-  blindedMessage: SerializedBlindedMessage
+  blindedMessage: {
+    amount: number
+    id: string
+    B_: string
+  }
   blindingFactor: string
   secret: string
 }
@@ -135,7 +140,7 @@ export interface RegularSplitWallet {
   ): Promise<SwapPreview>
   completeSwap?(swapPreview: SwapPreview): Promise<{ keep: Proof[]; send: Proof[] }>
   checkProofsStates?(
-    proofs: Array<Pick<Proof, 'secret'>>,
+    proofs: Array<Pick<Proof, 'id' | 'secret'>>,
   ): Promise<ProofState[]>
 }
 
@@ -157,6 +162,7 @@ export async function splitRegularProofsWithOperation(params: {
     throw new Error('amountSats must be a positive safe integer')
   }
 
+  const normalizedProofs = params.proofs.map(normalizeProof)
   const existing = await params.proofOperationStore.getProofOperation(
     params.operationId,
   )
@@ -175,7 +181,7 @@ export async function splitRegularProofsWithOperation(params: {
 
   const preview = await params.wallet.prepareSwapToSend(
     params.amountSats,
-    params.proofs,
+    normalizedProofs,
     undefined,
     { send: { type: 'random' }, keep: { type: 'random' } },
   )
@@ -189,20 +195,23 @@ export async function splitRegularProofsWithOperation(params: {
       keep: serializeOutputDataArray(preview.keepOutputs ?? []),
     },
     metadata: {
-      amount: preview.amount,
-      fees: preview.fees,
+      amount: amountToNumber(preview.amount),
+      fees: amountToNumber(preview.fees),
       keysetId: preview.keysetId,
       unselectedProofs: preview.unselectedProofs ?? [],
     },
   })
 
   const result = await params.wallet.completeSwap(preview)
-  const completed = { send: result.send, keep: result.keep }
+  const completed = {
+    send: result.send.map(normalizeProof),
+    keep: result.keep.map(normalizeProof),
+  }
   await params.proofOperationStore.markProofOperationCompleted(
     params.operationId,
     completed,
   )
-  return { ...completed, spent: preview.inputs }
+  return { ...completed, spent: preview.inputs.map(normalizeProof) }
 }
 
 export async function selectCollateralForCtfSplit(
@@ -221,13 +230,15 @@ export async function selectCollateralForCtfSplit(
   }
 
   const selected = wallet.selectProofsToSend(
-    availableProofs,
+    availableProofs.map(normalizeProof),
     faceAmountSats,
     true,
     true,
   )
-  const inputFeeSats = wallet.getFeesForProofs(selected.send)
-  const grossInputSats = selected.send.reduce((acc, proof) => acc + proof.amount, 0)
+  const selectedSend = selected.send.map(normalizeProof)
+  const selectedKeep = selected.keep.map(normalizeProof)
+  const inputFeeSats = amountToNumber(wallet.getFeesForProofs(selectedSend))
+  const grossInputSats = selectedSend.reduce((acc, proof) => acc + amountToNumber(proof.amount), 0)
   const netInputSats = grossInputSats - inputFeeSats
   if (netInputSats !== faceAmountSats) {
     throw new Error(
@@ -236,8 +247,8 @@ export async function selectCollateralForCtfSplit(
   }
 
   return {
-    inputs: selected.send,
-    keep: selected.keep,
+    inputs: selectedSend,
+    keep: selectedKeep,
     inputFeeSats,
     grossInputSats,
   }
@@ -270,19 +281,20 @@ export async function splitRootCompleteSetForSwap(
     outcomeCollectionKeysets,
     'keep',
   )
+  const normalizedCollateral = params.collateralProofs.map(normalizeProof)
   const proofsByCollection = await splitCompleteSetWithOperation({
     mintUrl: params.mintUrl,
     operationId: params.operationId,
     transport,
     conditionId: params.conditionId,
-    collateralProofs: params.collateralProofs,
+    collateralProofs: normalizedCollateral,
     outcomeCollectionKeysets,
     amountSats: params.amountSats,
     proofOperationStore: params.proofOperationStore,
     makeOutputs: ({ collection, amountSats, keyset }) =>
       collection === resolvedLockOutcomeSetId
-        ? OutputData.createP2PKData(params.p2pk, amountSats, keyset)
-        : OutputData.createRandomData(amountSats, keyset),
+        ? RegularOutputData.createP2PKData(params.p2pk, Amount.from(amountSats), keyset)
+        : RegularOutputData.createRandomData(Amount.from(amountSats), keyset),
   })
 
   return {
@@ -298,7 +310,7 @@ export async function splitRootCompleteSetForSwap(
       resolvedKeepOutcomeSetId,
       params.operationId,
     ),
-    spentSatProofs: params.collateralProofs,
+    spentSatProofs: normalizedCollateral,
   }
 }
 
@@ -328,17 +340,18 @@ export async function splitRootCompleteSetForPreflightOrder(
     outcomeCollectionKeysets,
     'keep',
   )
+  const normalizedCollateral = params.collateralProofs.map(normalizeProof)
   const proofsByCollection = await splitCompleteSetWithOperation({
     mintUrl: params.mintUrl,
     operationId: params.operationId,
     transport,
     conditionId: params.conditionId,
-    collateralProofs: params.collateralProofs,
+    collateralProofs: normalizedCollateral,
     outcomeCollectionKeysets,
     amountSats: params.amountSats,
     proofOperationStore: params.proofOperationStore,
     makeOutputs: ({ amountSats, keyset }) =>
-      OutputData.createRandomData(amountSats, keyset),
+      RegularOutputData.createRandomData(Amount.from(amountSats), keyset),
   })
 
   return {
@@ -355,7 +368,7 @@ export async function splitRootCompleteSetForPreflightOrder(
       params.operationId,
     ),
     proofsByCollection,
-    spentSatProofs: params.collateralProofs,
+    spentSatProofs: normalizedCollateral,
   }
 }
 
@@ -385,7 +398,8 @@ export async function splitCompleteSet(
   amountSats: number,
   options: CtfSplitOptions = {},
 ): Promise<Record<string, Proof[]>> {
-  validateSplitInput(conditionId, inputs, outcomeCollectionKeysets, amountSats)
+  const normalizedInputs = inputs.map(normalizeProof)
+  validateSplitInput(conditionId, normalizedInputs, outcomeCollectionKeysets, amountSats)
 
   const makeOutputs = options.makeOutputs ?? defaultMakeOutputs
   const keysetsById = new Map<string, MintKeys>()
@@ -397,7 +411,7 @@ export async function splitCompleteSet(
     return keyset
   }
 
-  await validateInputBalance(inputs, amountSats, getCachedKeys)
+  await validateInputBalance(normalizedInputs, amountSats, getCachedKeys)
 
   const keysetsByCollection = new Map<string, MintKeys>()
   const outputsByCollection: Record<string, CtfSplitOutputData[]> = {}
@@ -409,14 +423,16 @@ export async function splitCompleteSet(
     const outputs = makeOutputs({ collection, amountSats, keyset })
     validateOutputs(collection, keysetId, amountSats, outputs)
     outputsByCollection[collection] = outputs
-    requestOutputs[collection] = outputs.map((output) => output.blindedMessage)
+    requestOutputs[collection] = outputs.map((output) =>
+      toWireBlindedMessage(output.blindedMessage),
+    )
   }
 
-  await options.onPrepared?.({ inputs, outputsByCollection, requestOutputs })
+  await options.onPrepared?.({ inputs: normalizedInputs, outputsByCollection, requestOutputs })
 
   const response = await transport.postSplit({
     condition_id: conditionId,
-    inputs,
+    inputs: normalizedInputs,
     outputs: requestOutputs,
   })
 
@@ -435,7 +451,12 @@ export async function splitCompleteSet(
     if (!keyset) throw new Error(`Missing keyset for outcome collection ${collection}`)
     proofsByCollection[collection] = outputs.map((output, index) => {
       validateSignature(collection, outputs[index].blindedMessage, signatures[index])
-      return output.toProof(signatures[index], keyset)
+      return normalizeProof(
+        output.toProof(
+          { ...signatures[index], amount: output.blindedMessage.amount },
+          keyset,
+        ),
+      )
     })
   }
 
@@ -443,12 +464,16 @@ export async function splitCompleteSet(
 }
 
 export class HttpCtfSplitTransport implements CtfSplitTransport {
-  private readonly mint: CashuMint
-  private readonly mintUrl: string
+  private readonly mint: CashuMint & {
+    getCtfCondition(conditionId: string): Promise<CtfConditionInfo>
+    ctfSplit(request: CtfSplitRequest): Promise<CtfSplitResponse>
+  }
 
   constructor(mintUrl: string) {
-    this.mintUrl = mintUrl
-    this.mint = new CashuMint(mintUrl)
+    this.mint = new CashuMint(mintUrl) as CashuMint & {
+      getCtfCondition(conditionId: string): Promise<CtfConditionInfo>
+      ctfSplit(request: CtfSplitRequest): Promise<CtfSplitResponse>
+    }
   }
 
   async getKeys(keysetId: string): Promise<MintKeys> {
@@ -461,37 +486,13 @@ export class HttpCtfSplitTransport implements CtfSplitTransport {
   }
 
   async getRootPartitionKeysets(conditionId: string): Promise<Record<string, string>> {
-    if (!/^[0-9a-fA-F]{64}$/.test(conditionId)) {
-      throw new Error('conditionId must be a 64-character hex string for CTF condition lookup')
-    }
-    const normalizedConditionId = conditionId.toLowerCase()
-    const response = await fetch(joinUrl(this.mintUrl, `/v1/conditions/${normalizedConditionId}`), {
-      method: 'GET',
-      headers: { accept: 'application/json' },
-    })
-    if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`CTF condition lookup failed with HTTP ${response.status}: ${body}`)
-    }
-    const body = (await response.json()) as CtfConditionInfo | { condition?: CtfConditionInfo }
-    const condition = normalizeConditionResponse(body)
-    if (!condition || condition.condition_id.toLowerCase() !== normalizedConditionId) {
-      throw new Error(`Mint did not return condition ${normalizedConditionId}`)
-    }
-    return selectSingleRootPartitionKeysets(condition)
+    return selectSingleRootPartitionKeysets(
+      await this.mint.getCtfCondition(conditionId),
+    )
   }
 
   async postSplit(request: CtfSplitRequest): Promise<CtfSplitResponse> {
-    const response = await fetch(joinUrl(this.mintUrl, '/v1/ctf/split'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(request),
-    })
-    if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`CTF split failed with HTTP ${response.status}: ${body}`)
-    }
-    return (await response.json()) as CtfSplitResponse
+    return this.mint.ctfSplit(request)
   }
 }
 
@@ -579,7 +580,7 @@ async function resumeCtfSplit(
     throw new Error('Cashu wallet adapter does not support proof-state recovery checks')
   }
   const states = await wallet.checkProofsStates(
-    entry.inputs.map(({ secret }) => ({ secret })),
+    entry.inputs.map(({ id, secret }) => ({ id, secret })),
   )
   if (allStates(states, CheckStateEnum.SPENT)) {
     const restored = await restoreOutputGroups(mintUrl, entry.outputs)
@@ -598,7 +599,7 @@ async function resumeCtfSplit(
     if (!metadata.conditionId || !metadata.amountSats || !metadata.outcomeCollectionKeysets) {
       throw new Error(`proof operation ${entry.operationId} is missing CTF split metadata`)
     }
-    const outputDataByCollection = deserializeOutputGroups(entry.outputs)
+    const outputDataByCollection = deserializeCtfOutputGroups(entry.outputs)
     const result = await splitCompleteSet(
       transport,
       metadata.conditionId,
@@ -610,7 +611,7 @@ async function resumeCtfSplit(
       },
     )
     await proofOperationStore.markProofOperationCompleted(entry.operationId, result)
-    return result
+    return normalizeProofGroups(result)
   }
 
   throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
@@ -627,9 +628,9 @@ async function resumeRegularSplit(
   }
   if (entry.state === 'completed') {
     return {
-      send: structuredClone(entry.resultProofs?.send ?? []),
-      keep: structuredClone(entry.resultProofs?.keep ?? []),
-      spent: structuredClone(entry.inputs),
+      send: (entry.resultProofs?.send ?? []).map(normalizeProof),
+      keep: (entry.resultProofs?.keep ?? []).map(normalizeProof),
+      spent: entry.inputs.map(normalizeProof),
     }
   }
   if (entry.state === 'failed') {
@@ -642,21 +643,24 @@ async function resumeRegularSplit(
   }
 
   const states = await wallet.checkProofsStates(
-    entry.inputs.map(({ secret }) => ({ secret })),
+    entry.inputs.map(({ id, secret }) => ({ id, secret })),
   )
   let completed: { send: Proof[]; keep: Proof[] }
   if (allStates(states, CheckStateEnum.SPENT)) {
     const restored = await restoreOutputGroups(mintUrl, entry.outputs)
     completed = {
-      send: restored.send ?? [],
-      keep: [...(restored.keep ?? []), ...readUnselectedProofs(entry)],
+      send: (restored.send ?? []).map(normalizeProof),
+      keep: [...(restored.keep ?? []), ...readUnselectedProofs(entry)].map(normalizeProof),
     }
   } else if (allStates(states, CheckStateEnum.UNSPENT)) {
     if (!wallet.completeSwap) {
       throw new Error('Cashu wallet adapter does not support prepared split completion')
     }
     const result = await wallet.completeSwap(entryToSwapPreview(entry))
-    completed = { send: result.send, keep: result.keep }
+    completed = {
+      send: result.send.map(normalizeProof),
+      keep: result.keep.map(normalizeProof),
+    }
   } else {
     throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
   }
@@ -665,7 +669,7 @@ async function resumeRegularSplit(
     entry.operationId,
     completed,
   )
-  return { ...completed, spent: structuredClone(entry.inputs) }
+  return { ...completed, spent: entry.inputs.map(normalizeProof) }
 }
 
 async function restoreOutputGroups(
@@ -673,14 +677,14 @@ async function restoreOutputGroups(
   outputs: Record<string, StoredOutputData[]>,
 ): Promise<Record<string, Proof[]>> {
   const mint = new CashuMint(mintUrl)
-  const rows = Object.entries(deserializeOutputGroups(outputs)).flatMap(
+  const rows = Object.entries(deserializeCtfOutputGroups(outputs)).flatMap(
     ([group, groupOutputs]) =>
       groupOutputs.map((output, index) => ({ group, index, output })),
   )
   if (rows.length === 0) return {}
 
   const response = await mint.restore({
-    outputs: rows.map((row) => row.output.blindedMessage),
+    outputs: rows.map((row) => toWireBlindedMessage(row.output.blindedMessage)),
   })
   if (response.signatures.length !== response.outputs.length) {
     throw new Error('Mint restore response had mismatched output/signature counts')
@@ -710,10 +714,15 @@ async function restoreOutputGroups(
       throw new Error(`Mint restore did not return signature for output ${row.group}[${row.index}]`)
     }
     const keyset = await getKeyset(row.output.blindedMessage.id)
-    const proof = row.output.toProof(signature, keyset)
+    const proof = normalizeProof(
+      row.output.toProof(
+        { ...signature, amount: row.output.blindedMessage.amount },
+        keyset,
+      ),
+    )
     restored[row.group] = [...(restored[row.group] ?? []), proof]
   }
-  return restored
+  return normalizeProofGroups(restored)
 }
 
 export function resolveMintOutcomeSetKey(
@@ -745,13 +754,6 @@ export function requireOutcomeProofs(
     )
   }
   return proofs
-}
-
-function normalizeConditionResponse(
-  body: CtfConditionInfo | { condition?: CtfConditionInfo },
-): CtfConditionInfo | undefined {
-  if ('condition' in body) return body.condition
-  return body as CtfConditionInfo
 }
 
 function selectSingleRootPartitionKeysets(condition: CtfConditionInfo): Record<string, string> {
@@ -806,7 +808,7 @@ async function validateInputBalance(
   }
 
   const inputFeeSats = Math.ceil(feePpk / 1_000)
-  const inputAmountSats = inputs.reduce((acc, proof) => acc + proof.amount, 0)
+  const inputAmountSats = inputs.reduce((acc, proof) => acc + amountToNumber(proof.amount), 0)
   const netInputSats = inputAmountSats - inputFeeSats
 
   if (netInputSats !== amountSats) {
@@ -825,7 +827,10 @@ function validateOutputs(
   if (outputs.length === 0) {
     throw new Error(`No blinded outputs generated for outcome collection ${collection}`)
   }
-  const total = outputs.reduce((acc, output) => acc + output.blindedMessage.amount, 0)
+  const total = outputs.reduce(
+    (acc, output) => acc + amountToNumber(output.blindedMessage.amount),
+    0,
+  )
   if (total !== amountSats) {
     throw new Error(
       `CTF split outputs for outcome collection ${collection} total ${total}, expected ${amountSats}`,
@@ -849,7 +854,7 @@ function validateSignature(
       `CTF split signature for outcome collection ${collection} used keyset ${signature.id}, expected ${output.id}`,
     )
   }
-  if (signature.amount !== output.amount) {
+  if (amountToNumber(signature.amount) !== amountToNumber(output.amount)) {
     throw new Error(
       `CTF split signature for outcome collection ${collection} amount ${signature.amount}, expected ${output.amount}`,
     )
@@ -859,7 +864,7 @@ function validateSignature(
 function serializeOutputDataArray(outputs: CtfSplitOutputData[]): StoredOutputData[] {
   return outputs.map((output) => ({
     blindedMessage: {
-      amount: Number(output.blindedMessage.amount),
+      amount: amountToNumber(output.blindedMessage.amount),
       id: output.blindedMessage.id,
       B_: output.blindedMessage.B_,
     },
@@ -868,16 +873,81 @@ function serializeOutputDataArray(outputs: CtfSplitOutputData[]): StoredOutputDa
   }))
 }
 
-function deserializeOutputGroups(
+function toWireBlindedMessage(output: SerializedBlindedMessage): SerializedBlindedMessage {
+  return {
+    ...output,
+    amount: amountToNumber(output.amount),
+  } as unknown as SerializedBlindedMessage
+}
+
+function amountToNumber(amount: unknown): number {
+  if (typeof amount === 'number') return amount
+  if (typeof amount === 'bigint') return Number(amount)
+  if (typeof amount === 'string') return Number(amount)
+  if (
+    amount &&
+    typeof amount === 'object' &&
+    'toNumber' in amount &&
+    typeof amount.toNumber === 'function'
+  ) {
+    return Number(amount.toNumber())
+  }
+  if (amount && typeof amount === 'object' && 'value' in amount) {
+    return amountToNumber((amount as { value: unknown }).value)
+  }
+  return Number(amount)
+}
+
+function normalizeProof(proof: Proof): Proof {
+  return {
+    ...proof,
+    amount: amountToNumber(proof.amount) as never,
+  }
+}
+
+function normalizeProofGroups(groups: Record<string, Proof[]>): Record<string, Proof[]> {
+  return Object.fromEntries(
+    Object.entries(groups).map(([group, proofs]) => [
+      group,
+      proofs.map(normalizeProof),
+    ]),
+  )
+}
+
+function deserializeCtfOutputGroups(
   groups: Record<string, StoredOutputData[]>,
-): Record<string, OutputData[]> {
+): Record<string, CtfSplitOutputData[]> {
   return Object.fromEntries(
     Object.entries(groups).map(([group, outputs]) => [
       group,
       outputs.map(
         (output) =>
-          new OutputData(
-            output.blindedMessage,
+          new RegularOutputData(
+            {
+              ...output.blindedMessage,
+              amount: Amount.from(output.blindedMessage.amount),
+            },
+            BigInt(`0x${output.blindingFactor}`),
+            hexToBytes(output.secret),
+          ),
+      ),
+    ]),
+  )
+}
+
+function deserializeOutputGroups(
+  groups: Record<string, StoredOutputData[]>,
+): Record<string, RegularOutputData[]> {
+  return Object.fromEntries(
+    Object.entries(groups).map(([group, outputs]) => [
+      group,
+      outputs.map(
+        (output) =>
+          new RegularOutputData(
+            {
+              ...output.blindedMessage,
+              amount: Amount.from(output.blindedMessage.amount),
+            },
             BigInt(`0x${output.blindingFactor}`),
             hexToBytes(output.secret),
           ),
@@ -905,10 +975,10 @@ function entryToSwapPreview(entry: CtfProofOperationRecord): SwapPreview {
   const keysetId = metadata.keysetId
   const outputs = deserializeOutputGroups(entry.outputs)
   return {
-    amount,
-    fees,
+    amount: Amount.from(amount),
+    fees: Amount.from(fees),
     keysetId,
-    inputs: structuredClone(entry.inputs),
+    inputs: entry.inputs.map(normalizeProof),
     sendOutputs: outputs.send ?? [],
     keepOutputs: outputs.keep ?? [],
     unselectedProofs: Array.isArray(metadata.unselectedProofs)
@@ -920,7 +990,7 @@ function entryToSwapPreview(entry: CtfProofOperationRecord): SwapPreview {
 function readUnselectedProofs(entry: CtfProofOperationRecord): Proof[] {
   const metadata = entry.metadata as { unselectedProofs?: unknown }
   return Array.isArray(metadata.unselectedProofs)
-    ? structuredClone(metadata.unselectedProofs as Proof[])
+    ? (metadata.unselectedProofs as Proof[]).map(normalizeProof)
     : []
 }
 
@@ -928,7 +998,7 @@ function defaultMakeOutputs(input: {
   amountSats: number
   keyset: MintKeys
 }): CtfSplitOutputData[] {
-  return OutputData.createRandomData(input.amountSats, input.keyset)
+  return RegularOutputData.createRandomData(Amount.from(input.amountSats), input.keyset)
 }
 
 function parseOutcomeSetToComparableSet(outcomeSetId: string): Set<string> {
@@ -960,10 +1030,6 @@ function blindedMessageKey(output: SerializedBlindedMessage): string {
 
 function allStates(states: ProofState[], expected: string): boolean {
   return states.length > 0 && states.every((state) => state.state === expected)
-}
-
-function joinUrl(baseUrl: string, path: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`
 }
 
 function bytesToHex(bytes: Uint8Array): string {

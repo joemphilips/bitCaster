@@ -46,10 +46,11 @@ function makeQuote(overrides: Partial<MintQuoteResponse> = {}): MintQuoteRespons
     quote: 'q-test-1',
     request: 'lnbc-test',
     amount: 1000,
+    unit: 'sat',
     state: 'UNPAID',
     expiry: NOW_SEC + 3600,  // 1h in the future by default
     ...overrides,
-  } as MintQuoteResponse
+  } as unknown as MintQuoteResponse
 }
 
 function partialQuote(state: 'UNPAID' | 'PAID' | 'ISSUED'): PartialMintQuoteResponse {
@@ -57,9 +58,10 @@ function partialQuote(state: 'UNPAID' | 'PAID' | 'ISSUED'): PartialMintQuoteResp
     quote: 'q-test-1',
     request: 'lnbc-test',
     amount: 1000,
+    unit: 'sat',
     state,
     expiry: NOW_SEC + 3600,
-  } as PartialMintQuoteResponse
+  } as unknown as PartialMintQuoteResponse
 }
 
 describe('waitForMintQuotePaid', () => {

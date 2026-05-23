@@ -9,6 +9,7 @@ import { getOutcomeProofs } from "@/stores/proof-db";
 import { settleCtfPosition } from "@/lib/cashu";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 
 export function toPortfolioMarketDetailId(marketId: string): string {
   const separator = marketId.indexOf("-");
@@ -105,7 +106,10 @@ export function PortfolioPage() {
         );
         const regularProofs = await settleCtfPosition({
           conditionId,
-          amountSats: proofs.reduce((sum, proof) => sum + proof.amount, 0),
+          amountSats: proofs.reduce(
+            (sum, proof) => sum + amountToNumber(proof.amount),
+            0,
+          ),
           proofs,
           mintUrl: position.mintUrl,
           outcomeCollection,
@@ -113,7 +117,7 @@ export function PortfolioPage() {
         addActivity({
           type: "payout_claimed",
           amountSats: regularProofs.reduce(
-            (sum, proof) => sum + proof.amount,
+            (sum, proof) => sum + amountToNumber(proof.amount),
             0,
           ),
           status: "completed",

@@ -7,13 +7,35 @@ import {
   type CtfProofOperationStore,
 } from '@/lib/ctfSplit'
 
-vi.mock('@cashu/cashu-ts', () => {
+const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(() => {
+  class MockAmount {
+    constructor(readonly value: number) {}
+    static from(value: unknown) {
+      return value instanceof MockAmount ? value : new MockAmount(Number(value))
+    }
+    isZero() {
+      return this.value === 0
+    }
+    equals(other: unknown) {
+      return this.value === Number(other instanceof MockAmount ? other.value : other)
+    }
+    toNumber() {
+      return this.value
+    }
+    toJSON() {
+      return String(this.value)
+    }
+  }
+
   class MockOutputData {
-    blindedMessage: { amount: number; id: string; B_: string }
+    blindedMessage: { amount: MockAmount; id: string; B_: string }
     blindingFactor = 1n
     secret = new Uint8Array([1])
 
-    constructor(kind: 'p2pk' | 'random', amount: number, keyset: { id: string }) {
+    constructor(kind: 'p2pk' | 'random', amount: MockAmount, keyset: { id: string }) {
+      if (typeof amount?.isZero !== 'function') {
+        throw new TypeError('amount.isZero is not a function')
+      }
       this.blindedMessage = {
         amount,
         id: keyset.id,
@@ -23,57 +45,117 @@ vi.mock('@cashu/cashu-ts', () => {
 
     static createP2PKData(
       _p2pk: unknown,
-      amount: number,
+      amount: MockAmount,
       keyset: { id: string },
     ): MockOutputData[] {
       return [new MockOutputData('p2pk', amount, keyset)]
     }
 
-    static createRandomData(amount: number, keyset: { id: string }): MockOutputData[] {
+    static createRandomData(amount: MockAmount, keyset: { id: string }): MockOutputData[] {
       return [new MockOutputData('random', amount, keyset)]
     }
 
-    toProof(signature: { id: string; amount: number; C_: string }): Proof {
+    toProof(signature: { id: string; amount: number; C_: string }) {
       return {
         id: signature.id,
-        amount: signature.amount,
+        amount: Number(signature.amount),
         secret: `proof-${this.blindedMessage.B_}`,
         C: signature.C_,
-      } as Proof
+      }
     }
   }
 
+  const ctfMintState = {
+    keysets: {} as Record<string, string>,
+    splitRequests: [] as Array<{
+      condition_id: string
+      inputs: Proof[]
+      outputs: Record<string, Array<{ id: string; amount: number; B_: string }>>
+    }>,
+  }
+
+  class MockCtfMint {
+    constructor(readonly mintUrl: string) {}
+
+    async getKeys(keysetId: string) {
+      return {
+        keysets: [
+          {
+            id: keysetId,
+            unit: 'sat',
+            active: true,
+            input_fee_ppk: 0,
+            keys: { 1: '02'.padEnd(66, '1') },
+          },
+        ],
+      }
+    }
+
+    async getCtfCondition(conditionIdArg: string) {
+      return {
+        condition_id: conditionIdArg,
+        partitions: [
+          {
+            collateral: 'sat',
+            parent_collection_id: '0'.repeat(64),
+            keysets: ctfMintState.keysets,
+          },
+        ],
+      }
+    }
+
+    async ctfSplit(request: {
+      condition_id: string
+      inputs: Proof[]
+      outputs: Record<string, Array<{ id: string; amount: number; B_: string }>>
+    }) {
+      ctfMintState.splitRequests.push(request)
+      for (const outputs of Object.values(request.outputs)) {
+        expect(outputs.every((output) => typeof output.amount === 'number')).toBe(true)
+      }
+      return {
+        signatures: Object.fromEntries(
+          Object.entries(request.outputs).map(([collection, outputs]) => [
+            collection,
+            outputs.map((output) => ({
+              id: output.id,
+              amount: output.amount,
+              C_: `02${collection}`.padEnd(66, '0'),
+            })),
+          ]),
+        ),
+      }
+    }
+  }
+
+  return { MockAmount, MockOutputData, MockCtfMint, ctfMintState }
+})
+
+vi.mock('/home/joemphilips/working/src/cashu/bitCaster-matching-engine-2/bitCaster/cashu-ts/lib/cashu-ts.es.js', () => ({
+  Amount: MockAmount,
+  Mint: MockCtfMint,
+  OutputData: MockOutputData,
+}))
+
+vi.mock('@cashu/cashu-ts', () => {
   return {
+    Amount: MockAmount,
     CheckStateEnum: { SPENT: 'SPENT', UNSPENT: 'UNSPENT' },
     OutputData: MockOutputData,
-    Mint: vi.fn(function MockMint() {
-      return {
-        getKeys: vi.fn(async (keysetId: string) => ({
-          keysets: [
-            {
-              id: keysetId,
-              unit: 'sat',
-              active: true,
-              input_fee_ppk: 0,
-              keys: { 1: '02'.padEnd(66, '1') },
-            },
-          ],
-        })),
-        restore: vi.fn(),
-      }
+    Mint: vi.fn(function MockMint(mintUrl: string) {
+      return new MockCtfMint(mintUrl)
     }),
     Wallet: vi.fn(),
   }
 })
 
 const conditionId = 'a'.repeat(64)
-const zeroCollectionId = '0'.repeat(64)
 const inputProof = {
   id: 'sat-keyset',
   amount: 100,
   secret: 'input-secret',
   C: '02'.padEnd(66, '0'),
-} as Proof
+} as unknown as Proof
 
 function proofOperationStore(): CtfProofOperationStore {
   return {
@@ -106,57 +188,19 @@ function proofOperationStore(): CtfProofOperationStore {
   }
 }
 
-function mockConditionFetch(keysets: Record<string, string>) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === 'POST') {
-        const request = JSON.parse(String(init.body)) as {
-          outputs: Record<string, Array<{ id: string; amount: number }>>
-        }
-        return new Response(
-          JSON.stringify({
-            signatures: Object.fromEntries(
-              Object.entries(request.outputs).map(([collection, outputs]) => [
-                collection,
-                outputs.map((output) => ({
-                  id: output.id,
-                  amount: output.amount,
-                  C_: `02${collection}`.padEnd(66, '0'),
-                })),
-              ]),
-            ),
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        )
-      }
-
-      return new Response(
-        JSON.stringify({
-          condition: {
-            condition_id: conditionId,
-            partitions: [
-              {
-                collateral: 'sat',
-                parent_collection_id: zeroCollectionId,
-                keysets,
-              },
-            ],
-          },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )
-    }),
-  )
+function mockMintCondition(keysets: Record<string, string>) {
+  ctfMintState.keysets = keysets
+  ctfMintState.splitRequests = []
 }
 
 describe('splitRootCompleteSetForSwap', () => {
   beforeEach(() => {
     vi.unstubAllGlobals()
+    mockMintCondition({})
   })
 
   it('keys split outputs by resolved mint outcome-set keys and locks the resolved branch', async () => {
-    mockConditionFetch({
+    mockMintCondition({
       'Bob|Carol': 'keyset-not-alice',
       Alice: 'keyset-alice',
     })
@@ -173,12 +217,10 @@ describe('splitRootCompleteSetForSwap', () => {
       proofOperationStore: proofOperationStore(),
     })
 
-    const postBody = JSON.parse(
-      String(vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')?.[1]?.body),
-    ) as { outputs: Record<string, Array<{ B_: string }>> }
-    expect(Object.keys(postBody.outputs)).toEqual(['Bob|Carol', 'Alice'])
-    expect(postBody.outputs['Bob|Carol'][0].B_).toBe('p2pk-keyset-not-alice')
-    expect(postBody.outputs.Alice[0].B_).toBe('random-keyset-alice')
+    const splitRequest = ctfMintState.splitRequests[0]
+    expect(Object.keys(splitRequest.outputs)).toEqual(['Bob|Carol', 'Alice'])
+    expect(splitRequest.outputs['Bob|Carol'][0].B_).toBe('p2pk-keyset-not-alice')
+    expect(splitRequest.outputs.Alice[0].B_).toBe('random-keyset-alice')
     expect(result.resolvedLockOutcomeSetId).toBe('Bob|Carol')
     expect(result.resolvedKeepOutcomeSetId).toBe('Alice')
     expect(result.lockedProofs[0].id).toBe('keyset-not-alice')
@@ -186,7 +228,7 @@ describe('splitRootCompleteSetForSwap', () => {
   })
 
   it('pre-flight splits both outcome branches as regular proofs for later reservation', async () => {
-    mockConditionFetch({
+    mockMintCondition({
       NO: 'keyset-no',
       YES: 'keyset-yes',
     })
@@ -202,14 +244,9 @@ describe('splitRootCompleteSetForSwap', () => {
       proofOperationStore: proofOperationStore(),
     })
 
-    const postBody = JSON.parse(
-      String(
-        vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')?.[1]
-          ?.body,
-      ),
-    ) as { outputs: Record<string, Array<{ B_: string }>> }
-    expect(postBody.outputs.NO[0].B_).toBe('random-keyset-no')
-    expect(postBody.outputs.YES[0].B_).toBe('random-keyset-yes')
+    const splitRequest = ctfMintState.splitRequests[0]
+    expect(splitRequest.outputs.NO[0].B_).toBe('random-keyset-no')
+    expect(splitRequest.outputs.YES[0].B_).toBe('random-keyset-yes')
     expect(result.lockProofs[0].id).toBe('keyset-no')
     expect(result.keepProofs[0].id).toBe('keyset-yes')
     expect(result.proofsByCollection.NO[0].secret).toBe('proof-random-keyset-no')
@@ -217,7 +254,7 @@ describe('splitRootCompleteSetForSwap', () => {
   })
 
   it('throws before posting when an engine outcome-set id matches multiple mint keys', async () => {
-    mockConditionFetch({
+    mockMintCondition({
       'Alice|Bob': 'keyset-1',
       'Bob|Alice': 'keyset-2',
       Carol: 'keyset-3',
@@ -236,8 +273,6 @@ describe('splitRootCompleteSetForSwap', () => {
         proofOperationStore: proofOperationStore(),
       }),
     ).rejects.toThrow('matched 2 mint keyset-map keys')
-    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(
-      false,
-    )
+    expect(ctfMintState.splitRequests).toHaveLength(0)
   })
 })

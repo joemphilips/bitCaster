@@ -1,0 +1,12 @@
+{
+  "name": "bitcaster-monorepo",
+  "private": true,
+  "workspaces": [
+    "cashu-ts",
+    "bitCaster-app",
+    "bitcaster-client-sdk",
+    "bitcaster-daemon",
+    "bitcaster-cli",
+    "bitCaster-swap-protocol"
+  ]
+}

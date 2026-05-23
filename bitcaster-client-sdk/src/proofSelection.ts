@@ -1,5 +1,5 @@
 export interface AmountProofLike {
-  amount: number
+  amount: unknown
   id?: string
   secret?: string
   C?: string
@@ -7,7 +7,7 @@ export interface AmountProofLike {
 
 export function sumProofs(proofs: readonly AmountProofLike[]): number {
   let total = 0
-  for (const p of proofs) total += p.amount
+  for (const p of proofs) total += amountToNumber(p.amount)
   return total
 }
 
@@ -72,17 +72,35 @@ function takeGreedyProofs<T extends AmountProofLike>(
   source: readonly T[],
   target: number,
 ): T[] | null {
-  const sorted = [...source].sort((a, b) => b.amount - a.amount)
+  const sorted = [...source].sort((a, b) => amountToNumber(b.amount) - amountToNumber(a.amount))
   const taken: T[] = []
   let acc = 0
   for (const p of sorted) {
     if (acc >= target) break
     taken.push(p)
-    acc += p.amount
+    acc += amountToNumber(p.amount)
   }
   return acc >= target ? taken : null
 }
 
 function proofKey(p: AmountProofLike): string {
   return `${p.id ?? ''}:${p.secret ?? ''}:${p.C ?? ''}`
+}
+
+export function amountToNumber(amount: unknown): number {
+  if (typeof amount === 'number') return amount
+  if (typeof amount === 'bigint') return Number(amount)
+  if (typeof amount === 'string') return Number(amount)
+  if (
+    amount &&
+    typeof amount === 'object' &&
+    'toNumber' in amount &&
+    typeof amount.toNumber === 'function'
+  ) {
+    return Number(amount.toNumber())
+  }
+  if (amount && typeof amount === 'object' && 'value' in amount) {
+    return amountToNumber((amount as { value: unknown }).value)
+  }
+  return Number(amount)
 }

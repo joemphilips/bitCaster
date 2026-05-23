@@ -63,6 +63,15 @@ interface AtomicSwapModule {
     lockedProofs: CashuProofRecord[]
     changeProofs: CashuProofRecord[]
   }>
+  sellerLockOutcomeProofs(
+    ctx: AtomicSwapContext,
+    outcomeProofs: CashuProofRecord[],
+    amountSats: number,
+    options?: ProofOperationOptions,
+  ): Promise<{
+    lockedProofs: CashuProofRecord[]
+    changeProofs: CashuProofRecord[]
+  }>
   buyerPrepareSwap(
     ctx: AtomicSwapContext,
     adaptorPointCipher: string,
@@ -198,6 +207,19 @@ export function createRealDaemonSwapOps(
         lockedProofs: out.lockedProofs,
         changeProofs: out.changeProofs,
       }
+    },
+
+    async sellerLockOutcomeProofs(ctx, outcomeProofs, amountSats, operationId) {
+      const atomicSwap = await loadAtomicSwapModule()
+      return atomicSwap.sellerLockOutcomeProofs(
+        toAtomicCtx(ctx),
+        outcomeProofs,
+        amountSats,
+        {
+          operationId,
+          proofOperationStore: DAEMON_PROOF_OPERATION_STORE,
+        },
+      )
     },
 
     async sellerOpenComplementary(ctx, params, collateralProofs) {

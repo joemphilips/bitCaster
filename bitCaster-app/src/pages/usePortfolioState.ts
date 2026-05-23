@@ -19,6 +19,7 @@ import type {
   ActivityItem,
   CreatedMarket,
 } from '@/types/portfolio'
+import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 
 interface PortfolioState {
   walletState: WalletState
@@ -223,7 +224,7 @@ export function usePortfolioState(): PortfolioState & {
       byOutcome.set(key, {
         conditionId,
         outcomeCollection,
-        amount: (current?.amount ?? 0) + proof.amount,
+        amount: (current?.amount ?? 0) + amountToNumber(proof.amount),
         mintUrl: current?.mintUrl ?? proof.mintUrl,
         firstReceivedAt: Math.min(
           current?.firstReceivedAt ?? Number.POSITIVE_INFINITY,
@@ -282,7 +283,8 @@ export function usePortfolioState(): PortfolioState & {
     const proofs = await db.proofs.toArray()
     const balanceByMint: Record<string, number> = {}
     for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-      balanceByMint[p.mintUrl] = (balanceByMint[p.mintUrl] ?? 0) + p.amount
+      balanceByMint[p.mintUrl] =
+        (balanceByMint[p.mintUrl] ?? 0) + amountToNumber(p.amount)
     }
     return Object.entries(balanceByMint).map(([mintUrl, amount]) => {
       const mintInfo = storeMints.find((m) => m.url === mintUrl)

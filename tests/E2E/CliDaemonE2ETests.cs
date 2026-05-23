@@ -18,7 +18,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     private readonly string _repoRoot = FindRepoRoot();
     private readonly List<DaemonHandle> _daemons = [];
 
-    private static string NewConditionId() => $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+    private static string NewConditionId()
+    {
+        var random = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
+        return $"11{random[2..]}";
+    }
 
     public enum TradingClientKind
     {

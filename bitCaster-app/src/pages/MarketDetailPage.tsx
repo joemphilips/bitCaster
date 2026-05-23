@@ -38,6 +38,7 @@ import {
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
 } from "@/lib/ctfSplit";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import type { Proof } from "@cashu/cashu-ts";
 import type {
   MarketDetail as MarketDetailType,
@@ -132,7 +133,7 @@ async function getSellSideBalance(
     market.id,
     outcomeSets.selectedOutcomeSetId,
   );
-  return proofs.reduce((sum, proof) => sum + proof.amount, 0);
+  return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
 }
 
 interface PreparedPreflightSplit {
@@ -226,7 +227,8 @@ async function prepareCollateralLotForCtfSplit(input: {
     throw new Error("No regular collateral proofs are available for CTF split.");
   }
   const grossCtfInputSats =
-    input.faceAmountSats + wallet.getFeesForProofs([selected.send[0]]);
+    input.faceAmountSats +
+    amountToNumber(wallet.getFeesForProofs([selected.send[0]]));
   const regularSplit = await splitRegularProofsWithOperation({
     mintUrl: input.mintUrl,
     operationId,

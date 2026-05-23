@@ -1,4 +1,5 @@
 import {
+  Amount,
   Mint as CashuMint,
   Wallet as CashuWallet,
   CheckStateEnum,
@@ -50,7 +51,7 @@ export interface CashuWalletLike {
   ): Promise<SwapPreview>
   completeSwap?(swapPreview: SwapPreview): Promise<{ keep: Proof[]; send: Proof[] }>
   checkProofsStates?(
-    proofs: Array<Pick<Proof, 'secret'>>,
+    proofs: Array<Pick<Proof, 'id' | 'secret'>>,
   ): Promise<ProofState[]>
   selectProofsToSend?(
     proofs: Proof[],
@@ -58,7 +59,7 @@ export interface CashuWalletLike {
     includeFees?: boolean,
     exactMatch?: boolean,
   ): { keep: Proof[]; send: Proof[] }
-  getFeesForProofs?(proofs: Proof[]): number
+  getFeesForProofs?(proofs: Proof[]): unknown
 }
 
 export interface WalletOpsDependencies {
@@ -159,7 +160,7 @@ async function decodeTokenForProfile(
   try {
     return getDecodedToken(token)
   } catch (err) {
-    if (!errorMessage(err).includes('short keyset ID')) throw err
+    if (!/short keyset ID/i.test(errorMessage(err))) throw err
     const keysetIds = await getDecodeKeysetIds(profile.mintUrl, asset, deps)
     return getDecodedToken(token, keysetIds)
   }
@@ -238,7 +239,7 @@ export async function splitAvailableSatProofsForCtfCollateral(
   if (selected.send.length === 0) {
     throw new Error(`insufficient available sats in mint ${mintUrl}`)
   }
-  const grossCtfInputSats = amountSats + wallet.getFeesForProofs([selected.send[0]])
+  const grossCtfInputSats = amountSats + amountToNumber(wallet.getFeesForProofs([selected.send[0]]))
   const split = await splitRegularProofsWithOperation({
     mintUrl,
     operationId,
@@ -301,8 +302,8 @@ async function sendWalletTokenWithOperation(
       keep: serializeOutputDataArray(preview.keepOutputs ?? []),
     },
     metadata: {
-      amount: preview.amount,
-      fees: preview.fees,
+      amount: amountToNumber(preview.amount),
+      fees: amountToNumber(preview.fees),
       keysetId: preview.keysetId,
       unselectedProofs: preview.unselectedProofs ?? [],
       reservationId,
@@ -375,7 +376,7 @@ async function resumeWalletSendOperation(
   }
 
   const states = await wallet.checkProofsStates(
-    entry.inputs.map(({ secret }) => ({ secret })),
+    entry.inputs.map(({ id, secret }) => ({ id: id ?? '', secret })),
   )
   let split: { send: Proof[]; keep: Proof[] }
   if (allStates(states, CheckStateEnum.SPENT)) {
@@ -477,7 +478,7 @@ class DaemonCounterSource implements CounterSource {
 }
 
 function sumProofs(proofs: Proof[]): number {
-  return proofs.reduce((sum, proof) => sum + proof.amount, 0)
+  return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
 }
 
 function assertWalletSendOperation(
@@ -498,7 +499,7 @@ function serializeOutputDataArray(
 ): StoredOutputData[] {
   return outputs.map((output) => ({
     blindedMessage: {
-      amount: Number(output.blindedMessage.amount),
+      amount: amountToNumber(output.blindedMessage.amount),
       id: output.blindedMessage.id,
       B_: output.blindedMessage.B_,
     },
@@ -516,7 +517,10 @@ function deserializeOutputGroups(
       outputs.map(
         (output) =>
           new OutputData(
-            output.blindedMessage,
+            {
+              ...output.blindedMessage,
+              amount: Amount.from(output.blindedMessage.amount),
+            },
             BigInt(`0x${output.blindingFactor}`),
             hexToBytes(output.secret),
           ),
@@ -584,8 +588,8 @@ async function restoreOutputGroups(
 
 function entryToSwapPreview(entry: ProofOperationRecord): SwapPreview {
   return {
-    amount: readNumberMetadata(entry, 'amount'),
-    fees: readNumberMetadata(entry, 'fees'),
+    amount: Amount.from(readNumberMetadata(entry, 'amount')),
+    fees: Amount.from(readNumberMetadata(entry, 'fees')),
     keysetId: readStringMetadata(entry, 'keysetId'),
     inputs: entry.inputs as Proof[],
     sendOutputs:
@@ -638,6 +642,24 @@ function blindedMessageKey(output: SerializedBlindedMessage): string {
   return `${output.id}:${output.B_}`
 }
 
+function amountToNumber(amount: unknown): number {
+  if (typeof amount === 'number') return amount
+  if (typeof amount === 'bigint') return Number(amount)
+  if (typeof amount === 'string') return Number(amount)
+  if (
+    amount &&
+    typeof amount === 'object' &&
+    'toNumber' in amount &&
+    typeof amount.toNumber === 'function'
+  ) {
+    return Number(amount.toNumber())
+  }
+  if (amount && typeof amount === 'object' && 'value' in amount) {
+    return amountToNumber((amount as { value: unknown }).value)
+  }
+  return Number(amount)
+}
+
 async function receiveOutcomeToken(
   proofs: Proof[],
   mintUrl: string,
@@ -652,7 +674,7 @@ async function receiveOutcomeToken(
     throw new Error('cashu wallet does not support proof-state checks')
   }
   const proofStates = await wallet.checkProofsStates(
-    proofs.map((proof) => ({ secret: proof.secret })),
+    proofs.map((proof) => ({ id: proof.id, secret: proof.secret })),
   )
   const firstBlocked = proofStates.find(
     (state) => state.state !== CheckStateEnum.UNSPENT,

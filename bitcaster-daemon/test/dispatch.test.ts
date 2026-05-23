@@ -137,6 +137,44 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       assert.doesNotMatch(text, /status-secret|operation-input-secret/)
     })
 
+    await t.test('daemon state serializes native CTF proof operation amounts as numbers', async () => {
+      const state = emptyDaemonState()
+      state.proofOperations['ctf-native-op'] = {
+        operationId: 'ctf-native-op',
+        kind: 'conditional-keyset-swap',
+        state: 'completed',
+        mintUrl: 'mint-a',
+        inputs: [
+          { id: 'ctf-keyset', amount: 136n as never, secret: 'ctf-input', C: 'C-in' },
+        ],
+        outputs: {
+          lock: [
+            {
+              blindedMessage: { amount: 100n as never, id: 'ctf-keyset', B_: 'B-lock' },
+              blindingFactor: '01',
+              secret: '02',
+            },
+          ],
+        },
+        metadata: { fees: 0n },
+        resultProofs: {
+          lock: [
+            { id: 'ctf-keyset', amount: 100n as never, secret: 'ctf-lock', C: 'C-out' },
+          ],
+        },
+        createdAt: 1,
+        updatedAt: 2,
+      }
+
+      await writeState(state)
+      const restored = await readState()
+
+      assert.equal(restored?.proofOperations['ctf-native-op']?.kind, 'conditional-keyset-swap')
+      assert.equal(restored?.proofOperations['ctf-native-op']?.inputs[0].amount, 136)
+      assert.equal(restored?.proofOperations['ctf-native-op']?.outputs.lock[0].blindedMessage.amount, 100)
+      assert.equal(restored?.proofOperations['ctf-native-op']?.resultProofs?.lock[0].amount, 100)
+    })
+
     await t.test('daemon.config updates engine and mint URLs without replacing identity', async () => {
       await writeState(emptyDaemonState())
       const response = await dispatch({
@@ -336,7 +374,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 throw new Error('send unused')
               },
               async checkProofsStates(proofs) {
-                assert.deepEqual(proofs, [{ secret: 'outcome-token-secret' }])
+                assert.deepEqual(proofs, [
+                  { id: '009a1f293253e41e', secret: 'outcome-token-secret' },
+                ])
                 return [
                   {
                     Y: 'proof-y',

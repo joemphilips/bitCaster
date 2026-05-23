@@ -19,7 +19,7 @@
     "generate:api": "openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o src/generated/api.ts"
   },
   "dependencies": {
-    "@cashu/cashu-ts": "^3.5.0",
+    "@cashu/cashu-ts": "file:../cashu-ts",
     "@microsoft/signalr": "^10.0.0",
     "@noble/curves": "^2.2.0",
     "@nostr-dev-kit/ndk": "^2.11.0",

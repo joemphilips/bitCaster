@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { Amount } from '@cashu/cashu-ts'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import {
   MIN_LOCKTIME_DELTA_SECS,
+  assertProofsAtomicSwapLocked,
+  sellerPreparePrelockedSwap,
   validateLocktimeOrdering,
 } from '../src/atomicSwap.ts'
 import {
@@ -95,6 +98,111 @@ test('P2PK helpers produce NUT-11 secret and witness shapes', () => {
     () => createP2PKWitness(signer.privateKey, new Uint8Array(31)),
     /message must be 32 bytes/,
   )
+})
+
+test('seller prelocked swap rejects raw outcome proofs before presigning', async () => {
+  const seller = generateEphemeralKeypair()
+  const buyer = generateEphemeralKeypair()
+  const ctx = {
+    role: 'seller' as const,
+    tradeId: 'trade-precondition',
+    orderId: 'order-precondition',
+    marketId: 'condition-YES',
+    mintUrl: 'https://mint.example',
+    counterpartyPubkey: buyer.publicKey,
+    ephemeralKey: seller,
+    sellerLocktime: 1_779_393_600,
+    buyerLocktime: 1_779_393_000,
+  }
+  const rawProof = {
+    id: 'conditional-keyset',
+    amount: Amount.from(100),
+    secret: 'raw-outcome-secret',
+    C: '02'.padEnd(66, '0'),
+  }
+
+  assert.throws(
+    () => assertProofsAtomicSwapLocked(ctx, [rawProof]),
+    /requires P2PK-locked proofs/,
+  )
+  await assert.rejects(
+    () => sellerPreparePrelockedSwap(ctx, [rawProof]),
+    /requires P2PK-locked proofs/,
+  )
+})
+
+test('seller prelocked swap accepts the exact atomic-swap P2PK lock shape', () => {
+  const seller = generateEphemeralKeypair()
+  const buyer = generateEphemeralKeypair()
+  const ctx = {
+    role: 'seller' as const,
+    tradeId: 'trade-precondition-ok',
+    orderId: 'order-precondition-ok',
+    marketId: 'condition-YES',
+    mintUrl: 'https://mint.example',
+    counterpartyPubkey: buyer.publicKey,
+    ephemeralKey: seller,
+    sellerLocktime: 1_779_393_600,
+    buyerLocktime: 1_779_393_000,
+  }
+  const lockedProof = {
+    id: 'conditional-keyset',
+    amount: Amount.from(100),
+    secret: JSON.stringify([
+      'P2PK',
+      {
+        data: seller.publicKey,
+        tags: [
+          ['pubkeys', buyer.publicKey],
+          ['n_sigs', '2'],
+          ['sigflag', 'SIG_INPUTS'],
+          ['locktime', String(ctx.sellerLocktime)],
+          ['refund', seller.publicKey],
+        ],
+      },
+    ]),
+    C: '02'.padEnd(66, '1'),
+  }
+
+  assert.doesNotThrow(() => assertProofsAtomicSwapLocked(ctx, [lockedProof]))
+})
+
+test('seller prelocked swap normalizes structured-cloned Cashu Amount values', async () => {
+  const seller = generateEphemeralKeypair()
+  const buyer = generateEphemeralKeypair()
+  const ctx = {
+    role: 'seller' as const,
+    tradeId: 'trade-structured-amount',
+    orderId: 'order-structured-amount',
+    marketId: 'condition-YES',
+    mintUrl: 'https://mint.example',
+    counterpartyPubkey: buyer.publicKey,
+    ephemeralKey: seller,
+    sellerLocktime: 1_779_393_600,
+    buyerLocktime: 1_779_393_000,
+  }
+  const lockedProof = {
+    id: 'conditional-keyset',
+    amount: { value: 100n },
+    secret: JSON.stringify([
+      'P2PK',
+      {
+        data: seller.publicKey,
+        tags: [
+          ['pubkeys', buyer.publicKey],
+          ['n_sigs', '2'],
+          ['sigflag', 'SIG_INPUTS'],
+          ['locktime', String(ctx.sellerLocktime)],
+          ['refund', seller.publicKey],
+        ],
+      },
+    ]),
+    C: '02'.padEnd(66, '2'),
+  } as never
+
+  const prepared = await sellerPreparePrelockedSwap(ctx, [lockedProof])
+
+  assert.equal(prepared.lockedProofs[0].amount, 100)
 })
 
 test('URL helpers normalize mint identifiers consistently', () => {

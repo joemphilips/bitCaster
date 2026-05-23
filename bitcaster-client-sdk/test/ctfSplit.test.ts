@@ -82,6 +82,34 @@ test('splitCompleteSetWithOperation prepares outputs before posting and complete
   })
 })
 
+test('splitCompleteSetWithOperation normalizes structured Cashu Amount inputs before mint calls', async () => {
+  const transport = new FakeSplitTransport()
+  const store = new MemoryProofOperationStore()
+
+  await splitCompleteSetWithOperation({
+    mintUrl: 'https://mint.example',
+    operationId: 'op-structured-input',
+    transport,
+    conditionId: CONDITION_ID,
+    collateralProofs: [
+      { ...proof('input-keyset', 100, 'input-secret'), amount: { value: 100n } } as unknown as Proof,
+    ],
+    outcomeCollectionKeysets: { YES: 'keyset-yes', NO: 'keyset-no' },
+    amountSats: 100,
+    proofOperationStore: store,
+    makeOutputs: ({ collection, amountSats, keyset }) => [
+      output(collection, amountSats, keyset.id),
+    ],
+  })
+
+  assert.equal(typeof transport.posted[0].inputs[0].amount, 'number')
+  assert.equal(transport.posted[0].inputs[0].amount, 100)
+  assert.equal(
+    typeof store.records.get('op-structured-input')?.inputs[0].amount,
+    'number',
+  )
+})
+
 test('splitCompleteSetWithOperation replays completed operations without mint calls', async () => {
   const completed = new MemoryProofOperationStore()
   completed.records.set('op-completed', {

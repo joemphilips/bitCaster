@@ -6,6 +6,7 @@ import * as bip39 from '@/lib/bip39'
 import { normalizeUrl } from '@/lib/url'
 import { db, getBaseProofs, isCtfProof, type StoredProof } from './proof-db'
 import type { MintConnectionTestStatus } from '@/types/wallet-setup'
+import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 
 export interface StoredMint {
   url: string
@@ -297,12 +298,15 @@ export function useBalance(mintUrl?: string): number {
       : await db.proofs.toArray()
     return proofs
       .filter((p) => !isCtfProof(p))
-      .reduce((sum, p) => sum + p.amount, 0)
+      .reduce((sum, p) => sum + amountToNumber(p.amount), 0)
   }, [normalized], 0)
   return balance ?? 0
 }
 
 export async function getBalance(mintUrl?: string): Promise<number> {
   const proofs = await getBaseProofs(mintUrl)
-  return proofs.reduce((sum: number, p: StoredProof) => sum + p.amount, 0)
+  return proofs.reduce(
+    (sum: number, p: StoredProof) => sum + amountToNumber(p.amount),
+    0,
+  )
 }
