@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Users, Droplet, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
+import { Users, Droplet, TrendingUp, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { formatBtc } from '@/lib/format'
 import { getMarketThumbnail } from '@/lib/markets'
@@ -575,15 +575,28 @@ export function MarketCard({
           {renderNormalView()}
         </div>
 
-        <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400 pt-2 mt-auto border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
-          <div className="flex items-center gap-1 font-mono font-semibold text-amber-600 dark:text-amber-400" title="Volume">
-            {formatBtc(market.volume)}
+        <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-400 pt-2 mt-auto border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
+          <div
+            className="flex min-w-0 items-center gap-1 font-mono font-semibold text-amber-600 dark:text-amber-400"
+            title={t('market.volume')}
+            aria-label={t('market.volume')}
+          >
+            <TrendingUp className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="truncate">{formatBtc(market.volumeLifetimeSats)}</span>
           </div>
-          <div className="flex items-center gap-1" title="Liquidity">
+          <div
+            className="flex items-center gap-1"
+            title={t('market.liquidity')}
+            aria-label={t('market.liquidity')}
+          >
             <Droplet className="w-3.5 h-3.5" />
-            <span className="font-mono font-medium">{formatBtc(market.liquidity)}</span>
+            <span className="font-mono font-medium">{formatBtc(market.liquiditySats)}</span>
           </div>
-          <div className="flex items-center gap-1" title="Traders">
+          <div
+            className="flex items-center gap-1"
+            title={t('market.traders')}
+            aria-label={t('market.traders')}
+          >
             <Users className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">{market.traderCount.toLocaleString()}</span>
           </div>

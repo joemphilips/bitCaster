@@ -3,6 +3,7 @@ import {
   Share2,
   Clock,
   CheckCircle2,
+  TrendingUp,
   Droplet,
   Users,
   Landmark,
@@ -16,6 +17,7 @@ import type { MarketDetail } from "@/types/market-detail";
 import { formatBtc } from "@/lib/format";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
 import { getMintIconUrl } from "@/lib/mints";
+import { assertNever } from "@/lib/enumDiscipline";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { useWalletStore } from "@/stores/wallet";
 
@@ -54,16 +56,16 @@ function creatorIdToHex(creatorId: string): string | null {
 
 function formatTimeRemaining(
   closingDate: string | null,
+  now: Date,
   t: (key: string, opts?: Record<string, unknown>) => string,
   locale: string,
 ): string {
   if (!closingDate) return "";
 
-  const now = new Date();
   const close = new Date(closingDate);
   const diff = close.getTime() - now.getTime();
 
-  if (diff < 0) return t("market.closed");
+  if (diff < 0) return "";
 
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
@@ -83,6 +85,19 @@ function formatTimeRemaining(
   return t("market.minutesRemaining", { minutes });
 }
 
+function isEngineMarketClosed(state: MarketDetail["state"]): boolean {
+  if (state == null) return false;
+
+  switch (state) {
+    case "open":
+      return false;
+    case "closed":
+      return true;
+    default:
+      return assertNever(state);
+  }
+}
+
 export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -91,15 +106,17 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
     s.mints.find((m) => m.url === activeMintUrl),
   );
   const isResolved = market.resolution.status === "resolved";
-  const timeRemaining = formatTimeRemaining(
-    market.closingDate,
-    t,
-    i18n.language,
-  );
+  const isEngineClosed = isEngineMarketClosed(market.state);
+  const isClosed = isResolved || isEngineClosed;
+  const [now, setNow] = useState(() => new Date());
+  const timeRemaining =
+    isEngineClosed && !isResolved
+      ? t("market.closed")
+      : formatTimeRemaining(market.closingDate, now, t, i18n.language);
   const isClosingSoon =
-    !isResolved &&
+    !isClosed &&
     market.closingDate != null &&
-    new Date(market.closingDate).getTime() - Date.now() <
+    new Date(market.closingDate).getTime() - now.getTime() <
       7 * 24 * 60 * 60 * 1000;
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id));
   const toggleBookmark = useBookmarkStore((s) => s.toggle);
@@ -146,6 +163,13 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
     };
   }, [creatorHex]);
 
+  useEffect(() => {
+    if (!market.closingDate || isClosed) return;
+    setNow(new Date());
+    const intervalId = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => window.clearInterval(intervalId);
+  }, [market.closingDate, isClosed]);
+
   const resolvedDate = isResolved
     ? new Date(market.resolution.resolutionDate).toLocaleDateString(
         i18n.language,
@@ -175,21 +199,6 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
       <div
         className={`relative ${market.imageUrl ? "pt-8 pb-6 px-6" : "py-6 px-6"}`}
       >
-        {/* RESOLVED Badge */}
-        {isResolved && (
-          <div className="flex items-center gap-2 mb-3">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 uppercase tracking-wider">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              {t("marketStatus.resolved")}
-            </span>
-            {market.resolution.finalOutcome && (
-              <span className="text-sm font-semibold text-emerald-400">
-                {market.resolution.finalOutcome}
-              </span>
-            )}
-          </div>
-        )}
-
         {/* Category Tags */}
         <div className="flex flex-wrap gap-2 mb-4">
           {market.categoryTags.map((tag) => (
@@ -203,20 +212,40 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
         </div>
 
         {/* Title */}
-        <h1
-          className={`text-2xl md:text-3xl font-bold mb-4 leading-tight ${market.imageUrl ? "text-white" : "text-slate-900 dark:text-white"}`}
-        >
-          {market.title}
-        </h1>
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <h1
+            className={`text-2xl md:text-3xl font-bold leading-tight ${market.imageUrl ? "text-white" : "text-slate-900 dark:text-white"}`}
+          >
+            {market.title}
+          </h1>
+          {isClosed && (
+            <div className="shrink-0">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 uppercase tracking-wider">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {isResolved ? t("marketStatus.resolved") : t("market.closed")}
+              </span>
+              {market.resolution.finalOutcome && (
+                <div className="mt-2 text-right">
+                  <p className="text-[10px] uppercase tracking-wider text-emerald-500/80">
+                    {t("market.finalOutcome")}
+                  </p>
+                  <p className="text-2xl font-black leading-tight text-emerald-400">
+                    {market.resolution.finalOutcome}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Meta Row */}
         <div className="flex flex-wrap items-center gap-4 mb-4">
           {/* Time Remaining / Resolved Date — hidden when no real deadline known */}
-          {(isResolved || timeRemaining) && (
+          {(isClosed || timeRemaining) && (
             <div
-              className={`flex items-center gap-1.5 ${isResolved ? "text-slate-400" : isClosingSoon ? "text-amber-400" : market.imageUrl ? "text-slate-300" : "text-slate-600 dark:text-slate-400"}`}
+              className={`flex items-center gap-1.5 ${isClosed ? "text-slate-400" : isClosingSoon ? "text-amber-400" : market.imageUrl ? "text-slate-300" : "text-slate-600 dark:text-slate-400"}`}
             >
-              {isResolved ? (
+              {isClosed ? (
                 <CheckCircle2 className="w-4 h-4" />
               ) : (
                 <Clock className="w-4 h-4" />
@@ -330,17 +359,27 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
         >
           <div
             className="flex items-center gap-1 font-mono font-semibold text-amber-600 dark:text-amber-400"
-            title="Volume"
+            title={t("market.volume")}
+            aria-label={t("market.volume")}
           >
-            {formatBtc(market.volume)}
+            <TrendingUp className="w-3.5 h-3.5" />
+            <span>{formatBtc(market.volumeLifetimeSats)}</span>
           </div>
-          <div className="flex items-center gap-1" title="Liquidity">
+          <div
+            className="flex items-center gap-1"
+            title={t("market.liquidity")}
+            aria-label={t("market.liquidity")}
+          >
             <Droplet className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
-              {formatBtc(market.liquidity)}
+              {formatBtc(market.liquiditySats)}
             </span>
           </div>
-          <div className="flex items-center gap-1" title="Traders">
+          <div
+            className="flex items-center gap-1"
+            title={t("market.traders")}
+            aria-label={t("market.traders")}
+          >
             <Users className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
               {market.traderCount.toLocaleString()}

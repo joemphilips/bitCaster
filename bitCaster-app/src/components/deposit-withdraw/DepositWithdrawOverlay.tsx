@@ -7,6 +7,7 @@ import { MeltConfirmation } from './MeltConfirmation'
 import { QrScannerView } from './QrScanner'
 import { PaymentRequestDisplay } from './PaymentRequestDisplay'
 import { SuccessView } from './SuccessView'
+import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 
 interface DepositWithdrawOverlayProps {
   mode: DepositWithdrawMode
@@ -88,8 +89,8 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
       <>
         {errorBanner}
         <MeltConfirmation
-          amountSats={state.meltQuote.amount}
-          feeSats={state.meltQuote.fee_reserve}
+          amountSats={amountToNumber(state.meltQuote.amount)}
+          feeSats={amountToNumber(state.meltQuote.fee_reserve)}
           invoice={state.lightningInput}
           isPaying={state.meltIsPaying}
           onConfirm={state.onConfirmMelt}

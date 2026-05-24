@@ -13,13 +13,16 @@ const testMarkets: Market[] = [
     id: 'test-001',
     title: 'Will Bitcoin reach $100K?',
     type: 'yesno',
+    state: 'open',
     imageUrl: '',
     categoryTags: ['crypto'],
     metaTags: ['trending'],
     currentOdds: { yes: 60, no: 40 },
     volume: 1000,
     liquidity: 500,
+    liquiditySats: 500,
     traderCount: 10,
+    volumeLifetimeSats: 1000,
     closingDate: '2026-12-31T23:59:59Z',
     createdDate: '2026-01-01T00:00:00Z',
     activeSince: '2026-01-01T00:00:00Z',
@@ -30,6 +33,7 @@ const testMarkets: Market[] = [
     id: 'test-002',
     title: 'NBA Championship Winner',
     type: 'categorical',
+    state: 'open',
     imageUrl: '',
     categoryTags: ['sports'],
     metaTags: [],
@@ -39,7 +43,9 @@ const testMarkets: Market[] = [
     ],
     volume: 500,
     liquidity: 200,
+    liquiditySats: 200,
     traderCount: 5,
+    volumeLifetimeSats: 500,
     closingDate: '2026-06-30T23:59:59Z',
     createdDate: '2026-01-01T00:00:00Z',
     activeSince: '2026-01-01T00:00:00Z',
@@ -139,5 +145,25 @@ describe('MarketDiscovery', () => {
 
     await user.click(screen.getByTestId('market-sort-new'))
     expect(onSortChange).toHaveBeenCalledWith('new')
+  })
+
+  it('forwards the include-closed filter toggle', async () => {
+    const user = userEvent.setup()
+    const onIncludeClosedChange = vi.fn()
+    render(
+      <MarketDiscovery
+        categoryTags={testCategoryTags}
+        markets={testMarkets}
+        selectedTags={[]}
+        sort="trending"
+        onSortChange={vi.fn()}
+        onIncludeClosedChange={onIncludeClosedChange}
+      />
+    )
+
+    await user.click(screen.getByRole('button', { name: /filters/i }))
+    await user.click(screen.getByLabelText('Include closed'))
+
+    expect(onIncludeClosedChange).toHaveBeenCalledWith(true)
   })
 })

@@ -10,7 +10,9 @@ const market: MarketDetail = {
   categoryTags: [],
   volume: 0,
   liquidity: 0,
+  liquiditySats: 0,
   traderCount: 0,
+  volumeLifetimeSats: 0,
   closingDate: "2026-12-31T00:00:00Z",
   createdDate: "2026-01-01T00:00:00Z",
   activeSince: "2026-01-01T00:00:00Z",
@@ -21,6 +23,10 @@ const market: MarketDetail = {
     totalMarketsCreated: 0,
     feePercent: 0,
   },
+  outcomes: [
+    { id: "outcome-0", label: "Yes", odds: 50 },
+    { id: "outcome-1", label: "No", odds: 50 },
+  ],
   resolution: {
     criteria: "Test market",
     source: "oracle",
@@ -39,8 +45,21 @@ const market: MarketDetail = {
   currentOdds: { yes: 50, no: 50 },
 };
 
+const categoricalMarket: MarketDetail = {
+  ...market,
+  id: "condition-2",
+  type: "categorical",
+  outcomes: [
+    { id: "outcome-0", label: "Alice", odds: 33.33 },
+    { id: "outcome-1", label: "Bob", odds: 33.33 },
+    { id: "outcome-2", label: "Carol", odds: 33.33 },
+  ],
+  outcomePriceHistories: {},
+  outcomeOrderBooks: {},
+};
+
 describe("buildTradeTicket", () => {
-  it("builds limit orders with canonical Yes outcome names and valid GTC price", () => {
+  it("builds limit orders with oracle-verbatim Yes outcome names and valid GTC price", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -51,9 +70,9 @@ describe("buildTradeTicket", () => {
       orderBook: market.orderBook,
     });
 
-    expect(ticket.marketId).toBe("condition-1-YES");
+    expect(ticket.marketId).toBe("condition-1-Yes");
     expect(ticket.request).toMatchObject({
-      outcomeId: "YES",
+      outcomeId: "Yes",
       side: "Buy",
       price: 50,
       amountSats: 100,
@@ -61,7 +80,7 @@ describe("buildTradeTicket", () => {
     });
   });
 
-  it("uses the best ask for executable market buys", () => {
+  it("uses aggressive FAK pricing for executable market buys", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -72,7 +91,7 @@ describe("buildTradeTicket", () => {
       orderBook: market.orderBook,
     });
 
-    expect(ticket.request.price).toBe(53);
+    expect(ticket.request.price).toBe(99);
     expect(ticket.request.timeInForce).toBe("FAK");
   });
 
@@ -88,6 +107,22 @@ describe("buildTradeTicket", () => {
         orderBook: market.orderBook,
       }),
     ).toThrow("Enter an amount in 100 sat increments.");
+  });
+
+  it("builds sell orders after same-outcome CTF swaps are supported", () => {
+    const ticket = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSats: 100,
+      side: "sell",
+      orderType: "limit",
+      limitPrice: 50,
+      orderBook: market.orderBook,
+    });
+
+    expect(ticket.request.side).toBe("Sell");
+    expect(ticket.request.outcomeId).toBe("Yes");
+    expect(ticket.request.price).toBe(50);
   });
 
   it("prefers direct asks for Buy NO market orders when available", () => {
@@ -110,12 +145,12 @@ describe("buildTradeTicket", () => {
       },
     });
 
-    expect(ticket.marketId).toBe("condition-1-NO");
-    expect(ticket.request.price).toBe(62);
+    expect(ticket.marketId).toBe("condition-1-No");
+    expect(ticket.request.price).toBe(99);
     expect(ticket.request.timeInForce).toBe("FAK");
   });
 
-  it("prices Buy NO market orders from complementary YES bids when direct asks are absent", () => {
+  it("uses aggressive FAK pricing for Buy NO market orders when complementary YES bids are available", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "no" },
@@ -135,9 +170,39 @@ describe("buildTradeTicket", () => {
       },
     });
 
-    expect(ticket.marketId).toBe("condition-1-NO");
-    expect(ticket.request.price).toBe(50);
+    expect(ticket.marketId).toBe("condition-1-No");
+    expect(ticket.request.price).toBe(99);
     expect(ticket.request.timeInForce).toBe("FAK");
+  });
+
+  it("builds categorical YES tickets with the selected oracle label", () => {
+    const ticket = buildTradeTicket({
+      market: categoricalMarket,
+      selection: { side: "yes", outcomeId: "outcome-0" },
+      amountSats: 100,
+      side: "buy",
+      orderType: "limit",
+      limitPrice: 45,
+      orderBook: market.orderBook,
+    });
+
+    expect(ticket.marketId).toBe("condition-2-Alice");
+    expect(ticket.request.outcomeId).toBe("Alice");
+  });
+
+  it("builds categorical NO tickets with the complement outcome set", () => {
+    const ticket = buildTradeTicket({
+      market: categoricalMarket,
+      selection: { side: "no", outcomeId: "outcome-0" },
+      amountSats: 100,
+      side: "buy",
+      orderType: "limit",
+      limitPrice: 45,
+      orderBook: market.orderBook,
+    });
+
+    expect(ticket.marketId).toBe("condition-2-Bob|Carol");
+    expect(ticket.request.outcomeId).toBe("Bob|Carol");
   });
 
   it("rejects market orders with no visible liquidity instead of emitting price 0", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router";
 import { MarketDetail } from "@/components/market-detail";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
@@ -6,12 +6,40 @@ import { NostrAuthRequiredModal } from "@/components/shared/NostrAuthRequiredMod
 import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
 import { useShareMarket } from "@/components/market-detail/useShareMarket";
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
+import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
+import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
+import {
+  outcomeLabels,
+  outcomeSetIdsForMarketBooks,
+  outcomeSetMarketId,
+  resolveOutcomeSets,
+} from "@/lib/outcomeSets";
+import {
+  addProofs,
+  getBaseProofs,
+  getOutcomeProofs,
+  getProofOperation,
+  markProofOperationCompleted,
+  prepareProofOperation,
+  releaseProofReservation,
+  removeProofs,
+  reserveProofs,
+} from "@/stores/proof-db";
 import { getBalance, useBalance, useWalletStore } from "@/stores/wallet";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
+import {
+  selectCollateralForCtfSplit,
+  splitRegularProofsWithOperation,
+  splitRootCompleteSetForPreflightOrder,
+  type CtfProofOperationRecord,
+  type CtfProofOperationStore,
+} from "@/lib/ctfSplit";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import type { Proof } from "@cashu/cashu-ts";
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -24,12 +52,6 @@ import type {
 } from "@/types/market-detail";
 
 type TopUpStage = "closed" | "modal" | "overlay";
-
-function hasKnownPastDeadline(market: MarketDetailType): boolean {
-  if (!market.closingDate) return false;
-  const deltaMs = new Date(market.closingDate).getTime() - Date.now();
-  return Number.isFinite(deltaMs) && deltaMs <= 0;
-}
 
 function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
   if (state == null) return false;
@@ -45,14 +67,11 @@ function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
 }
 
 function isClosedForTrading(market: MarketDetailType): boolean {
-  return isEngineMarketClosed(market.state) || hasKnownPastDeadline(market);
+  return isEngineMarketClosed(market.state);
 }
 
-function outcomeLabels(market: MarketDetailType): string[] {
-  if (market.type === "yesno") return ["YES", "NO"];
-  if (market.type === "categorical") return market.outcomes.map((o) => o.label);
-  if (market.type === "numeric") return ["HI", "LO"];
-  return [];
+function needsEngineDetailRefresh(market: MarketDetailType): boolean {
+  return market.closingDate == null || market.state == null;
 }
 
 function categoryTagIds(market: MarketDetailType): string[] {
@@ -73,27 +92,263 @@ function marketShapeMatches(
   );
 }
 
-async function fetchMarketDetailWithBooks(
+export async function fetchMarketDetailWithBooks(
   conditionId: string,
 ): Promise<MarketDetailType> {
   let detail = await fetchMarketDetail(conditionId);
-  if (detail.type !== "yesno") return detail;
+  const outcomeSetIds = outcomeSetIdsForMarketBooks(detail);
+  if (outcomeSetIds.length === 0) return detail;
 
   try {
-    const [yes, no] = await Promise.all([
-      fetchOrderBook(`${conditionId}-YES`),
-      fetchOrderBook(`${conditionId}-NO`),
-    ]);
+    const entries = await Promise.all(
+      outcomeSetIds.map(async (outcomeSetId) => [
+        outcomeSetId,
+        await fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId)),
+      ] as const),
+    );
+    const outcomeOrderBooks = Object.fromEntries(entries);
+    const defaultOrderBook =
+      outcomeOrderBooks[outcomeSetIds[0]] ?? detail.orderBook;
     detail = {
       ...detail,
-      orderBook: yes,
-      outcomeOrderBooks: { YES: yes, NO: no },
+      orderBook: defaultOrderBook,
+      outcomeOrderBooks,
     };
   } catch {
     // Order book fetch is best-effort; limit orders can still rest.
   }
 
   return detail;
+}
+
+async function getSellSideBalance(
+  activeMintUrl: string,
+  market: MarketDetailType,
+  tradeSelection: TradeSelection,
+): Promise<number> {
+  const outcomeSets = resolveOutcomeSets(market, tradeSelection);
+  if (!outcomeSets) return 0;
+  const proofs = await getOutcomeProofs(
+    activeMintUrl,
+    market.id,
+    outcomeSets.selectedOutcomeSetId,
+  );
+  return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
+}
+
+interface PreparedPreflightSplit {
+  reservationId: string;
+  conditionId: string;
+  keepOutcomeSetId: string;
+  lockOutcomeSetId: string;
+  amountSats: number;
+}
+
+interface PreparedCollateralLot {
+  inputs: Proof[];
+  spentSecrets: string[];
+  keepProofs: Proof[];
+}
+
+async function prepareCollateralLotForCtfSplit(input: {
+  mintUrl: string;
+  available: Proof[];
+  faceAmountSats: number;
+  reservationId: string;
+  lotIndex: number;
+}): Promise<PreparedCollateralLot> {
+  const operationId = `${input.reservationId}:regular-split:${input.lotIndex}`;
+  const existingRegularSplit = await getProofOperation(operationId);
+  if (existingRegularSplit) {
+    const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
+    const regularSplit = await splitRegularProofsWithOperation({
+      mintUrl: input.mintUrl,
+      operationId,
+      wallet,
+      proofs: [],
+      amountSats: input.faceAmountSats,
+      proofOperationStore: ctfProofOperationStore,
+    });
+    const exact = await selectCollateralForCtfSplit(
+      input.mintUrl,
+      regularSplit.send,
+      input.faceAmountSats,
+    );
+    await removeProofs(regularSplit.spent.map((proof) => proof.secret));
+    await addProofs([
+      ...regularSplit.keep.map((proof) => ({
+        ...proof,
+        mintUrl: input.mintUrl,
+      })),
+      ...exact.inputs.map((proof) => ({
+        ...proof,
+        mintUrl: input.mintUrl,
+        reservedBy: input.reservationId,
+      })),
+    ]);
+    return {
+      inputs: exact.inputs,
+      spentSecrets: exact.inputs.map((proof) => proof.secret),
+      keepProofs: regularSplit.keep,
+    };
+  }
+
+  try {
+    const exact = await selectCollateralForCtfSplit(
+      input.mintUrl,
+      input.available,
+      input.faceAmountSats,
+    );
+    await reserveProofs(
+      exact.inputs.map((proof) => proof.secret),
+      input.reservationId,
+    );
+    return {
+      inputs: exact.inputs,
+      spentSecrets: exact.inputs.map((proof) => proof.secret),
+      keepProofs: [],
+    };
+  } catch {
+    // No exact net input is available. Split larger/fragmented regular sats
+    // into a gross input that will net to the requested CTF face amount.
+  }
+
+  const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
+  if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
+    throw new Error("Cashu wallet adapter does not support fee-aware proof selection.");
+  }
+  const selected = wallet.selectProofsToSend(
+    input.available,
+    input.faceAmountSats,
+    true,
+    false,
+  );
+  if (selected.send.length === 0) {
+    throw new Error("No regular collateral proofs are available for CTF split.");
+  }
+  const grossCtfInputSats =
+    input.faceAmountSats +
+    amountToNumber(wallet.getFeesForProofs([selected.send[0]]));
+  const regularSplit = await splitRegularProofsWithOperation({
+    mintUrl: input.mintUrl,
+    operationId,
+    wallet,
+    proofs: selected.send,
+    amountSats: grossCtfInputSats,
+    proofOperationStore: ctfProofOperationStore,
+  });
+  const exact = await selectCollateralForCtfSplit(
+    input.mintUrl,
+    regularSplit.send,
+    input.faceAmountSats,
+  );
+  await removeProofs(regularSplit.spent.map((proof) => proof.secret));
+  await addProofs([
+    ...regularSplit.keep.map((proof) => ({
+      ...proof,
+      mintUrl: input.mintUrl,
+    })),
+    ...exact.inputs.map((proof) => ({
+      ...proof,
+      mintUrl: input.mintUrl,
+      reservedBy: input.reservationId,
+    })),
+  ]);
+  return {
+    inputs: exact.inputs,
+    spentSecrets: exact.inputs.map((proof) => proof.secret),
+    keepProofs: regularSplit.keep,
+  };
+}
+
+const ctfProofOperationStore: CtfProofOperationStore = {
+  getProofOperation: async (operationId) =>
+    (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
+  prepareProofOperation: async (input) =>
+    (await prepareProofOperation(input)) as CtfProofOperationRecord,
+  markProofOperationCompleted: async (operationId, resultProofs) =>
+    (await markProofOperationCompleted(
+      operationId,
+      resultProofs,
+    )) as CtfProofOperationRecord,
+};
+
+async function preparePreflightSplitForLimitBuy(input: {
+  mintUrl: string;
+  market: MarketDetailType;
+  selectedOutcomeSetId: string;
+  complementOutcomeSetId: string;
+  amountSats: number;
+  reservationId: string;
+}): Promise<PreparedPreflightSplit> {
+  if (input.amountSats % 100 !== 0) {
+    throw new Error("Pre-flight split requires 100 sat order increments.");
+  }
+
+  let available: Proof[] = await getBaseProofs(input.mintUrl);
+  const spentSecrets = new Set<string>();
+  const proofsToStore: Parameters<typeof addProofs>[0] = [];
+  let resolvedKeepOutcomeSetId = input.selectedOutcomeSetId;
+  let resolvedLockOutcomeSetId = input.complementOutcomeSetId;
+
+  try {
+    for (let offset = 0; offset < input.amountSats; offset += 100) {
+      const lotIndex = offset / 100;
+      const collateral = await prepareCollateralLotForCtfSplit({
+        mintUrl: input.mintUrl,
+        available,
+        faceAmountSats: 100,
+        reservationId: input.reservationId,
+        lotIndex,
+      });
+      const operationId = `${input.reservationId}:ctf-split:${lotIndex}`;
+      const split = await splitRootCompleteSetForPreflightOrder({
+        mintUrl: input.mintUrl,
+        conditionId: input.market.id,
+        collateralProofs: collateral.inputs,
+        amountSats: 100,
+        keepOutcomeSetId: input.selectedOutcomeSetId,
+        lockOutcomeSetId: input.complementOutcomeSetId,
+        operationId,
+        proofOperationStore: ctfProofOperationStore,
+      });
+
+      resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId;
+      resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId;
+      for (const proof of split.spentSatProofs) spentSecrets.add(proof.secret);
+      for (const [outcomeCollection, proofs] of Object.entries(
+        split.proofsByCollection,
+      )) {
+        proofsToStore.push(
+          ...proofs.map((proof) => ({
+            ...proof,
+            mintUrl: input.mintUrl,
+            conditionId: input.market.id,
+            outcomeCollection,
+            marketId: `${input.market.id}-${outcomeCollection}`,
+            reservedBy: input.reservationId,
+          })),
+        );
+      }
+      available = available
+        .filter((proof) => !collateral.spentSecrets.includes(proof.secret))
+        .concat(collateral.keepProofs);
+    }
+  } catch (err) {
+    await releaseProofReservation(input.reservationId);
+    throw err;
+  }
+
+  await removeProofs([...spentSecrets]);
+  await addProofs(proofsToStore);
+
+  return {
+    reservationId: input.reservationId,
+    conditionId: input.market.id,
+    keepOutcomeSetId: resolvedKeepOutcomeSetId,
+    lockOutcomeSetId: resolvedLockOutcomeSetId,
+    amountSats: input.amountSats,
+  };
 }
 
 export function MarketDetailPage() {
@@ -121,11 +376,14 @@ export function MarketDetailPage() {
   const [tradeAmount, setTradeAmount] = useState(0);
   const [tradeSide, setTradeSide] = useState<TradeSide>("buy");
   const [orderType, setOrderType] = useState<OrderType>("market");
+  const [preflightSplit, setPreflightSplit] = useState(true);
   const [limitPrice, setLimitPrice] = useState(50);
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
     message: string;
   } | null>(null);
+  const [isTradeSubmitting, setIsTradeSubmitting] = useState(false);
+  const tradeSubmitInFlightRef = useRef(false);
 
   // Top-up flow state — surfaced only when the user tries to confirm a trade
   // they can't afford. `balanceAtCheck` is the snapshot taken when the gate
@@ -156,6 +414,49 @@ export function MarketDetailPage() {
   useEffect(() => {
     loadMarket();
   }, [loadMarket]);
+
+  useEffect(() => {
+    if (!id || !market || !needsEngineDetailRefresh(market)) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 10;
+    let timeoutId: number | null = null;
+
+    const refresh = async () => {
+      attempts += 1;
+      try {
+        const latest = await fetchMarketDetailWithBooks(id);
+        if (cancelled) return;
+        setMarket((current) => {
+          if (!current || !marketShapeMatches(current, latest)) return current;
+          if (
+            current.closingDate === latest.closingDate &&
+            current.state === latest.state &&
+            needsEngineDetailRefresh(latest)
+          ) {
+            return current;
+          }
+          return latest;
+        });
+        if (!needsEngineDetailRefresh(latest) || attempts >= maxAttempts) {
+          return;
+        }
+      } catch {
+        if (attempts >= maxAttempts) return;
+      }
+
+      if (!cancelled) {
+        timeoutId = window.setTimeout(refresh, 2_000);
+      }
+    };
+
+    timeoutId = window.setTimeout(refresh, 2_000);
+    return () => {
+      cancelled = true;
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+    };
+  }, [id, market?.id, market?.closingDate, market?.state]);
 
   // Computed trade preview
   const tradePreview = useMemo<TradePreview | null>(() => {
@@ -199,6 +500,9 @@ export function MarketDetailPage() {
   // callers that can't promise that must route through `handleTradeConfirm`.
   const placeOrder = useCallback(async () => {
     if (!market || !tradeSelection || !tradeAmount) return;
+    if (tradeSubmitInFlightRef.current) return;
+    tradeSubmitInFlightRef.current = true;
+    setIsTradeSubmitting(true);
     setTradeSubmitStatus(null);
     let latestMarket: MarketDetailType;
     try {
@@ -209,6 +513,8 @@ export function MarketDetailPage() {
         kind: "error",
         message: "Could not refresh market status before submitting the order.",
       });
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
       return;
     }
     if (isClosedForTrading(latestMarket)) {
@@ -216,6 +522,8 @@ export function MarketDetailPage() {
         kind: "error",
         message: "This market is closed and no longer accepts orders.",
       });
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
       return;
     }
     if (!marketShapeMatches(market, latestMarket)) {
@@ -224,23 +532,22 @@ export function MarketDetailPage() {
         message:
           "Market metadata changed before submission. Review the market and try again.",
       });
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
       return;
     }
 
     let ticket: ReturnType<typeof buildTradeTicket>;
+    let outcomeSets: NonNullable<ReturnType<typeof resolveOutcomeSets>>;
     try {
-      const selectedOutcome =
-        market.type === "yesno"
-          ? tradeSelection.side === "no"
-            ? "NO"
-            : "YES"
-          : null;
-      const complementaryOutcome =
-        selectedOutcome === "YES"
-          ? "NO"
-          : selectedOutcome === "NO"
-            ? "YES"
-            : null;
+      const resolvedOutcomeSets = resolveOutcomeSets(latestMarket, tradeSelection);
+      if (!resolvedOutcomeSets) {
+        throw new TradeTicketError(
+          "missing-selection",
+          "Choose an outcome before placing an order.",
+        );
+      }
+      outcomeSets = resolvedOutcomeSets;
       ticket = buildTradeTicket({
         market: latestMarket,
         selection: tradeSelection,
@@ -248,18 +555,14 @@ export function MarketDetailPage() {
         side: tradeSide,
         orderType,
         limitPrice,
-        orderBook: selectedOutcome
-          ? latestMarket.type === "yesno"
-            ? (latestMarket.outcomeOrderBooks?.[selectedOutcome] ??
-              (selectedOutcome === "YES" ? latestMarket.orderBook : null))
-            : null
-          : null,
-        complementaryOrderBook: complementaryOutcome
-          ? latestMarket.type === "yesno"
-            ? (latestMarket.outcomeOrderBooks?.[complementaryOutcome] ??
-              (complementaryOutcome === "YES" ? latestMarket.orderBook : null))
-            : null
-          : null,
+        orderBook:
+          latestMarket.outcomeOrderBooks?.[
+            outcomeSets.selectedOutcomeSetId
+          ] ?? null,
+        complementaryOrderBook:
+          latestMarket.outcomeOrderBooks?.[
+            outcomeSets.complementOutcomeSetId
+          ] ?? null,
       });
     } catch (e) {
       const message =
@@ -267,11 +570,45 @@ export function MarketDetailPage() {
           ? e.message
           : "This order cannot be submitted yet.";
       setTradeSubmitStatus({ kind: "info", message });
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
       return;
     }
 
     const ephemeral = generateEphemeralKeyPair();
+    let preparedPreflightSplit: PreparedPreflightSplit | undefined;
     try {
+      const selectedBook =
+        latestMarket.outcomeOrderBooks?.[outcomeSets.selectedOutcomeSetId] ??
+        null;
+      const complementBook =
+        latestMarket.outcomeOrderBooks?.[outcomeSets.complementOutcomeSetId] ??
+        null;
+      const directCross =
+        selectedBook?.asks[0] != null &&
+        selectedBook.asks[0].price <= ticket.request.price;
+      const complementaryCross =
+        complementBook?.bids[0] != null &&
+        complementBook.bids[0].price + ticket.request.price >= 100;
+      const shouldPreflightSplit =
+        preflightSplit &&
+        tradeSide === "buy" &&
+        orderType === "limit" &&
+        !directCross &&
+        !complementaryCross;
+      if (shouldPreflightSplit) {
+        if (!activeMintUrl) {
+          throw new Error("Select an active mint before using pre-flight split.");
+        }
+        preparedPreflightSplit = await preparePreflightSplitForLimitBuy({
+          mintUrl: activeMintUrl,
+          market: latestMarket,
+          selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
+          complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
+          amountSats: tradeAmount,
+          reservationId: `order-preflight:${ephemeral.pubkey}`,
+        });
+      }
       const response = await submitOrder(ticket.marketId, {
         ...ticket.request,
         ephemeralPubkey: ephemeral.pubkey,
@@ -284,19 +621,22 @@ export function MarketDetailPage() {
         ephemeralPubkey: ephemeral.pubkey,
         ephemeralPrivkey: ephemeral.privkey,
         submittedAt: Date.now(),
+        preflightSplit: preparedPreflightSplit,
       });
-      useNotificationsStore.getState().add({
-        id: `${response.orderId}-accepted`,
-        kind: "accepted",
+      promoteFillsToActiveSwaps(response.fills ?? [], {
         orderId: response.orderId,
         marketId: ticket.marketId,
-        filledAmountSats: Math.max(
-          ticket.request.amountSats - response.remainingAmountSats,
-          0,
-        ),
+        ephemeralPubkey: ephemeral.pubkey,
+        ephemeralPrivkey: ephemeral.privkey,
+      });
+      addOrderSubmitNotifications({
+        add: useNotificationsStore.getState().add,
+        orderId: response.orderId,
+        marketId: ticket.marketId,
+        requestedAmountSats: ticket.request.amountSats,
         remainingAmountSats: response.remainingAmountSats,
-        occurredAt: Date.now(),
-        read: false,
+        fillCount: response.fills?.length ?? 0,
+        status: response.status,
       });
       setTradeSelection(null);
       setTradeAmount(0);
@@ -309,17 +649,25 @@ export function MarketDetailPage() {
       });
       loadMarket();
     } catch (e) {
+      if (preparedPreflightSplit) {
+        await releaseProofReservation(preparedPreflightSplit.reservationId);
+      }
       if (
         e instanceof Error &&
         e.message.includes("No Nostr signer configured")
       ) {
         setShowNostrAuthModal(true);
+        tradeSubmitInFlightRef.current = false;
+        setIsTradeSubmitting(false);
         return;
       }
       setTradeSubmitStatus({
         kind: "error",
         message: e instanceof Error ? e.message : "Failed to submit order.",
       });
+    } finally {
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
     }
   }, [
     market,
@@ -327,7 +675,9 @@ export function MarketDetailPage() {
     tradeAmount,
     tradeSide,
     orderType,
+    preflightSplit,
     limitPrice,
+    activeMintUrl,
     loadMarket,
     addPendingTrade,
   ]);
@@ -337,15 +687,35 @@ export function MarketDetailPage() {
   // subscription after a top-up.
   const handleTradeConfirm = useCallback(async () => {
     if (!market || !tradeSelection || !tradeAmount) return;
+    if (tradeSubmitInFlightRef.current) return;
+    tradeSubmitInFlightRef.current = true;
     const requiredSats = tradeAmount; // totalCost for FAK today; PR2+ refines
-    const current = await getBalance(activeMintUrl);
-    if (current < requiredSats) {
-      setBalanceAtCheck(current);
-      setTopUpStage("modal");
+    setIsTradeSubmitting(true);
+    try {
+      const current =
+        tradeSide === "sell"
+          ? await getSellSideBalance(activeMintUrl, market, tradeSelection)
+          : await getBalance(activeMintUrl);
+      if (current < requiredSats) {
+        setBalanceAtCheck(current);
+        setTopUpStage("modal");
+        return;
+      }
+    } catch (error) {
+      setTradeSubmitStatus({
+        kind: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not check wallet balance before submitting the order.",
+      });
       return;
+    } finally {
+      tradeSubmitInFlightRef.current = false;
+      setIsTradeSubmitting(false);
     }
     await placeOrder();
-  }, [market, tradeSelection, tradeAmount, activeMintUrl, placeOrder]);
+  }, [market, tradeSelection, tradeAmount, tradeSide, activeMintUrl, placeOrder]);
 
   // After a successful top-up, close the overlay and place the order.
   // TopUpOverlay only invokes onSuccess once proofs have been written to the
@@ -420,9 +790,12 @@ export function MarketDetailPage() {
         }}
         onTradeConfirm={handleTradeConfirm}
         tradeSubmitStatus={tradeSubmitStatus}
+        isTradeSubmitting={isTradeSubmitting}
         onShare={handleShare}
         onTradeSideChange={setTradeSide}
         onOrderTypeChange={setOrderType}
+        preflightSplit={preflightSplit}
+        onPreflightSplitChange={setPreflightSplit}
         onLimitPriceChange={setLimitPrice}
         onRelatedMarketClick={handleRelatedMarketClick}
         walletReady={setupComplete}

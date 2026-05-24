@@ -151,8 +151,18 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     expect(callOrder).toEqual(['condition', 'partition', 'createMarket'])
     expect(mockRegisterCondition).toHaveBeenCalledOnce()
+    expect(mockRegisterCondition).toHaveBeenCalledWith({
+      tags: [
+        ['title', 'Test Market'],
+        ['description', 'Test description'],
+      ],
+      announcementHex: 'ann-hex-123',
+    })
     expect(mockRegisterPartition).toHaveBeenCalledWith('test-cond-id', ['Yes', 'No'])
     expect(mockCreateMarket).toHaveBeenCalledOnce()
+    expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
+      oracleAnnouncementHex: 'ann-hex-123',
+    })
   })
 
   it('stops and sets error if registerCondition fails', async () => {
@@ -265,6 +275,8 @@ describe('useMarketCreationState – onCreateMarket', () => {
       expect.stringMatching(/^will_btc_hit_150k_[0-9a-f]{12}$/),
       ['Yes', 'No'],
       expect.any(Number),
+      'Will BTC hit $150k?',
+      'Test description',
     )
     const entry = useCreatorMarketsStore.getState().markets[0]
     expect(entry.oracle?.type).toBe('self')

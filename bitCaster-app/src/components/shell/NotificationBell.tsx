@@ -164,7 +164,7 @@ function NotificationIcon({ kind }: { kind: Notification['kind'] }) {
   if (kind === 'filled') {
     return <Check className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" />
   }
-  if (kind === 'partially_filled') {
+  if (kind === 'matched' || kind === 'partially_filled') {
     return <TrendingUp className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />
   }
   return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
@@ -181,6 +181,9 @@ function formatNotification(n: Notification, t: (key: string, opts?: Record<stri
   }
   if (n.kind === 'partially_filled') {
     return t('notification.partiallyFilled', { sats: n.filledAmountSats, remaining: n.remainingAmountSats, market: marketLabel })
+  }
+  if (n.kind === 'matched') {
+    return t('notification.matched', { sats: n.filledAmountSats, market: marketLabel })
   }
   return t('notification.cancelled', { market: marketLabel })
 }

@@ -44,7 +44,7 @@ export function CreatedMarketRow({
     <div className="rounded-lg p-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-700/50">
       <div className="flex items-center gap-3">
         {/* Market Image */}
-        <div className="h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-slate-200 dark:bg-slate-700">
+        <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-slate-200 dark:bg-slate-700">
           {market.imageUrl && (
             <img
               src={market.imageUrl}
@@ -54,6 +54,11 @@ export function CreatedMarketRow({
                 (e.target as HTMLImageElement).style.display = "none";
               }}
             />
+          )}
+          {market.status !== "active" && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/65 text-[9px] font-semibold uppercase tracking-wide text-white">
+              {t("common.closed")}
+            </div>
           )}
         </div>
 

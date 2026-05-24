@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,7 +30,9 @@ function makeMarket(
     categoryTags: [],
     volume: 0,
     liquidity: 0,
+    liquiditySats: 0,
     traderCount: 0,
+    volumeLifetimeSats: 0,
     closingDate: "2030-12-31T23:59:59Z",
     createdDate: "2026-01-01T00:00:00Z",
     activeSince: "2026-01-01T00:00:00Z",
@@ -69,6 +71,7 @@ describe("MarketHeader", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     if (originalClipboard === undefined) {
       delete (navigator as unknown as NavigatorMutable).clipboard;
     } else {
@@ -102,6 +105,66 @@ describe("MarketHeader", () => {
     expect(screen.getByText("Mint")).toBeInTheDocument();
     expect(screen.getByText("Unknown")).toBeInTheDocument();
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
+  it("renders engine-closed markets as closed even before mint attestation catches up", async () => {
+    renderHeader(makeMarket({ state: "closed" }));
+
+    expect(screen.getAllByText("Closed").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/remaining/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
+  it("does not render an open engine market as closed only because its deadline is stale", async () => {
+    renderHeader(
+      makeMarket({
+        state: "open",
+        closingDate: "1970-01-12T13:46:40Z",
+      }),
+    );
+
+    expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
+  it("renders the final answer prominently when closed with an outcome", async () => {
+    renderHeader(
+      makeMarket({
+        state: "closed",
+        resolution: {
+          ...makeMarket().resolution,
+          status: "resolved",
+          finalOutcome: "Yes",
+        },
+      }),
+    );
+
+    expect(screen.getByText("Final Outcome")).toBeInTheDocument();
+    expect(screen.getByText("Yes")).toBeInTheDocument();
+    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
+  it("updates the remaining-time label while the market stays open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-17T12:00:00Z"));
+
+    renderHeader(
+      makeMarket({
+        closingDate: "2026-05-17T13:30:00Z",
+        resolution: {
+          ...makeMarket().resolution,
+          resolutionDate: "2026-05-17T13:30:00Z",
+        },
+      }),
+    );
+
+    expect(screen.getByText("1h remaining")).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(31 * 60 * 1000);
+    });
+
+    expect(screen.getByText("59m remaining")).toBeInTheDocument();
   });
 
   it("renders unavailable Nostr profile state and copies the full npub", async () => {

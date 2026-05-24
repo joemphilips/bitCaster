@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
   return {
     settingsState,
     privateKeySignerCtor: vi.fn(),
+    nip07SignerCtor: vi.fn(),
     setPendingKormirNsecSpy: vi.fn(),
   }
 })
@@ -48,7 +49,12 @@ vi.mock('@nostr-dev-kit/ndk', () => {
     }
     user = () => Promise.resolve({ pubkey: 'pk', profile: null, fetchProfile: () => Promise.resolve() })
   }
-  class FakeNDKNip07Signer {}
+  class FakeNDKNip07Signer {
+    constructor() {
+      mocks.nip07SignerCtor()
+    }
+    user = () => Promise.resolve({ pubkey: 'pk', profile: null, fetchProfile: () => Promise.resolve() })
+  }
   return {
     default: FakeNDK,
     NDKNip07Signer: FakeNDKNip07Signer,
@@ -73,7 +79,9 @@ describe('rehydrateNostrSigner', () => {
     mocks.settingsState.nsecSecret = null
     mocks.settingsState.nostrProfile = null
     vi.mocked(mocks.settingsState.setProfile).mockClear()
+    vi.mocked(mocks.settingsState.setSignerMode).mockClear()
     mocks.privateKeySignerCtor.mockClear()
+    mocks.nip07SignerCtor.mockClear()
     mocks.setPendingKormirNsecSpy.mockClear()
     nostrModule = await import('../nostr')
   })
@@ -96,6 +104,13 @@ describe('rehydrateNostrSigner', () => {
     await nostrModule.rehydrateNostrSigner()
     expect(mocks.privateKeySignerCtor).toHaveBeenCalledTimes(1)
     expect(mocks.privateKeySignerCtor).toHaveBeenCalledWith('nsec1example')
+  })
+
+  it('reinstalls the extension signer when persisted mode is nip07', async () => {
+    mocks.settingsState.nostrSignerMode = 'nip07'
+    await nostrModule.rehydrateNostrSigner()
+    expect(mocks.nip07SignerCtor).toHaveBeenCalledTimes(1)
+    expect(mocks.settingsState.setSignerMode).not.toHaveBeenCalled()
   })
 
   it('is idempotent for the same nsec — second call does not reinstall', async () => {

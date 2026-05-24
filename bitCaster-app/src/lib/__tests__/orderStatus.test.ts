@@ -9,6 +9,7 @@ vi.mock('../markets', () => ({
 }))
 
 import {
+  buildOrderStatusNotifications,
   fetchOrderStatus,
   promoteNewFillsToActiveSwaps,
   splitMarketId,
@@ -89,6 +90,73 @@ describe('promoteNewFillsToActiveSwaps', () => {
       'trade-b',
       'trade-c',
     ])
+  })
+})
+
+describe('buildOrderStatusNotifications', () => {
+  it('notifies on a complementary reservation-shaped match', () => {
+    const status = {
+      ...orderStatusWithTradeFills('trade-a'),
+      status: 'matched',
+      remainingAmountSats: 100,
+      filledAmountSats: 100,
+    } as OrderStatusResponse
+
+    const notifications = buildOrderStatusNotifications(
+      status,
+      pendingTrade(),
+      0,
+      123,
+    )
+
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]).toMatchObject({
+      id: 'order-1-matched-1',
+      kind: 'matched',
+      filledAmountSats: 100,
+      remainingAmountSats: 100,
+      occurredAt: 123,
+    })
+  })
+
+  it('does not notify again for the same fill snapshot', () => {
+    const status = {
+      ...orderStatusWithTradeFills('trade-a'),
+      filledAmountSats: 100,
+    } as OrderStatusResponse
+
+    const notifications = buildOrderStatusNotifications(
+      status,
+      pendingTrade(),
+      1,
+      123,
+    )
+
+    expect(notifications).toEqual([])
+  })
+
+  it('notifies when an order is cancelled by market close', () => {
+    const status = {
+      ...orderStatusWithTradeFills(),
+      status: 'cancelled',
+      remainingAmountSats: 100,
+      filledAmountSats: 0,
+    } as OrderStatusResponse
+
+    const notifications = buildOrderStatusNotifications(
+      status,
+      pendingTrade(),
+      0,
+      123,
+    )
+
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]).toMatchObject({
+      id: 'order-1-cancelled',
+      kind: 'cancelled',
+      remainingAmountSats: 100,
+      occurredAt: 123,
+    })
   })
 })
 

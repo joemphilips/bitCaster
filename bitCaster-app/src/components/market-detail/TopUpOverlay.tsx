@@ -136,7 +136,7 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
       const quote = activeQuoteRef.current ?? await createMintQuote(requested, activeMintUrl)
       activeQuoteRef.current = quote
       setBolt11(quote.request)
-      setExpiresAtSec(quote.expiry)
+      setExpiresAtSec(quote.expiry ?? undefined)
       setView('invoice')
 
       const unsub = await waitForMintQuotePaid(

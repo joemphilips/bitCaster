@@ -24,6 +24,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/markets/{conditionId}/oracle-attestation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit a signed oracle attestation directly to the engine
+         * @description Accepts a Nostr kind-89 DLC oracle attestation event and closes any open market identified by conditionId when the event and embedded kormir/rust-dlc attestation verify against that market's registered oracle. Nostr relay publication is optional: this endpoint is the direct closure path for bitCaster markets. The payload is self-authenticating, so no NIP-98 header is required.
+         */
+        post: operations["submitOracleAttestation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conditions/{conditionId}/attestation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch the verified oracle witness for a closed condition
+         * @description Returns the oracle witness persisted when the engine closed the market from a verified DLC oracle attestation. Clients use this witness as input to the mint's `POST /v1/redeem_outcome` endpoint. The mint still verifies the witness before paying out; this endpoint is a convenience cache for already-closed bitCaster conditions, not the payout authority.
+         */
+        get: operations["getConditionAttestation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/{marketId}/orders": {
         parameters: {
             query?: never;
@@ -276,6 +316,60 @@ export interface components {
          * @enum {string}
          */
         MatchPath: "Direct" | "Complementary";
+        /**
+         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means a DCB reservation exists and atomic-swap settlement is still pending; `Filled` means settlement committed; `Released` means a reservation failed or timed out and no longer consumes order depth.
+         * @enum {string}
+         */
+        FillStatus: "Matched" | "Filled" | "Released";
+        OracleNostrEvent: {
+            /** @description NIP-01 event id of the kind-89 attestation. */
+            id: string;
+            /** @description X-only BIP-340/Nostr public key of the oracle. */
+            pubkey: string;
+            /**
+             * Format: int64
+             * @description NIP-01 created_at timestamp in Unix seconds.
+             */
+            createdAt: number;
+            /**
+             * @description Nostr event kind for DLC oracle attestations.
+             * @enum {integer}
+             */
+            kind: 89;
+            /** @description Base64-encoded kormir/rust-dlc oracle_attestation payload. */
+            content: string;
+            /** @description BIP-340 Schnorr signature over the NIP-01 event id. */
+            sig: string;
+        };
+        OracleAttestationResponse: {
+            /**
+             * @description Engine processing result for the submitted attestation.
+             * @enum {string}
+             */
+            result: "Closed" | "AlreadyClosed" | "DuplicateReplay" | "WrongKind" | "InvalidSignature" | "InvalidPayload" | "NoMatchingMarket";
+        };
+        ConditionAttestationResponse: {
+            /** @description bitCaster condition id for the closed market. */
+            conditionId: string;
+            /** @description The single outcome attested by the DLC oracle. */
+            attestedOutcome: string;
+            oracleWitness: components["schemas"]["OracleWitness"];
+        };
+        ConditionAttestationProblem: {
+            /** @enum {string} */
+            result: "InvalidConditionId" | "MarketNotFound" | "AttestationNotAvailable";
+        };
+        OracleWitness: {
+            oracle_sigs: components["schemas"]["OracleWitnessSig"][];
+        };
+        OracleWitnessSig: {
+            /** @description X-only BIP-340 oracle public key. */
+            oracle_pubkey: string;
+            /** @description Oracle signature over the attested outcome. */
+            oracle_sig: string;
+            /** @description Outcome string signed by the oracle. */
+            outcome: string;
+        };
         Fill: {
             /**
              * Format: uuid
@@ -292,10 +386,11 @@ export interface components {
              * @description The resting order that was matched against.
              */
             makerOrderId: string;
-            /** @description Filled conditional-token face amount. For direct atomic swaps the buyer's quote payment is derived from this amount and the execution price. */
+            /** @description Conditional-token face amount matched for settlement. DCB complementary reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session. */
             amountSats: components["schemas"]["Sats"];
             executionPrice: components["schemas"]["Probability"];
             path: components["schemas"]["MatchPath"];
+            status: components["schemas"]["FillStatus"];
             /**
              * Format: date-time
              * @description Timestamp when this fill was executed.
@@ -303,7 +398,7 @@ export interface components {
             filledAt: string;
             /**
              * Format: uuid
-             * @description Atomic-swap trade session identifier for this fill. Present on direct-match fills that require TradeHub settlement; omitted on complementary fills and legacy fills that do not have a corresponding TradeHub session.
+             * @description Atomic-swap trade session identifier for this fill or DCB reservation. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
              */
             tradeId?: string;
             /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders). */
@@ -329,11 +424,12 @@ export interface components {
             orderId: string;
             /** @description The market this order belongs to. */
             marketId: string;
-            /** @description One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled". */
+            /** @description One of: "resting" (on book, unmatched), "matched" (reserved for atomic-swap settlement), "partially_filled", "filled", "cancelled". */
             status: string;
             remainingAmountSats: components["schemas"]["Sats"];
+            /** @description Conditional-token face amount already consumed by fills or active DCB complementary reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake. */
             filledAmountSats: components["schemas"]["Sats"];
-            /** @description All fills produced against this order so far. */
+            /** @description All fills and active DCB complementary reservation handles produced against this order so far. */
             fills: components["schemas"]["Fill"][];
         };
         RestingOrderResponse: {
@@ -367,7 +463,7 @@ export interface components {
              * @description The unique identifier assigned to this order.
              */
             orderId: string;
-            /** @description One of: "filled", "partially_filled", "resting", "cancelled". */
+            /** @description One of: "filled", "matched" (reserved for atomic-swap settlement), "partially_filled", "resting", "cancelled". */
             status: string;
             remainingAmountSats: components["schemas"]["Sats"];
             /** @description List of fills produced by this order. Empty if no matches. */
@@ -417,6 +513,8 @@ export interface components {
             liquiditySats: number;
             /** @description Optional category tags for the market. */
             categoryTags?: string[];
+            /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */
+            oracleAnnouncementHex?: string | null;
         };
         CreateMarketResponse: {
             /** @description The condition ID this market was registered for. */
@@ -560,6 +658,8 @@ export interface components {
             outcomes: string[];
             /** @description Optional human-readable title from market registration. Null when the creator did not supply one. */
             title?: string | null;
+            /** @description Detailed market description supplied by the creator at registration time. Market detail pages render this as the resolution criteria text. */
+            description?: string | null;
             /** @description Optional thumbnail URL. Null when no thumbnail was uploaded. */
             thumbnailUrl?: string | null;
             /** @description Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking. */
@@ -569,6 +669,13 @@ export interface components {
              * @description Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.
              */
             deadline?: string | null;
+            /**
+             * Format: date-time
+             * @description Engine-side close timestamp. Null while the market is open. Closed market detail pages use this value as the resolution date; deadline remains the scheduled oracle maturity time.
+             */
+            closedAt?: string | null;
+            /** @description Winning outcome known to the engine after an oracle attestation close. Null for deadline-only closes or markets that have not yet resolved. */
+            finalOutcome?: string | null;
             /**
              * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
              * @enum {string}
@@ -589,6 +696,21 @@ export interface components {
              * @description Trading volume over the last 30 days in satoshis. Drives the `Popular` sort dimension.
              */
             volume30dSats: number;
+            /**
+             * Format: int64
+             * @description Total face amount in sats of currently-resting orders across the market's order books.
+             */
+            liquiditySats: number;
+            /**
+             * Format: int32
+             * @description Number of distinct traders that have settled a trade in this market.
+             */
+            traderCount: number;
+            /**
+             * Format: int64
+             * @description Cumulative settled collateral face amount of all fills in the market's history.
+             */
+            volumeLifetimeSats: number;
             /** @description Most recent execution price (probability in `[1, 99]`), null if the market has never traded. */
             lastTradedPrice?: number | null;
             /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
@@ -693,6 +815,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": string;
+                };
+            };
+        };
+    };
+    submitOracleAttestation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OracleNostrEvent"];
+            };
+        };
+        responses: {
+            /** @description Attestation accepted. Result is "Closed", "AlreadyClosed", or "DuplicateReplay". */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OracleAttestationResponse"];
+                };
+            };
+            /** @description The submitted event is not a valid kind-89 oracle attestation, or its signatures/payload do not verify. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OracleAttestationResponse"];
+                };
+            };
+            /** @description The attestation verified, but no open market is registered for the attesting oracle. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OracleAttestationResponse"];
+                };
+            };
+        };
+    };
+    getConditionAttestation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verified oracle witness for the resolved condition */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConditionAttestationResponse"];
+                };
+            };
+            /** @description Invalid condition id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConditionAttestationProblem"];
+                };
+            };
+            /** @description Market not found, market not closed by oracle resolution, or no redeemable oracle witness is stored for the closed market. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConditionAttestationProblem"];
                 };
             };
         };

@@ -2,6 +2,10 @@ import type { Market, FilterState } from '@/types/market'
 import type { MarketDetail, OrderBook, Order } from '@/types/market-detail'
 import type { MarketSort } from '@/hooks/useMarketSort'
 import type { components } from '@/generated/api'
+import {
+  BitcasterEngineClient,
+  type SubmitOrderRequest as SdkSubmitOrderRequest,
+} from '@bitcaster/client-sdk/engineClient'
 import { getNdk } from '@/lib/nostr'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { bytesToHex } from 'nostr-tools/utils'
@@ -21,6 +25,9 @@ export type CreateMarketResponse = components['schemas']['CreateMarketResponse']
 export type CreatorMarketEntry = components['schemas']['CreatorMarketEntry']
 export type CreatorMarketsResponse =
   components['schemas']['CreatorMarketsResponse']
+export type OracleNostrEvent = components['schemas']['OracleNostrEvent']
+export type OracleAttestationResponse =
+  components['schemas']['OracleAttestationResponse']
 
 // CDK mint response types
 
@@ -58,7 +65,21 @@ export function getTagValues(tags: string[][], key: string): string[] {
   return tag ? tag.slice(1) : []
 }
 
-const KNOWN_TAG_KEYS = new Set(['description', 'n'])
+const KNOWN_TAG_KEYS = new Set(['description', 'title', 'n'])
+
+/**
+ * Identify the canonical two-outcome `Yes`/`No` universe so the mappers can
+ * branch on the dedicated `type: 'yesno'` shape. P19 made outcome labels
+ * oracle-verbatim, so this is a deliberate label match (`yes`/`no`,
+ * case-insensitive) rather than a count-only test.
+ */
+function isYesNoUniverse(outcomes: readonly string[]): boolean {
+  return (
+    outcomes.length === 2 &&
+    outcomes[0]?.toLowerCase() === 'yes' &&
+    outcomes[1]?.toLowerCase() === 'no'
+  )
+}
 
 export function extractCategoryTagIds(tags: string[][]): string[] {
   return tags
@@ -71,11 +92,9 @@ interface ConditionsResponse {
 }
 
 /**
- * Fetch the full mintd condition catalogue. Per ADR-009 only the
- * market-detail page (`/markets/{conditionId}`) consumes this directly —
- * it MUST reach mintd to verify a market exists before the user can place
- * deposits or orders. The markets-list page goes through the engine's
- * `/api/v1/markets/query` proxy (`getMarkets()` below).
+ * Fetch the full mintd condition catalogue. ADR-009 now keeps routine
+ * list/detail rendering engine-first, but operation-time checks may still
+ * call mintd directly before value is spent, locked, claimed, or resolved.
  */
 export async function fetchConditions(): Promise<ConditionInfo[]> {
   const response = await fetch('/v1/conditions')
@@ -99,13 +118,21 @@ export async function fetchMarketMetadata(
 }
 
 function applyMetadata<
-  T extends { volume: number; liquidity: number; traderCount: number },
+  T extends {
+    volume: number
+    liquidity: number
+    liquiditySats: number
+    traderCount: number
+    volumeLifetimeSats: number
+  },
 >(base: T, meta: MarketMetadataSnapshot): T {
   return {
     ...base,
     volume: meta.totalVolumeSats,
     liquidity: meta.totalLiquiditySats,
+    liquiditySats: meta.totalLiquiditySats,
     traderCount: meta.uniqueTraderCount,
+    volumeLifetimeSats: meta.totalVolumeSats,
   }
 }
 
@@ -171,10 +198,7 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
  */
 export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const outcomes = entry.outcomes ?? []
-  const isYesNo =
-    outcomes.length === 2 &&
-    outcomes[0]?.toLowerCase() === 'yes' &&
-    outcomes[1]?.toLowerCase() === 'no'
+  const isYesNo = isYesNoUniverse(outcomes)
 
   const closingDate = entry.deadline ?? entry.createdAt
   const title = entry.title ?? 'Untitled Market'
@@ -183,17 +207,15 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const base = {
     id: entry.conditionId,
     title,
+    state: normalizeEngineMarketState(entry.state) ?? 'open',
     imageUrl,
     categoryTags: entry.categoryTags ?? [],
     metaTags: [],
-    // 24h drives the Trending sort; the wire format also exposes 30d but the
-    // existing `Market` shape only carries one rolling-volume number. The
-    // sort dimension itself is hoisted up to the engine, so all three
-    // ordering dimensions are correct — `Market.volume` is now a UI display
-    // hint, not a tie-breaker.
-    volume: entry.volume24hSats ?? 0,
-    liquidity: 0,
-    traderCount: 0,
+    volume: entry.volumeLifetimeSats ?? 0,
+    liquidity: entry.liquiditySats ?? 0,
+    liquiditySats: entry.liquiditySats ?? 0,
+    traderCount: entry.traderCount ?? 0,
+    volumeLifetimeSats: entry.volumeLifetimeSats ?? 0,
     closingDate,
     createdDate: entry.createdAt,
     activeSince: entry.createdAt,
@@ -223,8 +245,8 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
 /**
  * Fetch a page of markets from the matching-engine catalogue API
  * (`GET /api/v1/markets/query`). The frontend trust contract (ADR-009) is:
- * the markets-list page may rely on this response, but the market-detail page
- * MUST verify market existence directly against mintd.
+ * routine list/detail rendering is engine-first; critical operations must
+ * fail closed or perform a later mint-authority check before funds move.
  */
 export async function getMarkets(
   params: GetMarketsParams = {},
@@ -298,12 +320,14 @@ export function filterMarkets(
 function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   const firstPartition = c.partitions[0]
   const outcomes = firstPartition?.partition ?? []
+  const mappedOutcomes = outcomes.map((label, i) => ({
+    id: `outcome-${i}`,
+    label,
+    odds: 100 / Math.max(outcomes.length, 1),
+  }))
   const now = new Date().toISOString()
 
-  const isYesNo =
-    outcomes.length === 2 &&
-    outcomes[0].toLowerCase() === 'yes' &&
-    outcomes[1].toLowerCase() === 'no'
+  const isYesNo = isYesNoUniverse(outcomes)
 
   // Mintd attestation is reduced to outcome metadata per ADR-009 Amendment
   // 2026-05-04. Lifecycle (Open / Closed) reads engine `state` and is merged
@@ -313,8 +337,12 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   const attestationStatus = normalizeMintdStatus(c.attestation.status)
   const isResolved = isAttestationResolved(attestationStatus)
   const tags = c.tags ?? []
+  const description = getTagValue(tags, 'description')?.trim()
   const title =
-    getTagValue(tags, 'description') ?? c.description ?? 'Untitled Market'
+    getTagValue(tags, 'title')?.trim() ??
+    c.description?.trim() ??
+    description ??
+    'Untitled Market'
 
   const base = {
     id: c.condition_id,
@@ -327,7 +355,9 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     })),
     volume: 0,
     liquidity: 0,
+    liquiditySats: 0,
     traderCount: 0,
+    volumeLifetimeSats: 0,
     closingDate: null,
     createdDate: now,
     activeSince: now,
@@ -342,10 +372,13 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
       totalMarketsCreated: 0,
       feePercent: 0,
     },
+    outcomes: mappedOutcomes,
     resolution: {
-      criteria: title,
+      criteria: description || title,
       source: 'oracle' as const,
-      resolutionDate: now,
+      resolutionDate: c.attestation.attested_at
+        ? new Date(c.attestation.attested_at * 1000).toISOString()
+        : now,
       status: isResolved ? ('resolved' as const) : ('open' as const),
       finalOutcome: c.attestation.winning_outcome ?? undefined,
     },
@@ -367,11 +400,97 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
   return {
     ...base,
     type: 'categorical',
-    outcomes: outcomes.map((label, i) => ({
-      id: `outcome-${i}`,
-      label,
-      odds: 100 / outcomes.length,
+    outcomePriceHistories: {},
+    outcomeOrderBooks: {},
+  }
+}
+
+function mapCatalogueEntryToMarketDetail(
+  entry: MarketCatalogueEntry,
+  mintCondition: ConditionInfo | null,
+): MarketDetail {
+  const firstPartition = mintCondition?.partitions[0]
+  const outcomes =
+    entry.outcomes && entry.outcomes.length > 0
+      ? entry.outcomes
+      : (firstPartition?.partition ?? [])
+  const mappedOutcomes = outcomes.map((label, i) => ({
+    id: `outcome-${i}`,
+    label,
+    odds: 100 / Math.max(outcomes.length, 1),
+  }))
+  const now = new Date().toISOString()
+  const createdAt = entry.createdAt ?? now
+  const title = entry.title?.trim() || 'Untitled Market'
+  const description = entry.description?.trim()
+  const creatorPubkey = entry.creatorPubkey?.trim()
+  const normalisedState = normalizeEngineMarketState(entry.state)
+  const finalOutcome = entry.finalOutcome?.trim() || undefined
+  const resolutionDate = entry.closedAt ?? entry.deadline ?? createdAt
+  const isYesNo = isYesNoUniverse(outcomes)
+
+  const base = {
+    id: entry.conditionId,
+    title,
+    state: normalisedState ?? undefined,
+    imageUrl: entry.thumbnailUrl ?? undefined,
+    categoryTags: (entry.categoryTags ?? []).map((id) => ({
+      id,
+      label: id,
+      marketCount: 0,
     })),
+    volume: entry.volumeLifetimeSats ?? 0,
+    liquidity: entry.liquiditySats ?? 0,
+    liquiditySats: entry.liquiditySats ?? 0,
+    traderCount: entry.traderCount ?? 0,
+    volumeLifetimeSats: entry.volumeLifetimeSats ?? 0,
+    closingDate: entry.deadline ?? null,
+    createdDate: createdAt,
+    activeSince: createdAt,
+    baseUnit: 'sats',
+    mint: {
+      collateral: firstPartition?.collateral ?? 'sat',
+      keysetCount: Object.keys(firstPartition?.keysets ?? {}).length,
+    },
+    creator: creatorPubkey
+      ? {
+          id: creatorPubkey,
+          name: `${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`,
+          totalMarketsCreated: 0,
+          feePercent: 0,
+        }
+      : {
+          id: 'unknown',
+          name: 'Unknown',
+          totalMarketsCreated: 0,
+          feePercent: 0,
+        },
+    outcomes: mappedOutcomes,
+    resolution: {
+      criteria: description || title,
+      source: 'oracle' as const,
+      resolutionDate,
+      status: finalOutcome ? ('resolved' as const) : ('open' as const),
+      finalOutcome,
+    },
+    priceHistory: { data: [], timeframe: '7d' as const },
+    orderBook: { bids: [], asks: [], spread: 0 },
+    recentTrades: [],
+    comments: [],
+    relatedMarkets: [],
+  }
+
+  if (isYesNo) {
+    return {
+      ...base,
+      type: 'yesno',
+      currentOdds: { yes: 50, no: 50 },
+    }
+  }
+
+  return {
+    ...base,
+    type: 'categorical',
     outcomePriceHistories: {},
     outcomeOrderBooks: {},
   }
@@ -380,7 +499,8 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
 /**
  * Resolve the engine catalogue entry for a single `conditionId`. Used by the
  * detail page to read engine-authoritative fields (`state`, `thumbnailUrl`,
- * `volume24hSats`) that mintd does not carry. ADR-009 Amendment 2026-05-04
+ * `volumeLifetimeSats`, `liquiditySats`, `traderCount`) that mintd does not
+ * carry. ADR-009 Amendment 2026-05-04
  * splits the trust contract: mintd is the existence + outcome-metadata
  * authority; the engine is the lifecycle + analytics + thumbnail authority.
  * Returns `null` when the engine has no record of the market or the request
@@ -389,18 +509,26 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
  */
 async function fetchEngineCatalogueEntry(
   conditionId: string,
+  attempts = 5,
 ): Promise<MarketCatalogueEntry | null> {
-  try {
-    const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`
-    const response = await fetch(url, {
-      headers: { Accept: 'application/json' },
-    })
-    if (!response.ok) return null
-    const body: MarketCatalogueResponse = await response.json()
-    return body.markets.find((m) => m.conditionId === conditionId) ?? null
-  } catch {
-    return null
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) return null
+      const body: MarketCatalogueResponse = await response.json()
+      const entry = body.markets.find((m) => m.conditionId === conditionId)
+      if (entry) return entry
+    } catch {
+      return null
+    }
+    if (attempt < attempts - 1) {
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 500))
+    }
   }
+  return null
 }
 
 /**
@@ -427,56 +555,27 @@ function normalizeEngineMarketState(
   return null
 }
 
-/**
- * Merge engine catalogue fields into a mintd-derived `MarketDetail`. Engine
- * is authoritative for lifecycle (`state`), analytics (volume), and thumbnail.
- * Mintd-derived fields (title, outcomes, resolution metadata) survive
- * untouched. Idempotent; safe to call when the engine entry is `null`
- * (returns the detail unchanged so the caller need not branch).
- */
-function mergeEngineCatalogueEntry(
-  detail: MarketDetail,
-  engineEntry: MarketCatalogueEntry | null,
-): MarketDetail {
-  if (!engineEntry) return detail
-  const normalisedState = normalizeEngineMarketState(engineEntry.state)
-  const creatorPubkey = engineEntry.creatorPubkey?.trim()
-  return {
-    ...detail,
-    state: normalisedState ?? detail.state,
-    imageUrl: engineEntry.thumbnailUrl ?? detail.imageUrl,
-    volume: engineEntry.volume24hSats ?? detail.volume,
-    creator: creatorPubkey
-      ? {
-          ...detail.creator,
-          id: creatorPubkey,
-          name: `${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`,
-        }
-      : detail.creator,
-    // Engine surfaces the oracle attestation deadline as the authoritative
-    // closing date. A null deadline means "unknown"; do not synthesize a
-    // page-load timestamp because that decays into a bogus Closed state.
-    closingDate: engineEntry.deadline ?? detail.closingDate,
-  }
-}
-
 export async function fetchMarketDetail(
   conditionId: string,
 ): Promise<MarketDetail> {
-  const conditions = await fetchConditions()
-  const condition = conditions.find((c) => c.condition_id === conditionId)
+  // Routine detail rendering is engine-first. Mintd can lag or contain stale
+  // mirrored rows during local/staging smoke; use it only as a fallback and
+  // as mint/keyset enrichment once the engine has the public catalogue row.
+  const [engineEntry, conditionsResult, meta] = await Promise.all([
+    fetchEngineCatalogueEntry(conditionId),
+    fetchConditions().catch(() => [] as ConditionInfo[]),
+    fetchMarketMetadata(conditionId),
+  ])
+  const condition = conditionsResult.find((c) => c.condition_id === conditionId)
+  if (engineEntry) {
+    const detail = mapCatalogueEntryToMarketDetail(engineEntry, condition ?? null)
+    return detail
+  }
   if (!condition) {
     throw new Error(`Condition not found: ${conditionId}`)
   }
-  // Run the engine catalogue lookup in parallel with the metadata lookup —
-  // the two are independent and both feed the rendered detail.
-  const [engineEntry, meta] = await Promise.all([
-    fetchEngineCatalogueEntry(conditionId),
-    fetchMarketMetadata(conditionId),
-  ])
   const detail = mapConditionToMarketDetail(condition)
-  const withEngine = mergeEngineCatalogueEntry(detail, engineEntry)
-  return meta ? applyMetadata(withEngine, meta) : withEngine
+  return meta ? applyMetadata(detail, meta) : detail
 }
 
 export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
@@ -500,41 +599,32 @@ export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
 }
 
 export async function fetchOrderBook(marketId: string): Promise<OrderBook> {
-  const response = await fetch(`/api/v1/${marketId}/orderbook`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch order book: ${response.status}`)
-  }
-  const snapshot: OrderBookSnapshot = await response.json()
-  return mapSnapshotToOrderBook(snapshot)
+  const snapshot = await new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+  }).getOrderBook(marketId)
+  return mapSnapshotToOrderBook(snapshot as OrderBookSnapshot)
 }
 
 export async function submitOrder(
   marketId: string,
   params: SubmitOrderRequest,
 ): Promise<SubmitOrderResponse> {
-  const url = `${window.location.origin}/api/v1/${marketId}/orders`
-  // Bind the NIP-98 token to the exact body bytes the server will hash.
-  const bodyText = JSON.stringify(params)
-  const bodyBytes = new TextEncoder().encode(bodyText)
-  const payloadHash = await sha256Hex(bodyBytes)
-  const authHeader = await generateNip98Header(url, 'POST', payloadHash)
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: authHeader,
+  return (await createAuthenticatedBrowserEngineClient().submitOrder(
+    marketId,
+    params as SdkSubmitOrderRequest,
+  )) as SubmitOrderResponse
+}
+
+export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient {
+  return new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+    authorization: async ({ url, method, bodyText }) => {
+      const payloadHash = bodyText
+        ? await sha256Hex(new TextEncoder().encode(bodyText))
+        : undefined
+      return generateNip98Header(url, method, payloadHash)
     },
-    body: bodyText,
   })
-  if (!response.ok) {
-    const detail = await response.text()
-    throw new Error(
-      detail.trim()
-        ? `Failed to submit order: ${response.status} ${detail.trim()}`
-        : `Failed to submit order: ${response.status}`,
-    )
-  }
-  return response.json()
 }
 
 // =============================================================================
@@ -700,6 +790,32 @@ export async function createMarket(
   return response.json()
 }
 
+export async function submitOracleAttestation(
+  conditionId: string,
+  event: OracleNostrEvent,
+): Promise<OracleAttestationResponse> {
+  const response = await fetch(
+    `/api/v1/markets/${encodeURIComponent(conditionId)}/oracle-attestation`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    },
+  )
+  const body = (await response.json().catch(() => null)) as
+    | OracleAttestationResponse
+    | null
+  if (!response.ok) {
+    throw new Error(
+      body?.result
+        ? `Oracle attestation rejected: ${body.result}`
+        : `Oracle attestation rejected: HTTP ${response.status}`,
+    )
+  }
+  if (!body) throw new Error('Oracle attestation response was empty')
+  return body
+}
+
 export async function fetchThumbnailUrl(
   conditionId: string,
 ): Promise<string | null> {
@@ -748,6 +864,25 @@ export type GetDepositResponseDto =
   components['schemas']['GetDepositResponseDto']
 export type DepositState = components['schemas']['DepositState']
 export type DepositMethod = components['schemas']['DepositMethod']
+
+function normalizeDepositState(state: unknown): DepositState {
+  switch (state) {
+    case 'Requested':
+    case 'requested':
+      return 'Requested'
+    case 'Paid':
+    case 'paid':
+      return 'Paid'
+    case 'Credited':
+    case 'credited':
+      return 'Credited'
+    case 'Failed':
+    case 'failed':
+      return 'Failed'
+    default:
+      throw new Error(`Unknown deposit state: ${String(state)}`)
+  }
+}
 
 /**
  * Request a Lightning invoice for a market's CPMM bot deposit. The returned
@@ -803,7 +938,8 @@ export async function requestEcashDeposit(
       `[Matching Engine] Failed to submit ecash deposit: ${response.status} ${await response.text()}`,
     )
   }
-  return response.json()
+  const result = await response.json() as RequestEcashDepositResponse
+  return { ...result, state: normalizeDepositState(result.state) }
 }
 
 /**
@@ -822,7 +958,8 @@ export async function getDepositStatus(
   if (!response.ok) {
     throw new Error(`Failed to read deposit status: ${response.status}`)
   }
-  return response.json()
+  const result = await response.json() as GetDepositResponseDto
+  return { ...result, state: normalizeDepositState(result.state) }
 }
 
 /**

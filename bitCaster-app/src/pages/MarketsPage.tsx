@@ -29,6 +29,7 @@ export function MarketsPage() {
     selectedTags: [],
     marketTypes: [],
     volumeRange: {},
+    includeClosed: false,
   })
 
   // Sort dimension is hoisted into the engine query (`?sort=`); the page now
@@ -40,7 +41,12 @@ export function MarketsPage() {
     setError(null)
     setNextCursor(null)
     const tags = selectedTags.length > 0 ? selectedTags : undefined
-    getMarkets({ sort, tags, search: searchQuery || undefined })
+    getMarkets({
+      sort,
+      tags,
+      search: searchQuery || undefined,
+      state: filter.includeClosed ? 'All' : 'Open',
+    })
       .then((result) => {
         setMarkets(result.markets)
         setNextCursor(result.nextCursor)
@@ -53,7 +59,7 @@ export function MarketsPage() {
       .finally(() => {
         setLoading(false)
       })
-  }, [sort, selectedTags, searchQuery])
+  }, [sort, selectedTags, searchQuery, filter.includeClosed])
 
   useEffect(() => {
     loadMarkets()
@@ -106,6 +112,10 @@ export function MarketsPage() {
     setFilter((prev) => ({ ...prev, closingInDays: days }))
   }, [])
 
+  const handleIncludeClosedChange = useCallback((includeClosed: boolean) => {
+    setFilter((prev) => ({ ...prev, includeClosed }))
+  }, [])
+
   const handleViewMarket = useCallback(
     (marketId: string) => {
       navigate(`/markets/${marketId}`)
@@ -121,6 +131,7 @@ export function MarketsPage() {
       sort,
       tags,
       search: searchQuery || undefined,
+      state: filter.includeClosed ? 'All' : 'Open',
       cursor: nextCursor,
     })
       .then((result) => {
@@ -134,7 +145,7 @@ export function MarketsPage() {
       .finally(() => {
         setLoadingMore(false)
       })
-  }, [nextCursor, loadingMore, sort, selectedTags, searchQuery])
+  }, [nextCursor, loadingMore, sort, selectedTags, searchQuery, filter.includeClosed])
 
   const handleViewSecondaryMarket = useCallback(
     (_baseMarketId: string, secondaryMarketId: string) => {
@@ -178,6 +189,7 @@ export function MarketsPage() {
       onMarketTypeChange={handleMarketTypeChange}
       onVolumeRangeChange={handleVolumeRangeChange}
       onClosingDateChange={handleClosingDateChange}
+      onIncludeClosedChange={handleIncludeClosedChange}
       onViewMarket={handleViewMarket}
       onLoadMore={handleLoadMore}
       onViewSecondaryMarket={handleViewSecondaryMarket}

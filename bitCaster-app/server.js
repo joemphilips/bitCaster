@@ -30,6 +30,32 @@ const proxyErrorHandler = (err, _req, res) => {
   if (!res.headersSent) res.status(502).json({ error: 'Bad Gateway' });
 };
 
+const firstHeaderValue = (value) => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return raw?.split(',')[0]?.trim();
+};
+
+const isAzurePublicHost = (host) => host?.endsWith('.azurewebsites.net');
+
+const browserFacingProto = (req, host) => {
+  const forwardedProto = firstHeaderValue(req.headers['x-forwarded-proto']);
+  if (forwardedProto === 'wss') return 'https';
+  if (forwardedProto === 'ws') {
+    return req.headers['x-arr-ssl'] || isAzurePublicHost(host) ? 'https' : 'http';
+  }
+  if (forwardedProto) return forwardedProto;
+  if (req.headers['x-arr-ssl'] || isAzurePublicHost(host)) return 'https';
+  return req.socket.encrypted ? 'https' : 'http';
+};
+
+const setBrowserForwardedHeaders = (proxyReq, req) => {
+  // Use the frontend request Host, not a client-supplied X-Forwarded-Host.
+  // NIP-98 URL binding should reflect the origin the browser actually opened.
+  const host = firstHeaderValue(req.headers.host);
+  if (host) proxyReq.setHeader('x-forwarded-host', host);
+  proxyReq.setHeader('x-forwarded-proto', browserFacingProto(req, host));
+};
+
 if (MINT_URL) {
   app.use(createProxyMiddleware({
     target: MINT_URL, changeOrigin: true, pathFilter: '/v1/**',
@@ -49,12 +75,24 @@ if (BACKEND_URL) {
     target: BACKEND_URL, changeOrigin: true, xfwd: true, pathFilter: '/api/**',
     on: { error: proxyErrorHandler },
   }));
+  // Wallet-service callbacks use the same frontend-to-backend private path as
+  // browser API calls. The backend still authenticates /internal/** with the
+  // WalletService Entra-MI bearer scheme; this proxy is transport reachability,
+  // not authorization.
+  app.use(createProxyMiddleware({
+    target: BACKEND_URL, changeOrigin: true, xfwd: true, pathFilter: '/internal/**',
+    on: { error: proxyErrorHandler },
+  }));
   hubsProxy = createProxyMiddleware({
     target: BACKEND_URL, changeOrigin: true, xfwd: true, pathFilter: '/hubs/**', ws: true,
-    on: { error: proxyErrorHandler },
+    on: {
+      proxyReqWs: setBrowserForwardedHeaders,
+      error: proxyErrorHandler,
+    },
   });
   app.use(hubsProxy);
   console.log(`/api/* -> ${BACKEND_URL}`);
+  console.log(`/internal/* -> ${BACKEND_URL}`);
   console.log(`/hubs/* -> ${BACKEND_URL} (ws)`);
 }
 

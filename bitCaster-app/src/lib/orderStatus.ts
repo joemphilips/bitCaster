@@ -2,11 +2,14 @@ import { useEffect, useRef } from 'react'
 import type { components } from '@/generated/api'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
 import {
+  type Notification,
   type NotificationKind,
   useNotificationsStore,
 } from '@/stores/notifications'
 import { useActiveSwapsStore } from '@/stores/activeSwaps'
+import { useToastStore } from '@/stores/toast'
 import { generateNip98Header } from '@/lib/markets'
+import { BitcasterEngineClient } from '@bitcaster/client-sdk/engineClient'
 
 export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
 
@@ -15,6 +18,7 @@ export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
  */
 export type OrderStatus =
   | 'resting'
+  | 'matched'
   | 'partially_filled'
   | 'filled'
   | 'cancelled'
@@ -26,6 +30,10 @@ type PendingTradeForPromotion = {
   ephemeralPrivkey: string
 }
 
+type FillLike = {
+  tradeId?: string
+}
+
 const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set([
   'filled',
   'cancelled',
@@ -35,26 +43,22 @@ export async function fetchOrderStatus(
   marketId: string,
   orderId: string,
 ): Promise<OrderStatusResponse | null> {
-  const url = `${window.location.origin}/api/v1/${marketId}/orders/${orderId}`
-  const authHeader = await generateNip98Header(url, 'GET')
-  const response = await fetch(url, {
-    headers: { Authorization: authHeader },
-  })
-  if (response.status === 404) return null
-  if (!response.ok) {
-    throw new Error(`Failed to fetch order status: ${response.status}`)
-  }
-  return response.json()
+  return (await new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+    authorization: ({ url, method }) => generateNip98Header(url, method),
+  }).getOrderStatus(marketId, orderId)) as OrderStatusResponse | null
 }
 
 const POLL_INTERVAL_MS = 5_000
 
 /**
- * Promote any fills carrying a `tradeId` to the in-progress swap store. Direct
- * matches surface the `tradeId` on every produced fill once the engine creates
- * the Trade aggregate; complementary matches and CPMM-bootstrap fills come
- * with no `tradeId` and are ignored here. Idempotent — `promote()` is a no-op
- * for tradeIds already present in `activeSwaps`.
+ * Promote any fill/reservation carrying a `tradeId` to the in-progress swap
+ * store. Direct matches surface the `tradeId` on produced fills once the
+ * engine creates the Trade aggregate; complementary reservations surface a
+ * fill-shaped settlement handle before final fill commit so clients can join
+ * TradeHub even if they missed the one-shot `TradeCreated` push. Legacy CPMM
+ * bootstrap fills with no `tradeId` are ignored here. Idempotent — `promote()`
+ * is a no-op for tradeIds already present in `activeSwaps`.
  *
  * Captures the ephemeral keypair from `pendingTrades` at promote-time so the
  * swap-driver keeps working after the pending-trade entry is evicted on a
@@ -65,13 +69,20 @@ export function promoteNewFillsToActiveSwaps(
   trade: PendingTradeForPromotion,
   lastFillCount: number,
 ): number {
-  if (status.fills.length <= lastFillCount) return 0
+  return promoteFillsToActiveSwaps(status.fills, trade, lastFillCount)
+}
+
+export function promoteFillsToActiveSwaps(
+  fills: readonly FillLike[],
+  trade: PendingTradeForPromotion,
+  lastFillCount = 0,
+): number {
+  if (fills.length <= lastFillCount) return 0
 
   const promote = useActiveSwapsStore.getState().promote
   let promoted = 0
-  for (const fill of status.fills.slice(lastFillCount)) {
-    const fillWithTrade = fill as typeof fill & { tradeId?: string }
-    const tradeId = fillWithTrade.tradeId
+  for (const fill of fills.slice(lastFillCount)) {
+    const tradeId = fill.tradeId
     if (!tradeId) continue
     promote({
       tradeId,
@@ -83,6 +94,61 @@ export function promoteNewFillsToActiveSwaps(
     promoted += 1
   }
   return promoted
+}
+
+export function buildOrderStatusNotifications(
+  status: OrderStatusResponse,
+  trade: PendingTradeForPromotion,
+  lastFillCount: number,
+  now = Date.now(),
+): Notification[] {
+  const current = status.status as OrderStatus
+  const isTerminal = TERMINAL_STATUSES.has(current)
+  const fillCount = status.fills.length
+  const hasNewFills = fillCount > lastFillCount
+
+  if (
+    !isTerminal &&
+    (current === 'matched' || current === 'partially_filled') &&
+    hasNewFills &&
+    status.filledAmountSats > 0
+  ) {
+    const kind = current === 'matched' ? 'matched' : 'partially_filled'
+    return [
+      {
+        id: `${trade.orderId}-${kind}-${fillCount}`,
+        kind,
+        orderId: trade.orderId,
+        marketId: trade.marketId,
+        filledAmountSats: status.filledAmountSats,
+        remainingAmountSats: status.remainingAmountSats,
+        occurredAt: now,
+        read: false,
+      },
+    ]
+  }
+
+  if (isTerminal) {
+    const kind = current as NotificationKind
+    return [
+      {
+        id: `${trade.orderId}-${kind}`,
+        kind,
+        orderId: trade.orderId,
+        marketId: trade.marketId,
+        filledAmountSats: status.filledAmountSats,
+        remainingAmountSats: status.remainingAmountSats,
+        occurredAt: now,
+        read: false,
+      },
+    ]
+  }
+
+  return []
+}
+
+function shortOrderId(orderId: string): string {
+  return orderId.length > 12 ? `${orderId.slice(0, 8)}...` : orderId
 }
 
 /**
@@ -158,31 +224,22 @@ export function usePendingTradesPoller(): void {
             const lastFillCount =
               lastFillCountRef.current.get(trade.orderId) ?? 0
 
-            // Hand any fresh direct-match fills to useTradeSettlement so the
-            // atomic-swap driver can pick them up. Fills without a tradeId
-            // (complementary matches, legacy CPMM bootstrap fills) are
-            // skipped — they don't produce a Trade aggregate on the engine.
+            // Hand any fresh direct-match fills or complementary reservations
+            // to useTradeSettlement so the atomic-swap driver can pick them up.
+            // Legacy CPMM bootstrap fills without a tradeId are skipped here.
             const hasNewFills = fillCount > lastFillCount
             promoteNewFillsToActiveSwaps(status, trade, lastFillCount)
 
             // Terminal status short-circuits partial-fill: a "filled" that
             // also has new fills shouldn't generate two separate bell entries
             // for the same settlement.
-            if (
-              !isTerminal &&
-              current === 'partially_filled' &&
-              hasNewFills
-            ) {
-              addNotification({
-                id: `${trade.orderId}-partially_filled-${fillCount}`,
-                kind: 'partially_filled',
-                orderId: trade.orderId,
-                marketId: trade.marketId,
-                filledAmountSats: status.filledAmountSats,
-                remainingAmountSats: status.remainingAmountSats,
-                occurredAt: Date.now(),
-                read: false,
-              })
+            const notifications = buildOrderStatusNotifications(
+              status,
+              trade,
+              lastFillCount,
+            )
+            for (const notification of notifications) {
+              addNotification(notification)
             }
 
             if (!isTerminal && hasNewFills) {
@@ -190,17 +247,12 @@ export function usePendingTradesPoller(): void {
             }
 
             if (isTerminal) {
-              const kind = current as NotificationKind
-              addNotification({
-                id: `${trade.orderId}-${kind}`,
-                kind,
-                orderId: trade.orderId,
-                marketId: trade.marketId,
-                filledAmountSats: status.filledAmountSats,
-                remainingAmountSats: status.remainingAmountSats,
-                occurredAt: Date.now(),
-                read: false,
-              })
+              if (current === 'filled') {
+                useToastStore.getState().addToast({
+                  type: 'success',
+                  message: `All your amount for order ${shortOrderId(trade.orderId)} has been filled. 0 sats remaining.`,
+                })
+              }
               removePendingTrade(trade.orderId)
               lastFillCountRef.current.delete(trade.orderId)
 

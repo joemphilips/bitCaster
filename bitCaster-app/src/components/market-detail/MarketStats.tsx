@@ -1,4 +1,5 @@
 import { TrendingUp, Droplets, Users, Calendar, Clock, CheckCircle } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
 import { formatBtc } from '@/lib/format'
@@ -17,9 +18,9 @@ function formatDate(dateStr: string, locale: string): string {
 
 function getTimeRemaining(
   closingDate: string,
+  now: Date,
   t: (key: string, opts?: Record<string, unknown>) => string,
 ): { text: string; isUrgent: boolean } {
-  const now = new Date()
   const close = new Date(closingDate)
   const diff = close.getTime() - now.getTime()
 
@@ -45,21 +46,29 @@ function getTimeRemaining(
 
 export function MarketStats({ market }: MarketStatsProps) {
   const { t, i18n } = useTranslation()
+  const [now, setNow] = useState(() => new Date())
   const timeRemaining = market.closingDate
-    ? getTimeRemaining(market.closingDate, t)
+    ? getTimeRemaining(market.closingDate, now, t)
     : null
+
+  useEffect(() => {
+    if (!market.closingDate) return
+    setNow(new Date())
+    const intervalId = window.setInterval(() => setNow(new Date()), 30_000)
+    return () => window.clearInterval(intervalId)
+  }, [market.closingDate])
 
   const stats = [
     {
       icon: TrendingUp,
       label: t('market.volume'),
-      value: formatBtc(market.volume),
+      value: formatBtc(market.volumeLifetimeSats),
       color: 'text-blue-500',
     },
     {
       icon: Droplets,
       label: t('market.liquidity'),
-      value: formatBtc(market.liquidity),
+      value: formatBtc(market.liquiditySats),
       color: 'text-cyan-500',
     },
     {
@@ -110,9 +119,8 @@ export function MarketStats({ market }: MarketStatsProps) {
             }`}
           >
             <div className="flex items-center gap-2 mb-1">
-              <stat.icon className={`w-4 h-4 ${stat.color}`} />
-              <span className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                {stat.label}
+              <span aria-label={stat.label} title={stat.label}>
+                <stat.icon className={`w-4 h-4 ${stat.color}`} />
               </span>
             </div>
             <p className={`text-lg font-semibold ${

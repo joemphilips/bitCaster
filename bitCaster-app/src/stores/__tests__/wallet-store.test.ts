@@ -151,7 +151,17 @@ describe('useWalletStore', () => {
     it('_addMintWithoutActivating registers the mint but leaves activeMintUrl untouched', async () => {
       vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
         const u = String(input)
-        if (u.endsWith('/v1/info')) return new Response('{"pubkey":"abc"}')
+        if (u.endsWith('/v1/info')) {
+          return Response.json({
+            name: 'test mint',
+            pubkey: 'abc',
+            version: 'test',
+            nuts: {
+              4: { methods: [] },
+              5: { methods: [] },
+            },
+          })
+        }
         if (u.endsWith('/v1/keysets')) return new Response('{"keysets":[]}')
         if (u.endsWith('/v1/keys')) return new Response('{"keysets":[{"id":"k","unit":"sat","keys":{}}]}')
         return new Response('{}')

@@ -35,6 +35,13 @@ export type Kormir = KormirType
 export type { KormirAnnouncement, KormirAttestation }
 
 type KormirModule = typeof import('./kormir-wasm-pkg/kormir_wasm')
+type StoredKormirEvent = {
+  event_name?: unknown
+  announcement?: unknown
+  attestation?: unknown
+}
+
+const NIP88_TITLE_MAX_CHARS = 100
 
 let modulePromise: Promise<KormirModule> | null = null
 let instancePromise: Promise<KormirType> | null = null
@@ -163,6 +170,14 @@ export function resetKormir(): void {
   instanceRelayKey = null
 }
 
+function plainTextTagValue(value: string): string {
+  return value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function truncateNip88Title(title: string): string {
+  return Array.from(plainTextTagValue(title)).slice(0, NIP88_TITLE_MAX_CHARS).join('')
+}
+
 /**
  * Create an enum oracle event, publish its announcement to the connected
  * relays, and return the announcement encoded as a hex string (the shape
@@ -172,15 +187,29 @@ export function resetKormir(): void {
  * @param eventId - DLC event_id (slug derived from the market title)
  * @param outcomes - list of possible outcome strings
  * @param maturityEpoch - Unix timestamp (seconds) when the event matures
+ * @param title - short plain-text market title for the kind-88 NIP-88 title tag
+ * @param description - plain-text market summary for the kind-88 NIP-88 description tag
  */
 export async function createEnumAnnouncement(
   relays: string[],
   eventId: string,
   outcomes: string[],
   maturityEpoch: number,
+  title = eventId,
+  description = title,
 ): Promise<string> {
   const kormir = await getKormir(relays)
-  return kormir.create_enum_event(eventId, outcomes, maturityEpoch)
+  try {
+    return await kormir.create_enum_event(
+      eventId,
+      outcomes,
+      maturityEpoch,
+      truncateNip88Title(title),
+      plainTextTagValue(description),
+    )
+  } catch (err) {
+    throw new Error(`Failed to create DLC oracle announcement: ${describeThrown(err)}`)
+  }
 }
 
 /**
@@ -194,7 +223,19 @@ export async function signEnumAttestation(
   outcome: string,
 ): Promise<string> {
   const kormir = await getKormir(relays)
-  return kormir.sign_enum_event(eventId, outcome)
+  try {
+    return await kormir.sign_enum_event(eventId, outcome)
+  } catch (err) {
+    const stored = await findStoredKormirEvent(kormir, eventId).catch(() => null)
+    if (typeof stored?.attestation === 'string' && stored.attestation.length > 0) {
+      console.warn(
+        'DLC oracle attestation was signed locally, but publishing to Nostr failed. Continuing with the local attestation hex.',
+        describeThrown(err),
+      )
+      return stored.attestation
+    }
+    throw new Error(`Failed to sign DLC oracle attestation: ${describeThrown(err)}`)
+  }
 }
 
 /**
@@ -204,4 +245,32 @@ export async function signEnumAttestation(
 export async function getOraclePublicKey(relays: string[]): Promise<string> {
   const kormir = await getKormir(relays)
   return kormir.get_public_key()
+}
+
+async function findStoredKormirEvent(
+  kormir: KormirType,
+  eventId: string,
+): Promise<StoredKormirEvent | null> {
+  const events = await kormir.list_events()
+  if (!Array.isArray(events)) return null
+  return (
+    events.find(
+      (event): event is StoredKormirEvent =>
+        isRecord(event) && event.event_name === eventId,
+    ) ?? null
+  )
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function describeThrown(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message
+  if (typeof err === 'string' && err.length > 0) return err
+  if (isRecord(err)) {
+    const message = err.message
+    if (typeof message === 'string' && message.length > 0) return message
+  }
+  return String(err)
 }

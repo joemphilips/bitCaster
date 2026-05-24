@@ -23,5 +23,8 @@ public interface ITradeHubClient
         DateTimeOffset sellerLocktime, DateTimeOffset buyerLocktime,
         string marketId, long fillAmountSats,
         long? outcomeFaceAmountSats = null,
-        long? quotePaymentSats = null);
+        long? quotePaymentSats = null,
+        string? settlementKind = null,
+        string? sellerKeepOutcomeSetId = null,
+        string? sellerLockOutcomeSetId = null);
 }

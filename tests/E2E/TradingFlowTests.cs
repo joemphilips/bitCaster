@@ -316,6 +316,17 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await limitOrder.ClickAsync();
 
+        // This regression guard intercepts SubmitOrder and seeds a synthetic
+        // proof that is good enough for balance display, but not spendable by
+        // the mint. Disable maker pre-flight here so the test remains scoped
+        // to the order request shape; pre-flight splitting has dedicated E2E
+        // coverage in CliDaemonE2ETests.
+        var preflightSplit = page.GetByRole(AriaRole.Checkbox, new() { Name = "Pre-flight split" })
+            .Filter(new() { Visible = true }).First;
+        await Assertions.Expect(preflightSplit).ToBeCheckedAsync(new() { Timeout = 5_000 });
+        await preflightSplit.ClickAsync();
+        await Assertions.Expect(preflightSplit).Not.ToBeCheckedAsync(new() { Timeout = 5_000 });
+
         var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^(Buy|Place)\\s", RegexOptions.IgnoreCase) })
             .Filter(new() { Visible = true }).First;
         await confirm.ClickAsync();

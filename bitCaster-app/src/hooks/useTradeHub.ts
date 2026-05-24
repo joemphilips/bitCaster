@@ -9,7 +9,8 @@
  *   TradeCreated         — initial trade details (pubkeys + locktimes)
  *
  * The hook manages reconnection automatically via SignalR's built-in
- * BackoffRetryPolicy and exposes `joinTrade` / `sendSwapMessage` to callers.
+ * BackoffRetryPolicy and exposes `joinOrder` / `joinTrade` /
+ * `sendSwapMessage` to callers.
  */
 
 import { useEffect, useRef, useCallback } from 'react'
@@ -20,7 +21,8 @@ import {
   type HubConnection,
 } from '@microsoft/signalr'
 import { resolveHubServerUrl } from '@/lib/hubUrl'
-import { generateNip98AuthHeader, tradeHubUrl } from '@/lib/nip98'
+import { tradeHubUrl } from '@/lib/nip98'
+import { generateNip98Header } from '@/lib/markets'
 import type { TradeMessageType } from '@/lib/tradeMessageTypes'
 
 // ---------------------------------------------------------------------------
@@ -43,6 +45,9 @@ export interface TradeCreatedPayload {
   fillAmountSats?: number
   outcomeFaceAmountSats?: number
   quotePaymentSats?: number
+  settlementKind?: string | null
+  sellerKeepOutcomeSetId?: string | null
+  sellerLockOutcomeSetId?: string | null
 }
 
 export interface TradeHubCallbacks {
@@ -53,6 +58,7 @@ export interface TradeHubCallbacks {
 }
 
 export interface TradeHubActions {
+  joinOrder: (marketId: string, orderId: string) => Promise<void>
   joinTrade: (tradeId: string) => Promise<void>
   sendSwapMessage: (
     tradeId: string,
@@ -67,27 +73,51 @@ export interface TradeHubActions {
 // ---------------------------------------------------------------------------
 
 const SERVER_URL = resolveHubServerUrl()
+const INITIAL_START_RETRY_DELAYS_MS = [0, 1_000, 2_000, 5_000, 10_000]
 
-export function generateTradeHubAccessToken(
-  privateKey: Uint8Array,
-  hubUrl: string,
-): string {
-  return generateNip98AuthHeader(privateKey, hubUrl, 'GET').replace(
-    /^Nostr\s+/,
-    '',
-  )
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function startWithInitialRetry(
+  connection: HubConnection,
+  onError: (err: Error) => void,
+  isStopped: () => boolean,
+): Promise<void> {
+  let attempt = 0
+  while (!isStopped()) {
+    try {
+      await connection.start()
+      return
+    } catch (err) {
+      if (isStopped()) return
+      onError(err instanceof Error ? err : new Error(String(err)))
+      const delay =
+        INITIAL_START_RETRY_DELAYS_MS[
+          Math.min(attempt, INITIAL_START_RETRY_DELAYS_MS.length - 1)
+        ]
+      attempt += 1
+      if (delay > 0) await sleep(delay)
+    }
+  }
+}
+
+export async function generateTradeHubAccessToken(hubUrl: string): Promise<string> {
+  return (await generateNip98Header(hubUrl, 'GET')).replace(/^Nostr\s+/, '')
 }
 
 /**
  * Connect to the TradeHub and register event handlers.
  *
- * @param ephemeralPrivkey - 32-byte private key used for NIP-98 token signing.
- *   Pass `null` to defer connection (e.g. while the wallet is not yet set up).
+ * @param enabled - Pass false to defer connection until a Nostr signer is
+ *   configured and there is pending swap work. Authentication uses the same
+ *   configured signer path as REST order submission, so NIP-07 users can
+ *   settle trades without exposing a raw nsec to the page.
  * @param callbacks - event handlers wired to the SignalR hub events
- * @returns { joinTrade, sendSwapMessage, connectionState }
+ * @returns { joinOrder, joinTrade, sendSwapMessage, connectionState }
  */
 export function useTradeHub(
-  ephemeralPrivkey: Uint8Array | null,
+  enabled: boolean,
   callbacks: TradeHubCallbacks,
 ): TradeHubActions {
   const connectionRef = useRef<HubConnection | null>(null)
@@ -96,15 +126,15 @@ export function useTradeHub(
   callbacksRef.current = callbacks
 
   useEffect(() => {
-    if (!ephemeralPrivkey) return
+    if (!enabled) return
 
     const hubUrl = tradeHubUrl(SERVER_URL)
-    const privkey = ephemeralPrivkey // stable reference for this effect run
+    let stopped = false
 
     const connection = new HubConnectionBuilder()
       .withUrl(hubUrl, {
         transport: HttpTransportType.WebSockets,
-        accessTokenFactory: () => generateTradeHubAccessToken(privkey, hubUrl),
+        accessTokenFactory: () => generateTradeHubAccessToken(hubUrl),
       })
       .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
       .build()
@@ -136,6 +166,9 @@ export function useTradeHub(
         fillAmountSats?: number,
         outcomeFaceAmountSats?: number,
         quotePaymentSats?: number,
+        settlementKind?: string | null,
+        sellerKeepOutcomeSetId?: string | null,
+        sellerLockOutcomeSetId?: string | null,
       ) => {
         callbacksRef.current.onTradeCreated?.({
           tradeId,
@@ -147,6 +180,9 @@ export function useTradeHub(
           fillAmountSats,
           outcomeFaceAmountSats,
           quotePaymentSats,
+          settlementKind,
+          sellerKeepOutcomeSetId,
+          sellerLockOutcomeSetId,
         })
       },
     )
@@ -167,22 +203,23 @@ export function useTradeHub(
 
     connectionRef.current = connection
 
-    connection.start().catch((err: unknown) => {
-      callbacksRef.current.onError?.(
-        err instanceof Error ? err : new Error(String(err)),
-      )
-    })
+    void startWithInitialRetry(
+      connection,
+      (err) => callbacksRef.current.onError?.(err),
+      () => stopped,
+    )
 
     return () => {
+      stopped = true
       connection.stop().catch(() => {
         /* ignore teardown errors */
       })
       connectionRef.current = null
     }
-  }, [ephemeralPrivkey]) // reconnect when key changes
+  }, [enabled]) // connect only while swap work exists and a signer is configured
 
   /**
-   * Wait up to ~10 s for the SignalR connection to reach
+   * Wait up to ~60 s for the SignalR connection to reach
    * {@link HubConnectionState.Connected}. The connection lifecycle is async
    * (negotiation may take several seconds, transient failures retry via
    * `withAutomaticReconnect`); a caller that fires immediately on store
@@ -191,7 +228,7 @@ export function useTradeHub(
    * step that no later state change recovers.
    */
   const waitForConnected = useCallback(
-    async (timeoutMs = 10_000): Promise<HubConnection> => {
+    async (timeoutMs = 60_000): Promise<HubConnection> => {
       const deadline = Date.now() + timeoutMs
       while (Date.now() < deadline) {
         const conn = connectionRef.current
@@ -207,6 +244,14 @@ export function useTradeHub(
     async (tradeId: string) => {
       const conn = await waitForConnected()
       await conn.invoke('JoinTrade', tradeId)
+    },
+    [waitForConnected],
+  )
+
+  const joinOrder = useCallback(
+    async (marketId: string, orderId: string) => {
+      const conn = await waitForConnected()
+      await conn.invoke('JoinOrder', marketId, orderId)
     },
     [waitForConnected],
   )
@@ -227,5 +272,5 @@ export function useTradeHub(
     return connectionRef.current?.state ?? HubConnectionState.Disconnected
   }, [])
 
-  return { joinTrade, sendSwapMessage, connectionState }
+  return { joinOrder, joinTrade, sendSwapMessage, connectionState }
 }

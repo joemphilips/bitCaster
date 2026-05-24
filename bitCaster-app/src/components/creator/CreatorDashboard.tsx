@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from 'lucide-react'
 import { formatBtc } from '@/lib/format'
-import { signEnumAttestation } from '@/lib/kormir'
+import { signEnumOracleAttestationEvent } from '@/lib/oracleAttestation'
+import { submitOracleAttestation } from '@/lib/markets'
 import { useCreatorDashboardState } from '@/hooks/useCreatorDashboardState'
 import { MyMarkets } from '@/components/portfolio/MyMarkets'
 import { PrimaryGradientButton } from '@/components/shared/PrimaryGradientButton'
@@ -56,7 +57,7 @@ export function CreatorDashboard() {
   const [resolutionSuccess, setResolutionSuccess] = useState<string | null>(null)
   const { stats, markets, isLoading, error, pubkey, refresh } = useCreatorDashboardState()
   const signerMode = useSettingsStore((s) => s.nostrSignerMode)
-  const relays = useSettingsStore((s) => s.relays)
+  const nsecSecret = useSettingsStore((s) => s.nsecSecret)
   const markOracleAttested = useCreatorMarketsStore((s) => s.markOracleAttested)
 
   const handleCreateMarket = () => navigate('/creator/new')
@@ -74,9 +75,8 @@ export function CreatorDashboard() {
       setResolutionError(t('creator.nsecRequiredToResolve'))
       return
     }
-    const relayUrls = relays.map((relay) => relay.url)
-    if (relayUrls.length === 0) {
-      setResolutionError(t('creator.relayRequiredToResolve'))
+    if (!nsecSecret) {
+      setResolutionError(t('creator.nsecRequiredToResolve'))
       return
     }
     const confirmed = window.confirm(
@@ -85,14 +85,15 @@ export function CreatorDashboard() {
     if (!confirmed) return
     setResolvingMarketId(marketId)
     try {
-      const attestationHex = await signEnumAttestation(
-        relayUrls,
+      const attestation = signEnumOracleAttestationEvent(
+        nsecSecret,
         market.oracle.eventId,
         outcome,
       )
+      await submitOracleAttestation(marketId, attestation)
       markOracleAttested(marketId, {
         outcome,
-        attestationHex,
+        attestationHex: attestation.content,
         attestedAt: new Date().toISOString(),
       })
       setResolutionSuccess(t('creator.attestationPublished', { outcome }))

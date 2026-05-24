@@ -187,9 +187,9 @@ public class InteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Inline JS that opens cashu.me's Dexie <c>db</c> database and returns the
-    /// summed <c>amount</c> field of every row in the <c>proofs</c> store,
-    /// or <c>-1</c> if the database or store is not yet initialised. Shared by
+    /// Inline JS that mirrors cashu.me's active balance calculation: proofs
+    /// must be unreserved and belong to a keyset for the active mint/unit.
+    /// Returns <c>-1</c> if local wallet state is not initialised. Shared by
     /// <see cref="ReadCashuMeBalanceAsync"/> and <see cref="WaitForCashuMeBalance"/>.
     /// </summary>
     private const string CashuMeReadBalanceJs = @"async () => {
@@ -203,6 +203,21 @@ public class InteropTests : IAsyncLifetime
                 db.close();
                 return -1;
             }
+            const parseMaybeJson = (raw) => {
+                if (raw == null) return null;
+                try { return JSON.parse(raw); } catch { return raw; }
+            };
+            const activeMintUrl = parseMaybeJson(localStorage.getItem('cashu.activeMintUrl'));
+            const activeUnit = parseMaybeJson(localStorage.getItem('cashu.activeUnit')) || 'sat';
+            const mints = parseMaybeJson(localStorage.getItem('cashu.mints')) || [];
+            const activeMint = mints.find((m) => m.url === activeMintUrl);
+            const keysetIds = new Set((activeMint?.keysets || [])
+                .filter((k) => k.unit === activeUnit)
+                .map((k) => k.id));
+            if (keysetIds.size === 0) {
+                db.close();
+                return -1;
+            }
             const tx = db.transaction('proofs', 'readonly');
             const proofs = await new Promise((resolve, reject) => {
                 const req = tx.objectStore('proofs').getAll();
@@ -210,7 +225,9 @@ public class InteropTests : IAsyncLifetime
                 req.onerror = () => reject(req.error);
             });
             db.close();
-            return proofs.reduce((sum, p) => sum + (p.amount || 0), 0);
+            return proofs
+                .filter((p) => !p.reserved && keysetIds.has(p.id))
+                .reduce((sum, p) => sum + (p.amount || 0), 0);
         } catch (e) {
             return -1;
         }
@@ -675,34 +692,9 @@ public class InteropTests : IAsyncLifetime
         ");
     }
 
-    /// <summary>
-    /// Inject cashu.me localStorage so it uses the test mint AND publishes /
-    /// subscribes on the same local nostr relay bitCaster points at.
-    /// cashu.me reads the relay list from <c>cashu.nostr.relays</c> (active
-    /// set) and <c>cashu.settings.defaultNostrRelays</c> (fallback).
-    /// </summary>
-    private async Task SetupCashuMeWithLocalRelay(IPage page, string mnemonic)
+    private async Task ConfigureCashuMeLocalRelay(IPage page)
     {
-        await page.GotoAsync($"{TestPorts.CashuMeUrl}", new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded,
-            Timeout = 30_000,
-        });
-
-        var mintUrl = $"{TestPorts.MintUrl}";
         await page.EvaluateAsync($@"
-            localStorage.setItem('cashu.welcome.showWelcome', 'false');
-            localStorage.setItem('cashu.welcome.termsAccepted', 'true');
-            localStorage.setItem('cashu.mnemonic', JSON.stringify('{mnemonic}'));
-            const mint = {{
-                url: '{mintUrl}',
-                keys: [],
-                keysets: [],
-                nickname: 'Test Mint'
-            }};
-            localStorage.setItem('cashu.mints', JSON.stringify([mint]));
-            localStorage.setItem('cashu.activeMintUrl', JSON.stringify('{mintUrl}'));
-            localStorage.setItem('cashu.activeUnit', JSON.stringify('sat'));
             localStorage.setItem('cashu.nostr.relays', JSON.stringify(['{LocalNostrRelayUrl}']));
             localStorage.setItem('cashu.settings.defaultNostrRelays', JSON.stringify(['{LocalNostrRelayUrl}']));
         ");
@@ -853,8 +845,38 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
+            var balanceDiag = await page.EvaluateAsync<string>(@"async () => {
+                const db = await new Promise((resolve, reject) => {
+                    const req = indexedDB.open('db');
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                });
+                const tx = db.transaction('proofs', 'readonly');
+                const proofs = await new Promise((resolve, reject) => {
+                    const req = tx.objectStore('proofs').getAll();
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                });
+                db.close();
+                const parseMaybeJson = (raw) => {
+                    if (raw == null) return null;
+                    try { return JSON.parse(raw); } catch { return raw; }
+                };
+                const mints = parseMaybeJson(localStorage.getItem('cashu.mints')) || [];
+                return JSON.stringify({
+                    activeMintUrl: parseMaybeJson(localStorage.getItem('cashu.activeMintUrl')),
+                    activeUnit: parseMaybeJson(localStorage.getItem('cashu.activeUnit')),
+                    proofCount: proofs.length,
+                    proofs: proofs.map(p => ({ id: p.id, amount: p.amount, reserved: p.reserved, quote: p.quote })),
+                    mints: mints.map(m => ({
+                        url: m.url,
+                        keysets: (m.keysets || []).map(k => ({ id: k.id, unit: k.unit, active: k.active }))
+                    }))
+                });
+            }");
             throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
-                $"cashu.me Pay button not enabled. Balance may be insufficient for {amountSats} sats.");
+                $"cashu.me Pay button not enabled. Balance may be insufficient for {amountSats} sats. " +
+                $"cashu.me balance diagnostic: {balanceDiag}");
         }
         await payBtn.Last.ClickAsync(new() { Force = true });
     }
@@ -910,8 +932,12 @@ public class InteropTests : IAsyncLifetime
         await using var cashuMeCtx = await NewIsolatedContextAsync();
         var cashuMePage = await cashuMeCtx.NewPageAsync();
         var cashuMeConsole = TestHelpers.AttachConsoleCapture(cashuMePage);
-        await SetupCashuMeWithLocalRelay(cashuMePage, cashuMeMnemonic);
+        await SetupCashuMe(cashuMePage, cashuMeMnemonic);
         await CashuMeDepositViaLightning(cashuMePage, 500, cashuMeConsole);
+        // cashu.me's local-relay NIP-17 subscription can race its Lightning
+        // minting flow in Chromium; fund first, then point outgoing payment
+        // requests at the test relay.
+        await ConfigureCashuMeLocalRelay(cashuMePage);
 
         // bitCaster: create the PaymentRequest.
         await using var bitCasterCtx = await NewIsolatedContextAsync();
@@ -966,8 +992,12 @@ public class InteropTests : IAsyncLifetime
         await using var cashuMeCtx = await NewIsolatedContextAsync();
         var cashuMePage = await cashuMeCtx.NewPageAsync();
         var cashuMeConsole = TestHelpers.AttachConsoleCapture(cashuMePage);
-        await SetupCashuMeWithLocalRelay(cashuMePage, cashuMeMnemonic);
+        await SetupCashuMe(cashuMePage, cashuMeMnemonic);
         await CashuMeDepositViaLightning(cashuMePage, 500, cashuMeConsole);
+        // cashu.me's local-relay NIP-17 subscription can race its Lightning
+        // minting flow in Chromium; fund first, then point outgoing payment
+        // requests at the test relay.
+        await ConfigureCashuMeLocalRelay(cashuMePage);
 
         await using var bitCasterCtx = await NewIsolatedContextAsync();
         var bitCasterPage = await bitCasterCtx.NewPageAsync();

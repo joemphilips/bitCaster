@@ -8,8 +8,8 @@ namespace BitCaster.E2ETest;
 /// PR3 coverage for the order-status poller + NotificationBell wiring.
 ///
 /// The InMemoryMatchingEngine never produces fills on its own, so these
-/// tests use Playwright route interception to return a fabricated
-/// <c>OrderStatusResponse</c> with <c>status = "filled"</c>. That's enough to
+/// tests use Playwright route interception to return fabricated
+/// <c>OrderStatusResponse</c> payloads. That's enough to
 /// exercise the full client pipeline:
 ///
 ///   submit order → pendingTrades store populated → poller GET fires →
@@ -134,6 +134,88 @@ public class NotificationPollerTests : IAsyncLifetime
         // Opening the panel should surface the fill copy.
         await bell.ClickAsync();
         var fillEntry = page.GetByText(new Regex("Order filled.*100 sats.*Yes"));
+        await Assertions.Expect(fillEntry).ToBeVisibleAsync(new() { Timeout = 5_000 });
+    }
+
+    [Fact]
+    public async Task Poller_FiresPartialFillNotification_WhenEngineReportsComplementaryReservation()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+
+        const string orderId = "22222222-2222-2222-2222-222222222222";
+        const string marketId = "deadbeefcafebabe-Yes";
+        const string nsecHex = "0000000000000000000000000000000000000000000000000000000000000001";
+
+        await page.AddInitScriptAsync($@"
+            window.localStorage.setItem('bitcaster-settings', JSON.stringify({{
+                state: {{
+                    nostrSignerMode: 'nsec',
+                    nsecSecret: '{nsecHex}',
+                    relays: []
+                }},
+                version: 0
+            }}));
+            window.localStorage.setItem('bitcaster-pending-trades', JSON.stringify({{
+                state: {{
+                    byOrderId: {{
+                        '{orderId}': {{
+                            orderId: '{orderId}',
+                            marketId: '{marketId}',
+                            ephemeralPubkey: '02' + 'a'.repeat(64),
+                            ephemeralPrivkey: 'b'.repeat(64),
+                            submittedAt: Date.now(),
+                        }}
+                    }}
+                }},
+                version: 0
+            }}));
+        ");
+
+        await page.RouteAsync($"**/api/v1/{marketId}/orders/{orderId}", async route =>
+        {
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    orderId,
+                    marketId,
+                    status = "partially_filled",
+                    remainingAmountSats = 100,
+                    filledAmountSats = 100,
+                    fills = new[]
+                    {
+                        new
+                        {
+                            id = Guid.NewGuid().ToString(),
+                            takerOrderId = Guid.NewGuid().ToString(),
+                            makerOrderId = orderId,
+                            amountSats = 100,
+                            executionPrice = 50,
+                            path = "Complementary",
+                            filledAt = DateTime.UtcNow.ToString("O"),
+                            tradeId = Guid.NewGuid().ToString(),
+                        }
+                    },
+                }),
+            });
+        });
+
+        await TestHelpers.GotoMarketsAsync(page, new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var bell = page.GetByRole(AriaRole.Button, new() { Name = "Notifications" });
+        await Assertions.Expect(bell).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        var badge = bell.GetByText(new Regex(@"^\d+$"));
+        await Assertions.Expect(badge).ToHaveTextAsync("1", new() { Timeout = 15_000 });
+
+        await bell.ClickAsync();
+        var fillEntry = page.GetByText(new Regex("Partial fill.*100 sats filled.*Yes.*100 remaining"));
         await Assertions.Expect(fillEntry).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 

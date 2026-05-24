@@ -1,4 +1,4 @@
-import { FileText, Tag, Calendar, BarChart3, Coins, Loader2 } from 'lucide-react'
+import { FileText, Tag, Calendar, BarChart3, Loader2 } from 'lucide-react'
 import { Link } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import type {
@@ -22,7 +22,6 @@ export function ReviewAndCreate({
   description,
   basicInfo,
   outcomes,
-  liquidity,
   isSubmitting,
   submitError,
   onDescriptionChange,
@@ -141,15 +140,6 @@ export function ReviewAndCreate({
             </div>
           )}
 
-          {liquidity && (
-            <div className="flex items-start gap-3">
-              <Coins className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" strokeWidth={1.5} />
-              <div>
-                <p className="text-xs text-slate-400">{t('marketCreation.initialLiquidityLabel')}</p>
-                <p className="text-sm font-semibold text-white">{t('marketCreation.liquiditySats', { count: liquidity.liquiditySats })}</p>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 

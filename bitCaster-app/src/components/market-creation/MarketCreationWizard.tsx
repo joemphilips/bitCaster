@@ -183,8 +183,10 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
         {currentStep === 5 && draft.stepInitialLiquidity && (
           <InitialLiquidity
             liquiditySats={draft.stepInitialLiquidity.liquiditySats}
-            onLiquiditySatsChange={onLiquiditySatsChange}
-            onNext={onNext}
+            onNext={() => {
+              onLiquiditySatsChange?.(0)
+              onNext?.()
+            }}
           />
         )}
 

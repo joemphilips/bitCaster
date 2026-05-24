@@ -20,6 +20,7 @@ export function MarketDiscovery({
   onMarketTypeChange,
   onVolumeRangeChange,
   onClosingDateChange,
+  onIncludeClosedChange,
   onViewMarket,
   onLoadMore,
   onViewSecondaryMarket,
@@ -31,6 +32,7 @@ export function MarketDiscovery({
   const [selectedMarketTypes, setSelectedMarketTypes] = useState<MarketType[]>([])
   const [volumeRange, setVolumeRange] = useState<VolumeRange>({})
   const [closingInDays, setClosingInDays] = useState<number | undefined>(undefined)
+  const [includeClosed, setIncludeClosed] = useState(false)
 
   const marketMap = useMemo(() => {
     const map = new Map<string, Market>()
@@ -58,6 +60,7 @@ export function MarketDiscovery({
     selectedMarketTypes.length > 0 ? 1 : 0,
     volumeRange.min !== undefined ? 1 : 0,
     closingInDays !== undefined ? 1 : 0,
+    includeClosed ? 1 : 0,
   ].reduce((a, b) => a + b, 0)
 
   useEffect(() => {
@@ -115,6 +118,7 @@ export function MarketDiscovery({
         selectedMarketTypes={selectedMarketTypes}
         volumeRange={volumeRange}
         closingInDays={closingInDays}
+        includeClosed={includeClosed}
         onMarketTypeChange={(types) => {
           setSelectedMarketTypes(types)
           onMarketTypeChange?.(types)
@@ -126,6 +130,10 @@ export function MarketDiscovery({
         onClosingDateChange={(days) => {
           setClosingInDays(days)
           onClosingDateChange?.(days)
+        }}
+        onIncludeClosedChange={(next) => {
+          setIncludeClosed(next)
+          onIncludeClosedChange?.(next)
         }}
       />
 

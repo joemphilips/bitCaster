@@ -14,7 +14,7 @@ const MAX_NOTIFICATIONS = 100
  * render without translating between a separate vocabulary. `resting` never
  * produces a notification, so it's excluded here.
  */
-export type NotificationKind = 'accepted' | 'filled' | 'partially_filled' | 'cancelled'
+export type NotificationKind = 'accepted' | 'matched' | 'filled' | 'partially_filled' | 'cancelled'
 
 export interface Notification {
   /**

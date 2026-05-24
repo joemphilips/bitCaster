@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { X, ChevronUp, ChevronDown } from 'lucide-react'
+import { X, ChevronUp, ChevronDown, Loader2 } from 'lucide-react'
 import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import type {
   MarketDetail,
@@ -30,6 +30,7 @@ interface TradingPanelProps {
     kind: 'info' | 'success' | 'error'
     message: string
   } | null
+  isTradeSubmitting?: boolean
   onTradeSelect?: (selection: TradeSelection) => void
   onTradeClear?: () => void
   onAmountChange?: (amount: number) => void
@@ -37,6 +38,8 @@ interface TradingPanelProps {
   onCommentPost?: (content: string) => void
   onTradeSideChange?: (side: TradeSide) => void
   onOrderTypeChange?: (type: OrderType) => void
+  preflightSplit?: boolean
+  onPreflightSplitChange?: (enabled: boolean) => void
   onLimitPriceChange?: (price: number) => void
   walletReady?: boolean
 }
@@ -481,8 +484,11 @@ export function TradingPanel({
   userHoldings,
   walletBalanceSats,
   tradeSubmitStatus,
+  isTradeSubmitting = false,
   onTradeSideChange,
   onOrderTypeChange,
+  preflightSplit = true,
+  onPreflightSplitChange,
   onLimitPriceChange,
   walletReady = true,
 }: TradingPanelProps) {
@@ -495,6 +501,7 @@ export function TradingPanel({
 
   // Build confirm button text
   const getConfirmText = () => {
+    if (isTradeSubmitting) return t('trade.submittingOrder')
     if (!walletReady) return t('wallet.createWallet')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
@@ -635,6 +642,18 @@ export function TradingPanel({
             />
           )}
 
+          {!isSell && isLimit && (
+            <label className="mb-4 flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={preflightSplit}
+                onChange={(event) => onPreflightSplitChange?.(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span>{t('trade.preflightSplit')}</span>
+            </label>
+          )}
+
           {/* Market Order Preview */}
           {!isLimit && tradePreview && tradeAmount > 0 && (
             <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
@@ -723,14 +742,19 @@ export function TradingPanel({
                 setTradeComment('')
               }
             }}
-            disabled={walletReady && (!tradeAmount || tradeAmount <= 0)}
+            disabled={
+              isTradeSubmitting || (walletReady && (!tradeAmount || tradeAmount <= 0))
+            }
             className={`w-full py-3 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
               !walletReady
                 ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'
                 : 'bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white'
             }`}
           >
-            {getConfirmText()}
+            <span className="inline-flex items-center justify-center gap-2">
+              {isTradeSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+              {getConfirmText()}
+            </span>
           </button>
         </div>
       )}

@@ -37,6 +37,7 @@ public class TradeHub : Hub<ITradeHubClient>
     /// </summary>
     public async Task JoinTrade(Guid tradeId)
     {
+        var caller = NipPubkeyOrAnonymous();
         var record = _trades.TryGet(tradeId)
             ?? throw new HubException("Not authorised to join this trade");
 
@@ -48,8 +49,33 @@ public class TradeHub : Hub<ITradeHubClient>
             record.SellerLocktime,
             record.BuyerLocktime,
             record.MarketId,
-            record.FillAmountSats);
+            record.FillAmountSats,
+            record.OutcomeFaceAmountSats,
+            record.QuotePaymentSats,
+            record.SettlementKind,
+            record.SellerKeepOutcomeSetId,
+            record.SellerLockOutcomeSetId);
+
+        foreach (var message in _trades.GetSwapMessages(tradeId))
+        {
+            if (message.SenderPubkey == caller) continue;
+            await Clients.Caller.SwapMessageReceived(
+                tradeId,
+                message.MessageType,
+                message.Ciphertext);
+        }
     }
+
+    /// <summary>
+    /// Join the per-order notification group used by the production engine to
+    /// wake resting makers when a later taker creates a trade. The mock keeps
+    /// no owner-indexed order notification registry, so this is intentionally
+    /// a no-op group join that lets browser and daemon clients exercise the
+    /// same long-running order subscription path without failing on a missing
+    /// hub method.
+    /// </summary>
+    public Task JoinOrder(string marketId, Guid orderId)
+        => Groups.AddToGroupAsync(Context.ConnectionId, OrderGroupName(orderId));
 
     /// <summary>
     /// Relay an opaque ciphertext to the counterparty. <c>settlement-complete</c>
@@ -73,6 +99,7 @@ public class TradeHub : Hub<ITradeHubClient>
         }
 
         await Clients.OthersInGroup(group).SwapMessageReceived(tradeId, messageType, ciphertext);
+        _trades.RecordSwapMessage(tradeId, caller, messageType, ciphertext);
 
         // Flip to Settling once the buyer has answered with their locked proofs
         // — both clients then run their claim branch in `useTradeSettlement`.
@@ -90,7 +117,10 @@ public class TradeHub : Hub<ITradeHubClient>
     }
 
     private string NipPubkeyOrAnonymous()
-        => Nip98PubkeyExtractor.TryExtract(Context.GetHttpContext()?.Request!) ?? "anonymous";
+        => Nip98PubkeyExtractor.TryExtract(Context.GetHttpContext()?.Request!)
+           ?? $"connection:{Context.ConnectionId}";
 
     internal static string GroupName(Guid tradeId) => $"trade-{tradeId}";
+
+    internal static string OrderGroupName(Guid orderId) => $"order-{orderId}";
 }

@@ -1,9 +1,14 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { InvoiceDisplay } from '../InvoiceDisplay'
 import { TokenDisplay } from '../TokenDisplay'
 import { MeltConfirmation } from '../MeltConfirmation'
+import { SuccessView } from '../SuccessView'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('InvoiceDisplay', () => {
   const bolt11 = 'lnbc10u1pjexampleinvoice'
@@ -233,6 +238,33 @@ describe('MeltConfirmation', () => {
     )
     const buttons = screen.getAllByRole('button')
     await userEvent.click(buttons[0])
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+})
+
+describe('SuccessView', () => {
+  it('auto-advances after a fixed 3 seconds and renders the countdown bar', () => {
+    vi.useFakeTimers()
+    const onClose = vi.fn()
+
+    render(<SuccessView amountSats={1000} onClose={onClose} />)
+
+    expect(screen.getByRole('progressbar', { name: 'Auto-advance countdown' })).toBeInTheDocument()
+    expect(screen.getByTestId('auto-advance-progress')).toHaveStyle({ width: '100%' })
+
+    act(() => {
+      vi.advanceTimersByTime(1500)
+    })
+    expect(onClose).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(1499)
+    })
+    expect(onClose).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
     expect(onClose).toHaveBeenCalledOnce()
   })
 })

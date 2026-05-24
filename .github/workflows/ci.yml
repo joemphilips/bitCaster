@@ -35,6 +35,8 @@ jobs:
         working-directory: bitCaster-app
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -73,6 +75,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm ci
 
       - name: Check if CDK has changes
         id: cdk-check
@@ -176,7 +179,7 @@ jobs:
 
       - name: Start frontend
         run: |
-          cd bitCaster-app && npm ci && npx vite --host &
+          cd bitCaster-app && npx vite --host &
           echo "Waiting for frontend..."
           for i in $(seq 1 30); do
             curl -sf http://localhost:5273 && exit 0

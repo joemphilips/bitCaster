@@ -90,6 +90,9 @@ export interface ActiveSwap {
   outcomeFaceAmountSats: number | null
   /** Regular sats the buyer locks. */
   quotePaymentSats: number | null
+  settlementKind: string | null
+  sellerKeepOutcomeSetId: string | null
+  sellerLockOutcomeSetId: string | null
   step: SwapStep
   messages: SwapMessages
   sellerState: SellerProtocolState | null
@@ -117,6 +120,9 @@ interface ActiveSwapsState {
     settlementAmounts?: {
       outcomeFaceAmountSats?: number
       quotePaymentSats?: number
+      settlementKind?: string | null
+      sellerKeepOutcomeSetId?: string | null
+      sellerLockOutcomeSetId?: string | null
     },
   ) => void
   recordMessage: (
@@ -165,6 +171,9 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
         buyerLocktime: null,
         outcomeFaceAmountSats: null,
         quotePaymentSats: null,
+        settlementKind: null,
+        sellerKeepOutcomeSetId: null,
+        sellerLockOutcomeSetId: null,
         step: 'awaiting-trade-created',
         messages: {},
         sellerState: null,
@@ -201,6 +210,14 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
               existing.outcomeFaceAmountSats,
             quotePaymentSats:
               settlementAmounts?.quotePaymentSats ?? existing.quotePaymentSats,
+            settlementKind:
+              settlementAmounts?.settlementKind ?? existing.settlementKind,
+            sellerKeepOutcomeSetId:
+              settlementAmounts?.sellerKeepOutcomeSetId ??
+              existing.sellerKeepOutcomeSetId,
+            sellerLockOutcomeSetId:
+              settlementAmounts?.sellerLockOutcomeSetId ??
+              existing.sellerLockOutcomeSetId,
             step:
               existing.step === 'awaiting-trade-created'
                 ? 'awaiting-counterparty'

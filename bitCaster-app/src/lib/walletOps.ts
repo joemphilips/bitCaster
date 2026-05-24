@@ -4,6 +4,7 @@ import { deriveNostrKeyPair, getNostrNprofile } from '@/lib/nip17'
 import { normalizeUrl } from '@/lib/url'
 import { useSettingsStore } from '@/stores/settings'
 import { useWalletStore, type StoredMint } from '@/stores/wallet'
+import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 
 export type WalletIngressSource = 'paste' | 'scan' | 'nip17'
 
@@ -113,7 +114,7 @@ export async function ingressReceiveCashuToken(
   return {
     ...registration,
     proofs,
-    amountSats: proofs.reduce((sum, p) => sum + p.amount, 0),
+    amountSats: proofs.reduce((sum, p) => sum + amountToNumber(p.amount), 0),
   }
 }
 

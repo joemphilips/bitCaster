@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Amount } from '@cashu/cashu-ts'
 
 // Mock Dexie before importing the module under test — we don't need a real
 // IndexedDB (no polyfill installed in the jsdom harness), just an object
@@ -6,10 +7,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 type AnyProof = {
   secret: string
   mintUrl: string
-  amount: number
+  amount: unknown
   id?: string
   C?: string
   receivedAt?: number
+  reservedBy?: string
   conditionId?: string
   condition_id?: string
   outcomeCollection?: string
@@ -27,14 +29,37 @@ vi.mock('dexie', () => {
     async bulkDelete(keys: string[]): Promise<void> {
       for (const k of keys) store.delete(k)
     }
+    async bulkGet(keys: string[]): Promise<Array<AnyProof | undefined>> {
+      return keys.map((key) => store.get(key))
+    }
     async toArray(): Promise<AnyProof[]> {
       return Array.from(store.values())
     }
-    where(_field: string) {
+    filter(predicate: (row: AnyProof) => boolean) {
       return {
-        equals: (v: string) => ({
+        toArray: async () => Array.from(store.values()).filter(predicate),
+      }
+    }
+    where(field: string) {
+      return {
+        equals: (v: string | [string, string, string]) => ({
           toArray: async () =>
-            Array.from(store.values()).filter((r) => r.mintUrl === v),
+            Array.from(store.values()).filter((r) => {
+              if (field === 'mintUrl') return r.mintUrl === v
+              if (field === '[mintUrl+conditionId+outcomeCollection]') {
+                const [mintUrl, conditionId, outcomeCollection] = v as [
+                  string,
+                  string,
+                  string,
+                ]
+                return (
+                  r.mintUrl === mintUrl &&
+                  r.conditionId === conditionId &&
+                  r.outcomeCollection === outcomeCollection
+                )
+              }
+              return false
+            }),
         }),
       }
     }
@@ -79,7 +104,11 @@ import {
   getBaseProofs,
   getOutcomeProofs,
   getProofs,
+  getReservedProofs,
   normalizeStoredMintUrls,
+  releaseProofReservation,
+  releaseProofReservationsBySecret,
+  reserveProofs,
 } from '../proof-db'
 
 beforeEach(() => {
@@ -92,7 +121,7 @@ describe('proof-db normalization', () => {
     await addProofs([
       {
         secret: 's1',
-        amount: 100,
+        amount: Amount.from(100),
         id: 'id1',
         C: 'C1',
         mintUrl: 'http://mint.example/',
@@ -103,11 +132,35 @@ describe('proof-db normalization', () => {
     expect(rows[0].mintUrl).toBe('http://mint.example')
   })
 
+  it('normalizes Cashu Amount values to numbers on write', async () => {
+    await addProofs([
+      {
+        secret: 's1',
+        amount: Amount.from(100),
+        id: 'id1',
+        C: 'C1',
+        mintUrl: 'http://mint.example',
+      },
+      {
+        secret: 's2',
+        amount: { value: 110n },
+        id: 'id2',
+        C: 'C2',
+        mintUrl: 'http://mint.example',
+      } as never,
+    ])
+
+    const rows = await getProofs('http://mint.example')
+
+    expect(rows.map((proof) => proof.amount)).toEqual([100, 110])
+    expect(Array.from(store.values()).map((proof) => proof.amount)).toEqual([100, 110])
+  })
+
   it('getProofs also normalizes the query argument', async () => {
     await addProofs([
       {
         secret: 's1',
-        amount: 100,
+        amount: Amount.from(100),
         id: 'id1',
         C: 'C1',
         mintUrl: 'http://mint.example',
@@ -121,7 +174,7 @@ describe('proof-db normalization', () => {
     // Seed directly so we bypass the write-time normalizer.
     store.set('legacy', {
       secret: 'legacy',
-      amount: 500,
+      amount: Amount.from(500),
       id: 'idL',
       C: 'CL',
       mintUrl: 'https://mint.staging//',
@@ -134,7 +187,7 @@ describe('proof-db normalization', () => {
 
   it('migration is a no-op when all rows are already normalized', async () => {
     await addProofs([
-      { secret: 's1', amount: 100, id: 'id1', C: 'C1', mintUrl: 'http://m' },
+      { secret: 's1', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m' },
     ])
     const changed = await normalizeStoredMintUrls()
     expect(changed).toBe(0)
@@ -142,10 +195,10 @@ describe('proof-db normalization', () => {
 
   it('getBaseProofs excludes CTF proofs from spendable ecash balances', async () => {
     await addProofs([
-      { secret: 'base', amount: 100, id: 'id1', C: 'C1', mintUrl: 'http://m' },
+      { secret: 'base', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m' },
       {
         secret: 'ctf',
-        amount: 200,
+        amount: Amount.from(200),
         id: 'id2',
         C: 'C2',
         mintUrl: 'http://m',
@@ -162,7 +215,7 @@ describe('proof-db normalization', () => {
     await addProofs([
       {
         secret: 'yes',
-        amount: 100,
+        amount: Amount.from(100),
         id: 'id1',
         C: 'C1',
         mintUrl: 'http://m',
@@ -171,18 +224,72 @@ describe('proof-db normalization', () => {
       },
       {
         secret: 'no',
-        amount: 100,
+        amount: Amount.from(100),
         id: 'id2',
         C: 'C2',
         mintUrl: 'http://m',
         condition_id: 'cond',
         outcome_collection: 'NO',
       } as never,
-      { secret: 'base', amount: 100, id: 'id3', C: 'C3', mintUrl: 'http://m' },
+      { secret: 'base', amount: Amount.from(100), id: 'id3', C: 'C3', mintUrl: 'http://m' },
     ])
 
     const rows = await getOutcomeProofs('http://m', 'cond', 'YES')
 
     expect(rows.map((r) => r.secret)).toEqual(['yes'])
+  })
+
+  it('hides reserved proofs from spendable base and outcome queries', async () => {
+    await addProofs([
+      { secret: 'base-free', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m' },
+      { secret: 'base-reserved', amount: Amount.from(100), id: 'id2', C: 'C2', mintUrl: 'http://m' },
+      {
+        secret: 'yes-free',
+        amount: Amount.from(100),
+        id: 'id3',
+        C: 'C3',
+        mintUrl: 'http://m',
+        conditionId: 'cond',
+        outcomeCollection: 'YES',
+      },
+      {
+        secret: 'yes-reserved',
+        amount: Amount.from(100),
+        id: 'id4',
+        C: 'C4',
+        mintUrl: 'http://m',
+        conditionId: 'cond',
+        outcomeCollection: 'YES',
+      },
+    ])
+    await reserveProofs(['base-reserved', 'yes-reserved'], 'order-1')
+
+    expect((await getBaseProofs('http://m')).map((r) => r.secret)).toEqual([
+      'base-free',
+    ])
+    expect((await getOutcomeProofs('http://m', 'cond', 'YES')).map((r) => r.secret)).toEqual([
+      'yes-free',
+    ])
+    expect((await getReservedProofs('order-1')).map((r) => r.secret)).toEqual([
+      'base-reserved',
+      'yes-reserved',
+    ])
+  })
+
+  it('releases reserved proofs by owner or selected secret', async () => {
+    await addProofs([
+      { secret: 's1', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m' },
+      { secret: 's2', amount: Amount.from(100), id: 'id2', C: 'C2', mintUrl: 'http://m' },
+    ])
+    await reserveProofs(['s1', 's2'], 'order-1')
+    await releaseProofReservationsBySecret(['s1'])
+
+    expect((await getProofs('http://m')).map((r) => r.secret)).toEqual(['s1'])
+
+    await releaseProofReservation('order-1')
+    expect((await getProofs('http://m')).map((r) => r.secret)).toEqual([
+      's1',
+      's2',
+    ])
   })
 })

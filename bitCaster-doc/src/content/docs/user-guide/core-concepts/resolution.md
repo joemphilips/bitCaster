@@ -36,9 +36,11 @@ bitCaster's DLC approach takes the opposite stance: make it clear who is respons
 
 In bitCaster, the market creator usually acts as the DLC oracle using their [Nostr](https://nostr.com/) private key. This means that **if the oracle lies or returns an incorrect answer, accountability attaches to that Nostr identity**. Reputation information accumulates on the Nostr network, making it easier to audit who made which attestations over time.
 
+Publishing through Nostr is useful for public auditability, but it is not required for bitCaster to close a market. The creator can also submit the signed oracle attestation directly to the matching engine. The engine verifies the DLC oracle signature against the market's registered oracle key and then closes the market for trading. Relays are therefore transport, not trust anchors.
+
 ## After Resolution
 
-Once the oracle publishes its attestation, the mint processes the result and the market itself closes. From that moment on, no new orders or deposits are accepted.
+Once the oracle attestation is published or submitted directly, the mint processes the result and the market itself closes. From that moment on, no new orders or deposits are accepted.
 
 For example, in a market with YES/NO outcomes:
 

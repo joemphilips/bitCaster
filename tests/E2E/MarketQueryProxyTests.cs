@@ -58,6 +58,9 @@ public class MarketQueryProxyTests : IAsyncLifetime
             createdAt = "2026-01-01T00:00:00Z",
             volume24hSats = 0,
             volume30dSats = 0,
+            liquiditySats = 25_000L,
+            traderCount = 3,
+            volumeLifetimeSats = 50_000L,
             lastTradedPrice = (double?)null,
             categoryTags = m.CategoryTags,
             lastSuccessfulRefreshAt = "2026-05-02T09:58:00Z",
@@ -117,6 +120,15 @@ public class MarketQueryProxyTests : IAsyncLifetime
         {
             var marketA = page.GetByText("Engine-routed Market A");
             await Assertions.Expect(marketA).ToBeVisibleAsync(new() { Timeout = 10_000 });
+            await Assertions.Expect(page.Locator("[aria-label='Volume'], [title='Volume']").First)
+                .ToBeVisibleAsync(new() { Timeout = 10_000 });
+            await Assertions.Expect(page.Locator("[aria-label='Liquidity'], [title='Liquidity']").First)
+                .ToBeVisibleAsync(new() { Timeout = 10_000 });
+            await Assertions.Expect(page.Locator("[aria-label='Traders'], [title='Traders']").First)
+                .ToBeVisibleAsync(new() { Timeout = 10_000 });
+            await Assertions.Expect(page.GetByText(new System.Text.RegularExpressions.Regex("^Volume$"))).ToHaveCountAsync(0);
+            await Assertions.Expect(page.GetByText(new System.Text.RegularExpressions.Regex("^Liquidity$"))).ToHaveCountAsync(0);
+            await Assertions.Expect(page.GetByText(new System.Text.RegularExpressions.Regex("^Traders$"))).ToHaveCountAsync(0);
             Assert.NotEmpty(queryUrls);
             // Detail-page mintd contract is intact, but we never navigated to
             // the detail page — so the markets-list flow MUST NOT have hit
@@ -326,6 +338,9 @@ public class MarketQueryProxyTests : IAsyncLifetime
                     createdAt = "2026-01-01T00:00:00Z",
                     volume24hSats = 0,
                     volume30dSats = 0,
+                    liquiditySats = 25_000L,
+                    traderCount = 3,
+                    volumeLifetimeSats = 50_000L,
                     lastTradedPrice = (double?)null,
                     categoryTags = new[] { "crypto" },
                     lastSuccessfulRefreshAt = "2026-05-02T09:58:00Z",

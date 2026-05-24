@@ -9,10 +9,12 @@ const {
   mockUseCreatorDashboardState,
   mockNavigate,
   mockSignEnumAttestation,
+  mockSubmitOracleAttestation,
 } = vi.hoisted(() => ({
   mockUseCreatorDashboardState: vi.fn(),
   mockNavigate: vi.fn(),
   mockSignEnumAttestation: vi.fn(),
+  mockSubmitOracleAttestation: vi.fn(),
 }))
 
 vi.mock('@/hooks/useCreatorDashboardState', () => ({
@@ -24,9 +26,17 @@ vi.mock('react-router', async () => {
   return { ...actual, useNavigate: () => mockNavigate }
 })
 
-vi.mock('@/lib/kormir', () => ({
-  signEnumAttestation: (...args: unknown[]) => mockSignEnumAttestation(...args),
+vi.mock('@/lib/oracleAttestation', () => ({
+  signEnumOracleAttestationEvent: (...args: unknown[]) => mockSignEnumAttestation(...args),
 }))
+
+vi.mock('@/lib/markets', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/markets')>()
+  return {
+    ...actual,
+    submitOracleAttestation: (...args: unknown[]) => mockSubmitOracleAttestation(...args),
+  }
+})
 
 import { CreatorDashboard } from '../CreatorDashboard'
 import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
@@ -56,11 +66,21 @@ beforeEach(() => {
   mockNavigate.mockReset()
   mockUseCreatorDashboardState.mockReset()
   mockSignEnumAttestation.mockReset()
-  mockSignEnumAttestation.mockResolvedValue('attestation-hex')
+  mockSignEnumAttestation.mockReturnValue({
+    id: 'event-id',
+    pubkey: 'a'.repeat(64),
+    createdAt: 1,
+    kind: 89,
+    content: 'attestation-hex',
+    sig: 'b'.repeat(128),
+  })
+  mockSubmitOracleAttestation.mockReset()
+  mockSubmitOracleAttestation.mockResolvedValue({ result: 'Closed' })
   vi.stubGlobal('confirm', vi.fn(() => true))
   useCreatorMarketsStore.setState({ markets: [] })
   useSettingsStore.setState({
     nostrSignerMode: 'none',
+    nsecSecret: null,
     relays: [],
   })
 })
@@ -205,6 +225,7 @@ describe('CreatorDashboard', () => {
     ]
     useSettingsStore.setState({
       nostrSignerMode: 'nsec',
+      nsecSecret: 'nsec1test',
       relays: [{ url: 'wss://relay.example.test', connectionStatus: 'connected' }],
     })
     useCreatorMarketsStore.setState({
@@ -235,10 +256,18 @@ describe('CreatorDashboard', () => {
     await user.click(screen.getByRole('button', { name: /close market/i }))
 
     expect(mockSignEnumAttestation).toHaveBeenCalledWith(
-      ['wss://relay.example.test'],
+      'nsec1test',
       'will_btc_hit_150k_abcd',
       'Yes',
     )
+    expect(mockSubmitOracleAttestation).toHaveBeenCalledWith('a'.repeat(64), {
+      id: 'event-id',
+      pubkey: 'a'.repeat(64),
+      createdAt: 1,
+      kind: 89,
+      content: 'attestation-hex',
+      sig: 'b'.repeat(128),
+    })
     expect(useCreatorMarketsStore.getState().markets[0].oracle).toMatchObject({
       attestationHex: 'attestation-hex',
       attestedOutcome: 'Yes',

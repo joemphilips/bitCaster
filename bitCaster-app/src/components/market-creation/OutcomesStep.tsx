@@ -1,4 +1,4 @@
-import { Plus, Trash2, Upload } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { WizardOutcome, OutcomeType } from '@/types/market-creation'
 import { probabilitySumValid, allProbabilitiesInRange } from '@/hooks/useMarketCreationState'
@@ -254,11 +254,7 @@ export function OutcomesStep({
         {outcomes?.map((outcome) => (
           <div key={outcome.id} className="p-4 rounded-lg bg-slate-900 border border-slate-700">
             <div className="flex items-start gap-3">
-              <button className="w-12 h-12 shrink-0 rounded-lg border border-dashed border-slate-600 bg-slate-800 flex items-center justify-center text-slate-500 hover:border-slate-500 transition-colors">
-                <Upload className="w-4 h-4" strokeWidth={1.5} />
-              </button>
-
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 <input
                   type="text"
                   value={outcome.label}

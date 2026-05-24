@@ -90,11 +90,242 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    /// <summary>
+    /// Lifecycle status of a fill-shaped order execution row. `Matched` means a DCB reservation exists and atomic-swap settlement is still pending; `Filled` means settlement committed; `Released` means a reservation failed or timed out and no longer consumes order depth.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum FillStatus
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Matched")]
+        Matched = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Filled")]
+        Filled = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Released")]
+        Released = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OracleNostrEvent
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OracleNostrEvent(string @content, long @createdAt, string @id, OracleNostrEventKind @kind, string @pubkey, string @sig)
+        {
+            this.Id = @id;
+            this.Pubkey = @pubkey;
+            this.CreatedAt = @createdAt;
+            this.Kind = @kind;
+            this.Content = @content;
+            this.Sig = @sig;
+        }
+
+        /// <summary>
+        /// NIP-01 event id of the kind-89 attestation.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("id")]
+        public string Id { get; }
+
+        /// <summary>
+        /// X-only BIP-340/Nostr public key of the oracle.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("pubkey")]
+        public string Pubkey { get; }
+
+        /// <summary>
+        /// NIP-01 created_at timestamp in Unix seconds.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
+        public long CreatedAt { get; }
+
+        /// <summary>
+        /// Nostr event kind for DLC oracle attestations.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("kind")]
+        public OracleNostrEventKind Kind { get; }
+
+        /// <summary>
+        /// Base64-encoded kormir/rust-dlc oracle_attestation payload.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("content")]
+        public string Content { get; }
+
+        /// <summary>
+        /// BIP-340 Schnorr signature over the NIP-01 event id.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("sig")]
+        public string Sig { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OracleAttestationResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OracleAttestationResponse(OracleAttestationResponseResult @result)
+        {
+            this.Result = @result;
+        }
+
+        /// <summary>
+        /// Engine processing result for the submitted attestation.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("result")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OracleAttestationResponseResult>))]
+        public OracleAttestationResponseResult Result { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ConditionAttestationResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ConditionAttestationResponse(string @attestedOutcome, string @conditionId, OracleWitness @oracleWitness)
+        {
+            this.ConditionId = @conditionId;
+            this.AttestedOutcome = @attestedOutcome;
+            this.OracleWitness = @oracleWitness;
+        }
+
+        /// <summary>
+        /// bitCaster condition id for the closed market.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
+        public string ConditionId { get; }
+
+        /// <summary>
+        /// The single outcome attested by the DLC oracle.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("attestedOutcome")]
+        public string AttestedOutcome { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("oracleWitness")]
+        public OracleWitness OracleWitness { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ConditionAttestationProblem
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ConditionAttestationProblem(ConditionAttestationProblemResult @result)
+        {
+            this.Result = @result;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("result")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<ConditionAttestationProblemResult>))]
+        public ConditionAttestationProblemResult Result { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OracleWitness
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OracleWitness(System.Collections.Generic.List<OracleWitnessSig> @oracle_sigs)
+        {
+            this.Oracle_sigs = @oracle_sigs;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("oracle_sigs")]
+        public System.Collections.Generic.List<OracleWitnessSig> Oracle_sigs { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OracleWitnessSig
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OracleWitnessSig(string @oracle_pubkey, string @oracle_sig, string @outcome)
+        {
+            this.Oracle_pubkey = @oracle_pubkey;
+            this.Oracle_sig = @oracle_sig;
+            this.Outcome = @outcome;
+        }
+
+        /// <summary>
+        /// X-only BIP-340 oracle public key.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("oracle_pubkey")]
+        public string Oracle_pubkey { get; }
+
+        /// <summary>
+        /// Oracle signature over the attested outcome.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("oracle_sig")]
+        public string Oracle_sig { get; }
+
+        /// <summary>
+        /// Outcome string signed by the oracle.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcome")]
+        public string Outcome { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSats, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, MatchPath @path, System.Guid @takerOrderId, System.Guid? @tradeId)
+        public Fill(long @amountSats, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, MatchPath @path, FillStatus @status, System.Guid @takerOrderId, System.Guid? @tradeId)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
@@ -102,6 +333,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.AmountSats = @amountSats;
             this.ExecutionPrice = @executionPrice;
             this.Path = @path;
+            this.Status = @status;
             this.FilledAt = @filledAt;
             this.TradeId = @tradeId;
             this.MakerEphemeralPubkey = @makerEphemeralPubkey;
@@ -126,7 +358,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid MakerOrderId { get; }
 
         /// <summary>
-        /// Filled conditional-token face amount. For direct atomic swaps the buyer's quote payment is derived from this amount and the execution price.
+        /// Conditional-token face amount matched for settlement. DCB complementary reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
@@ -139,6 +371,10 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<MatchPath>))]
         public MatchPath Path { get; }
 
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<FillStatus>))]
+        public FillStatus Status { get; }
+
         /// <summary>
         /// Timestamp when this fill was executed.
         /// </summary>
@@ -146,7 +382,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset FilledAt { get; }
 
         /// <summary>
-        /// Atomic-swap trade session identifier for this fill. Present on direct-match fills that require TradeHub settlement; omitted on complementary fills and legacy fills that do not have a corresponding TradeHub session.
+        /// Atomic-swap trade session identifier for this fill or DCB reservation. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
@@ -254,7 +490,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string MarketId { get; }
 
         /// <summary>
-        /// One of: "resting" (on book, unmatched), "partially_filled", "filled", "cancelled".
+        /// One of: "resting" (on book, unmatched), "matched" (reserved for atomic-swap settlement), "partially_filled", "filled", "cancelled".
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("status")]
@@ -263,11 +499,16 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSats")]
         public long RemainingAmountSats { get; }
 
+        /// <summary>
+        /// Conditional-token face amount already consumed by fills or active DCB complementary reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake.
+        /// <br/>
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("filledAmountSats")]
         public long FilledAmountSats { get; }
 
         /// <summary>
-        /// All fills produced against this order so far.
+        /// All fills and active DCB complementary reservation handles produced against this order so far.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("fills")]
         public System.Collections.Generic.List<Fill> Fills { get; }
@@ -403,7 +644,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid OrderId { get; }
 
         /// <summary>
-        /// One of: "filled", "partially_filled", "resting", "cancelled".
+        /// One of: "filled", "matched" (reserved for atomic-swap settlement), "partially_filled", "resting", "cancelled".
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("status")]
@@ -555,7 +796,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
+        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
@@ -563,6 +804,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.OutcomeType = @outcomeType;
             this.LiquiditySats = @liquiditySats;
             this.CategoryTags = @categoryTags;
+            this.OracleAnnouncementHex = @oracleAnnouncementHex;
         }
 
         /// <summary>
@@ -602,6 +844,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("categoryTags")]
         public System.Collections.Generic.List<string> CategoryTags { get; }
+
+        /// <summary>
+        /// Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("oracleAnnouncementHex")]
+        public string OracleAnnouncementHex { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1081,18 +1330,24 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(System.Collections.Generic.List<string> @categoryTags, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSats, long @volume30dSats)
+        public MarketCatalogueEntry(System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySats, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, int @traderCount, long @volume24hSats, long @volume30dSats, long @volumeLifetimeSats)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
             this.Title = @title;
+            this.Description = @description;
             this.ThumbnailUrl = @thumbnailUrl;
             this.CreatorPubkey = @creatorPubkey;
             this.Deadline = @deadline;
+            this.ClosedAt = @closedAt;
+            this.FinalOutcome = @finalOutcome;
             this.State = @state;
             this.CreatedAt = @createdAt;
             this.Volume24hSats = @volume24hSats;
             this.Volume30dSats = @volume30dSats;
+            this.LiquiditySats = @liquiditySats;
+            this.TraderCount = @traderCount;
+            this.VolumeLifetimeSats = @volumeLifetimeSats;
             this.LastTradedPrice = @lastTradedPrice;
             this.CategoryTags = @categoryTags;
             this.LastSuccessfulRefreshAt = @lastSuccessfulRefreshAt;
@@ -1120,6 +1375,13 @@ namespace BitCaster.MatchingEngine.Contracts
         public string Title { get; }
 
         /// <summary>
+        /// Detailed market description supplied by the creator at registration time. Market detail pages render this as the resolution criteria text.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("description")]
+        public string Description { get; }
+
+        /// <summary>
         /// Optional thumbnail URL. Null when no thumbnail was uploaded.
         /// <br/>
         /// </summary>
@@ -1139,6 +1401,20 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("deadline")]
         public System.DateTimeOffset? Deadline { get; }
+
+        /// <summary>
+        /// Engine-side close timestamp. Null while the market is open. Closed market detail pages use this value as the resolution date; deadline remains the scheduled oracle maturity time.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("closedAt")]
+        public System.DateTimeOffset? ClosedAt { get; }
+
+        /// <summary>
+        /// Winning outcome known to the engine after an oracle attestation close. Null for deadline-only closes or markets that have not yet resolved.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("finalOutcome")]
+        public string FinalOutcome { get; }
 
         /// <summary>
         /// Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
@@ -1168,6 +1444,27 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volume30dSats")]
         public long Volume30dSats { get; }
+
+        /// <summary>
+        /// Total face amount in sats of currently-resting orders across the market's order books.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
+        public long LiquiditySats { get; }
+
+        /// <summary>
+        /// Number of distinct traders that have settled a trade in this market.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("traderCount")]
+        public int TraderCount { get; }
+
+        /// <summary>
+        /// Cumulative settled collateral face amount of all fills in the market's history.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("volumeLifetimeSats")]
+        public long VolumeLifetimeSats { get; }
 
         /// <summary>
         /// Most recent execution price (probability in `[1, 99]`), null if the market has never traded.
@@ -1329,6 +1626,56 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"New")]
         New = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum OracleNostrEventKind
+    {
+
+        _89 = 89,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum OracleAttestationResponseResult
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Closed")]
+        Closed = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"AlreadyClosed")]
+        AlreadyClosed = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"DuplicateReplay")]
+        DuplicateReplay = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"WrongKind")]
+        WrongKind = 3,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"InvalidSignature")]
+        InvalidSignature = 4,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"InvalidPayload")]
+        InvalidPayload = 5,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"NoMatchingMarket")]
+        NoMatchingMarket = 6,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum ConditionAttestationProblemResult
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"InvalidConditionId")]
+        InvalidConditionId = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"MarketNotFound")]
+        MarketNotFound = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"AttestationNotAvailable")]
+        AttestationNotAvailable = 2,
 
     }
 

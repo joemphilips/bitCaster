@@ -26,15 +26,17 @@ The user-facing progressive web app (PWA). It runs entirely in your browser and 
 
 The matching engine maintains a central limit order book (CLOB) for each market. It matches buy and sell orders and broadcasts real-time price updates. It also connects to the Nostr oracle network, watches the oracle announcements and attestations relevant to registered markets, verifies them, and coordinates market closure when an attestation arrives.
 
+For everyday market pages, the app reads market state, deadlines, outcomes, and order-book data from the matching engine first. Treat that as a fast cache of the mint's condition data: it is what keeps list and detail pages responsive. When a user performs a critical action that can move funds, the app or protocol must still rely on mint-enforced checks or a fresh mint comparison before the action becomes final.
+
 This is the only centralized component — it exists because order matching is inherently a coordination problem that benefits from a single sequencer.
 
 ## Oracle Network
 
-Oracles publish announcements and attestations to Nostr relays. Those relays act as an untrusted public network: they can transport, cache, or withhold events, but they cannot make an invalid announcement or attestation valid. The matching engine treats the network as a source of signed DLC oracle data and verifies signatures before trusting anything it receives.
+Oracles can publish announcements and attestations to Nostr relays. Those relays act as an untrusted public network: they can transport, cache, or withhold events, but they cannot make an invalid announcement or attestation valid. bitCaster treats Nostr as a discovery and audit channel, not a trust anchor; signed DLC oracle data can also be submitted directly to the mint or matching engine and is verified before use.
 
 ## Oracle
 
-An oracle is an entity from [Discreet Log Contracts (DLC)](https://www.dci.mit.edu/projects/discreet-log-contracts) that announces real-world events and later attests to their outcomes. Oracles publish announcements and attestations as Nostr events, making them publicly verifiable. Any bitCaster App can read oracle announcements directly from the Nostr network — no special server is needed.
+An oracle is an entity from [Discreet Log Contracts (DLC)](https://www.dci.mit.edu/projects/discreet-log-contracts) that announces real-world events and later attests to their outcomes. Oracles may publish announcements and attestations as Nostr events, making them publicly discoverable and auditable. Any bitCaster App can read oracle announcements directly from the Nostr network — no special server is needed.
 
 Importantly, oracles are completely independent of bitCaster — they don't need to know about the app or ecash at all. They simply attest to real-world facts using the DLC protocol.
 

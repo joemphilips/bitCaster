@@ -86,6 +86,36 @@ message also carries the quote payment separately. For example, a 1,000-face-sat
 YES fill at price 37 means Alice locks 1,000 face sats of YES and Bob locks 370
 regular sats. Implementations must not use one amount for both swap legs.
 
+For complementary matches, the order book first creates a reservation, not a
+final fill. The public order status exposes that row as `status: matched` with a
+`tradeId`; once both parties complete the atomic swap the reservation commits
+and becomes `status: filled`. If the settlement timeout expires first, the
+engine fails the trade and releases the reservation as `status: released`.
+Release is time-in-force aware: GTC/GTD quantity may return to the book under
+the same order-level ephemeral key because reuse across partial fills of the
+same order is allowed, while FAK/FOK orders are cancelled instead of resting
+again. The timeout must be scheduled after the seller-side locktime plus a
+grace window; timing out at the buyer-side locktime can abort a swap that is
+still valid on the protocol timeline.
+
+For a resting buy that can become the complementary maker, clients SHOULD
+pre-flight split before order submission. The maker selects regular sats,
+submits a CTF split to the mint for the complete outcome set, stores the
+resulting outcome proofs in local wallet state, and reserves both the keep side
+and the complementary lock side under the order. If the mint is unavailable or
+the client cannot reserve enough collateral within the user-visible submission
+window, the client SHOULD fail submission or cancel/release the order path
+rather than publish a maker order that cannot settle. Implementations may expose
+an explicit opt-out, such as `--no-preflight-split`, but then they must reserve
+regular collateral and fail closed if it is unavailable when the match arrives.
+
+Pre-flight split is a wallet-local safety mechanism, not a different wire
+protocol. When a complementary match arrives, the maker still acts as Alice in
+the seller branch below: the reserved complementary outcome proofs are locked to
+the taker, while the maker's kept outcome proofs become visible only for the
+matched quantity. For partial fills, remaining pre-split proofs must stay
+reserved for the unfilled order quantity.
+
 ### Step 3: ECDH Shared Secret
 
 Both parties independently compute the shared secret:
@@ -260,6 +290,32 @@ POST /v1/swap
 
 The mint verifies and processes the swap. Bob now holds fresh YES conditional tokens.
 
+## Market Close and Position Claim
+
+The trading swap above moves conditional tokens between users while the market
+is open. After the oracle resolves the market, winning conditional tokens are
+redeemed through the mint, not through the matching engine.
+
+1. A signed DLC oracle attestation closes the market. Relay publication is
+   optional; a user may submit the signed attestation directly to the engine.
+2. The engine verifies the attestation against the market's registered oracle
+   and stores the verified oracle witness as a cache for that condition.
+3. Portfolio views classify local CTF proofs as Active or Closed by joining the
+   wallet-visible proofs with the engine's market state and final outcome.
+4. A winning position claim sends the local CTF proofs plus the oracle witness
+   to the mint's `POST /v1/redeem_outcome` endpoint. The mint verifies the
+   witness and returns regular ecash proofs. Losing outcome proofs redeem to
+   zero and remain closed.
+
+For categorical markets, a held outcome collection wins when it contains the
+attested outcome. For example, if the outcomes are `A`, `B`, `C` and the oracle
+attests `B`, then `B` and `B|C` are winning collections while `A` and `A|C` are
+losing collections.
+
+The engine's cached witness is not a payout authority. A buggy or malicious
+engine response cannot make losing tokens redeemable because the mint verifies
+the oracle signature and condition keyset again during `redeem_outcome`.
+
 ## Security Analysis
 
 ### Atomicity
@@ -346,7 +402,9 @@ The matching engine sees order flow and could trade ahead of users. Mitigation: 
 
 An attacker can place orders, get matched, and never complete — locking the counterparty's tokens until the locktime expires. Mitigations:
 
-- Short locktimes (under 30 seconds — since this protocol only involves ecash swaps with no Lightning routing delays, locktimes can be very aggressive)
+- Short locktimes and engine-owned settlement timeout reminders. A timed-out
+  reservation is released and the consumed orders are cancelled rather than
+  silently returned to the book with reused ephemeral keys.
 - Reputation tracking by the matching engine
 - Small anti-spam deposits (e.g., Lightning invoice payment to the engine)
 

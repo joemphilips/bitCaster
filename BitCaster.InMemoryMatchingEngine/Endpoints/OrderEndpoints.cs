@@ -46,10 +46,9 @@ public static class OrderEndpoints
             await marketHub.Clients.Group(marketId)
                 .OrderBookUpdated(bookManager.GetSnapshot(marketId));
 
-            // Register trades + replay TradeCreated for any direct-match fill
-            // that carries a tradeId. The taker's side maps onto the
-            // atomic-swap roles: Sell-side taker = seller (parts with the
-            // outcome token), Buy-side taker = buyer.
+            // Register trades + replay TradeCreated for any fill that carries
+            // a tradeId. Direct matches map seller/buyer from side; binary
+            // complementary buy/buy matches carry explicit settlement metadata.
             await EmitTradeCreatedForFills(
                 tradeHub, trades, result.Fills, req.Side, req.EphemeralPubkey, marketId);
 
@@ -79,13 +78,18 @@ public static class OrderEndpoints
                 status: status.Status));
         });
 
-        app.MapDelete("/api/v1/orders/{id:guid}", async (
-            Guid id,
+        app.MapDelete("/api/v1/{marketId}/orders/{orderId:guid}", async (
+            string marketId,
+            Guid orderId,
             InMemoryOrderBookManager bookManager,
             IHubContext<MarketHub, IMarketHubClient> hubContext) =>
         {
-            if (!bookManager.CancelOrder(id, out var marketId) || marketId is null)
+            if (!bookManager.CancelOrder(orderId, out var storedMarketId) ||
+                storedMarketId is null ||
+                storedMarketId != marketId)
+            {
                 return Results.NotFound();
+            }
 
             await hubContext.Clients.Group(marketId)
                 .OrderBookUpdated(bookManager.GetSnapshot(marketId));
@@ -95,12 +99,13 @@ public static class OrderEndpoints
     }
 
     /// <summary>
-    /// For each direct-match fill that carries a <c>tradeId</c> in its
-    /// extension data, register the trade in the in-memory registry and
-    /// broadcast <c>TradeCreated</c> to the trade group. The maker's
-    /// ephemeral pubkey is on the fill itself; the taker's is the request's
-    /// own ephemeral pubkey. Side mapping: a Sell-side taker is the
-    /// outcome-token seller (Alice); a Buy-side taker is the buyer (Bob).
+    /// For each fill that carries a <c>tradeId</c>, register the trade in the
+    /// in-memory registry and broadcast <c>TradeCreated</c> to both order
+    /// groups. The maker's ephemeral pubkey is on the fill itself; the
+    /// taker's is the request's own ephemeral pubkey. Direct side mapping: a
+    /// Sell-side taker is the outcome-token seller (Alice); a Buy-side taker
+    /// is the buyer (Bob). Complementary buy/buy matches treat the resting
+    /// maker as seller and the incoming taker as buyer.
     /// </summary>
     private static async Task EmitTradeCreatedForFills(
         IHubContext<TradeHub, ITradeHubClient> tradeHub,
@@ -112,28 +117,75 @@ public static class OrderEndpoints
     {
         foreach (var fill in fills)
         {
-            if (fill.Path != MatchPath.Direct) continue;
             var tradeId = TryReadTradeId(fill);
             if (tradeId is null) continue;
 
-            var (sellerPubkey, buyerPubkey) = takerSide == OrderSide.Sell
-                ? (takerEphemeralPubkey, fill.MakerEphemeralPubkey)
-                : (fill.MakerEphemeralPubkey, takerEphemeralPubkey);
+            var (sellerPubkey, buyerPubkey) = fill.Path == MatchPath.Complementary
+                ? (fill.MakerEphemeralPubkey, takerEphemeralPubkey)
+                : takerSide == OrderSide.Sell
+                    ? (takerEphemeralPubkey, fill.MakerEphemeralPubkey)
+                    : (fill.MakerEphemeralPubkey, takerEphemeralPubkey);
 
             // Skip fills against bootstrap orders (no maker ephemeral pubkey).
             if (string.IsNullOrEmpty(sellerPubkey) || string.IsNullOrEmpty(buyerPubkey))
                 continue;
 
+            var settlementMarketId = ReadString(fill, "settlementMarketId") ?? marketId;
+            var outcomeFaceAmountSats = ReadLong(fill, "outcomeFaceAmountSats");
+            var quotePaymentSats = ReadLong(fill, "quotePaymentSats");
+            var settlementKind = ReadString(fill, "settlementKind");
+            var sellerKeepOutcomeSetId = ReadString(fill, "sellerKeepOutcomeSetId");
+            var sellerLockOutcomeSetId = ReadString(fill, "sellerLockOutcomeSetId");
             var record = trades.Register(
                 tradeId.Value,
                 sellerPubkey,
                 buyerPubkey,
-                marketId,
-                fill.AmountSats);
+                settlementMarketId,
+                fill.AmountSats,
+                outcomeFaceAmountSats,
+                quotePaymentSats,
+                settlementKind,
+                sellerKeepOutcomeSetId,
+                sellerLockOutcomeSetId);
             await tradeHub.Clients.Group(TradeHub.GroupName(tradeId.Value))
                 .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
-                    record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats);
+                    record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
+                    record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
+                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId);
+            await tradeHub.Clients.Groups([
+                    TradeHub.OrderGroupName(fill.MakerOrderId),
+                    TradeHub.OrderGroupName(fill.TakerOrderId)
+                ])
+                .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
+                    record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
+                    record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
+                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId);
         }
+    }
+
+    private static string? ReadString(Fill fill, string key)
+    {
+        if (!fill.AdditionalProperties.TryGetValue(key, out var raw) || raw is null)
+            return null;
+        return raw switch
+        {
+            string value => value,
+            JsonElement je when je.ValueKind == JsonValueKind.String => je.GetString(),
+            _ => null
+        };
+    }
+
+    private static long? ReadLong(Fill fill, string key)
+    {
+        if (!fill.AdditionalProperties.TryGetValue(key, out var raw) || raw is null)
+            return null;
+        return raw switch
+        {
+            long value => value,
+            int value => value,
+            JsonElement je when je.ValueKind == JsonValueKind.Number && je.TryGetInt64(out var value) => value,
+            _ => null
+        };
     }
 
     private static Guid? TryReadTradeId(Fill fill)

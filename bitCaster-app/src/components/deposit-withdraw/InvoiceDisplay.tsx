@@ -112,7 +112,9 @@ export function InvoiceDisplay({
         <div className="mt-4 w-full">
           <div className="bg-slate-800 border border-slate-700 rounded-xl p-3 flex items-center gap-2">
             <span className="flex-1 text-xs text-slate-400 font-mono truncate">
-              {bolt11}
+              <span data-testid="bolt11-display">
+                {bolt11}
+              </span>
             </span>
             <button
               onClick={handleCopy}

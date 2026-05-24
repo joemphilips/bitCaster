@@ -59,7 +59,20 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: "@", replacement: "/src" },
-      { find: /^@cashu\/cashu-ts$/, replacement: path.resolve(__dirname, "src/lib/cashu-ts-compat.ts") },
+      {
+        find: /^@bitcaster\/client-sdk\/(.+)$/,
+        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/$1"),
+      },
+      {
+        find: /^@bitcaster\/client-sdk$/,
+        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/index.ts"),
+      },
+      {
+        find: /^@bitcaster\/swap-protocol\/(.+)$/,
+        replacement: path.resolve(__dirname, "../bitCaster-swap-protocol/src/$1"),
+      },
+      { find: /^@noble\/curves\/secp256k1\.js$/, replacement: path.resolve(__dirname, "node_modules/@noble/curves/secp256k1.js") },
+      { find: /^@noble\/hashes\/sha2\.js$/, replacement: path.resolve(__dirname, "node_modules/@noble/hashes/sha2.js") },
     ],
   },
   // kormir-wasm is imported with a relative path (`./kormir-wasm-pkg/kormir_wasm`),
