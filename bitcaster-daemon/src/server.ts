@@ -794,29 +794,35 @@ async function loadMarketOutcomeLabels(
 ): Promise<string[]> {
   if (!client.getMarket) return []
   for (let attempt = 0; attempt < 20; attempt++) {
-    const market = await client.getMarket(conditionId)
-    if (market && typeof market === 'object') {
-      const outcomes = (market as { outcomes?: unknown }).outcomes
-      if (Array.isArray(outcomes)) {
-        const labels = outcomes
-          .map((outcome) => {
-            if (typeof outcome === 'string') return outcome
-            if (outcome && typeof outcome === 'object') {
-              const objectOutcome = outcome as {
-                id?: unknown
-                label?: unknown
-                name?: unknown
+    try {
+      const market = await client.getMarket(conditionId)
+      if (market && typeof market === 'object') {
+        const outcomes = (market as { outcomes?: unknown }).outcomes
+        if (Array.isArray(outcomes)) {
+          const labels = outcomes
+            .map((outcome) => {
+              if (typeof outcome === 'string') return outcome
+              if (outcome && typeof outcome === 'object') {
+                const objectOutcome = outcome as {
+                  id?: unknown
+                  label?: unknown
+                  name?: unknown
+                }
+                for (const key of ['label', 'name', 'id'] as const) {
+                  const value = objectOutcome[key]
+                  if (typeof value === 'string' && value.trim()) return value
+                }
               }
-              for (const key of ['label', 'name', 'id'] as const) {
-                const value = objectOutcome[key]
-                if (typeof value === 'string' && value.trim()) return value
-              }
-            }
-            return null
-          })
-          .filter((outcome): outcome is string => !!outcome)
-        if (labels.length >= 2) return labels
+              return null
+            })
+            .filter((outcome): outcome is string => !!outcome)
+          if (labels.length >= 2) return labels
+        }
       }
+    } catch {
+      // Engine catalogue can fail closed while the mint mirror is still
+      // initializing. The daemon can derive the same outcome labels directly
+      // from mintd, so keep this lookup best-effort.
     }
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
