@@ -2,6 +2,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useActiveSwapsStore } from "@/stores/activeSwaps";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 
 const { mockUseTradeHub, mockJoinOrder, mockJoinTrade, mockSendSwapMessage } =
   vi.hoisted(() => ({
@@ -91,13 +92,16 @@ vi.mock("@/stores/wallet", () => ({
     selector({ activeMintUrl: "https://mint.example" }),
 }));
 
-const { useTradeSettlement } = await import("../useTradeSettlement");
+const { useTradeSettlement, persistPartialLockFromError } = await import(
+  "../useTradeSettlement"
+);
 
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
   useActiveSwapsStore.setState({ byTradeId: {} });
   usePendingTradesStore.setState({ byOrderId: {} });
+  usePartialLockFailuresStore.setState({ byTradeId: {} });
   mockJoinOrder.mockResolvedValue(undefined);
   mockJoinTrade.mockResolvedValue(undefined);
   mockSendSwapMessage.mockResolvedValue(undefined);
@@ -469,6 +473,55 @@ describe("useTradeSettlement", () => {
         "cipher-seller",
       ),
     );
+  });
+
+  it("persistPartialLockFromError_MultiKeyset_AttachesCorrectMetadataPerKeyset", async () => {
+    const err = {
+      partialLock: {
+        failure: {
+          refundLocktime: 1_779_393_600,
+          affectedKeysets: ["keyset-B", "keyset-C"],
+          detail: "leg 1 locked; leg 2 failed",
+        },
+        spentProofs: [proof(100, "spent-B"), proof(100, "spent-C")],
+        lockedProofs: [
+          { ...proof(100, "locked-B"), id: "keyset-B" },
+          { ...proof(100, "locked-C"), id: "keyset-C" },
+        ],
+        changeProofs: [],
+      },
+    };
+
+    await persistPartialLockFromError({
+      err,
+      swap: {
+        tradeId: "trade-partial-multi",
+        orderId: "order-partial-multi",
+      } as Parameters<typeof persistPartialLockFromError>[0]["swap"],
+      mintUrl: "https://mint.example",
+      conditionId: "condition-1",
+      collectionByKeyset: new Map([
+        ["keyset-B", "B"],
+        ["keyset-C", "C"],
+      ]),
+    });
+
+    const record =
+      usePartialLockFailuresStore.getState().byTradeId["trade-partial-multi"];
+    expect(record.outcomeByKeyset["keyset-B"]).toEqual({
+      conditionId: "condition-1",
+      outcomeCollection: "B",
+      marketId: "condition-1-B",
+    });
+    expect(record.outcomeByKeyset["keyset-C"]).toEqual({
+      conditionId: "condition-1",
+      outcomeCollection: "C",
+      marketId: "condition-1-C",
+    });
+    expect(record.lockedProofs.map((locked) => locked.secret)).toEqual([
+      "locked-B",
+      "locked-C",
+    ]);
   });
 
   it("ignores duplicate TradeCreated events after role assignment", async () => {

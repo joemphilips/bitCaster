@@ -87,6 +87,10 @@ import {
 } from "@/lib/ctfSplit";
 import { useToastStore } from "@/stores/toast";
 import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
+import type {
+  OutcomeMetadata,
+  PartialLockHeldRecord,
+} from "@bitcaster/client-sdk/swapFailure";
 import {
   TRADE_MESSAGE_TYPES,
   type TradeMessageType,
@@ -1263,7 +1267,7 @@ async function persistProofsByKeyset(input: {
   }
 }
 
-async function persistPartialLockFromError(input: {
+export async function persistPartialLockFromError(input: {
   err: unknown;
   swap: ActiveSwap;
   mintUrl: string;
@@ -1287,14 +1291,37 @@ async function persistPartialLockFromError(input: {
     collectionByKeyset: input.collectionByKeyset,
   });
   usePartialLockFailuresStore.getState().upsert({
+    kind: "PartialLockHeld",
     tradeId: input.swap.tradeId,
     orderId: input.swap.orderId,
     mintUrl: input.mintUrl,
     refundLocktime: partial.failure.refundLocktime,
     affectedKeysets: partial.failure.affectedKeysets,
     detail: partial.failure.detail,
+    outcomeByKeyset: outcomeMetadataByKeyset(
+      input.conditionId,
+      input.collectionByKeyset,
+      partial.failure.affectedKeysets,
+    ),
+    lockedProofs: partial.lockedProofs,
     createdAt: Date.now(),
   });
+}
+
+function outcomeMetadataByKeyset(
+  conditionId: string,
+  collectionByKeyset: Map<string, string>,
+  affectedKeysets: string[],
+): PartialLockHeldRecord["outcomeByKeyset"] {
+  const byKeyset: Record<string, OutcomeMetadata> = {};
+  for (const keysetId of affectedKeysets) {
+    const collection = collectionByKeyset.get(keysetId);
+    if (!collection) {
+      throw new Error(`No outcome collection metadata for keyset ${keysetId}`);
+    }
+    byKeyset[keysetId] = outcomeMetadataForCondition(conditionId, collection);
+  }
+  return byKeyset;
 }
 
 function partialLockFromError(err: unknown): {

@@ -7,7 +7,10 @@ import {
   isSettlementCompleteMessage,
 } from '../../bitcaster-client-sdk/src/tradeFlow.ts'
 import { amountToNumber } from '../../bitcaster-client-sdk/src/proofSelection.ts'
-import type { SwapFailure } from '../../bitcaster-client-sdk/src/swapFailure.ts'
+import type {
+  PartialLockHeldRecord,
+  SwapFailure,
+} from '../../bitcaster-client-sdk/src/swapFailure.ts'
 import { ensureProfileDir, profileDir } from './profile.ts'
 
 export interface CashuProofRecord {
@@ -165,7 +168,7 @@ export interface LocalSwapRecord {
       | 'refunded'
       | 'failed'
   error?: string
-  failure?: SwapFailure
+  failure?: SwapFailure | PartialLockHeldRecord
   createdAt: string
   updatedAt: string
 }

@@ -4,7 +4,11 @@ import {
   takeProofsForLock,
 } from '../../bitcaster-client-sdk/src/proofSelection.ts'
 import { parseOutcomeSetId } from '../../bitcaster-client-sdk/src/outcomeSets.ts'
-import type { SwapFailure } from '../../bitcaster-client-sdk/src/swapFailure.ts'
+import type {
+  OutcomeMetadata,
+  PartialLockHeldRecord,
+  SwapFailure,
+} from '../../bitcaster-client-sdk/src/swapFailure.ts'
 import { redactSwapFailureForTelemetry } from '../../bitcaster-client-sdk/src/swapFailure.ts'
 import { TRADE_MESSAGE_TYPES } from '../../bitcaster-client-sdk/src/tradeSession.ts'
 import type { DaemonProfile } from './profile.ts'
@@ -231,6 +235,7 @@ export class DaemonSwapExecutor {
     if (!loaded) return
     const { ctx, swap, profile } = loaded
     if (swap.failure?.kind !== 'PartialLockHeld') return
+    const failure = swap.failure
     const lockedRows = (await readState())?.wallet.proofs.filter(
       (row) => row.state === 'locked' && row.reservedBy === tradeId,
     ) ?? []
@@ -253,7 +258,7 @@ export class DaemonSwapExecutor {
           state,
           profile.mintUrl,
           fresh,
-          lockedRows,
+          outcomeByKeysetForPartialLock(failure, lockedRows),
           now,
         )
         live.step = 'refunded'
@@ -469,13 +474,14 @@ export class DaemonSwapExecutor {
         TRADE_MESSAGE_TYPES.adaptorPoint,
         result.adaptorPointCipher,
       )
-      // INVARIANT (P03): lockedProofsSeller is only published after every
-      //   keyset leg has successfully locked. A partial-leg failure must
-      //   not emit this cipher. Tested by
-      //   bitCaster-swap-protocol/test/atomicSwap.test.ts
+      // INVARIANT (P03): lockedProofsSeller is only published after
+      //   every keyset leg has successfully locked. A partial-leg
+      //   failure must not emit this cipher. The runtime guard is at
+      //   the orchestration layer (this function); tested by
+      //   bitCaster/bitcaster-daemon/test/swapExecutor.test.ts ::
       //   Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller.
-      //   Do not skip the test; do not refactor without re-pinning the
-      //   test to the new call site.
+      //   Do not skip the test; do not refactor without re-pinning to
+      //   the new call site.
       await this.sendSwapMessageResumable(
         tradeId,
         TRADE_MESSAGE_TYPES.lockedProofsSeller,
@@ -516,7 +522,27 @@ export class DaemonSwapExecutor {
         collectionByKeyset,
         now,
       )
+      const live = state.swaps[tradeId]
+      if (live) {
+        live.failure = partialLockRecordFromParts(
+          tradeId,
+          conditionId,
+          collectionByKeyset,
+          err,
+          partial,
+        )
+      }
     })
+    if (err && typeof err === 'object') {
+      ;(err as { failure?: PartialLockHeldRecord }).failure =
+        partialLockRecordFromParts(
+          tradeId,
+          conditionId,
+          collectionByKeyset,
+          err,
+          partial,
+        )
+    }
   }
 
   private async sellerOpenComplementary(
@@ -549,12 +575,24 @@ export class DaemonSwapExecutor {
     )
     if (availableOutcome) {
       const lockCollectionByKeyset = keysetToOutcomeCollection(availableOutcome)
-      const locked = await this.ops.sellerLockOutcomeProofs(
-        ctx,
-        availableOutcome.map(proofWithOutcomeMetadata),
-        amount,
-        `${tradeId}:seller-inventory-lock`,
-      )
+      let locked: LockedOutcomeProofResult
+      try {
+        locked = await this.ops.sellerLockOutcomeProofs(
+          ctx,
+          availableOutcome.map(proofWithOutcomeMetadata),
+          amount,
+          `${tradeId}:seller-inventory-lock`,
+        )
+      } catch (err) {
+        await this.persistPartialLock(
+          tradeId,
+          mintUrl,
+          split.conditionId,
+          lockCollectionByKeyset,
+          err,
+        )
+        throw err
+      }
       const result = await this.ops.sellerOpenPrelocked(
         ctx,
         locked.lockedProofs,
@@ -606,13 +644,14 @@ export class DaemonSwapExecutor {
         TRADE_MESSAGE_TYPES.adaptorPoint,
         result.adaptorPointCipher,
       )
-      // INVARIANT (P03): lockedProofsSeller is only published after every
-      //   keyset leg has successfully locked. A partial-leg failure must
-      //   not emit this cipher. Tested by
-      //   bitCaster-swap-protocol/test/atomicSwap.test.ts
+      // INVARIANT (P03): lockedProofsSeller is only published after
+      //   every keyset leg has successfully locked. A partial-leg
+      //   failure must not emit this cipher. The runtime guard is at
+      //   the orchestration layer (this function); tested by
+      //   bitCaster/bitcaster-daemon/test/swapExecutor.test.ts ::
       //   Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller.
-      //   Do not skip the test; do not refactor without re-pinning the
-      //   test to the new call site.
+      //   Do not skip the test; do not refactor without re-pinning to
+      //   the new call site.
       await this.sendSwapMessageResumable(
         tradeId,
         TRADE_MESSAGE_TYPES.lockedProofsSeller,
@@ -688,13 +727,14 @@ export class DaemonSwapExecutor {
       TRADE_MESSAGE_TYPES.adaptorPoint,
       result.adaptorPointCipher,
     )
-    // INVARIANT (P03): lockedProofsSeller is only published after every
-    //   keyset leg has successfully locked. A partial-leg failure must
-    //   not emit this cipher. Tested by
-    //   bitCaster-swap-protocol/test/atomicSwap.test.ts
+    // INVARIANT (P03): lockedProofsSeller is only published after
+    //   every keyset leg has successfully locked. A partial-leg
+    //   failure must not emit this cipher. The runtime guard is at
+    //   the orchestration layer (this function); tested by
+    //   bitCaster/bitcaster-daemon/test/swapExecutor.test.ts ::
     //   Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller.
-    //   Do not skip the test; do not refactor without re-pinning the
-    //   test to the new call site.
+    //   Do not skip the test; do not refactor without re-pinning to
+    //   the new call site.
     await this.sendSwapMessageResumable(
       tradeId,
       TRADE_MESSAGE_TYPES.lockedProofsSeller,
@@ -739,12 +779,24 @@ export class DaemonSwapExecutor {
     }
 
     const lockCollectionByKeyset = keysetToOutcomeCollection(selectedLock)
-    const locked = await this.ops.sellerLockOutcomeProofs(
-      ctx,
-      selectedLock.map(proofWithOutcomeMetadata),
-      amount,
-      `${tradeId}:seller-preflight-lock`,
-    )
+    let locked: LockedOutcomeProofResult
+    try {
+      locked = await this.ops.sellerLockOutcomeProofs(
+        ctx,
+        selectedLock.map(proofWithOutcomeMetadata),
+        amount,
+        `${tradeId}:seller-preflight-lock`,
+      )
+    } catch (err) {
+      await this.persistPartialLock(
+        tradeId,
+        mintUrl,
+        split.conditionId,
+        lockCollectionByKeyset,
+        err,
+      )
+      throw err
+    }
     const keepProofs = await this.prepareReservedExactProofsByOutcomeSet(
       mintUrl,
       selectedKeep,
@@ -810,13 +862,14 @@ export class DaemonSwapExecutor {
       TRADE_MESSAGE_TYPES.adaptorPoint,
       result.adaptorPointCipher,
     )
-    // INVARIANT (P03): lockedProofsSeller is only published after every
-    //   keyset leg has successfully locked. A partial-leg failure must
-    //   not emit this cipher. Tested by
-    //   bitCaster-swap-protocol/test/atomicSwap.test.ts
+    // INVARIANT (P03): lockedProofsSeller is only published after
+    //   every keyset leg has successfully locked. A partial-leg
+    //   failure must not emit this cipher. The runtime guard is at
+    //   the orchestration layer (this function); tested by
+    //   bitCaster/bitcaster-daemon/test/swapExecutor.test.ts ::
     //   Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller.
-    //   Do not skip the test; do not refactor without re-pinning the
-    //   test to the new call site.
+    //   Do not skip the test; do not refactor without re-pinning to
+    //   the new call site.
     await this.sendSwapMessageResumable(
       tradeId,
       TRADE_MESSAGE_TYPES.lockedProofsSeller,
@@ -1421,20 +1474,23 @@ function addRefundedProofsByKeyset(
   state: DaemonState,
   mintUrl: string,
   proofs: CashuProofRecord[],
-  lockedRows: StoredProofRecord[],
+  outcomeByKeyset: PartialLockHeldRecord['outcomeByKeyset'],
   now: string,
 ): void {
-  const assetByKeyset = new Map<string, StoredProofRecord['asset']>()
-  for (const row of lockedRows) {
-    if (row.proof.id) assetByKeyset.set(row.proof.id, row.asset)
-  }
   const byAsset = new Map<string, {
     asset: StoredProofRecord['asset']
     proofs: CashuProofRecord[]
   }>()
   for (const proof of proofs) {
-    const asset = proof.id ? assetByKeyset.get(proof.id) : undefined
-    if (!asset) throw new Error(`No locked-proof asset metadata for keyset ${proof.id ?? '<missing>'}`)
+    const metadata = proof.id ? outcomeByKeyset[proof.id] : undefined
+    if (!metadata) {
+      throw new Error(`No locked-proof asset metadata for keyset ${proof.id ?? '<missing>'}`)
+    }
+    const asset: StoredProofRecord['asset'] = {
+      kind: 'outcome',
+      conditionId: metadata.conditionId,
+      outcomeSetId: metadata.outcomeCollection,
+    }
     const key = JSON.stringify(asset)
     const group = byAsset.get(key) ?? { asset, proofs: [] }
     group.proofs.push(proof)
@@ -1615,17 +1671,28 @@ function proofKey(proof: CashuProofRecord): string {
   return `${proof.id ?? ''}:${proof.secret}:${proof.C}`
 }
 
-function swapFailureFromError(err: unknown): SwapFailure | null {
+function swapFailureFromError(
+  err: unknown,
+): SwapFailure | PartialLockHeldRecord | null {
   if (!err || typeof err !== 'object') return null
   const maybe = err as { failure?: unknown }
   if (!maybe.failure || typeof maybe.failure !== 'object') return null
-  const failure = maybe.failure as Partial<SwapFailure>
+  const failure = maybe.failure as {
+    kind?: unknown
+    refundLocktime?: unknown
+    affectedKeysets?: unknown
+    detail?: unknown
+    tradeId?: unknown
+    outcomeByKeyset?: PartialLockHeldRecord['outcomeByKeyset']
+    lockedProofs?: unknown
+  }
   if (
     failure.kind === 'PartialLockHeld' &&
     typeof failure.refundLocktime === 'number'
   ) {
     return {
       kind: 'PartialLockHeld',
+      tradeId: typeof failure.tradeId === 'string' ? failure.tradeId : '',
       refundLocktime: failure.refundLocktime,
       affectedKeysets: Array.isArray(failure.affectedKeysets)
         ? failure.affectedKeysets.filter((value): value is string => typeof value === 'string')
@@ -1633,6 +1700,10 @@ function swapFailureFromError(err: unknown): SwapFailure | null {
       detail: typeof failure.detail === 'string'
         ? failure.detail
         : errorMessage(err),
+      outcomeByKeyset: failure.outcomeByKeyset ?? {},
+      lockedProofs: Array.isArray(failure.lockedProofs)
+        ? failure.lockedProofs.filter(isProofWithKeyset)
+        : [],
     }
   }
   if (
@@ -1648,6 +1719,77 @@ function swapFailureFromError(err: unknown): SwapFailure | null {
     }
   }
   return null
+}
+
+function outcomeByKeysetForPartialLock(
+  failure: SwapFailure | PartialLockHeldRecord,
+  lockedRows: StoredProofRecord[],
+): PartialLockHeldRecord['outcomeByKeyset'] {
+  const canonical = failure as Partial<PartialLockHeldRecord>
+  if (Object.keys(canonical.outcomeByKeyset ?? {}).length > 0) {
+    return canonical.outcomeByKeyset ?? {}
+  }
+  const outcomeByKeyset: PartialLockHeldRecord['outcomeByKeyset'] = {}
+  for (const row of lockedRows) {
+    if (!row.proof.id || row.asset.kind !== 'outcome') continue
+    outcomeByKeyset[row.proof.id] = {
+      conditionId: row.asset.conditionId,
+      outcomeCollection: row.asset.outcomeSetId,
+      marketId: `${row.asset.conditionId}-${row.asset.outcomeSetId}`,
+    }
+  }
+  return outcomeByKeyset
+}
+
+function partialLockRecordFromParts(
+  tradeId: string,
+  conditionId: string,
+  collectionByKeyset: Map<string, string>,
+  err: unknown,
+  partial: NonNullable<ReturnType<typeof partialLockFromError>>,
+): PartialLockHeldRecord {
+  const baseFailure = (err as { failure?: Partial<PartialLockHeldRecord> } | null)
+    ?.failure
+  const failureAffectedKeysets = Array.isArray(baseFailure?.affectedKeysets)
+    ? baseFailure.affectedKeysets.filter((value): value is string => typeof value === 'string')
+    : []
+  const lockedKeysets = partial.lockedProofs
+    .map((proof) => proof.id)
+    .filter((value): value is string => typeof value === 'string')
+  const affectedKeysets =
+    failureAffectedKeysets.length > 0 &&
+    failureAffectedKeysets.every((keysetId) => collectionByKeyset.has(keysetId))
+      ? failureAffectedKeysets
+      : lockedKeysets.length > 0
+        ? [...new Set(lockedKeysets)]
+        : [...collectionByKeyset.keys()]
+  const outcomeByKeyset: Record<string, OutcomeMetadata> = {}
+  for (const keysetId of affectedKeysets) {
+    const collection = collectionByKeyset.get(keysetId)
+    if (!collection) {
+      throw new Error(`No outcome collection metadata for keyset ${keysetId}`)
+    }
+    outcomeByKeyset[keysetId] = {
+      conditionId,
+      outcomeCollection: collection,
+      marketId: `${conditionId}-${collection}`,
+    }
+  }
+  return {
+    kind: 'PartialLockHeld',
+    tradeId,
+    refundLocktime:
+      typeof baseFailure?.refundLocktime === 'number'
+        ? baseFailure.refundLocktime
+        : 0,
+    affectedKeysets,
+    detail:
+      typeof baseFailure?.detail === 'string'
+        ? baseFailure.detail
+        : errorMessage(err),
+    outcomeByKeyset,
+    lockedProofs: partial.lockedProofs.filter(isProofWithKeyset),
+  }
 }
 
 function partialLockFromError(err: unknown): {
@@ -1682,6 +1824,10 @@ function isCashuProofRecord(value: unknown): value is CashuProofRecord {
     typeof (value as { secret?: unknown }).secret === 'string' &&
     typeof (value as { C?: unknown }).C === 'string'
   )
+}
+
+function isProofWithKeyset(value: unknown): value is CashuProofRecord & { id: string } {
+  return isCashuProofRecord(value) && typeof value.id === 'string'
 }
 
 function isAlreadySpentError(message: string): boolean {

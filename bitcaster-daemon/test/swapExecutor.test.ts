@@ -207,7 +207,7 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
     )
     assert.deepEqual(
       persisted?.swaps['trade-partial-lock'].failure?.affectedKeysets,
-      ['A'],
+      ['keyset-100'],
     )
     assert.equal(
       persisted?.wallet.proofs.some((row) => row.proof.secret === 'secret-100'),
@@ -296,6 +296,117 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
       persisted?.wallet.proofs.find((row) => row.proof.secret === 'partial-refunded')
         ?.state,
       'available',
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-partial-multi-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const state = emptyDaemonState()
+    state.swaps['trade-partial-multi'] = {
+      tradeId: 'trade-partial-multi',
+      orderId: 'order-1',
+      marketId: 'cond-B|C',
+      role: 'seller',
+      counterpartyPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: 1,
+      buyerLocktime: 1,
+      fillAmountSats: 100,
+      messages: {},
+      step: 'failed',
+      error: 'leg 1 locked; leg 2 failed',
+      failure: {
+        kind: 'PartialLockHeld',
+        tradeId: 'trade-partial-multi',
+        refundLocktime: 1,
+        affectedKeysets: ['keyset-B', 'keyset-C'],
+        detail: 'leg 1 locked; leg 2 failed',
+        outcomeByKeyset: {
+          'keyset-B': {
+            conditionId: 'cond',
+            outcomeCollection: 'B',
+            marketId: 'cond-B',
+          },
+          'keyset-C': {
+            conditionId: 'cond',
+            outcomeCollection: 'C',
+            marketId: 'cond-C',
+          },
+        },
+        lockedProofs: [
+          { ...cashuProof(100, 'partial-locked-B'), id: 'keyset-B' },
+          { ...cashuProof(100, 'partial-locked-C'), id: 'keyset-C' },
+        ],
+      },
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.wallet.proofs.push(
+      {
+        ...proofRecord(profile.mintUrl, 100, 'locked', {
+          kind: 'outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'B',
+        }),
+        reservedBy: 'trade-partial-multi',
+        proof: { ...cashuProof(100, 'partial-locked-B'), id: 'keyset-B' },
+      },
+      {
+        ...proofRecord(profile.mintUrl, 100, 'locked', {
+          kind: 'outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'C',
+        }),
+        reservedBy: 'trade-partial-multi',
+        proof: { ...cashuProof(100, 'partial-locked-C'), id: 'keyset-C' },
+      },
+    )
+    await writeState(state)
+
+    const executor = new DaemonSwapExecutor({
+      connection: fakeConnection([]),
+      ops: {
+        ...fakeOps(),
+        async refundLockedProofs(_ctx, proofs) {
+          return proofs.map((proof) => ({
+            ...cashuProof(proof.amount, `refunded-${proof.secret}`),
+            id: proof.id,
+          }))
+        },
+      },
+    })
+
+    await executor.resumeActiveSwaps(await readState() as DaemonState)
+
+    const persisted = await readState()
+    assert.equal(persisted?.swaps['trade-partial-multi'].step, 'refunded')
+    const refundedB = persisted?.wallet.proofs.find(
+      (row) => row.proof.secret === 'refunded-partial-locked-B',
+    )
+    const refundedC = persisted?.wallet.proofs.find(
+      (row) => row.proof.secret === 'refunded-partial-locked-C',
+    )
+    assert.equal(refundedB?.asset.kind, 'outcome')
+    assert.equal(
+      refundedB?.asset.kind === 'outcome' ? refundedB.asset.outcomeSetId : '',
+      'B',
+    )
+    assert.equal(refundedC?.asset.kind, 'outcome')
+    assert.equal(
+      refundedC?.asset.kind === 'outcome' ? refundedC.asset.outcomeSetId : '',
+      'C',
     )
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME

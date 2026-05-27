@@ -2,34 +2,17 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Amount, type Proof } from '@cashu/cashu-ts'
 import {
-  sellerPreparePrelockedSwap,
   type SwapContext,
 } from '../src/atomicSwap.ts'
 import { adapt, generateAdaptorPoint, preSign } from '../src/adaptor.ts'
 import { generateEphemeralKeypair } from '../src/ecdh.ts'
 
-test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () => {
-  const ctx = swapContext('trade-leg2-failure')
-  const leg1 = lockedProof(ctx, 'keyset-A', 100)
-  const leg2Failure = new Error('leg 2 mint swap failed')
-  const sent: string[] = []
-  const publishLockedProofsSeller = (cipher: string) => sent.push(cipher)
-  const simulateLeg2Lock = () => {
-    throw leg2Failure
-  }
-  const preparedLeg1 = await sellerPreparePrelockedSwap(ctx, [leg1])
-  assert.equal(typeof preparedLeg1.lockedProofsCipher, 'string')
-  assert.ok(preparedLeg1.lockedProofsCipher.length > 0)
-
-  try {
-    simulateLeg2Lock()
-    publishLockedProofsSeller(preparedLeg1.lockedProofsCipher)
-  } catch (error) {
-    if (error !== leg2Failure) throw error
-  }
-
-  assert.deepEqual(sent, [])
-})
+// The "leg-2 failure must not publish locked-proofs-seller" invariant is
+// tested at the orchestration layer in
+// bitCaster/bitcaster-daemon/test/swapExecutor.test.ts ::
+// Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller. The
+// protocol-layer `sellerPreparePrelockedSwap` function returns the cipher;
+// whether and when it is sent to the hub is owned by the daemon.
 
 test('Block2_MultiLegSwap_PerLegNonceR_AreDistinct', () => {
   const signer = generateEphemeralKeypair()

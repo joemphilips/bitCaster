@@ -12,6 +12,7 @@ import {
 import { usePartialLockFailuresStore } from '@/stores/partialLockFailures'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
 import { useWalletStore } from '@/stores/wallet'
+import type { PartialLockHeldRecord } from '@bitcaster/client-sdk/swapFailure'
 
 const PARTIAL_LOCK_REFUND_MARGIN_SECS = 60
 
@@ -39,6 +40,8 @@ export async function sweepElapsedPartialLockFailures(): Promise<void> {
 async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
   const record = usePartialLockFailuresStore.getState().byTradeId[tradeId]
   if (!record) return
+  if (!record.orderId || !record.mintUrl) return
+  const mintUrl = record.mintUrl
   const pending = usePendingTradesStore.getState().get(record.orderId)
   if (!pending) return
 
@@ -52,7 +55,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
   await prepareProofOperation({
     operationId,
     kind: 'swap-refund',
-    mintUrl: record.mintUrl,
+    mintUrl,
     inputs: locked,
     outputs: {},
     metadata: {
@@ -63,7 +66,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
   })
 
   try {
-    const wallet = await useWalletStore.getState().getWallet(record.mintUrl)
+    const wallet = await useWalletStore.getState().getWallet(mintUrl)
     const refundKey = hexToBytes(pending.ephemeralPrivkey)
     const witnessed = locked.map((proof) => ({
       ...proof,
@@ -74,7 +77,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
     }))
     const fresh = await wallet.receive(
       getEncodedToken({
-        mint: record.mintUrl,
+        mint: mintUrl,
         unit: 'sat',
         proofs: witnessed as Proof[],
       }),
@@ -82,8 +85,8 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
     await addProofs(
       fresh.map((proof) => ({
         ...proof,
-        mintUrl: record.mintUrl,
-        ...metadataForRefundedProof(proof, locked),
+        mintUrl,
+        ...metadataForRefundedProof(proof, record),
       })),
     )
     await removeProofs(locked.map((proof) => proof.secret))
@@ -103,13 +106,13 @@ function isAlreadySpentError(error: unknown): boolean {
 
 function metadataForRefundedProof(
   proof: Proof,
-  locked: Awaited<ReturnType<typeof getReservedProofs>>,
+  record: PartialLockHeldRecord,
 ): {
   conditionId?: string
   outcomeCollection?: string
   marketId?: string
 } {
-  const source = locked.find((row) => row.id === proof.id)
+  const source = record.outcomeByKeyset[proof.id ?? '']
   if (!source) {
     throw new Error(`No locked-proof metadata for keyset ${proof.id ?? '<missing>'}`)
   }

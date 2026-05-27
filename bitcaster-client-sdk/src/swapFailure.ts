@@ -11,10 +11,31 @@ export interface SwapFailure {
   detail: string
 }
 
+export interface OutcomeMetadata {
+  conditionId: string
+  outcomeCollection: string
+  marketId: string
+}
+
+export interface PartialLockProofRecord {
+  id?: string
+  amount: unknown
+  secret: string
+  C: string
+  witness?: unknown
+  dleq?: unknown
+}
+
 export interface PartialLockHeldRecord extends SwapFailure {
   kind: 'PartialLockHeld'
+  tradeId: string
+  orderId?: string
+  mintUrl?: string
   refundLocktime: number
   affectedKeysets: string[]
+  outcomeByKeyset: Record<string, OutcomeMetadata>
+  lockedProofs: PartialLockProofRecord[]
+  createdAt?: number
 }
 
 export function redactSwapFailureForTelemetry(
