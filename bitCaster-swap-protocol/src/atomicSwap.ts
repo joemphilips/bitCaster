@@ -1647,7 +1647,9 @@ function groupProofsByKeyset(proofs: Proof[]): Map<string, Proof[]> {
     if (!proof.id) {
       throw new Error("Atomic swap proof is missing its keyset id");
     }
-    groups.set(proof.id, [...(groups.get(proof.id) ?? []), proof]);
+    const group = groups.get(proof.id);
+    if (group) group.push(proof);
+    else groups.set(proof.id, [proof]);
   }
   return groups;
 }
