@@ -111,7 +111,6 @@ export function buildTradeTicket(params: {
       'Choose an outcome before placing an order.',
     )
   }
-
   const requestSide = side === 'buy' ? 'Buy' : 'Sell'
   const settlementSupport = checkOrderSettlementSupport({
     request: { side: requestSide },

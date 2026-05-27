@@ -69,6 +69,27 @@ test('adaptor signatures preverify, adapt, and extract the adaptor secret', () =
   assert.deepEqual(extract(finalSig, preSig), adaptor.secret)
 })
 
+test('Block2_MultiLegSwap_PerLegNonceR_AreDistinct', () => {
+  const signer = generateEphemeralKeypair()
+  const adaptorA = generateAdaptorPoint()
+  const adaptorB = generateAdaptorPoint()
+  const messageA = new Uint8Array(32).fill(1)
+  const messageB = new Uint8Array(32).fill(2)
+
+  const finalSigA = adapt(
+    preSign(signer.privateKey, messageA, adaptorA.point),
+    adaptorA.secret,
+  )
+  const finalSigB = adapt(
+    preSign(signer.privateKey, messageB, adaptorB.point),
+    adaptorB.secret,
+  )
+
+  const nonceRA = Buffer.from(finalSigA.slice(0, 32)).toString('hex')
+  const nonceRB = Buffer.from(finalSigB.slice(0, 32)).toString('hex')
+  assert.notEqual(nonceRA, nonceRB)
+})
+
 test('P2PK helpers produce NUT-11 secret and witness shapes', () => {
   const signer = generateEphemeralKeypair()
   const refund = generateEphemeralKeypair()

@@ -44,6 +44,8 @@ export interface CashuSettings {
 // =============================================================================
 
 export type NostrSignerMode = 'none' | 'nip07' | 'nsec'
+export type NostrSignerSource = 'none' | 'implicit-generated' | 'user-nsec' | 'nip07'
+export type SecretBackupState = 'none' | 'needs_backup' | 'confirmed'
 export type NostrProfileFetchStatus = 'idle' | 'fetching' | 'found' | 'not-found'
 export type RelayConnectionStatus = 'connected' | 'disconnected'
 
@@ -63,6 +65,9 @@ export interface RelayConfig {
 
 export interface NostrSettings {
   signerMode: NostrSignerMode
+  signerSource: NostrSignerSource
+  signerBackupState: SecretBackupState
+  canRevealGeneratedNsec: boolean
   profile: NostrProfile | null
   profileFetchStatus: NostrProfileFetchStatus
   relays: RelayConfig[]
@@ -92,6 +97,9 @@ export interface SettingsProps {
   /** Wallet seed phrase (mnemonic) to display in the seed backup section */
   seedPhrase?: string
 
+  walletBackupState?: SecretBackupState
+  generatedNsecSecret?: string | null
+
   /** Called when user toggles a category group */
   onCategoryToggle?: (category: SettingsCategory) => void
 
@@ -107,6 +115,9 @@ export interface SettingsProps {
   // Nostr callbacks
   onSignerModeChange?: (mode: NostrSignerMode) => Promise<boolean>
   onNsecSubmit?: (nsec: string, passphrase?: string) => Promise<boolean>
+  onRevealGeneratedNsec?: () => void
+  onConfirmSignerBackup?: () => void
+  onConfirmWalletBackup?: () => void
   onDisconnectNostr?: () => void
   onRetryNostrProfile?: () => Promise<void>
   onAddRelay?: (url: string) => void

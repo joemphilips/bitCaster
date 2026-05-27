@@ -6,6 +6,8 @@ import type {
   LanguageCode,
   ThemeOption,
   NostrSignerMode,
+  NostrSignerSource,
+  SecretBackupState,
   NostrProfile,
   NostrProfileFetchStatus,
   RelayConfig,
@@ -20,6 +22,8 @@ interface SettingsStoreState {
   language: LanguageCode
   theme: ThemeOption
   nostrSignerMode: NostrSignerMode
+  signerSource: NostrSignerSource
+  signerBackupState: SecretBackupState
   nostrProfile: NostrProfile | null
   nostrProfileFetchStatus: NostrProfileFetchStatus
   relays: RelayConfig[]
@@ -44,6 +48,8 @@ interface SettingsStoreState {
   setLanguage: (language: LanguageCode) => void
   setTheme: (theme: ThemeOption) => void
   setSignerMode: (mode: NostrSignerMode) => void
+  setSignerSource: (source: NostrSignerSource) => void
+  setSignerBackupState: (state: SecretBackupState) => void
   setProfile: (profile: NostrProfile | null, status: NostrProfileFetchStatus) => void
   setNsecSecret: (nsec: string | null) => void
   addRelay: (url: string) => void
@@ -76,6 +82,8 @@ export const useSettingsStore = create<SettingsStoreState>()(
       language: 'en',
       theme: 'dark',
       nostrSignerMode: 'none',
+      signerSource: 'none',
+      signerBackupState: 'none',
       nostrProfile: null,
       nostrProfileFetchStatus: 'idle',
       relays: DEFAULT_RELAYS,
@@ -94,10 +102,28 @@ export const useSettingsStore = create<SettingsStoreState>()(
       setSignerMode: (mode) =>
         set((s) => ({
           nostrSignerMode: mode,
+          signerSource:
+            mode === 'none'
+              ? 'none'
+              : mode === 'nip07'
+                ? 'nip07'
+                : s.signerSource === 'implicit-generated'
+                  ? 'implicit-generated'
+                  : 'user-nsec',
+          signerBackupState:
+            mode === 'none'
+              ? 'none'
+              : mode === 'nip07'
+                ? 'confirmed'
+                : s.signerSource === 'implicit-generated'
+                  ? s.signerBackupState
+                  : 'confirmed',
           // Any mode other than 'nsec' must not carry a stray secret in
           // localStorage — switching to NIP-07 or disconnecting should wipe it.
           nsecSecret: mode === 'nsec' ? s.nsecSecret : null,
         })),
+      setSignerSource: (source) => set({ signerSource: source }),
+      setSignerBackupState: (state) => set({ signerBackupState: state }),
       setProfile: (profile, status) => set({ nostrProfile: profile, nostrProfileFetchStatus: status }),
       setNsecSecret: (nsec) => set({ nsecSecret: nsec }),
       addRelay: (url) =>
@@ -115,6 +141,8 @@ export const useSettingsStore = create<SettingsStoreState>()(
         language: state.language,
         theme: state.theme,
         nostrSignerMode: state.nostrSignerMode,
+        signerSource: state.signerSource,
+        signerBackupState: state.signerBackupState,
         relays: state.relays,
         nostrProfile: state.nostrProfile,
         nostrProfileFetchStatus: state.nostrProfileFetchStatus,

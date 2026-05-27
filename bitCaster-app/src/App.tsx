@@ -30,6 +30,7 @@ import { recoverKeysetCountersForMint } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
 import { userAddAndSelectMint } from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
+import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -183,6 +184,23 @@ function AppRoutes() {
     else {
       const unsub = useWalletStore.persist.onFinishHydration(() => {
         runRecovery();
+        unsub();
+      });
+    }
+  }, []);
+
+  const partialLockSweepAttempted = useRef(false);
+  useEffect(() => {
+    if (partialLockSweepAttempted.current) return;
+    const runSweep = () => {
+      if (partialLockSweepAttempted.current) return;
+      partialLockSweepAttempted.current = true;
+      sweepElapsedPartialLockFailures().catch(() => {});
+    };
+    if (useWalletStore.persist.hasHydrated()) runSweep();
+    else {
+      const unsub = useWalletStore.persist.onFinishHydration(() => {
+        runSweep();
         unsub();
       });
     }

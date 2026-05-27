@@ -7,6 +7,8 @@ namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 
 public static partial class MarketEndpoints
 {
+    private const int MaxOutcomes = 8;
+
     private sealed record MarketRecord(CreateMarketResponse Response, DateTimeOffset CreatedAt);
 
     private static readonly ConcurrentDictionary<string, MarketRecord> Markets = new();
@@ -60,6 +62,8 @@ public static partial class MarketEndpoints
                 return Results.BadRequest("Description is required");
             if (metadata.Outcomes is null || metadata.Outcomes.Count < 2)
                 return Results.BadRequest("At least 2 outcomes are required");
+            if (metadata.Outcomes.Count > MaxOutcomes)
+                return Results.BadRequest($"At most {MaxOutcomes} outcomes are supported");
 
             var probSum = metadata.Outcomes.Sum(o => o.Probability);
             if (probSum != 100)

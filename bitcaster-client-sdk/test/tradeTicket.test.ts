@@ -49,7 +49,7 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
   })
 })
 
-test('buildTradeTicket builds categorical NO tickets against the complement book', () => {
+test('buildTradeTicket builds categorical NO tickets against compound complements', () => {
   const ticket = buildTradeTicket({
     market: categoricalMarket,
     selection: { side: 'no', outcomeId: 'alice' },
@@ -60,8 +60,29 @@ test('buildTradeTicket builds categorical NO tickets against the complement book
     orderBook: liquidBook,
   })
 
-  assert.equal(ticket.marketId, 'condition-category-Bob|Carol')
+  assert.equal(ticket.marketId, `${categoricalMarket.id}-Bob|Carol`)
   assert.equal(ticket.request.outcomeId, 'Bob|Carol')
+})
+
+test('buildTradeTicket builds two-outcome categorical NO tickets against a primitive complement', () => {
+  const ticket = buildTradeTicket({
+    market: {
+      ...categoricalMarket,
+      outcomes: [
+        { id: 'alice', label: 'Alice' },
+        { id: 'bob', label: 'Bob' },
+      ],
+    },
+    selection: { side: 'no', outcomeId: 'alice' },
+    amountSats: 100,
+    side: 'buy',
+    orderType: 'limit',
+    limitPrice: 45,
+    orderBook: liquidBook,
+  })
+
+  assert.equal(ticket.marketId, 'condition-category-Bob')
+  assert.equal(ticket.request.outcomeId, 'Bob')
 })
 
 test('buildTradeTicket prices executable market buys as aggressive FAK orders', () => {

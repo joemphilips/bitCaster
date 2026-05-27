@@ -99,18 +99,30 @@ export interface SplitCollateralSelection {
 export interface ComplementarySplitForSwapResult {
   resolvedLockOutcomeSetId: string
   resolvedKeepOutcomeSetId: string
+  lockCollections: string[]
+  keepCollections: string[]
   lockedProofs: Proof[]
   keepProofs: Proof[]
+  proofsByCollection: Record<string, Proof[]>
   spentSatProofs: Proof[]
 }
 
 export interface PreflightCompleteSetSplitResult {
   resolvedLockOutcomeSetId: string
   resolvedKeepOutcomeSetId: string
+  lockCollections: string[]
+  keepCollections: string[]
   lockProofs: Proof[]
   keepProofs: Proof[]
   proofsByCollection: Record<string, Proof[]>
   spentSatProofs: Proof[]
+}
+
+export interface ComplementaryOutcomeLegResolution {
+  resolvedLockOutcomeSetId: string
+  resolvedKeepOutcomeSetId: string
+  lockCollections: string[]
+  keepCollections: string[]
 }
 
 export interface CtfSplitTransport {
@@ -272,16 +284,13 @@ export async function splitRootCompleteSetForSwap(
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
   )
-  const resolvedLockOutcomeSetId = resolveMintOutcomeSetKey(
+  const outcomeLegs = resolveComplementaryOutcomeLegs(
     params.lockOutcomeSetId,
-    outcomeCollectionKeysets,
-    'lock',
-  )
-  const resolvedKeepOutcomeSetId = resolveMintOutcomeSetKey(
     params.keepOutcomeSetId,
     outcomeCollectionKeysets,
-    'keep',
   )
+  const lockCollections = new Set(outcomeLegs.lockCollections)
+  const keepCollections = new Set(outcomeLegs.keepCollections)
   const normalizedCollateral = params.collateralProofs.map(normalizeProof)
   const proofsByCollection = await splitCompleteSetWithOperation({
     mintUrl: params.mintUrl,
@@ -292,25 +301,33 @@ export async function splitRootCompleteSetForSwap(
     outcomeCollectionKeysets,
     amountSats: params.amountSats,
     proofOperationStore: params.proofOperationStore,
-    makeOutputs: ({ collection, amountSats, keyset }) =>
-      collection === resolvedLockOutcomeSetId
-        ? RegularOutputData.createP2PKData(params.p2pk, Amount.from(amountSats), keyset)
-        : RegularOutputData.createRandomData(Amount.from(amountSats), keyset),
+    makeOutputs: ({ collection, amountSats, keyset }) => {
+      if (lockCollections.has(collection)) {
+        return RegularOutputData.createP2PKData(params.p2pk, Amount.from(amountSats), keyset)
+      }
+      if (keepCollections.has(collection)) {
+        return RegularOutputData.createRandomData(Amount.from(amountSats), keyset)
+      }
+      throw new Error(`CTF split has no lock/keep branch for outcome collection ${collection}`)
+    },
   })
 
   return {
-    resolvedLockOutcomeSetId,
-    resolvedKeepOutcomeSetId,
-    lockedProofs: requireOutcomeProofs(
+    resolvedLockOutcomeSetId: outcomeLegs.resolvedLockOutcomeSetId,
+    resolvedKeepOutcomeSetId: outcomeLegs.resolvedKeepOutcomeSetId,
+    lockCollections: outcomeLegs.lockCollections,
+    keepCollections: outcomeLegs.keepCollections,
+    lockedProofs: requireOutcomeProofsForCollections(
       proofsByCollection,
-      resolvedLockOutcomeSetId,
+      outcomeLegs.lockCollections,
       params.operationId,
     ),
-    keepProofs: requireOutcomeProofs(
+    keepProofs: requireOutcomeProofsForCollections(
       proofsByCollection,
-      resolvedKeepOutcomeSetId,
+      outcomeLegs.keepCollections,
       params.operationId,
     ),
+    proofsByCollection,
     spentSatProofs: normalizedCollateral,
   }
 }
@@ -331,15 +348,10 @@ export async function splitRootCompleteSetForPreflightOrder(
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
   )
-  const resolvedLockOutcomeSetId = resolveMintOutcomeSetKey(
+  const outcomeLegs = resolveComplementaryOutcomeLegs(
     params.lockOutcomeSetId,
-    outcomeCollectionKeysets,
-    'lock',
-  )
-  const resolvedKeepOutcomeSetId = resolveMintOutcomeSetKey(
     params.keepOutcomeSetId,
     outcomeCollectionKeysets,
-    'keep',
   )
   const normalizedCollateral = params.collateralProofs.map(normalizeProof)
   const proofsByCollection = await splitCompleteSetWithOperation({
@@ -356,16 +368,18 @@ export async function splitRootCompleteSetForPreflightOrder(
   })
 
   return {
-    resolvedLockOutcomeSetId,
-    resolvedKeepOutcomeSetId,
-    lockProofs: requireOutcomeProofs(
+    resolvedLockOutcomeSetId: outcomeLegs.resolvedLockOutcomeSetId,
+    resolvedKeepOutcomeSetId: outcomeLegs.resolvedKeepOutcomeSetId,
+    lockCollections: outcomeLegs.lockCollections,
+    keepCollections: outcomeLegs.keepCollections,
+    lockProofs: requireOutcomeProofsForCollections(
       proofsByCollection,
-      resolvedLockOutcomeSetId,
+      outcomeLegs.lockCollections,
       params.operationId,
     ),
-    keepProofs: requireOutcomeProofs(
+    keepProofs: requireOutcomeProofsForCollections(
       proofsByCollection,
-      resolvedKeepOutcomeSetId,
+      outcomeLegs.keepCollections,
       params.operationId,
     ),
     proofsByCollection,
@@ -743,6 +757,69 @@ export function resolveMintOutcomeSetKey(
   return matches[0]
 }
 
+export function resolveComplementaryOutcomeLegs(
+  lockOutcomeSetId: string,
+  keepOutcomeSetId: string,
+  outcomeCollectionKeysets: Record<string, string>,
+): ComplementaryOutcomeLegResolution {
+  const rootCollections = Object.keys(outcomeCollectionKeysets)
+  const primitiveCollections = new Map<string, string>()
+  for (const collection of rootCollections) {
+    const parts = parseOutcomeSetId(collection)
+    if (parts.length !== 1) {
+      throw new Error(
+        `CTF split root outcome collection ${collection} is not primitive`,
+      )
+    }
+    const comparable = comparableOutcome(parts[0])
+    if (primitiveCollections.has(comparable)) {
+      throw new Error(
+        `CTF split root outcome collection ${collection} duplicates primitive outcome ${parts[0]}`,
+      )
+    }
+    primitiveCollections.set(comparable, collection)
+  }
+
+  const lockSet = parseOutcomeSetToComparableSet(lockOutcomeSetId)
+  const keepSet = parseOutcomeSetToComparableSet(keepOutcomeSetId)
+  const lockCollections = resolvePrimitiveOutcomeCollections(
+    lockOutcomeSetId,
+    lockSet,
+    primitiveCollections,
+    'lock',
+  )
+  const keepCollections = resolvePrimitiveOutcomeCollections(
+    keepOutcomeSetId,
+    keepSet,
+    primitiveCollections,
+    'keep',
+  )
+
+  const seen = new Set<string>()
+  for (const collection of lockCollections) seen.add(collection)
+  for (const collection of keepCollections) {
+    if (seen.has(collection)) {
+      throw new Error(
+        `CTF split lock and keep outcomes overlap on primitive collection ${collection}`,
+      )
+    }
+    seen.add(collection)
+  }
+  if (seen.size !== rootCollections.length) {
+    const missing = rootCollections.filter((collection) => !seen.has(collection))
+    throw new Error(
+      `CTF split lock and keep outcomes are not a complete partition; missing ${missing.join('|')}`,
+    )
+  }
+
+  return {
+    resolvedLockOutcomeSetId: canonicalizeOutcomeSetCollections(lockCollections),
+    resolvedKeepOutcomeSetId: canonicalizeOutcomeSetCollections(keepCollections),
+    lockCollections,
+    keepCollections,
+  }
+}
+
 export function requireOutcomeProofs(
   proofsByCollection: Record<string, Proof[]>,
   outcomeSetId: string,
@@ -755,6 +832,16 @@ export function requireOutcomeProofs(
     )
   }
   return proofs
+}
+
+export function requireOutcomeProofsForCollections(
+  proofsByCollection: Record<string, Proof[]>,
+  collections: string[],
+  operationId: string,
+): Proof[] {
+  return collections.flatMap((collection) =>
+    requireOutcomeProofs(proofsByCollection, collection, operationId),
+  )
 }
 
 function selectSingleRootPartitionKeysets(condition: CtfConditionInfo): Record<string, string> {
@@ -989,7 +1076,7 @@ function parseOutcomeSetToComparableSet(outcomeSetId: string): Set<string> {
   if (elements.length === 0) {
     throw new Error('CTF split outcome-set id cannot be empty')
   }
-  return new Set(elements)
+  return new Set(elements.map(comparableOutcome))
 }
 
 function parseOutcomeSetId(outcomeSetId: string): string[] {
@@ -997,6 +1084,36 @@ function parseOutcomeSetId(outcomeSetId: string): string[] {
     .split('|')
     .map((outcome) => outcome.trim())
     .filter(Boolean)
+}
+
+function resolvePrimitiveOutcomeCollections(
+  outcomeSetId: string,
+  outcomeSet: Set<string>,
+  primitiveCollections: Map<string, string>,
+  branch: 'lock' | 'keep',
+): string[] {
+  const collections: string[] = []
+  for (const primitive of outcomeSet) {
+    const collection = primitiveCollections.get(primitive)
+    if (!collection) {
+      throw new Error(
+        `CTF split ${branch} outcome ${outcomeSetId} contains primitive ${primitive} with no mint root keyset`,
+      )
+    }
+    collections.push(collection)
+  }
+  return collections
+}
+
+function canonicalizeOutcomeSetCollections(collections: string[]): string {
+  return collections
+    .flatMap(parseOutcomeSetId)
+    .sort()
+    .join('|')
+}
+
+function comparableOutcome(outcome: string): string {
+  return outcome.trim()
 }
 
 function outcomeSetsEqual(left: Set<string>, right: Set<string>): boolean {

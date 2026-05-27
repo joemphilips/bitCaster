@@ -203,8 +203,9 @@ describe('splitRootCompleteSetForSwap', () => {
 
   it('keys split outputs by resolved mint outcome-set keys and locks the resolved branch', async () => {
     mockMintCondition({
-      'Bob|Carol': 'keyset-not-alice',
       Alice: 'keyset-alice',
+      Bob: 'keyset-bob',
+      Carol: 'keyset-carol',
     })
 
     const result = await splitRootCompleteSetForSwap({
@@ -220,12 +221,16 @@ describe('splitRootCompleteSetForSwap', () => {
     })
 
     const splitRequest = ctfMintState.splitRequests[0]
-    expect(Object.keys(splitRequest.outputs)).toEqual(['Bob|Carol', 'Alice'])
-    expect(splitRequest.outputs['Bob|Carol'][0].B_).toBe('p2pk-keyset-not-alice')
+    expect(Object.keys(splitRequest.outputs)).toEqual(['Alice', 'Bob', 'Carol'])
     expect(splitRequest.outputs.Alice[0].B_).toBe('random-keyset-alice')
+    expect(splitRequest.outputs.Bob[0].B_).toBe('p2pk-keyset-bob')
+    expect(splitRequest.outputs.Carol[0].B_).toBe('p2pk-keyset-carol')
     expect(result.resolvedLockOutcomeSetId).toBe('Bob|Carol')
     expect(result.resolvedKeepOutcomeSetId).toBe('Alice')
-    expect(result.lockedProofs[0].id).toBe('keyset-not-alice')
+    expect(result.lockedProofs.map((proof) => proof.id).sort()).toEqual([
+      'keyset-bob',
+      'keyset-carol',
+    ])
     expect(result.keepProofs[0].id).toBe('keyset-alice')
   })
 
@@ -255,7 +260,7 @@ describe('splitRootCompleteSetForSwap', () => {
     expect(result.proofsByCollection.YES[0].secret).toBe('proof-random-keyset-yes')
   })
 
-  it('throws before posting when an engine outcome-set id matches multiple mint keys', async () => {
+  it('throws before posting when the mint root keyset map is not primitive', async () => {
     mockMintCondition({
       'Alice|Bob': 'keyset-1',
       'Bob|Alice': 'keyset-2',
@@ -274,7 +279,7 @@ describe('splitRootCompleteSetForSwap', () => {
         operationId: 'op-2',
         proofOperationStore: proofOperationStore(),
       }),
-    ).rejects.toThrow('matched 2 mint keyset-map keys')
+    ).rejects.toThrow('root outcome collection Alice|Bob is not primitive')
     expect(ctfMintState.splitRequests).toHaveLength(0)
   })
 })

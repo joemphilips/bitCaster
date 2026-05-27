@@ -1,4 +1,11 @@
 import {
+  Mint as CashuMint,
+  Wallet as CashuWallet,
+  getEncodedToken,
+} from '@cashu/cashu-ts'
+import { createP2PKWitness } from '@bitcaster/swap-protocol/p2pk'
+import { sha256 } from '@noble/hashes/sha2.js'
+import {
   getProofOperation,
   markProofOperationCompleted,
   prepareProofOperation,
@@ -125,8 +132,11 @@ interface CtfSplitModule {
   }): Promise<{
     resolvedLockOutcomeSetId: string
     resolvedKeepOutcomeSetId: string
+    lockCollections: string[]
+    keepCollections: string[]
     lockedProofs: CashuProofRecord[]
     keepProofs: CashuProofRecord[]
+    proofsByCollection: Record<string, CashuProofRecord[]>
     spentSatProofs: CashuProofRecord[]
   }>
 }
@@ -257,6 +267,9 @@ export function createRealDaemonSwapOps(
         changeProofs: prepared.changeProofs,
         spentSatProofs: split.spentSatProofs,
         keepProofs: split.keepProofs,
+        proofsByCollection: split.proofsByCollection,
+        lockCollections: split.lockCollections,
+        keepCollections: split.keepCollections,
         resolvedKeepOutcomeSetId: split.resolvedKeepOutcomeSetId,
         resolvedLockOutcomeSetId: split.resolvedLockOutcomeSetId,
       } satisfies SellerComplementaryOpenResult
@@ -314,6 +327,40 @@ export function createRealDaemonSwapOps(
         await sleep(nut07PollIntervalMs)
       }
       throw new Error('Timed out waiting for seller to spend at mint')
+    },
+
+    async refundLockedProofs(ctx, lockedProofs, operationId) {
+      if (lockedProofs.length === 0) return []
+      await prepareProofOperation({
+        operationId,
+        kind: 'swap-refund',
+        mintUrl: ctx.mintUrl,
+        inputs: lockedProofs,
+        outputs: {},
+        metadata: {
+          tradeId: ctx.tradeId,
+          role: ctx.role,
+          refundLocktime: ctx.sellerLocktime,
+        },
+      })
+      const witnessed = lockedProofs.map((proof) => ({
+        ...proof,
+        witness: createP2PKWitness(
+          hexToBytes(ctx.ephemeralKey.privateKeyHex),
+          sha256(new TextEncoder().encode(proof.secret)),
+        ),
+      }))
+      const mint = new CashuMint(ctx.mintUrl)
+      const wallet = new CashuWallet(mint)
+      await wallet.loadMint()
+      const token = getEncodedToken({
+        mint: ctx.mintUrl,
+        unit: 'sat',
+        proofs: witnessed as never,
+      })
+      const fresh = await wallet.receive(token)
+      await markProofOperationCompleted(operationId, { refund: fresh })
+      return fresh
     },
   }
 }

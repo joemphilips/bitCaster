@@ -170,8 +170,14 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
             return {
               resolvedKeepOutcomeSetId: 'YES',
               resolvedLockOutcomeSetId: 'NO',
+              lockCollections: ['NO'],
+              keepCollections: ['YES'],
               lockedProofs: [proof(100, 'lock-proof')],
               keepProofs: [proof(100, 'keep-proof')],
+              proofsByCollection: {
+                YES: [proof(100, 'keep-proof')],
+                NO: [proof(100, 'lock-proof')],
+              },
               spentSatProofs: params.collateralProofs,
             }
           },

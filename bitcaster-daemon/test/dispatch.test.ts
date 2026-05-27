@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { getEncodedToken, type Proof } from '@cashu/cashu-ts'
+import { EngineClientError } from '@bitcaster/client-sdk/engineClient'
 import { dispatch, type EngineClientLike } from '../src/server.ts'
 import { profileFromPublicKey, readProfile, writeProfile } from '../src/profile.ts'
 import {
@@ -1065,6 +1066,65 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         publicKeyHex: `02${'22'.repeat(32)}`,
         createdAt: updatedSecrets.orderEphemeralKeys['order-1'].createdAt,
       })
+    })
+
+    await t.test('order.submit propagates engine machine-code rejections', async () => {
+      const priorState = await readState()
+      await writeState(emptyDaemonState())
+      const engine: EngineClientLike = {
+        async submitOrder() {
+          throw new EngineClientError(
+            400,
+            '{"code":"InvalidOutcomeSet","detail":"OutcomeId must match the marketId outcome set."}',
+            'InvalidOutcomeSet',
+            'OutcomeId must match the marketId outcome set.',
+          )
+        },
+        async getOrderStatus() {
+          return null
+        },
+        async cancelOrder() {
+          throw new Error('cancelOrder unused')
+        },
+        async getOrderBook() {
+          throw new Error('getOrderBook unused')
+        },
+        async queryMarkets() {
+          return { markets: [], nextCursor: null }
+        },
+      }
+
+      const response = await dispatch(
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-Bob|Carol',
+            outcomeId: 'Bob|Carol',
+            side: 'Buy',
+            price: 42,
+            amountSats: 100,
+            timeInForce: 'GTC',
+          },
+        },
+        {
+          createEngineClient() {
+            return engine
+          },
+          generateEphemeralKeypair: () => ({
+            privateKeyHex: '11'.repeat(32),
+            publicKeyHex: `02${'22'.repeat(32)}`,
+          }),
+        },
+      )
+
+      assert.equal(response.ok, false)
+      assert.equal(response.code, 'InvalidOutcomeSet')
+      assert.equal(
+        response.error,
+        'OutcomeId must match the marketId outcome set.',
+      )
+      assert.deepEqual((await readState())?.orders, {})
+      if (priorState) await writeState(priorState)
     })
 
     await t.test('order.submit rejects malformed order intent before side effects', async () => {

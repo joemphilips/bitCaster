@@ -114,6 +114,264 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
   }
 })
 
+test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-partial-lock-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const state = emptyDaemonState()
+    state.orders['order-1'] = {
+      orderId: 'order-1',
+      marketId: 'cond-A',
+      status: 'resting',
+      ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.wallet.proofs.push(
+      proofRecord(profile.mintUrl, 100, 'available', {
+        kind: 'outcome',
+        conditionId: 'cond',
+        outcomeSetId: 'A',
+      }),
+    )
+    await writeState(state)
+
+    const sent: string[] = []
+    const executor = new DaemonSwapExecutor({
+      connection: fakeConnection(sent),
+      ops: {
+        ...fakeOps(),
+        async sellerLockOutcomeProofs() {
+          const err = new Error('leg 2 mint swap failed') as Error & {
+            failure: {
+              kind: 'PartialLockHeld'
+              refundLocktime: number
+              affectedKeysets: string[]
+              detail: string
+            }
+            partialLock: {
+              spentProofs: ReturnType<typeof cashuProof>[]
+              lockedProofs: ReturnType<typeof cashuProof>[]
+              changeProofs: ReturnType<typeof cashuProof>[]
+            }
+          }
+          err.failure = {
+            kind: 'PartialLockHeld',
+            refundLocktime: 1_779_393_600,
+            affectedKeysets: ['A'],
+            detail: 'leg 1 locked; leg 2 failed',
+          }
+          err.partialLock = {
+            spentProofs: [cashuProof(100, 'secret-100')],
+            lockedProofs: [cashuProof(100, 'partial-locked')],
+            changeProofs: [],
+          }
+          throw err
+        },
+        async sellerOpenPrelocked() {
+          throw new Error('sellerOpenPrelocked must not run after partial lock')
+        },
+      },
+    })
+
+    await executor.onTradeCreated(
+      await recordTradeCreated({
+        tradeId: 'trade-partial-lock',
+        sellerPubkey: orderKey(secrets).publicKeyHex,
+        buyerPubkey: `03${'22'.repeat(32)}`,
+        sellerLocktime: '2026-05-21T00:02:00.000Z',
+        buyerLocktime: '2026-05-21T00:01:00.000Z',
+        marketId: 'cond-A',
+        outcomeFaceAmountSats: 100,
+        quotePaymentSats: 42,
+        settlementKind: 'DirectSwap',
+      }),
+    )
+
+    const persisted = await readState()
+    assert.equal(persisted?.swaps['trade-partial-lock'].step, 'failed')
+    assert.equal(
+      persisted?.swaps['trade-partial-lock'].failure?.kind,
+      'PartialLockHeld',
+    )
+    assert.equal(
+      persisted?.swaps['trade-partial-lock'].failure?.refundLocktime,
+      1_779_393_600,
+    )
+    assert.deepEqual(
+      persisted?.swaps['trade-partial-lock'].failure?.affectedKeysets,
+      ['A'],
+    )
+    assert.equal(
+      persisted?.wallet.proofs.some((row) => row.proof.secret === 'secret-100'),
+      false,
+    )
+    assert.equal(
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'partial-locked')
+        ?.state,
+      'locked',
+    )
+    assert.deepEqual(sent, [])
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-partial-refund-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const state = emptyDaemonState()
+    state.swaps['trade-partial-refund'] = {
+      tradeId: 'trade-partial-refund',
+      orderId: 'order-1',
+      marketId: 'cond-A',
+      role: 'seller',
+      counterpartyPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: 1,
+      buyerLocktime: 1,
+      fillAmountSats: 100,
+      messages: {},
+      step: 'failed',
+      error: 'leg 1 locked; leg 2 failed',
+      failure: {
+        kind: 'PartialLockHeld',
+        refundLocktime: 1,
+        affectedKeysets: ['A'],
+        detail: 'leg 1 locked; leg 2 failed',
+      },
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.wallet.proofs.push({
+      ...proofRecord(profile.mintUrl, 100, 'locked', {
+        kind: 'outcome',
+        conditionId: 'cond',
+        outcomeSetId: 'A',
+      }),
+      reservedBy: 'trade-partial-refund',
+      proof: cashuProof(100, 'partial-locked'),
+    })
+    await writeState(state)
+
+    const refunded: string[] = []
+    const executor = new DaemonSwapExecutor({
+      connection: fakeConnection([]),
+      ops: {
+        ...fakeOps(),
+        async refundLockedProofs(_ctx, proofs, operationId) {
+          refunded.push(`${operationId}:${proofs[0].secret}`)
+          return [cashuProof(100, 'partial-refunded')]
+        },
+      },
+    })
+
+    await executor.resumeActiveSwaps(await readState() as DaemonState)
+
+    const persisted = await readState()
+    assert.deepEqual(refunded, [
+      'trade-partial-refund:partial-lock-refund:partial-locked',
+    ])
+    assert.equal(persisted?.swaps['trade-partial-refund'].step, 'refunded')
+    assert.equal(
+      persisted?.wallet.proofs.some((row) => row.proof.secret === 'partial-locked'),
+      false,
+    )
+    assert.equal(
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'partial-refunded')
+        ?.state,
+      'available',
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-partial-spent-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const state = emptyDaemonState()
+    state.swaps['trade-partial-spent'] = {
+      tradeId: 'trade-partial-spent',
+      orderId: 'order-1',
+      marketId: 'cond-A',
+      role: 'seller',
+      counterpartyPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: 1,
+      buyerLocktime: 1,
+      fillAmountSats: 100,
+      messages: {},
+      step: 'failed',
+      error: 'leg 1 locked; leg 2 failed',
+      failure: {
+        kind: 'PartialLockHeld',
+        refundLocktime: 1,
+        affectedKeysets: ['A'],
+        detail: 'leg 1 locked; leg 2 failed',
+      },
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.wallet.proofs.push({
+      ...proofRecord(profile.mintUrl, 100, 'locked', {
+        kind: 'outcome',
+        conditionId: 'cond',
+        outcomeSetId: 'A',
+      }),
+      reservedBy: 'trade-partial-spent',
+      proof: cashuProof(100, 'partial-spent'),
+    })
+    await writeState(state)
+
+    const executor = new DaemonSwapExecutor({
+      connection: fakeConnection([]),
+      ops: {
+        ...fakeOps(),
+        async refundLockedProofs() {
+          throw new Error('proof already spent')
+        },
+      },
+    })
+
+    await executor.resumeActiveSwaps(await readState() as DaemonState)
+
+    const persisted = await readState()
+    assert.equal(persisted?.swaps['trade-partial-spent'].step, 'refunded')
+    assert.equal(
+      persisted?.wallet.proofs.some((row) => row.proof.secret === 'partial-spent'),
+      false,
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('DaemonSwapExecutor leaves persisted seller open resumable when hub send fails', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-send-fail-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
@@ -670,17 +928,17 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
           assert.equal(proofs[0].secret, 'reserved-lock-no-136')
           return {
             lockedProofs: [cashuProof(100, 'lock-locked-100')],
-            changeProofs: [cashuProof(36, 'lock-change-36')],
+            changeProofs: [{ ...cashuProof(36, 'lock-change-36'), id: 'keyset-136' }],
           }
         },
         async splitProofsForExactSend(params) {
           assert.equal(params.amountSats, 100)
           assert.equal(params.preserveSourceKeyset, true)
-          assert.match(params.operationId, /seller-preflight-keep-exact-v2$/)
+          assert.match(params.operationId, /seller-preflight-keep-exact-v2\/YES$/)
           const prefix = 'keep'
           return {
             sendProofs: [cashuProof(100, `${prefix}-exact-100`)],
-            changeProofs: [cashuProof(36, `${prefix}-change-36`)],
+            changeProofs: [{ ...cashuProof(36, `${prefix}-change-36`), id: 'keyset-136' }],
             spentProofs: params.sourceProofs,
           }
         },
@@ -920,6 +1178,9 @@ function fakeOps(): DaemonSwapOps {
     async buyerClaim() {
       throw new Error('buyer path unused in this test')
     },
+    async refundLockedProofs() {
+      throw new Error('refund path unused in this test')
+    },
   }
 }
 
@@ -955,6 +1216,9 @@ function buyerFakeOps(): DaemonSwapOps {
     async buyerClaim() {
       return [cashuProof(100, 'buyer-claim')]
     },
+    async refundLockedProofs() {
+      throw new Error('refund path unused in this test')
+    },
   }
 }
 
@@ -989,6 +1253,12 @@ function complementaryFakeOps(): DaemonSwapOps {
         changeProofs: [],
         spentSatProofs: collateralProofs,
         keepProofs: [cashuProof(100, 'keep-proof')],
+        proofsByCollection: {
+          YES: [cashuProof(100, 'keep-proof')],
+          NO: [cashuProof(100, 'lock-proof')],
+        },
+        lockCollections: ['NO'],
+        keepCollections: ['YES'],
         resolvedKeepOutcomeSetId: 'YES',
         resolvedLockOutcomeSetId: 'NO',
       }
@@ -1001,6 +1271,9 @@ function complementaryFakeOps(): DaemonSwapOps {
     },
     async buyerClaim() {
       throw new Error('buyer path unused in this test')
+    },
+    async refundLockedProofs() {
+      throw new Error('refund path unused in this test')
     },
   }
 }

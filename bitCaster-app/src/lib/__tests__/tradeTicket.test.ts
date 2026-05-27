@@ -190,7 +190,7 @@ describe("buildTradeTicket", () => {
     expect(ticket.request.outcomeId).toBe("Alice");
   });
 
-  it("builds categorical NO tickets with the complement outcome set", () => {
+  it("builds categorical NO tickets against compound complements", () => {
     const ticket = buildTradeTicket({
       market: categoricalMarket,
       selection: { side: "no", outcomeId: "outcome-0" },
@@ -203,6 +203,29 @@ describe("buildTradeTicket", () => {
 
     expect(ticket.marketId).toBe("condition-2-Bob|Carol");
     expect(ticket.request.outcomeId).toBe("Bob|Carol");
+  });
+
+  it("builds two-outcome categorical NO tickets with a primitive complement", () => {
+    const twoOutcomeCategoricalMarket: MarketDetail = {
+      ...categoricalMarket,
+      outcomes: [
+        { id: "outcome-0", label: "Alice", odds: 50 },
+        { id: "outcome-1", label: "Bob", odds: 50 },
+      ],
+    };
+
+    const ticket = buildTradeTicket({
+      market: twoOutcomeCategoricalMarket,
+      selection: { side: "no", outcomeId: "outcome-1" },
+      amountSats: 100,
+      side: "buy",
+      orderType: "limit",
+      limitPrice: 45,
+      orderBook: market.orderBook,
+    });
+
+    expect(ticket.marketId).toBe("condition-2-Alice");
+    expect(ticket.request.outcomeId).toBe("Alice");
   });
 
   it("rejects market orders with no visible liquidity instead of emitting price 0", () => {

@@ -31,6 +31,7 @@ import { buildEventId } from '@/lib/slug'
  * one-line change here. CreatedMarketRow hides the row when the value is 0.
  */
 const DEFAULT_CREATOR_FEE_PERCENT = 0
+export const MAX_MARKET_OUTCOMES = 8
 
 const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
 
@@ -263,6 +264,7 @@ export function useMarketCreationState() {
   const onAddOutcome = useCallback(() => {
     setDraft((prev) => {
       if (!prev.stepOutcomes?.outcomes) return prev
+      if (prev.stepOutcomes.outcomes.length >= MAX_MARKET_OUTCOMES) return prev
       const newOutcome: WizardOutcome = {
         id: `outcome-${Date.now()}`,
         label: '',
@@ -466,6 +468,9 @@ export function useMarketCreationState() {
         if (!announcement) throw new Error('No oracle announcement selected')
         announcementHex = announcement.id
         outcomes = draft.stepOutcomes?.outcomes?.map((o) => o.label) ?? announcement.outcomes
+      }
+      if (outcomes.length > MAX_MARKET_OUTCOMES) {
+        throw new Error(`At most ${MAX_MARKET_OUTCOMES} outcomes are supported.`)
       }
 
       // 1. Register condition on the mint

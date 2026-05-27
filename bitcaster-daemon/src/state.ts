@@ -7,6 +7,7 @@ import {
   isSettlementCompleteMessage,
 } from '../../bitcaster-client-sdk/src/tradeFlow.ts'
 import { amountToNumber } from '../../bitcaster-client-sdk/src/proofSelection.ts'
+import type { SwapFailure } from '../../bitcaster-client-sdk/src/swapFailure.ts'
 import { ensureProfileDir, profileDir } from './profile.ts'
 
 export interface CashuProofRecord {
@@ -37,6 +38,7 @@ export type ProofOperationKind =
   | 'regular-split'
   | 'wallet-send'
   | 'proof-split'
+  | 'swap-refund'
 
 export type ProofOperationState = 'prepared' | 'completed' | 'failed'
 
@@ -160,9 +162,10 @@ export interface LocalSwapRecord {
     | 'settling'
     | 'awaiting-confirmation'
     | 'confirmed'
-    | 'refunded'
-    | 'failed'
+      | 'refunded'
+      | 'failed'
   error?: string
+  failure?: SwapFailure
   createdAt: string
   updatedAt: string
 }
@@ -1017,7 +1020,8 @@ function isProofOperationKind(value: unknown): value is ProofOperationKind {
     value === 'ctf-redeem' ||
     value === 'regular-split' ||
     value === 'wallet-send' ||
-    value === 'proof-split'
+    value === 'proof-split' ||
+    value === 'swap-refund'
   )
 }
 

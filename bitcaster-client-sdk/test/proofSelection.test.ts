@@ -1,9 +1,33 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { keysetToOutcomeCollection } from '../src/proofSelection.ts'
 
-import { amountToNumber, sumProofs } from '../src/proofSelection.ts'
+test('keysetToOutcomeCollection maps each keyset to exactly one outcome collection', () => {
+  assert.deepEqual(
+    [...keysetToOutcomeCollection(
+      [
+        { keysetId: 'keyset-a', outcomeCollection: 'A' },
+        { keysetId: 'keyset-b', outcomeCollection: 'B|C' },
+      ],
+      (row) => row,
+    )],
+    [
+      ['keyset-a', 'A'],
+      ['keyset-b', 'B|C'],
+    ],
+  )
+})
 
-test('amountToNumber normalizes Cashu Amount values after IndexedDB structured clone', () => {
-  assert.equal(amountToNumber({ value: 100n }), 100)
-  assert.equal(sumProofs([{ amount: { value: 60n } }, { amount: { value: 40 } }]), 100)
+test('keysetToOutcomeCollection rejects ambiguous keyset mappings', () => {
+  assert.throws(
+    () =>
+      keysetToOutcomeCollection(
+        [
+          { keysetId: 'keyset-a', outcomeCollection: 'A' },
+          { keysetId: 'keyset-a', outcomeCollection: 'B' },
+        ],
+        (row) => row,
+      ),
+    /maps to both A and B/,
+  )
 })

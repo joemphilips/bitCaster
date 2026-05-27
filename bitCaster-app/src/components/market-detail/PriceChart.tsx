@@ -59,9 +59,19 @@ export function PriceChart({
 
   // Get active price history
   const activeData = priceHistory.data
+  const multiLineSeries = isMultiLine && outcomePriceHistories && outcomes
+    ? outcomes
+        .slice(0, 6)
+        .map((outcome) => ({ outcome, data: outcomePriceHistories[outcome.id]?.data ?? [] }))
+        .filter((series) => series.data.length > 0)
+    : []
+  const chartData = multiLineSeries.length > 0
+    ? multiLineSeries.flatMap((series) => series.data)
+    : activeData
+  const hasChartData = chartData.length > 0
 
   // Calculate chart bounds
-  const allPrices = activeData.map((p) => chartType === 'volume' && p.volume ? p.volume : p.price)
+  const allPrices = chartData.map((p) => chartType === 'volume' && p.volume ? p.volume : p.price)
   const minPrice = Math.min(...allPrices, 0)
   const maxPrice = Math.max(...allPrices, 100)
   const range = maxPrice - minPrice || 1
@@ -82,6 +92,16 @@ export function PriceChart({
         return `${i === 0 ? 'M' : 'L'} ${x} ${y}`
       })
       .join(' ')
+  }
+
+  function pointPosition(data: Array<{ price: number; volume?: number }>, i: number) {
+    const width = 100
+    const height = 100
+    const padding = 5
+    const x = padding + ((width - 2 * padding) * i) / (data.length - 1 || 1)
+    const value = chartType === 'volume' && data[i].volume ? data[i].volume : data[i].price
+    const y = height - padding - ((value - minPrice) / range) * (height - 2 * padding)
+    return { x, y }
   }
 
   return (
@@ -130,7 +150,7 @@ export function PriceChart({
 
       {/* Chart Area */}
       <div className="relative h-48 mb-4 bg-slate-50 dark:bg-slate-900 rounded-xl overflow-hidden">
-        {activeData.length === 0 ? (
+        {!hasChartData ? (
           <div className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
             {t('market.noDataAvailable')}
           </div>
@@ -145,19 +165,28 @@ export function PriceChart({
             <line x1="5" y1="50" x2="95" y2="50" stroke="currentColor" className="text-slate-200 dark:text-slate-700" strokeWidth="0.5" />
             <line x1="5" y1="75" x2="95" y2="75" stroke="currentColor" className="text-slate-200 dark:text-slate-700" strokeWidth="0.5" />
 
-            {isMultiLine && outcomePriceHistories && outcomes ? (
-              outcomes.slice(0, 6).map((outcome, idx) => {
-                const history = outcomePriceHistories[outcome.id]
-                if (!history?.data?.length) return null
+            {multiLineSeries.length > 0 ? (
+              multiLineSeries.map(({ outcome, data }, idx) => {
+                const singlePoint = data.length === 1 ? pointPosition(data, 0) : null
                 return (
-                  <path
-                    key={outcome.id}
-                    d={generatePath(history.data)}
-                    fill="none"
-                    stroke={OUTCOME_COLORS[idx % OUTCOME_COLORS.length]}
-                    strokeWidth="2"
-                    vectorEffect="non-scaling-stroke"
-                  />
+                  <g key={outcome.id}>
+                    <path
+                      d={generatePath(data)}
+                      fill="none"
+                      stroke={OUTCOME_COLORS[idx % OUTCOME_COLORS.length]}
+                      strokeWidth="2"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    {singlePoint && (
+                      <circle
+                        cx={singlePoint.x}
+                        cy={singlePoint.y}
+                        r="2"
+                        fill={OUTCOME_COLORS[idx % OUTCOME_COLORS.length]}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    )}
+                  </g>
                 )
               })
             ) : (
@@ -176,6 +205,18 @@ export function PriceChart({
                   strokeWidth="2"
                   vectorEffect="non-scaling-stroke"
                 />
+                {activeData.length === 1 && (() => {
+                  const point = pointPosition(activeData, 0)
+                  return (
+                    <circle
+                      cx={point.x}
+                      cy={point.y}
+                      r="2"
+                      fill="rgb(59, 130, 246)"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )
+                })()}
               </>
             )}
 

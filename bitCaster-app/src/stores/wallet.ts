@@ -7,6 +7,7 @@ import { normalizeUrl } from '@/lib/url'
 import { db, getBaseProofs, isCtfProof, type StoredProof } from './proof-db'
 import type { MintConnectionTestStatus } from '@/types/wallet-setup'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
+import type { SecretBackupState } from '@/types/settings'
 
 export interface StoredMint {
   url: string
@@ -18,6 +19,7 @@ export interface StoredMint {
 interface WalletState {
   mnemonic: string
   setupComplete: boolean
+  walletBackupState: SecretBackupState
   mints: StoredMint[]
   activeMintUrl: string
   keysetCounters: Record<string, number>
@@ -39,6 +41,8 @@ interface WalletState {
   mintConnectionStatuses: Record<string, MintConnectionTestStatus>
 
   generateMnemonic: () => void
+  ensureImplicitWallet: () => Promise<void>
+  markWalletBackupConfirmed: () => void
   recoverFromMnemonic: (words: string[]) => { valid: boolean; error?: string }
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>
   /**
@@ -154,6 +158,7 @@ export const useWalletStore = create<WalletState>()(
     (set, get) => ({
       mnemonic: '',
       setupComplete: false,
+      walletBackupState: 'none',
       mints: [],
       activeMintUrl: DEFAULT_MINT_URL,
       keysetCounters: {},
@@ -170,10 +175,27 @@ export const useWalletStore = create<WalletState>()(
         // adversarial review #6).
         set({
           mnemonic: words.join(' '),
+          walletBackupState: 'needs_backup',
           keysetCounters: {},
           keysetCountersRecovered: {},
         })
       },
+
+      ensureImplicitWallet: async () => {
+        if (!get().mnemonic) {
+          get().generateMnemonic()
+        } else if (get().walletBackupState === 'none') {
+          set({ walletBackupState: 'needs_backup' })
+        }
+
+        const { mints } = get()
+        if (!mints.some((m) => m.url === DEFAULT_MINT_URL)) {
+          try { await get()._addMint(DEFAULT_MINT_URL) } catch { /* retry on next app load */ }
+        }
+        set({ setupComplete: true })
+      },
+
+      markWalletBackupConfirmed: () => set({ walletBackupState: 'confirmed' }),
 
       recoverFromMnemonic: (words: string[]) => {
         if (words.length !== 12) {
@@ -188,6 +210,7 @@ export const useWalletStore = create<WalletState>()(
         // new seed.
         set({
           mnemonic: words.join(' '),
+          walletBackupState: 'confirmed',
           keysetCounters: {},
           keysetCountersRecovered: {},
         })
@@ -253,7 +276,7 @@ export const useWalletStore = create<WalletState>()(
         if (!mints.some((m) => m.url === DEFAULT_MINT_URL)) {
           try { await get()._addMint(DEFAULT_MINT_URL) } catch { /* retry on next app load */ }
         }
-        set({ setupComplete: true })
+        set({ setupComplete: true, walletBackupState: 'confirmed' })
       },
 
       getWallet: async (mintUrl?: string): Promise<CashuWallet> => {
@@ -277,6 +300,7 @@ export const useWalletStore = create<WalletState>()(
       partialize: (state) => ({
         mnemonic: state.mnemonic,
         setupComplete: state.setupComplete,
+        walletBackupState: state.walletBackupState,
         mints: state.mints,
         activeMintUrl: state.activeMintUrl,
         keysetCounters: state.keysetCounters,

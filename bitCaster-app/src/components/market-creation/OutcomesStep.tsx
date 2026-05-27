@@ -1,7 +1,11 @@
 import { Plus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { WizardOutcome, OutcomeType } from '@/types/market-creation'
-import { probabilitySumValid, allProbabilitiesInRange } from '@/hooks/useMarketCreationState'
+import {
+  MAX_MARKET_OUTCOMES,
+  probabilitySumValid,
+  allProbabilitiesInRange,
+} from '@/hooks/useMarketCreationState'
 
 interface OutcomesStepProps {
   outcomeType: OutcomeType
@@ -236,9 +240,11 @@ export function OutcomesStep({
   // Categorical outcomes
   const catSumOk = outcomes ? probabilitySumValid(outcomes) : false
   const catRangeOk = outcomes ? allProbabilitiesInRange(outcomes) : false
+  const canAddOutcome = (outcomes?.length ?? 0) < MAX_MARKET_OUTCOMES
   const canProceed =
     outcomes &&
     outcomes.length >= 2 &&
+    outcomes.length <= MAX_MARKET_OUTCOMES &&
     outcomes.every((o) => o.label.trim().length > 0) &&
     catSumOk &&
     catRangeOk
@@ -292,7 +298,12 @@ export function OutcomesStep({
 
       <button
         onClick={() => onAddOutcome?.()}
-        className="flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 transition-colors mb-4"
+        disabled={!canAddOutcome}
+        className={`flex items-center gap-1.5 text-sm transition-colors mb-4 ${
+          canAddOutcome
+            ? 'text-blue-400 hover:text-blue-300'
+            : 'text-slate-600 cursor-not-allowed'
+        }`}
       >
         <Plus className="w-4 h-4" strokeWidth={1.5} />
         {t('marketCreation.addOutcome')}

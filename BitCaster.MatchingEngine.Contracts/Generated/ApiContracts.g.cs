@@ -410,7 +410,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(long @amountSats, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce)
+        public SubmitOrderRequest(long @amountSats, NostrKind1Event @comment, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce)
         {
             this.OutcomeId = @outcomeId;
             this.Side = @side;
@@ -418,6 +418,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.AmountSats = @amountSats;
             this.TimeInForce = @timeInForce;
             this.EphemeralPubkey = @ephemeralPubkey;
+            this.Comment = @comment;
         }
 
         /// <summary>
@@ -451,6 +452,63 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("ephemeralPubkey")]
         public string EphemeralPubkey { get; }
+
+        /// <summary>
+        /// Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("comment")]
+        public NostrKind1Event Comment { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class NostrKind1Event
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public NostrKind1Event(string @content, long @createdAt, string @id, NostrKind1EventKind @kind, string @pubkey, string @sig, System.Collections.Generic.List<System.Collections.Generic.List<string>> @tags)
+        {
+            this.Id = @id;
+            this.Pubkey = @pubkey;
+            this.CreatedAt = @createdAt;
+            this.Kind = @kind;
+            this.Tags = @tags;
+            this.Content = @content;
+            this.Sig = @sig;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("id")]
+        public string Id { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("pubkey")]
+        public string Pubkey { get; }
+
+        /// <summary>
+        /// NIP-01 created_at Unix timestamp.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
+        public long CreatedAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("kind")]
+        public NostrKind1EventKind Kind { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tags")]
+        public System.Collections.Generic.List<System.Collections.Generic.List<string>> Tags { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("content")]
+        public string Content { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("sig")]
+        public string Sig { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -892,6 +950,214 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("thumbnailUrl")]
         public string ThumbnailUrl { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketPriceHistoryPoint
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketPriceHistoryPoint(int @price, System.DateTimeOffset @timestamp, long @volumeSats)
+        {
+            this.Timestamp = @timestamp;
+            this.Price = @price;
+            this.VolumeSats = @volumeSats;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("timestamp")]
+        public System.DateTimeOffset Timestamp { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int Price { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("volumeSats")]
+        public long VolumeSats { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketOutcomePriceHistory
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketOutcomePriceHistory(System.Collections.Generic.List<MarketPriceHistoryPoint> @data, string @outcomeId)
+        {
+            this.OutcomeId = @outcomeId;
+            this.Data = @data;
+        }
+
+        /// <summary>
+        /// Primitive outcome id. Compound outcome ids are not returned.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("data")]
+        public System.Collections.Generic.List<MarketPriceHistoryPoint> Data { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketPriceHistoryResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketPriceHistoryResponse(string @conditionId, System.Collections.Generic.List<MarketOutcomePriceHistory> @outcomes, MarketPriceHistoryResponseTimeframe @timeframe)
+        {
+            this.ConditionId = @conditionId;
+            this.Timeframe = @timeframe;
+            this.Outcomes = @outcomes;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
+        public string ConditionId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("timeframe")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<MarketPriceHistoryResponseTimeframe>))]
+        public MarketPriceHistoryResponseTimeframe Timeframe { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
+        public System.Collections.Generic.List<MarketOutcomePriceHistory> Outcomes { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketComment
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketComment(string @authorPubkey, System.Guid @commentId, string @content, System.DateTimeOffset @createdAt)
+        {
+            this.AuthorPubkey = @authorPubkey;
+            this.CommentId = @commentId;
+            this.Content = @content;
+            this.CreatedAt = @createdAt;
+        }
+
+        /// <summary>
+        /// Nostr pubkey that signed the comment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("authorPubkey")]
+        public string AuthorPubkey { get; }
+
+        /// <summary>
+        /// Opaque stable comment identifier.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("commentId")]
+        public System.Guid CommentId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("content")]
+        public string Content { get; }
+
+        /// <summary>
+        /// Timestamp from the signed Nostr kind-1 comment event.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
+        public System.DateTimeOffset CreatedAt { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketCommentsResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketCommentsResponse(System.Collections.Generic.List<MarketComment> @comments, string @conditionId)
+        {
+            this.ConditionId = @conditionId;
+            this.Comments = @comments;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
+        public string ConditionId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("comments")]
+        public System.Collections.Generic.List<MarketComment> Comments { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class SwapFailure
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public SwapFailure(string @detail, SwapFailureKind @kind, long? @refundLocktime, System.Collections.Generic.List<string> @affectedKeysets)
+        {
+            this.Detail = @detail;
+            this.Kind = @kind;
+            this.RefundLocktime = @refundLocktime;
+            this.AffectedKeysets = @affectedKeysets;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("kind")]
+        public SwapFailureKind Kind { get; }
+
+        /// <summary>
+        /// Unix seconds; present when kind is PartialLockHeld.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("refundLocktime")]
+        public long? RefundLocktime { get; }
+
+        /// <summary>
+        /// Primitive outcome/keyset legs affected by a partial lock.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("affectedKeysets")]
+        public System.Collections.Generic.List<string> AffectedKeysets { get; }
+
+        /// <summary>
+        /// Local diagnostic detail; redact from telemetry.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("detail")]
+        public string Detail { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1600,6 +1866,27 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum Timeframe
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1h")]
+        _1h = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"24h")]
+        _24h = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"7d")]
+        _7d = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"30d")]
+        _30d = 3,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"all")]
+        All = 4,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum State
     {
 
@@ -1680,6 +1967,14 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum NostrKind1EventKind
+    {
+
+        _1 = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum CreateMarketRequestOutcomeType
     {
 
@@ -1691,6 +1986,45 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"numeric")]
         Numeric = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum MarketPriceHistoryResponseTimeframe
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"1h")]
+        _1h = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"24h")]
+        _24h = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"7d")]
+        _7d = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"30d")]
+        _30d = 3,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"all")]
+        All = 4,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum SwapFailureKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"PartialLockHeld")]
+        PartialLockHeld = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"InsufficientInventory")]
+        InsufficientInventory = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"MintError")]
+        MintError = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"EngineRejected")]
+        EngineRejected = 3,
 
     }
 

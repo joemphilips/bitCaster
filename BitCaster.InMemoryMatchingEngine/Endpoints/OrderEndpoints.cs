@@ -16,6 +16,8 @@ public static class OrderEndpoints
             HttpRequest httpRequest,
             InMemoryOrderBookManager bookManager,
             InMemoryTradeRegistry trades,
+            InMemoryPriceHistoryStore priceHistory,
+            InMemoryCommentStore comments,
             IHubContext<MarketHub, IMarketHubClient> marketHub,
             IHubContext<TradeHub, ITradeHubClient> tradeHub) =>
         {
@@ -32,6 +34,15 @@ public static class OrderEndpoints
             // signature — sufficient for dev/E2E, unsafe in prod (enforced by
             // keeping this helper scoped to the mock project).
             var takerUserId = Nip98PubkeyExtractor.TryExtract(httpRequest) ?? "anonymous";
+            if (req.Comment is not null)
+            {
+                if (req.Comment.Kind != NostrKind1EventKind._1)
+                    return Results.BadRequest("Comment event must be kind 1.");
+                if (!string.Equals(req.Comment.Pubkey, takerUserId, StringComparison.Ordinal))
+                    return Results.BadRequest("Comment pubkey must match the authenticated NIP-98 pubkey.");
+                if (req.Comment.Content.Length > 280)
+                    return Results.BadRequest("Comment content must be at most 280 characters.");
+            }
 
             var result = bookManager.SubmitOrder(
                 marketId,
@@ -45,6 +56,19 @@ public static class OrderEndpoints
 
             await marketHub.Clients.Group(marketId)
                 .OrderBookUpdated(bookManager.GetSnapshot(marketId));
+
+            foreach (var fill in result.Fills)
+            {
+                priceHistory.RecordFill(marketId, fill);
+                if (MarketParts.TryParse(marketId) is { } parts)
+                    comments.RecordFill(parts.ConditionId, fill);
+            }
+
+            if (req.Comment is not null &&
+                MarketParts.TryParse(marketId) is { } commentParts)
+            {
+                comments.RecordComment(commentParts.ConditionId, result.OrderId, req.Comment);
+            }
 
             // Register trades + replay TradeCreated for any fill that carries
             // a tradeId. Direct matches map seller/buyer from side; binary

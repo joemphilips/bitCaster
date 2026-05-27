@@ -294,6 +294,7 @@ export function useDepositWithdrawState(
     const requested = amountSats
     const mintUrl = selectedMintId
     try {
+      await useWalletStore.getState().ensureImplicitWallet()
       // Re-mount idempotency: reuse the active quote if one exists, otherwise
       // request a fresh one. Prevents the duplicate-quote LNBits snackbar.
       const quote = mintQuoteRef.current ?? await createMintQuote(requested, mintUrl)

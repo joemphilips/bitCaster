@@ -100,6 +100,25 @@ interface LockedProofResult {
   changeProofs: Proof[];
 }
 
+export interface PartialLockHeldFailure {
+  kind: "PartialLockHeld";
+  refundLocktime: number;
+  affectedKeysets: string[];
+  detail: string;
+}
+
+export interface PartialLockHeldDetails {
+  failure: PartialLockHeldFailure;
+  spentProofs: Proof[];
+  lockedProofs: Proof[];
+  changeProofs: Proof[];
+}
+
+export type PartialLockHeldError = Error & {
+  failure: PartialLockHeldFailure;
+  partialLock: PartialLockHeldDetails;
+};
+
 export interface StoredOutputData {
   blindedMessage: {
     amount: number;
@@ -630,17 +649,7 @@ export async function sellerLockOutcomeProofs(
   if (outcomeProofs.length === 0) {
     throw new Error("sellerLockOutcomeProofs requires outcome proofs to lock");
   }
-  const keysetId = singleProofKeysetId(outcomeProofs);
   const mint = new CashuMint(ctx.mintUrl);
-  const keyset = await fetchMintKeys(mint, keysetId);
-  const feeSats = conditionalInputFee(outcomeProofs.length, keyset);
-  const netInput = sumProofs(outcomeProofs) - feeSats;
-  if (netInput < amount) {
-    throw new Error(
-      `sellerLockOutcomeProofs: outcome proofs net ${netInput} sats, need ${amount} to lock`,
-    );
-  }
-
   const p2pk: P2PKOptions = {
     pubkey: [ctx.ephemeralKey.publicKey, ctx.counterpartyPubkey],
     requiredSignatures: 2,
@@ -648,24 +657,84 @@ export async function sellerLockOutcomeProofs(
     refundKeys: [ctx.ephemeralKey.publicKey],
     sigFlag: "SIG_INPUTS",
   };
-  const groups: ConditionalSwapOutputGroup[] = [
-    { label: "lock", kind: "p2pk", amount, p2pk },
-  ];
-  const changeAmount = netInput - amount;
-  if (changeAmount > 0) {
-    groups.push({ label: "change", kind: "random", amount: changeAmount });
-  }
 
-  const swapped = await conditionalKeysetSwap(
-    ctx.mintUrl,
-    outcomeProofs,
-    groups,
+  const lockedProofs: Proof[] = [];
+  const changeProofs: Proof[] = [];
+  const spentProofs: Proof[] = [];
+  const affectedKeysets: string[] = [];
+  const proofGroups = groupProofsByKeyset(outcomeProofs);
+  requireDurableOperationForMultiKeyset(
+    proofGroups.size,
     options,
+    "sellerLockOutcomeProofs",
   );
+  for (const [keysetId, proofs] of proofGroups) {
+    try {
+      const keyset = await fetchMintKeys(mint, keysetId);
+      const feeSats = conditionalInputFee(proofs.length, keyset);
+      const netInput = sumProofs(proofs) - feeSats;
+      if (netInput < amount) {
+        throw new Error(
+          `sellerLockOutcomeProofs: outcome proofs for keyset ${keysetId} net ${netInput} sats, need ${amount} to lock`,
+        );
+      }
+
+      const groups: ConditionalSwapOutputGroup[] = [
+        { label: "lock", kind: "p2pk", amount, p2pk },
+      ];
+      const changeAmount = netInput - amount;
+      if (changeAmount > 0) {
+        groups.push({ label: "change", kind: "random", amount: changeAmount });
+      }
+
+      const swapped = await conditionalKeysetSwap(
+        ctx.mintUrl,
+        proofs,
+        groups,
+        proofOperationOptionsForKeyset(options, keysetId, proofGroups.size),
+      );
+      lockedProofs.push(...(swapped.lock ?? []));
+      changeProofs.push(...(swapped.change ?? []));
+      spentProofs.push(...proofs);
+      affectedKeysets.push(keysetId);
+    } catch (error) {
+      if (lockedProofs.length === 0) throw error;
+      throw partialLockHeldError(error, {
+        refundLocktime: ctx.sellerLocktime,
+        affectedKeysets,
+        spentProofs,
+        lockedProofs,
+        changeProofs,
+      });
+    }
+  }
   return {
-    lockedProofs: swapped.lock ?? [],
-    changeProofs: swapped.change ?? [],
+    lockedProofs,
+    changeProofs,
   };
+}
+
+function partialLockHeldError(
+  error: unknown,
+  partial: Omit<PartialLockHeldDetails, "failure"> & {
+    refundLocktime: number;
+    affectedKeysets: string[];
+  },
+): PartialLockHeldError {
+  const detail = error instanceof Error ? error.message : String(error);
+  const failure: PartialLockHeldFailure = {
+    kind: "PartialLockHeld",
+    refundLocktime: partial.refundLocktime,
+    affectedKeysets: partial.affectedKeysets,
+    detail,
+  };
+  const out = new Error(
+    `sellerLockOutcomeProofs partially locked ${partial.affectedKeysets.length} keyset leg(s): ${detail}`,
+  ) as PartialLockHeldError;
+  if (error instanceof Error && error.stack) out.stack = error.stack;
+  out.failure = failure;
+  out.partialLock = { ...partial, failure };
+  return out;
 }
 
 /** Input fee in sats for a swap whose inputs all share one keyset. */
@@ -1064,18 +1133,30 @@ async function claimConditionalProofsAtMint(
   options: ProofOperationOptions,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl);
-  const keyset = await fetchMintKeys(mint, singleProofKeysetId(inputProofs));
-  const netAmount = sumProofs(inputProofs) - conditionalInputFee(inputProofs.length, keyset);
-  if (netAmount <= 0) {
-    throw new Error("buyerClaimSwap: conditional claim proofs are exhausted by input fees");
-  }
-  const result = await conditionalKeysetSwap(
-    mintUrl,
-    inputProofs,
-    [{ label: "keep", kind: "random", amount: netAmount }],
+  const claimedProofs: Proof[] = [];
+  const proofGroups = groupProofsByKeyset(inputProofs);
+  requireDurableOperationForMultiKeyset(
+    proofGroups.size,
     options,
+    "buyerClaimSwap",
   );
-  return result.keep ?? [];
+  for (const [keysetId, proofs] of proofGroups) {
+    const keyset = await fetchMintKeys(mint, keysetId);
+    const netAmount = sumProofs(proofs) - conditionalInputFee(proofs.length, keyset);
+    if (netAmount <= 0) {
+      throw new Error(
+        `buyerClaimSwap: conditional claim proofs for keyset ${keysetId} are exhausted by input fees`,
+      );
+    }
+    const result = await conditionalKeysetSwap(
+      mintUrl,
+      proofs,
+      [{ label: "keep", kind: "random", amount: netAmount }],
+      proofOperationOptionsForKeyset(options, keysetId, proofGroups.size),
+    );
+    claimedProofs.push(...(result.keep ?? []));
+  }
+  return claimedProofs;
 }
 
 async function receiveProofsAtMint(
@@ -1558,6 +1639,41 @@ function singleProofKeysetId(proofs: Proof[]): string {
     throw new Error("Atomic swap proof set must use exactly one keyset");
   }
   return [...ids][0];
+}
+
+function groupProofsByKeyset(proofs: Proof[]): Map<string, Proof[]> {
+  const groups = new Map<string, Proof[]>();
+  for (const proof of proofs) {
+    if (!proof.id) {
+      throw new Error("Atomic swap proof is missing its keyset id");
+    }
+    groups.set(proof.id, [...(groups.get(proof.id) ?? []), proof]);
+  }
+  return groups;
+}
+
+function proofOperationOptionsForKeyset(
+  options: ProofOperationOptions,
+  keysetId: string,
+  groupCount: number,
+): ProofOperationOptions {
+  if (!options.operationId || groupCount === 1) return options;
+  return {
+    ...options,
+    operationId: `${options.operationId}/keyset/${encodeURIComponent(keysetId)}`,
+  };
+}
+
+function requireDurableOperationForMultiKeyset(
+  groupCount: number,
+  options: ProofOperationOptions,
+  operationName: string,
+): void {
+  if (groupCount <= 1) return;
+  if (options.operationId && options.proofOperationStore) return;
+  throw new Error(
+    `${operationName}: multi-keyset conditional swaps require a proof operation store`,
+  );
 }
 
 function stripLocalProofMetadata(proof: Proof): Proof {

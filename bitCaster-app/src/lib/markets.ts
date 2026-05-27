@@ -1,5 +1,5 @@
 import type { Market, FilterState } from '@/types/market'
-import type { MarketDetail, OrderBook, Order } from '@/types/market-detail'
+import type { MarketDetail, OrderBook, Order, PriceHistory } from '@/types/market-detail'
 import type { MarketSort } from '@/hooks/useMarketSort'
 import type { components } from '@/generated/api'
 import {
@@ -28,6 +28,11 @@ export type CreatorMarketsResponse =
 export type OracleNostrEvent = components['schemas']['OracleNostrEvent']
 export type OracleAttestationResponse =
   components['schemas']['OracleAttestationResponse']
+export type MarketPriceHistoryResponse =
+  components['schemas']['MarketPriceHistoryResponse']
+export type MarketCommentsResponse =
+  components['schemas']['MarketCommentsResponse']
+export type NostrKind1Event = components['schemas']['NostrKind1Event']
 
 // CDK mint response types
 
@@ -561,21 +566,117 @@ export async function fetchMarketDetail(
   // Routine detail rendering is engine-first. Mintd can lag or contain stale
   // mirrored rows during local/staging smoke; use it only as a fallback and
   // as mint/keyset enrichment once the engine has the public catalogue row.
-  const [engineEntry, conditionsResult, meta] = await Promise.all([
+  const [engineEntry, conditionsResult, meta, priceHistory, comments] = await Promise.all([
     fetchEngineCatalogueEntry(conditionId),
     fetchConditions().catch(() => [] as ConditionInfo[]),
     fetchMarketMetadata(conditionId),
+    fetchMarketPriceHistory(conditionId, '7d').catch(() => null),
+    fetchMarketComments(conditionId).catch(() => null),
   ])
   const condition = conditionsResult.find((c) => c.condition_id === conditionId)
   if (engineEntry) {
     const detail = mapCatalogueEntryToMarketDetail(engineEntry, condition ?? null)
-    return detail
+    const withHistory = priceHistory ? applyMarketPriceHistory(detail, priceHistory) : detail
+    return comments ? applyMarketComments(withHistory, comments) : withHistory
   }
   if (!condition) {
     throw new Error(`Condition not found: ${conditionId}`)
   }
   const detail = mapConditionToMarketDetail(condition)
-  return meta ? applyMetadata(detail, meta) : detail
+  const withMetadata = meta ? applyMetadata(detail, meta) : detail
+  const withHistory = priceHistory ? applyMarketPriceHistory(withMetadata, priceHistory) : withMetadata
+  return comments ? applyMarketComments(withHistory, comments) : withHistory
+}
+
+export async function fetchMarketPriceHistory(
+  conditionId: string,
+  timeframe: PriceHistory['timeframe'] = '7d',
+): Promise<MarketPriceHistoryResponse> {
+  const params = new URLSearchParams({ timeframe })
+  const response = await fetch(
+    `/api/v1/markets/${encodeURIComponent(conditionId)}/price-history?${params}`,
+    { headers: { Accept: 'application/json' } },
+  )
+  if (!response.ok) {
+    throw new Error(`Failed to fetch price history: ${response.status}`)
+  }
+  return (await response.json()) as MarketPriceHistoryResponse
+}
+
+export async function fetchMarketComments(
+  conditionId: string,
+): Promise<MarketCommentsResponse> {
+  const response = await fetch(
+    `/api/v1/markets/${encodeURIComponent(conditionId)}/comments`,
+    { headers: { Accept: 'application/json' } },
+  )
+  if (!response.ok) {
+    throw new Error(`Failed to fetch comments: ${response.status}`)
+  }
+  return (await response.json()) as MarketCommentsResponse
+}
+
+function applyMarketComments(
+  market: MarketDetail,
+  response: MarketCommentsResponse,
+): MarketDetail {
+  return {
+    ...market,
+    comments: response.comments.map((comment) => ({
+      id: comment.commentId,
+      userId: `comment:${comment.commentId}`,
+      userDisplayName: 'Verified trader',
+      userAvatarUrl: undefined,
+      content: comment.content,
+      timestamp: comment.createdAt,
+      likeCount: 0,
+      isLiked: false,
+    })),
+  }
+}
+
+export function applyMarketPriceHistory(
+  market: MarketDetail,
+  response: MarketPriceHistoryResponse,
+): MarketDetail {
+  const byOutcomeLabel = new Map(
+    (market.outcomes ?? []).map((outcome) => [outcome.label, outcome.id] as const),
+  )
+  const toPriceHistory = (
+    data: MarketPriceHistoryResponse['outcomes'][number]['data'],
+  ): PriceHistory => ({
+    timeframe: response.timeframe as PriceHistory['timeframe'],
+    data: data.map((point) => ({
+      timestamp: point.timestamp,
+      price: point.price,
+      volume: point.volumeSats,
+    })),
+  })
+  const histories = Object.fromEntries(
+    response.outcomes
+      .map((outcome) => {
+        const outcomeId = byOutcomeLabel.get(outcome.outcomeId) ?? outcome.outcomeId
+        return [outcomeId, toPriceHistory(outcome.data)] as const
+      }),
+  )
+  const primary =
+    market.type === 'yesno'
+      ? histories[byOutcomeLabel.get('YES') ?? byOutcomeLabel.get('Yes') ?? 'outcome-0'] ??
+        histories[Object.keys(histories)[0]]
+      : histories[Object.keys(histories)[0]]
+
+  if (market.type === 'categorical') {
+    return {
+      ...market,
+      priceHistory: primary ?? market.priceHistory,
+      outcomePriceHistories: histories,
+    }
+  }
+
+  return {
+    ...market,
+    priceHistory: primary ?? market.priceHistory,
+  }
 }
 
 export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
@@ -613,6 +714,31 @@ export async function submitOrder(
     marketId,
     params as SdkSubmitOrderRequest,
   )) as SubmitOrderResponse
+}
+
+export async function signTradeComment(
+  conditionId: string,
+  content: string,
+): Promise<NostrKind1Event> {
+  const ndk = getNdk()
+  if (!ndk.signer)
+    throw new Error('No Nostr signer configured — connect in Settings first')
+  const event = new NDKEvent(ndk)
+  event.kind = 1
+  event.created_at = Math.floor(Date.now() / 1000)
+  event.content = content
+  event.tags = [['r', `${window.location.origin}/markets/${encodeURIComponent(conditionId)}`]]
+  await event.sign()
+  const raw = event.rawEvent()
+  return {
+    id: raw.id ?? '',
+    pubkey: raw.pubkey ?? '',
+    createdAt: raw.created_at ?? event.created_at,
+    kind: 1,
+    tags: raw.tags ?? event.tags,
+    content: raw.content ?? content,
+    sig: raw.sig ?? '',
+  }
 }
 
 export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient {
