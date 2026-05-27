@@ -41,4 +41,4 @@ Each layer exists because the one below it is the wrong fit for the job above. B
 - [Ecash](/user-guide/core-concepts/ecash/) — why bitCaster uses Cashu as the Layer 3 substrate
 - [Market Resolution](/user-guide/core-concepts/resolution/) — how L4 tokens settle back to L3 when the oracle attests
 - [NUT-CTF Core Specification](/technical/nut-ctf/core-ctf/) — the technical protocol for minting, holding, and redeeming Layer 4 tokens
-- [Gnosis Conditional Tokens](https://docs.gnosis.io/conditionaltokens/) — the original on-chain CTF specification
+- [Gnosis Conditional Tokens](https://conditional-tokens.readthedocs.io/en/latest/) — the original on-chain CTF specification
