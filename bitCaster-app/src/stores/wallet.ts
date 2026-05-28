@@ -190,7 +190,13 @@ export const useWalletStore = create<WalletState>()(
 
         const { mints } = get()
         if (!mints.some((m) => m.url === DEFAULT_MINT_URL)) {
-          try { await get()._addMint(DEFAULT_MINT_URL) } catch { /* retry on next app load */ }
+          try {
+            if (mints.length === 0) {
+              await get()._addMint(DEFAULT_MINT_URL)
+            } else {
+              await get()._addMintWithoutActivating(DEFAULT_MINT_URL)
+            }
+          } catch { /* retry on next app load */ }
         }
         set({ setupComplete: true })
       },
@@ -274,7 +280,13 @@ export const useWalletStore = create<WalletState>()(
         // so features like CTF badge detection work on the Settings page.
         const { mints } = get()
         if (!mints.some((m) => m.url === DEFAULT_MINT_URL)) {
-          try { await get()._addMint(DEFAULT_MINT_URL) } catch { /* retry on next app load */ }
+          try {
+            if (mints.length === 0) {
+              await get()._addMint(DEFAULT_MINT_URL)
+            } else {
+              await get()._addMintWithoutActivating(DEFAULT_MINT_URL)
+            }
+          } catch { /* retry on next app load */ }
         }
         set({ setupComplete: true, walletBackupState: 'confirmed' })
       },

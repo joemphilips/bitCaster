@@ -177,6 +177,7 @@ export function useDepositWithdrawState(
   // first's polling subscription.
   const inflightRef = useRef(false)
   const unsubRef = useRef<(() => void) | null>(null)
+  const userSelectedMintRef = useRef(false)
 
   // PaymentRequest id of the request currently displayed in the
   // "Waiting for payment…" view. A non-null value subscribes us to the
@@ -194,6 +195,20 @@ export function useDepositWithdrawState(
       unsubRef.current?.()
     }
   }, [])
+
+  useEffect(() => {
+    if (!activeMintUrl) return
+    setSelectedMintId((current) => {
+      if (!userSelectedMintRef.current) {
+        return activeMintUrl
+      }
+      if (!current || !storeMints.some((mint) => mint.url === current)) {
+        userSelectedMintRef.current = false
+        return activeMintUrl
+      }
+      return current
+    })
+  }, [activeMintUrl, storeMints])
 
   // React to the global inbox flipping our pending request to "received".
   useEffect(() => {
@@ -233,6 +248,7 @@ export function useDepositWithdrawState(
   }, [])
 
   const onMintChange = useCallback((mintId: string) => {
+    userSelectedMintRef.current = true
     setSelectedMintId(mintId)
   }, [])
 

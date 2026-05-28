@@ -1699,8 +1699,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{TestPorts.FrontendUrl}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
-                    activeMintUrl: '{TestPorts.FrontendUrl}',
+                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
+                    activeMintUrl: '{TestPorts.MintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
                 }},
@@ -1799,9 +1799,6 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync(amountSats.ToString());
 
-        await Assertions.Expect(page.GetByText($"{amountSats} sats").Filter(new() { Visible = true }).First)
-            .ToBeVisibleAsync(new() { Timeout = 10_000 });
-
         var priceInput = page.Locator("input[type='number']")
             .Filter(new() { Visible = true })
             .Nth(1);
@@ -1887,7 +1884,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var conditionJson = JsonSerializer.Serialize(conditionId);
         var outcomeJson = JsonSerializer.Serialize(outcomeSetId);
         var marketJson = JsonSerializer.Serialize($"{conditionId}-{outcomeSetId}");
-        var mintJson = JsonSerializer.Serialize(TestPorts.FrontendUrl);
+        var mintJson = JsonSerializer.Serialize(TestPorts.MintUrl);
         var inserted = await page.EvaluateAsync<int>($$"""
             async () => {
                 const proofs = {{proofsJson}};

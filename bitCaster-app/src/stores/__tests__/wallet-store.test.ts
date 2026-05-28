@@ -3,6 +3,7 @@ import { useWalletStore } from '../wallet'
 import * as bip39 from '@/lib/bip39'
 
 const initialAddMint = useWalletStore.getState()._addMint
+const initialAddMintWithoutActivating = useWalletStore.getState()._addMintWithoutActivating
 
 // Reset store state before each test
 beforeEach(() => {
@@ -16,6 +17,7 @@ beforeEach(() => {
     keysetCountersRecovered: {},
     mintConnectionStatuses: {},
     _addMint: initialAddMint,
+    _addMintWithoutActivating: initialAddMintWithoutActivating,
   })
 })
 
@@ -138,6 +140,22 @@ describe('useWalletStore', () => {
       await useWalletStore.getState().completeSetup()
       expect(useWalletStore.getState().setupComplete).toBe(true)
     })
+
+    it('does not activate the default mint when setup already has a custom active mint', async () => {
+      useWalletStore.setState({
+        mints: [{ url: 'http://localhost:5273' }],
+        activeMintUrl: 'http://localhost:5273',
+        _addMint: vi.fn().mockResolvedValue(undefined),
+        _addMintWithoutActivating: vi.fn().mockResolvedValue(undefined),
+      } as Partial<ReturnType<typeof useWalletStore.getState>>)
+
+      await useWalletStore.getState().completeSetup()
+
+      const state = useWalletStore.getState()
+      expect(state._addMint).not.toHaveBeenCalled()
+      expect(state._addMintWithoutActivating).toHaveBeenCalledWith('http://localhost:8085')
+      expect(state.activeMintUrl).toBe('http://localhost:5273')
+    })
   })
 
   describe('ensureImplicitWallet', () => {
@@ -171,6 +189,25 @@ describe('useWalletStore', () => {
       expect(state.walletBackupState).toBe('confirmed')
       expect(state.setupComplete).toBe(true)
       expect(state._addMint).not.toHaveBeenCalled()
+    })
+
+    it('registers the default mint without activating it when another mint is active', async () => {
+      const words = bip39.generate().join(' ')
+      useWalletStore.setState({
+        mnemonic: words,
+        walletBackupState: 'confirmed',
+        mints: [{ url: 'http://localhost:5273' }],
+        activeMintUrl: 'http://localhost:5273',
+        _addMint: vi.fn().mockResolvedValue(undefined),
+        _addMintWithoutActivating: vi.fn().mockResolvedValue(undefined),
+      } as Partial<ReturnType<typeof useWalletStore.getState>>)
+
+      await useWalletStore.getState().ensureImplicitWallet()
+
+      const state = useWalletStore.getState()
+      expect(state._addMint).not.toHaveBeenCalled()
+      expect(state._addMintWithoutActivating).toHaveBeenCalledWith('http://localhost:8085')
+      expect(state.activeMintUrl).toBe('http://localhost:5273')
     })
 
     it('marks a pre-existing unconfirmed mnemonic as needing backup', async () => {
