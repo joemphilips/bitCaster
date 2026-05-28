@@ -609,7 +609,7 @@ async function prepareDirectSellerOpening(
   let locked: Awaited<ReturnType<typeof sellerLockOutcomeProofs>>;
   try {
     locked = await sellerLockOutcomeProofs(ctx, proofs, amountSats, {
-      operationId: proofOperationId(swap.tradeId, "seller-direct-lock"),
+      operationId: proofOperationId(swap.tradeId, "seller-complementary-lock"),
       proofOperationStore,
     });
   } catch (err) {
