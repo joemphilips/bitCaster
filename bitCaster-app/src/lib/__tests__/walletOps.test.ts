@@ -8,6 +8,7 @@ import {
   ingressReceiveCashuToken,
   ingressRegisterMint,
   normalizeRelayUrl,
+  refreshMintInfoWithoutActivating,
   userAddAndSelectMint,
   userAddRelay,
   userCreatePaymentRequest,
@@ -72,6 +73,14 @@ describe('walletOps facade', () => {
     expect(setActiveMint).toHaveBeenCalledWith('https://new.mint/')
     expect(removeMint).toHaveBeenCalledWith('https://old.mint')
     expect(addMintWithoutActivating).not.toHaveBeenCalled()
+  })
+
+  it('refreshes mint info without changing the active mint', async () => {
+    await refreshMintInfoWithoutActivating('https://active.mint/')
+
+    expect(addMintWithoutActivating).toHaveBeenCalledWith('https://active.mint/')
+    expect(addMint).not.toHaveBeenCalled()
+    expect(setActiveMint).not.toHaveBeenCalled()
   })
 
   it('registers unknown ingress mints without changing the active mint', async () => {

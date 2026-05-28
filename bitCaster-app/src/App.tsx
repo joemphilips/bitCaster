@@ -28,7 +28,10 @@ import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import { recoverKeysetCountersForMint } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
-import { userAddAndSelectMint } from "@/lib/walletOps";
+import {
+  refreshMintInfoWithoutActivating,
+  userAddAndSelectMint,
+} from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
 
@@ -269,7 +272,7 @@ function AppRoutes() {
         const missingCtfOnDefault =
           isDefault && nuts != null && !("CTF" in nuts);
         if (!nuts || missingCtfOnDefault) {
-          userAddAndSelectMint(m.url).catch(() => {});
+          refreshMintInfoWithoutActivating(m.url).catch(() => {});
         }
       }
     };

@@ -198,17 +198,16 @@ export function useDepositWithdrawState(
 
   useEffect(() => {
     if (!activeMintUrl) return
-    setSelectedMintId((current) => {
-      if (!userSelectedMintRef.current) {
-        return activeMintUrl
+    const userChoseMint = userSelectedMintRef.current
+    const selectedMintStillExists =
+      !!selectedMintId && storeMints.some((mint) => mint.url === selectedMintId)
+    if (!userChoseMint || !selectedMintStillExists) {
+      userSelectedMintRef.current = false
+      if (selectedMintId !== activeMintUrl) {
+        setSelectedMintId(activeMintUrl)
       }
-      if (!current || !storeMints.some((mint) => mint.url === current)) {
-        userSelectedMintRef.current = false
-        return activeMintUrl
-      }
-      return current
-    })
-  }, [activeMintUrl, storeMints])
+    }
+  }, [activeMintUrl, selectedMintId, storeMints])
 
   // React to the global inbox flipping our pending request to "received".
   useEffect(() => {

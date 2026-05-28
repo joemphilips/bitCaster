@@ -43,6 +43,10 @@ export async function userAddAndSelectMint(url: string): Promise<void> {
   await useWalletStore.getState()._addMint(url)
 }
 
+export async function refreshMintInfoWithoutActivating(url: string): Promise<void> {
+  await useWalletStore.getState()._addMintWithoutActivating(url)
+}
+
 export function userSwitchActiveMint(url: string): void {
   useWalletStore.getState()._setActiveMint(url)
 }
