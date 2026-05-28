@@ -254,7 +254,7 @@ describe("useTradeSettlement", () => {
     expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending");
   });
 
-  it("promotes an unsolicited TradeCreated event for a pending complementary order", async () => {
+  it("promotes an unsolicited TradeCreated event for a pending mint order", async () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-NO",
@@ -290,7 +290,7 @@ describe("useTradeSettlement", () => {
         sellerLocktime: "2026-05-07T12:01:00Z",
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-NO",
-        settlementKind: "ComplementarySplit",
+        settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         outcomeFaceAmountSats: 100,
@@ -309,7 +309,7 @@ describe("useTradeSettlement", () => {
     expect(swap.quotePaymentSats).toBe(50);
   });
 
-  it("keeps the maker market when promoting a complementary seller TradeCreated event", async () => {
+  it("keeps the maker market when promoting a mint seller TradeCreated event", async () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
@@ -344,7 +344,7 @@ describe("useTradeSettlement", () => {
         sellerLocktime: "2026-05-07T12:01:00Z",
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-NO",
-        settlementKind: "ComplementarySplit",
+        settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         outcomeFaceAmountSats: 100,
@@ -364,7 +364,7 @@ describe("useTradeSettlement", () => {
     expect(swap.sellerLockOutcomeSetId).toBe("NO");
   });
 
-  it("splits oversized reserved pre-flight proofs before sending a complementary seller opening", async () => {
+  it("splits oversized reserved pre-flight proofs before sending a mint seller opening", async () => {
     const reservationId = `order-preflight:${"02" + "22".repeat(32)}`;
     mockGetReservedProofs.mockResolvedValue([
       {
@@ -425,7 +425,7 @@ describe("useTradeSettlement", () => {
         sellerLocktime: "2026-05-07T12:01:00Z",
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-NO",
-        settlementKind: "ComplementarySplit",
+        settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         outcomeFaceAmountSats: 100,

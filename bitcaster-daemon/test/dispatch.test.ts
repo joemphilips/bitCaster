@@ -986,7 +986,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 outcomeId: request.outcomeId,
                 amountSats: request.amountSats,
                 executionPrice: request.price,
-                path: 'Direct',
+                path: 'Complementary',
                 status: 'Matched',
                 filledAt: '2026-05-21T00:00:00.000Z',
                 tradeId: 'trade-1',

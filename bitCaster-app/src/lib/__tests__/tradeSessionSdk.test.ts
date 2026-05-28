@@ -25,12 +25,12 @@ describe('shared trade-session protocol validation', () => {
     ).toContain('unsupported settlement kind')
   })
 
-  it('requires complementary split settlement metadata', () => {
+  it('requires mint split settlement metadata', () => {
     expect(
       validateTradeCreatedProtocol({
         sellerLocktime: 120,
         buyerLocktime: 60,
-        settlementKind: SETTLEMENT_KINDS.complementarySplit,
+        settlementKind: SETTLEMENT_KINDS.mint,
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
         outcomeFaceAmountSats: 100,

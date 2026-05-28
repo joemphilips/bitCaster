@@ -96,7 +96,7 @@ export interface SplitCollateralSelection {
   grossInputSats: number
 }
 
-export interface ComplementarySplitForSwapResult {
+export interface MintSplitForSwapResult {
   resolvedLockOutcomeSetId: string
   resolvedKeepOutcomeSetId: string
   lockCollections: string[]
@@ -279,7 +279,7 @@ export async function splitRootCompleteSetForSwap(
     operationId: string
     proofOperationStore: CtfProofOperationStore
   },
-): Promise<ComplementarySplitForSwapResult> {
+): Promise<MintSplitForSwapResult> {
   const transport = new CashuMintCtfSplitTransport(params.mintUrl)
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,

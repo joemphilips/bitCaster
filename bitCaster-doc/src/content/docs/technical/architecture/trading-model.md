@@ -1,6 +1,6 @@
 ---
 title: "Trading Model & Human Market Makers"
-description: "How bitCaster CLOB orders settle, how complementary matching works, and what human market makers must keep online."
+description: "How bitCaster CLOB orders settle, how mint matching works, and what human market makers must keep online."
 sidebar:
   order: 2
 ---
@@ -9,15 +9,17 @@ sidebar:
 
 bitCaster uses a central limit order book (CLOB). Limit orders rest on the book, market or crossing limit orders take liquidity, and settlement happens peer-to-peer with Cashu CTF atomic swaps.
 
+Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell for the same outcome set, **Mint** = Buy vs Buy for exactly complementary outcome sets (maker mints a complete CTF set as the splitter), **Merge** = Sell vs Sell that combines into a complete set (not yet supported in bitCaster).
+
 ## Online Requirement
 
 A resting limit order is an online commitment. The maker must keep a browser tab or bot process connected until the order is filled, cancelled, or expired. When a taker matches the order, the maker must be able to answer the TradeHub messages and lock proofs before the swap timeout.
 
 Professional market makers should run a bot rather than rely on an occasional browser session. `bitcaster-cli` uses `bitcaster-daemon` as its long-running wallet and swap process so non-browser makers can participate without changing the wire protocol.
 
-## Direct Matching
+## Complementary Matching
 
-Direct matching is the usual buy-versus-sell flow for the same outcome set:
+Complementary matching is the usual buy-versus-sell flow for the same outcome set:
 
 - Seller locks outcome proofs for the buyer.
 - Buyer locks sats for the seller.
@@ -25,25 +27,25 @@ Direct matching is the usual buy-versus-sell flow for the same outcome set:
 
 The seller's token locktime must be longer than the buyer's sat locktime by the configured safety delta. This gives the buyer time to extract the adaptor secret after the seller spends.
 
-## Complementary Matching
+## Mint Matching
 
-Complementary matching pairs buy orders for exact complementary outcome sets. In a binary market, `YES` complements `NO`. In a categorical market with outcomes `A`, `B`, `C`, the singleton `A` complements `B|C`; `B` complements `A|C`; and `A|B` complements `C`.
+Mint matching pairs buy orders for exact complementary outcome sets. In a binary market, `YES` and `NO` are complementary. In a categorical market with outcomes `A`, `B`, `C`, the singleton `A` pairs with `B|C`; `B` pairs with `A|C`; and `A|B` pairs with `C`.
 
 The maker acts as the splitter:
 
 1. The maker selects regular sats collateral.
 2. The maker asks the mint to split that collateral into the complete CTF outcome set.
 3. The maker keeps their desired outcome set.
-4. The maker locks the taker's complementary outcome set into the normal seller atomic-swap branch.
+4. The maker locks the taker's outcome set into the normal seller atomic-swap branch.
 5. The taker pays sats through the normal buyer branch.
 
-This is why complementary settlement does not require the maker to already own the taker's outcome token. The maker only needs enough regular collateral to create the complete set, including mint input fees.
+This is why mint settlement does not require the maker to already own the taker's outcome token. The maker only needs enough regular collateral to create the complete set, including mint input fees.
 
 ## Pre-Flight Split and Local Reservation
 
-For resting limit buys that can become complementary maker orders, bitCaster defaults to a pre-flight split. Before the order rests, the client splits regular sats into the complete CTF outcome set, stores the resulting outcome proofs locally, and reserves the keep and lock sides for that order.
+For resting limit buys that can become mint maker orders, bitCaster defaults to a pre-flight split. Before the order rests, the client splits regular sats into the complete CTF outcome set, stores the resulting outcome proofs locally, and reserves the keep and lock sides for that order.
 
-This keeps the live order honest: if the mint is unavailable or the wallet cannot select enough regular collateral, the client should fail the submission or cancel the order path instead of leaving a maker quote that cannot settle. When a complementary taker later matches the order, the maker locks only the matched amount of the reserved complementary side and releases only the matched amount of the kept side as an active position. Remaining reserved proofs stay attached to the unfilled order quantity.
+This keeps the live order honest: if the mint is unavailable or the wallet cannot select enough regular collateral, the client should fail the submission or cancel the order path instead of leaving a maker quote that cannot settle. When a mint taker later matches the order, the maker locks only the matched amount of the reserved side and releases only the matched amount of the kept side as an active position. Remaining reserved proofs stay attached to the unfilled order quantity.
 
 The browser exposes this as a default-on **Pre-flight split** checkbox for limit buys. The CLI uses the same default; `bitcaster-cli order submit ... --no-preflight-split` opts out for operators who intentionally want the split to happen at match time. Opting out increases settlement-failure risk if collateral is spent, reserved elsewhere, or the mint is slow when the match arrives.
 

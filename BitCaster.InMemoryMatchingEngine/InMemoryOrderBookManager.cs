@@ -9,8 +9,9 @@ namespace BitCaster.InMemoryMatchingEngine;
 ///
 /// <list type="bullet">
 /// <item>Per-market FIFO order book at each price level (price-time priority).</item>
-/// <item>Direct same-outcome opposite-side matching plus YES/NO and finite
-/// categorical complementary buy/buy matching for CLI/daemon settlement E2E.</item>
+/// <item>Complementary same-outcome opposite-side matching (Buy vs Sell) plus
+/// YES/NO and finite categorical mint matching (Buy vs Buy splitter) for
+/// CLI/daemon settlement E2E.</item>
 /// <item>GTC, FAK, and FOK time-in-force semantics for the browser/CLI
 /// development stack. GTD is treated as GTC; the OpenAPI gate keeps unknown
 /// values out.</item>
@@ -22,8 +23,8 @@ namespace BitCaster.InMemoryMatchingEngine;
 /// </para>
 ///
 /// <para>
-/// Direct-match fills get a freshly-generated <c>tradeId</c> stamped onto the
-/// emitted <see cref="Fill.AdditionalProperties"/>. The frontend reads the id
+/// Complementary-match fills get a freshly-generated <c>tradeId</c> stamped onto
+/// the emitted <see cref="Fill.AdditionalProperties"/>. The frontend reads the id
 /// off this dictionary in <c>orderStatus.ts</c> to wake the atomic-swap
 /// driver.
 /// </para>
@@ -68,7 +69,7 @@ public class InMemoryOrderBookManager
                 {
                     fills = MatchAgainstBook(book, incoming);
                     if (incoming.RemainingSats > 0)
-                        fills.AddRange(MatchAgainstComplementaryBooks(marketId, book, incoming));
+                        fills.AddRange(MatchAgainstMintBooks(marketId, book, incoming));
                     remaining = incoming.RemainingSats;
 
                     // FAK/FOK never rest the unfilled remainder. GTC/GTD rest if anything remains.
@@ -141,11 +142,12 @@ public class InMemoryOrderBookManager
     }
 
     /// <summary>
-    /// Direct-match the incoming order against same-outcome opposite-side
-    /// resting orders. Mutates <paramref name="incoming"/>.RemainingSats and
-    /// the matched resting orders in place; the caller still holds the book
-    /// lock. Generates a fresh <c>tradeId</c> per fill so the frontend's
-    /// atomic-swap driver can pair counterparties.
+    /// Complementary-match the incoming order against same-outcome
+    /// opposite-side resting orders (Polymarket CTF V2 Complementary path:
+    /// Buy vs Sell). Mutates <paramref name="incoming"/>.RemainingSats and the
+    /// matched resting orders in place; the caller still holds the book lock.
+    /// Generates a fresh <c>tradeId</c> per fill so the frontend's atomic-swap
+    /// driver can pair counterparties.
     /// </summary>
     private static List<Fill> MatchAgainstBook(OrderBook book, RestingOrder incoming)
     {
@@ -173,12 +175,12 @@ public class InMemoryOrderBookManager
 
         var parsed = MarketParts.TryParse(marketId);
         if (parsed is null) return fillable;
-        foreach (var candidate in ComplementaryBooks(parsed))
+        foreach (var candidate in MintBooks(parsed))
         {
             if (fillable >= incoming.AmountSats) break;
             lock (candidate.Book)
             {
-                foreach (var maker in candidate.Book.ComplementaryBuyMakers(incoming, candidate.OutcomeSetId))
+                foreach (var maker in candidate.Book.MintBuyMakers(incoming, candidate.OutcomeSetId))
                 {
                     fillable += Math.Min(maker.RemainingSats, incoming.AmountSats - fillable);
                     if (fillable >= incoming.AmountSats) break;
@@ -201,18 +203,18 @@ public class InMemoryOrderBookManager
         return fillable;
     }
 
-    private List<Fill> MatchAgainstComplementaryBooks(string marketId, OrderBook currentBook, RestingOrder incoming)
+    private List<Fill> MatchAgainstMintBooks(string marketId, OrderBook currentBook, RestingOrder incoming)
     {
         if (incoming.Side != OrderSide.Buy) return [];
         var parsed = MarketParts.TryParse(marketId);
         if (parsed is null) return [];
         var fills = new List<Fill>();
-        foreach (var candidate in ComplementaryBooks(parsed))
+        foreach (var candidate in MintBooks(parsed))
         {
             if (incoming.RemainingSats <= 0) break;
             lock (candidate.Book)
             {
-                foreach (var maker in candidate.Book.ComplementaryBuyMakers(incoming, candidate.OutcomeSetId))
+                foreach (var maker in candidate.Book.MintBuyMakers(incoming, candidate.OutcomeSetId))
                 {
                     if (incoming.RemainingSats <= 0) break;
                     var fillAmount = Math.Min(incoming.RemainingSats, maker.RemainingSats);
@@ -220,7 +222,7 @@ public class InMemoryOrderBookManager
 
                     incoming.RemainingSats -= fillAmount;
                     maker.RemainingSats -= fillAmount;
-                    var fill = BuildComplementaryFill(
+                    var fill = BuildMintFill(
                         incoming,
                         maker,
                         fillAmount,
@@ -237,7 +239,7 @@ public class InMemoryOrderBookManager
         return fills;
     }
 
-    private IEnumerable<(string OutcomeSetId, OrderBook Book)> ComplementaryBooks(MarketParts incoming)
+    private IEnumerable<(string OutcomeSetId, OrderBook Book)> MintBooks(MarketParts incoming)
     {
         return _books
             .Select(entry => (Parts: MarketParts.TryParse(entry.Key), entry.Value))
@@ -260,13 +262,13 @@ public class InMemoryOrderBookManager
             id: Guid.NewGuid(),
             makerEphemeralPubkey: maker.EphemeralPubkey!,
             makerOrderId: maker.Id,
-            path: MatchPath.Direct,
+            path: MatchPath.Complementary,
             status: FillStatus.Filled,
             takerOrderId: taker.Id,
             tradeId: tradeId);
     }
 
-    private static Fill BuildComplementaryFill(
+    private static Fill BuildMintFill(
         RestingOrder taker,
         RestingOrder maker,
         long amount,
@@ -283,12 +285,12 @@ public class InMemoryOrderBookManager
             id: Guid.NewGuid(),
             makerEphemeralPubkey: maker.EphemeralPubkey!,
             makerOrderId: maker.Id,
-            path: MatchPath.Complementary,
+            path: MatchPath.Mint,
             status: FillStatus.Filled,
             takerOrderId: taker.Id,
             tradeId: tradeId);
         fill.AdditionalProperties["settlementMarketId"] = settlementMarketId;
-        fill.AdditionalProperties["settlementKind"] = "ComplementarySplit";
+        fill.AdditionalProperties["settlementKind"] = "Mint";
         fill.AdditionalProperties["outcomeFaceAmountSats"] = amount;
         fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSats;
         fill.AdditionalProperties["sellerKeepOutcomeSetId"] = sellerKeepOutcomeSetId;
@@ -369,7 +371,7 @@ internal sealed class OrderBook
             .ThenBy(o => o.PlacedAt);
     }
 
-    public IEnumerable<RestingOrder> ComplementaryBuyMakers(
+    public IEnumerable<RestingOrder> MintBuyMakers(
         RestingOrder incoming,
         string outcomeSetId)
     {

@@ -12,15 +12,17 @@ Trading on bitCaster involves two broad steps:
 1. You submit an order and the matching engine finds a match.
 2. The matched parties settle with an atomic swap through the mint.
 
-This is true for both direct and complementary matches. A complementary match
+This is true for both complementary and mint matches. A mint match
 may first require one side to split regular sats into a complete set of outcome
 tokens, but the matched trade still settles through the same trustless atomic
 swap protocol.
 
-## Complementary vs non-complementary matches
+Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell, **Mint** = Buy vs Buy (maker splits a complete set), **Merge** = Sell vs Sell (combine into a complete set; not yet supported in bitCaster).
 
-- **Complementary match** — a YES buyer is matched with a NO buyer, or in a categorical market a buyer of one outcome set is matched with a buyer of the exact complementary set. The maker creates or selects the complete outcome-token set, keeps the side they wanted, and atomically swaps the complementary side to the taker for sats.
-- **Non-complementary match** — for example, someone selling YES tokens they already hold to another participant who wants to buy them with sats. The seller already has the outcome tokens, so no pre-trade split is needed, but the exchange still uses the same atomic-swap safety rule.
+## Mint vs complementary matches
+
+- **Mint match** — a YES buyer is matched with a NO buyer, or in a categorical market a buyer of one outcome set is matched with a buyer of the exact complementary set. The maker creates or selects the complete outcome-token set, keeps the side they wanted, and atomically swaps the other side to the taker for sats.
+- **Complementary match** — for example, someone selling YES tokens they already hold to another participant who wants to buy them with sats. The seller already has the outcome tokens, so no pre-trade split is needed, but the exchange still uses the same atomic-swap safety rule.
 
 For limit buys that may rest on the book, bitCaster enables **Pre-flight split** by default. The wallet asks the mint to split the needed regular sats into the complete outcome set before the order becomes live, then reserves those proofs locally for that order. If the split cannot finish quickly, the order should not remain live. Advanced CLI users can opt out with `--no-preflight-split`, but then settlement depends on regular collateral still being available when a later match arrives.
 

@@ -1085,7 +1085,7 @@ function tradeCreatedMatchesOrderPath(
     return order.marketId === payload.marketId
   }
 
-  if (settlementKind !== 'ComplementarySplit') {
+  if (settlementKind !== 'Mint') {
     return true
   }
 

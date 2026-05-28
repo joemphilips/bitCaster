@@ -16,7 +16,7 @@ import {
 import type {
   DaemonSwapContext,
   DaemonSwapOps,
-  SellerComplementaryOpenResult,
+  SellerMintOpenResult,
 } from './swapExecutor.ts'
 
 interface ProofOperationStore {
@@ -232,7 +232,7 @@ export function createRealDaemonSwapOps(
       )
     },
 
-    async sellerOpenComplementary(ctx, params, collateralProofs) {
+    async sellerOpenMint(ctx, params, collateralProofs) {
       const [atomicSwap, ctfSplit] = await Promise.all([
         loadAtomicSwapModule(),
         loadCtfSplitModule(),
@@ -251,7 +251,7 @@ export function createRealDaemonSwapOps(
           refundKeys: [ctx.ephemeralKey.publicKey],
           sigFlag: 'SIG_INPUTS',
         },
-        operationId: `${ctx.tradeId}/seller-complementary-ctf-split`,
+        operationId: `${ctx.tradeId}/seller-mint-ctf-split`,
         proofOperationStore: DAEMON_PROOF_OPERATION_STORE,
       })
       const prepared = await atomicSwap.sellerPreparePrelockedSwap(
@@ -272,7 +272,7 @@ export function createRealDaemonSwapOps(
         keepCollections: split.keepCollections,
         resolvedKeepOutcomeSetId: split.resolvedKeepOutcomeSetId,
         resolvedLockOutcomeSetId: split.resolvedLockOutcomeSetId,
-      } satisfies SellerComplementaryOpenResult
+      } satisfies SellerMintOpenResult
     },
 
     async buyerRespond(ctx, messages, proofs) {

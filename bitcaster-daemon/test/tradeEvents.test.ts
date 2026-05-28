@@ -113,7 +113,7 @@ test('TradeCreated direct match must use the same local order market path', asyn
   }
 })
 
-test('TradeCreated complementary seller matches keep path and buyer matches lock path', async () => {
+test('TradeCreated mint seller matches keep path and buyer matches lock path', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-path-complement-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -148,7 +148,7 @@ test('TradeCreated complementary seller matches keep path and buyer matches lock
       marketId: 'cond-NO',
       outcomeFaceAmountSats: 100,
       quotePaymentSats: 42,
-      settlementKind: 'ComplementarySplit',
+      settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
     })
@@ -161,7 +161,7 @@ test('TradeCreated complementary seller matches keep path and buyer matches lock
       marketId: 'cond-NO',
       outcomeFaceAmountSats: 100,
       quotePaymentSats: 42,
-      settlementKind: 'ComplementarySplit',
+      settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
     })
@@ -177,7 +177,7 @@ test('TradeCreated complementary seller matches keep path and buyer matches lock
   }
 })
 
-test('TradeCreated complementary match rejects mismatched keep or lock paths', async () => {
+test('TradeCreated mint match rejects mismatched keep or lock paths', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-path-mismatch-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -212,7 +212,7 @@ test('TradeCreated complementary match rejects mismatched keep or lock paths', a
       marketId: 'cond-NO',
       outcomeFaceAmountSats: 100,
       quotePaymentSats: 42,
-      settlementKind: 'ComplementarySplit',
+      settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
     })
@@ -225,7 +225,7 @@ test('TradeCreated complementary match rejects mismatched keep or lock paths', a
       marketId: 'cond-NO',
       outcomeFaceAmountSats: 100,
       quotePaymentSats: 42,
-      settlementKind: 'ComplementarySplit',
+      settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
     })

@@ -210,7 +210,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
     )
     assert.equal(sellerLockedOutcome.lockedProofs[0].secret, 'outcome-locked')
 
-    const complementary = await ops.sellerOpenComplementary(
+    const mint = await ops.sellerOpenMint(
       ctx('seller'),
       {
         conditionId: 'cond',
@@ -220,8 +220,8 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       },
       [proof(100, 'sat-collateral')],
     )
-    assert.equal(complementary.adaptorSecretHex, 'dd')
-    assert.equal(complementary.resolvedLockOutcomeSetId, 'NO')
+    assert.equal(mint.adaptorSecretHex, 'dd')
+    assert.equal(mint.resolvedLockOutcomeSetId, 'NO')
 
     await ops.sellerClaim(ctx('seller'), 'aa', 'bb', 'cipher-b')
     await ops.buyerClaim(ctx('buyer'), {
@@ -236,7 +236,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       'sellerPrelocked:trade-1:prelocked-input',
       'buyerPrepare:trade-1/buyer-lock:buyer:cipher-a:cipher-s:buyer-input',
       'sellerLockOutcome:trade-1/seller-inventory-lock:trade-1:100:outcome-input',
-      'ctfSplit:trade-1/seller-complementary-ctf-split:cond:YES:NO:2',
+      'ctfSplit:trade-1/seller-mint-ctf-split:cond:YES:NO:2',
       'sellerPrelocked:trade-1:lock-proof',
       'sellerClaim:trade-1/seller-claim:trade-1:170:187:cipher-b',
       'buyerExtract:buyer-locked:pre-b',
@@ -252,7 +252,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       'send-secret',
     )
     assert.equal(
-      state?.proofOperations['trade-1/seller-complementary-ctf-split'].state,
+      state?.proofOperations['trade-1/seller-mint-ctf-split'].state,
       'completed',
     )
   } finally {

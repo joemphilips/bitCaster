@@ -10,7 +10,7 @@ The matching engine is split into three parts:
 
 1. **BitCaster.MatchingEngine.Contracts** — shared class library (`Microsoft.NET.Sdk`, net10.0): DTOs, enums, request/response records. Used by the in-memory stub and the real server.
 2. **BitCaster.InMemoryMatchingEngine** — ASP.NET minimal API (`Microsoft.NET.Sdk.Web`, net10.0). Stores orders in-memory, **no matching** — every submitted order returns `"resting"` and never produces fills. Used for frontend dev / E2E. (Could change in the future.)
-3. **Real CLOB engine** — private repo one level above (`bitCaster-matching-engine`); references Contracts via submodule. Price-time priority, direct + complementary matching.
+3. **Real CLOB engine** — private repo one level above (`bitCaster-matching-engine`); references Contracts via submodule. Price-time priority, complementary + mint matching.
 
 ```bash
 dotnet build BitCaster.MatchingEngine.Contracts

@@ -352,10 +352,10 @@ export interface components {
          */
         TimeInForce: "GTC" | "FOK" | "FAK";
         /**
-         * @description How two orders were matched together.
+         * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker mints a complete CTF set to settle. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
          * @enum {string}
          */
-        MatchPath: "Direct" | "Complementary";
+        MatchPath: "Complementary" | "Mint";
         /**
          * @description Lifecycle status of a fill-shaped order execution row. `Matched` means a DCB reservation exists and atomic-swap settlement is still pending; `Filled` means settlement committed; `Released` means a reservation failed or timed out and no longer consumes order depth.
          * @enum {string}
@@ -426,7 +426,7 @@ export interface components {
              * @description The resting order that was matched against.
              */
             makerOrderId: string;
-            /** @description Conditional-token face amount matched for settlement. DCB complementary reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session. */
+            /** @description Conditional-token face amount matched for settlement. DCB mint-match reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session. */
             amountSats: components["schemas"]["Sats"];
             executionPrice: components["schemas"]["Probability"];
             path: components["schemas"]["MatchPath"];
@@ -441,7 +441,7 @@ export interface components {
              * @description Atomic-swap trade session identifier for this fill or DCB reservation. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
              */
             tradeId?: string;
-            /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders). */
+            /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on complementary-match fills (Buy vs Sell) so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on mint-match fills (Buy vs Buy splitter) and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders). */
             makerEphemeralPubkey?: string;
         };
         SubmitOrderRequest: {
@@ -483,9 +483,9 @@ export interface components {
             /** @description One of: "resting" (on book, unmatched), "matched" (reserved for atomic-swap settlement), "partially_filled", "filled", "cancelled". */
             status: string;
             remainingAmountSats: components["schemas"]["Sats"];
-            /** @description Conditional-token face amount already consumed by fills or active DCB complementary reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake. */
+            /** @description Conditional-token face amount already consumed by fills or active DCB mint-match reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake. */
             filledAmountSats: components["schemas"]["Sats"];
-            /** @description All fills and active DCB complementary reservation handles produced against this order so far. */
+            /** @description All fills and active DCB mint-match reservation handles produced against this order so far. */
             fills: components["schemas"]["Fill"][];
         };
         RestingOrderResponse: {

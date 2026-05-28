@@ -1,7 +1,7 @@
 import type { SdkSubmitOrderRequest } from './types.ts'
 
 export const UNSUPPORTED_DIRECT_CTF_SELL_MESSAGE =
-  'Direct sell-side locking of existing CTF outcome proofs is unsupported by the current mint. Use a prelocked CTF split flow such as complementary maker-as-splitter settlement.'
+  'Direct sell-side locking of existing CTF outcome proofs is unsupported by the current mint. Use a prelocked CTF split flow such as mint maker-as-splitter settlement.'
 
 export type SettlementSupportErrorCode = 'unsupported-direct-ctf-sell'
 

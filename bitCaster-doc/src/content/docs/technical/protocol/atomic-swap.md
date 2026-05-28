@@ -86,7 +86,7 @@ message also carries the quote payment separately. For example, a 1,000-face-sat
 YES fill at price 37 means Alice locks 1,000 face sats of YES and Bob locks 370
 regular sats. Implementations must not use one amount for both swap legs.
 
-For complementary matches, the order book first creates a reservation, not a
+For mint matches, the order book first creates a reservation, not a
 final fill. The public order status exposes that row as `status: matched` with a
 `tradeId`; once both parties complete the atomic swap the reservation commits
 and becomes `status: filled`. If the settlement timeout expires first, the
@@ -98,11 +98,11 @@ again. The timeout must be scheduled after the seller-side locktime plus a
 grace window; timing out at the buyer-side locktime can abort a swap that is
 still valid on the protocol timeline.
 
-For a resting buy that can become the complementary maker, clients SHOULD
+For a resting buy that can become the mint maker, clients SHOULD
 pre-flight split before order submission. The maker selects regular sats,
 submits a CTF split to the mint for the complete outcome set, stores the
 resulting outcome proofs in local wallet state, and reserves both the keep side
-and the complementary lock side under the order. If the mint is unavailable or
+and the lock side under the order. If the mint is unavailable or
 the client cannot reserve enough collateral within the user-visible submission
 window, the client SHOULD fail submission or cancel/release the order path
 rather than publish a maker order that cannot settle. Implementations may expose
@@ -117,8 +117,8 @@ must prepare successfully before the seller publishes the atomic-swap opening
 messages.
 
 Pre-flight split is a wallet-local safety mechanism, not a different wire
-protocol. When a complementary match arrives, the maker still acts as Alice in
-the seller branch below: the reserved complementary outcome proofs are locked to
+protocol. When a mint match arrives, the maker still acts as Alice in
+the seller branch below: the reserved outcome proofs are locked to
 the taker, while the maker's kept outcome proofs become visible only for the
 matched quantity. For partial fills, remaining pre-split proofs must stay
 reserved for the unfilled order quantity.

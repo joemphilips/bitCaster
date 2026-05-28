@@ -41,7 +41,7 @@ export interface Fill {
   outcomeId: string
   amountSats: number
   executionPrice: number
-  path: 'Direct' | 'Complementary'
+  path: 'Complementary' | 'Mint'
   status: 'Matched' | 'Filled' | 'Released'
   filledAt: string
   tradeId?: string

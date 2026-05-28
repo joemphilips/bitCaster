@@ -76,17 +76,18 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// How two orders were matched together.
+    /// How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker mints a complete CTF set to settle. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
+    /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum MatchPath
     {
 
-        [System.Runtime.Serialization.EnumMember(Value = @"Direct")]
-        Direct = 0,
-
         [System.Runtime.Serialization.EnumMember(Value = @"Complementary")]
-        Complementary = 1,
+        Complementary = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Mint")]
+        Mint = 1,
 
     }
 
@@ -358,7 +359,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid MakerOrderId { get; }
 
         /// <summary>
-        /// Conditional-token face amount matched for settlement. DCB complementary reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session.
+        /// Conditional-token face amount matched for settlement. DCB mint-match reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
@@ -389,7 +390,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid? TradeId { get; }
 
         /// <summary>
-        /// Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on direct-match fills so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on complementary-match fills and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders).
+        /// Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on complementary-match fills (Buy vs Sell) so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on mint-match fills (Buy vs Buy splitter) and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders).
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("makerEphemeralPubkey")]
@@ -558,14 +559,14 @@ namespace BitCaster.MatchingEngine.Contracts
         public long RemainingAmountSats { get; }
 
         /// <summary>
-        /// Conditional-token face amount already consumed by fills or active DCB complementary reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake.
+        /// Conditional-token face amount already consumed by fills or active DCB mint-match reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("filledAmountSats")]
         public long FilledAmountSats { get; }
 
         /// <summary>
-        /// All fills and active DCB complementary reservation handles produced against this order so far.
+        /// All fills and active DCB mint-match reservation handles produced against this order so far.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("fills")]

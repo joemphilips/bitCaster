@@ -114,7 +114,7 @@ public class TabCloseRecoveryTests : IAsyncLifetime
         // crosses. Mid-price 50; both orders match at 50.
         var sellerOrderId = await PostOrderAsync(marketId, outcome, "Sell", 50, 100, seller);
 
-        // Crossing Buy from the buyer — produces a Direct fill stamped with
+        // Crossing Buy from the buyer — produces a Complementary fill stamped with
         // a tradeId in the fill's AdditionalProperties dictionary, and the
         // mock registers a TradeRecord keyed on (sellerPubkey, buyerPubkey).
         var buyerOrderResp = await PostOrderAsyncRaw(marketId, outcome, "Buy", 50, 100, buyer);
