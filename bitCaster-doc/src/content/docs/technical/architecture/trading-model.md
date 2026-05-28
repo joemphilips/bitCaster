@@ -63,3 +63,41 @@ Example: if a maker rests `Buy YES 50 / 100` and a taker submits `Buy NO 49 / 10
 ## Operational Guidance
 
 Human makers should keep only the collateral they are willing to commit to live orders in the wallet, cancel orders before going offline, and expect the browser to fail settlement if the tab is closed mid-trade. Bot and daemon makers should monitor stale orders, swap failures, reserved inventory, and mint fee changes.
+
+## Comparison to Polymarket CTF Exchange V2
+
+bitCaster's match-type taxonomy mirrors Polymarket CTF Exchange V2 — Complementary for Buy vs Sell, Mint for Buy vs Buy, Merge for Sell vs Sell — but the settlement model is fundamentally different. Polymarket V2 settles on Ethereum through a batched on-chain operator transaction. bitCaster settles peer-to-peer with Cashu atomic swaps. The taxonomy carries over from on-chain to off-chain, but several behaviors do not.
+
+### No batching, by design
+
+Polymarket V2 batches matches into a single on-chain transaction because each transaction has a fixed base gas cost; batching amortizes that cost across many fills. bitCaster has no shared cost to amortize. Each atomic swap is a peer-to-peer interaction with the mint, paying only the mint's per-proof input fee. Batching multiple matches into one settlement event would not lower per-fill fees.
+
+The advantages that follow are concrete. The protocol is simpler — no batch-construction step on the operator side, no batch-revert semantics, no per-batch nonce. A match either fires the atomic swap or fails. Latency is lower because the matching engine fires fills as the book crosses, where Polymarket's operator typically delays for economic reasons even though the protocol does not require waiting.
+
+### Mint: maker-side splitter
+
+In Polymarket V2 Mint, the exchange contract takes USDC from both buyers and calls `ConditionalTokens.splitPosition` atomically with the trade. Gas for the split is socialized through the transaction.
+
+In bitCaster Mint, the maker is the splitter. The maker selects regular sats from their own wallet, asks the mint to split them into the complete CTF outcome set, keeps the desired complement, and locks the taker's side into a normal atomic-swap branch. Two consequences follow. First, the maker briefly holds both sides of the complete set; if the taker fails to complete, the maker is stuck with the unwanted complement until they find another counterparty or pay another mint fee to merge back. Polymarket's atomic on-chain trade has no equivalent stuck-inventory failure mode. Second, the mint input fee falls on the maker — Polymarket's `splitPosition` gas is socialized through the on-chain transaction, but bitCaster's per-proof fee is paid by whoever submits the split. This is a real economic asymmetry: bitCaster makers carry the cost of supplying complete-set inventory.
+
+The pre-flight split policy partially mitigates this by letting makers split before the order rests, holding both sides of the complete set as reserved inventory. This trades held capital for settlement certainty: no mint-unavailable race at fill time, but the maker is committing collateral to a quote that may not fill.
+
+### Atomicity model
+
+Polymarket atomicity comes from Ethereum. The exchange transaction commits both legs of the match or commits neither. There is no in-between state.
+
+bitCaster atomicity comes from Schnorr adaptor signatures over NUT-11 P2PK spending conditions, with locktime and refund pubkey on the locked proofs. The two parties' mint spends become atomic through the adaptor relationship, not through a shared transaction. The cost is that a party going offline mid-swap during the locktime window leaves a partial-lock-held state. The locked proofs are recoverable after locktime via the refund key, but until then they are economically frozen. Polymarket has no equivalent failure mode.
+
+### Merge: deferred by design, not infeasible
+
+Polymarket V2 Merge (Sell vs Sell) is a natural extension of the on-chain split primitive — `ConditionalTokens.mergePositions` is the inverse of `splitPosition`, and gas is socialized through one transaction.
+
+bitCaster does not currently support Merge. Off-chain Sell vs Sell is doable as a sequence of atomic-swap legs, but each leg pays its own mint input fee, so the maker-as-merger pattern is less obviously net-positive than the maker-as-splitter pattern is for Mint. Whether the demand justifies the per-leg cost is an open question; the absence of Merge is a deferral pending real trading data, not a protocol limitation.
+
+### Pre-flight split has no Polymarket analogue
+
+In Polymarket V2 the mint happens atomically with the trade, so there is no maker-held inventory model to pre-populate. In the off-chain model the maker holds inventory locally, and pre-splitting before the order rests substitutes wallet-side capital commitment for at-match-time mint availability. Pre-flight split is therefore a bitCaster-specific reliability optimization, addressing a failure mode that does not exist on-chain.
+
+### Summary
+
+The match-type taxonomy is portable from Polymarket V2. The settlement model is not. bitCaster gains protocol simplicity and immediate fire-on-cross matching; it accepts maker-side inventory risk for Mint, a partial-lock recovery surface from off-chain atomicity, and a deferred Merge implementation.
