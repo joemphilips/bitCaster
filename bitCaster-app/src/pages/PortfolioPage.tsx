@@ -5,7 +5,7 @@ import { DepositWithdrawOverlay } from "@/components/deposit-withdraw/DepositWit
 import { usePortfolioState } from "./usePortfolioState";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
-import { getOutcomeProofs } from "@/stores/proof-db";
+import { getConditionCtfProofs } from "@/stores/proof-db";
 import { settleCtfPosition } from "@/lib/cashu";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
@@ -97,13 +97,18 @@ export function PortfolioPage() {
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
-        if (!outcomeCollection)
-          throw new Error("Position does not include an outcome label");
-        const proofs = await getOutcomeProofs(
+        // Gather ALL of the condition's CTF proofs (every keyset leg),
+        // independent of how each leg was labelled when persisted. A composite
+        // "A|B" position spans multiple keysets and `settleCtfPosition` buckets
+        // them by keyset id, redeeming the winning leg and removing the losing
+        // one — so the claim resolves the whole position, leaving no leftover
+        // composite-tagged proof to keep the row alive or look like a winner.
+        const proofs = await getConditionCtfProofs(
           position.mintUrl,
           conditionId,
-          outcomeCollection,
         );
+        if (proofs.length === 0)
+          throw new Error("Position has no redeemable proofs");
         const regularProofs = await settleCtfPosition({
           conditionId,
           amountSats: proofs.reduce(

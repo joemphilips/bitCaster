@@ -102,6 +102,7 @@ vi.mock('dexie', () => {
 import {
   addProofs,
   getBaseProofs,
+  getConditionCtfProofs,
   getOutcomeProofs,
   getProofs,
   getReservedProofs,
@@ -237,6 +238,60 @@ describe('proof-db normalization', () => {
     const rows = await getOutcomeProofs('http://m', 'cond', 'YES')
 
     expect(rows.map((r) => r.secret)).toEqual(['yes'])
+  })
+
+  it('getConditionCtfProofs gathers every keyset leg regardless of label storage', async () => {
+    await addProofs([
+      // composite-label storage: both keysets tagged "A|B"
+      {
+        secret: 'compA',
+        amount: Amount.from(100),
+        id: 'keyset-A',
+        C: 'C1',
+        mintUrl: 'http://m',
+        conditionId: 'cond',
+        outcomeCollection: 'A|B',
+      },
+      {
+        secret: 'compB',
+        amount: Amount.from(100),
+        id: 'keyset-B',
+        C: 'C2',
+        mintUrl: 'http://m',
+        conditionId: 'cond',
+        outcomeCollection: 'A|B',
+      },
+      // per-primitive storage variant under condition_id snake-case key
+      {
+        secret: 'primC',
+        amount: Amount.from(100),
+        id: 'keyset-C',
+        C: 'C3',
+        mintUrl: 'http://m',
+        condition_id: 'cond',
+        outcome_collection: 'C',
+      } as never,
+      // different condition — must be excluded
+      {
+        secret: 'other',
+        amount: Amount.from(100),
+        id: 'keyset-A',
+        C: 'C4',
+        mintUrl: 'http://m',
+        conditionId: 'cond2',
+        outcomeCollection: 'A',
+      },
+      // base (non-CTF) proof — must be excluded
+      { secret: 'base', amount: Amount.from(100), id: 'id5', C: 'C5', mintUrl: 'http://m' },
+    ])
+
+    const rows = await getConditionCtfProofs('http://m', 'cond')
+
+    expect(rows.map((r) => r.secret).sort()).toEqual(['compA', 'compB', 'primC'])
+    // Bucketing by real keyset id recovers all three legs.
+    expect(new Set(rows.map((r) => r.id))).toEqual(
+      new Set(['keyset-A', 'keyset-B', 'keyset-C']),
+    )
   })
 
   it('hides reserved proofs from spendable base and outcome queries', async () => {

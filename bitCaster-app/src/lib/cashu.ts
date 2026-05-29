@@ -33,6 +33,7 @@ import {
   addProofs,
   getProofOperation,
   markProofOperationCompleted,
+  markProofOperationFailed,
   prepareProofOperation,
   removeProofs,
   type ProofOperationRecord,
@@ -40,6 +41,7 @@ import {
   type StoredProof,
 } from "@/stores/proof-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -714,37 +716,166 @@ export async function settleCtfPosition(
   const mintUrl = normalizeUrl(
     position.mintUrl ?? useWalletStore.getState().activeMintUrl,
   );
-  const operationId = buildCtfRedeemOperationId(position);
+
+  // A composite ("A|B") position spans MULTIPLE primitive keysets, but the
+  // mint enforces a single-keyset rule per redeem (redeem_outcome.rs §1). So
+  // we bucket the position's proofs by their REAL keyset id (`Proof.id`) and
+  // issue one redeem per keyset. We deliberately do NOT trust the position's
+  // `outcomeCollection` label for bucketing — settlement persists proofs
+  // inconsistently (composite-label vs per-primitive), so the keyset id is
+  // the only reliable grouping key.
+  const legs = groupProofsByKeyset(position.proofs);
+
+  const { witnessJson, attestedOutcome } = await fetchConditionAttestation(
+    position.conditionId,
+  );
+
+  const redeemed: Proof[] = [];
+  for (const [keysetId, legProofs] of legs) {
+    const legResult = await redeemKeysetLeg({
+      conditionId: position.conditionId,
+      keysetId,
+      proofs: legProofs,
+      mintUrl,
+      witnessJson,
+      attestedOutcome,
+    });
+    redeemed.push(...legResult);
+  }
+  return redeemed;
+}
+
+/** Group a position's proofs by their real keyset id (`Proof.id`). */
+function groupProofsByKeyset(proofs: Proof[]): Map<string, Proof[]> {
+  const byKeyset = new Map<string, Proof[]>();
+  for (const proof of proofs) {
+    byKeyset.set(proof.id, [...(byKeyset.get(proof.id) ?? []), proof]);
+  }
+  return byKeyset;
+}
+
+/** Substring markers the mint uses for "this keyset is not the winning outcome". */
+const LOSING_LEG_ERROR_MARKERS = [
+  "oraclenotattestedoutcome",
+  "not the attested outcome",
+  "not attested outcome",
+];
+
+function isLosingLegError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error))
+    .toLowerCase()
+    .replace(/[\s_-]/g, "");
+  return LOSING_LEG_ERROR_MARKERS.some((marker) =>
+    message.includes(marker.replace(/[\s_-]/g, "")),
+  );
+}
+
+/**
+ * Does this keyset leg's stored outcome label cover the attested outcome?
+ *
+ * Under per-primitive storage the answer is exact (the losing keyset's label
+ * excludes the attested outcome, so we never call the mint for it). Under
+ * composite-label storage every leg carries the same "A|B" label and looks
+ * like a winner; we then attempt the redeem and let the mint reject the
+ * losing keyset terminally (handled in `redeemKeysetLeg`).
+ */
+function legCoversAttestedOutcome(
+  proofs: Proof[],
+  attestedOutcome: string,
+): boolean {
+  const attested = attestedOutcome.trim().toLowerCase();
+  if (!attested) return true; // can't decide locally — defer to the mint
+  return proofs.some((proof) => {
+    const candidate = proof as Proof & {
+      outcomeCollection?: string;
+      outcome_collection?: string;
+    };
+    const label = candidate.outcomeCollection ?? candidate.outcome_collection;
+    if (!label) return true; // unlabelled — defer to the mint
+    return parseOutcomeSetId(label).some(
+      (outcome) => outcome.trim().toLowerCase() === attested,
+    );
+  });
+}
+
+interface RedeemKeysetLegInput {
+  conditionId: string;
+  keysetId: string;
+  proofs: Proof[];
+  mintUrl: string;
+  witnessJson: string;
+  attestedOutcome: string;
+}
+
+/**
+ * Redeem (or discard) one keyset leg of a CTF position.
+ *
+ * Winning leg  → redeem at the mint, credit regular proofs, remove inputs.
+ *                Transient failures are forward-recoverable via the op-id.
+ * Losing leg   → the keyset's collection excludes the attested outcome, so the
+ *                mint rejects it terminally (OracleNotAttestedOutcome). We
+ *                remove the now-worthless proofs LOCALLY and surface NO error —
+ *                a composite position legitimately carries a losing leg.
+ */
+async function redeemKeysetLeg(
+  input: RedeemKeysetLegInput,
+): Promise<Proof[]> {
+  const { conditionId, keysetId, proofs, mintUrl, witnessJson, attestedOutcome } =
+    input;
+
+  // Definite losing leg — its label cannot contain the attested outcome.
+  // Skip the (terminal-failing) mint call entirely and drop it locally.
+  if (!legCoversAttestedOutcome(proofs, attestedOutcome)) {
+    await removeProofs(proofs.map((proof) => proof.secret));
+    return [];
+  }
+
+  const legAmount = proofs.reduce(
+    (sum, proof) => sum + amountToNumber(proof.amount),
+    0,
+  );
+  const operationId = buildKeysetRedeemOperationId(conditionId, keysetId, proofs);
   const existing = await getProofOperation(operationId);
   if (existing) {
     return resumeCtfRedeem(existing);
   }
 
-  const outputData = await prepareRegularRedeemOutputs(
-    mintUrl,
-    position.amountSats,
-  );
+  const outputData = await prepareRegularRedeemOutputs(mintUrl, legAmount);
   await prepareProofOperation({
     operationId,
     kind: "ctf-redeem",
     mintUrl,
-    inputs: position.proofs,
+    inputs: proofs,
     outputs: { regular: serializeOutputDataArray(outputData) },
     metadata: {
-      conditionId: position.conditionId,
-      amountSats: position.amountSats,
-      outcomeCollection: position.outcomeCollection ?? null,
+      conditionId,
+      keysetId,
+      amountSats: legAmount,
     },
   });
 
-  const witness = await fetchConditionOracleWitness(position.conditionId);
-  const settled = await redeemOutcomeProofsAtMint(
-    mintUrl,
-    withOracleWitness(position.proofs, witness),
-    outputData,
-  );
-  await completeCtfRedeem(operationId, mintUrl, position.proofs, settled);
-  return settled;
+  try {
+    const settled = await redeemOutcomeProofsAtMint(
+      mintUrl,
+      withOracleWitness(proofs, witnessJson),
+      outputData,
+    );
+    await completeCtfRedeem(operationId, mintUrl, proofs, settled);
+    return settled;
+  } catch (error) {
+    if (isLosingLegError(error)) {
+      // Composite-label storage hid this losing leg behind a winning-looking
+      // label. The mint resolved it terminally — discard locally, no retry,
+      // no user-facing error.
+      await markProofOperationFailed(operationId, error);
+      await removeProofs(proofs.map((proof) => proof.secret));
+      return [];
+    }
+    // Transient failure on a winning leg — leave the op-id `prepared` (do NOT
+    // mark it failed: `resumeCtfRedeem` treats `failed` as terminal) so a
+    // re-run resumes from it; rethrow so the caller can surface/retry.
+    throw error;
+  }
 }
 
 interface ConditionAttestationResponse {
@@ -778,17 +909,23 @@ function validateRedeemPosition(position: MarketPosition): void {
   }
 }
 
-function buildCtfRedeemOperationId(position: MarketPosition): string {
-  const secrets = position.proofs
+/**
+ * Deterministic restore-ledger op id for one keyset leg.
+ *
+ * Positions carry no tradeId, so we key on `(conditionId, keyset_id,
+ * sorted-secrets)` — stable across re-runs so a transient winning-leg failure
+ * resumes from the same op rather than minting fresh outputs.
+ */
+function buildKeysetRedeemOperationId(
+  conditionId: string,
+  keysetId: string,
+  proofs: Proof[],
+): string {
+  const secrets = proofs
     .map((proof) => proof.secret)
     .sort()
     .join("|");
-  return [
-    "ctf-redeem",
-    position.conditionId.toLowerCase(),
-    position.outcomeCollection ?? "",
-    secrets,
-  ].join(":");
+  return ["ctf-redeem", conditionId.toLowerCase(), keysetId, secrets].join(":");
 }
 
 async function prepareRegularRedeemOutputs(
@@ -812,9 +949,14 @@ async function getActiveRegularKeyset(wallet: CashuWallet): Promise<MintKeys> {
   return keyset;
 }
 
-async function fetchConditionOracleWitness(
+interface ResolvedConditionAttestation {
+  witnessJson: string;
+  attestedOutcome: string;
+}
+
+async function fetchConditionAttestation(
   conditionId: string,
-): Promise<string> {
+): Promise<ResolvedConditionAttestation> {
   const response = await fetch(
     `/api/v1/conditions/${conditionId}/attestation`,
     {
@@ -838,7 +980,17 @@ async function fetchConditionOracleWitness(
       "Condition attestation response did not include an oracle witness",
     );
   }
-  return JSON.stringify(body.oracleWitness);
+  return {
+    witnessJson: JSON.stringify(body.oracleWitness),
+    attestedOutcome: body.attestedOutcome ?? "",
+  };
+}
+
+async function fetchConditionOracleWitness(
+  conditionId: string,
+): Promise<string> {
+  const { witnessJson } = await fetchConditionAttestation(conditionId);
+  return witnessJson;
 }
 
 async function redeemOutcomeProofsAtMint(

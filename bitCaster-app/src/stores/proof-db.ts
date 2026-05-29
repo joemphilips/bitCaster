@@ -158,6 +158,32 @@ export async function getOutcomeProofs(
   });
 }
 
+/**
+ * Return ALL of a condition's CTF proofs at a mint, regardless of how the
+ * outcome was labelled when persisted.
+ *
+ * A composite ("A|B") position lives as proofs spanning MULTIPLE primitive
+ * keysets, and settlement persists them inconsistently: sometimes under the
+ * composite `outcomeCollection="A|B"` label, sometimes per-primitive
+ * (`outcomeCollection="A"` / `"B"`). A label-scoped query (`getOutcomeProofs`)
+ * therefore misses proofs. The redeem path must bucket by the proof's real
+ * `keyset_id` (`Proof.id`), so it needs every CTF proof of the condition —
+ * not a label slice. This query gathers them by `conditionId` only.
+ */
+export async function getConditionCtfProofs(
+  mintUrl: string,
+  conditionId: string,
+  options: { includeReserved?: boolean } = {},
+): Promise<StoredProof[]> {
+  const proofs = await getProofs(mintUrl, options);
+  return proofs.filter((p) => {
+    if (!isCtfProof(p)) return false;
+    const candidate = p as StoredProof & { condition_id?: string };
+    const proofConditionId = candidate.conditionId ?? candidate.condition_id;
+    return proofConditionId === conditionId;
+  });
+}
+
 // Central normalization point — proofs arrive from many receive paths
 // (deposit, atomic-swap change, NIP-17 payload) where `mintUrl` may come
 // from a decoded token or a raw wallet config. Normalizing on write means
