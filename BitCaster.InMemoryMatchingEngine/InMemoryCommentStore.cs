@@ -40,9 +40,9 @@ public sealed class InMemoryCommentStore
             .Where(comment => comment.AdditionalProperties.TryGetValue("conditionId", out var raw)
                               && raw is string value
                               && string.Equals(value, conditionId, StringComparison.Ordinal))
-            .OrderBy(comment => comment.Timestamp)
+            .OrderBy(comment => comment.CreatedAt)
             .ThenBy(comment => comment.CommentId)
-            .Select(comment => new MarketComment(comment.CommentId, comment.Content, comment.Timestamp))
+            .Select(comment => new MarketComment(comment.AuthorPubkey, comment.CommentId, comment.Content, comment.CreatedAt))
             .ToList();
         return new MarketCommentsResponse(comments, conditionId);
     }
@@ -63,6 +63,7 @@ public sealed class InMemoryCommentStore
         _visibleByKey.GetOrAdd(key, _ =>
         {
             var visible = new MarketComment(
+                comment.Pubkey,
                 DeterministicGuid(key),
                 comment.Content,
                 DateTimeOffset.FromUnixTimeSeconds(comment.CreatedAt));
