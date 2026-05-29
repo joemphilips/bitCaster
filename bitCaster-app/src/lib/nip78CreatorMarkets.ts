@@ -34,6 +34,8 @@ function isStoredCreatorOracle(
     typeof oracle.eventId === "string" &&
     Array.isArray(oracle.outcomes) &&
     oracle.outcomes.every((outcome) => typeof outcome === "string") &&
+    (oracle.announcementHex === undefined ||
+      typeof oracle.announcementHex === "string") &&
     (oracle.attestationHex === undefined ||
       typeof oracle.attestationHex === "string") &&
     (oracle.attestedOutcome === undefined ||

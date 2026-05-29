@@ -414,7 +414,7 @@ export function useMarketCreationState() {
       let announcementHex: string
       let outcomes: string[]
       let creatorOracle:
-        | { type: 'self'; eventId: string; outcomes: string[] }
+        | { type: 'self'; eventId: string; outcomes: string[]; announcementHex?: string }
         | undefined
 
       if (choice === 'become-oracle') {
@@ -460,7 +460,9 @@ export function useMarketCreationState() {
           title,
           description,
         )
-        creatorOracle = { type: 'self', eventId, outcomes }
+        // Persist the announcement hex so a fresh browser profile can recover
+        // the committed-nonce material needed to resolve this market (P22 B1b).
+        creatorOracle = { type: 'self', eventId, outcomes, announcementHex }
       } else {
         const announcement = oracleAnnouncements.find(
           (a) => a.id === draft.stepOracleCheck?.selectedAnnouncementId,

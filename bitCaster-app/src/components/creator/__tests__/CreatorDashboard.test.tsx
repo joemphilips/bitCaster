@@ -9,11 +9,13 @@ const {
   mockUseCreatorDashboardState,
   mockNavigate,
   mockSignEnumAttestation,
+  mockBuildOracleAttestationEvent,
   mockSubmitOracleAttestation,
 } = vi.hoisted(() => ({
   mockUseCreatorDashboardState: vi.fn(),
   mockNavigate: vi.fn(),
   mockSignEnumAttestation: vi.fn(),
+  mockBuildOracleAttestationEvent: vi.fn(),
   mockSubmitOracleAttestation: vi.fn(),
 }))
 
@@ -26,8 +28,16 @@ vi.mock('react-router', async () => {
   return { ...actual, useNavigate: () => mockNavigate }
 })
 
+// The DLC attestation signature is produced by kormir against the
+// announcement's committed nonce; oracleAttestation only wraps the resulting
+// hex in a NIP-01 envelope.
+vi.mock('@/lib/kormir', () => ({
+  signEnumAttestation: (...args: unknown[]) => mockSignEnumAttestation(...args),
+}))
+
 vi.mock('@/lib/oracleAttestation', () => ({
-  signEnumOracleAttestationEvent: (...args: unknown[]) => mockSignEnumAttestation(...args),
+  buildOracleAttestationEvent: (...args: unknown[]) =>
+    mockBuildOracleAttestationEvent(...args),
 }))
 
 vi.mock('@/lib/markets', async (importOriginal) => {
@@ -66,12 +76,15 @@ beforeEach(() => {
   mockNavigate.mockReset()
   mockUseCreatorDashboardState.mockReset()
   mockSignEnumAttestation.mockReset()
-  mockSignEnumAttestation.mockReturnValue({
+  // kormir returns the rust-dlc oracle_attestation as a hex string.
+  mockSignEnumAttestation.mockResolvedValue('deadbeef')
+  mockBuildOracleAttestationEvent.mockReset()
+  mockBuildOracleAttestationEvent.mockReturnValue({
     id: 'event-id',
     pubkey: 'a'.repeat(64),
     createdAt: 1,
     kind: 89,
-    content: 'attestation-hex',
+    content: 'YXR0ZXN0YXRpb24=',
     sig: 'b'.repeat(128),
   })
   mockSubmitOracleAttestation.mockReset()
@@ -255,21 +268,31 @@ describe('CreatorDashboard', () => {
 
     await user.click(screen.getByRole('button', { name: /close market/i }))
 
+    await screen.findByText(/published oracle attestation/i)
+
+    // Signing goes through kormir so the attestation binds to the
+    // announcement's committed nonce (relay urls, event id, outcome).
     expect(mockSignEnumAttestation).toHaveBeenCalledWith(
-      'nsec1test',
+      ['wss://relay.example.test'],
       'will_btc_hit_150k_abcd',
       'Yes',
+    )
+    // The kormir attestation hex is wrapped in a NIP-01 envelope signed by
+    // the creator's nsec.
+    expect(mockBuildOracleAttestationEvent).toHaveBeenCalledWith(
+      'nsec1test',
+      'deadbeef',
     )
     expect(mockSubmitOracleAttestation).toHaveBeenCalledWith('a'.repeat(64), {
       id: 'event-id',
       pubkey: 'a'.repeat(64),
       createdAt: 1,
       kind: 89,
-      content: 'attestation-hex',
+      content: 'YXR0ZXN0YXRpb24=',
       sig: 'b'.repeat(128),
     })
     expect(useCreatorMarketsStore.getState().markets[0].oracle).toMatchObject({
-      attestationHex: 'attestation-hex',
+      attestationHex: 'YXR0ZXN0YXRpb24=',
       attestedOutcome: 'Yes',
     })
     expect(screen.getByText(/published oracle attestation/i)).toBeInTheDocument()

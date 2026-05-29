@@ -115,6 +115,32 @@ describe('useCreatorMarketsStore', () => {
     useCreatorMarketsStore.getState().clear()
     expect(useCreatorMarketsStore.getState().markets).toEqual([])
   })
+
+  it('preserves the announcement recovery material across a simulated fresh profile (P22 B1b)', () => {
+    // Market created on the original profile, carrying the committed-nonce
+    // recovery material (announcement TLV hex).
+    const created = makeMarket({
+      oracle: {
+        type: 'self',
+        eventId: 'will_btc_hit_150k_abcd',
+        outcomes: ['Yes', 'No'],
+        announcementHex: 'fdd824ab0102',
+      },
+    })
+    useCreatorMarketsStore.getState().addCreatedMarket(created)
+
+    // Fresh browser profile: localStorage is empty until NIP-78 sync restores.
+    useCreatorMarketsStore.getState().clear()
+    expect(useCreatorMarketsStore.getState().markets).toEqual([])
+
+    // useCreatorSync fetches the NIP-78 mirror and replaces the local set.
+    // The recovery material must survive the round-trip so the creator can
+    // re-derive the committed nonce and resolve the market.
+    useCreatorMarketsStore.getState().replace([created])
+
+    const restored = useCreatorMarketsStore.getState().markets[0]
+    expect(restored.oracle?.announcementHex).toBe('fdd824ab0102')
+  })
 })
 
 describe('creatorMarketsEqual', () => {
@@ -144,6 +170,26 @@ describe('creatorMarketsEqual', () => {
         eventId: 'event-1',
         outcomes: ['Yes', 'No'],
         attestedOutcome: 'Yes',
+      },
+    })
+    expect(creatorMarketsEqual([a], [b])).toBe(false)
+  })
+
+  it('returns false when the announcement recovery material differs', () => {
+    const a = makeMarket({
+      oracle: {
+        type: 'self',
+        eventId: 'event-1',
+        outcomes: ['Yes', 'No'],
+        announcementHex: 'aa',
+      },
+    })
+    const b = makeMarket({
+      oracle: {
+        type: 'self',
+        eventId: 'event-1',
+        outcomes: ['Yes', 'No'],
+        announcementHex: 'bb',
       },
     })
     expect(creatorMarketsEqual([a], [b])).toBe(false)
