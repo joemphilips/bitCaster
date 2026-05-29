@@ -335,7 +335,13 @@
     "themeDark": "Dark",
     "themeSystem": "System",
     "languageEnglish": "English",
-    "languageJapanese": "Japanese"
+    "languageJapanese": "Japanese",
+    "publicKeyNpubLabel": "Public key (npub)",
+    "npubSafeToShare": "Safe to share",
+    "secretKeyNsecLabel": "Secret key (nsec)",
+    "nsecKeepPrivate": "Keep private",
+    "copyNpub": "Copy npub",
+    "copyNsec": "Copy nsec"
   },
   "deposit": {
     "title": "Deposit",

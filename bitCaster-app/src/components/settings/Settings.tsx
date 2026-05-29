@@ -1,4 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { nip19 } from 'nostr-tools'
+import { getPublicKey } from 'nostr-tools/pure'
 import type {
   SettingsProps,
   SettingsCategory,
@@ -145,6 +148,7 @@ export function Settings({
   onAddRelay,
   onRemoveRelay,
 }: SettingsProps) {
+  const { t } = useTranslation()
   const { general, cashu, nostr } = settings
 
   // Local state for UI interactions. The add-mint subform is owned by
@@ -162,6 +166,7 @@ export function Settings({
   const [showGeneratedNsecSecret, setShowGeneratedNsecSecret] = useState(false)
   const [generatedNsecBlurred, setGeneratedNsecBlurred] = useState(false)
   const [generatedNsecCopied, setGeneratedNsecCopied] = useState(false)
+  const [generatedNpubCopied, setGeneratedNpubCopied] = useState(false)
   const [ncryptsecPassphrase, setNcryptsecPassphrase] = useState('')
   const [showAddRelay, setShowAddRelay] = useState(false)
   const [newRelayUrl, setNewRelayUrl] = useState('')
@@ -180,6 +185,7 @@ export function Settings({
       setShowGeneratedNsecConfirm(false)
       setGeneratedNsecBlurred(false)
       setGeneratedNsecCopied(false)
+      setGeneratedNpubCopied(false)
     }, 60_000)
     return () => {
       window.clearTimeout(blurTimer)
@@ -231,6 +237,35 @@ export function Settings({
     }, 60_000)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  /**
+   * Derive the public npub from the generated nsec. The npub is the BIP-340
+   * x-only public key — public-by-design and safe to display unblurred and
+   * copy to the clipboard without the auto-clear protection the secret nsec
+   * needs. Decode nsec → raw 32-byte secret → schnorr/x-only pubkey hex →
+   * npub bech32 (same pattern as MarketHeader / oracleAttestation). Returns
+   * null if the nsec is missing or malformed so the UI can degrade quietly
+   * rather than throw inside render.
+   */
+  const generatedNpub = useMemo(() => {
+    if (!generatedNsecSecret) return null
+    try {
+      const decoded = nip19.decode(generatedNsecSecret)
+      if (decoded.type !== 'nsec') return null
+      const pubkeyHex = getPublicKey(decoded.data)
+      return nip19.npubEncode(pubkeyHex)
+    } catch {
+      return null
+    }
+  }, [generatedNsecSecret])
+
+  const handleCopyGeneratedNpub = () => {
+    if (!generatedNpub) return
+    // npub is public — plain copy, no clipboard auto-clear needed.
+    void navigator.clipboard.writeText(generatedNpub)
+    setGeneratedNpubCopied(true)
+    window.setTimeout(() => setGeneratedNpubCopied(false), 2_000)
   }
 
   const handleCopyGeneratedNsec = () => {
@@ -888,8 +923,57 @@ export function Settings({
               </div>
             ) : (
               <>
+                {/* ── Public key (npub) — safe to share, never blurred ──── */}
+                {generatedNpub && (
+                  <div className="mb-4">
+                    <div className="mb-1.5 flex items-center gap-1.5">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        {t('settings.publicKeyNpubLabel')}
+                      </span>
+                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                        {t('settings.npubSafeToShare')}
+                      </span>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-700/50">
+                      <div
+                        data-testid="generated-npub-value"
+                        className="break-all font-mono text-sm text-slate-900 dark:text-white"
+                      >
+                        {generatedNpub}
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleCopyGeneratedNpub}
+                      aria-label={t('settings.copyNpub')}
+                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-slate-100 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
+                    >
+                      {generatedNpubCopied ? (
+                        <>
+                          <Check className="h-4 w-4 text-green-500" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-4 w-4" />
+                          {t('settings.copyNpub')}
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+
+                {/* ── Secret key (nsec) — blurred / auto-hidden / clipboard-cleared ── */}
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    {t('settings.secretKeyNsecLabel')}
+                  </span>
+                  <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-400">
+                    {t('settings.nsecKeepPrivate')}
+                  </span>
+                </div>
                 <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-700/50">
                   <div
+                    data-testid="generated-nsec-value"
                     className={`break-all font-mono text-sm text-slate-900 transition-[filter] dark:text-white ${
                       generatedNsecBlurred ? 'blur-sm select-none' : ''
                     }`}
@@ -908,6 +992,7 @@ export function Settings({
                 <div className="flex gap-3">
                   <button
                     onClick={handleCopyGeneratedNsec}
+                    aria-label={t('settings.copyNsec')}
                     className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
                   >
                     {generatedNsecCopied ? (
@@ -918,7 +1003,7 @@ export function Settings({
                     ) : (
                       <>
                         <Copy className="w-4 h-4" />
-                        Copy to Clipboard
+                        {t('settings.copyNsec')}
                       </>
                     )}
                   </button>
@@ -928,6 +1013,7 @@ export function Settings({
                       setShowGeneratedNsecSecret(false)
                       setGeneratedNsecBlurred(false)
                       setGeneratedNsecCopied(false)
+                      setGeneratedNpubCopied(false)
                       onConfirmSignerBackup?.()
                     }}
                     className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"

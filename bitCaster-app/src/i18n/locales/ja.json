@@ -335,7 +335,13 @@
     "themeDark": "ダーク",
     "themeSystem": "システム",
     "languageEnglish": "English",
-    "languageJapanese": "日本語"
+    "languageJapanese": "日本語",
+    "publicKeyNpubLabel": "公開鍵 (npub)",
+    "npubSafeToShare": "共有しても安全",
+    "secretKeyNsecLabel": "秘密鍵 (nsec)",
+    "nsecKeepPrivate": "非公開のままにする",
+    "copyNpub": "npub をコピー",
+    "copyNsec": "nsec をコピー"
   },
   "deposit": {
     "title": "入金",
