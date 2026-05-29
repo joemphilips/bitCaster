@@ -779,7 +779,7 @@ test('DaemonSwapExecutor resume sweep retries active claim after retryable timeo
   }
 })
 
-test('DaemonSwapExecutor drives complementary seller split before opening swap', async () => {
+test('DaemonSwapExecutor drives mint seller split before opening swap', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-swap-complement-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -810,7 +810,7 @@ test('DaemonSwapExecutor drives complementary seller split before opening swap',
     const sent: string[] = []
     const executor = new DaemonSwapExecutor({
       connection: fakeConnection(sent),
-      ops: complementaryFakeOps(),
+      ops: mintFakeOps(),
     })
 
     await executor.onTradeCreated(
@@ -823,7 +823,7 @@ test('DaemonSwapExecutor drives complementary seller split before opening swap',
         marketId: 'cond-YES',
         outcomeFaceAmountSats: 100,
         quotePaymentSats: 42,
-        settlementKind: 'ComplementarySplit',
+        settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
       }),
@@ -853,8 +853,8 @@ test('DaemonSwapExecutor drives complementary seller split before opening swap',
   }
 })
 
-test('DaemonSwapExecutor uses reserved pre-flight proofs for complementary seller open', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-preflight-complement-'))
+test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-preflight-mint-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
@@ -942,7 +942,7 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for complementary selle
         marketId: 'cond-YES',
         outcomeFaceAmountSats: 100,
         quotePaymentSats: 42,
-        settlementKind: 'ComplementarySplit',
+        settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
       }),
@@ -1077,7 +1077,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
         marketId: 'cond-YES',
         outcomeFaceAmountSats: 100,
         quotePaymentSats: 42,
-        settlementKind: 'ComplementarySplit',
+        settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
       }),
@@ -1280,8 +1280,8 @@ function fakeOps(): DaemonSwapOps {
     async buyerRespond() {
       throw new Error('buyer path unused in this test')
     },
-    async sellerOpenComplementary() {
-      throw new Error('complementary path unused in this test')
+    async sellerOpenMint() {
+      throw new Error('mint path unused in this test')
     },
     async sellerClaim() {
       return [cashuProof(42, 'seller-claim')]
@@ -1318,8 +1318,8 @@ function buyerFakeOps(): DaemonSwapOps {
         sellerPreSigsHex: ['pre-s'],
       }
     },
-    async sellerOpenComplementary() {
-      throw new Error('complementary path unused in this test')
+    async sellerOpenMint() {
+      throw new Error('mint path unused in this test')
     },
     async sellerClaim() {
       throw new Error('seller path unused in this test')
@@ -1333,7 +1333,7 @@ function buyerFakeOps(): DaemonSwapOps {
   }
 }
 
-function complementaryFakeOps(): DaemonSwapOps {
+function mintFakeOps(): DaemonSwapOps {
   return {
     async splitProofsForExactSend() {
       throw new Error('proof split path unused in this test')
@@ -1347,7 +1347,7 @@ function complementaryFakeOps(): DaemonSwapOps {
     async sellerLockOutcomeProofs() {
       throw new Error('outcome lock path unused in this test')
     },
-    async sellerOpenComplementary(_ctx, params, collateralProofs) {
+    async sellerOpenMint(_ctx, params, collateralProofs) {
       assert.deepEqual(params, {
         conditionId: 'cond',
         keepOutcomeSetId: 'YES',

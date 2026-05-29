@@ -164,8 +164,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var fill = Assert.Single(takerEngine.GetProperty("fills").EnumerateArray());
         var tradeId = fill.GetProperty("tradeId").GetString();
         Assert.False(string.IsNullOrWhiteSpace(tradeId));
-        Assert.Equal("Complementary", fill.GetProperty("path").GetString());
-        Assert.Equal("ComplementarySplit", fill.GetProperty("settlementKind").GetString());
+        Assert.Equal("Mint", fill.GetProperty("path").GetString());
+        Assert.Equal("Mint", fill.GetProperty("settlementKind").GetString());
         Assert.Equal(100, fill.GetProperty("outcomeFaceAmountSats").GetInt32());
         Assert.Equal(50, fill.GetProperty("quotePaymentSats").GetInt32());
         Assert.Equal("NO", fill.GetProperty("sellerKeepOutcomeSetId").GetString());
@@ -175,7 +175,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         using var makerTrade = await WaitForTradeRecordAsync(
             maker,
             tradeId!,
-            record => HasComplementaryMetadata(
+            record => HasMintMetadata(
                 record,
                 yesMarketId,
                 expectedRole: "seller",
@@ -183,11 +183,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 sellerLockOutcomeSetId: "YES",
                 outcomeFaceAmountSats: 100,
                 quotePaymentSats: 50),
-            "resting maker complementary TradeCreated");
+            "resting maker mint TradeCreated");
         using var takerTrade = await WaitForTradeRecordAsync(
             taker,
             tradeId!,
-            record => HasComplementaryMetadata(
+            record => HasMintMetadata(
                 record,
                 yesMarketId,
                 expectedRole: "buyer",
@@ -195,7 +195,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 sellerLockOutcomeSetId: "YES",
                 outcomeFaceAmountSats: 100,
                 quotePaymentSats: 50),
-            "incoming taker complementary TradeCreated");
+            "incoming taker mint TradeCreated");
 
         Assert.Equal(makerOrderId, makerTrade.RootElement
             .GetProperty("result")
@@ -250,8 +250,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var fill = Assert.Single(takerEngine.GetProperty("fills").EnumerateArray());
         var tradeId = fill.GetProperty("tradeId").GetString();
         Assert.False(string.IsNullOrWhiteSpace(tradeId));
-        Assert.Equal("Complementary", fill.GetProperty("path").GetString());
-        Assert.Equal("ComplementarySplit", fill.GetProperty("settlementKind").GetString());
+        Assert.Equal("Mint", fill.GetProperty("path").GetString());
+        Assert.Equal("Mint", fill.GetProperty("settlementKind").GetString());
         Assert.Equal(100, fill.GetProperty("outcomeFaceAmountSats").GetInt32());
         Assert.Equal(45, fill.GetProperty("quotePaymentSats").GetInt32());
         Assert.Equal(makerOutcomeSetId, fill.GetProperty("sellerKeepOutcomeSetId").GetString());
@@ -261,7 +261,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         using var makerTrade = await WaitForTradeRecordAsync(
             maker,
             tradeId!,
-            record => HasComplementaryMetadata(
+            record => HasMintMetadata(
                 record,
                 takerMarketId,
                 expectedRole: "seller",
@@ -269,11 +269,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 sellerLockOutcomeSetId: takerOutcomeSetId,
                 outcomeFaceAmountSats: 100,
                 quotePaymentSats: 45),
-            "categorical resting maker complementary TradeCreated");
+            "categorical resting maker mint TradeCreated");
         using var takerTrade = await WaitForTradeRecordAsync(
             taker,
             tradeId!,
-            record => HasComplementaryMetadata(
+            record => HasMintMetadata(
                 record,
                 takerMarketId,
                 expectedRole: "buyer",
@@ -281,7 +281,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 sellerLockOutcomeSetId: takerOutcomeSetId,
                 outcomeFaceAmountSats: 100,
                 quotePaymentSats: 45),
-            "categorical incoming taker complementary TradeCreated");
+            "categorical incoming taker mint TradeCreated");
 
         Assert.Equal("seller", makerTrade.RootElement
             .GetProperty("result")
@@ -511,7 +511,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var fill = Assert.Single(takerEngine.GetProperty("fills").EnumerateArray());
         var tradeId = fill.GetProperty("tradeId").GetString();
         Assert.False(string.IsNullOrWhiteSpace(tradeId));
-        Assert.Equal("ComplementarySplit", fill.GetProperty("settlementKind").GetString());
+        Assert.Equal("Mint", fill.GetProperty("settlementKind").GetString());
 
         await RestartDaemonAsync(maker);
 
@@ -575,7 +575,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var fill = Assert.Single(takerEngine.GetProperty("fills").EnumerateArray());
         var tradeId = fill.GetProperty("tradeId").GetString();
         Assert.False(string.IsNullOrWhiteSpace(tradeId));
-        Assert.Equal("ComplementarySplit", fill.GetProperty("settlementKind").GetString());
+        Assert.Equal("Mint", fill.GetProperty("settlementKind").GetString());
 
         await RestartDaemonAsync(taker);
 
@@ -1371,7 +1371,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             var fill = Assert.Single(engine.GetProperty("fills").EnumerateArray());
             var tradeId = fill.GetProperty("tradeId").GetString();
             Assert.False(string.IsNullOrWhiteSpace(tradeId));
-            Assert.Equal("ComplementarySplit", fill.GetProperty("settlementKind").GetString());
+            Assert.Equal("Mint", fill.GetProperty("settlementKind").GetString());
             return tradeId!;
         }
 
@@ -2112,7 +2112,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             throw await TestHelpers.BuildDiagnosticExceptionAsync(
                 page,
                 consoleMessages,
-                $"Browser maker buy should rest before complementary taker arrives. Body={orderBody}");
+                $"Browser maker buy should rest before mint taker arrives. Body={orderBody}");
         }
 
         var orderId = doc.RootElement.GetProperty("orderId").GetString();
@@ -2358,7 +2358,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             $"Trade {tradeId} did not expose {description}. Last result={lastResult ?? "(none)"}");
     }
 
-    private static bool HasComplementaryMetadata(
+    private static bool HasMintMetadata(
         JsonElement record,
         string expectedMarketId,
         string expectedRole,
@@ -2372,7 +2372,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                && record.TryGetProperty("role", out var role)
                && role.GetString() == expectedRole
                && record.TryGetProperty("settlementKind", out var settlementKind)
-               && settlementKind.GetString() == "ComplementarySplit"
+               && settlementKind.GetString() == "Mint"
                && record.TryGetProperty("sellerKeepOutcomeSetId", out var keep)
                && keep.GetString() == sellerKeepOutcomeSetId
                && record.TryGetProperty("sellerLockOutcomeSetId", out var locked)

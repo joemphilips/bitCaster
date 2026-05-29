@@ -506,7 +506,7 @@ function tradeCreatedMatchesPendingOrderPath(
     return !payload.marketId || pendingTrade.marketId === payload.marketId;
   }
 
-  if (settlementKind !== "ComplementarySplit") {
+  if (settlementKind !== "Mint") {
     return true;
   }
 
@@ -542,13 +542,13 @@ async function runSellerSendOpening(
     useActiveSwapsStore.getState().setStep(tradeId, "driving");
     const ctx = buildSwapContext(swap, mintUrl);
     if (!ctx) return;
-    const complementarySplit = complementarySellerSplit(swap, ctx);
-    const out = complementarySplit
-      ? await prepareComplementarySellerOpening(
+    const mintSplit = mintSellerSplit(swap, ctx);
+    const out = mintSplit
+      ? await prepareMintSellerOpening(
           swap,
           ctx,
           mintUrl,
-          complementarySplit,
+          mintSplit,
         )
       : await prepareDirectSellerOpening(swap, ctx, mintUrl);
     useActiveSwapsStore
@@ -573,7 +573,7 @@ async function runSellerSendOpening(
 
 type SellerOpening = Awaited<ReturnType<typeof sellerPrepareSwap>>;
 
-interface ComplementarySellerSplit {
+interface MintSellerSplit {
   conditionId: string;
   keepOutcomeSetId: string;
   lockOutcomeSetId: string;
@@ -609,7 +609,7 @@ async function prepareDirectSellerOpening(
   let locked: Awaited<ReturnType<typeof sellerLockOutcomeProofs>>;
   try {
     locked = await sellerLockOutcomeProofs(ctx, proofs, amountSats, {
-      operationId: proofOperationId(swap.tradeId, "seller-direct-lock"),
+      operationId: proofOperationId(swap.tradeId, "seller-complementary-lock"),
       proofOperationStore,
     });
   } catch (err) {
@@ -631,11 +631,11 @@ async function prepareDirectSellerOpening(
   return sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
 }
 
-async function prepareComplementarySellerOpening(
+async function prepareMintSellerOpening(
   swap: ActiveSwap,
   ctx: SwapCtx,
   mintUrl: string,
-  split: ComplementarySellerSplit,
+  split: MintSellerSplit,
 ): Promise<SellerOpening> {
   const amountSats = swap.outcomeFaceAmountSats;
   if (
@@ -644,13 +644,13 @@ async function prepareComplementarySellerOpening(
     amountSats <= 0
   ) {
     throw new Error(
-      "Complementary swap is missing a positive outcome face amount",
+      "Mint swap is missing a positive outcome face amount",
     );
   }
 
   const operationId = proofOperationId(
     swap.tradeId,
-    "seller-complementary-ctf-split",
+    "seller-mint-ctf-split",
   );
   const pendingTrade = usePendingTradesStore.getState().get(swap.orderId);
   if (
@@ -936,20 +936,20 @@ async function releaseMatchedPreflightOutcomeSetProofs(input: {
   }
 }
 
-function complementarySellerSplit(
+function mintSellerSplit(
   swap: ActiveSwap,
   ctx: SwapCtx,
-): ComplementarySellerSplit | null {
+): MintSellerSplit | null {
   if (ctx.role !== "seller") return null;
-  if (swap.settlementKind !== "ComplementarySplit") return null;
+  if (swap.settlementKind !== "Mint") return null;
   if (!swap.sellerKeepOutcomeSetId || !swap.sellerLockOutcomeSetId) {
     throw new Error(
-      "Complementary split trade is missing seller outcome metadata",
+      "Mint split trade is missing seller outcome metadata",
     );
   }
   const market = splitMarketId(swap.marketId);
   if (!market) {
-    throw new Error(`Invalid complementary split market id ${swap.marketId}`);
+    throw new Error(`Invalid mint split market id ${swap.marketId}`);
   }
   return {
     conditionId: market.conditionId,

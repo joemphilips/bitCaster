@@ -7,7 +7,7 @@ sidebar:
 
 # CPMM Bot & Initial Liquidity
 
-This page covers the automated CPMM bot used to bootstrap a new market. For the human/professional market-maker trading model, online requirements, complementary matching, and fee policy, see [Trading Model & Human Market Makers](/technical/architecture/trading-model/).
+This page covers the automated CPMM bot used to bootstrap a new market. For the human/professional market-maker trading model, online requirements, mint matching, and fee policy, see [Trading Model & Human Market Makers](/technical/architecture/trading-model/).
 
 ## The Cold-Start Problem
 
@@ -44,7 +44,7 @@ Implied price of A: p_A = y / (x + y)
 
 The continuous CPMM curve is discretized into a ladder of ~20 limit orders (10 bids, 10 asks) around the current midpoint. When orders are filled by real traders, the CPMM recalculates its reserves and replaces all orders based on the new state.
 
-From a trader's perspective, CPMM orders are indistinguishable from orders placed by human market makers. The matching engine's CLOB logic is unchanged — CPMM orders participate in both direct and complementary matching like any other GTC limit order.
+From a trader's perspective, CPMM orders are indistinguishable from orders placed by human market makers. The matching engine's CLOB logic is unchanged — CPMM orders participate in both complementary and mint matching like any other GTC limit order.
 
 ### Market Creation Flow
 

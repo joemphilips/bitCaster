@@ -94,7 +94,7 @@ describe('promoteNewFillsToActiveSwaps', () => {
 })
 
 describe('buildOrderStatusNotifications', () => {
-  it('notifies on a complementary reservation-shaped match', () => {
+  it('notifies on a mint reservation-shaped match', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
       status: 'matched',

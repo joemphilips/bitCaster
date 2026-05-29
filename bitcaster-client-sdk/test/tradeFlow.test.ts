@@ -10,7 +10,7 @@ test('decideTradeCreated uses shared trade-session protocol validation', () => {
     buyerPubkey: 'def',
     sellerLocktime: 120,
     buyerLocktime: 60,
-    settlementKind: 'ComplementarySplit',
+    settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'YES',
     outcomeFaceAmountSats: 100,
@@ -20,7 +20,7 @@ test('decideTradeCreated uses shared trade-session protocol validation', () => {
   const sharedError = validateTradeCreatedProtocol(payload)
   const decision = decideTradeCreated(payload)
 
-  assert.equal(sharedError, 'Trade rejected: complementary split keep and lock outcome sets are identical.')
+  assert.equal(sharedError, 'Trade rejected: mint split keep and lock outcome sets are identical.')
   assert.deepEqual(decision, {
     accepted: false,
     reason: 'invalid-protocol',

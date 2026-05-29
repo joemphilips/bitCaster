@@ -71,8 +71,9 @@ public static class OrderEndpoints
             }
 
             // Register trades + replay TradeCreated for any fill that carries
-            // a tradeId. Direct matches map seller/buyer from side; binary
-            // complementary buy/buy matches carry explicit settlement metadata.
+            // a tradeId. Complementary matches (Buy vs Sell) map seller/buyer
+            // from side; mint buy/buy matches (Buy vs Buy splitter) carry
+            // explicit settlement metadata.
             await EmitTradeCreatedForFills(
                 tradeHub, trades, result.Fills, req.Side, req.EphemeralPubkey, marketId);
 
@@ -126,10 +127,11 @@ public static class OrderEndpoints
     /// For each fill that carries a <c>tradeId</c>, register the trade in the
     /// in-memory registry and broadcast <c>TradeCreated</c> to both order
     /// groups. The maker's ephemeral pubkey is on the fill itself; the
-    /// taker's is the request's own ephemeral pubkey. Direct side mapping: a
+    /// taker's is the request's own ephemeral pubkey. Complementary side
+    /// mapping (Polymarket CTF V2 Complementary path — Buy vs Sell): a
     /// Sell-side taker is the outcome-token seller (Alice); a Buy-side taker
-    /// is the buyer (Bob). Complementary buy/buy matches treat the resting
-    /// maker as seller and the incoming taker as buyer.
+    /// is the buyer (Bob). Mint buy/buy matches treat the resting maker as
+    /// seller and the incoming taker as buyer.
     /// </summary>
     private static async Task EmitTradeCreatedForFills(
         IHubContext<TradeHub, ITradeHubClient> tradeHub,
@@ -144,7 +146,7 @@ public static class OrderEndpoints
             var tradeId = TryReadTradeId(fill);
             if (tradeId is null) continue;
 
-            var (sellerPubkey, buyerPubkey) = fill.Path == MatchPath.Complementary
+            var (sellerPubkey, buyerPubkey) = fill.Path == MatchPath.Mint
                 ? (fill.MakerEphemeralPubkey, takerEphemeralPubkey)
                 : takerSide == OrderSide.Sell
                     ? (takerEphemeralPubkey, fill.MakerEphemeralPubkey)

@@ -23,7 +23,7 @@ test('validateLocktimeOrdering requires seller proofs to unlock after buyer proo
   )
 })
 
-test('validateTradeCreatedProtocol accepts direct and complete complementary metadata', () => {
+test('validateTradeCreatedProtocol accepts direct and complete mint metadata', () => {
   assert.equal(
     validateTradeCreatedProtocol({
       sellerLocktime: 120,
@@ -36,7 +36,7 @@ test('validateTradeCreatedProtocol accepts direct and complete complementary met
     validateTradeCreatedProtocol({
       sellerLocktime: 120,
       buyerLocktime: 100,
-      settlementKind: 'ComplementarySplit',
+      settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
       outcomeFaceAmountSats: 100,
@@ -60,7 +60,7 @@ test('validateTradeCreatedProtocol rejects unsupported or ambiguous settlement m
       {
         sellerLocktime: 120,
         buyerLocktime: 100,
-        settlementKind: 'ComplementarySplit',
+        settlementKind: 'Mint',
         sellerKeepOutcomeSetId: '',
         sellerLockOutcomeSetId: 'NO',
         outcomeFaceAmountSats: 100,
@@ -72,7 +72,7 @@ test('validateTradeCreatedProtocol rejects unsupported or ambiguous settlement m
       {
         sellerLocktime: 120,
         buyerLocktime: 100,
-        settlementKind: 'ComplementarySplit',
+        settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'YES',
         outcomeFaceAmountSats: 100,
@@ -84,7 +84,7 @@ test('validateTradeCreatedProtocol rejects unsupported or ambiguous settlement m
       {
         sellerLocktime: 120,
         buyerLocktime: 100,
-        settlementKind: 'ComplementarySplit',
+        settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
         outcomeFaceAmountSats: 0,
@@ -96,7 +96,7 @@ test('validateTradeCreatedProtocol rejects unsupported or ambiguous settlement m
       {
         sellerLocktime: 120,
         buyerLocktime: 100,
-        settlementKind: 'ComplementarySplit',
+        settlementKind: 'Mint',
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
         outcomeFaceAmountSats: 100,

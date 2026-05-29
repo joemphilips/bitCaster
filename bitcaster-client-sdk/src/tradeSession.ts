@@ -17,7 +17,7 @@ export type SwapRole = 'seller' | 'buyer'
 
 export const SETTLEMENT_KINDS = {
   directSwap: 'DirectSwap',
-  complementarySplit: 'ComplementarySplit',
+  mint: 'Mint',
 } as const
 
 export type SettlementKind =
@@ -90,7 +90,7 @@ export function validateTradeCreatedProtocol(
     return null
   }
 
-  if (settlementKind !== SETTLEMENT_KINDS.complementarySplit) {
+  if (settlementKind !== SETTLEMENT_KINDS.mint) {
     return `Trade rejected: unsupported settlement kind '${settlementKind}'.`
   }
 
@@ -98,16 +98,16 @@ export function validateTradeCreatedProtocol(
     !fields.sellerKeepOutcomeSetId?.trim() ||
     !fields.sellerLockOutcomeSetId?.trim()
   ) {
-    return 'Trade rejected: complementary split is missing seller outcome-set metadata.'
+    return 'Trade rejected: mint split is missing seller outcome-set metadata.'
   }
   if (fields.sellerKeepOutcomeSetId === fields.sellerLockOutcomeSetId) {
-    return 'Trade rejected: complementary split keep and lock outcome sets are identical.'
+    return 'Trade rejected: mint split keep and lock outcome sets are identical.'
   }
   if (!isPositiveFiniteAmount(fields.outcomeFaceAmountSats)) {
-    return 'Trade rejected: complementary split is missing a positive outcome face amount.'
+    return 'Trade rejected: mint split is missing a positive outcome face amount.'
   }
   if (!isPositiveFiniteAmount(fields.quotePaymentSats)) {
-    return 'Trade rejected: complementary split is missing a positive quote payment.'
+    return 'Trade rejected: mint split is missing a positive quote payment.'
   }
   return null
 }

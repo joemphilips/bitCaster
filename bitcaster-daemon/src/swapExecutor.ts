@@ -30,7 +30,7 @@ import {
 type OutcomeAsset = Extract<StoredProofRecord['asset'], { kind: 'outcome' }>
 const PARTIAL_LOCK_REFUND_MARGIN_SECS = 60
 
-interface ComplementarySellerSplit {
+interface MintSellerSplit {
   conditionId: string
   keepOutcomeSetId: string
   lockOutcomeSetId: string
@@ -55,7 +55,7 @@ export interface SellerOpenResult {
   changeProofs: CashuProofRecord[]
 }
 
-export interface SellerComplementaryOpenResult extends SellerOpenResult {
+export interface SellerMintOpenResult extends SellerOpenResult {
   spentSatProofs: CashuProofRecord[]
   keepProofs: CashuProofRecord[]
   proofsByCollection: Record<string, CashuProofRecord[]>
@@ -119,7 +119,7 @@ export interface DaemonSwapOps {
     amountSats: number,
     operationId: string,
   ): Promise<LockedOutcomeProofResult>
-  sellerOpenComplementary(
+  sellerOpenMint(
     ctx: DaemonSwapContext,
     params: {
       conditionId: string
@@ -128,7 +128,7 @@ export interface DaemonSwapOps {
       amountSats: number
     },
     collateralProofs: CashuProofRecord[],
-  ): Promise<SellerComplementaryOpenResult>
+  ): Promise<SellerMintOpenResult>
   buyerRespond(
     ctx: DaemonSwapContext,
     messages: { adaptorPoint: string; lockedProofsSeller: string },
@@ -383,14 +383,14 @@ export class DaemonSwapExecutor {
 
     try {
       const amount = requiredAmount(swap.outcomeFaceAmountSats ?? swap.fillAmountSats)
-      const complementary = resolveComplementarySellerSplit(swap)
-      if (complementary) {
-        await this.sellerOpenComplementary(
+      const mint = resolveMintSellerSplit(swap)
+      if (mint) {
+        await this.sellerOpenMint(
           tradeId,
           ctx,
           swap,
           profile.mintUrl,
-          complementary,
+          mint,
           amount,
         )
         return
@@ -545,17 +545,17 @@ export class DaemonSwapExecutor {
     }
   }
 
-  private async sellerOpenComplementary(
+  private async sellerOpenMint(
     tradeId: string,
     ctx: DaemonSwapContext,
     swap: LocalSwapRecord,
     mintUrl: string,
-    split: ComplementarySellerSplit,
+    split: MintSellerSplit,
     amount: number,
   ): Promise<void> {
     const preflight = resolvePreflightSplit(await readState(), swap, split)
     if (preflight) {
-      await this.sellerOpenPreflightComplementary(
+      await this.sellerOpenPreflightMint(
         tradeId,
         ctx,
         mintUrl,
@@ -683,7 +683,7 @@ export class DaemonSwapExecutor {
               secrets,
             )
           })()
-    const result = await this.ops.sellerOpenComplementary(
+    const result = await this.ops.sellerOpenMint(
       ctx,
       {
         conditionId: split.conditionId,
@@ -742,11 +742,11 @@ export class DaemonSwapExecutor {
     )
   }
 
-  private async sellerOpenPreflightComplementary(
+  private async sellerOpenPreflightMint(
     tradeId: string,
     ctx: DaemonSwapContext,
     mintUrl: string,
-    split: ComplementarySellerSplit,
+    split: MintSellerSplit,
     amount: number,
     preflight: LocalOrderPreflightSplit,
   ): Promise<void> {
@@ -761,7 +761,7 @@ export class DaemonSwapExecutor {
     )
     if (!selectedLock) {
       throw new Error(
-        `insufficient pre-flight lock proofs for complementary seller open (${amount} sats)`,
+        `insufficient pre-flight lock proofs for mint seller open (${amount} sats)`,
       )
     }
     const selectedKeep = selectReservedProofsForOutcomeSet(
@@ -774,7 +774,7 @@ export class DaemonSwapExecutor {
     )
     if (!selectedKeep) {
       throw new Error(
-        `insufficient pre-flight keep proofs for complementary seller open (${amount} sats)`,
+        `insufficient pre-flight keep proofs for mint seller open (${amount} sats)`,
       )
     }
 
@@ -1544,29 +1544,29 @@ function outcomeAssetForMarket(
   }
 }
 
-function resolveComplementarySellerSplit(
+function resolveMintSellerSplit(
   swap: LocalSwapRecord,
-): ComplementarySellerSplit | null {
-  if (swap.role !== 'seller' || swap.settlementKind !== 'ComplementarySplit') {
+): MintSellerSplit | null {
+  if (swap.role !== 'seller' || swap.settlementKind !== 'Mint') {
     return null
   }
   if (!swap.sellerKeepOutcomeSetId || !swap.sellerLockOutcomeSetId) {
-    throw new Error('complementary seller trade is missing outcome-set metadata')
+    throw new Error('mint seller trade is missing outcome-set metadata')
   }
   const market = outcomeAssetForMarket(swap.marketId)
   if (!market) {
-    throw new Error(`invalid market id for complementary seller trade: ${swap.marketId ?? '<missing>'}`)
+    throw new Error(`invalid market id for mint seller trade: ${swap.marketId ?? '<missing>'}`)
   }
   if (
     market.outcomeSetId !== swap.sellerKeepOutcomeSetId &&
     market.outcomeSetId !== swap.sellerLockOutcomeSetId
   ) {
     throw new Error(
-      `complementary seller market ${swap.marketId} does not match settlement outcome metadata`,
+      `mint seller market ${swap.marketId} does not match settlement outcome metadata`,
     )
   }
   if (swap.sellerKeepOutcomeSetId === swap.sellerLockOutcomeSetId) {
-    throw new Error('complementary seller keep and lock outcome sets are identical')
+    throw new Error('mint seller keep and lock outcome sets are identical')
   }
   return {
     conditionId: market.conditionId,
@@ -1578,7 +1578,7 @@ function resolveComplementarySellerSplit(
 function resolvePreflightSplit(
   state: DaemonState | null,
   swap: LocalSwapRecord,
-  split: ComplementarySellerSplit,
+  split: MintSellerSplit,
 ): LocalOrderPreflightSplit | null {
   if (!swap.orderId) return null
   const preflight = state?.orders[swap.orderId]?.preflightSplit
@@ -1847,7 +1847,7 @@ function unsupportedSwapOps(): DaemonSwapOps {
     sellerOpen: unsupported,
     sellerOpenPrelocked: unsupported,
     sellerLockOutcomeProofs: unsupported,
-    sellerOpenComplementary: unsupported,
+    sellerOpenMint: unsupported,
     buyerRespond: unsupported,
     sellerClaim: unsupported,
     buyerClaim: unsupported,

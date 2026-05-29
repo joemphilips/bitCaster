@@ -105,7 +105,7 @@ public class NotificationPollerTests : IAsyncLifetime
                             makerOrderId = Guid.NewGuid().ToString(),
                             amountSats = 100,
                             executionPrice = 50,
-                            path = "Direct",
+                            path = "Complementary",
                             filledAt = DateTime.UtcNow.ToString("O"),
                         }
                     },
@@ -138,7 +138,7 @@ public class NotificationPollerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Poller_FiresPartialFillNotification_WhenEngineReportsComplementaryReservation()
+    public async Task Poller_FiresPartialFillNotification_WhenEngineReportsMintReservation()
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
@@ -194,7 +194,7 @@ public class NotificationPollerTests : IAsyncLifetime
                             makerOrderId = orderId,
                             amountSats = 100,
                             executionPrice = 50,
-                            path = "Complementary",
+                            path = "Mint",
                             filledAt = DateTime.UtcNow.ToString("O"),
                             tradeId = Guid.NewGuid().ToString(),
                         }

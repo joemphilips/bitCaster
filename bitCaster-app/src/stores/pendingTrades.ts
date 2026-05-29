@@ -29,7 +29,7 @@ export interface PendingTrade {
   ephemeralPrivkey: string
   /** Unix ms when the order was submitted — useful for TTL/expiry handling. */
   submittedAt: number
-  /** Reserved complete-set proofs created before a complementary-maker buy rests. */
+  /** Reserved complete-set proofs created before a mint-maker buy rests. */
   preflightSplit?: PendingPreflightSplit
 }
 
