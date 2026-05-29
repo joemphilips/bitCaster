@@ -81,8 +81,6 @@ export interface PriceHistory {
 
 export type ChartTimeframe = '1h' | '24h' | '7d' | '30d' | 'all'
 
-export type ChartType = 'price' | 'volume'
-
 // =============================================================================
 // Activity Types
 // =============================================================================
@@ -268,9 +266,6 @@ export interface MarketDetailProps {
   /** Current chart timeframe selection */
   chartTimeframe: ChartTimeframe
 
-  /** Current chart type (price or volume) */
-  chartType: ChartType
-
   /** Currently selected trade (null if none) */
   tradeSelection: TradeSelection | null
 
@@ -282,9 +277,6 @@ export interface MarketDetailProps {
 
   /** Called when user changes chart timeframe */
   onTimeframeChange?: (timeframe: ChartTimeframe) => void
-
-  /** Called when user toggles chart type */
-  onChartTypeChange?: (type: ChartType) => void
 
   /** Called when user selects an outcome to trade */
   onTradeSelect?: (selection: TradeSelection) => void

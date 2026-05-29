@@ -61,7 +61,6 @@ import type { Proof } from "@cashu/cashu-ts";
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
-  ChartType,
   TradeSelection,
   TradePreview,
   TradeSide,
@@ -396,7 +395,6 @@ export function MarketDetailPage() {
 
   // UI state
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>("7d");
-  const [chartType, setChartType] = useState<ChartType>("price");
   const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(
     null,
   );
@@ -873,7 +871,6 @@ export function MarketDetailPage() {
       <MarketDetail
         market={market}
         chartTimeframe={chartTimeframe}
-        chartType={chartType}
         tradeSelection={tradeSelection}
         tradeAmount={tradeAmount}
         tradePreview={tradePreview}
@@ -882,7 +879,6 @@ export function MarketDetailPage() {
         limitOrderPreview={limitOrderPreview}
         limitPrice={limitPrice}
         onTimeframeChange={handleTimeframeChange}
-        onChartTypeChange={setChartType}
         onTradeSelect={(selection) => {
           setTradeSelection(selection);
           setTradeSubmitStatus(null);

@@ -49,7 +49,6 @@ function computeCurrentDisplay(market: MarketDetailProps["market"]): string {
 export function MarketDetail({
   market,
   chartTimeframe,
-  chartType,
   tradeSelection,
   tradeAmount,
   tradePreview,
@@ -58,7 +57,6 @@ export function MarketDetail({
   limitOrderPreview,
   limitPrice,
   onTimeframeChange,
-  onChartTypeChange,
   onTradeSelect,
   onTradeClear,
   onAmountChange,
@@ -160,9 +158,7 @@ export function MarketDetail({
             <PriceChart
               priceHistory={market.priceHistory}
               chartTimeframe={chartTimeframe}
-              chartType={chartType}
               onTimeframeChange={onTimeframeChange}
-              onChartTypeChange={onChartTypeChange}
               outcomePriceHistories={outcomePriceHistories}
               outcomes={outcomes}
               currentDisplay={currentDisplay}
