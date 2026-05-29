@@ -13,6 +13,7 @@ namespace BitCaster.E2ETest;
 /// </summary>
 public class TradingFlowTests : IAsyncLifetime
 {
+    private const string TestNsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
     private IPlaywright? _playwright;
     private IBrowser? _browser;
 
@@ -44,8 +45,29 @@ public class TradingFlowTests : IAsyncLifetime
     /// Seed the wallet store and point it at the real mint port so balance
     /// queries resolve against proofs we inject below.
     /// </summary>
-    private static Task SetupWalletAsync(IPage page) =>
-        TestHelpers.SetupComplete(page, TestPorts.Vite, $"{TestPorts.MintUrl}");
+    private static async Task SetupWalletAsync(IPage page)
+    {
+        await TestHelpers.SetupComplete(page, TestPorts.Vite, $"{TestPorts.MintUrl}");
+        await SeedNostrSignerAsync(page);
+    }
+
+    private static Task SeedNostrSignerAsync(IPage page) =>
+        page.EvaluateAsync($@"
+            localStorage.setItem('bitcaster-settings', JSON.stringify({{
+                state: {{
+                    activeCategory: 'general',
+                    baseCurrency: 'BTC',
+                    language: 'en',
+                    theme: 'dark',
+                    nostrSignerMode: 'nsec',
+                    nsecSecret: '{TestNsec}',
+                    nostrProfile: null,
+                    nostrProfileFetchStatus: 'idle',
+                    relays: []
+                }},
+                version: 0
+            }}));
+        ");
 
     /// <summary>
     /// Inject a single proof directly into the IndexedDB store so
@@ -135,6 +157,7 @@ public class TradingFlowTests : IAsyncLifetime
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
         await SetupWalletAsync(page);
         await GoToFirstMarketDetailAsync(page);
 
@@ -149,13 +172,23 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await quickAmount.ClickAsync();
 
-        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Buy\\s", RegexOptions.IgnoreCase) }).First;
-        await Assertions.Expect(confirm).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        var confirm = VisibleTradeConfirm(page);
+        await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
         await confirm.ClickAsync();
 
         // Zero balance + 100 sat order → InsufficientBalanceModal opens.
         var modalHeader = page.GetByText("Insufficient Balance");
-        await Assertions.Expect(modalHeader).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        try
+        {
+            await Assertions.Expect(modalHeader).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                "Zero-balance trade confirm did not open Insufficient Balance modal.");
+        }
 
         var topUpButton = page.GetByRole(AriaRole.Button, new() { Name = "Top Up" });
         await Assertions.Expect(topUpButton).ToBeVisibleAsync();
@@ -172,6 +205,7 @@ public class TradingFlowTests : IAsyncLifetime
         // live-balance wire-through to `<TradingPanel>`.
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
         await SetupWalletAsync(page);
         await GoToFirstMarketDetailAsync(page);
         await SeedBalanceAsync(page, 10_000);
@@ -206,17 +240,26 @@ public class TradingFlowTests : IAsyncLifetime
         // TradingPanel.tsx); type a larger value directly to exceed the 10k
         // seeded balance. The amount input is a <input type="number">
         // sibling to the quick buttons.
-        var amountInput = page.GetByPlaceholder("0").Filter(new() { Visible = true }).First;
+        var amountInput = VisibleTradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync("50000");
 
-        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^(Buy|Place)\\s", RegexOptions.IgnoreCase) })
-            .Filter(new() { Visible = true }).First;
-        await Assertions.Expect(confirm).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        var confirm = VisibleTradeConfirm(page);
+        await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
         await confirm.ClickAsync();
 
         var modalHeader = page.GetByText("Insufficient Balance");
-        await Assertions.Expect(modalHeader).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        try
+        {
+            await Assertions.Expect(modalHeader).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                "Over-balance trade confirm did not open Insufficient Balance modal.");
+        }
 
         // The modal's "You have {{count}} sats" line must now report the
         // seeded balance, not 0 (pre-fix regression).
@@ -231,30 +274,6 @@ public class TradingFlowTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         var consoleMessages = TestHelpers.AttachConsoleCapture(page);
         await SetupWalletAsync(page);
-        // submitOrder -> generateNip98Header requires an NDK signer. Seed
-        // bitcaster-settings with nostrSignerMode='nsec' + a deterministic
-        // throwaway nsec; App.tsx's rehydrateNostrSigner() will install the
-        // signer on the next navigation so the Authorization header can be
-        // produced. Without this the outer try/catch in MarketDetailPage's
-        // placeOrder swallows the "No Nostr signer configured" error and the
-        // POST is never dispatched.
-        const string nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
-        await page.EvaluateAsync($@"
-            localStorage.setItem('bitcaster-settings', JSON.stringify({{
-                state: {{
-                    activeCategory: 'general',
-                    baseCurrency: 'BTC',
-                    language: 'en',
-                    theme: 'dark',
-                    nostrSignerMode: 'nsec',
-                    nsecSecret: '{nsec}',
-                    nostrProfile: null,
-                    nostrProfileFetchStatus: 'idle',
-                    relays: []
-                }},
-                version: 0
-            }}));
-        ");
         await GoToFirstMarketDetailAsync(page);
         await SeedBalanceAsync(page, 10_000);
         // Reload so the seeded proof is in IDB before useLiveQuery subscribes
@@ -327,8 +346,8 @@ public class TradingFlowTests : IAsyncLifetime
         await preflightSplit.ClickAsync();
         await Assertions.Expect(preflightSplit).Not.ToBeCheckedAsync(new() { Timeout = 5_000 });
 
-        var confirm = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^(Buy|Place)\\s", RegexOptions.IgnoreCase) })
-            .Filter(new() { Visible = true }).First;
+        var confirm = VisibleTradeConfirm(page);
+        await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
         await confirm.ClickAsync();
 
         // Wait for the request to land.
@@ -363,6 +382,16 @@ public class TradingFlowTests : IAsyncLifetime
             return "02" + new string('0', 64);
         }
     }
+
+    private static ILocator VisibleTradeAmountInput(IPage page) =>
+        page.GetByTestId("trade-amount-input")
+            .Filter(new() { Visible = true })
+            .First;
+
+    private static ILocator VisibleTradeConfirm(IPage page) =>
+        page.GetByTestId("trade-confirm")
+            .Filter(new() { Visible = true })
+            .First;
 
     public async Task DisposeAsync()
     {

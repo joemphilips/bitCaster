@@ -7,6 +7,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<InMemoryOrderBookManager>();
 builder.Services.AddSingleton<InMemoryTradeRegistry>();
+builder.Services.AddSingleton<InMemoryPriceHistoryStore>();
+builder.Services.AddSingleton<InMemoryCommentStore>();
 builder.Services.AddHealthChecks();
 builder.Services.AddHttpClient("mint", c =>
     c.BaseAddress = new Uri(builder.Configuration["MINT_URL"] ?? "http://localhost:8085"));
@@ -36,6 +38,8 @@ app.MapHub<TradeHub>("/hubs/trade");
 app.MapMarketEndpoints();
 app.MapMarketQueryEndpoint();
 app.MapOrderEndpoints();
+app.MapPriceHistoryEndpoints();
+app.MapCommentEndpoints();
 app.MapBookEndpoints();
 app.MapMetadataEndpoints();
 app.MapThumbnailEndpoints();

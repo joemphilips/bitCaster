@@ -62,6 +62,7 @@ export interface DaemonResponse<T = unknown> {
   ok: boolean
   result?: T
   error?: string
+  code?: string
 }
 
 export interface DaemonHealth {

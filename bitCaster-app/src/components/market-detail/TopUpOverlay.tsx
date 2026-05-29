@@ -129,6 +129,7 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
     setStatus('pending')
     setLoading(true)
     try {
+      await useWalletStore.getState().ensureImplicitWallet()
       // Re-mount idempotency: reuse a quote already issued during this open.
       // Otherwise StrictMode (or a parent re-render) would issue a second quote
       // against the same mint state — LNBits then returns "Invoice already paid

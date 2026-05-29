@@ -17,6 +17,10 @@ export function PositionRow({
 }: PositionRowProps) {
   const isPositive = position.profitLossSats >= 0;
   const isWinner = position.status === "closed" && position.profitLossSats > 0;
+  const sideLabel = position.side.toUpperCase();
+  const showOutcomeLabel =
+    position.outcomeLabel &&
+    position.outcomeLabel.toLocaleUpperCase() !== sideLabel;
   const handleView = () => onView?.(position.id);
   const handleViewKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -59,7 +63,7 @@ export function PositionRow({
           >
             {position.side.toUpperCase()}
           </span>
-          {position.outcomeLabel && (
+          {showOutcomeLabel && (
             <span className="text-xs text-slate-500 dark:text-slate-400 truncate">
               {position.outcomeLabel}
             </span>

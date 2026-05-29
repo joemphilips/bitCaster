@@ -1,8 +1,11 @@
 import { useSettingsStore } from '@/stores/settings'
+import { useWalletStore } from '@/stores/wallet'
 import type { NostrSignerMode } from '@/types/settings'
+import { generateSecretKey, nip19 } from 'nostr-tools'
 import {
   fetchAndStoreNostrProfile,
   loginWithExtension,
+  loginWithNsec,
   loginWithNsecOrNcryptsec,
   rehydrateNostrSigner,
 } from '@/lib/nostr'
@@ -34,6 +37,8 @@ export function rehydratePersistedNostrIdentity(): Promise<void> {
 export function disconnectNostrIdentity(): void {
   const settings = useSettingsStore.getState()
   settings.setSignerMode('none')
+  settings.setSignerSource('none')
+  settings.setSignerBackupState('none')
   settings.setProfile(null, 'idle')
 }
 
@@ -49,6 +54,8 @@ export async function userConnectNostrSignerMode(
   if (mode === 'nip07') {
     try {
       await loginWithExtension()
+      settings.setSignerSource('nip07')
+      settings.setSignerBackupState('confirmed')
       refreshNostrProfile().catch(() => {})
       return { ok: true }
     } catch {
@@ -71,6 +78,8 @@ export async function userConnectNsecIdentity(
     settings.setSignerMode('nsec')
     const { nsec: decryptedNsec } = await loginWithNsecOrNcryptsec(nsec, passphrase)
     settings.setNsecSecret(decryptedNsec)
+    settings.setSignerSource('user-nsec')
+    settings.setSignerBackupState('confirmed')
     refreshNostrProfile().catch(() => {})
     return { ok: true }
   } catch (err) {
@@ -81,5 +90,28 @@ export async function userConnectNsecIdentity(
         ? err.message
         : 'Invalid private key or connection failed'
     return { ok: false, error }
+  }
+}
+
+export async function createImplicitWalletAndNostrIdentity(): Promise<IdentityActionResult> {
+  const wallet = useWalletStore.getState()
+  const settings = useSettingsStore.getState()
+  try {
+    await wallet.ensureImplicitWallet()
+    if (settings.nostrSignerMode === 'none') {
+      const nsec = nip19.nsecEncode(generateSecretKey())
+      await loginWithNsec(nsec)
+      settings.setSignerMode('nsec')
+      settings.setNsecSecret(nsec)
+      settings.setSignerSource('implicit-generated')
+      settings.setSignerBackupState('needs_backup')
+      refreshNostrProfile().catch(() => {})
+    }
+    return { ok: true }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Failed to create local wallet',
+    }
   }
 }

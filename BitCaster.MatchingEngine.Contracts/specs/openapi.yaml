@@ -109,6 +109,60 @@ paths:
               schema:
                 $ref: '#/components/schemas/OracleAttestationResponse'
 
+  /api/v1/markets/{conditionId}/price-history:
+    get:
+      operationId: getMarketPriceHistory
+      summary: Fetch primitive outcome price history for a market
+      description: >
+        Returns settled trade ticks grouped by primitive outcome id. Compound
+        outcome-set matches are projected only when settlement commits, and
+        the response never uses compound outcome ids.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+        - name: timeframe
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - 1h
+              - 24h
+              - 7d
+              - 30d
+              - all
+            default: 7d
+      responses:
+        '200':
+          description: Primitive outcome price history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketPriceHistoryResponse'
+        '400':
+          description: Invalid condition id or timeframe
+
+  /api/v1/markets/{conditionId}/comments:
+    get:
+      operationId: getMarketComments
+      summary: Fetch verified trade comments for a market
+      description: >
+        Returns engine-indexed comments attached to orders in this condition
+        after those orders have produced at least one settled fill. The
+        response is condition-keyed and returns the public kind-1 author
+        pubkey while intentionally omitting order ids, fill ids, ephemeral
+        pubkeys, and counterparty ids.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      responses:
+        '200':
+          description: Verified market comments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketCommentsResponse'
+        '400':
+          description: Invalid condition id
+
   /api/v1/conditions/{conditionId}/attestation:
     get:
       operationId: getConditionAttestation
@@ -885,6 +939,54 @@ components:
             this order's submitter. The corresponding private key stays on the
             client and is the only thing that can decrypt and sign swap
             payloads — the engine never sees it.
+        comment:
+          oneOf:
+            - $ref: '#/components/schemas/NostrKind1Event'
+            - type: 'null'
+          description: >
+            Optional signed Nostr kind-1 event to index as a verified trade
+            comment once this order produces a fill. The event pubkey must
+            match the NIP-98 submitter and include an `r` tag for the market
+            detail URL.
+
+    NostrKind1Event:
+      type: object
+      required:
+        - id
+        - pubkey
+        - createdAt
+        - kind
+        - tags
+        - content
+        - sig
+      properties:
+        id:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        pubkey:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        createdAt:
+          type: integer
+          format: int64
+          description: NIP-01 created_at Unix timestamp.
+        kind:
+          type: integer
+          enum:
+            - 1
+        tags:
+          type: array
+          maxItems: 16
+          items:
+            type: array
+            items:
+              type: string
+        content:
+          type: string
+          maxLength: 280
+        sig:
+          type: string
+          pattern: '^[0-9a-f]{128}$'
 
     OrderStatusResponse:
       type: object
@@ -1137,6 +1239,127 @@ components:
             - type: string
             - type: 'null'
           description: URL to the uploaded thumbnail, or null if none was provided.
+
+    MarketPriceHistoryPoint:
+      type: object
+      required:
+        - timestamp
+        - price
+        - volumeSats
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        price:
+          type: integer
+          minimum: 1
+          maximum: 99
+        volumeSats:
+          type: integer
+          format: int64
+          minimum: 0
+
+    MarketOutcomePriceHistory:
+      type: object
+      required:
+        - outcomeId
+        - data
+      properties:
+        outcomeId:
+          type: string
+          description: Primitive outcome id. Compound outcome ids are not returned.
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketPriceHistoryPoint'
+
+    MarketPriceHistoryResponse:
+      type: object
+      required:
+        - conditionId
+        - timeframe
+        - outcomes
+      properties:
+        conditionId:
+          type: string
+        timeframe:
+          type: string
+          enum:
+            - 1h
+            - 24h
+            - 7d
+            - 30d
+            - all
+        outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketOutcomePriceHistory'
+
+    MarketComment:
+      type: object
+      required:
+        - commentId
+        - content
+        - createdAt
+        - authorPubkey
+      properties:
+        commentId:
+          type: string
+          format: uuid
+          description: Opaque stable comment identifier.
+        content:
+          type: string
+          maxLength: 280
+        createdAt:
+          type: string
+          format: date-time
+          description: Timestamp from the signed Nostr kind-1 comment event.
+        authorPubkey:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Nostr pubkey that signed the comment.
+
+    MarketCommentsResponse:
+      type: object
+      required:
+        - conditionId
+        - comments
+      properties:
+        conditionId:
+          type: string
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketComment'
+
+    SwapFailureKind:
+      type: string
+      enum:
+        - PartialLockHeld
+        - InsufficientInventory
+        - MintError
+        - EngineRejected
+
+    SwapFailure:
+      type: object
+      required:
+        - kind
+        - detail
+      properties:
+        kind:
+          $ref: '#/components/schemas/SwapFailureKind'
+        refundLocktime:
+          type: integer
+          format: int64
+          description: Unix seconds; present when kind is PartialLockHeld.
+        affectedKeysets:
+          type: array
+          items:
+            type: string
+          description: Primitive outcome/keyset legs affected by a partial lock.
+        detail:
+          type: string
+          description: Local diagnostic detail; redact from telemetry.
 
     LiquidityStateResponse:
       type: object

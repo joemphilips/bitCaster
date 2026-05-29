@@ -294,7 +294,7 @@ export interface MarketDetailProps {
   onAmountChange?: (amount: number) => void
 
   /** Called when user confirms trade */
-  onTradeConfirm?: () => void
+  onTradeConfirm?: (comment?: string) => void
 
   /** Status text from the latest order-submit attempt. */
   tradeSubmitStatus?: {
@@ -370,4 +370,7 @@ export interface MarketDetailProps {
 
   /** Whether the user has a wallet configured (gates trade confirmation) */
   walletReady?: boolean
+
+  /** Called when the trade UI needs wallet/Nostr setup before continuing. */
+  onWalletRequired?: (comment?: string) => void
 }

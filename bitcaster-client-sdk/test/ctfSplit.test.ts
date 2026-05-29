@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  resolveComplementaryOutcomeLegs,
   resolveMintOutcomeSetKey,
   splitRegularProofsWithOperation,
   splitCompleteSetWithOperation,
@@ -43,6 +44,38 @@ test('resolveMintOutcomeSetKey fails closed on ambiguous mint keyset-map matches
         'lock',
       ),
     /matched 2 mint keyset-map keys/,
+  )
+})
+
+test('resolveComplementaryOutcomeLegs decomposes compound outcome sets into primitive mint collections', () => {
+  const keysets = {
+    Alice: 'keyset-alice',
+    Bob: 'keyset-bob',
+    Carol: 'keyset-carol',
+    Dave: 'keyset-dave',
+  }
+
+  assert.deepEqual(
+    resolveComplementaryOutcomeLegs('Bob|Carol', 'Alice|Dave', keysets),
+    {
+      resolvedLockOutcomeSetId: 'Bob|Carol',
+      resolvedKeepOutcomeSetId: 'Alice|Dave',
+      lockCollections: ['Bob', 'Carol'],
+      keepCollections: ['Alice', 'Dave'],
+    },
+  )
+})
+
+test('resolveComplementaryOutcomeLegs requires a strict complete primitive partition', () => {
+  assert.throws(
+    () =>
+      resolveComplementaryOutcomeLegs('Bob|Carol', 'Alice', {
+        Alice: 'keyset-alice',
+        Bob: 'keyset-bob',
+        Carol: 'keyset-carol',
+        Dave: 'keyset-dave',
+      }),
+    /not a complete partition; missing Dave/,
   )
 })
 

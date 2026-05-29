@@ -9,6 +9,7 @@ import { unlink } from 'node:fs/promises'
 import { Amount, OutputData } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
+  EngineClientError,
   type OrderBookSnapshot,
   type OrderStatusResponse,
   type QueryMarketsParams,
@@ -531,6 +532,13 @@ export async function dispatch(
       } catch (err) {
         if (preparedPreflight) {
           await releaseProofReservation(preparedPreflight.reservationId)
+        }
+        if (err instanceof EngineClientError) {
+          return {
+            ok: false,
+            error: err.problemDetail ?? err.message,
+            code: err.code,
+          }
         }
         throw err
       }

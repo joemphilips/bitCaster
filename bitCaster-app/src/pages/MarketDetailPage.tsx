@@ -1,11 +1,21 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router";
+import { useTranslation } from "react-i18next";
 import { MarketDetail } from "@/components/market-detail";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
 import { NostrAuthRequiredModal } from "@/components/shared/NostrAuthRequiredModal";
+import { NostrAccountChooserModal } from "@/components/shared/NostrAccountChooserModal";
+import { BackupSecretsReminderModal } from "@/components/shared/BackupSecretsReminderModal";
 import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
 import { useShareMarket } from "@/components/market-detail/useShareMarket";
-import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
+import {
+  applyMarketPriceHistory,
+  fetchMarketDetail,
+  fetchMarketPriceHistory,
+  fetchOrderBook,
+  signTradeComment,
+  submitOrder,
+} from "@/lib/markets";
 import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import { assertNever } from "@/lib/enumDiscipline";
@@ -29,8 +39,10 @@ import {
   reserveProofs,
 } from "@/stores/proof-db";
 import { getBalance, useBalance, useWalletStore } from "@/stores/wallet";
+import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
+import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import {
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
@@ -354,9 +366,13 @@ async function preparePreflightSplitForLimitBuy(input: {
 export function MarketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const setupComplete = useWalletStore((s) => s.setupComplete);
+  const walletBackupState = useWalletStore((s) => s.walletBackupState);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const addPendingTrade = usePendingTradesStore((s) => s.add);
+  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
+  const signerBackupState = useSettingsStore((s) => s.signerBackupState);
   // Live balance for the active mint so the trading panel can show
   // "You have N sats" before the user tries to confirm (matches the
   // pattern cashu.me uses to surface available funds).
@@ -392,6 +408,12 @@ export function MarketDetailPage() {
   const [topUpStage, setTopUpStage] = useState<TopUpStage>("closed");
   const [balanceAtCheck, setBalanceAtCheck] = useState(0);
   const [showNostrAuthModal, setShowNostrAuthModal] = useState(false);
+  const [showNostrChooser, setShowNostrChooser] = useState(false);
+  const [lazySetupError, setLazySetupError] = useState<string | null>(null);
+  const [lazySetupCreating, setLazySetupCreating] = useState(false);
+  const [showBackupReminder, setShowBackupReminder] = useState(false);
+  const [pendingTopUpComment, setPendingTopUpComment] = useState<string | undefined>();
+  const [lazySetupComment, setLazySetupComment] = useState<string | undefined>();
 
   // Load market data
   const loadMarket = useCallback(() => {
@@ -498,7 +520,7 @@ export function MarketDetailPage() {
 
   // Submit the order. Assumes wallet is set up and balance has been checked —
   // callers that can't promise that must route through `handleTradeConfirm`.
-  const placeOrder = useCallback(async () => {
+  const placeOrder = useCallback(async (comment?: string) => {
     if (!market || !tradeSelection || !tradeAmount) return;
     if (tradeSubmitInFlightRef.current) return;
     tradeSubmitInFlightRef.current = true;
@@ -609,9 +631,13 @@ export function MarketDetailPage() {
           reservationId: `order-preflight:${ephemeral.pubkey}`,
         });
       }
+      const signedComment = comment?.trim()
+        ? await signTradeComment(latestMarket.id, comment.trim())
+        : undefined;
       const response = await submitOrder(ticket.marketId, {
         ...ticket.request,
         ephemeralPubkey: ephemeral.pubkey,
+        ...(signedComment ? { comment: signedComment } : {}),
       });
       // Only persist the privkey once the engine has accepted the order.
       // Otherwise we accumulate orphaned keys on every failed submission.
@@ -647,6 +673,12 @@ export function MarketDetailPage() {
             ? "Order posted to the book."
             : `Order ${response.status.replace("_", " ")}.`,
       });
+      if (
+        useWalletStore.getState().walletBackupState === "needs_backup" ||
+        useSettingsStore.getState().signerBackupState === "needs_backup"
+      ) {
+        setShowBackupReminder(true);
+      }
       loadMarket();
     } catch (e) {
       if (preparedPreflightSplit) {
@@ -680,12 +712,13 @@ export function MarketDetailPage() {
     activeMintUrl,
     loadMarket,
     addPendingTrade,
+    t,
   ]);
 
   // Gate the order submission on sufficient balance. Reads the balance at
   // click-time (not via `useBalance`) so we don't race a stale live-query
   // subscription after a top-up.
-  const handleTradeConfirm = useCallback(async () => {
+  const handleTradeConfirm = useCallback(async (comment?: string) => {
     if (!market || !tradeSelection || !tradeAmount) return;
     if (tradeSubmitInFlightRef.current) return;
     tradeSubmitInFlightRef.current = true;
@@ -698,6 +731,7 @@ export function MarketDetailPage() {
           : await getBalance(activeMintUrl);
       if (current < requiredSats) {
         setBalanceAtCheck(current);
+        setPendingTopUpComment(comment?.trim() || undefined);
         setTopUpStage("modal");
         return;
       }
@@ -714,8 +748,41 @@ export function MarketDetailPage() {
       tradeSubmitInFlightRef.current = false;
       setIsTradeSubmitting(false);
     }
-    await placeOrder();
+    await placeOrder(comment);
   }, [market, tradeSelection, tradeAmount, tradeSide, activeMintUrl, placeOrder]);
+
+  const handleWalletRequired = useCallback(async (comment?: string) => {
+    setLazySetupError(null);
+    if (nostrSignerMode === "none") {
+      setLazySetupComment(comment?.trim() || undefined);
+      setShowNostrChooser(true);
+      return;
+    }
+    setLazySetupCreating(true);
+    const result = await createImplicitWalletAndNostrIdentity();
+    setLazySetupCreating(false);
+    if (!result.ok) {
+      setLazySetupError(result.error ?? "Could not create wallet");
+      setShowNostrChooser(true);
+      return;
+    }
+    await handleTradeConfirm(comment);
+  }, [handleTradeConfirm, nostrSignerMode]);
+
+  const handleCreateImplicitAccount = useCallback(async () => {
+    setLazySetupCreating(true);
+    setLazySetupError(null);
+    const result = await createImplicitWalletAndNostrIdentity();
+    setLazySetupCreating(false);
+    if (!result.ok) {
+      setLazySetupError(result.error ?? "Could not create wallet");
+      return;
+    }
+    setShowNostrChooser(false);
+    const comment = lazySetupComment;
+    setLazySetupComment(undefined);
+    await handleTradeConfirm(comment);
+  }, [handleTradeConfirm, lazySetupComment]);
 
   // After a successful top-up, close the overlay and place the order.
   // TopUpOverlay only invokes onSuccess once proofs have been written to the
@@ -723,14 +790,34 @@ export function MarketDetailPage() {
   // get here — no re-read needed.
   const handleTopUpSuccess = useCallback(async () => {
     setTopUpStage("closed");
-    await placeOrder();
-  }, [placeOrder]);
+    const comment = pendingTopUpComment;
+    setPendingTopUpComment(undefined);
+    await placeOrder(comment);
+  }, [pendingTopUpComment, placeOrder]);
 
   const handleRelatedMarketClick = useCallback(
     (marketId: string) => {
       navigate(`/markets/${marketId}`);
     },
     [navigate],
+  );
+
+  const handleTimeframeChange = useCallback(
+    async (timeframe: ChartTimeframe) => {
+      setChartTimeframe(timeframe);
+      if (!market) return;
+      try {
+        const history = await fetchMarketPriceHistory(market.id, timeframe);
+        setMarket((current) =>
+          current && current.id === market.id
+            ? applyMarketPriceHistory(current, history)
+            : current,
+        );
+      } catch {
+        // Chart history is non-critical; keep the current series visible.
+      }
+    },
+    [market],
   );
 
   // Share button (P7 §/markets/{id}). The hook handles the native share-sheet
@@ -773,7 +860,7 @@ export function MarketDetailPage() {
         orderType={orderType}
         limitOrderPreview={limitOrderPreview}
         limitPrice={limitPrice}
-        onTimeframeChange={setChartTimeframe}
+        onTimeframeChange={handleTimeframeChange}
         onChartTypeChange={setChartType}
         onTradeSelect={(selection) => {
           setTradeSelection(selection);
@@ -798,7 +885,8 @@ export function MarketDetailPage() {
         onPreflightSplitChange={setPreflightSplit}
         onLimitPriceChange={setLimitPrice}
         onRelatedMarketClick={handleRelatedMarketClick}
-        walletReady={setupComplete}
+        walletReady={setupComplete && nostrSignerMode !== "none"}
+        onWalletRequired={handleWalletRequired}
         walletBalanceSats={activeMintBalance}
       />
       {topUpStage === "modal" && (
@@ -818,6 +906,23 @@ export function MarketDetailPage() {
       )}
       {showNostrAuthModal && (
         <NostrAuthRequiredModal onClose={() => setShowNostrAuthModal(false)} />
+      )}
+      {showNostrChooser && (
+        <NostrAccountChooserModal
+          isCreating={lazySetupCreating}
+          error={lazySetupError}
+          onClose={() => setShowNostrChooser(false)}
+          onUseExisting={() => navigate("/settings?category=nostr")}
+          onCreateImplicit={handleCreateImplicitAccount}
+        />
+      )}
+      {showBackupReminder && (
+        <BackupSecretsReminderModal
+          includeWallet={walletBackupState === "needs_backup"}
+          includeNostr={signerBackupState === "needs_backup"}
+          onDismiss={() => setShowBackupReminder(false)}
+          onOpenSettings={() => navigate("/settings?category=nostr")}
+        />
       )}
     </>
   );

@@ -136,6 +136,8 @@ export interface TradeStatusProps {
   settlingStep?: number
   /** Optional trade ID for display. */
   tradeId?: string
+  /** Optional unix-second refund locktime for partial-lock failures. */
+  refundLocktime?: number
   className?: string
 }
 
@@ -174,6 +176,7 @@ export function TradeStatus({
   state,
   settlingStep,
   tradeId,
+  refundLocktime,
   className = '',
 }: TradeStatusProps) {
   const { t } = useTranslation()
@@ -193,7 +196,14 @@ export function TradeStatus({
 
       <div className={`flex items-center gap-2 font-medium ${colour}`}>
         {icon}
-        <span>{t(labelKey)}</span>
+        <span>
+          {t(labelKey, {
+            locktime:
+              typeof refundLocktime === 'number'
+                ? new Date(refundLocktime * 1000).toLocaleString()
+                : t('trade.locktimeFallback'),
+          })}
+        </span>
       </div>
 
       {state === 'settling' && (

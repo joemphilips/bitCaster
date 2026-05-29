@@ -2,6 +2,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useActiveSwapsStore } from "@/stores/activeSwaps";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 
 const { mockUseTradeHub, mockJoinOrder, mockJoinTrade, mockSendSwapMessage } =
   vi.hoisted(() => ({
@@ -91,13 +92,16 @@ vi.mock("@/stores/wallet", () => ({
     selector({ activeMintUrl: "https://mint.example" }),
 }));
 
-const { useTradeSettlement } = await import("../useTradeSettlement");
+const { useTradeSettlement, persistPartialLockFromError } = await import(
+  "../useTradeSettlement"
+);
 
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
   useActiveSwapsStore.setState({ byTradeId: {} });
   usePendingTradesStore.setState({ byOrderId: {} });
+  usePartialLockFailuresStore.setState({ byTradeId: {} });
   mockJoinOrder.mockResolvedValue(undefined);
   mockJoinTrade.mockResolvedValue(undefined);
   mockSendSwapMessage.mockResolvedValue(undefined);
@@ -120,14 +124,19 @@ beforeEach(() => {
   });
   mockSellerLockOutcomeProofs.mockImplementation(async (_ctx, proofs) => ({
     lockedProofs: [proof(100, `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-locked-100`)],
-    changeProofs: [proof(36, `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-change-36`)],
+    changeProofs: [
+      {
+        ...proof(36, `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-change-36`),
+        id: proofs[0].id,
+      },
+    ],
   }));
   mockSplitProofsForExactSend.mockImplementation(async (params) => {
     const source = params.sourceProofs[0];
     const prefix = source.secret.includes("lock") ? "lock" : "keep";
     return {
       sendProofs: [proof(100, `${prefix}-exact-100`)],
-      changeProofs: [proof(36, `${prefix}-change-36`)],
+      changeProofs: [{ ...proof(36, `${prefix}-change-36`), id: source.id }],
       spentProofs: params.sourceProofs,
     };
   });
@@ -433,12 +442,12 @@ describe("useTradeSettlement", () => {
         operationId: "trade-preflight-overpay/browser/seller-preflight-lock",
       }),
     );
-    expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(1));
     expect(mockSplitProofsForExactSend).toHaveBeenCalledWith(
       expect.objectContaining({
         amountSats: 100,
         operationId:
-          "trade-preflight-overpay/browser/seller-preflight-keep-exact-v2",
+          "trade-preflight-overpay/browser/seller-preflight-keep-exact-v2/YES",
         preserveSourceKeyset: true,
         sourceProofs: [expect.objectContaining({ secret: "reserved-keep-yes-136" })],
       }),
@@ -464,6 +473,55 @@ describe("useTradeSettlement", () => {
         "cipher-seller",
       ),
     );
+  });
+
+  it("persistPartialLockFromError_MultiKeyset_AttachesCorrectMetadataPerKeyset", async () => {
+    const err = {
+      partialLock: {
+        failure: {
+          refundLocktime: 1_779_393_600,
+          affectedKeysets: ["keyset-B", "keyset-C"],
+          detail: "leg 1 locked; leg 2 failed",
+        },
+        spentProofs: [proof(100, "spent-B"), proof(100, "spent-C")],
+        lockedProofs: [
+          { ...proof(100, "locked-B"), id: "keyset-B" },
+          { ...proof(100, "locked-C"), id: "keyset-C" },
+        ],
+        changeProofs: [],
+      },
+    };
+
+    await persistPartialLockFromError({
+      err,
+      swap: {
+        tradeId: "trade-partial-multi",
+        orderId: "order-partial-multi",
+      } as Parameters<typeof persistPartialLockFromError>[0]["swap"],
+      mintUrl: "https://mint.example",
+      conditionId: "condition-1",
+      collectionByKeyset: new Map([
+        ["keyset-B", "B"],
+        ["keyset-C", "C"],
+      ]),
+    });
+
+    const record =
+      usePartialLockFailuresStore.getState().byTradeId["trade-partial-multi"];
+    expect(record.outcomeByKeyset["keyset-B"]).toEqual({
+      conditionId: "condition-1",
+      outcomeCollection: "B",
+      marketId: "condition-1-B",
+    });
+    expect(record.outcomeByKeyset["keyset-C"]).toEqual({
+      conditionId: "condition-1",
+      outcomeCollection: "C",
+      marketId: "condition-1-C",
+    });
+    expect(record.lockedProofs.map((locked) => locked.secret)).toEqual([
+      "locked-B",
+      "locked-C",
+    ]);
   });
 
   it("ignores duplicate TradeCreated events after role assignment", async () => {

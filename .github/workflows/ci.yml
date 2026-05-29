@@ -77,7 +77,7 @@ jobs:
           node-version: 22
       - run: npm ci
 
-      - name: Check if CDK has changes
+      - name: Check if mintd-compatible surfaces changed
         id: cdk-check
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -85,7 +85,12 @@ jobs:
           else
             BASE="${{ github.event.before }}"
           fi
-          if git diff --name-only "$BASE"..HEAD -- cdk/ | grep -q .; then
+          if git diff --name-only "$BASE"..HEAD -- \
+            cdk/ \
+            bitCaster-swap-protocol/ \
+            bitcaster-client-sdk/ \
+            bitcaster-daemon/ \
+            tests/E2E/ | grep -q .; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -105,7 +110,7 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build mintd image (CDK changed)
+      - name: Build mintd image (mintd-compatible surfaces changed)
         if: steps.cdk-check.outputs.changed == 'true'
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build mintd
 

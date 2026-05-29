@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { X, ChevronUp, ChevronDown, Loader2 } from 'lucide-react'
-import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import type {
   MarketDetail,
   TradeSelection,
@@ -34,7 +33,7 @@ interface TradingPanelProps {
   onTradeSelect?: (selection: TradeSelection) => void
   onTradeClear?: () => void
   onAmountChange?: (amount: number) => void
-  onTradeConfirm?: () => void
+  onTradeConfirm?: (comment?: string) => void
   onCommentPost?: (content: string) => void
   onTradeSideChange?: (side: TradeSide) => void
   onOrderTypeChange?: (type: OrderType) => void
@@ -42,6 +41,7 @@ interface TradingPanelProps {
   onPreflightSplitChange?: (enabled: boolean) => void
   onLimitPriceChange?: (price: number) => void
   walletReady?: boolean
+  onWalletRequired?: (comment?: string) => void
 }
 
 const QUICK_AMOUNTS = [100, 500, 1000, 5000]
@@ -491,10 +491,10 @@ export function TradingPanel({
   onPreflightSplitChange,
   onLimitPriceChange,
   walletReady = true,
+  onWalletRequired,
 }: TradingPanelProps) {
   const { t } = useTranslation()
   const [tradeComment, setTradeComment] = useState('')
-  const [showWalletModal, setShowWalletModal] = useState(false)
   const isSell = tradeSide === 'sell'
   const isLimit = orderType === 'limit'
   const baseUnit = market.baseUnit ?? 'sats'
@@ -733,12 +733,13 @@ export function TradingPanel({
             data-testid="trade-confirm"
             onClick={() => {
               if (!walletReady) {
-                setShowWalletModal(true)
+                onWalletRequired?.(tradeComment.trim() || undefined)
                 return
               }
-              onTradeConfirm?.()
-              if (tradeComment.trim()) {
-                onCommentPost?.(tradeComment.trim())
+              const comment = tradeComment.trim()
+              onTradeConfirm?.(comment || undefined)
+              if (comment) {
+                onCommentPost?.(comment)
                 setTradeComment('')
               }
             }}
@@ -758,8 +759,6 @@ export function TradingPanel({
           </button>
         </div>
       )}
-
-      {showWalletModal && <WalletRequiredModal onClose={() => setShowWalletModal(false)} />}
     </div>
   )
 }

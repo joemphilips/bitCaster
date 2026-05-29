@@ -33,6 +33,26 @@ export function subtractProofs<T extends AmountProofLike>(
   return source.filter((p) => !taken.has(proofKey(p)))
 }
 
+export function keysetToOutcomeCollection<T>(
+  rows: readonly T[],
+  read: (row: T) => { keysetId?: string; outcomeCollection?: string | null },
+): Map<string, string> {
+  const result = new Map<string, string>()
+  for (const row of rows) {
+    const { keysetId, outcomeCollection } = read(row)
+    if (!outcomeCollection) continue
+    if (!keysetId) throw new Error('Outcome proof is missing keyset id')
+    const existing = result.get(keysetId)
+    if (existing && existing !== outcomeCollection) {
+      throw new Error(
+        `Keyset ${keysetId} maps to both ${existing} and ${outcomeCollection}`,
+      )
+    }
+    result.set(keysetId, outcomeCollection)
+  }
+  return result
+}
+
 function takeProofsForLockFromSingleKeyset<T extends AmountProofLike>(
   source: readonly T[],
   target: number,

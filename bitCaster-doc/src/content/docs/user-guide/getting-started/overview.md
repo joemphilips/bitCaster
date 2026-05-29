@@ -19,6 +19,8 @@ For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https:/
 
 Browse existing markets or place limit orders at any price. Markets can be binary (Yes/No), categorical (multiple outcomes), or even two-dimensional. You trade using Bitcoin via Lightning.
 
+Categorical market limit orders can settle complementary multi-outcome legs, such as buying `A` from a seller who locks `B|C`. The first release supports markets with up to 8 outcomes.
+
 ### Create your own market
 
 Anyone can freely create a new market. Define the question, the possible outcomes, and the resolution criteria.
@@ -51,6 +53,14 @@ This means the server holds as little user information as possible. There is no 
 **This completely eliminates risks such as personal information leaks or having only specific individuals' assets frozen.**
 
 In return, like any other cryptocurrency wallet, you are responsible for managing your own keys. Back up your 12-word mnemonic and keep it safe.
+
+When you start trading before completing setup, bitCaster can create a local wallet and a Nostr signing key for you. These are separate secrets. Back up both the wallet recovery phrase and the Nostr secret key shown in the app. If you already use a Nostr account, connect it instead of generating a new one.
+
+## Market detail pages
+
+The market chart shows recorded trades for each primitive outcome. If only one outcome has traded, only that line is shown; bitCaster does not invent prices for outcomes that have not traded.
+
+Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
 
 ## Getting started
 

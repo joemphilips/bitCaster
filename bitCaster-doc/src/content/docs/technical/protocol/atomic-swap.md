@@ -109,6 +109,13 @@ rather than publish a maker order that cannot settle. Implementations may expose
 an explicit opt-out, such as `--no-preflight-split`, but then they must reserve
 regular collateral and fail closed if it is unavailable when the match arrives.
 
+For categorical outcome sets, the engine-level set id may contain multiple
+primitive outcomes (for example `B|C`). The mint still issues one conditional
+keyset per primitive root outcome, so wallet implementations decompose a
+logical lock or keep side into primitive keyset legs. Each primitive lock leg
+must prepare successfully before the seller publishes the atomic-swap opening
+messages.
+
 Pre-flight split is a wallet-local safety mechanism, not a different wire
 protocol. When a complementary match arrives, the maker still acts as Alice in
 the seller branch below: the reserved complementary outcome proofs are locked to

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
   SettingsProps,
   SettingsCategory,
@@ -127,6 +127,8 @@ export function Settings({
   activeCategory,
   settings,
   seedPhrase,
+  walletBackupState,
+  generatedNsecSecret,
   onCategoryToggle,
   onThemeChange,
   onAddMint,
@@ -135,6 +137,9 @@ export function Settings({
   onMintClick,
   onSignerModeChange,
   onNsecSubmit,
+  onRevealGeneratedNsec,
+  onConfirmSignerBackup,
+  onConfirmWalletBackup,
   onDisconnectNostr,
   onRetryNostrProfile,
   onAddRelay,
@@ -153,12 +158,45 @@ export function Settings({
   const [nsecValue, setNsecValue] = useState('')
   const [showNsec, setShowNsec] = useState(false)
   const [showNsecInput, setShowNsecInput] = useState(false)
+  const [showGeneratedNsecConfirm, setShowGeneratedNsecConfirm] = useState(false)
+  const [showGeneratedNsecSecret, setShowGeneratedNsecSecret] = useState(false)
+  const [generatedNsecBlurred, setGeneratedNsecBlurred] = useState(false)
+  const [generatedNsecCopied, setGeneratedNsecCopied] = useState(false)
   const [ncryptsecPassphrase, setNcryptsecPassphrase] = useState('')
   const [showAddRelay, setShowAddRelay] = useState(false)
   const [newRelayUrl, setNewRelayUrl] = useState('')
   const [isConnectingNip07, setIsConnectingNip07] = useState(false)
   const [isConnectingNsec, setIsConnectingNsec] = useState(false)
   const [isRetryingProfile, setIsRetryingProfile] = useState(false)
+  const seedClipboardClearRef = useRef<number | null>(null)
+  const nsecClipboardClearRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!showGeneratedNsecSecret) return
+    setGeneratedNsecBlurred(false)
+    const blurTimer = window.setTimeout(() => setGeneratedNsecBlurred(true), 15_000)
+    const hideTimer = window.setTimeout(() => {
+      setShowGeneratedNsecSecret(false)
+      setShowGeneratedNsecConfirm(false)
+      setGeneratedNsecBlurred(false)
+      setGeneratedNsecCopied(false)
+    }, 60_000)
+    return () => {
+      window.clearTimeout(blurTimer)
+      window.clearTimeout(hideTimer)
+    }
+  }, [showGeneratedNsecSecret])
+
+  useEffect(() => {
+    return () => {
+      if (seedClipboardClearRef.current != null) {
+        window.clearTimeout(seedClipboardClearRef.current)
+      }
+      if (nsecClipboardClearRef.current != null) {
+        window.clearTimeout(nsecClipboardClearRef.current)
+      }
+    }
+  }, [])
 
   /**
    * Manual retry for the Nostr profile fetch. Even after the persist-
@@ -179,9 +217,38 @@ export function Settings({
   const displaySeedPhrase = seedPhrase ?? ''
 
   const handleCopySeed = () => {
-    navigator.clipboard.writeText(displaySeedPhrase)
+    void navigator.clipboard.writeText(displaySeedPhrase)
+    if (seedClipboardClearRef.current != null) {
+      window.clearTimeout(seedClipboardClearRef.current)
+    }
+    seedClipboardClearRef.current = window.setTimeout(() => {
+      void navigator.clipboard
+        .readText()
+        .then((value) => {
+          if (value === displaySeedPhrase) void navigator.clipboard.writeText('')
+        })
+        .catch(() => {})
+    }, 60_000)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleCopyGeneratedNsec = () => {
+    if (!generatedNsecSecret) return
+    void navigator.clipboard.writeText(generatedNsecSecret)
+    if (nsecClipboardClearRef.current != null) {
+      window.clearTimeout(nsecClipboardClearRef.current)
+    }
+    nsecClipboardClearRef.current = window.setTimeout(() => {
+      void navigator.clipboard
+        .readText()
+        .then((value) => {
+          if (value === generatedNsecSecret) void navigator.clipboard.writeText('')
+        })
+        .catch(() => {})
+    }, 60_000)
+    setGeneratedNsecCopied(true)
+    window.setTimeout(() => setGeneratedNsecCopied(false), 2_000)
   }
 
   const trimmedNsec = nsecValue.trim()
@@ -396,6 +463,12 @@ export function Settings({
           <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
             Back up your wallet seed phrase. Anyone with this phrase can access your funds.
           </p>
+          {walletBackupState === 'needs_backup' && (
+            <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              Save this phrase before relying on this browser.
+            </div>
+          )}
           <button
             onClick={() => setShowSeedConfirm(true)}
             className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600"
@@ -473,6 +546,8 @@ export function Settings({
                   }}
                   onKeyDown={(e) => e.key === 'Enter' && handleNsecSubmit()}
                   placeholder="nsec1... or ncryptsec1..."
+                  autoComplete="off"
+                  spellCheck={false}
                   className="w-full px-3 py-2 pr-10 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   autoFocus
                 />
@@ -494,6 +569,8 @@ export function Settings({
                     onChange={(e) => setNcryptsecPassphrase(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleNsecSubmit()}
                     placeholder="Decrypt passphrase (NIP-49)"
+                    autoComplete="off"
+                    spellCheck={false}
                     className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -592,6 +669,28 @@ export function Settings({
                 Disconnect
               </button>
             </div>
+            {nostr.canRevealGeneratedNsec && (
+              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-700/50 dark:bg-amber-900/20">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <div className="min-w-0 flex-1">
+                    <h4 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                      Generated Nostr key
+                    </h4>
+                    <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
+                      Back up this nsec if you want to recover this Nostr identity outside this browser.
+                    </p>
+                    <button
+                      onClick={() => setShowGeneratedNsecConfirm(true)}
+                      className="mt-3 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-700"
+                    >
+                      <Eye className="h-4 w-4" />
+                      View generated nsec
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -738,6 +837,98 @@ export function Settings({
                       setShowSeedConfirm(false)
                       setShowSeedPhrase(false)
                       setCopied(false)
+                      onConfirmWalletBackup?.()
+                    }}
+                    className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Generated nsec Confirmation Modal ───────────────────────────── */}
+      {showGeneratedNsecConfirm && nostr.canRevealGeneratedNsec && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+                <Shield className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+              </div>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+                Security Warning
+              </h3>
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
+              This nsec controls your generated Nostr identity. Never share it
+              with anyone. Make sure no one is looking at your screen before
+              proceeding.
+            </p>
+
+            {!showGeneratedNsecSecret ? (
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowGeneratedNsecConfirm(false)}
+                  className="flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    onRevealGeneratedNsec?.()
+                    setShowGeneratedNsecSecret(true)
+                  }}
+                  className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
+                >
+                  I Understand, Show nsec
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-700/50">
+                  <div
+                    className={`break-all font-mono text-sm text-slate-900 transition-[filter] dark:text-white ${
+                      generatedNsecBlurred ? 'blur-sm select-none' : ''
+                    }`}
+                  >
+                    {generatedNsecSecret ?? ''}
+                  </div>
+                  {generatedNsecBlurred && (
+                    <button
+                      onClick={() => setGeneratedNsecBlurred(false)}
+                      className="mt-3 text-sm font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                    >
+                      Show again
+                    </button>
+                  )}
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleCopyGeneratedNsec}
+                    className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
+                  >
+                    {generatedNsecCopied ? (
+                      <>
+                        <Check className="w-4 h-4 text-green-500" />
+                        Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-4 h-4" />
+                        Copy to Clipboard
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowGeneratedNsecConfirm(false)
+                      setShowGeneratedNsecSecret(false)
+                      setGeneratedNsecBlurred(false)
+                      setGeneratedNsecCopied(false)
+                      onConfirmSignerBackup?.()
                     }}
                     className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
                   >

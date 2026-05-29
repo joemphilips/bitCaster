@@ -49,6 +49,25 @@ export function SettingsPage() {
     }
   }, [searchParams, openCategory])
 
+  useEffect(() => {
+    let robotsMeta = document.querySelector<HTMLMetaElement>('meta[name="robots"]')
+    const previousContent = robotsMeta?.content ?? null
+    const created = !robotsMeta
+    if (!robotsMeta) {
+      robotsMeta = document.createElement('meta')
+      robotsMeta.name = 'robots'
+      document.head.appendChild(robotsMeta)
+    }
+    robotsMeta.content = 'noindex'
+    return () => {
+      if (created) {
+        robotsMeta?.remove()
+      } else if (robotsMeta && previousContent !== null) {
+        robotsMeta.content = previousContent
+      }
+    }
+  }, [])
+
   // Map wallet mints → MintConfig[]
   const mintConfigs: MintConfig[] = walletStore.mints.map((m) => {
     const info = m.info as Record<string, unknown> | undefined
@@ -81,6 +100,12 @@ export function SettingsPage() {
     },
     nostr: {
       signerMode: settingsStore.nostrSignerMode,
+      signerSource: settingsStore.signerSource,
+      signerBackupState: settingsStore.signerBackupState,
+      canRevealGeneratedNsec:
+        settingsStore.signerSource === 'implicit-generated' &&
+        settingsStore.nostrSignerMode === 'nsec' &&
+        !!settingsStore.nsecSecret,
       profile: settingsStore.nostrProfile,
       profileFetchStatus: settingsStore.nostrProfileFetchStatus,
       relays: settingsStore.relays,
@@ -161,6 +186,12 @@ export function SettingsPage() {
       activeCategory={settingsStore.activeCategory}
       settings={settingsState}
       seedPhrase={walletStore.mnemonic}
+      walletBackupState={walletStore.walletBackupState}
+      generatedNsecSecret={
+        settingsStore.signerSource === 'implicit-generated'
+          ? settingsStore.nsecSecret
+          : null
+      }
       onCategoryToggle={settingsStore.setActiveCategory}
       onThemeChange={handleThemeChange}
       onAddMint={handleAddMint}
@@ -168,6 +199,8 @@ export function SettingsPage() {
       onMintClick={handleMintClick}
       onSignerModeChange={handleSignerModeChange}
       onNsecSubmit={handleNsecSubmit}
+      onConfirmWalletBackup={walletStore.markWalletBackupConfirmed}
+      onConfirmSignerBackup={() => settingsStore.setSignerBackupState('confirmed')}
       onDisconnectNostr={handleDisconnectNostr}
       onRetryNostrProfile={refreshNostrProfile}
       onAddRelay={userAddRelay}

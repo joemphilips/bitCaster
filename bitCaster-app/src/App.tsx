@@ -28,8 +28,12 @@ import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import { recoverKeysetCountersForMint } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
-import { userAddAndSelectMint } from "@/lib/walletOps";
+import {
+  refreshMintInfoWithoutActivating,
+  userAddAndSelectMint,
+} from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
+import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
@@ -188,6 +192,23 @@ function AppRoutes() {
     }
   }, []);
 
+  const partialLockSweepAttempted = useRef(false);
+  useEffect(() => {
+    if (partialLockSweepAttempted.current) return;
+    const runSweep = () => {
+      if (partialLockSweepAttempted.current) return;
+      partialLockSweepAttempted.current = true;
+      sweepElapsedPartialLockFailures().catch(() => {});
+    };
+    if (useWalletStore.persist.hasHydrated()) runSweep();
+    else {
+      const unsub = useWalletStore.persist.onFinishHydration(() => {
+        runSweep();
+        unsub();
+      });
+    }
+  }, []);
+
   // Continuous NIP-17 listener so inbound payment-request DMs are
   // processed regardless of which route is mounted. The per-view
   // subscription inside `useDepositWithdrawState` was lost on reload and
@@ -251,7 +272,7 @@ function AppRoutes() {
         const missingCtfOnDefault =
           isDefault && nuts != null && !("CTF" in nuts);
         if (!nuts || missingCtfOnDefault) {
-          userAddAndSelectMint(m.url).catch(() => {});
+          refreshMintInfoWithoutActivating(m.url).catch(() => {});
         }
       }
     };

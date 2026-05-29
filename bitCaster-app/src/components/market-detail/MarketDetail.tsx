@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type { MarketDetailProps } from "@/types/market-detail";
@@ -9,10 +8,8 @@ import { TradingPanel } from "./TradingPanel";
 import { PriceChart } from "./PriceChart";
 import { OrderBookSection } from "./OrderBookSection";
 import { ResolutionInfo } from "./ResolutionInfo";
-import { ActivityFeed } from "./ActivityFeed";
 import { RelatedMarkets } from "./RelatedMarkets";
 import { CommentSection } from "./CommentSection";
-import { WalletRequiredModal } from "@/components/shared/WalletRequiredModal";
 
 function formatNumericPrice(value: number, unit: string): string {
   if (unit === "USD") return `$${value.toLocaleString()}`;
@@ -71,7 +68,6 @@ export function MarketDetail({
   onShare,
   onCommentPost,
   onCommentLike,
-  onLoadMoreTrades,
   onLoadMoreComments,
   onRelatedMarketClick,
   onTradeSideChange,
@@ -82,9 +78,9 @@ export function MarketDetail({
   userHoldings,
   walletBalanceSats,
   walletReady = true,
+  onWalletRequired,
 }: MarketDetailProps) {
   const { t } = useTranslation();
-  const [showWalletModal, setShowWalletModal] = useState(false);
   // Get outcomes for categorical markets
   const outcomes = market.type === "categorical" ? market.outcomes : undefined;
 
@@ -155,6 +151,7 @@ export function MarketDetail({
                   userHoldings={userHoldings}
                   walletBalanceSats={walletBalanceSats}
                   walletReady={walletReady}
+                  onWalletRequired={onWalletRequired}
                 />
               </div>
             )}
@@ -203,12 +200,6 @@ export function MarketDetail({
             {/* Resolution Info (in normal position for open markets) */}
             {!isResolved && <ResolutionInfo resolution={market.resolution} />}
 
-            {/* Activity Feed (Trades only) */}
-            <ActivityFeed
-              trades={market.recentTrades}
-              onLoadMoreTrades={onLoadMoreTrades}
-            />
-
             {/* Related Markets */}
             <RelatedMarkets
               markets={market.relatedMarkets}
@@ -251,6 +242,7 @@ export function MarketDetail({
                   userHoldings={userHoldings}
                   walletBalanceSats={walletBalanceSats}
                   walletReady={walletReady}
+                  onWalletRequired={onWalletRequired}
                 />
               </div>
             </div>
@@ -283,7 +275,7 @@ export function MarketDetail({
               <button
                 onClick={() => {
                   if (!walletReady) {
-                    setShowWalletModal(true);
+                    onWalletRequired?.();
                     return;
                   }
                   onTradeConfirm?.();
@@ -312,7 +304,7 @@ export function MarketDetail({
             <button
               onClick={() => {
                 if (!walletReady) {
-                  setShowWalletModal(true);
+                  onWalletRequired?.();
                   return;
                 }
                 const panel = document.querySelector("[data-trading-panel]");
@@ -330,9 +322,6 @@ export function MarketDetail({
         </div>
       )}
 
-      {showWalletModal && (
-        <WalletRequiredModal onClose={() => setShowWalletModal(false)} />
-      )}
     </div>
   );
 }

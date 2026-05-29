@@ -21,6 +21,17 @@ export interface SubmitOrderRequest {
   amountSats: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
   ephemeralPubkey: string
+  comment?: NostrKind1Event | null
+}
+
+export interface NostrKind1Event {
+  id: string
+  pubkey: string
+  createdAt: number
+  kind: 1
+  tags: string[][]
+  content: string
+  sig: string
 }
 
 export interface Fill {
@@ -43,6 +54,11 @@ export interface SubmitOrderResponse {
   remainingAmountSats: number
   fills: Fill[]
   ephemeralPubkey: string
+}
+
+export interface EngineProblem {
+  code?: string
+  detail?: string
 }
 
 export interface OrderStatusResponse {
@@ -80,6 +96,37 @@ export interface QueryMarketsParams {
 export interface QueryMarketsResponse {
   markets: unknown[]
   nextCursor?: string | null
+}
+
+export type PriceHistoryTimeframe = '1h' | '24h' | '7d' | '30d' | 'all'
+
+export interface MarketPriceHistoryPoint {
+  timestamp: string
+  price: number
+  volumeSats: number
+}
+
+export interface MarketOutcomePriceHistory {
+  outcomeId: string
+  data: MarketPriceHistoryPoint[]
+}
+
+export interface MarketPriceHistoryResponse {
+  conditionId: string
+  timeframe: PriceHistoryTimeframe
+  outcomes: MarketOutcomePriceHistory[]
+}
+
+export interface MarketComment {
+  commentId: string
+  content: string
+  createdAt: string
+  authorPubkey: string
+}
+
+export interface MarketCommentsResponse {
+  conditionId: string
+  comments: MarketComment[]
 }
 
 export class BitcasterEngineClient {
@@ -148,6 +195,24 @@ export class BitcasterEngineClient {
     return (await response.json()) as QueryMarketsResponse
   }
 
+  async getMarketPriceHistory(
+    conditionId: string,
+    timeframe: PriceHistoryTimeframe = '7d',
+  ): Promise<MarketPriceHistoryResponse> {
+    const query = new URLSearchParams({ timeframe })
+    const response = await this.request(
+      `/api/v1/markets/${encodePathSegment(conditionId)}/price-history?${query}`,
+    )
+    return (await response.json()) as MarketPriceHistoryResponse
+  }
+
+  async getMarketComments(conditionId: string): Promise<MarketCommentsResponse> {
+    const response = await this.request(
+      `/api/v1/markets/${encodePathSegment(conditionId)}/comments`,
+    )
+    return (await response.json()) as MarketCommentsResponse
+  }
+
   async getMarket(conditionId: string): Promise<unknown | null> {
     const response = await this.queryMarkets({
       ids: [conditionId],
@@ -173,9 +238,13 @@ export class BitcasterEngineClient {
     }
     const response = await this.fetchImpl(url, { ...init, headers })
     if (!response.ok && response.status !== 404) {
+      const detail = await response.text().catch(() => '')
+      const problem = parseEngineProblem(detail)
       throw new EngineClientError(
         response.status,
-        await response.text().catch(() => ''),
+        detail,
+        problem?.code,
+        problem?.detail,
       )
     }
     return response
@@ -199,12 +268,21 @@ function buildMarketsQueryString(params: QueryMarketsParams): string {
 export class EngineClientError extends Error {
   public readonly status: number
   public readonly detail: string
+  public readonly code?: string
+  public readonly problemDetail?: string
 
-  constructor(status: number, detail: string) {
-    super(formatEngineClientError(status, detail))
+  constructor(
+    status: number,
+    detail: string,
+    code?: string,
+    problemDetail?: string,
+  ) {
+    super(formatEngineClientError(status, detail, code, problemDetail))
     this.name = 'EngineClientError'
     this.status = status
     this.detail = detail
+    this.code = code
+    this.problemDetail = problemDetail
   }
 }
 
@@ -212,11 +290,49 @@ function encodePathSegment(segment: string): string {
   return encodeURIComponent(segment)
 }
 
-function formatEngineClientError(status: number, detail: string): string {
+function formatEngineClientError(
+  status: number,
+  detail: string,
+  code?: string,
+  problemDetail?: string,
+): string {
+  if (problemDetail) {
+    return code
+      ? `Engine request failed: ${status} ${code}: ${problemDetail}`
+      : `Engine request failed: ${status} ${problemDetail}`
+  }
   const trimmed = detail.trim()
   return trimmed
     ? `Engine request failed: ${status} ${trimmed}`
     : `Engine request failed: ${status}`
+}
+
+function parseEngineProblem(text: string): EngineProblem | null {
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const body = parsed as {
+      code?: unknown
+      detail?: unknown
+      Code?: unknown
+      Detail?: unknown
+    }
+    const code =
+      typeof body.code === 'string'
+        ? body.code
+        : typeof body.Code === 'string'
+          ? body.Code
+          : undefined
+    const detail =
+      typeof body.detail === 'string'
+        ? body.detail
+        : typeof body.Detail === 'string'
+          ? body.Detail
+          : undefined
+    return code || detail ? { code, detail } : null
+  } catch {
+    return null
+  }
 }
 
 function normalizeHeaders(headers: HeadersInit | undefined): Record<string, string> {

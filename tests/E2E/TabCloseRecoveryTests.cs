@@ -99,9 +99,11 @@ public class TabCloseRecoveryTests : IAsyncLifetime
         Assert.NotNull(_engineClient);
 
         // -------- 1. Seed a fresh trade via REST -------------------------
-        // Use the well-known seeded condition (Yes/No) so the marketId
-        // resolves to a known outcome book on the mock.
-        const string conditionId = "46b95015e209069faaebf25063d30e02ad845f19859ee24b973cc31ce1ade316";
+        // The mock order endpoint does not require catalog registration.
+        // Use a unique condition per theory row so prior rows/runs cannot
+        // leave a resting order in the same in-memory book and contaminate the
+        // expected maker/taker pubkeys.
+        var conditionId = $"{Guid.NewGuid():N}{Guid.NewGuid():N}";
         const string outcome = "Yes";
         var marketId = $"{conditionId}-{outcome}";
 

@@ -177,6 +177,7 @@ export function useDepositWithdrawState(
   // first's polling subscription.
   const inflightRef = useRef(false)
   const unsubRef = useRef<(() => void) | null>(null)
+  const userSelectedMintRef = useRef(false)
 
   // PaymentRequest id of the request currently displayed in the
   // "Waiting for payment…" view. A non-null value subscribes us to the
@@ -194,6 +195,19 @@ export function useDepositWithdrawState(
       unsubRef.current?.()
     }
   }, [])
+
+  useEffect(() => {
+    if (!activeMintUrl) return
+    const userChoseMint = userSelectedMintRef.current
+    const selectedMintStillExists =
+      !!selectedMintId && storeMints.some((mint) => mint.url === selectedMintId)
+    if (!userChoseMint || !selectedMintStillExists) {
+      userSelectedMintRef.current = false
+      if (selectedMintId !== activeMintUrl) {
+        setSelectedMintId(activeMintUrl)
+      }
+    }
+  }, [activeMintUrl, selectedMintId, storeMints])
 
   // React to the global inbox flipping our pending request to "received".
   useEffect(() => {
@@ -233,6 +247,7 @@ export function useDepositWithdrawState(
   }, [])
 
   const onMintChange = useCallback((mintId: string) => {
+    userSelectedMintRef.current = true
     setSelectedMintId(mintId)
   }, [])
 
@@ -294,6 +309,7 @@ export function useDepositWithdrawState(
     const requested = amountSats
     const mintUrl = selectedMintId
     try {
+      await useWalletStore.getState().ensureImplicitWallet()
       // Re-mount idempotency: reuse the active quote if one exists, otherwise
       // request a fresh one. Prevents the duplicate-quote LNBits snackbar.
       const quote = mintQuoteRef.current ?? await createMintQuote(requested, mintUrl)

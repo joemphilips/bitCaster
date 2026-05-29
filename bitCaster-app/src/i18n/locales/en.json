@@ -218,7 +218,7 @@
     "amountBtc": "Amount (₿)",
     "balance": "Balance: {{count}} shares",
     "walletBalance": "You have {{count}} sats",
-    "comment": "Add a comment (optional)",
+    "comment": "Leave a comment if you are not hiding about your opinion",
     "commentPlaceholder": "Share your reasoning...",
     "enterAmount": "Enter amount",
     "confirmBuy": "Buy {{side}} for {{amount}}",
@@ -233,7 +233,8 @@
     "exchanging": "Exchanging proofs\u2026",
     "complete": "Swap complete!",
     "retrying": "Connection lost, retrying\u2026",
-    "failed": "Swap failed. Tokens will be refunded after locktime.",
+    "locktimeFallback": "the refund locktime",
+    "failed": "Some outcome proofs are locked until {{locktime}}. Your wallet will refund them the next time it runs after that time.",
     "tradeId": "Trade {{id}}",
     "settlingStep0": "Locking proofs",
     "settlingStep1": "Exchanging signatures",
@@ -564,6 +565,15 @@
     "s5p1": "bitCaster does not collect or store any personal data. All data is stored locally on your device. The application code is open source and can be self-hosted.",
     "section6Title": "6. Governing Law",
     "s6p1": "These Terms shall be governed by the applicable laws of your jurisdiction. Nothing in these Terms shall exclude or limit any rights you may have under applicable mandatory consumer protection laws."
+  },
+  "backupSecrets": {
+    "title": "Back up your account",
+    "description": "Save these secrets before relying on this browser.",
+    "walletSecret": "Cashu recovery phrase",
+    "nostrSecret": "Nostr private key",
+    "identityDisclosure": "Your auto-generated Nostr key links your wallet, trades, and any public comments under one identity. If you want them separate, pair your existing Nostr account in Settings before your first trade.",
+    "later": "Later",
+    "openSettings": "Open settings"
   },
   "loading": {
     "tagline": "Finance wants to be free | Fake must be expensive"

@@ -240,10 +240,22 @@ describe('useDepositWithdrawState', () => {
   })
 
   describe('onMintChange', () => {
-    it('updates selectedMintId', () => {
+    it('updates selectedMintId for a registered mint', () => {
+      useWalletStore.setState({
+        mints: [
+          { url: 'http://localhost:8085', info: { name: 'Test Mint' } },
+          { url: 'http://localhost:8086', info: { name: 'Second Mint' } },
+        ],
+      })
       const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
-      act(() => result.current.onMintChange('another-mint'))
-      expect(result.current.selectedMintId).toBe('another-mint')
+      act(() => result.current.onMintChange('http://localhost:8086'))
+      expect(result.current.selectedMintId).toBe('http://localhost:8086')
+    })
+
+    it('falls back to the active mint when the selected mint is no longer registered', () => {
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
+      act(() => result.current.onMintChange('unknown-mint'))
+      expect(result.current.selectedMintId).toBe('http://localhost:8085')
     })
   })
 
