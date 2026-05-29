@@ -18,6 +18,7 @@ import {
 } from "@/lib/markets";
 import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
+import { computeLimitOrderPreview } from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
@@ -38,7 +39,12 @@ import {
   removeProofs,
   reserveProofs,
 } from "@/stores/proof-db";
-import { getBalance, useBalance, useWalletStore } from "@/stores/wallet";
+import {
+  getBalance,
+  useActiveMintInputFeePpk,
+  useBalance,
+  useWalletStore,
+} from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
@@ -377,6 +383,11 @@ export function MarketDetailPage() {
   // "You have N sats" before the user tries to confirm (matches the
   // pattern cashu.me uses to surface available funds).
   const activeMintBalance = useBalance(activeMintUrl);
+  // Display-only mint fee for the trade cost preview. Read from the
+  // `input_fee_ppk` the active mint already advertises on its cached keysets
+  // (no extra mint round-trip). 0 for the first-release bitCaster mint config,
+  // so the panel shows a static "Mint fee: 0 sats".
+  const activeMintInputFeePpk = useActiveMintInputFeePpk(activeMintUrl);
 
   // Data state
   const [market, setMarket] = useState<MarketDetailType | null>(null);
@@ -499,24 +510,34 @@ export function MarketDetailPage() {
     };
   }, [tradeSelection, tradeAmount, market, orderType]);
 
-  // Computed limit order preview
+  // Computed limit order preview.
+  //
+  // `tradeAmount` is the SHARE/FACE count (the wire `amountSats`, a multiple of
+  // 100). The cost the user pays is derived display-only — it is NEVER sent as
+  // `amountSats`. Quote = face * price / 100 (the engine derives quote sats
+  // from face × price); on top of that the creator fee (on the quote) and the
+  // mint fee. The total is fully reactive to `limitPrice`, `tradeAmount`, the
+  // creator fee percent, and the mint's advertised `input_fee_ppk` — fixing
+  // the prior static `totalCost: tradeAmount` bug.
   const limitOrderPreview = useMemo<LimitOrderPreview | null>(() => {
     if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
       return null;
     if (orderType !== "limit") return null;
 
-    const feePercent = market.creator.feePercent;
-    const creatorFee = Math.round((tradeAmount * feePercent) / 100);
-    return {
+    return computeLimitOrderPreview({
+      shares: tradeAmount,
       limitPrice,
-      amount: tradeAmount,
-      sharesIfFilled:
-        limitPrice > 0 ? Math.round((tradeAmount * 10000) / limitPrice) : 0,
-      creatorFee,
-      platformFee: 0,
-      totalCost: tradeAmount,
-    };
-  }, [tradeSelection, tradeAmount, market, orderType, limitPrice]);
+      feePercent: market.creator.feePercent,
+      mintInputFeePpk: activeMintInputFeePpk,
+    });
+  }, [
+    tradeSelection,
+    tradeAmount,
+    market,
+    orderType,
+    limitPrice,
+    activeMintInputFeePpk,
+  ]);
 
   // Submit the order. Assumes wallet is set up and balance has been checked —
   // callers that can't promise that must route through `handleTradeConfirm`.

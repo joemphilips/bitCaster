@@ -224,11 +224,13 @@ export type TradeSide = 'buy' | 'sell'
 export type OrderType = 'market' | 'limit'
 
 export interface LimitOrderPreview {
-  limitPrice: number        // in market's base unit (e.g. sats)
-  amount: number            // sats
-  sharesIfFilled: number    // amount * 10000 / limitPrice (assumes 10000 sats per full share)
-  creatorFee: number
-  platformFee: number
+  limitPrice: number        // probability price 1..99 (sats per 100 face)
+  amount: number            // share/face count (multiple of 100) submitted as wire amountSats
+  creatorFee: number        // sats
+  mintFee: number           // sats — read from the CTF keyset input_fee_ppk (0 in the first release)
+  // Display-only spend estimate used for the balance check. NEVER sent as the
+  // wire amountSats (which is the face amount = `amount`). Reactive:
+  //   limitPrice * amount / 100 + creatorFee + mintFee
   totalCost: number
 }
 
