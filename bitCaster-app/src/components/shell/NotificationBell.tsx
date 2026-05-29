@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Bell, Check, X, TrendingUp, AlertCircle } from 'lucide-react'
+import { Bell, Check, X, TrendingUp, AlertCircle, Flag } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import {
   type Notification,
@@ -167,6 +167,9 @@ function NotificationIcon({ kind }: { kind: Notification['kind'] }) {
   if (kind === 'matched' || kind === 'partially_filled') {
     return <TrendingUp className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />
   }
+  if (kind === 'market_closed') {
+    return <Flag className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+  }
   return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
 }
 
@@ -184,6 +187,9 @@ function formatNotification(n: Notification, t: (key: string, opts?: Record<stri
   }
   if (n.kind === 'matched') {
     return t('notification.matched', { sats: n.filledAmountSats, market: marketLabel })
+  }
+  if (n.kind === 'market_closed') {
+    return t('notification.marketClosed', { market: n.finalOutcome ?? marketLabel })
   }
   return t('notification.cancelled', { market: marketLabel })
 }

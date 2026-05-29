@@ -231,10 +231,10 @@
     "recentTrades": "Recent Trades",
     "noTrades": "No trades yet",
     "loadMoreTrades": "Load more trades",
-    "preparing": "Preparing swap\u2026",
-    "exchanging": "Exchanging proofs\u2026",
+    "preparing": "Preparing swap…",
+    "exchanging": "Exchanging proofs…",
     "complete": "Swap complete!",
-    "retrying": "Connection lost, retrying\u2026",
+    "retrying": "Connection lost, retrying…",
     "locktimeFallback": "the refund locktime",
     "failed": "Some outcome proofs are locked until {{locktime}}. Your wallet will refund them the next time it runs after that time.",
     "tradeId": "Trade {{id}}",
@@ -347,7 +347,13 @@
     "secretKeyNsecLabel": "Secret key (nsec)",
     "nsecKeepPrivate": "Keep private",
     "copyNpub": "Copy npub",
-    "copyNsec": "Copy nsec"
+    "copyNsec": "Copy nsec",
+    "notifications": "Notifications",
+    "likedMarketCloseNotifications": "Notify when a liked market closes",
+    "likedMarketCloseNotificationsDesc": "Show a browser notification when a market you have bookmarked closes. Detection is client-side only — no data leaves your device.",
+    "enableNotifications": "Enable notifications",
+    "notificationsBlocked": "Notifications are blocked in your browser settings.",
+    "notificationsUnsupported": "Your browser does not support notifications."
   },
   "deposit": {
     "title": "Deposit",
@@ -598,7 +604,9 @@
     "matched": "Order matched: {{sats}} sats reserved on {{market}}",
     "filled": "Order filled: {{sats}} sats on {{market}}",
     "partiallyFilled": "Partial fill: {{sats}} sats filled on {{market}}, {{remaining}} remaining",
-    "cancelled": "Order cancelled on {{market}}"
+    "cancelled": "Order cancelled on {{market}}",
+    "marketClosed": "Market closed: {{market}}",
+    "marketClosedTitle": "A market you follow has closed"
   },
   "topUp": {
     "title": "Top Up Wallet",

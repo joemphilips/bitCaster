@@ -17,6 +17,11 @@ export interface GeneralSettings {
   language: LanguageCode
   theme: ThemeOption
   appVersion: string
+  /**
+   * Opt-in for client-side Web Notifications when a liked (bookmarked) market
+   * closes (P22 Link G). Client-only — no server push subscription.
+   */
+  likedMarketCloseNotifications: boolean
 }
 
 // =============================================================================
@@ -105,6 +110,13 @@ export interface SettingsProps {
 
   // General callbacks
   onThemeChange?: (theme: ThemeOption) => void
+  /**
+   * Toggle the liked-market close notification opt-in. The handler is
+   * responsible for requesting browser notification permission when enabling
+   * (P22 Link G3); it returns the effective enabled state so the toggle can
+   * reflect a permission denial.
+   */
+  onLikedMarketCloseNotificationsChange?: (enabled: boolean) => Promise<boolean> | boolean
 
   // Cashu callbacks
   onAddMint?: (url: string) => Promise<void>

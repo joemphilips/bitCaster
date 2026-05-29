@@ -5,6 +5,7 @@ import { useWalletStore, DEFAULT_MINT_URL } from '@/stores/wallet'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
 import { detectMintCapabilities, getMintIconUrl } from '@/lib/mints'
+import { requestNotificationPermission } from '@/lib/webNotifications'
 import {
   disconnectNostrIdentity,
   refreshNostrProfile,
@@ -94,6 +95,7 @@ export function SettingsPage() {
       language: settingsStore.language,
       theme: settingsStore.theme,
       appVersion: APP_VERSION,
+      likedMarketCloseNotifications: settingsStore.likedMarketCloseNotifications,
     },
     cashu: {
       mints: mintConfigs,
@@ -148,6 +150,31 @@ export function SettingsPage() {
     [settingsStore],
   )
 
+  // P22 Link G3 — enabling the opt-in requests browser notification permission.
+  // A denial keeps the opt-in OFF so the UI never claims an unusable state.
+  const handleLikedMarketCloseNotificationsChange = useCallback(
+    async (enabled: boolean): Promise<boolean> => {
+      if (!enabled) {
+        settingsStore.setLikedMarketCloseNotifications(false)
+        return false
+      }
+      const permission = await requestNotificationPermission()
+      if (permission !== 'granted') {
+        settingsStore.setLikedMarketCloseNotifications(false)
+        if (permission === 'denied') {
+          useToastStore.getState().addToast({
+            type: 'error',
+            message: 'Notifications are blocked in your browser settings.',
+          })
+        }
+        return false
+      }
+      settingsStore.setLikedMarketCloseNotifications(true)
+      return true
+    },
+    [settingsStore],
+  )
+
   const handleSignerModeChange = useCallback(
     async (mode: NostrSignerMode): Promise<boolean> => {
       const result = await userConnectNostrSignerMode(mode)
@@ -194,6 +221,7 @@ export function SettingsPage() {
       }
       onCategoryToggle={settingsStore.setActiveCategory}
       onThemeChange={handleThemeChange}
+      onLikedMarketCloseNotificationsChange={handleLikedMarketCloseNotificationsChange}
       onAddMint={handleAddMint}
       onRemoveMint={handleRemoveMint}
       onMintClick={handleMintClick}

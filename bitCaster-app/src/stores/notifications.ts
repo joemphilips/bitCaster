@@ -13,8 +13,19 @@ const MAX_NOTIFICATIONS = 100
  * Mirrors the engine's terminal / partial order statuses so the bell can
  * render without translating between a separate vocabulary. `resting` never
  * produces a notification, so it's excluded here.
+ *
+ * `market_closed` is not an order status — it's a market-lifecycle event the
+ * client detects for the user's bookmarked ("liked") markets (P22 Link G).
+ * It carries no order fields; the bell renders it from `conditionId` /
+ * `finalOutcome`.
  */
-export type NotificationKind = 'accepted' | 'matched' | 'filled' | 'partially_filled' | 'cancelled'
+export type NotificationKind =
+  | 'accepted'
+  | 'matched'
+  | 'filled'
+  | 'partially_filled'
+  | 'cancelled'
+  | 'market_closed'
 
 export interface Notification {
   /**
@@ -24,9 +35,14 @@ export interface Notification {
    *
    *   filled / cancelled → `{orderId}-{kind}` (terminal, one per order)
    *   partially_filled   → `{orderId}-partially_filled-{fillCount}` (one per step)
+   *   market_closed      → `{marketId}-market_closed` (one per liked market)
    */
   id: string
   kind: NotificationKind
+  /**
+   * Owning order. Empty for non-order notifications (`market_closed`), which
+   * are keyed on the market instead.
+   */
   orderId: string
   marketId: string
   /** Absolute sats filled at the moment this notification was generated. */
@@ -36,6 +52,18 @@ export interface Notification {
   /** Unix ms. */
   occurredAt: number
   read: boolean
+
+  // ── market_closed only (P22 Link G) ──────────────────────────────────────
+  /** Condition the closed market belongs to. */
+  conditionId?: string
+  /**
+   * The winning outcome name, when the close also carried an attested
+   * resolution. `undefined` when the market merely transitioned to closed
+   * without a known final outcome yet.
+   */
+  finalOutcome?: string
+  /** Unix ms the market was observed closed. */
+  closedAt?: number
 }
 
 interface NotificationState {

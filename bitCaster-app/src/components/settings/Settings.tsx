@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import { useToastStore } from '@/stores/toast'
 import { isNip07Available } from '@/lib/nostr'
+import { getNotificationPermission } from '@/lib/webNotifications'
 import { getRelayUrlValidationError } from '@/lib/walletOps'
 import { safeHostname } from '@/lib/url'
 import { AddMintForm } from '@/components/shared/AddMintForm'
@@ -134,6 +135,7 @@ export function Settings({
   generatedNsecSecret,
   onCategoryToggle,
   onThemeChange,
+  onLikedMarketCloseNotificationsChange,
   onAddMint,
   onRemoveMint,
   onViewSeedPhrase,
@@ -286,6 +288,17 @@ export function Settings({
     window.setTimeout(() => setGeneratedNsecCopied(false), 2_000)
   }
 
+  const [notificationPermission, setNotificationPermission] = useState(
+    getNotificationPermission(),
+  )
+
+  const handleToggleLikedMarketCloseNotifications = async () => {
+    const next = !general.likedMarketCloseNotifications
+    await onLikedMarketCloseNotificationsChange?.(next)
+    // Permission may have changed as a side-effect of enabling.
+    setNotificationPermission(getNotificationPermission())
+  }
+
   const trimmedNsec = nsecValue.trim()
   const isNcryptsec = trimmedNsec.startsWith('ncryptsec1')
   const relayError = getRelayUrlValidationError(newRelayUrl)
@@ -369,6 +382,51 @@ export function Settings({
             value={general.theme}
             onChange={onThemeChange}
           />
+        </div>
+
+        {/* Notifications (P22 Link G) */}
+        <div>
+          <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+            {t('settings.notifications')}
+          </h3>
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-slate-900 dark:text-white">
+                {t('settings.likedMarketCloseNotifications')}
+              </p>
+              <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
+                {t('settings.likedMarketCloseNotificationsDesc')}
+              </p>
+              {notificationPermission === 'denied' && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  {t('settings.notificationsBlocked')}
+                </p>
+              )}
+              {notificationPermission === 'unsupported' && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  {t('settings.notificationsUnsupported')}
+                </p>
+              )}
+            </div>
+            <button
+              role="switch"
+              aria-checked={general.likedMarketCloseNotifications}
+              aria-label={t('settings.likedMarketCloseNotifications')}
+              disabled={notificationPermission === 'unsupported'}
+              onClick={handleToggleLikedMarketCloseNotifications}
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                general.likedMarketCloseNotifications
+                  ? 'bg-blue-600'
+                  : 'bg-slate-300 dark:bg-slate-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  general.likedMarketCloseNotifications ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
         </div>
 
         {/* About */}

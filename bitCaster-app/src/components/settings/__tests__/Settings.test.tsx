@@ -1,5 +1,5 @@
-import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nip19 } from 'nostr-tools'
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { Settings } from '../Settings'
@@ -14,6 +14,7 @@ function settingsState(
       language: 'en',
       theme: 'dark',
       appVersion: 'test',
+      likedMarketCloseNotifications: false,
     },
     cashu: {
       mints: [],
@@ -121,5 +122,66 @@ describe('Settings generated nsec/npub reveal modal (P22 Link E)', () => {
     // Per-field copy affordances exist for both.
     expect(screen.getByRole('button', { name: /copy npub/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /copy nsec/i })).toBeInTheDocument()
+  })
+})
+
+describe('Settings liked-market close notifications opt-in (P22 Link G)', () => {
+  // jsdom has no Notification API by default; stub one so the toggle is not
+  // disabled as "unsupported".
+  beforeEach(() => {
+    const ctor = vi.fn() as unknown as typeof Notification
+    ;(ctor as unknown as { permission: NotificationPermission }).permission = 'default'
+    vi.stubGlobal('Notification', ctor)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function generalSettings(
+    likedMarketCloseNotifications: boolean,
+  ): SettingsState {
+    const base = settingsState()
+    return {
+      ...base,
+      general: { ...base.general, likedMarketCloseNotifications },
+    }
+  }
+
+  it('reflects the opt-in OFF state on the toggle switch', () => {
+    render(
+      <Settings activeCategory="general" settings={generalSettings(false)} />,
+    )
+    const toggle = screen.getByRole('switch', {
+      name: /notify when a liked market closes/i,
+    })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('reflects the opt-in ON state on the toggle switch', () => {
+    render(
+      <Settings activeCategory="general" settings={generalSettings(true)} />,
+    )
+    const toggle = screen.getByRole('switch', {
+      name: /notify when a liked market closes/i,
+    })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('invokes the change handler when toggled — the handler gates the SW permission request', async () => {
+    const calls: boolean[] = []
+    render(
+      <Settings
+        activeCategory="general"
+        settings={generalSettings(false)}
+        onLikedMarketCloseNotificationsChange={(enabled) => {
+          calls.push(enabled)
+          return true
+        }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole('switch', { name: /notify when a liked market closes/i }),
+    )
+    await waitFor(() => expect(calls).toEqual([true]))
   })
 })

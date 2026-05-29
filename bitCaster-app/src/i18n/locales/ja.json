@@ -231,10 +231,10 @@
     "recentTrades": "最近の取引",
     "noTrades": "まだ取引がありません",
     "loadMoreTrades": "さらに取引を表示",
-    "preparing": "スワップを準備中\u2026",
-    "exchanging": "プルーフを交換中\u2026",
+    "preparing": "スワップを準備中…",
+    "exchanging": "プルーフを交換中…",
     "complete": "スワップ完了！",
-    "retrying": "接続が切断されました。再接続中\u2026",
+    "retrying": "接続が切断されました。再接続中…",
     "locktimeFallback": "返還ロックタイム",
     "failed": "一部のアウトカムプルーフは {{locktime}} までロックされています。その時刻を過ぎて次にウォレットが起動したときに返還されます。",
     "tradeId": "取引 {{id}}",
@@ -347,7 +347,13 @@
     "secretKeyNsecLabel": "秘密鍵 (nsec)",
     "nsecKeepPrivate": "非公開のままにする",
     "copyNpub": "npub をコピー",
-    "copyNsec": "nsec をコピー"
+    "copyNsec": "nsec をコピー",
+    "notifications": "通知",
+    "likedMarketCloseNotifications": "お気に入りのマーケットがクローズしたら通知する",
+    "likedMarketCloseNotificationsDesc": "ブックマークしたマーケットがクローズしたときにブラウザ通知を表示します。検知はクライアント側のみで行われ、データが端末の外に出ることはありません。",
+    "enableNotifications": "通知を有効にする",
+    "notificationsBlocked": "ブラウザの設定で通知がブロックされています。",
+    "notificationsUnsupported": "お使いのブラウザは通知に対応していません。"
   },
   "deposit": {
     "title": "入金",
@@ -598,7 +604,9 @@
     "matched": "注文がマッチしました: {{market}} で {{sats}} sats 予約済み",
     "filled": "注文が約定しました: {{market}} で {{sats}} sats",
     "partiallyFilled": "一部約定: {{market}} で {{sats}} sats 約定、残り {{remaining}}",
-    "cancelled": "{{market}} の注文がキャンセルされました"
+    "cancelled": "{{market}} の注文がキャンセルされました",
+    "marketClosed": "マーケットがクローズしました: {{market}}",
+    "marketClosedTitle": "フォロー中のマーケットがクローズしました"
   },
   "topUp": {
     "title": "ウォレットをチャージ",
