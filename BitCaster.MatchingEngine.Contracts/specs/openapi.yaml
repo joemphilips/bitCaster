@@ -1161,6 +1161,39 @@ components:
             - type: 'null'
           description: Difference between best ask and best bid. Null if either side is empty.
 
+    MarketStatusChanged:
+      type: object
+      description: >
+        Lifecycle-change notification pushed over the market hub when a
+        condition's market transitions state (e.g. open -> closed). Sent to
+        every per-outcome market group of the condition. Carries only
+        wire-visible, public lifecycle data.
+      required:
+        - conditionId
+        - state
+      properties:
+        conditionId:
+          type: string
+          description: The condition identifier whose lifecycle changed.
+        state:
+          type: string
+          enum: [open, closed]
+          description: >
+            New engine-side lifecycle state. `open` accepts new orders;
+            `closed` does not.
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Engine-side close timestamp. Null unless the new state is `closed`.
+        finalOutcome:
+          type: string
+          nullable: true
+          description: >
+            Winning outcome known to the engine after an oracle attestation
+            close. Null for deadline-only closes or non-resolving transitions.
+
     CreateMarketOutcome:
       type: object
       required:
