@@ -5,7 +5,11 @@ import { DepositWithdrawOverlay } from "@/components/deposit-withdraw/DepositWit
 import { usePortfolioState } from "./usePortfolioState";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
-import { getConditionCtfProofs } from "@/stores/proof-db";
+import {
+  getConditionCtfProofs,
+  getOutcomeProofs,
+  removeProofs,
+} from "@/stores/proof-db";
 import { settleCtfPosition } from "@/lib/cashu";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
@@ -141,6 +145,38 @@ export function PortfolioPage() {
     [addActivity, claimingPositionId, state.positions],
   );
 
+  const handleRemovePosition = useCallback(
+    async (positionId: string) => {
+      const position = state.positions.find((p) => p.id === positionId);
+      // Gate on the SAME single source-of-truth as the "Lost" badge and the
+      // Remove button (P22 F2/F3). These are bearer proofs: destroying a
+      // mislabelled winner is permanent loss, so we never remove a position the
+      // derivation considers a winner — even if a stale callback fired.
+      if (!position || !position.isLoser || position.isWinner) return;
+      try {
+        const conditionId = toPortfolioMarketDetailId(position.marketId);
+        const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
+        // Delete only this lost position's proofs (its outcome-collection
+        // leg(s)), not the whole condition — a condition can hold several
+        // positions. No mint redeem: a losing leg has nothing to claim.
+        const proofs = outcomeCollection
+          ? await getOutcomeProofs(
+              position.mintUrl,
+              conditionId,
+              outcomeCollection,
+              { includeReserved: true },
+            )
+          : [];
+        if (proofs.length > 0) {
+          await removeProofs(proofs.map((proof) => proof.secret));
+        }
+      } catch (error) {
+        console.error("[portfolio] failed to remove lost position", error);
+      }
+    },
+    [state.positions],
+  );
+
   const handlePositionsTabChange = useCallback(
     (tab: "active" | "closed") => {
       state.setPositionsTab(tab);
@@ -186,6 +222,7 @@ export function PortfolioPage() {
         onViewPosition={handleViewPosition}
         onViewMarket={handleViewMarket}
         onClaimPayout={handleClaimPayout}
+        onRemovePosition={handleRemovePosition}
         onPositionsTabChange={handlePositionsTabChange}
         onOpenSettings={handleOpenSettings}
         showConnectNostrCta={showConnectNostrCta}

@@ -67,6 +67,15 @@ export interface Position {
   profitLossSats: number
   profitLossPercent: number
   status: PositionStatus
+  /**
+   * Single source-of-truth winner flag for a closed position (P22 F3), derived
+   * once in usePortfolioState via deriveWinnerStatus. The "Won" badge, Claim
+   * button, value/P&L, and the destructive "Remove" guard all read this same
+   * field so they can never disagree. Always false while active.
+   */
+  isWinner: boolean
+  /** Closed and not a winner. Always false while active. Gates "Remove". */
+  isLoser: boolean
   closedDate?: string
   acquiredDate: string
   mintUrl: string
@@ -210,6 +219,12 @@ export interface PortfolioProps {
 
   /** Called when user claims payout from a winning position */
   onClaimPayout?: (positionId: string) => void
+
+  /**
+   * Called when user removes a LOST position — deletes its local CTF proofs
+   * without a mint redeem. Only offered for losers (P22 F2).
+   */
+  onRemovePosition?: (positionId: string) => void
 
   /** Called when user clicks to view a fund */
   onViewFund?: (fundId: string) => void

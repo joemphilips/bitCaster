@@ -20,6 +20,7 @@ import type {
   CreatedMarket,
 } from '@/types/portfolio'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
+import { deriveWinnerStatus } from '@/lib/positionWinner'
 
 interface PortfolioState {
   walletState: WalletState
@@ -117,27 +118,6 @@ function computeStats(positions: Position[], fundsBalance: number): PortfolioSta
     biggestWinSats,
     predictionsCount: positions.length,
   }
-}
-
-function parseOutcomeCollection(value: string): string[] {
-  const outcomes: string[] = []
-  let current = ''
-  let escaped = false
-  for (const ch of value) {
-    if (escaped) {
-      current += ch
-      escaped = false
-    } else if (ch === '\\') {
-      escaped = true
-    } else if (ch === '|') {
-      outcomes.push(current)
-      current = ''
-    } else {
-      current += ch
-    }
-  }
-  outcomes.push(current)
-  return outcomes.filter((outcome) => outcome.length > 0)
 }
 
 function positionSide(outcomeCollection: string): Position['side'] {
@@ -238,21 +218,21 @@ export function usePortfolioState(): PortfolioState & {
     ])
     return entries.map((entry): Position => {
       const market = catalogue.get(entry.conditionId)
-      const finalOutcome = market?.finalOutcome?.trim()
       const isClosed = String(market?.state ?? '').toLowerCase() === 'closed'
-      const isWinner =
-        isClosed &&
-        !!finalOutcome &&
-        parseOutcomeCollection(entry.outcomeCollection).some(
-          (held) => held.toLowerCase() === finalOutcome.toLowerCase(),
-        )
-      const isLoser = isClosed && !!finalOutcome && !isWinner
+      // Single source-of-truth winner derivation (P22 F3): a composite "A|B"
+      // position counts as a winner only when EVERY held leg matches the final
+      // outcome. A residual losing-leg composite (e.g. only "B" left after the
+      // "A" leg was redeemed) is therefore NOT a winner, even though its label
+      // still mentions the winning outcome.
+      const winnerStatus = deriveWinnerStatus({
+        isClosed,
+        finalOutcome: market?.finalOutcome,
+        outcomeCollection: entry.outcomeCollection,
+      })
+      const isWinner = winnerStatus === 'winner'
+      const isLoser = winnerStatus === 'loser'
       const status = isClosed ? 'closed' : 'active'
-      const currentValueSats = isWinner
-        ? entry.amount
-        : isLoser
-          ? 0
-          : entry.amount
+      const currentValueSats = isLoser ? 0 : entry.amount
       return {
         id: `${entry.conditionId}-${entry.outcomeCollection}`,
         marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
@@ -272,6 +252,8 @@ export function usePortfolioState(): PortfolioState & {
             : -100
           : 0,
         status,
+        isWinner,
+        isLoser,
         closedDate: isClosed ? (market?.closedAt ?? undefined) : undefined,
         acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
         mintUrl: entry.mintUrl,

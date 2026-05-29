@@ -61,6 +61,8 @@ const mockPositions: Position[] = [
     profitLossSats: 8250,
     profitLossPercent: 8.87,
     status: 'active',
+    isWinner: false,
+    isLoser: false,
     acquiredDate: '2025-12-10T14:22:00Z',
   },
   {
@@ -77,6 +79,8 @@ const mockPositions: Position[] = [
     profitLossSats: 55000,
     profitLossPercent: 122.22,
     status: 'closed',
+    isWinner: true,
+    isLoser: false,
     closedDate: '2025-12-31T23:59:59Z',
     acquiredDate: '2025-09-20T10:30:00Z',
   },
@@ -94,6 +98,8 @@ const mockPositions: Position[] = [
     profitLossSats: -95000,
     profitLossPercent: -100,
     status: 'closed',
+    isWinner: false,
+    isLoser: true,
     closedDate: '2025-12-18T19:00:00Z',
     acquiredDate: '2025-11-01T13:45:00Z',
   },
@@ -276,6 +282,47 @@ describe('Portfolio', () => {
     it('shows empty state when no positions', () => {
       renderPortfolio({ positions: [] })
       expect(screen.getByText('No active positions')).toBeInTheDocument()
+    })
+
+    // P22 F1 — closed winner vs loser are visually distinct (Won ☺ / Lost 😭).
+    it('shows distinct Won and Lost badges on closed positions', () => {
+      renderPortfolio({ positionsTab: 'closed' })
+      expect(screen.getByText(/Won/)).toBeInTheDocument()
+      expect(screen.getByText(/Lost/)).toBeInTheDocument()
+    })
+
+    // P22 F2 — Remove is offered for LOST positions only.
+    it('shows Remove button on losing closed positions', () => {
+      const onRemovePosition = vi.fn()
+      renderPortfolio({ positionsTab: 'closed', onRemovePosition })
+      expect(screen.getByLabelText(/remove.*fed/i)).toBeInTheDocument()
+    })
+
+    // P22 F2 guard — Remove is NEVER offered on a winner (badge/action parity).
+    it('does not show Remove button on winning closed positions', () => {
+      const onRemovePosition = vi.fn()
+      renderPortfolio({ positionsTab: 'closed', onRemovePosition })
+      expect(screen.queryByLabelText(/remove.*ethereum/i)).not.toBeInTheDocument()
+    })
+
+    it('calls onRemovePosition after confirm on a lost position', async () => {
+      const onRemovePosition = vi.fn()
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderPortfolio({ positionsTab: 'closed', onRemovePosition })
+      await userEvent.click(screen.getByLabelText(/remove.*fed/i))
+      expect(confirmSpy).toHaveBeenCalledOnce()
+      expect(onRemovePosition).toHaveBeenCalledWith('pos-006')
+      confirmSpy.mockRestore()
+    })
+
+    it('does not call onRemovePosition when the confirm is dismissed', async () => {
+      const onRemovePosition = vi.fn()
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      renderPortfolio({ positionsTab: 'closed', onRemovePosition })
+      await userEvent.click(screen.getByLabelText(/remove.*fed/i))
+      expect(confirmSpy).toHaveBeenCalledOnce()
+      expect(onRemovePosition).not.toHaveBeenCalled()
+      confirmSpy.mockRestore()
     })
   })
 
