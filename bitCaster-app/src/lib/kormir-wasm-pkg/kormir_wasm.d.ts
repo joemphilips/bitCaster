@@ -140,6 +140,25 @@ export class Kormir {
 */
   create_enum_event(event_id: string, outcomes: (string)[], event_maturity_epoch: number, title: string, description: string): Promise<string>;
 /**
+* Re-import a previously-created enum announcement into local storage so it
+* can be signed again on a fresh profile.
+*
+* `Kormir.restore(nsec)` clears IndexedDb and re-installs only the oracle
+* signing key — the per-event nonce *index* persisted at creation time is
+* gone, so `sign_enum_event` fails with `NotFound`. The announcement TLV hex
+* (a public protocol artifact, mirrored client-side) carries the committed
+* nonce point(s); because nonce keys are derived deterministically from the
+* signing key, the original index is recovered by a bounded scan and the
+* announcement is re-saved. After this call `sign_enum_event(event_id, …)`
+* succeeds and produces the same committed-nonce signature the mint expects.
+*
+* `announcement_tlv_hex` is the TLV-enveloped hex returned by
+* `create_enum_event` (and stored by the client). Returns the event_id.
+* @param {string} announcement_tlv_hex
+* @returns {Promise<string>}
+*/
+  import_enum_event(announcement_tlv_hex: string): Promise<string>;
+/**
 * @param {string} str
 * @returns {Promise<Attestation>}
 */
@@ -212,6 +231,7 @@ export interface InitOutput {
   readonly kormir_decode_announcement: (a: number, b: number) => number;
   readonly kormir_decode_attestation: (a: number, b: number) => number;
   readonly kormir_get_public_key: (a: number, b: number) => void;
+  readonly kormir_import_enum_event: (a: number, b: number, c: number) => number;
   readonly kormir_list_events: (a: number) => number;
   readonly kormir_new: (a: number, b: number) => number;
   readonly kormir_restore: (a: number, b: number) => number;

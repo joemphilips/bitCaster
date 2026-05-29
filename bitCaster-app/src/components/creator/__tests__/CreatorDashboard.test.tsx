@@ -233,6 +233,7 @@ describe('CreatorDashboard', () => {
           type: 'self',
           eventId: 'will_btc_hit_150k_abcd',
           outcomes: ['Yes', 'No'],
+          announcementHex: 'aabbccdd',
         },
       },
     ]
@@ -271,11 +272,14 @@ describe('CreatorDashboard', () => {
     await screen.findByText(/published oracle attestation/i)
 
     // Signing goes through kormir so the attestation binds to the
-    // announcement's committed nonce (relay urls, event id, outcome).
+    // announcement's committed nonce (relay urls, event id, outcome). The
+    // mirrored announcement hex is passed so a fresh profile can re-import the
+    // nonce index before signing (P22 B1b).
     expect(mockSignEnumAttestation).toHaveBeenCalledWith(
       ['wss://relay.example.test'],
       'will_btc_hit_150k_abcd',
       'Yes',
+      'aabbccdd',
     )
     // The kormir attestation hex is wrapped in a NIP-01 envelope signed by
     // the creator's nsec.

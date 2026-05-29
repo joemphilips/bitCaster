@@ -32,6 +32,7 @@ export function kormir_create_numeric_event(a: number, b: number, c: number, d: 
 export function kormir_decode_announcement(a: number, b: number): number;
 export function kormir_decode_attestation(a: number, b: number): number;
 export function kormir_get_public_key(a: number, b: number): void;
+export function kormir_import_enum_event(a: number, b: number, c: number): number;
 export function kormir_list_events(a: number): number;
 export function kormir_new(a: number, b: number): number;
 export function kormir_restore(a: number, b: number): number;

@@ -125,6 +125,12 @@ export interface CreatedMarket {
     type: 'self'
     eventId: string
     outcomes: string[]
+    /**
+     * TLV-hex of the kormir DLC oracle announcement. Mirrored client-side so a
+     * fresh browser profile can re-import the committed-nonce material before
+     * re-signing the attestation (P22 B1b).
+     */
+    announcementHex?: string
     attestationHex?: string
     attestedOutcome?: string
     attestedAt?: string

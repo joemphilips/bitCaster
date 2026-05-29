@@ -213,16 +213,59 @@ export async function createEnumAnnouncement(
 }
 
 /**
+ * Re-import a previously-created enum announcement into kormir's local storage
+ * so its outcome can be signed again on a fresh browser profile.
+ *
+ * Why this is needed (P22 B1b): `Kormir.restore(nsec)` wipes IndexedDB and
+ * re-installs only the oracle signing key. The per-event nonce *index* that
+ * `create_enum_event` persisted is gone, so `sign_enum_event` fails with
+ * NotFound. The announcement TLV hex (a public protocol artifact, mirrored in
+ * the creator-markets store + NIP-78) carries the committed nonce point(s);
+ * because nonce keys are derived deterministically from the signing key,
+ * kormir recovers the original index by a bounded scan and re-saves the event.
+ *
+ * Non-destructive and idempotent: if the event already exists in this profile
+ * (created or imported here), the call is a no-op and never clobbers a stored
+ * attestation. Returns the recovered DLC event_id.
+ *
+ * @param relays - websocket URLs of Nostr relays (only used to obtain a kormir instance)
+ * @param announcementHex - TLV-hex of the kormir oracle announcement (from `createEnumAnnouncement`)
+ */
+export async function importEnumAnnouncement(
+  relays: string[],
+  announcementHex: string,
+): Promise<string> {
+  const kormir = await getKormir(relays)
+  try {
+    return await kormir.import_enum_event(announcementHex)
+  } catch (err) {
+    throw new Error(`Failed to re-import DLC oracle announcement: ${describeThrown(err)}`)
+  }
+}
+
+/**
  * Sign a previously-created enum event with the given outcome, publish the
  * attestation to the connected relays, and return the attestation encoded as
  * a hex string.
+ *
+ * `announcementHex` (optional) is the TLV-hex of the event's announcement. When
+ * provided it is re-imported first (via {@link importEnumAnnouncement}) so a
+ * fresh browser profile — which restored only the oracle nsec and lost kormir's
+ * nonce-index store — can still re-sign. The import is non-destructive and a
+ * no-op when the event is already present, so passing it is always safe.
  */
 export async function signEnumAttestation(
   relays: string[],
   eventId: string,
   outcome: string,
+  announcementHex?: string,
 ): Promise<string> {
   const kormir = await getKormir(relays)
+  if (announcementHex) {
+    // Recover the committed-nonce material on a fresh profile before signing.
+    // Idempotent: no-op when the event already exists locally.
+    await importEnumAnnouncement(relays, announcementHex)
+  }
   try {
     return await kormir.sign_enum_event(eventId, outcome)
   } catch (err) {

@@ -95,10 +95,16 @@ export function CreatorDashboard() {
       // Sign against the announcement's COMMITTED nonce via kormir. The mint
       // enforces the DLC committed-nonce scheme at redeem; a fresh-nonce
       // signature would close the market but leave it unclaimable.
+      //
+      // Pass the mirrored announcement hex so a fresh browser profile (which
+      // restored only the oracle nsec and lost kormir's nonce-index store) can
+      // re-import the committed-nonce material before signing (P22 B1b). The
+      // import is idempotent and non-destructive when the event already exists.
       const attestationHex = await signEnumAttestation(
         relayUrls,
         market.oracle.eventId,
         outcome,
+        market.oracle.announcementHex,
       )
       const attestation = buildOracleAttestationEvent(nsecSecret, attestationHex)
       await submitOracleAttestation(marketId, attestation)
