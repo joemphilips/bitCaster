@@ -68,14 +68,22 @@ export interface Position {
   profitLossPercent: number
   status: PositionStatus
   /**
-   * Single source-of-truth winner flag for a closed position (P22 F3), derived
-   * once in usePortfolioState via deriveWinnerStatus. The "Won" badge, Claim
-   * button, value/P&L, and the destructive "Remove" guard all read this same
-   * field so they can never disagree. Always false while active.
+   * Single source-of-truth winner flag for a closed position (P22 Link F),
+   * derived once in usePortfolioState via deriveWinner. A position is a winner
+   * iff it holds >= 1 proof on a winning keyset (the attested outcome is a
+   * member of the keyset's collection). The "Won" badge, Claim button,
+   * value/P&L, and the destructive "Remove" guard all read this same field so
+   * they can never disagree. Always false while active.
    */
   isWinner: boolean
   /** Closed and not a winner. Always false while active. Gates "Remove". */
   isLoser: boolean
+  /**
+   * The market's attested final outcome (P22 Link F). Carried so the
+   * destructive "Remove" handler can apply a defense-in-depth filter: it must
+   * never delete a proof on a winning keyset, even if classification were off.
+   */
+  finalOutcome?: string | null
   closedDate?: string
   acquiredDate: string
   mintUrl: string

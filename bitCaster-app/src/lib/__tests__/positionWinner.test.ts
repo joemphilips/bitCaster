@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { deriveWinnerStatus, parseOutcomeCollection } from '../positionWinner'
+import {
+  deriveWinner,
+  deriveWinnerStatus,
+  isWinningCollection,
+  parseOutcomeCollection,
+} from '../positionWinner'
 
 describe('parseOutcomeCollection', () => {
   it('splits a composite collection into legs', () => {
@@ -15,15 +20,43 @@ describe('parseOutcomeCollection', () => {
   })
 })
 
-describe('deriveWinnerStatus (P22 F3 single source-of-truth)', () => {
-  it('marks a singular winning leg as a winner', () => {
+describe('isWinningCollection (per-keyset membership rule)', () => {
+  it('treats a primitive collection containing the final outcome as winning', () => {
+    expect(isWinningCollection('A', 'A')).toBe(true)
+  })
+
+  it('treats a composite collection containing the final outcome as winning', () => {
+    // The mint redeems a collection's proofs iff the collection contains the
+    // attested outcome, so "A|B" with final "A" is a WINNING keyset.
+    expect(isWinningCollection('A|B', 'A')).toBe(true)
+  })
+
+  it('treats a collection NOT containing the final outcome as losing', () => {
+    expect(isWinningCollection('B', 'A')).toBe(false)
+    expect(isWinningCollection('A|B', 'C')).toBe(false)
+  })
+
+  it('is case-insensitive and trims', () => {
+    expect(isWinningCollection('Alice', ' alice ')).toBe(true)
+  })
+
+  it('is losing when no final outcome is attested', () => {
+    expect(isWinningCollection('A', null)).toBe(false)
+    expect(isWinningCollection('A', undefined)).toBe(false)
+    expect(isWinningCollection('A', '')).toBe(false)
+  })
+})
+
+describe('deriveWinner (P22 Link F single source-of-truth)', () => {
+  // TEST 3: singular-A winner -> winner.
+  it('marks a singular winning leg as a winner with full value', () => {
     expect(
-      deriveWinnerStatus({
+      deriveWinner({
         isClosed: true,
         finalOutcome: 'A',
-        outcomeCollection: 'A',
+        legs: [{ outcomeCollection: 'A', amount: 250 }],
       }),
-    ).toBe('winner')
+    ).toEqual({ status: 'winner', claimableValue: 250 })
   })
 
   it('is case-insensitive on the final outcome match', () => {
@@ -31,9 +64,56 @@ describe('deriveWinnerStatus (P22 F3 single source-of-truth)', () => {
       deriveWinnerStatus({
         isClosed: true,
         finalOutcome: 'alice',
-        outcomeCollection: 'Alice',
+        legs: [{ outcomeCollection: 'Alice', amount: 1 }],
       }),
     ).toBe('winner')
+  })
+
+  // TEST 1 (the core P22 Link F HIGH bug): an UNCLAIMED composite "A|B"
+  // position holds BOTH a winning A leg AND a losing B leg, final outcome "A".
+  // The OLD `.every` rule classified this a LOSER -> only a destructive Remove
+  // offered -> the user destroys the winning A-keyset proofs. The CORRECT rule:
+  // it holds >= 1 proof on a winning keyset -> WINNER, claimable, Claim offered,
+  // Remove NOT offered. Value = the A (winning) leg only; the B leg is worth 0.
+  it('marks an unclaimed composite holding winning + losing keysets as a WINNER (value = winning legs only)', () => {
+    const result = deriveWinner({
+      isClosed: true,
+      finalOutcome: 'A',
+      legs: [
+        { outcomeCollection: 'A', amount: 100 },
+        { outcomeCollection: 'B', amount: 40 },
+      ],
+    })
+    expect(result.status).toBe('winner')
+    // B leg (losing) contributes 0; claimable value is the A leg amount only.
+    expect(result.claimableValue).toBe(100)
+  })
+
+  it('treats a single composite-labelled "A|B" leg (composite-storage variant) as a WINNER', () => {
+    // Some settlement paths persist fresh proofs under the composite label
+    // "A|B" on a single keyset. The whole collection redeems if it contains the
+    // attested outcome, so the full amount is claimable.
+    expect(
+      deriveWinner({
+        isClosed: true,
+        finalOutcome: 'A',
+        legs: [{ outcomeCollection: 'A|B', amount: 70 }],
+      }),
+    ).toEqual({ status: 'winner', claimableValue: 70 })
+  })
+
+  // TEST 2: closed position holding ONLY losing legs -> LOSER.
+  it('marks a closed position holding only losing legs as a loser with 0 value', () => {
+    expect(
+      deriveWinner({
+        isClosed: true,
+        finalOutcome: 'A',
+        legs: [
+          { outcomeCollection: 'B', amount: 30 },
+          { outcomeCollection: 'C', amount: 20 },
+        ],
+      }),
+    ).toEqual({ status: 'loser', claimableValue: 0 })
   })
 
   it('marks a singular non-winning leg as a loser', () => {
@@ -41,63 +121,51 @@ describe('deriveWinnerStatus (P22 F3 single source-of-truth)', () => {
       deriveWinnerStatus({
         isClosed: true,
         finalOutcome: 'A',
-        outcomeCollection: 'B',
+        legs: [{ outcomeCollection: 'B', amount: 10 }],
       }),
     ).toBe('loser')
   })
 
-  // The core F3 regression: a composite "A|B" position whose winning "A" leg
-  // was already redeemed leaves a residual losing "B" leg STILL labelled "A|B".
-  // A naive `.some` derivation would see the label contains the final outcome
-  // "A" and falsely report it Won with nonzero value, re-offering Claim on
-  // proofs the mint rejects. `.every` correctly treats it as a loser.
-  it('does NOT treat a residual composite partial-claim leg as a winner', () => {
+  // TEST 4: after a claim removes all legs -> no legs -> not a winner -> no row.
+  // (usePortfolioState only emits a Position when legs exist; the derivation
+  // itself must not invent a winner from zero held proofs.)
+  it('is a loser (never a winner) once all legs are removed by a successful claim', () => {
     expect(
-      deriveWinnerStatus({
+      deriveWinner({
         isClosed: true,
         finalOutcome: 'A',
-        outcomeCollection: 'A|B',
+        legs: [],
       }),
-    ).toBe('loser')
+    ).toEqual({ status: 'loser', claimableValue: 0 })
   })
 
-  it('treats a fully-losing composite as a loser', () => {
+  it('treats an open market as active regardless of legs', () => {
     expect(
-      deriveWinnerStatus({
-        isClosed: true,
-        finalOutcome: 'C',
-        outcomeCollection: 'A|B',
-      }),
-    ).toBe('loser')
-  })
-
-  it('treats an open market as active regardless of outcome label', () => {
-    expect(
-      deriveWinnerStatus({
+      deriveWinner({
         isClosed: false,
         finalOutcome: 'A',
-        outcomeCollection: 'A',
+        legs: [{ outcomeCollection: 'A', amount: 5 }],
       }),
-    ).toBe('active')
+    ).toEqual({ status: 'active', claimableValue: 0 })
   })
 
   it('treats a closed market with no attested outcome as a loser, never a winner', () => {
     expect(
-      deriveWinnerStatus({
+      deriveWinner({
         isClosed: true,
         finalOutcome: undefined,
-        outcomeCollection: 'A',
+        legs: [{ outcomeCollection: 'A', amount: 5 }],
       }),
-    ).toBe('loser')
+    ).toEqual({ status: 'loser', claimableValue: 0 })
   })
 
-  it('treats an empty outcome collection as a loser, never a winner', () => {
+  it('treats an empty outcome collection leg as non-winning', () => {
     expect(
-      deriveWinnerStatus({
+      deriveWinner({
         isClosed: true,
         finalOutcome: 'A',
-        outcomeCollection: '',
+        legs: [{ outcomeCollection: '', amount: 5 }],
       }),
-    ).toBe('loser')
+    ).toEqual({ status: 'loser', claimableValue: 0 })
   })
 })

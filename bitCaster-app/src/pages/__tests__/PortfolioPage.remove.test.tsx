@@ -121,6 +121,39 @@ describe('PortfolioPage — Remove lost position (P22 F2)', () => {
     confirmSpy.mockRestore()
   })
 
+  it('never deletes a winning-keyset proof even if the position were mis-classified a loser (P22 F2 defence-in-depth)', async () => {
+    // Defence-in-depth: even if a position is (wrongly) flagged isLoser and its
+    // fetched proofs include one on a WINNING keyset (collection "A", final
+    // "A"), the Remove handler must skip that proof and only delete the
+    // genuinely-losing keyset proofs. Destroying a winning proof is permanent
+    // value loss.
+    getOutcomeProofs.mockResolvedValue([
+      { secret: 's-win', amount: 60, outcomeCollection: 'A' },
+      { secret: 's-lose', amount: 40, outcomeCollection: 'B' },
+    ])
+    mockPositions = [
+      closedPosition({
+        id: 'cond1-A|B',
+        marketId: 'cond1-A|B',
+        marketTitle: 'Misclassified market',
+        outcomeId: 'A|B',
+        outcomeLabel: 'A|B',
+        finalOutcome: 'A',
+        isWinner: false,
+        isLoser: true,
+      }),
+    ]
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<PortfolioPage />)
+    await userEvent.click(screen.getByLabelText(/remove.*misclassified market/i))
+
+    // Only the losing-keyset proof is deleted; the winning-keyset proof is
+    // never touched.
+    expect(removeProofs).toHaveBeenCalledWith(['s-lose'])
+    confirmSpy.mockRestore()
+  })
+
   it('never deletes proofs for a winner even if the handler is invoked', async () => {
     // A winner has no Remove button, but defence-in-depth: the handler bails
     // on the single isWinner/isLoser truth before touching the proof store.

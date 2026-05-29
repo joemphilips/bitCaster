@@ -11,6 +11,7 @@ import {
   removeProofs,
 } from "@/stores/proof-db";
 import { settleCtfPosition } from "@/lib/cashu";
+import { isWinningCollection } from "@/lib/positionWinner";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
@@ -167,8 +168,24 @@ export function PortfolioPage() {
               { includeReserved: true },
             )
           : [];
-        if (proofs.length > 0) {
-          await removeProofs(proofs.map((proof) => proof.secret));
+        // F2 defense-in-depth (P22 Link F): destroying a proof on a WINNING
+        // keyset is permanent value loss. Even though `isLoser` already gates
+        // this handler, never delete a proof whose own keyset outcome-collection
+        // contains the attested final outcome — if the row classification were
+        // ever off, this filter still refuses to touch redeemable proofs.
+        const safeToDelete = proofs.filter((proof) => {
+          const candidate = proof as typeof proof & {
+            outcome_collection?: string;
+          };
+          const proofCollection =
+            candidate.outcomeCollection ?? candidate.outcome_collection;
+          return !(
+            proofCollection &&
+            isWinningCollection(proofCollection, position.finalOutcome)
+          );
+        });
+        if (safeToDelete.length > 0) {
+          await removeProofs(safeToDelete.map((proof) => proof.secret));
         }
       } catch (error) {
         console.error("[portfolio] failed to remove lost position", error);

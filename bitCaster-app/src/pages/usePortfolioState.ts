@@ -20,7 +20,7 @@ import type {
   CreatedMarket,
 } from '@/types/portfolio'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
-import { deriveWinnerStatus } from '@/lib/positionWinner'
+import { deriveWinner } from '@/lib/positionWinner'
 
 interface PortfolioState {
   walletState: WalletState
@@ -219,20 +219,33 @@ export function usePortfolioState(): PortfolioState & {
     return entries.map((entry): Position => {
       const market = catalogue.get(entry.conditionId)
       const isClosed = String(market?.state ?? '').toLowerCase() === 'closed'
-      // Single source-of-truth winner derivation (P22 F3): a composite "A|B"
-      // position counts as a winner only when EVERY held leg matches the final
-      // outcome. A residual losing-leg composite (e.g. only "B" left after the
-      // "A" leg was redeemed) is therefore NOT a winner, even though its label
-      // still mentions the winning outcome.
-      const winnerStatus = deriveWinnerStatus({
+      // Single source-of-truth winner/value derivation (P22 Link F HIGH).
+      // A keyset is a WINNING keyset iff the attested final outcome is a member
+      // of that keyset's outcome-collection (the mint redeems a collection's
+      // proofs iff the collection contains the attested outcome). A position is
+      // a WINNER iff it holds >= 1 proof on a winning keyset — the existence
+      // ("some winning leg") rule, NOT "every leg wins". An UNCLAIMED composite
+      // "A|B" position (final "A") therefore correctly counts as a winner and
+      // stays claimable; the old `.every` rule mis-classified it as a loser and
+      // offered only the destructive Remove, destroying the winning A-leg.
+      // Claimable value sums WINNING keysets only (losing-keyset proofs = 0).
+      // Each position group shares one outcome-collection label by construction
+      // (the group key includes it), so it is a single leg here.
+      const { status: winnerStatus, claimableValue } = deriveWinner({
         isClosed,
         finalOutcome: market?.finalOutcome,
-        outcomeCollection: entry.outcomeCollection,
+        legs: [
+          { outcomeCollection: entry.outcomeCollection, amount: entry.amount },
+        ],
       })
       const isWinner = winnerStatus === 'winner'
       const isLoser = winnerStatus === 'loser'
       const status = isClosed ? 'closed' : 'active'
-      const currentValueSats = isLoser ? 0 : entry.amount
+      const currentValueSats = isClosed
+        ? isWinner
+          ? claimableValue
+          : 0
+        : entry.amount
       return {
         id: `${entry.conditionId}-${entry.outcomeCollection}`,
         marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
@@ -254,6 +267,7 @@ export function usePortfolioState(): PortfolioState & {
         status,
         isWinner,
         isLoser,
+        finalOutcome: market?.finalOutcome ?? null,
         closedDate: isClosed ? (market?.closedAt ?? undefined) : undefined,
         acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
         mintUrl: entry.mintUrl,
