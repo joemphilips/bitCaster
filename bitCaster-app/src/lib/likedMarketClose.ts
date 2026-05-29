@@ -2,7 +2,6 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Market } from '@/types/market'
 import type { Notification } from '@/stores/notifications'
-import { splitMarketId } from '@/lib/orderStatus'
 
 /**
  * Liked-market close detection (P22 Link G2).
@@ -63,7 +62,10 @@ export function reconcileLikedMarketCloses(
     nextStates[market.id] = market.state
 
     if (previous === 'open' && market.state === 'closed') {
-      const parts = splitMarketId(market.id)
+      // `market.id` is the bare conditionId (markets list maps
+      // `id = entry.conditionId`). The winning outcome is NOT encoded in the
+      // id — it comes from the oracle attestation — so we do not try to derive
+      // `finalOutcome` here; the catalogue/portfolio surface shows it on click.
       notifications.push({
         id: `${market.id}-market_closed`,
         kind: 'market_closed',
@@ -73,8 +75,7 @@ export function reconcileLikedMarketCloses(
         remainingAmountSats: 0,
         occurredAt: now,
         read: false,
-        conditionId: parts?.conditionId,
-        finalOutcome: parts?.outcomeName,
+        conditionId: market.id,
         closedAt: now,
       })
     }

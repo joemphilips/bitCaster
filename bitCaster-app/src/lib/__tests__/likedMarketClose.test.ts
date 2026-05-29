@@ -27,7 +27,9 @@ function market(id: string, state: Market['state']): Market {
 }
 
 const COND = 'a'.repeat(64)
-const MARKET_ID = `${COND}-Alice`
+// useLikedMarkets maps `market.id = entry.conditionId` (the bare conditionId,
+// no `-{outcome}` suffix), so the reconcile sees the conditionId as the id.
+const MARKET_ID = COND
 
 describe('reconcileLikedMarketCloses', () => {
   it('emits a market_closed notification on an open -> closed transition', () => {
@@ -43,7 +45,10 @@ describe('reconcileLikedMarketCloses', () => {
     expect(n.id).toBe(`${MARKET_ID}-market_closed`)
     expect(n.marketId).toBe(MARKET_ID)
     expect(n.conditionId).toBe(COND)
-    expect(n.finalOutcome).toBe('Alice')
+    // finalOutcome is the oracle-attested winning outcome — not encoded in the
+    // marketId/conditionId — so the reconcile leaves it unset (the user sees it
+    // on the market/portfolio surface when they open the notification).
+    expect(n.finalOutcome).toBeUndefined()
     expect(n.closedAt).toBe(1_700_000_000_000)
     expect(nextStates[MARKET_ID]).toBe('closed')
   })

@@ -513,7 +513,18 @@ export function TradingPanel({
       onAmountChange?.(0)
       return
     }
-    onAmountChange?.(Math.round(raw / 100) * 100)
+    // Free typing: do NOT snap to the 100-share tick on every keystroke — that
+    // rounds a partial entry like "1" down to 0 and clears the controlled
+    // input, making the field impossible to type into. Snap on blur instead.
+    onAmountChange?.(raw)
+  }
+
+  // Snap the buy share input to the engine's 100-face settlement tick once the
+  // user finishes editing (submit also enforces `amountSats % 100 === 0`).
+  const handleBuyAmountBlur = () => {
+    if (!isSell && tradeAmount > 0) {
+      onAmountChange?.(Math.max(100, Math.round(tradeAmount / 100) * 100))
+    }
   }
 
   // Build confirm button text
@@ -621,6 +632,7 @@ export function TradingPanel({
                   ? onAmountChange?.(Number(e.target.value))
                   : handleBuyAmountChange(Number(e.target.value))
               }
+              onBlur={isSell ? undefined : handleBuyAmountBlur}
               step={isSell ? undefined : 100}
               min={0}
               placeholder="0"
