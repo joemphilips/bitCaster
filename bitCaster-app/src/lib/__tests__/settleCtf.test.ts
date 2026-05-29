@@ -18,6 +18,9 @@ const cashuState = vi.hoisted(() => ({
   winningKeysets: new Set<string>(),
   redeemCalls: [] as Array<{ inputs: Proof[] }>,
   transientFailKeysets: new Set<string>(),
+  // When true, losing-leg rejections are surfaced as a bare message-only Error
+  // (no structured `code`) to exercise `isLosingLegError`'s legacy fallback.
+  losingLegMessageOnly: false,
 }))
 
 // ---------------------------------------------------------------------------
@@ -161,7 +164,19 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
         throw new Error('network timeout while contacting mint')
       }
       if (!cashuState.winningKeysets.has(keysetId)) {
-        throw new Error('OracleNotAttestedOutcome')
+        if (cashuState.losingLegMessageOnly) {
+          // Transport dropped the structured code → bare message only.
+          throw new Error('Oracle has not attested to this outcome collection')
+        }
+        // The mint condemns a non-winning leg with the terminal NUT-CTF
+        // code 13015 (OracleNotAttestedOutcome), surfaced as MintOperationError.
+        const err = new Error(
+          'Oracle has not attested to this outcome collection',
+        ) as Error & { code: number; status: number; name: string }
+        err.name = 'MintOperationError'
+        err.code = 13015
+        err.status = 400
+        throw err
       }
       return outputs.map((o) =>
         o.toProof({ C_: '02'.padEnd(66, '7') }),
@@ -231,6 +246,7 @@ describe('settleCtfPosition — per-keyset redeem', () => {
     cashuState.winningKeysets.clear()
     cashuState.transientFailKeysets.clear()
     cashuState.redeemCalls.length = 0
+    cashuState.losingLegMessageOnly = false
   })
 
   afterEach(() => {
@@ -238,9 +254,12 @@ describe('settleCtfPosition — per-keyset redeem', () => {
     vi.restoreAllMocks()
   })
 
-  it('composite "A|B" stored per-primitive: redeems A leg, removes B leg without a mint call', async () => {
+  it('composite "A|B" stored per-primitive: redeems A leg; B leg is removed ONLY after the mint condemns it (never on label alone)', async () => {
     // 3-outcome market A/B/C; taker holds composite "A|B" across keysets A and B.
     // Stored per-primitive: A-keyset proof labelled "A", B-keyset proof labelled "B".
+    // B2 LOW: even though B's stored label ("B") excludes the attested outcome,
+    // we must NOT short-circuit on the label — the B leg has to be presented to
+    // the mint and is only removed once the mint returns the terminal 13015.
     cashuState.winningKeysets.add('keyset-A')
     mockAttestation('A')
     const { settleCtfPosition } = await import('@/lib/cashu')
@@ -256,12 +275,74 @@ describe('settleCtfPosition — per-keyset redeem', () => {
       mintUrl: 'http://mint.test',
     })
 
-    // A leg redeemed → 100 sats credited. B leg never hits the mint.
+    // A leg redeemed → 100 sats credited.
+    expect(regular.reduce((s, p) => s + Number(p.amount), 0)).toBe(100)
+    // BOTH keysets were presented to the mint — the B leg is NOT discarded on
+    // its stored label; the mint adjudicates it.
+    expect(cashuState.redeemCalls).toHaveLength(2)
+    expect(
+      cashuState.redeemCalls.map((c) => c.inputs[0].id).sort(),
+    ).toEqual(['keyset-A', 'keyset-B'])
+    // Both legs removed locally (A spent, B condemned by the mint).
+    expect(proofDbState.removedSecrets.sort()).toEqual(['sA', 'sB'])
+  })
+
+  it('B2 LOW: a MISLABELLED would-be-winning proof is NOT destroyed — the mint redeems it despite the wrong stored label', async () => {
+    // The A-keyset proof is the real winner (mint attests "A"), but settlement
+    // mislabelled it "B" (a stale/wrong outcomeCollection). The pre-fix code
+    // would have read the label, decided "loser", and silently destroyed this
+    // proof with NO mint call — irreversible bearer-proof loss. Post-fix, the
+    // leg is presented to the mint, which redeems it for full value.
+    cashuState.winningKeysets.add('keyset-A')
+    mockAttestation('A')
+    const { settleCtfPosition } = await import('@/lib/cashu')
+
+    const proofs = [makeProof('sA', 100, 'keyset-A', 'B')] // label LIES
+    const regular = await settleCtfPosition({
+      conditionId: CONDITION_ID,
+      amountSats: 100,
+      proofs,
+      mintUrl: 'http://mint.test',
+    })
+
+    // Redeemed for full value despite the wrong label — value preserved.
     expect(regular.reduce((s, p) => s + Number(p.amount), 0)).toBe(100)
     expect(cashuState.redeemCalls).toHaveLength(1)
     expect(cashuState.redeemCalls[0].inputs[0].id).toBe('keyset-A')
-    // Both legs removed locally (A spent, B discarded).
+    // The mislabelled winner's input is removed (spent), not silently discarded.
+    expect(proofDbState.removedSecrets).toEqual(['sA'])
+    // Its op-id must NOT be marked failed — it succeeded.
+    const op = Array.from(proofDbState.operations.values())[0]
+    expect(op.state).toBe('completed')
+  })
+
+  it('B2 LOW: a code-less terminal rejection (transport dropped the code) still classifies as a losing leg via the message fallback', async () => {
+    // Some proxies collapse the JSON error body to a bare string, so the
+    // structured `code` is gone. The message-substring fallback must still
+    // recognise the terminal rejection rather than treat it as transient.
+    cashuState.winningKeysets.add('keyset-A')
+    cashuState.losingLegMessageOnly = true
+    mockAttestation('A')
+    const { settleCtfPosition } = await import('@/lib/cashu')
+
+    const proofs = [
+      makeProof('sA', 100, 'keyset-A', 'A|B'),
+      makeProof('sB', 100, 'keyset-B', 'A|B'),
+    ]
+    const regular = await settleCtfPosition({
+      conditionId: CONDITION_ID,
+      amountSats: 200,
+      proofs,
+      mintUrl: 'http://mint.test',
+    })
+
+    expect(regular.reduce((s, p) => s + Number(p.amount), 0)).toBe(100)
+    expect(cashuState.redeemCalls).toHaveLength(2)
     expect(proofDbState.removedSecrets.sort()).toEqual(['sA', 'sB'])
+    const losingOp = Array.from(proofDbState.operations.values()).find(
+      (op) => op.metadata?.keysetId === 'keyset-B',
+    )
+    expect(losingOp?.state).toBe('failed')
   })
 
   it('composite "A|B" stored under composite label: B leg attempted then removed terminally, no error', async () => {

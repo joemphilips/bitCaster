@@ -41,7 +41,6 @@ import {
   type StoredProof,
 } from "@/stores/proof-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
-import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -726,7 +725,10 @@ export async function settleCtfPosition(
   // the only reliable grouping key.
   const legs = groupProofsByKeyset(position.proofs);
 
-  const { witnessJson, attestedOutcome } = await fetchConditionAttestation(
+  // We resolve the attestation only for its oracle witness. The attested
+  // OUTCOME is intentionally NOT used to pre-classify legs locally — only the
+  // mint may condemn a proof (see `redeemKeysetLeg`).
+  const { witnessJson } = await fetchConditionAttestation(
     position.conditionId,
   );
 
@@ -738,7 +740,6 @@ export async function settleCtfPosition(
       proofs: legProofs,
       mintUrl,
       witnessJson,
-      attestedOutcome,
     });
     redeemed.push(...legResult);
   }
@@ -754,14 +755,51 @@ function groupProofsByKeyset(proofs: Proof[]): Map<string, Proof[]> {
   return byKeyset;
 }
 
-/** Substring markers the mint uses for "this keyset is not the winning outcome". */
+/**
+ * The CDK NUT-CTF error code (`cdk-common/src/error.rs` `ErrorCode`) the mint
+ * returns when a keyset's outcome collection does NOT include the attested
+ * outcome — i.e. an authoritatively-established LOSING leg. This is the single
+ * terminal signal that a proof is worthless; unlike the duplicate-output 20006
+ * code (see `isCdkDuplicateOutputsError`), 13015 is unambiguous, so we key on
+ * the structured numeric code directly rather than on a message substring.
+ */
+const ORACLE_NOT_ATTESTED_OUTCOME_CODE = 13015;
+
+/**
+ * Legacy fallback only: substring markers for the same terminal rejection,
+ * used when the transport dropped the structured `MintOperationError.code`
+ * (e.g. a proxy collapsed the JSON error body to a bare string). The numeric
+ * code above is the authoritative discriminator; this exists so a code-less
+ * terminal rejection is still recognised rather than mis-treated as transient.
+ */
 const LOSING_LEG_ERROR_MARKERS = [
   "oraclenotattestedoutcome",
+  "oracle has not attested to this outcome",
   "not the attested outcome",
   "not attested outcome",
 ];
 
+/**
+ * Has the mint AUTHORITATIVELY rejected this leg as a non-winner?
+ *
+ * `true` ONLY when the mint adjudicated the leg and returned the terminal
+ * `OracleNotAttestedOutcome` (13015) rejection. We deliberately do NOT decide
+ * a leg's losing status from the proof's stored `outcomeCollection` label: a
+ * mislabelled would-be-winning proof must never be destroyed on a stale label
+ * alone (bearer-proof loss is irreversible). The mint is the only authority
+ * that may condemn a proof.
+ */
 function isLosingLegError(error: unknown): boolean {
+  if (error && typeof error === "object") {
+    const e = error as { code?: unknown };
+    if (
+      typeof e.code === "number" &&
+      e.code === ORACLE_NOT_ATTESTED_OUTCOME_CODE
+    ) {
+      return true;
+    }
+  }
+  // No structured code present — fall back to the message heuristic.
   const message = (error instanceof Error ? error.message : String(error))
     .toLowerCase()
     .replace(/[\s_-]/g, "");
@@ -770,65 +808,35 @@ function isLosingLegError(error: unknown): boolean {
   );
 }
 
-/**
- * Does this keyset leg's stored outcome label cover the attested outcome?
- *
- * Under per-primitive storage the answer is exact (the losing keyset's label
- * excludes the attested outcome, so we never call the mint for it). Under
- * composite-label storage every leg carries the same "A|B" label and looks
- * like a winner; we then attempt the redeem and let the mint reject the
- * losing keyset terminally (handled in `redeemKeysetLeg`).
- */
-function legCoversAttestedOutcome(
-  proofs: Proof[],
-  attestedOutcome: string,
-): boolean {
-  const attested = attestedOutcome.trim().toLowerCase();
-  if (!attested) return true; // can't decide locally — defer to the mint
-  return proofs.some((proof) => {
-    const candidate = proof as Proof & {
-      outcomeCollection?: string;
-      outcome_collection?: string;
-    };
-    const label = candidate.outcomeCollection ?? candidate.outcome_collection;
-    if (!label) return true; // unlabelled — defer to the mint
-    return parseOutcomeSetId(label).some(
-      (outcome) => outcome.trim().toLowerCase() === attested,
-    );
-  });
-}
-
 interface RedeemKeysetLegInput {
   conditionId: string;
   keysetId: string;
   proofs: Proof[];
   mintUrl: string;
   witnessJson: string;
-  attestedOutcome: string;
 }
 
 /**
  * Redeem (or discard) one keyset leg of a CTF position.
  *
- * Winning leg  → redeem at the mint, credit regular proofs, remove inputs.
+ * EVERY leg is presented to the mint — we never pre-classify a leg as a loser
+ * from its stored `outcomeCollection` label. The label can be stale or wrong
+ * (settlement persists composite vs per-primitive labels inconsistently), and
+ * these are bearer proofs: destroying a mislabelled would-be-winner on a label
+ * alone is irreversible value loss. The mint is the sole authority that may
+ * condemn a proof.
+ *
+ * Winning leg  → mint signs the redeem, credit regular proofs, remove inputs.
  *                Transient failures are forward-recoverable via the op-id.
- * Losing leg   → the keyset's collection excludes the attested outcome, so the
- *                mint rejects it terminally (OracleNotAttestedOutcome). We
- *                remove the now-worthless proofs LOCALLY and surface NO error —
- *                a composite position legitimately carries a losing leg.
+ * Losing leg   → the mint AUTHORITATIVELY rejects it with the terminal
+ *                `OracleNotAttestedOutcome` (13015) code. ONLY THEN do we remove
+ *                the now-worthless proofs locally, and we surface NO error — a
+ *                composite position legitimately carries a losing leg.
  */
 async function redeemKeysetLeg(
   input: RedeemKeysetLegInput,
 ): Promise<Proof[]> {
-  const { conditionId, keysetId, proofs, mintUrl, witnessJson, attestedOutcome } =
-    input;
-
-  // Definite losing leg — its label cannot contain the attested outcome.
-  // Skip the (terminal-failing) mint call entirely and drop it locally.
-  if (!legCoversAttestedOutcome(proofs, attestedOutcome)) {
-    await removeProofs(proofs.map((proof) => proof.secret));
-    return [];
-  }
+  const { conditionId, keysetId, proofs, mintUrl, witnessJson } = input;
 
   const legAmount = proofs.reduce(
     (sum, proof) => sum + amountToNumber(proof.amount),
