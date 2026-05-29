@@ -240,9 +240,15 @@ export function usePortfolioState(): PortfolioState & {
       })
       const isWinner = winnerStatus === 'winner'
       const isLoser = winnerStatus === 'loser'
+      // Closed but NOT YET ATTESTED (P22 Link F): win/loss undecided. The row
+      // must offer NEITHER Claim NOR Remove (destroying not-yet-decided proofs
+      // is permanent loss) and show an "awaiting resolution" indicator. It stays
+      // visible in the Closed tab (status 'closed'), and its value is the full
+      // held amount — an undecided outcome is not a loss, so it is NOT zeroed.
+      const isPending = winnerStatus === 'pending'
       const status = isClosed ? 'closed' : 'active'
       const currentValueSats = isClosed
-        ? isWinner
+        ? isWinner || isPending
           ? claimableValue
           : 0
         : entry.amount
@@ -256,17 +262,21 @@ export function usePortfolioState(): PortfolioState & {
         outcomeLabel: entry.outcomeCollection,
         shares: entry.amount,
         avgBuyPrice: 0,
-        currentPrice: isClosed ? (isWinner ? 100 : 0) : 0,
+        currentPrice: isClosed && isWinner ? 100 : 0,
         currentValueSats,
-        profitLossSats: isClosed ? currentValueSats : 0,
+        // Pending (undecided) shows no realised P&L; only attested winners/losers do.
+        profitLossSats: isClosed && !isPending ? currentValueSats : 0,
         profitLossPercent: isClosed
           ? isWinner
             ? 100
-            : -100
+            : isPending
+              ? 0
+              : -100
           : 0,
         status,
         isWinner,
         isLoser,
+        isPending,
         finalOutcome: market?.finalOutcome ?? null,
         closedDate: isClosed ? (market?.closedAt ?? undefined) : undefined,
         acquiredDate: new Date(entry.firstReceivedAt).toISOString(),

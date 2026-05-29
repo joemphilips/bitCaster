@@ -63,6 +63,7 @@ const mockPositions: Position[] = [
     status: 'active',
     isWinner: false,
     isLoser: false,
+    isPending: false,
     acquiredDate: '2025-12-10T14:22:00Z',
   },
   {
@@ -81,6 +82,7 @@ const mockPositions: Position[] = [
     status: 'closed',
     isWinner: true,
     isLoser: false,
+    isPending: false,
     closedDate: '2025-12-31T23:59:59Z',
     acquiredDate: '2025-09-20T10:30:00Z',
   },
@@ -100,6 +102,7 @@ const mockPositions: Position[] = [
     status: 'closed',
     isWinner: false,
     isLoser: true,
+    isPending: false,
     closedDate: '2025-12-18T19:00:00Z',
     acquiredDate: '2025-11-01T13:45:00Z',
   },

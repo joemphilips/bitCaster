@@ -21,8 +21,13 @@
  *   keyset — the existence ("some winning leg") rule, NOT "every leg wins".
  * - Its claimable VALUE = sum of amounts on WINNING keysets only
  *   (losing-keyset proofs are worth 0).
- * - A position is a LOSER iff closed AND it holds NO proof on any winning
- *   keyset.
+ * - A position is a LOSER iff closed, ATTESTED (a final outcome is known), AND
+ *   it holds NO proof on any winning keyset.
+ * - A position is PENDING (awaiting resolution) iff closed but NOT YET ATTESTED
+ *   (final outcome null/empty — e.g. closed by deadline, or before the oracle
+ *   attests). Its win/loss is UNDECIDED: it offers NEITHER Claim NOR Remove, and
+ *   its value is the full held amount (not zeroed). Treating this as a loser was
+ *   the P22 Link F regression — it let the user destroy not-yet-decided proofs.
  *
  * ## Why "some", not "every"
  *
@@ -65,7 +70,17 @@ export function parseOutcomeCollection(value: string): string[] {
   return outcomes.filter((outcome) => outcome.length > 0)
 }
 
-export type WinnerStatus = 'active' | 'winner' | 'loser'
+/**
+ * - `active`     — market still open; no claim/remove.
+ * - `winner`     — closed, attested, holds a winning leg; Claim offered.
+ * - `loser`      — closed, attested, holds NO winning leg (value 0); Remove offered.
+ * - `pending`    — closed but NOT YET ATTESTED (no final outcome). The
+ *   winning/losing status is UNDECIDED, so neither Claim nor Remove may be
+ *   offered: removing here would PERMANENTLY DESTROY proofs whose value is not
+ *   yet known. Value is the full held amount (an undecided position is not a
+ *   loss). The row shows an "awaiting resolution" indicator and no actions.
+ */
+export type WinnerStatus = 'active' | 'winner' | 'loser' | 'pending'
 
 /**
  * One held leg of a position: the keyset's outcome-collection label and the
@@ -110,8 +125,10 @@ export interface DeriveWinnerInput {
 export interface WinnerResult {
   status: WinnerStatus
   /**
-   * Sum of amounts on WINNING keysets only. 0 for active or losing positions.
-   * Losing-keyset proofs are worth 0 even when the position overall wins.
+   * For `winner`: sum of amounts on WINNING keysets only (losing-keyset proofs
+   * are worth 0). For `pending` (closed-but-unattested): the full held amount —
+   * the outcome is undecided, not a loss, so the value is NOT zeroed. For
+   * `active`/`loser`: 0.
    */
   claimableValue: number
 }
@@ -120,10 +137,17 @@ export interface WinnerResult {
  * Derive the closed-position winner status and claimable value from the actual
  * held legs.
  *
- * Winner ⇔ closed AND a final outcome is known AND the position holds >= 1
- * proof on a WINNING keyset (existence rule). Claimable value sums only the
- * winning legs. A closed position with no winning leg is a loser; not-closed is
- * active.
+ * - Not closed → `active`.
+ * - Closed but NO final outcome attested (closed by deadline, or in the window
+ *   before the oracle attests) → `pending`: the win/loss is UNDECIDED, so this
+ *   is NON-DESTRUCTIVE — neither Claim nor Remove is offered, and the value is
+ *   the full held amount (NOT zeroed; an undecided outcome is not a loss).
+ *   Treating this as a loser is the P22 Link F regression: it offered the
+ *   destructive Remove and let the user permanently destroy proofs whose status
+ *   was not yet decided.
+ * - Closed AND attested AND holds >= 1 proof on a WINNING keyset (existence
+ *   rule) → `winner`; claimable value sums only the winning legs.
+ * - Closed AND attested AND no winning leg → `loser` (value 0).
  */
 export function deriveWinner({
   isClosed,
@@ -132,7 +156,12 @@ export function deriveWinner({
 }: DeriveWinnerInput): WinnerResult {
   if (!isClosed) return { status: 'active', claimableValue: 0 }
   const final = finalOutcome?.trim()
-  if (!final) return { status: 'loser', claimableValue: 0 }
+  if (!final) {
+    // Closed but unattested: undecided, never destructive. Value = full held
+    // amount across all legs (the outcome is not yet a loss).
+    const heldValue = legs.reduce((sum, leg) => sum + leg.amount, 0)
+    return { status: 'pending', claimableValue: heldValue }
+  }
 
   let claimableValue = 0
   for (const leg of legs) {

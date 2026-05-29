@@ -84,6 +84,7 @@ function closedPosition(overrides: Partial<Position>): Position {
     status: 'closed',
     isWinner: false,
     isLoser: true,
+    isPending: false,
     acquiredDate: new Date(0).toISOString(),
     mintUrl: 'https://mint.example',
     ...overrides,
@@ -151,6 +152,77 @@ describe('PortfolioPage — Remove lost position (P22 F2)', () => {
     // Only the losing-keyset proof is deleted; the winning-keyset proof is
     // never touched.
     expect(removeProofs).toHaveBeenCalledWith(['s-lose'])
+    confirmSpy.mockRestore()
+  })
+
+  it('never offers Remove for a closed-but-unattested (pending) position, and the handler cannot destroy its proofs (P22 Link F)', async () => {
+    // A closed market that is NOT YET ATTESTED (no final outcome) is PENDING:
+    // its win/loss is undecided. Offering the destructive Remove here would let
+    // the user permanently destroy proofs whose status is not yet known. The row
+    // must show neither Remove nor Claim, and even if the handler were somehow
+    // invoked it must bail before touching the proof store.
+    getOutcomeProofs.mockResolvedValue([{ secret: 's-pending', amount: 100 }])
+    mockPositions = [
+      closedPosition({
+        id: 'cond1-A',
+        marketId: 'cond1-A',
+        marketTitle: 'Awaiting market',
+        outcomeId: 'A',
+        outcomeLabel: 'A',
+        finalOutcome: null,
+        isWinner: false,
+        isLoser: false,
+        isPending: true,
+        currentValueSats: 100,
+        profitLossSats: 0,
+        profitLossPercent: 0,
+      }),
+    ]
+
+    render(<PortfolioPage />)
+    // Pending shows neither Remove nor Claim.
+    expect(
+      screen.queryByLabelText(/remove.*awaiting market/i),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText(/claim.*awaiting market/i),
+    ).not.toBeInTheDocument()
+    expect(removeProofs).not.toHaveBeenCalled()
+    expect(getOutcomeProofs).not.toHaveBeenCalled()
+  })
+
+  it('STILL offers Remove for an attested loser and deletes its proofs (P22 Link F: attested losers remain removable)', async () => {
+    // Contrast with the pending case: an ATTESTED loser (final outcome known,
+    // held leg lost) keeps the destructive Remove — there is genuinely nothing
+    // to claim, so cleanup is safe.
+    getOutcomeProofs.mockResolvedValue([{ secret: 's-lost', amount: 100 }])
+    mockPositions = [
+      closedPosition({
+        id: 'cond1-B',
+        marketId: 'cond1-B',
+        marketTitle: 'Attested loser market',
+        outcomeId: 'B',
+        outcomeLabel: 'B',
+        finalOutcome: 'A',
+        isWinner: false,
+        isLoser: true,
+        isPending: false,
+      }),
+    ]
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<PortfolioPage />)
+    await userEvent.click(
+      screen.getByLabelText(/remove.*attested loser market/i),
+    )
+
+    expect(getOutcomeProofs).toHaveBeenCalledWith(
+      'https://mint.example',
+      'cond1',
+      'B',
+      { includeReserved: true },
+    )
+    expect(removeProofs).toHaveBeenCalledWith(['s-lost'])
     confirmSpy.mockRestore()
   })
 

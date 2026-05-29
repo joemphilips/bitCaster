@@ -24,7 +24,7 @@ export function PositionRow({
   // button, and the destructive "Remove" gate all read these flags, derived
   // once in usePortfolioState. They can never disagree, so the Remove button
   // can never be offered on a position the badge calls "Won".
-  const { isWinner, isLoser } = position;
+  const { isWinner, isLoser, isPending } = position;
   const sideLabel = position.side.toUpperCase();
   const showOutcomeLabel =
     position.outcomeLabel &&
@@ -54,7 +54,9 @@ export function PositionRow({
           ? "bg-emerald-50 dark:bg-emerald-900/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/30"
           : isLoser
             ? "bg-rose-50 dark:bg-rose-900/20 hover:bg-rose-100 dark:hover:bg-rose-900/30 opacity-80"
-            : "hover:bg-slate-50 dark:hover:bg-slate-700/50"
+            : isPending
+              ? "bg-amber-50 dark:bg-amber-900/10 hover:bg-amber-100 dark:hover:bg-amber-900/20"
+              : "hover:bg-slate-50 dark:hover:bg-slate-700/50"
       }`}
     >
       {/* Market Image */}
@@ -82,6 +84,10 @@ export function PositionRow({
           ) : isLoser ? (
             <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300">
               {t("portfolio.lost")} 😭
+            </span>
+          ) : isPending ? (
+            <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
+              {t("portfolio.awaitingResolution")}
             </span>
           ) : (
             <span

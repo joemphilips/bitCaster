@@ -76,8 +76,19 @@ export interface Position {
    * they can never disagree. Always false while active.
    */
   isWinner: boolean
-  /** Closed and not a winner. Always false while active. Gates "Remove". */
+  /**
+   * Closed, attested, and not a winner. Always false while active or pending.
+   * Gates "Remove" — only an attested loser may have its proofs destroyed.
+   */
   isLoser: boolean
+  /**
+   * Closed but NOT YET ATTESTED (no final outcome — closed by deadline, or
+   * before the oracle attests). Win/loss is UNDECIDED (P22 Link F): the row
+   * shows an "awaiting resolution" indicator and offers NEITHER Claim NOR
+   * Remove, so not-yet-decided proofs can never be destroyed. Its value is the
+   * full held amount, not zero. Always false while active.
+   */
+  isPending: boolean
   /**
    * The market's attested final outcome (P22 Link F). Carried so the
    * destructive "Remove" handler can apply a defense-in-depth filter: it must

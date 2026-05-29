@@ -263,6 +263,7 @@
     "noClosedPositions": "No closed positions",
     "won": "Won",
     "lost": "Lost",
+    "awaitingResolution": "Awaiting resolution",
     "claimAria": "Claim payout for {{title}}",
     "sellAria": "Sell {{title}}",
     "removeAria": "Remove {{title}}",

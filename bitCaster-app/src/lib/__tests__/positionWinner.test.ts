@@ -149,14 +149,44 @@ describe('deriveWinner (P22 Link F single source-of-truth)', () => {
     ).toEqual({ status: 'active', claimableValue: 0 })
   })
 
-  it('treats a closed market with no attested outcome as a loser, never a winner', () => {
+  // P22 Link F regression guard: a CLOSED but NOT-YET-ATTESTED market (no final
+  // outcome — closed by deadline, or in the window before the oracle attests)
+  // must be PENDING, never a loser. A loser is offered the destructive Remove
+  // (PortfolioPage gates Remove on isLoser); offering it here would let the user
+  // PERMANENTLY DESTROY proofs whose win/loss is NOT YET DECIDED. Pending is
+  // non-destructive (neither Claim nor Remove) and the value is NOT zeroed — the
+  // outcome is undecided, not a loss, so claimableValue = the full held amount.
+  it('treats a closed market with no attested outcome as PENDING (non-destructive), value = held amount, never a loser', () => {
     expect(
       deriveWinner({
         isClosed: true,
         finalOutcome: undefined,
         legs: [{ outcomeCollection: 'A', amount: 5 }],
       }),
-    ).toEqual({ status: 'loser', claimableValue: 0 })
+    ).toEqual({ status: 'pending', claimableValue: 5 })
+  })
+
+  it('treats a closed market with a null final outcome as PENDING, summing held legs', () => {
+    expect(
+      deriveWinner({
+        isClosed: true,
+        finalOutcome: null,
+        legs: [
+          { outcomeCollection: 'A', amount: 30 },
+          { outcomeCollection: 'B', amount: 20 },
+        ],
+      }),
+    ).toEqual({ status: 'pending', claimableValue: 50 })
+  })
+
+  it('treats a closed market with an empty/whitespace final outcome as PENDING, never a loser', () => {
+    expect(
+      deriveWinnerStatus({
+        isClosed: true,
+        finalOutcome: '   ',
+        legs: [{ outcomeCollection: 'A', amount: 5 }],
+      }),
+    ).toBe('pending')
   })
 
   it('treats an empty outcome collection leg as non-winning', () => {

@@ -263,6 +263,7 @@
     "noClosedPositions": "クローズ済みポジションはありません",
     "won": "的中",
     "lost": "不的中",
+    "awaitingResolution": "結果待ち",
     "claimAria": "{{title}} の配当を受け取る",
     "sellAria": "{{title}} を売却",
     "removeAria": "{{title}} を削除",

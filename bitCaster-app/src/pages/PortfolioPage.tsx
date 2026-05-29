@@ -151,9 +151,18 @@ export function PortfolioPage() {
       const position = state.positions.find((p) => p.id === positionId);
       // Gate on the SAME single source-of-truth as the "Lost" badge and the
       // Remove button (P22 F2/F3). These are bearer proofs: destroying a
-      // mislabelled winner is permanent loss, so we never remove a position the
-      // derivation considers a winner — even if a stale callback fired.
-      if (!position || !position.isLoser || position.isWinner) return;
+      // mislabelled winner — or a closed-but-unattested (pending) position whose
+      // win/loss is NOT YET DECIDED — is permanent loss, so we never remove a
+      // position the derivation does not consider an attested loser, even if a
+      // stale callback fired. Only an attested loser (isLoser, not isWinner, not
+      // isPending) may have its proofs destroyed.
+      if (
+        !position ||
+        !position.isLoser ||
+        position.isWinner ||
+        position.isPending
+      )
+        return;
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
