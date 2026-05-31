@@ -41,4 +41,4 @@ bitCaster のアセットモデルは4つのレイヤーからなるスタック
 - [Ecash](/ja/user-guide/core-concepts/ecash/) — bitCaster が Layer 3 の基盤として Cashu を選ぶ理由
 - [マーケットの清算](/ja/user-guide/core-concepts/resolution/) — オラクルがアテステーションを公開した際に L4 トークンが L3 に決済される仕組み
 - [NUT-CTF コア仕様](/ja/technical/nut-ctf/core-ctf/) — Layer 4 トークンの発行・保持・償還に関する技術プロトコル
-- [Gnosis Conditional Tokens](https://docs.gnosis.io/conditionaltokens/) — オンチェーンCTFのオリジナル仕様
+- [Gnosis Conditional Tokens](https://conditional-tokens.readthedocs.io/en/latest/) — オンチェーンCTFのオリジナル仕様
