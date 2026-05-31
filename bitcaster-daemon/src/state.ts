@@ -5,12 +5,12 @@ import {
   decideTradeCreated,
   decideTradeStateChanged,
   isSettlementCompleteMessage,
-} from '../../bitcaster-client-sdk/src/tradeFlow.ts'
-import { amountToNumber } from '../../bitcaster-client-sdk/src/proofSelection.ts'
+} from '@bitcaster-market/client-sdk/tradeFlow'
+import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type {
   PartialLockHeldRecord,
   SwapFailure,
-} from '../../bitcaster-client-sdk/src/swapFailure.ts'
+} from '@bitcaster-market/client-sdk/swapFailure'
 import { ensureProfileDir, profileDir } from './profile.ts'
 
 export interface CashuProofRecord {

@@ -22,8 +22,8 @@ import {
   splitRegularProofsWithOperation,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
-} from '../../bitcaster-client-sdk/src/ctfSplit.ts'
-import { amountToNumber } from '../../bitcaster-client-sdk/src/proofSelection.ts'
+} from '@bitcaster-market/client-sdk/ctfSplit'
+import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import {
   addAvailableProofs,
   completeReservedSatSend,

@@ -16,20 +16,20 @@ import {
   type QueryMarketsResponse,
   type SubmitOrderRequest,
   type SubmitOrderResponse,
-} from '../../bitcaster-client-sdk/src/engineClient.ts'
+} from '@bitcaster-market/client-sdk/engineClient'
 import {
   complementOutcomeSetId,
   outcomeSetMarketId,
-} from '../../bitcaster-client-sdk/src/outcomeSets.ts'
-import { validateOrderIntent } from '../../bitcaster-client-sdk/src/orderValidation.ts'
-import { checkOrderSettlementSupport } from '../../bitcaster-client-sdk/src/settlementSupport.ts'
+} from '@bitcaster-market/client-sdk/outcomeSets'
+import { validateOrderIntent } from '@bitcaster-market/client-sdk/orderValidation'
+import { checkOrderSettlementSupport } from '@bitcaster-market/client-sdk/settlementSupport'
 import {
   CashuMintCtfSplitTransport,
   splitCompleteSetWithOperation,
   splitRootCompleteSetForPreflightOrder,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
-} from '../../bitcaster-client-sdk/src/ctfSplit.ts'
+} from '@bitcaster-market/client-sdk/ctfSplit'
 import { generateOrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
@@ -274,7 +274,7 @@ export async function dispatch(
         result: {
           status: 'ok',
           service: 'bitcaster-daemon',
-          sdk: '@bitcaster/client-sdk',
+          sdk: '@bitcaster-market/client-sdk',
           state: (await readProfile()) ? 'ready' : 'missing-profile',
         } satisfies DaemonHealth,
       }

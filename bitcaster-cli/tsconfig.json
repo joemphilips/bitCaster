@@ -15,7 +15,7 @@
     "noEmit": true,
     "types": ["node"],
     "paths": {
-      "bitcaster-daemon/*": ["../bitcaster-daemon/src/*"]
+      "@bitcaster-market/daemon/*": ["../bitcaster-daemon/src/*"]
     }
   },
   "include": ["src", "../bitcaster-daemon/src/protocol.ts"]

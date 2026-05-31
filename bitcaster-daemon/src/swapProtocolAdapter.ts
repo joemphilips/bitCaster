@@ -3,7 +3,7 @@ import {
   Wallet as CashuWallet,
   getEncodedToken,
 } from '@cashu/cashu-ts'
-import { createP2PKWitness } from '@bitcaster/swap-protocol/p2pk'
+import { createP2PKWitness } from '@bitcaster-market/swap-protocol/p2pk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import {
   getProofOperation,
@@ -382,12 +382,12 @@ const DAEMON_PROOF_OPERATION_STORE: ProofOperationStore = {
 }
 
 async function defaultAtomicSwapModuleLoader(): Promise<AtomicSwapModule> {
-  const specifier = '@bitcaster/swap-protocol/atomicSwap'
+  const specifier = '@bitcaster-market/swap-protocol/atomicSwap'
   return (await import(specifier)) as AtomicSwapModule
 }
 
 async function defaultCtfSplitModuleLoader(): Promise<CtfSplitModule> {
-  const specifier = '@bitcaster/client-sdk/ctfSplit'
+  const specifier = '@bitcaster-market/client-sdk/ctfSplit'
   return (await import(specifier)) as CtfSplitModule
 }
 
