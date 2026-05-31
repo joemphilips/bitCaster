@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { assertNever } from '@/lib/enumDiscipline'
 import type { Market } from '@/types/market'
 import type { Notification } from '@/stores/notifications'
 
@@ -35,6 +36,26 @@ export const useLikedMarketStateStore = create<LastSeenStatesState>()(
   ),
 )
 
+function didTransitionToClosed(
+  previous: Market['state'] | undefined,
+  current: Market['state'],
+): boolean {
+  if (previous == null) return false
+
+  switch (previous) {
+    case 'open':
+      switch (current) {
+        case 'open':   return false
+        case 'closed': return true
+        default:       return assertNever(current)
+      }
+    case 'closed':
+      return false
+    default:
+      return assertNever(previous)
+  }
+}
+
 /**
  * Pure reconcile: given the markets currently resolved for the user's
  * bookmarks and the last-seen state map, return the `market_closed`
@@ -61,7 +82,7 @@ export function reconcileLikedMarketCloses(
     const previous = lastSeen[market.id]
     nextStates[market.id] = market.state
 
-    if (previous === 'open' && market.state === 'closed') {
+    if (didTransitionToClosed(previous, market.state)) {
       // `market.id` is the bare conditionId (markets list maps
       // `id = entry.conditionId`). The winning outcome is NOT encoded in the
       // id — it comes from the oracle attestation — so we do not try to derive
