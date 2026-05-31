@@ -224,6 +224,7 @@ export type OrderType = 'market' | 'limit'
 export interface LimitOrderPreview {
   limitPrice: number        // probability price 1..99 (sats per 100 face)
   amount: number            // share/face count (multiple of 100) submitted as wire amountSats
+  quoteSats: number         // shares × price / 100, the pre-fee quote
   creatorFee: number        // sats
   mintFee: number           // sats — read from the CTF keyset input_fee_ppk (0 in the first release)
   // Display-only spend estimate used for the balance check. NEVER sent as the

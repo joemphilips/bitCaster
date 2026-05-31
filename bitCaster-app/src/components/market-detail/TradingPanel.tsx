@@ -24,7 +24,6 @@ interface TradingPanelProps {
   limitOrderPreview?: LimitOrderPreview | null
   limitPrice?: number
   userHoldings?: number
-  walletBalanceSats?: number
   tradeSubmitStatus?: {
     kind: 'info' | 'success' | 'error'
     message: string
@@ -426,45 +425,25 @@ function LimitPriceInput({
   )
 }
 
-function WalletBalanceSatsRow({
-  walletBalanceSats,
-  isInsufficientBalance,
-}: {
-  walletBalanceSats: number
-  isInsufficientBalance: boolean
-}) {
-  const { t } = useTranslation()
-  return (
-    <div className="flex justify-end text-sm">
-      <span
-        className={`font-medium ${
-          isInsufficientBalance
-            ? 'text-rose-500 dark:text-rose-400'
-            : 'text-slate-600 dark:text-slate-300'
-        }`}
-      >
-        {t('trade.walletBalanceSats', { count: walletBalanceSats })}
-      </span>
-    </div>
-  )
-}
-
 function LimitOrderPreviewSection({
   preview,
   feePercent,
-  walletBalanceSats,
 }: {
   preview: LimitOrderPreview
   feePercent: number
-  walletBalanceSats: number | null
 }) {
   const { t } = useTranslation()
-  const isInsufficientBalance = walletBalanceSats != null && preview.totalCost > walletBalanceSats
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
       {/* Limit Price + Shares-if-filled rows removed: the limit price is the
           editable field above, and the share count is now the order input
           itself — both would be duplicates. */}
+      <div className="flex justify-between text-sm">
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesTimesPrice')}</span>
+        <span className="font-medium text-slate-600 dark:text-slate-300">
+          {formatBtc(preview.quoteSats)}
+        </span>
+      </div>
       <div className="flex justify-between text-sm">
         <span className="text-slate-500 dark:text-slate-400">{t('trade.creatorFee', { percent: feePercent })}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
@@ -483,12 +462,6 @@ function LimitOrderPreviewSection({
           {formatBtc(preview.totalCost)}
         </span>
       </div>
-      {walletBalanceSats != null && (
-        <WalletBalanceSatsRow
-          walletBalanceSats={walletBalanceSats}
-          isInsufficientBalance={isInsufficientBalance}
-        />
-      )}
       <p className="text-[10px] text-slate-400 dark:text-slate-500 pt-1">
         {t('trade.orderFillHint')}
       </p>
@@ -511,7 +484,6 @@ export function TradingPanel({
   onTradeConfirm,
   onCommentPost,
   userHoldings,
-  walletBalanceSats,
   tradeSubmitStatus,
   isTradeSubmitting = false,
   onTradeSideChange,
@@ -732,12 +704,6 @@ export function TradingPanel({
                   </span>
                 </div>
               )}
-              {!isSell && walletBalanceSats != null && (
-                <WalletBalanceSatsRow
-                  walletBalanceSats={walletBalanceSats}
-                  isInsufficientBalance={tradePreview.totalCost > walletBalanceSats}
-                />
-              )}
               <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
                 <span className="text-slate-700 dark:text-slate-300 font-medium">
                   {isSell ? t('trade.proceeds') : t('trade.potentialPayout')}
@@ -754,7 +720,6 @@ export function TradingPanel({
             <LimitOrderPreviewSection
               preview={limitOrderPreview}
               feePercent={market.creator.feePercent}
-              walletBalanceSats={walletBalanceSats ?? null}
             />
           )}
 

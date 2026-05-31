@@ -51,6 +51,16 @@ describe("computeLimitOrderPreview", () => {
     expect(preview.totalCost).toBe(510);
   });
 
+  it("exposes the pre-fee shares-times-price quote", () => {
+    const preview = computeLimitOrderPreview({
+      shares: 300,
+      limitPrice: 50,
+      feePercent: 0,
+      mintInputFeePpk: 0,
+    });
+    expect(preview.quoteSats).toBe(150);
+  });
+
   it("collapses the mint fee to 0 for the first-release zero-fee mint", () => {
     const preview = computeLimitOrderPreview({
       shares: 5000,

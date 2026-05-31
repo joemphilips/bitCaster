@@ -74,7 +74,6 @@ export function MarketDetail({
   onPreflightSplitChange,
   onLimitPriceChange,
   userHoldings,
-  walletBalanceSats,
   walletReady = true,
   onWalletRequired,
 }: MarketDetailProps) {
@@ -147,7 +146,6 @@ export function MarketDetail({
                   onPreflightSplitChange={onPreflightSplitChange}
                   onLimitPriceChange={onLimitPriceChange}
                   userHoldings={userHoldings}
-                  walletBalanceSats={walletBalanceSats}
                   walletReady={walletReady}
                   onWalletRequired={onWalletRequired}
                 />
@@ -236,7 +234,6 @@ export function MarketDetail({
                   onPreflightSplitChange={onPreflightSplitChange}
                   onLimitPriceChange={onLimitPriceChange}
                   userHoldings={userHoldings}
-                  walletBalanceSats={walletBalanceSats}
                   walletReady={walletReady}
                   onWalletRequired={onWalletRequired}
                 />

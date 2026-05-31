@@ -71,6 +71,7 @@ export function computeLimitOrderPreview(params: {
   return {
     limitPrice,
     amount: shares,
+    quoteSats: cost.quoteSats,
     creatorFee: cost.creatorFee,
     mintFee: cost.mintFee,
     totalCost: cost.totalCost,
