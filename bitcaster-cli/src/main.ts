@@ -12,6 +12,11 @@ const execFileAsync = promisify(execFile)
 
 switch (command) {
   case 'health':
+    if (isHelpRequest(args)) {
+      printHealthHelp()
+      break
+    }
+    if (args.length > 0) throwUsage('Usage: bitcaster-cli health')
     await printDaemonResult(callDaemon({ method: 'health' }))
     break
   case 'markets':
@@ -30,6 +35,10 @@ switch (command) {
     await handleDaemon(args)
     break
   case 'help':
+  case '--help':
+  case '-h':
+    printHelp()
+    break
   default:
     printHelp()
     if (command !== 'help') process.exitCode = 1
@@ -37,6 +46,10 @@ switch (command) {
 
 async function handleDaemon(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args
+  if (isHelpRequest(args)) {
+    printDaemonHelp()
+    return
+  }
   if (subcommand === 'status') {
     if (rest.length > 0) throwUsage('Usage: bitcaster-cli daemon status')
     await printDaemonResult(callDaemon({ method: 'daemon.status' }))
@@ -90,6 +103,10 @@ async function handleDaemon(args: string[]): Promise<void> {
 
 async function handleMarkets(args: string[]): Promise<void> {
   const [subcommand = 'list', ...rest] = args
+  if (isHelpRequest(args)) {
+    printMarketsHelp()
+    return
+  }
   if (subcommand === 'show') {
     const conditionId = requiredArg(rest[0], 'condition id')
     if (rest.length > 1) {
@@ -127,6 +144,10 @@ async function handleMarkets(args: string[]): Promise<void> {
 
 async function handleWallet(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args
+  if (isHelpRequest(args)) {
+    printWalletHelp()
+    return
+  }
   if (subcommand === 'balance') {
     await printDaemonResult(callDaemon({ method: 'wallet.balance' }))
     return
@@ -225,6 +246,10 @@ async function handleWallet(args: string[]): Promise<void> {
 
 async function handleOrder(args: string[]): Promise<void> {
   const [subcommand] = args
+  if (isHelpRequest(args)) {
+    printOrderHelp()
+    return
+  }
   if (subcommand === 'submit') {
     const marketId = requiredArg(args[1], 'market id')
     const outcomeId = requiredArg(args[2], 'outcome id')
@@ -305,6 +330,10 @@ async function handleOrder(args: string[]): Promise<void> {
 
 async function handleTrade(args: string[]): Promise<void> {
   const [subcommand] = args
+  if (isHelpRequest(args)) {
+    printTradeHelp()
+    return
+  }
   if (subcommand === 'recover') {
     if (args.length > 1) throwUsage('Usage: bitcaster-cli trade recover')
     await printDaemonResult(callDaemon({ method: 'trade.recover' }))
@@ -473,6 +502,10 @@ function throwUsage(message: string): never {
   process.exit(1)
 }
 
+function isHelpRequest(args: string[]): boolean {
+  return args.length === 1 && (args[0] === '--help' || args[0] === '-h' || args[0] === 'help')
+}
+
 async function runDaemonCommand(args: string[]): Promise<void> {
   const daemonMain = join(
     dirname(fileURLToPath(import.meta.url)),
@@ -495,27 +528,122 @@ function printHelp(): void {
   process.stdout.write(`bitcaster-cli
 
 Usage:
+  bitcaster-cli <command> [arguments]
+
+Commands:
+  daemon   Initialize, configure, and inspect the local daemon.
+  health   Check daemon RPC health.
+  markets  List markets and inspect market details.
+  wallet   Manage wallet balance, Cashu tokens, and wallet operations.
+  order    Submit, inspect, list, cancel orders, and read order books.
+  trade    Recover, list, and watch atomic swap trades.
+
+Run 'bitcaster-cli <command> --help' for command usage.
+
+Long-running wallet and swap operations are delegated to bitcaster-daemon.
+`)
+}
+
+function printHealthHelp(): void {
+  process.stdout.write(`bitcaster-cli health
+
+Check daemon RPC health.
+
+Usage:
+  bitcaster-cli health
+`)
+}
+
+function printDaemonHelp(): void {
+  process.stdout.write(`bitcaster-cli daemon
+
+Initialize, configure, and inspect the local daemon.
+
+Usage:
   bitcaster-cli daemon init [--wallet-seed-hex <hex>|--wallet-seed-hex-file <path>] [--nostr-secret-key-hex <hex>|--nostr-secret-key-hex-file <path>] [--force] [--engine-url <url>] [--mint-url <url>]
   bitcaster-cli daemon config [--engine-url <url>] [--mint-url <url>]
   bitcaster-cli daemon status
-  bitcaster-cli health
+
+Subcommands:
+  init    Initialize daemon profile, wallet seed, Nostr key, and endpoints.
+  config  Update daemon engine and mint endpoint configuration.
+  status  Show daemon health and runtime status.
+`)
+}
+
+function printMarketsHelp(): void {
+  process.stdout.write(`bitcaster-cli markets
+
+List markets and inspect market details.
+
+Usage:
   bitcaster-cli markets list [--search <query>] [--limit <n>] [--state <Open|Closed|Resolved|All>]
   bitcaster-cli markets show <condition-id>
+
+Subcommands:
+  list  Query markets with optional search, limit, and lifecycle filters.
+  show  Show one market by condition id.
+`)
+}
+
+function printWalletHelp(): void {
+  process.stdout.write(`bitcaster-cli wallet
+
+Manage wallet balance, Cashu tokens, and wallet operations.
+
+Usage:
   bitcaster-cli wallet balance
   bitcaster-cli wallet receive <cashu-token> [--condition-id <id> --outcome-set <id>]
   bitcaster-cli wallet send <amount-sats> [--mint <url>] [--operation-id <id>]
   bitcaster-cli wallet split-complete-set <condition-id> <amount-sats> [--mint <url>] [--operation-id <id>]
   bitcaster-cli wallet operations [--kind <kind>] [--state <state>]
+  bitcaster-cli wallet recover
+
+Subcommands:
+  balance             Show available wallet balances.
+  receive             Import a Cashu token into the wallet.
+  send                Prepare an ecash send operation for the requested amount.
+  split-complete-set  Split regular ecash into a complete conditional outcome set.
+  operations          List prepared or recoverable wallet operations.
+  recover             Resume or recover incomplete wallet operations.
+`)
+}
+
+function printOrderHelp(): void {
+  process.stdout.write(`bitcaster-cli order
+
+Submit, inspect, list, cancel orders, and read order books.
+
+Usage:
   bitcaster-cli order submit <market-id> <outcome-id> <Buy|Sell> <price> <amount-sats> [GTC|FAK|FOK] [--no-preflight-split]
   bitcaster-cli order status <market-id> <order-id>
   bitcaster-cli order list [--market <market-id>] [--status <status>]
   bitcaster-cli order cancel <market-id> <order-id>
   bitcaster-cli order book <market-id>
+
+Subcommands:
+  submit  Submit a buy or sell order to the matching engine.
+  status  Show one order by market id and order id.
+  list    List orders, optionally filtered by market or status.
+  cancel  Cancel an open order.
+  book    Show the order book for one market.
+`)
+}
+
+function printTradeHelp(): void {
+  process.stdout.write(`bitcaster-cli trade
+
+Recover, list, and watch atomic swap trades.
+
+Usage:
   bitcaster-cli trade recover
   bitcaster-cli trade list [--market <market-id>] [--order <order-id>] [--step <step>]
   bitcaster-cli trade watch <trade-id> [--wait] [--interval-ms <n>] [--timeout-ms <n>]
 
-Long-running wallet and swap operations are delegated to bitcaster-daemon.
+Subcommands:
+  recover  Resume or repair incomplete atomic swap trades.
+  list     List trades, optionally filtered by market, order, or protocol step.
+  watch    Show one trade, or wait until it reaches a terminal state.
 `)
 }
 
