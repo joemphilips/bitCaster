@@ -13,7 +13,10 @@
     "noFallthroughCasesInSwitch": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@cashu/cashu-ts": ["../cashu-ts/lib/types/index.d.ts"]
+    }
   },
   "include": ["src", "test"]
 }

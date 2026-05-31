@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { getEncodedToken, type Proof } from '@cashu/cashu-ts'
-import { EngineClientError } from '@bitcaster/client-sdk/engineClient'
+import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
 import { dispatch, type EngineClientLike } from '../src/server.ts'
 import { profileFromPublicKey, readProfile, writeProfile } from '../src/profile.ts'
 import {

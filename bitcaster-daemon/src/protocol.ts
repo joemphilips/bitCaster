@@ -68,6 +68,6 @@ export interface DaemonResponse<T = unknown> {
 export interface DaemonHealth {
   status: 'ok'
   service: 'bitcaster-daemon'
-  sdk: '@bitcaster/client-sdk'
+  sdk: '@bitcaster-market/client-sdk'
   state: 'ready' | 'missing-profile'
 }
