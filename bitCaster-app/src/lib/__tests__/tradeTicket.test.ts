@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
+import {
+  computeLimitOrderPreview,
+  displaySharesToFaceSats,
+} from "@/lib/tradeCostPreview";
 import type { MarketDetail } from "@/types/market-detail";
 
 const market: MarketDetail = {
@@ -226,6 +230,52 @@ describe("buildTradeTicket", () => {
 
     expect(ticket.marketId).toBe("condition-2-Alice");
     expect(ticket.request.outcomeId).toBe("Alice");
+  });
+
+  it("sends protocol face amountSats, not the derived display cost", () => {
+    const displayShares = 10;
+    const faceAmountSats = displaySharesToFaceSats(displayShares);
+    const ticket = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSats: faceAmountSats,
+      side: "buy",
+      orderType: "limit",
+      limitPrice: 40,
+      orderBook: market.orderBook,
+    });
+
+    const preview = computeLimitOrderPreview({
+      displayShares,
+      limitPrice: 40,
+      feePercent: 2,
+      mintInputFeePpk: 0,
+    });
+
+    expect(ticket.request.amountSats).toBe(faceAmountSats);
+    // The cost preview is strictly smaller here (price 40 < 100) and is the
+    // thing we must NOT put on the wire.
+    expect(preview.totalCost).not.toBe(ticket.request.amountSats);
+    expect(preview.amount).toBe(displayShares);
+    // amountSats stays a multiple of 100.
+    expect(ticket.request.amountSats % 100).toBe(0);
+  });
+
+  it("uses an aggressive worst-price limit for market buys while keeping face amountSats", () => {
+    const shares = 500;
+    const ticket = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSats: shares,
+      side: "buy",
+      orderType: "market",
+      limitPrice: 50,
+      orderBook: market.orderBook,
+    });
+    // Market buy: face shares + worst-acceptable price (max 99) + FAK.
+    expect(ticket.request.amountSats).toBe(shares);
+    expect(ticket.request.price).toBe(99);
+    expect(ticket.request.timeInForce).toBe("FAK");
   });
 
   it("rejects market orders with no visible liquidity instead of emitting price 0", () => {

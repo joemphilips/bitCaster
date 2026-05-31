@@ -4,6 +4,7 @@ import {
   createEnumAnnouncement,
   getKormir,
   getOraclePublicKey,
+  importEnumAnnouncement,
   resetKormir,
   restoreKormirWithNsec,
   setPendingKormirNsec,
@@ -18,6 +19,7 @@ interface FakeKormir {
   instanceId: number
   create_enum_event: ReturnType<typeof vi.fn>
   sign_enum_event: ReturnType<typeof vi.fn>
+  import_enum_event: ReturnType<typeof vi.fn>
   list_events: ReturnType<typeof vi.fn>
   get_public_key: ReturnType<typeof vi.fn>
 }
@@ -32,6 +34,7 @@ function buildFakeModule() {
       instanceId: nextId,
       create_enum_event: vi.fn().mockResolvedValue('deadbeef'),
       sign_enum_event: vi.fn().mockResolvedValue('beeff00d'),
+      import_enum_event: vi.fn().mockResolvedValue('event_1'),
       list_events: vi.fn().mockResolvedValue([]),
       get_public_key: vi.fn().mockReturnValue('02abc'),
     }
@@ -218,6 +221,60 @@ describe('kormir wrapper', () => {
     expect(hex).toBe('beeff00d')
     const instance = (await getKormir(['wss://a'])) as unknown as FakeKormir
     expect(instance.sign_enum_event).toHaveBeenCalledWith('event_1', 'Yes')
+  })
+
+  it('importEnumAnnouncement delegates to the instance and returns the recovered event id', async () => {
+    const { module } = buildFakeModule()
+    __setKormirModuleForTest(module)
+
+    const eventId = await importEnumAnnouncement(['wss://a'], 'annhex')
+
+    expect(eventId).toBe('event_1')
+    const instance = (await getKormir(['wss://a'])) as unknown as FakeKormir
+    expect(instance.import_enum_event).toHaveBeenCalledWith('annhex')
+  })
+
+  it('signEnumAttestation re-imports the announcement BEFORE signing on a fresh profile', async () => {
+    // Simulates the fresh-profile flow: restore(nsec) wiped the nonce-index
+    // store, so the announcement hex must be re-imported before sign succeeds.
+    const { module } = buildFakeModule()
+    __setKormirModuleForTest(module)
+
+    const hex = await signEnumAttestation(['wss://a'], 'event_1', 'Yes', 'annhex')
+
+    expect(hex).toBe('beeff00d')
+    const instance = (await getKormir(['wss://a'])) as unknown as FakeKormir
+    expect(instance.import_enum_event).toHaveBeenCalledWith('annhex')
+    expect(instance.sign_enum_event).toHaveBeenCalledWith('event_1', 'Yes')
+    // Import must run before signing — otherwise sign_enum_event hits NotFound.
+    expect(
+      instance.import_enum_event.mock.invocationCallOrder[0],
+    ).toBeLessThan(instance.sign_enum_event.mock.invocationCallOrder[0])
+  })
+
+  it('signEnumAttestation does not import when no announcement hex is supplied', async () => {
+    const { module } = buildFakeModule()
+    __setKormirModuleForTest(module)
+
+    await signEnumAttestation(['wss://a'], 'event_1', 'Yes')
+
+    const instance = (await getKormir(['wss://a'])) as unknown as FakeKormir
+    expect(instance.import_enum_event).not.toHaveBeenCalled()
+    expect(instance.sign_enum_event).toHaveBeenCalledWith('event_1', 'Yes')
+  })
+
+  it('signEnumAttestation surfaces a clear error when re-import fails', async () => {
+    const { module } = buildFakeModule()
+    __setKormirModuleForTest(module)
+
+    const instance = (await getKormir(['wss://a'])) as unknown as FakeKormir
+    instance.import_enum_event.mockRejectedValueOnce(new Error('bad nonce scan'))
+
+    await expect(
+      signEnumAttestation(['wss://a'], 'event_1', 'Yes', 'annhex'),
+    ).rejects.toThrow(/re-import DLC oracle announcement.*bad nonce scan/)
+    // Signing is never attempted if the import fails.
+    expect(instance.sign_enum_event).not.toHaveBeenCalled()
   })
 
   it('signEnumAttestation falls back to the locally stored attestation when relay publishing fails', async () => {

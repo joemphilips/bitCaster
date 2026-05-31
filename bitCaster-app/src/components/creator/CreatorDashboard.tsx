@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from 'lucide-react'
 import { formatBtc } from '@/lib/format'
-import { signEnumOracleAttestationEvent } from '@/lib/oracleAttestation'
+import { buildOracleAttestationEvent } from '@/lib/oracleAttestation'
+import { signEnumAttestation } from '@/lib/kormir'
 import { submitOracleAttestation } from '@/lib/markets'
 import { useCreatorDashboardState } from '@/hooks/useCreatorDashboardState'
 import { MyMarkets } from '@/components/portfolio/MyMarkets'
@@ -58,6 +59,7 @@ export function CreatorDashboard() {
   const { stats, markets, isLoading, error, pubkey, refresh } = useCreatorDashboardState()
   const signerMode = useSettingsStore((s) => s.nostrSignerMode)
   const nsecSecret = useSettingsStore((s) => s.nsecSecret)
+  const relays = useSettingsStore((s) => s.relays)
   const markOracleAttested = useCreatorMarketsStore((s) => s.markOracleAttested)
 
   const handleCreateMarket = () => navigate('/creator/new')
@@ -83,13 +85,28 @@ export function CreatorDashboard() {
       t('creator.closeMarketConfirm', { title: market.title, outcome }),
     )
     if (!confirmed) return
+    const relayUrls = relays.map((r) => r.url)
+    if (relayUrls.length === 0) {
+      setResolutionError(t('creator.relayRequiredToResolve'))
+      return
+    }
     setResolvingMarketId(marketId)
     try {
-      const attestation = signEnumOracleAttestationEvent(
-        nsecSecret,
+      // Sign against the announcement's COMMITTED nonce via kormir. The mint
+      // enforces the DLC committed-nonce scheme at redeem; a fresh-nonce
+      // signature would close the market but leave it unclaimable.
+      //
+      // Pass the mirrored announcement hex so a fresh browser profile (which
+      // restored only the oracle nsec and lost kormir's nonce-index store) can
+      // re-import the committed-nonce material before signing (P22 B1b). The
+      // import is idempotent and non-destructive when the event already exists.
+      const attestationHex = await signEnumAttestation(
+        relayUrls,
         market.oracle.eventId,
         outcome,
+        market.oracle.announcementHex,
       )
+      const attestation = buildOracleAttestationEvent(nsecSecret, attestationHex)
       await submitOracleAttestation(marketId, attestation)
       markOracleAttested(marketId, {
         outcome,

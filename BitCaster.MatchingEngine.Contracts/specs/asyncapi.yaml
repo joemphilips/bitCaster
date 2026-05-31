@@ -35,6 +35,15 @@ channels:
         $ref: '#/components/messages/OrderBookUpdatedMessage'
     description: Server pushes an updated order book snapshot to the market group.
 
+  marketStatusChanged:
+    address: MarketStatusChanged
+    messages:
+      marketStatusChangedMessage:
+        $ref: '#/components/messages/MarketStatusChangedMessage'
+    description: >
+      Server pushes a lifecycle-change notification (e.g. open -> closed) to
+      every per-outcome market group of a condition.
+
 operations:
   joinMarket:
     action: send
@@ -68,6 +77,19 @@ operations:
     messages:
       - $ref: '#/channels/orderBookUpdated/messages/orderBookUpdatedMessage'
 
+  marketStatusChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/marketStatusChanged'
+    summary: Receive market lifecycle change
+    description: >
+      Server pushes a MarketStatusChanged to clients in any of the
+      condition's per-outcome market groups when the market's lifecycle
+      state changes (e.g. when an oracle attestation or deadline closes it).
+      A client joined to any one outcome group of the condition receives it.
+    messages:
+      - $ref: '#/channels/marketStatusChanged/messages/marketStatusChangedMessage'
+
 components:
   messages:
     JoinMarketRequest:
@@ -95,6 +117,10 @@ components:
     OrderBookUpdatedMessage:
       payload:
         $ref: '#/components/schemas/OrderBookSnapshot'
+
+    MarketStatusChangedMessage:
+      payload:
+        $ref: '#/components/schemas/MarketStatusChanged'
 
   schemas:
     Sats:
@@ -146,3 +172,32 @@ components:
             - integer
             - 'null'
           description: Difference between best ask and best bid. Null if either side is empty.
+
+    MarketStatusChanged:
+      type: object
+      required:
+        - conditionId
+        - state
+      properties:
+        conditionId:
+          type: string
+          description: The condition identifier whose lifecycle changed.
+        state:
+          type: string
+          enum: [open, closed]
+          description: >
+            New engine-side lifecycle state. `open` accepts new orders;
+            `closed` does not.
+        closedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Engine-side close timestamp. Null unless state is `closed`.
+        finalOutcome:
+          type:
+            - string
+            - 'null'
+          description: >
+            Winning outcome after an oracle attestation close. Null for
+            deadline-only closes or non-resolving transitions.

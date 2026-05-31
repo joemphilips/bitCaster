@@ -213,7 +213,7 @@ function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8Memory0().subarray(ptr / 1, ptr / 1 + len);
 }
-function __wbg_adapter_235(arg0, arg1, arg2, arg3) {
+function __wbg_adapter_236(arg0, arg1, arg2, arg3) {
     wasm.wasm_bindgen__convert__closures__invoke2_mut__hd304671d96792a2a(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
 }
 
@@ -710,6 +710,30 @@ export class Kormir {
         const ptr3 = passStringToWasm0(description, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len3 = WASM_VECTOR_LEN;
         const ret = wasm.kormir_create_enum_event(this.__wbg_ptr, ptr0, len0, ptr1, len1, event_maturity_epoch, ptr2, len2, ptr3, len3);
+        return takeObject(ret);
+    }
+    /**
+    * Re-import a previously-created enum announcement into local storage so it
+    * can be signed again on a fresh profile.
+    *
+    * `Kormir.restore(nsec)` clears IndexedDb and re-installs only the oracle
+    * signing key — the per-event nonce *index* persisted at creation time is
+    * gone, so `sign_enum_event` fails with `NotFound`. The announcement TLV hex
+    * (a public protocol artifact, mirrored client-side) carries the committed
+    * nonce point(s); because nonce keys are derived deterministically from the
+    * signing key, the original index is recovered by a bounded scan and the
+    * announcement is re-saved. After this call `sign_enum_event(event_id, …)`
+    * succeeds and produces the same committed-nonce signature the mint expects.
+    *
+    * `announcement_tlv_hex` is the TLV-enveloped hex returned by
+    * `create_enum_event` (and stored by the client). Returns the event_id.
+    * @param {string} announcement_tlv_hex
+    * @returns {Promise<string>}
+    */
+    import_enum_event(announcement_tlv_hex) {
+        const ptr0 = passStringToWasm0(announcement_tlv_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kormir_import_enum_event(this.__wbg_ptr, ptr0, len0);
         return takeObject(ret);
     }
     /**
@@ -1236,7 +1260,7 @@ function __wbg_get_imports() {
                 const a = state0.a;
                 state0.a = 0;
                 try {
-                    return __wbg_adapter_235(a, state0.b, arg0, arg1);
+                    return __wbg_adapter_236(a, state0.b, arg0, arg1);
                 } finally {
                     state0.a = a;
                 }
@@ -1282,24 +1306,24 @@ function __wbg_get_imports() {
     imports.wbg.__wbindgen_throw = function(arg0, arg1) {
         throw new Error(getStringFromWasm0(arg0, arg1));
     };
-    imports.wbg.__wbindgen_closure_wrapper875 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 184, __wbg_adapter_28);
+    imports.wbg.__wbindgen_closure_wrapper889 = function(arg0, arg1, arg2) {
+        const ret = makeMutClosure(arg0, arg1, 188, __wbg_adapter_28);
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper1844 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 532, __wbg_adapter_31);
+    imports.wbg.__wbindgen_closure_wrapper1858 = function(arg0, arg1, arg2) {
+        const ret = makeMutClosure(arg0, arg1, 536, __wbg_adapter_31);
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper1846 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 532, __wbg_adapter_31);
+    imports.wbg.__wbindgen_closure_wrapper1860 = function(arg0, arg1, arg2) {
+        const ret = makeMutClosure(arg0, arg1, 536, __wbg_adapter_31);
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper1922 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 570, __wbg_adapter_36);
+    imports.wbg.__wbindgen_closure_wrapper1936 = function(arg0, arg1, arg2) {
+        const ret = makeMutClosure(arg0, arg1, 574, __wbg_adapter_36);
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper1948 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 581, __wbg_adapter_39);
+    imports.wbg.__wbindgen_closure_wrapper1962 = function(arg0, arg1, arg2) {
+        const ret = makeMutClosure(arg0, arg1, 585, __wbg_adapter_39);
         return addHeapObject(ret);
     };
 

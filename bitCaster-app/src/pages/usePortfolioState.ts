@@ -20,6 +20,7 @@ import type {
   CreatedMarket,
 } from '@/types/portfolio'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
+import { deriveWinner } from '@/lib/positionWinner'
 
 interface PortfolioState {
   walletState: WalletState
@@ -117,27 +118,6 @@ function computeStats(positions: Position[], fundsBalance: number): PortfolioSta
     biggestWinSats,
     predictionsCount: positions.length,
   }
-}
-
-function parseOutcomeCollection(value: string): string[] {
-  const outcomes: string[] = []
-  let current = ''
-  let escaped = false
-  for (const ch of value) {
-    if (escaped) {
-      current += ch
-      escaped = false
-    } else if (ch === '\\') {
-      escaped = true
-    } else if (ch === '|') {
-      outcomes.push(current)
-      current = ''
-    } else {
-      current += ch
-    }
-  }
-  outcomes.push(current)
-  return outcomes.filter((outcome) => outcome.length > 0)
 }
 
 function positionSide(outcomeCollection: string): Position['side'] {
@@ -238,21 +218,40 @@ export function usePortfolioState(): PortfolioState & {
     ])
     return entries.map((entry): Position => {
       const market = catalogue.get(entry.conditionId)
-      const finalOutcome = market?.finalOutcome?.trim()
       const isClosed = String(market?.state ?? '').toLowerCase() === 'closed'
-      const isWinner =
-        isClosed &&
-        !!finalOutcome &&
-        parseOutcomeCollection(entry.outcomeCollection).some(
-          (held) => held.toLowerCase() === finalOutcome.toLowerCase(),
-        )
-      const isLoser = isClosed && !!finalOutcome && !isWinner
+      // Single source-of-truth winner/value derivation (P22 Link F HIGH).
+      // A keyset is a WINNING keyset iff the attested final outcome is a member
+      // of that keyset's outcome-collection (the mint redeems a collection's
+      // proofs iff the collection contains the attested outcome). A position is
+      // a WINNER iff it holds >= 1 proof on a winning keyset — the existence
+      // ("some winning leg") rule, NOT "every leg wins". An UNCLAIMED composite
+      // "A|B" position (final "A") therefore correctly counts as a winner and
+      // stays claimable; the old `.every` rule mis-classified it as a loser and
+      // offered only the destructive Remove, destroying the winning A-leg.
+      // Claimable value sums WINNING keysets only (losing-keyset proofs = 0).
+      // Each position group shares one outcome-collection label by construction
+      // (the group key includes it), so it is a single leg here.
+      const { status: winnerStatus, claimableValue } = deriveWinner({
+        isClosed,
+        finalOutcome: market?.finalOutcome,
+        legs: [
+          { outcomeCollection: entry.outcomeCollection, amount: entry.amount },
+        ],
+      })
+      const isWinner = winnerStatus === 'winner'
+      const isLoser = winnerStatus === 'loser'
+      // Closed but NOT YET ATTESTED (P22 Link F): win/loss undecided. The row
+      // must offer NEITHER Claim NOR Remove (destroying not-yet-decided proofs
+      // is permanent loss) and show an "awaiting resolution" indicator. It stays
+      // visible in the Closed tab (status 'closed'), and its value is the full
+      // held amount — an undecided outcome is not a loss, so it is NOT zeroed.
+      const isPending = winnerStatus === 'pending'
       const status = isClosed ? 'closed' : 'active'
-      const currentValueSats = isWinner
-        ? entry.amount
-        : isLoser
-          ? 0
-          : entry.amount
+      const currentValueSats = isClosed
+        ? isWinner || isPending
+          ? claimableValue
+          : 0
+        : entry.amount
       return {
         id: `${entry.conditionId}-${entry.outcomeCollection}`,
         marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
@@ -263,15 +262,22 @@ export function usePortfolioState(): PortfolioState & {
         outcomeLabel: entry.outcomeCollection,
         shares: entry.amount,
         avgBuyPrice: 0,
-        currentPrice: isClosed ? (isWinner ? 100 : 0) : 0,
+        currentPrice: isClosed && isWinner ? 100 : 0,
         currentValueSats,
-        profitLossSats: isClosed ? currentValueSats : 0,
+        // Pending (undecided) shows no realised P&L; only attested winners/losers do.
+        profitLossSats: isClosed && !isPending ? currentValueSats : 0,
         profitLossPercent: isClosed
           ? isWinner
             ? 100
-            : -100
+            : isPending
+              ? 0
+              : -100
           : 0,
         status,
+        isWinner,
+        isLoser,
+        isPending,
+        finalOutcome: market?.finalOutcome ?? null,
         closedDate: isClosed ? (market?.closedAt ?? undefined) : undefined,
         acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
         mintUrl: entry.mintUrl,

@@ -22,8 +22,10 @@ import type { components } from '@/generated/api'
 import { resolveHubServerUrl } from '@/lib/hubUrl'
 
 export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
+export type MarketStatusChanged = components['schemas']['MarketStatusChanged']
 
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void
+type MarketStatusHandler = (status: MarketStatusChanged) => void
 
 const SERVER_URL = resolveHubServerUrl()
 const HUB_URL = `${SERVER_URL}/hubs/market`
@@ -40,6 +42,11 @@ let _startPromise: Promise<void> | null = null
 // can cleanly leave the server group.
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>()
 
+// Per-condition lifecycle handlers. The server fans MarketStatusChanged out to
+// every per-outcome group of the condition, so a client joined to any one
+// outcome group receives it; we key handlers by conditionId.
+const _marketStatusHandlers = new Map<string, Set<MarketStatusHandler>>()
+
 function buildConnection(): HubConnection {
   // Order-book updates are public — no NIP-98 needed on this hub.
   const conn = new HubConnectionBuilder()
@@ -55,6 +62,18 @@ function buildConnection(): HubConnection {
         handler(snapshot)
       } catch (err) {
         console.warn('[marketHub] OrderBookUpdated handler threw:', err)
+      }
+    }
+  })
+
+  conn.on('MarketStatusChanged', (status: MarketStatusChanged) => {
+    const handlers = _marketStatusHandlers.get(status.conditionId)
+    if (!handlers) return
+    for (const handler of handlers) {
+      try {
+        handler(status)
+      } catch (err) {
+        console.warn('[marketHub] MarketStatusChanged handler threw:', err)
       }
     }
   })
@@ -125,6 +144,31 @@ export function onOrderBookUpdated(
 }
 
 /**
+ * Register a handler for lifecycle changes (e.g. open -> closed) on a
+ * condition. The server broadcasts to every per-outcome group of the
+ * condition, so the caller must be joined to at least one of the condition's
+ * outcome markets (via {@link joinMarket}) to receive these. Returns an
+ * unsubscribe function — call on component unmount.
+ */
+export function onMarketStatusChanged(
+  conditionId: string,
+  handler: MarketStatusHandler,
+): () => void {
+  let set = _marketStatusHandlers.get(conditionId)
+  if (!set) {
+    set = new Set()
+    _marketStatusHandlers.set(conditionId, set)
+  }
+  set.add(handler)
+  return () => {
+    const s = _marketStatusHandlers.get(conditionId)
+    if (!s) return
+    s.delete(handler)
+    if (s.size === 0) _marketStatusHandlers.delete(conditionId)
+  }
+}
+
+/**
  * Tear down the singleton connection. Mostly for tests and hot-reload
  * scenarios; normal app runs never call this.
  */
@@ -133,6 +177,7 @@ export async function disconnect(): Promise<void> {
   _connection = null
   _startPromise = null
   _orderBookHandlers.clear()
+  _marketStatusHandlers.clear()
   if (conn) {
     try {
       await conn.stop()

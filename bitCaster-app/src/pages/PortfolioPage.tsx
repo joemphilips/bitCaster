@@ -5,8 +5,13 @@ import { DepositWithdrawOverlay } from "@/components/deposit-withdraw/DepositWit
 import { usePortfolioState } from "./usePortfolioState";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
-import { getOutcomeProofs } from "@/stores/proof-db";
+import {
+  getConditionCtfProofs,
+  getOutcomeProofs,
+  removeProofs,
+} from "@/stores/proof-db";
 import { settleCtfPosition } from "@/lib/cashu";
+import { isWinningCollection } from "@/lib/positionWinner";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
@@ -97,13 +102,18 @@ export function PortfolioPage() {
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
-        if (!outcomeCollection)
-          throw new Error("Position does not include an outcome label");
-        const proofs = await getOutcomeProofs(
+        // Gather ALL of the condition's CTF proofs (every keyset leg),
+        // independent of how each leg was labelled when persisted. A composite
+        // "A|B" position spans multiple keysets and `settleCtfPosition` buckets
+        // them by keyset id, redeeming the winning leg and removing the losing
+        // one — so the claim resolves the whole position, leaving no leftover
+        // composite-tagged proof to keep the row alive or look like a winner.
+        const proofs = await getConditionCtfProofs(
           position.mintUrl,
           conditionId,
-          outcomeCollection,
         );
+        if (proofs.length === 0)
+          throw new Error("Position has no redeemable proofs");
         const regularProofs = await settleCtfPosition({
           conditionId,
           amountSats: proofs.reduce(
@@ -134,6 +144,63 @@ export function PortfolioPage() {
       }
     },
     [addActivity, claimingPositionId, state.positions],
+  );
+
+  const handleRemovePosition = useCallback(
+    async (positionId: string) => {
+      const position = state.positions.find((p) => p.id === positionId);
+      // Gate on the SAME single source-of-truth as the "Lost" badge and the
+      // Remove button (P22 F2/F3). These are bearer proofs: destroying a
+      // mislabelled winner — or a closed-but-unattested (pending) position whose
+      // win/loss is NOT YET DECIDED — is permanent loss, so we never remove a
+      // position the derivation does not consider an attested loser, even if a
+      // stale callback fired. Only an attested loser (isLoser, not isWinner, not
+      // isPending) may have its proofs destroyed.
+      if (
+        !position ||
+        !position.isLoser ||
+        position.isWinner ||
+        position.isPending
+      )
+        return;
+      try {
+        const conditionId = toPortfolioMarketDetailId(position.marketId);
+        const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
+        // Delete only this lost position's proofs (its outcome-collection
+        // leg(s)), not the whole condition — a condition can hold several
+        // positions. No mint redeem: a losing leg has nothing to claim.
+        const proofs = outcomeCollection
+          ? await getOutcomeProofs(
+              position.mintUrl,
+              conditionId,
+              outcomeCollection,
+              { includeReserved: true },
+            )
+          : [];
+        // F2 defense-in-depth (P22 Link F): destroying a proof on a WINNING
+        // keyset is permanent value loss. Even though `isLoser` already gates
+        // this handler, never delete a proof whose own keyset outcome-collection
+        // contains the attested final outcome — if the row classification were
+        // ever off, this filter still refuses to touch redeemable proofs.
+        const safeToDelete = proofs.filter((proof) => {
+          const candidate = proof as typeof proof & {
+            outcome_collection?: string;
+          };
+          const proofCollection =
+            candidate.outcomeCollection ?? candidate.outcome_collection;
+          return !(
+            proofCollection &&
+            isWinningCollection(proofCollection, position.finalOutcome)
+          );
+        });
+        if (safeToDelete.length > 0) {
+          await removeProofs(safeToDelete.map((proof) => proof.secret));
+        }
+      } catch (error) {
+        console.error("[portfolio] failed to remove lost position", error);
+      }
+    },
+    [state.positions],
   );
 
   const handlePositionsTabChange = useCallback(
@@ -181,6 +248,7 @@ export function PortfolioPage() {
         onViewPosition={handleViewPosition}
         onViewMarket={handleViewMarket}
         onClaimPayout={handleClaimPayout}
+        onRemovePosition={handleRemovePosition}
         onPositionsTabChange={handlePositionsTabChange}
         onOpenSettings={handleOpenSettings}
         showConnectNostrCta={showConnectNostrCta}

@@ -33,6 +33,7 @@ import {
   addProofs,
   getProofOperation,
   markProofOperationCompleted,
+  markProofOperationFailed,
   prepareProofOperation,
   removeProofs,
   type ProofOperationRecord,
@@ -714,37 +715,175 @@ export async function settleCtfPosition(
   const mintUrl = normalizeUrl(
     position.mintUrl ?? useWalletStore.getState().activeMintUrl,
   );
-  const operationId = buildCtfRedeemOperationId(position);
+
+  // A composite ("A|B") position spans MULTIPLE primitive keysets, but the
+  // mint enforces a single-keyset rule per redeem (redeem_outcome.rs §1). So
+  // we bucket the position's proofs by their REAL keyset id (`Proof.id`) and
+  // issue one redeem per keyset. We deliberately do NOT trust the position's
+  // `outcomeCollection` label for bucketing — settlement persists proofs
+  // inconsistently (composite-label vs per-primitive), so the keyset id is
+  // the only reliable grouping key.
+  const legs = groupProofsByKeyset(position.proofs);
+
+  // We resolve the attestation only for its oracle witness. The attested
+  // OUTCOME is intentionally NOT used to pre-classify legs locally — only the
+  // mint may condemn a proof (see `redeemKeysetLeg`).
+  const { witnessJson } = await fetchConditionAttestation(
+    position.conditionId,
+  );
+
+  const redeemed: Proof[] = [];
+  for (const [keysetId, legProofs] of legs) {
+    const legResult = await redeemKeysetLeg({
+      conditionId: position.conditionId,
+      keysetId,
+      proofs: legProofs,
+      mintUrl,
+      witnessJson,
+    });
+    redeemed.push(...legResult);
+  }
+  return redeemed;
+}
+
+/** Group a position's proofs by their real keyset id (`Proof.id`). */
+function groupProofsByKeyset(proofs: Proof[]): Map<string, Proof[]> {
+  const byKeyset = new Map<string, Proof[]>();
+  for (const proof of proofs) {
+    byKeyset.set(proof.id, [...(byKeyset.get(proof.id) ?? []), proof]);
+  }
+  return byKeyset;
+}
+
+/**
+ * The CDK NUT-CTF error code (`cdk-common/src/error.rs` `ErrorCode`) the mint
+ * returns when a keyset's outcome collection does NOT include the attested
+ * outcome — i.e. an authoritatively-established LOSING leg. This is the single
+ * terminal signal that a proof is worthless; unlike the duplicate-output 20006
+ * code (see `isCdkDuplicateOutputsError`), 13015 is unambiguous, so we key on
+ * the structured numeric code directly rather than on a message substring.
+ */
+const ORACLE_NOT_ATTESTED_OUTCOME_CODE = 13015;
+
+/**
+ * Legacy fallback only: substring markers for the same terminal rejection,
+ * used when the transport dropped the structured `MintOperationError.code`
+ * (e.g. a proxy collapsed the JSON error body to a bare string). The numeric
+ * code above is the authoritative discriminator; this exists so a code-less
+ * terminal rejection is still recognised rather than mis-treated as transient.
+ */
+const LOSING_LEG_ERROR_MARKERS = [
+  "oraclenotattestedoutcome",
+  "oracle has not attested to this outcome",
+  "not the attested outcome",
+  "not attested outcome",
+];
+
+/**
+ * Has the mint AUTHORITATIVELY rejected this leg as a non-winner?
+ *
+ * `true` ONLY when the mint adjudicated the leg and returned the terminal
+ * `OracleNotAttestedOutcome` (13015) rejection. We deliberately do NOT decide
+ * a leg's losing status from the proof's stored `outcomeCollection` label: a
+ * mislabelled would-be-winning proof must never be destroyed on a stale label
+ * alone (bearer-proof loss is irreversible). The mint is the only authority
+ * that may condemn a proof.
+ */
+function isLosingLegError(error: unknown): boolean {
+  if (error && typeof error === "object") {
+    const e = error as { code?: unknown };
+    if (
+      typeof e.code === "number" &&
+      e.code === ORACLE_NOT_ATTESTED_OUTCOME_CODE
+    ) {
+      return true;
+    }
+  }
+  // No structured code present — fall back to the message heuristic.
+  const message = (error instanceof Error ? error.message : String(error))
+    .toLowerCase()
+    .replace(/[\s_-]/g, "");
+  return LOSING_LEG_ERROR_MARKERS.some((marker) =>
+    message.includes(marker.replace(/[\s_-]/g, "")),
+  );
+}
+
+interface RedeemKeysetLegInput {
+  conditionId: string;
+  keysetId: string;
+  proofs: Proof[];
+  mintUrl: string;
+  witnessJson: string;
+}
+
+/**
+ * Redeem (or discard) one keyset leg of a CTF position.
+ *
+ * EVERY leg is presented to the mint — we never pre-classify a leg as a loser
+ * from its stored `outcomeCollection` label. The label can be stale or wrong
+ * (settlement persists composite vs per-primitive labels inconsistently), and
+ * these are bearer proofs: destroying a mislabelled would-be-winner on a label
+ * alone is irreversible value loss. The mint is the sole authority that may
+ * condemn a proof.
+ *
+ * Winning leg  → mint signs the redeem, credit regular proofs, remove inputs.
+ *                Transient failures are forward-recoverable via the op-id.
+ * Losing leg   → the mint AUTHORITATIVELY rejects it with the terminal
+ *                `OracleNotAttestedOutcome` (13015) code. ONLY THEN do we remove
+ *                the now-worthless proofs locally, and we surface NO error — a
+ *                composite position legitimately carries a losing leg.
+ */
+async function redeemKeysetLeg(
+  input: RedeemKeysetLegInput,
+): Promise<Proof[]> {
+  const { conditionId, keysetId, proofs, mintUrl, witnessJson } = input;
+
+  const legAmount = proofs.reduce(
+    (sum, proof) => sum + amountToNumber(proof.amount),
+    0,
+  );
+  const operationId = buildKeysetRedeemOperationId(conditionId, keysetId, proofs);
   const existing = await getProofOperation(operationId);
   if (existing) {
     return resumeCtfRedeem(existing);
   }
 
-  const outputData = await prepareRegularRedeemOutputs(
-    mintUrl,
-    position.amountSats,
-  );
+  const outputData = await prepareRegularRedeemOutputs(mintUrl, legAmount);
   await prepareProofOperation({
     operationId,
     kind: "ctf-redeem",
     mintUrl,
-    inputs: position.proofs,
+    inputs: proofs,
     outputs: { regular: serializeOutputDataArray(outputData) },
     metadata: {
-      conditionId: position.conditionId,
-      amountSats: position.amountSats,
-      outcomeCollection: position.outcomeCollection ?? null,
+      conditionId,
+      keysetId,
+      amountSats: legAmount,
     },
   });
 
-  const witness = await fetchConditionOracleWitness(position.conditionId);
-  const settled = await redeemOutcomeProofsAtMint(
-    mintUrl,
-    withOracleWitness(position.proofs, witness),
-    outputData,
-  );
-  await completeCtfRedeem(operationId, mintUrl, position.proofs, settled);
-  return settled;
+  try {
+    const settled = await redeemOutcomeProofsAtMint(
+      mintUrl,
+      withOracleWitness(proofs, witnessJson),
+      outputData,
+    );
+    await completeCtfRedeem(operationId, mintUrl, proofs, settled);
+    return settled;
+  } catch (error) {
+    if (isLosingLegError(error)) {
+      // Composite-label storage hid this losing leg behind a winning-looking
+      // label. The mint resolved it terminally — discard locally, no retry,
+      // no user-facing error.
+      await markProofOperationFailed(operationId, error);
+      await removeProofs(proofs.map((proof) => proof.secret));
+      return [];
+    }
+    // Transient failure on a winning leg — leave the op-id `prepared` (do NOT
+    // mark it failed: `resumeCtfRedeem` treats `failed` as terminal) so a
+    // re-run resumes from it; rethrow so the caller can surface/retry.
+    throw error;
+  }
 }
 
 interface ConditionAttestationResponse {
@@ -778,17 +917,23 @@ function validateRedeemPosition(position: MarketPosition): void {
   }
 }
 
-function buildCtfRedeemOperationId(position: MarketPosition): string {
-  const secrets = position.proofs
+/**
+ * Deterministic restore-ledger op id for one keyset leg.
+ *
+ * Positions carry no tradeId, so we key on `(conditionId, keyset_id,
+ * sorted-secrets)` — stable across re-runs so a transient winning-leg failure
+ * resumes from the same op rather than minting fresh outputs.
+ */
+function buildKeysetRedeemOperationId(
+  conditionId: string,
+  keysetId: string,
+  proofs: Proof[],
+): string {
+  const secrets = proofs
     .map((proof) => proof.secret)
     .sort()
     .join("|");
-  return [
-    "ctf-redeem",
-    position.conditionId.toLowerCase(),
-    position.outcomeCollection ?? "",
-    secrets,
-  ].join(":");
+  return ["ctf-redeem", conditionId.toLowerCase(), keysetId, secrets].join(":");
 }
 
 async function prepareRegularRedeemOutputs(
@@ -812,9 +957,14 @@ async function getActiveRegularKeyset(wallet: CashuWallet): Promise<MintKeys> {
   return keyset;
 }
 
-async function fetchConditionOracleWitness(
+interface ResolvedConditionAttestation {
+  witnessJson: string;
+  attestedOutcome: string;
+}
+
+async function fetchConditionAttestation(
   conditionId: string,
-): Promise<string> {
+): Promise<ResolvedConditionAttestation> {
   const response = await fetch(
     `/api/v1/conditions/${conditionId}/attestation`,
     {
@@ -838,7 +988,17 @@ async function fetchConditionOracleWitness(
       "Condition attestation response did not include an oracle witness",
     );
   }
-  return JSON.stringify(body.oracleWitness);
+  return {
+    witnessJson: JSON.stringify(body.oracleWitness),
+    attestedOutcome: body.attestedOutcome ?? "",
+  };
+}
+
+async function fetchConditionOracleWitness(
+  conditionId: string,
+): Promise<string> {
+  const { witnessJson } = await fetchConditionAttestation(conditionId);
+  return witnessJson;
 }
 
 async function redeemOutcomeProofsAtMint(

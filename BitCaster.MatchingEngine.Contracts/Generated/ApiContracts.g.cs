@@ -814,6 +814,61 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    /// <summary>
+    /// Lifecycle-change notification pushed over the market hub when a condition's market transitions state (e.g. open -&gt; closed). Sent to every per-outcome market group of the condition. Carries only wire-visible, public lifecycle data.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketStatusChanged
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketStatusChanged(System.DateTimeOffset? @closedAt, string @conditionId, string @finalOutcome, MarketStatusChangedState @state)
+        {
+            this.ConditionId = @conditionId;
+            this.State = @state;
+            this.ClosedAt = @closedAt;
+            this.FinalOutcome = @finalOutcome;
+        }
+
+        /// <summary>
+        /// The condition identifier whose lifecycle changed.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
+        public string ConditionId { get; }
+
+        /// <summary>
+        /// New engine-side lifecycle state. `open` accepts new orders; `closed` does not.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("state")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<MarketStatusChangedState>))]
+        public MarketStatusChangedState State { get; }
+
+        /// <summary>
+        /// Engine-side close timestamp. Null unless the new state is `closed`.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("closedAt")]
+        public System.DateTimeOffset? ClosedAt { get; }
+
+        /// <summary>
+        /// Winning outcome known to the engine after an oracle attestation close. Null for deadline-only closes or non-resolving transitions.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("finalOutcome")]
+        public string FinalOutcome { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class CreateMarketOutcome
     {
@@ -1062,17 +1117,11 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConstructor]
         public MarketComment(string @authorPubkey, System.Guid @commentId, string @content, System.DateTimeOffset @createdAt)
         {
-            this.AuthorPubkey = @authorPubkey;
             this.CommentId = @commentId;
             this.Content = @content;
             this.CreatedAt = @createdAt;
+            this.AuthorPubkey = @authorPubkey;
         }
-
-        /// <summary>
-        /// Nostr pubkey that signed the comment.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("authorPubkey")]
-        public string AuthorPubkey { get; }
 
         /// <summary>
         /// Opaque stable comment identifier.
@@ -1088,6 +1137,12 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
         public System.DateTimeOffset CreatedAt { get; }
+
+        /// <summary>
+        /// Nostr pubkey that signed the comment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("authorPubkey")]
+        public string AuthorPubkey { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1128,18 +1183,37 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum SwapFailureKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"PartialLockHeld")]
+        PartialLockHeld = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"InsufficientInventory")]
+        InsufficientInventory = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"MintError")]
+        MintError = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"EngineRejected")]
+        EngineRejected = 3,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SwapFailure
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SwapFailure(string @detail, SwapFailureKind @kind, long? @refundLocktime, System.Collections.Generic.List<string> @affectedKeysets)
+        public SwapFailure(System.Collections.Generic.List<string> @affectedKeysets, string @detail, SwapFailureKind @kind, long? @refundLocktime)
         {
-            this.Detail = @detail;
             this.Kind = @kind;
             this.RefundLocktime = @refundLocktime;
             this.AffectedKeysets = @affectedKeysets;
+            this.Detail = @detail;
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("kind")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<SwapFailureKind>))]
         public SwapFailureKind Kind { get; }
 
         /// <summary>
@@ -1976,6 +2050,18 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum MarketStatusChangedState
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"open")]
+        Open = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"closed")]
+        Closed = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum CreateMarketRequestOutcomeType
     {
 
@@ -2008,24 +2094,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"all")]
         All = 4,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum SwapFailureKind
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"PartialLockHeld")]
-        PartialLockHeld = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"InsufficientInventory")]
-        InsufficientInventory = 1,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"MintError")]
-        MintError = 2,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"EngineRejected")]
-        EngineRejected = 3,
 
     }
 

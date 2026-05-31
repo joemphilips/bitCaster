@@ -73,7 +73,7 @@ export interface paths {
         };
         /**
          * Fetch verified trade comments for a market
-         * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and intentionally omits submitter pubkeys, order ids, fill ids, ephemeral pubkeys, and counterparty ids.
+         * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and returns the public kind-1 author pubkey while intentionally omitting order ids, fill ids, ephemeral pubkeys, and counterparty ids.
          */
         get: operations["getMarketComments"];
         put?: never;
@@ -542,6 +542,23 @@ export interface components {
             /** @description Difference between best ask and best bid. Null if either side is empty. */
             spread?: number | null;
         };
+        /** @description Lifecycle-change notification pushed over the market hub when a condition's market transitions state (e.g. open -> closed). Sent to every per-outcome market group of the condition. Carries only wire-visible, public lifecycle data. */
+        MarketStatusChanged: {
+            /** @description The condition identifier whose lifecycle changed. */
+            conditionId: string;
+            /**
+             * @description New engine-side lifecycle state. `open` accepts new orders; `closed` does not.
+             * @enum {string}
+             */
+            state: "open" | "closed";
+            /**
+             * Format: date-time
+             * @description Engine-side close timestamp. Null unless the new state is `closed`.
+             */
+            closedAt?: string | null;
+            /** @description Winning outcome known to the engine after an oracle attestation close. Null for deadline-only closes or non-resolving transitions. */
+            finalOutcome?: string | null;
+        };
         CreateMarketOutcome: {
             /** @description Outcome label (e.g. "Yes", "Alice"). */
             name: string;
@@ -599,8 +616,6 @@ export interface components {
             outcomes: components["schemas"]["MarketOutcomePriceHistory"][];
         };
         MarketComment: {
-            /** @description Nostr pubkey that signed the comment. */
-            authorPubkey: string;
             /**
              * Format: uuid
              * @description Opaque stable comment identifier.
@@ -612,6 +627,8 @@ export interface components {
              * @description Timestamp from the signed Nostr kind-1 comment event.
              */
             createdAt: string;
+            /** @description Nostr pubkey that signed the comment. */
+            authorPubkey: string;
         };
         MarketCommentsResponse: {
             conditionId: string;

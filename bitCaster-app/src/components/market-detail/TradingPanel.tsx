@@ -24,7 +24,6 @@ interface TradingPanelProps {
   limitOrderPreview?: LimitOrderPreview | null
   limitPrice?: number
   userHoldings?: number
-  walletBalanceSats?: number
   tradeSubmitStatus?: {
     kind: 'info' | 'success' | 'error'
     message: string
@@ -44,7 +43,9 @@ interface TradingPanelProps {
   onWalletRequired?: (comment?: string) => void
 }
 
-const QUICK_AMOUNTS = [100, 500, 1000, 5000]
+// Buy quick-presets are user-facing display shares. Boundary code maps each
+// display share to a 100-sat conditional-token face lot before submit.
+const QUICK_SHARE_PRESETS = [1, 5, 10, 50]
 const QUICK_SELL_PERCENTAGES = [25, 50, 75, 100]
 
 // Custom scrollable container with chevron buttons
@@ -427,25 +428,20 @@ function LimitPriceInput({
 function LimitOrderPreviewSection({
   preview,
   feePercent,
-  baseUnit,
 }: {
   preview: LimitOrderPreview
   feePercent: number
-  baseUnit: string
 }) {
   const { t } = useTranslation()
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
+      {/* Limit Price + Shares-if-filled rows removed: the limit price is the
+          editable field above, and the share count is now the order input
+          itself — both would be duplicates. */}
       <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">{t('trade.limitPrice')}</span>
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesTimesPrice')}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
-          {preview.limitPrice.toLocaleString()} {baseUnit}
-        </span>
-      </div>
-      <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesIfFilled')}</span>
-        <span className="font-medium text-slate-600 dark:text-slate-300">
-          {preview.sharesIfFilled.toLocaleString()}
+          {formatBtc(preview.quoteSats)}
         </span>
       </div>
       <div className="flex justify-between text-sm">
@@ -454,9 +450,15 @@ function LimitOrderPreviewSection({
           {formatBtc(preview.creatorFee)}
         </span>
       </div>
+      <div className="flex justify-between text-sm">
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.mintFee')}</span>
+        <span className="font-medium text-slate-600 dark:text-slate-300">
+          {formatBtc(preview.mintFee)}
+        </span>
+      </div>
       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
         <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalCost')}</span>
-        <span className="font-bold text-blue-600 dark:text-blue-400">
+        <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-total-cost">
           {formatBtc(preview.totalCost)}
         </span>
       </div>
@@ -482,7 +484,6 @@ export function TradingPanel({
   onTradeConfirm,
   onCommentPost,
   userHoldings,
-  walletBalanceSats,
   tradeSubmitStatus,
   isTradeSubmitting = false,
   onTradeSideChange,
@@ -499,18 +500,32 @@ export function TradingPanel({
   const isLimit = orderType === 'limit'
   const baseUnit = market.baseUnit ?? 'sats'
 
+  const handleBuyAmountChange = (raw: number) => {
+    if (!Number.isFinite(raw) || raw <= 0) {
+      onAmountChange?.(0)
+      return
+    }
+    onAmountChange?.(raw)
+  }
+
+  const handleBuyAmountBlur = () => {
+    if (!isSell && tradeAmount > 0) {
+      onAmountChange?.(Math.max(1, Math.round(tradeAmount)))
+    }
+  }
+
   // Build confirm button text
   const getConfirmText = () => {
     if (isTradeSubmitting) return t('trade.submittingOrder')
     if (!walletReady) return t('wallet.createWallet')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
-    const amountLabel = formatBtc(tradeAmount)
+    const sharesAmountLabel = `${tradeAmount.toLocaleString()} ${t('trade.sharesUnit')}`
 
-    if (isSell && isLimit) return t('trade.confirmLimitSell', { amount: amountLabel })
-    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: amountLabel })
-    if (isLimit) return t('trade.confirmLimitBuy', { amount: amountLabel })
-    return t('trade.confirmBuy', { side: sideLabel, amount: amountLabel })
+    if (isSell && isLimit) return t('trade.confirmLimitSell', { amount: sharesAmountLabel })
+    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: sharesAmountLabel })
+    if (isLimit) return t('trade.confirmLimitBuy', { amount: sharesAmountLabel })
+    return t('trade.confirmBuy', { side: sideLabel, amount: sharesAmountLabel })
   }
 
   return (
@@ -556,7 +571,7 @@ export function TradingPanel({
         <div className="mt-5 pt-5 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between mb-1">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
-              {isSell ? t('trade.sharesToSell') : t('trade.amountBtc')}
+              {isSell ? t('trade.sharesToSell') : t('trade.shares')}
             </span>
             <button
               onClick={onTradeClear}
@@ -566,35 +581,36 @@ export function TradingPanel({
             </button>
           </div>
 
-          {/* Balance hint — for sell show outcome shares held, for buy
-              show wallet balance at the active mint so the user knows
-              what they have to spend before hitting confirm. */}
+          {/* Sell-side balance shows outcome shares held. Buy-side wallet
+              balance is intentionally omitted from this panel. */}
           {isSell && userHoldings != null && (
             <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
               {t('trade.balance', { count: userHoldings })}
             </p>
           )}
-          {!isSell && walletBalanceSats != null && (
-            <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
-              {t('trade.walletBalance', { count: walletBalanceSats })}
-            </p>
-          )}
 
-          {/* Amount Input */}
+          {/* Shares Input — one displayed share maps to a 100-sat conditional
+              token face lot at the protocol boundary. No ₿ prefix: this is a
+              share count, not a sats amount. */}
           <div className="relative mb-3">
-            {!isSell && (
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-mono text-sm">
-                ₿
-              </span>
-            )}
             <input
               data-testid="trade-amount-input"
               type="number"
               value={tradeAmount || ''}
-              onChange={(e) => onAmountChange?.(Number(e.target.value))}
+              onChange={(e) =>
+                isSell
+                  ? onAmountChange?.(Number(e.target.value))
+                  : handleBuyAmountChange(Number(e.target.value))
+              }
+              onBlur={isSell ? undefined : handleBuyAmountBlur}
+              step={1}
+              min={0}
               placeholder="0"
-              className={`w-full ${isSell ? 'pl-4' : 'pl-8'} pr-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500`}
+              className="w-full pl-4 pr-16 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-mono text-xs uppercase tracking-wide">
+              {t('trade.sharesUnit')}
+            </span>
           </div>
 
           {/* Quick Amount / Percentage Buttons */}
@@ -617,17 +633,13 @@ export function TradingPanel({
                 )
               })
             ) : (
-              QUICK_AMOUNTS.map((amount) => (
+              QUICK_SHARE_PRESETS.map((shares) => (
                 <button
-                  key={amount}
-                  onClick={() => onAmountChange?.(amount)}
-                  className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${
-                    tradeAmount === amount
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-                  }`}
+                  key={shares}
+                  onClick={() => onAmountChange?.(Math.round(tradeAmount || 0) + shares)}
+                  className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                 >
-                  {amount.toLocaleString()}
+                  +{shares}
                 </button>
               ))
             )}
@@ -675,6 +687,14 @@ export function TradingPanel({
                   {formatBtc(tradePreview.creatorFee)}
                 </span>
               </div>
+              {!isSell && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 dark:text-slate-400">{t('trade.totalCost')}</span>
+                  <span className="font-medium text-slate-600 dark:text-slate-300">
+                    {formatBtc(tradePreview.totalCost)}
+                  </span>
+                </div>
+              )}
               <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
                 <span className="text-slate-700 dark:text-slate-300 font-medium">
                   {isSell ? t('trade.proceeds') : t('trade.potentialPayout')}
@@ -691,7 +711,6 @@ export function TradingPanel({
             <LimitOrderPreviewSection
               preview={limitOrderPreview}
               feePercent={market.creator.feePercent}
-              baseUnit={baseUnit}
             />
           )}
 

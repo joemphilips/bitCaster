@@ -8,6 +8,7 @@ interface PositionsListProps {
   onPositionsTabChange?: (tab: 'active' | 'closed') => void
   onSellPosition?: (positionId: string) => void
   onClaimPayout?: (positionId: string) => void
+  onRemovePosition?: (positionId: string) => void
   onViewPosition?: (positionId: string) => void
 }
 
@@ -17,6 +18,7 @@ export function PositionsList({
   onPositionsTabChange,
   onSellPosition,
   onClaimPayout,
+  onRemovePosition,
   onViewPosition,
 }: PositionsListProps) {
   const { t } = useTranslation()
@@ -59,6 +61,7 @@ export function PositionsList({
               position={position}
               onSell={onSellPosition}
               onClaim={onClaimPayout}
+              onRemove={onRemovePosition}
               onView={onViewPosition}
             />
           ))}

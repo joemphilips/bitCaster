@@ -36,6 +36,15 @@ interface SettingsStoreState {
    */
   nsecSecret: string | null
 
+  /**
+   * Opt-in for client-side Web Notifications when a bookmarked ("liked")
+   * market closes (P22 Link G). Purely local — there is no server-stored push
+   * subscription (that would leak the private bookmark set and require the
+   * engine to hold authoritative per-user state — P08). When enabled, the app
+   * fires an in-browser `Notification` on a detected open→closed transition.
+   */
+  likedMarketCloseNotifications: boolean
+
   setActiveCategory: (category: SettingsCategory) => void
   /**
    * Deep-link setter — always opens the given category (no toggle).
@@ -52,6 +61,7 @@ interface SettingsStoreState {
   setSignerBackupState: (state: SecretBackupState) => void
   setProfile: (profile: NostrProfile | null, status: NostrProfileFetchStatus) => void
   setNsecSecret: (nsec: string | null) => void
+  setLikedMarketCloseNotifications: (enabled: boolean) => void
   addRelay: (url: string) => void
   removeRelay: (url: string) => void
 }
@@ -88,6 +98,7 @@ export const useSettingsStore = create<SettingsStoreState>()(
       nostrProfileFetchStatus: 'idle',
       relays: DEFAULT_RELAYS,
       nsecSecret: null,
+      likedMarketCloseNotifications: false,
 
       setActiveCategory: (category) => set((s) => ({
         activeCategory: s.activeCategory === category ? null : category,
@@ -126,6 +137,8 @@ export const useSettingsStore = create<SettingsStoreState>()(
       setSignerBackupState: (state) => set({ signerBackupState: state }),
       setProfile: (profile, status) => set({ nostrProfile: profile, nostrProfileFetchStatus: status }),
       setNsecSecret: (nsec) => set({ nsecSecret: nsec }),
+      setLikedMarketCloseNotifications: (enabled) =>
+        set({ likedMarketCloseNotifications: enabled }),
       addRelay: (url) =>
         set((s) => {
           if (s.relays.some((r) => r.url === url)) return s
@@ -149,6 +162,7 @@ export const useSettingsStore = create<SettingsStoreState>()(
         // Persist the decrypted nsec so the NDK signer can be rehydrated on
         // reload. Same localStorage surface as the BIP-39 mnemonic.
         nsecSecret: state.nsecSecret,
+        likedMarketCloseNotifications: state.likedMarketCloseNotifications,
       }),
       onRehydrateStorage: () => {
         return (state: SettingsStoreState | undefined) => {

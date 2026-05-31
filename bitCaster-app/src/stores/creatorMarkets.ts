@@ -34,6 +34,23 @@ export interface StoredCreatorOracleMetadata {
   eventId: string;
   /** Enum outcomes the oracle can attest. Numeric self-oracle markets are not supported yet. */
   outcomes: string[];
+  /**
+   * TLV-hex of the kormir DLC oracle_announcement (the kind-88 payload).
+   *
+   * Recovery durability (P22 B1b): kormir's IndexedDB holds the per-event
+   * nonce index needed to re-sign the committed-nonce attestation, but
+   * `Kormir.restore(nsec)` wipes that store, so a fresh browser profile cannot
+   * resolve a previously-created self-oracle market. The announcement carries
+   * the committed nonce point(s) `R`; combined with the (restored) oracle nsec
+   * it is sufficient material to re-derive the nonce index (deterministic
+   * BIP32 scan) and re-sign. Persisted here — and mirrored through the
+   * NIP-78 creator-markets event — so the data survives a device swap.
+   *
+   * Public protocol artifact (already broadcast as the kind-88 event), so it
+   * is NOT Secret-class. The oracle nsec it pairs with is managed by the
+   * settings/login path and is never stored here.
+   */
+  announcementHex?: string;
   /** Hex-encoded oracle_attestation returned by kormir after resolution signing. */
   attestationHex?: string;
   /** Outcome the creator attested. */
@@ -72,6 +89,7 @@ function creatorOracleEqual(
   return (
     a.type === b.type &&
     a.eventId === b.eventId &&
+    a.announcementHex === b.announcementHex &&
     a.attestationHex === b.attestationHex &&
     a.attestedOutcome === b.attestedOutcome &&
     a.attestedAt === b.attestedAt &&

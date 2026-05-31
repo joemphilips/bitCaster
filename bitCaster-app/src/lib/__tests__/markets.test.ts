@@ -11,6 +11,7 @@ import {
   mapCatalogueEntryToMarket,
   requestEcashDeposit,
   submitOrder,
+  windowPriceHistory,
 } from '../markets'
 import type { MarketCatalogueEntry } from '../markets'
 import type { FilterState, Market } from '@/types/market'
@@ -830,5 +831,45 @@ describe('fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)', ()
 
     expect(detail.resolution.status).toBe('resolved')
     expect(detail.resolution.finalOutcome).toBe('Yes')
+  })
+})
+
+describe('windowPriceHistory (P22 Link D timeframe windowing)', () => {
+  const makePoint = (timestamp: string, price: number) => ({ timestamp, price })
+
+  it('keeps the full series for the "all" timeframe', () => {
+    const history = {
+      timeframe: 'all' as const,
+      data: [
+        makePoint('2026-01-01T00:00:00Z', 10),
+        makePoint('2026-05-01T00:00:00Z', 20),
+      ],
+    }
+    expect(windowPriceHistory(history).data).toHaveLength(2)
+  })
+
+  it('trims points older than the window, anchored on the newest sample', () => {
+    // Newest point is 2026-05-25; the 24h window keeps only the last day plus
+    // one pre-window anchor point.
+    const history = {
+      timeframe: '24h' as const,
+      data: [
+        makePoint('2026-05-10T10:00:00Z', 5),  // far outside window (dropped)
+        makePoint('2026-05-20T10:00:00Z', 10), // pre-window anchor (kept)
+        makePoint('2026-05-24T20:00:00Z', 15), // in window (cutoff 05-24T10:00)
+        makePoint('2026-05-25T06:00:00Z', 18), // in window
+        makePoint('2026-05-25T10:00:00Z', 20), // newest
+      ],
+    }
+    const result = windowPriceHistory(history)
+    // cutoff = newest - 24h = 2026-05-24T10:00. First in-window point is the
+    // 05-24T20:00 sample; one pre-window anchor (05-20) is retained, and the
+    // far-older 05-10 sample is dropped.
+    expect(result.data.map((p) => p.price)).toEqual([10, 15, 18, 20])
+  })
+
+  it('returns the series untouched when an empty timeframe is given', () => {
+    const history = { timeframe: '7d' as const, data: [] }
+    expect(windowPriceHistory(history).data).toHaveLength(0)
   })
 })

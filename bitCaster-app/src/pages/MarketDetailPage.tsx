@@ -18,6 +18,11 @@ import {
 } from "@/lib/markets";
 import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
+import {
+  computeLimitOrderPreview,
+  computeTradeCost,
+  displaySharesToFaceSats,
+} from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
@@ -38,7 +43,11 @@ import {
   removeProofs,
   reserveProofs,
 } from "@/stores/proof-db";
-import { getBalance, useBalance, useWalletStore } from "@/stores/wallet";
+import {
+  getBalance,
+  useActiveMintInputFeePpk,
+  useWalletStore,
+} from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
@@ -55,7 +64,6 @@ import type { Proof } from "@cashu/cashu-ts";
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
-  ChartType,
   TradeSelection,
   TradePreview,
   TradeSide,
@@ -373,10 +381,11 @@ export function MarketDetailPage() {
   const addPendingTrade = usePendingTradesStore((s) => s.add);
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const signerBackupState = useSettingsStore((s) => s.signerBackupState);
-  // Live balance for the active mint so the trading panel can show
-  // "You have N sats" before the user tries to confirm (matches the
-  // pattern cashu.me uses to surface available funds).
-  const activeMintBalance = useBalance(activeMintUrl);
+  // Display-only mint fee for the trade cost preview. Read from the
+  // `input_fee_ppk` the active mint already advertises on its cached keysets
+  // (no extra mint round-trip). 0 for the first-release bitCaster mint config,
+  // so the panel shows a static "Mint fee: 0 sats".
+  const activeMintInputFeePpk = useActiveMintInputFeePpk(activeMintUrl);
 
   // Data state
   const [market, setMarket] = useState<MarketDetailType | null>(null);
@@ -385,7 +394,6 @@ export function MarketDetailPage() {
 
   // UI state
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>("7d");
-  const [chartType, setChartType] = useState<ChartType>("price");
   const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(
     null,
   );
@@ -407,6 +415,9 @@ export function MarketDetailPage() {
   // if the wallet balance changes live while they decide.
   const [topUpStage, setTopUpStage] = useState<TopUpStage>("closed");
   const [balanceAtCheck, setBalanceAtCheck] = useState(0);
+  // Required spend snapshot taken when the gate tripped, so the modal/overlay
+  // show the same derived cost the gate compared against (P22 C LOW).
+  const [requiredAtCheck, setRequiredAtCheck] = useState(0);
   const [showNostrAuthModal, setShowNostrAuthModal] = useState(false);
   const [showNostrChooser, setShowNostrChooser] = useState(false);
   const [lazySetupError, setLazySetupError] = useState<string | null>(null);
@@ -480,48 +491,94 @@ export function MarketDetailPage() {
     };
   }, [id, market?.id, market?.closingDate, market?.state]);
 
-  // Computed trade preview
+  // Worst-case effective price for a MARKET order, mirroring the wire price
+  // `buildTradeTicket`/`marketPriceFor` resolves (buy crosses up to 99, sell
+  // down to 1). The market preview's cost basis derives from this price so the
+  // creator fee + Total cost are computed on the QUOTE, not the face amount.
+  const marketEffectivePrice = tradeSide === "sell" ? 1 : 99;
+
+  // Computed trade preview (market orders). `tradeAmount` is user-facing
+  // display shares; boundary calls convert it to protocol face sats via
+  // `displaySharesToFaceSats`.
   const tradePreview = useMemo<TradePreview | null>(() => {
     if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
       return null;
     if (orderType === "limit") return null;
 
-    const feePercent = market.creator.feePercent;
-    const creatorFee = Math.round((tradeAmount * feePercent) / 100);
+    const cost = computeTradeCost({
+      displayShares: tradeAmount,
+      price: marketEffectivePrice,
+      feePercent: market.creator.feePercent,
+      mintInputFeePpk: activeMintInputFeePpk,
+    });
     return {
       amount: tradeAmount,
       predictedOdds: 50, // Placeholder — real computation needs order book depth
       priceImpact: 0,
-      potentialPayout: Math.round((tradeAmount * 100) / 50),
-      creatorFee,
+      potentialPayout: displaySharesToFaceSats(tradeAmount),
+      creatorFee: cost.creatorFee,
       platformFee: 0,
-      totalCost: tradeAmount,
+      totalCost: cost.totalCost,
     };
-  }, [tradeSelection, tradeAmount, market, orderType]);
+  }, [
+    tradeSelection,
+    tradeAmount,
+    market,
+    orderType,
+    marketEffectivePrice,
+    activeMintInputFeePpk,
+  ]);
 
-  // Computed limit order preview
+  // Computed limit order preview.
+  //
+  // `tradeAmount` is user-facing display shares. One display share maps to 100
+  // protocol face sats, so the displayed quote is simply shares × limit price.
   const limitOrderPreview = useMemo<LimitOrderPreview | null>(() => {
     if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
       return null;
     if (orderType !== "limit") return null;
 
-    const feePercent = market.creator.feePercent;
-    const creatorFee = Math.round((tradeAmount * feePercent) / 100);
-    return {
+    return computeLimitOrderPreview({
+      displayShares: tradeAmount,
       limitPrice,
-      amount: tradeAmount,
-      sharesIfFilled:
-        limitPrice > 0 ? Math.round((tradeAmount * 10000) / limitPrice) : 0,
-      creatorFee,
-      platformFee: 0,
-      totalCost: tradeAmount,
-    };
-  }, [tradeSelection, tradeAmount, market, orderType, limitPrice]);
+      feePercent: market.creator.feePercent,
+      mintInputFeePpk: activeMintInputFeePpk,
+    });
+  }, [
+    tradeSelection,
+    tradeAmount,
+    market,
+    orderType,
+    limitPrice,
+    activeMintInputFeePpk,
+  ]);
+
+  // Derived spend a BUY must cover, used by the pre-submit balance gate and the
+  // top-up modal/overlay. Sells are gated on the protocol face sats represented
+  // by the display share count.
+  const requiredBuyCost = useMemo(() => {
+    if (!market || !tradeAmount || tradeAmount <= 0) return 0;
+    const price = orderType === "limit" ? limitPrice : marketEffectivePrice;
+    return computeTradeCost({
+      displayShares: tradeAmount,
+      price,
+      feePercent: market.creator.feePercent,
+      mintInputFeePpk: activeMintInputFeePpk,
+    }).totalCost;
+  }, [
+    market,
+    tradeAmount,
+    orderType,
+    limitPrice,
+    marketEffectivePrice,
+    activeMintInputFeePpk,
+  ]);
 
   // Submit the order. Assumes wallet is set up and balance has been checked —
   // callers that can't promise that must route through `handleTradeConfirm`.
   const placeOrder = useCallback(async (comment?: string) => {
     if (!market || !tradeSelection || !tradeAmount) return;
+    const faceAmountSats = displaySharesToFaceSats(tradeAmount);
     if (tradeSubmitInFlightRef.current) return;
     tradeSubmitInFlightRef.current = true;
     setIsTradeSubmitting(true);
@@ -573,7 +630,7 @@ export function MarketDetailPage() {
       ticket = buildTradeTicket({
         market: latestMarket,
         selection: tradeSelection,
-        amountSats: tradeAmount,
+        amountSats: faceAmountSats,
         side: tradeSide,
         orderType,
         limitPrice,
@@ -627,7 +684,7 @@ export function MarketDetailPage() {
           market: latestMarket,
           selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
           complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
-          amountSats: tradeAmount,
+          amountSats: faceAmountSats,
           reservationId: `order-preflight:${ephemeral.pubkey}`,
         });
       }
@@ -722,7 +779,8 @@ export function MarketDetailPage() {
     if (!market || !tradeSelection || !tradeAmount) return;
     if (tradeSubmitInFlightRef.current) return;
     tradeSubmitInFlightRef.current = true;
-    const requiredSats = tradeAmount; // totalCost for FAK today; PR2+ refines
+    const faceAmountSats = displaySharesToFaceSats(tradeAmount);
+    const requiredSats = tradeSide === "sell" ? faceAmountSats : requiredBuyCost;
     setIsTradeSubmitting(true);
     try {
       const current =
@@ -730,6 +788,7 @@ export function MarketDetailPage() {
           ? await getSellSideBalance(activeMintUrl, market, tradeSelection)
           : await getBalance(activeMintUrl);
       if (current < requiredSats) {
+        setRequiredAtCheck(requiredSats);
         setBalanceAtCheck(current);
         setPendingTopUpComment(comment?.trim() || undefined);
         setTopUpStage("modal");
@@ -749,7 +808,15 @@ export function MarketDetailPage() {
       setIsTradeSubmitting(false);
     }
     await placeOrder(comment);
-  }, [market, tradeSelection, tradeAmount, tradeSide, activeMintUrl, placeOrder]);
+  }, [
+    market,
+    tradeSelection,
+    tradeAmount,
+    tradeSide,
+    requiredBuyCost,
+    activeMintUrl,
+    placeOrder,
+  ]);
 
   const handleWalletRequired = useCallback(async (comment?: string) => {
     setLazySetupError(null);
@@ -852,7 +919,6 @@ export function MarketDetailPage() {
       <MarketDetail
         market={market}
         chartTimeframe={chartTimeframe}
-        chartType={chartType}
         tradeSelection={tradeSelection}
         tradeAmount={tradeAmount}
         tradePreview={tradePreview}
@@ -861,7 +927,6 @@ export function MarketDetailPage() {
         limitOrderPreview={limitOrderPreview}
         limitPrice={limitPrice}
         onTimeframeChange={handleTimeframeChange}
-        onChartTypeChange={setChartType}
         onTradeSelect={(selection) => {
           setTradeSelection(selection);
           setTradeSubmitStatus(null);
@@ -887,19 +952,18 @@ export function MarketDetailPage() {
         onRelatedMarketClick={handleRelatedMarketClick}
         walletReady={setupComplete && nostrSignerMode !== "none"}
         onWalletRequired={handleWalletRequired}
-        walletBalanceSats={activeMintBalance}
       />
       {topUpStage === "modal" && (
         <InsufficientBalanceModal
           balance={balanceAtCheck}
-          required={tradeAmount}
+          required={requiredAtCheck}
           onCancel={() => setTopUpStage("closed")}
           onTopUp={() => setTopUpStage("overlay")}
         />
       )}
       {topUpStage === "overlay" && (
         <TopUpOverlay
-          deficit={Math.max(tradeAmount - balanceAtCheck, 0)}
+          deficit={Math.max(requiredAtCheck - balanceAtCheck, 0)}
           onSuccess={handleTopUpSuccess}
           onCancel={() => setTopUpStage("closed")}
         />

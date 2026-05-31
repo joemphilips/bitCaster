@@ -22,6 +22,7 @@ import { useCreatorSync } from "@/stores/useCreatorSync";
 import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { usePendingTradesPoller } from "@/lib/orderStatus";
 import { useTradeSettlement } from "@/hooks/useTradeSettlement";
+import { useLikedMarketCloseReconcile } from "@/hooks/useLikedMarketCloseReconcile";
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
@@ -131,6 +132,7 @@ function AppRoutes() {
   useCreatorSync();
   useActivityLogSync();
   usePendingTradesPoller();
+  useLikedMarketCloseReconcile();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   useTradeSettlement(nostrSignerMode !== "none");
 

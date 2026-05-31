@@ -81,8 +81,6 @@ export interface PriceHistory {
 
 export type ChartTimeframe = '1h' | '24h' | '7d' | '30d' | 'all'
 
-export type ChartType = 'price' | 'volume'
-
 // =============================================================================
 // Activity Types
 // =============================================================================
@@ -224,11 +222,14 @@ export type TradeSide = 'buy' | 'sell'
 export type OrderType = 'market' | 'limit'
 
 export interface LimitOrderPreview {
-  limitPrice: number        // in market's base unit (e.g. sats)
-  amount: number            // sats
-  sharesIfFilled: number    // amount * 10000 / limitPrice (assumes 10000 sats per full share)
-  creatorFee: number
-  platformFee: number
+  limitPrice: number        // probability price 1..99; also sats per display share
+  amount: number            // user-facing display shares (1 share = 100 face sats)
+  quoteSats: number         // display shares × price, the pre-fee quote
+  creatorFee: number        // sats
+  mintFee: number           // sats — read from the CTF keyset input_fee_ppk (0 in the first release)
+  // Display-only spend estimate used for the balance check. NEVER sent as the
+  // wire amountSats (which is `amount * 100`). Reactive:
+  //   limitPrice * amount + creatorFee + mintFee
   totalCost: number
 }
 
@@ -266,13 +267,10 @@ export interface MarketDetailProps {
   /** Current chart timeframe selection */
   chartTimeframe: ChartTimeframe
 
-  /** Current chart type (price or volume) */
-  chartType: ChartType
-
   /** Currently selected trade (null if none) */
   tradeSelection: TradeSelection | null
 
-  /** Trade amount entered by user */
+  /** Trade amount entered by user, in display shares (1 share = 100 face sats) */
   tradeAmount: number
 
   /** Preview of trade outcome (null if no valid selection) */
@@ -280,9 +278,6 @@ export interface MarketDetailProps {
 
   /** Called when user changes chart timeframe */
   onTimeframeChange?: (timeframe: ChartTimeframe) => void
-
-  /** Called when user toggles chart type */
-  onChartTypeChange?: (type: ChartType) => void
 
   /** Called when user selects an outcome to trade */
   onTradeSelect?: (selection: TradeSelection) => void
@@ -364,9 +359,6 @@ export interface MarketDetailProps {
 
   /** Number of shares the user currently holds (for sell percentage calculation) */
   userHoldings?: number
-
-  /** User's spendable sats balance at the active mint (for buy-side balance hint) */
-  walletBalanceSats?: number
 
   /** Whether the user has a wallet configured (gates trade confirmation) */
   walletReady?: boolean

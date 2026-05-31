@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useBookmarkStore } from '@/stores/bookmarks'
 import { getMarkets } from '@/lib/markets'
 import type { Market } from '@/types/market'
@@ -7,6 +7,12 @@ interface UseLikedMarketsResult {
   markets: Market[]
   loading: boolean
   error: string | null
+  /**
+   * Re-run the bulk-fetch against the engine. Used by the liked-market close
+   * reconcile (P22 Link G2) so a `visibilitychange` can refresh the catalogue
+   * `state` of the user's bookmarks without a full reload.
+   */
+  refetch: () => void
 }
 
 /**
@@ -39,6 +45,9 @@ export function useLikedMarkets(): UseLikedMarketsResult {
   const [allMarkets, setAllMarkets] = useState<Market[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refetchNonce, setRefetchNonce] = useState(0)
+
+  const refetch = useCallback(() => setRefetchNonce((n) => n + 1), [])
 
   const uniqueIds = useMemo(() => Array.from(new Set(bookmarks)), [bookmarks])
 
@@ -72,7 +81,7 @@ export function useLikedMarkets(): UseLikedMarketsResult {
     return () => {
       cancelled = true
     }
-  }, [uniqueIds])
+  }, [uniqueIds, refetchNonce])
 
   const markets = useMemo(() => {
     if (!allMarkets) return []
@@ -85,7 +94,7 @@ export function useLikedMarkets(): UseLikedMarketsResult {
       .filter((m): m is Market => m != null)
   }, [allMarkets, uniqueIds])
 
-  return { markets, loading, error }
+  return { markets, loading, error, refetch }
 }
 
 /**

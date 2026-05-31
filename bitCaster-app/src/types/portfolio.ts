@@ -67,6 +67,34 @@ export interface Position {
   profitLossSats: number
   profitLossPercent: number
   status: PositionStatus
+  /**
+   * Single source-of-truth winner flag for a closed position (P22 Link F),
+   * derived once in usePortfolioState via deriveWinner. A position is a winner
+   * iff it holds >= 1 proof on a winning keyset (the attested outcome is a
+   * member of the keyset's collection). The "Won" badge, Claim button,
+   * value/P&L, and the destructive "Remove" guard all read this same field so
+   * they can never disagree. Always false while active.
+   */
+  isWinner: boolean
+  /**
+   * Closed, attested, and not a winner. Always false while active or pending.
+   * Gates "Remove" — only an attested loser may have its proofs destroyed.
+   */
+  isLoser: boolean
+  /**
+   * Closed but NOT YET ATTESTED (no final outcome — closed by deadline, or
+   * before the oracle attests). Win/loss is UNDECIDED (P22 Link F): the row
+   * shows an "awaiting resolution" indicator and offers NEITHER Claim NOR
+   * Remove, so not-yet-decided proofs can never be destroyed. Its value is the
+   * full held amount, not zero. Always false while active.
+   */
+  isPending: boolean
+  /**
+   * The market's attested final outcome (P22 Link F). Carried so the
+   * destructive "Remove" handler can apply a defense-in-depth filter: it must
+   * never delete a proof on a winning keyset, even if classification were off.
+   */
+  finalOutcome?: string | null
   closedDate?: string
   acquiredDate: string
   mintUrl: string
@@ -125,6 +153,12 @@ export interface CreatedMarket {
     type: 'self'
     eventId: string
     outcomes: string[]
+    /**
+     * TLV-hex of the kormir DLC oracle announcement. Mirrored client-side so a
+     * fresh browser profile can re-import the committed-nonce material before
+     * re-signing the attestation (P22 B1b).
+     */
+    announcementHex?: string
     attestationHex?: string
     attestedOutcome?: string
     attestedAt?: string
@@ -204,6 +238,12 @@ export interface PortfolioProps {
 
   /** Called when user claims payout from a winning position */
   onClaimPayout?: (positionId: string) => void
+
+  /**
+   * Called when user removes a LOST position — deletes its local CTF proofs
+   * without a mint redeem. Only offered for losers (P22 F2).
+   */
+  onRemovePosition?: (positionId: string) => void
 
   /** Called when user clicks to view a fund */
   onViewFund?: (fundId: string) => void

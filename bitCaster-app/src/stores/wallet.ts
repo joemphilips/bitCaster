@@ -346,3 +346,26 @@ export async function getBalance(mintUrl?: string): Promise<number> {
     0,
   )
 }
+
+/**
+ * Per-input mint fee (`input_fee_ppk`, parts-per-thousand) advertised by the
+ * keysets the wallet already holds for `mintUrl`. The mint applies the same
+ * `input_fee_ppk` to its primitive and conditional (CTF) keysets, so the
+ * already-cached primitive keysets are a faithful proxy and no extra mint
+ * round-trip is needed. Returns the max ppk across the mint's keysets, or `0`
+ * when the mint advertises no fee (the first-release default).
+ *
+ * Read-only proxy for a *display* fee estimate — never a settlement
+ * authority. With `input_fee_ppk === 0` (current bitCaster mint config) the
+ * derived mint fee is `0 sats` and the trade panel shows a static label.
+ */
+export function useActiveMintInputFeePpk(mintUrl?: string): number {
+  const normalized = mintUrl ? normalizeUrl(mintUrl) : undefined
+  return useWalletStore((s) => {
+    const mint = s.mints.find((m) => (normalized ? m.url === normalized : true))
+    return (mint?.keysets ?? []).reduce(
+      (max, ks) => Math.max(max, ks.input_fee_ppk ?? 0),
+      0,
+    )
+  })
+}
