@@ -14,12 +14,28 @@ const execFileAsync = promisify(execFile)
 test('bitcaster-cli bin entrypoint is directly executable', async () => {
   const result = await execFileAsync(
     join(import.meta.dirname, '..', 'src', 'main.ts'),
-    ['help'],
+    ['--help'],
     { env: process.env },
   )
 
   assert.match(result.stdout, /bitcaster-cli/)
-  assert.match(result.stdout, /bitcaster-cli trade recover/)
+  assert.match(result.stdout, /Commands:/)
+  assert.match(result.stdout, /wallet\s+Manage wallet balance/)
+  assert.doesNotMatch(result.stdout, /bitcaster-cli trade recover/)
+})
+
+test('bitcaster-cli command help includes usage and subcommand summaries', async () => {
+  const result = await execFileAsync(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    ['wallet', '--help'],
+    { env: process.env },
+  )
+
+  assert.match(result.stdout, /bitcaster-cli wallet/)
+  assert.match(result.stdout, /Usage:/)
+  assert.match(result.stdout, /bitcaster-cli wallet balance/)
+  assert.match(result.stdout, /Subcommands:/)
+  assert.match(result.stdout, /receive\s+Import a Cashu token/)
 })
 
 test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
