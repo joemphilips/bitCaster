@@ -2,15 +2,15 @@ import {
   amountToNumber,
   keysetToOutcomeCollection as keysetToOutcomeCollectionShared,
   takeProofsForLock,
-} from '../../bitcaster-client-sdk/src/proofSelection.ts'
-import { parseOutcomeSetId } from '../../bitcaster-client-sdk/src/outcomeSets.ts'
+} from '@bitcaster-market/client-sdk/proofSelection'
+import { parseOutcomeSetId } from '@bitcaster-market/client-sdk/outcomeSets'
 import type {
   OutcomeMetadata,
   PartialLockHeldRecord,
   SwapFailure,
-} from '../../bitcaster-client-sdk/src/swapFailure.ts'
-import { redactSwapFailureForTelemetry } from '../../bitcaster-client-sdk/src/swapFailure.ts'
-import { TRADE_MESSAGE_TYPES } from '../../bitcaster-client-sdk/src/tradeSession.ts'
+} from '@bitcaster-market/client-sdk/swapFailure'
+import { redactSwapFailureForTelemetry } from '@bitcaster-market/client-sdk/swapFailure'
+import { TRADE_MESSAGE_TYPES } from '@bitcaster-market/client-sdk/tradeSession'
 import type { DaemonProfile } from './profile.ts'
 import { readProfile } from './profile.ts'
 import type { DaemonSecrets } from './secrets.ts'

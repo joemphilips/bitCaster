@@ -1,10 +1,10 @@
-import type { DaemonCommand, DaemonResponse } from 'bitcaster-daemon/protocol'
-import { readRpcToken, rpcSocketPath } from 'bitcaster-daemon/rpcAuth'
+import type { DaemonCommand, DaemonResponse } from '@bitcaster-market/daemon/protocol'
+import { readRpcToken, rpcSocketPath } from '@bitcaster-market/daemon/rpcAuth'
 import { spawn } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const DAEMON_STARTUP_TIMEOUT_MS = 10_000
@@ -128,14 +128,7 @@ function isNetworkFailure(err: unknown): boolean {
 }
 
 async function startDaemonProcess(): Promise<void> {
-  const daemonMain = join(
-    dirname(fileURLToPath(import.meta.url)),
-    '..',
-    '..',
-    'bitcaster-daemon',
-    'src',
-    'main.ts',
-  )
+  const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
   const child = spawn(
     process.execPath,
     ['--experimental-strip-types', daemonMain, 'run'],

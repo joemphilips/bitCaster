@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process'
-import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { callDaemon } from './rpc.ts'
-import type { DaemonResponse } from 'bitcaster-daemon/protocol'
+import type { DaemonResponse } from '@bitcaster-market/daemon/protocol'
 
 const [, , command = 'help', ...args] = process.argv
 const execFileAsync = promisify(execFile)
@@ -507,14 +506,7 @@ function isHelpRequest(args: string[]): boolean {
 }
 
 async function runDaemonCommand(args: string[]): Promise<void> {
-  const daemonMain = join(
-    dirname(fileURLToPath(import.meta.url)),
-    '..',
-    '..',
-    'bitcaster-daemon',
-    'src',
-    'main.ts',
-  )
+  const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
   const result = await execFileAsync(
     process.execPath,
     ['--experimental-strip-types', daemonMain, ...args],
