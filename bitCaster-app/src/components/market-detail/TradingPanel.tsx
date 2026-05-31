@@ -426,14 +426,40 @@ function LimitPriceInput({
   )
 }
 
+function WalletBalanceSatsRow({
+  walletBalanceSats,
+  isInsufficientBalance,
+}: {
+  walletBalanceSats: number
+  isInsufficientBalance: boolean
+}) {
+  const { t } = useTranslation()
+  return (
+    <div className="flex justify-end text-sm">
+      <span
+        className={`font-medium ${
+          isInsufficientBalance
+            ? 'text-rose-500 dark:text-rose-400'
+            : 'text-slate-600 dark:text-slate-300'
+        }`}
+      >
+        {t('trade.walletBalanceSats', { count: walletBalanceSats })}
+      </span>
+    </div>
+  )
+}
+
 function LimitOrderPreviewSection({
   preview,
   feePercent,
+  walletBalanceSats,
 }: {
   preview: LimitOrderPreview
   feePercent: number
+  walletBalanceSats: number | null
 }) {
   const { t } = useTranslation()
+  const isInsufficientBalance = walletBalanceSats != null && preview.totalCost > walletBalanceSats
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
       {/* Limit Price + Shares-if-filled rows removed: the limit price is the
@@ -457,6 +483,12 @@ function LimitOrderPreviewSection({
           {formatBtc(preview.totalCost)}
         </span>
       </div>
+      {walletBalanceSats != null && (
+        <WalletBalanceSatsRow
+          walletBalanceSats={walletBalanceSats}
+          isInsufficientBalance={isInsufficientBalance}
+        />
+      )}
       <p className="text-[10px] text-slate-400 dark:text-slate-500 pt-1">
         {t('trade.orderFillHint')}
       </p>
@@ -495,14 +527,6 @@ export function TradingPanel({
   const isSell = tradeSide === 'sell'
   const isLimit = orderType === 'limit'
   const baseUnit = market.baseUnit ?? 'sats'
-
-  // Buy input is a SHARE/FACE count — the wire `amountSats` is this value
-  // directly (a multiple of 100). The COST the user pays is derived for
-  // display only (never sent as amountSats): the limit preview's `totalCost`
-  // when limiting, otherwise the market preview's `totalCost`.
-  const estimatedCostSats = isLimit
-    ? limitOrderPreview?.totalCost
-    : tradePreview?.totalCost
 
   // Snap a buy share input to the 100-face settlement tick the engine
   // enforces (openapi `amountSats` multiple-of-100). Sell amounts are share
@@ -594,28 +618,11 @@ export function TradingPanel({
             </button>
           </div>
 
-          {/* Balance hint — for sell show outcome shares held, for buy
-              show wallet balance at the active mint so the user knows
-              what they have to spend before hitting confirm. */}
+          {/* Balance hint for sell shows outcome shares held. Buy balance is
+              shown in the preview summary with the relevant cost rows. */}
           {isSell && userHoldings != null && (
             <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
               {t('trade.balance', { count: userHoldings })}
-            </p>
-          )}
-          {!isSell && walletBalanceSats != null && (
-            <p
-              className={`text-xs mb-2 ${
-                estimatedCostSats != null && estimatedCostSats > walletBalanceSats
-                  ? 'text-rose-500 dark:text-rose-400'
-                  : 'text-slate-400 dark:text-slate-500'
-              }`}
-            >
-              {estimatedCostSats != null && estimatedCostSats > 0
-                ? t('trade.costVsBalance', {
-                    cost: estimatedCostSats,
-                    balance: walletBalanceSats,
-                  })
-                : t('trade.walletBalance', { count: walletBalanceSats })}
             </p>
           )}
 
@@ -666,14 +673,10 @@ export function TradingPanel({
               QUICK_SHARE_PRESETS.map((shares) => (
                 <button
                   key={shares}
-                  onClick={() => onAmountChange?.(shares)}
-                  className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${
-                    tradeAmount === shares
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-                  }`}
+                  onClick={() => onAmountChange?.(Math.round((tradeAmount || 0) / 100) * 100 + shares)}
+                  className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                 >
-                  {shares.toLocaleString()}
+                  +{shares}
                 </button>
               ))
             )}
@@ -721,6 +724,20 @@ export function TradingPanel({
                   {formatBtc(tradePreview.creatorFee)}
                 </span>
               </div>
+              {!isSell && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 dark:text-slate-400">{t('trade.totalCost')}</span>
+                  <span className="font-medium text-slate-600 dark:text-slate-300">
+                    {formatBtc(tradePreview.totalCost)}
+                  </span>
+                </div>
+              )}
+              {!isSell && walletBalanceSats != null && (
+                <WalletBalanceSatsRow
+                  walletBalanceSats={walletBalanceSats}
+                  isInsufficientBalance={tradePreview.totalCost > walletBalanceSats}
+                />
+              )}
               <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
                 <span className="text-slate-700 dark:text-slate-300 font-medium">
                   {isSell ? t('trade.proceeds') : t('trade.potentialPayout')}
@@ -737,6 +754,7 @@ export function TradingPanel({
             <LimitOrderPreviewSection
               preview={limitOrderPreview}
               feePercent={market.creator.feePercent}
+              walletBalanceSats={walletBalanceSats ?? null}
             />
           )}
 
