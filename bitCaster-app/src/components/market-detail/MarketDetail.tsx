@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type { MarketDetailProps } from "@/types/market-detail";
-import { formatBtc } from "@/lib/format";
 import { useMarketState } from "@/hooks/useMarketState";
 import { MarketHeader } from "./MarketHeader";
 import { TradingPanel } from "./TradingPanel";
@@ -255,7 +254,7 @@ export function MarketDetail({
                 </p>
                 <p className="text-sm font-medium text-slate-900 dark:text-white">
                   {tradeAmount > 0
-                    ? formatBtc(tradeAmount)
+                    ? `${tradeAmount.toLocaleString()} ${t("trade.sharesUnit")}`
                     : t("trade.enterAmount")}
                 </p>
               </div>

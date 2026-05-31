@@ -43,9 +43,9 @@ interface TradingPanelProps {
   onWalletRequired?: (comment?: string) => void
 }
 
-// Buy quick-presets are SHARE counts. Each is a multiple of 100 so it maps
-// directly to a valid wire face amount (`amountSats`) without re-rounding.
-const QUICK_SHARE_PRESETS = [100, 500, 1000, 5000]
+// Buy quick-presets are user-facing display shares. Boundary code maps each
+// display share to a 100-sat conditional-token face lot before submit.
+const QUICK_SHARE_PRESETS = [1, 5, 10, 50]
 const QUICK_SELL_PERCENTAGES = [25, 50, 75, 100]
 
 // Custom scrollable container with chevron buttons
@@ -500,26 +500,17 @@ export function TradingPanel({
   const isLimit = orderType === 'limit'
   const baseUnit = market.baseUnit ?? 'sats'
 
-  // Snap a buy share input to the 100-face settlement tick the engine
-  // enforces (openapi `amountSats` multiple-of-100). Sell amounts are share
-  // counts derived from holdings and are left to the existing percentage
-  // presets.
   const handleBuyAmountChange = (raw: number) => {
     if (!Number.isFinite(raw) || raw <= 0) {
       onAmountChange?.(0)
       return
     }
-    // Free typing: do NOT snap to the 100-share tick on every keystroke — that
-    // rounds a partial entry like "1" down to 0 and clears the controlled
-    // input, making the field impossible to type into. Snap on blur instead.
     onAmountChange?.(raw)
   }
 
-  // Snap the buy share input to the engine's 100-face settlement tick once the
-  // user finishes editing (submit also enforces `amountSats % 100 === 0`).
   const handleBuyAmountBlur = () => {
     if (!isSell && tradeAmount > 0) {
-      onAmountChange?.(Math.max(100, Math.round(tradeAmount / 100) * 100))
+      onAmountChange?.(Math.max(1, Math.round(tradeAmount)))
     }
   }
 
@@ -529,13 +520,12 @@ export function TradingPanel({
     if (!walletReady) return t('wallet.createWallet')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
-    const satsAmountLabel = formatBtc(tradeAmount)
     const sharesAmountLabel = `${tradeAmount.toLocaleString()} ${t('trade.sharesUnit')}`
 
     if (isSell && isLimit) return t('trade.confirmLimitSell', { amount: sharesAmountLabel })
-    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: satsAmountLabel })
+    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: sharesAmountLabel })
     if (isLimit) return t('trade.confirmLimitBuy', { amount: sharesAmountLabel })
-    return t('trade.confirmBuy', { side: sideLabel, amount: satsAmountLabel })
+    return t('trade.confirmBuy', { side: sideLabel, amount: sharesAmountLabel })
   }
 
   return (
@@ -599,9 +589,9 @@ export function TradingPanel({
             </p>
           )}
 
-          {/* Shares Input — the order is denominated in shares (= the wire
-              face amount, a multiple of 100). No ₿ prefix: this is a share
-              count, not a sats amount. Buy inputs snap to the 100-share tick. */}
+          {/* Shares Input — one displayed share maps to a 100-sat conditional
+              token face lot at the protocol boundary. No ₿ prefix: this is a
+              share count, not a sats amount. */}
           <div className="relative mb-3">
             <input
               data-testid="trade-amount-input"
@@ -613,7 +603,7 @@ export function TradingPanel({
                   : handleBuyAmountChange(Number(e.target.value))
               }
               onBlur={isSell ? undefined : handleBuyAmountBlur}
-              step={isSell ? undefined : 100}
+              step={1}
               min={0}
               placeholder="0"
               className="w-full pl-4 pr-16 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -646,7 +636,7 @@ export function TradingPanel({
               QUICK_SHARE_PRESETS.map((shares) => (
                 <button
                   key={shares}
-                  onClick={() => onAmountChange?.(Math.round((tradeAmount || 0) / 100) * 100 + shares)}
+                  onClick={() => onAmountChange?.(Math.round(tradeAmount || 0) + shares)}
                   className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                 >
                   +{shares}

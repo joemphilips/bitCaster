@@ -1,23 +1,36 @@
 import type { LimitOrderPreview } from '@/types/market-detail'
 
+export const FACE_SATS_PER_DISPLAY_SHARE = 100
+
+export function displaySharesToFaceSats(displayShares: number): number {
+  return displayShares * FACE_SATS_PER_DISPLAY_SHARE
+}
+
+export function faceSatsToDisplayShares(faceSats: number): number {
+  return Math.floor(faceSats / FACE_SATS_PER_DISPLAY_SHARE)
+}
+
 /**
- * Derived cost breakdown for a buy of `shares` face at a given `price`.
+ * Derived cost breakdown for a buy of display shares at a given `price`.
  *
- * The trade input is a SHARE/FACE count. That share count is the wire
- * `amountSats` (a multiple of 100) submitted to the engine — see
- * `buildTradeTicket`. The figures here are NEVER sent on the wire; they exist
- * only to (a) populate the trade preview panels and (b) drive the pre-submit
- * balance check. The balance gate and the displayed Total cost MUST share this
- * formula so the gate can never over-require (P22 C LOW): for a buy at
- * price < 100 the actual spend is strictly less than the face amount, so
- * gating on face would block trades the user can actually afford.
+ * The trade input is user-facing display shares. One display share is a
+ * 100-sat conditional-token face lot; boundary code converts to wire
+ * `amountSats` via {@link displaySharesToFaceSats}. The figures here are NEVER
+ * sent on the wire; they exist only to (a) populate the trade preview panels
+ * and (b) drive the pre-submit balance check.
  *
- * Quote sats = face * price / 100 — the engine derives the quote it charges
- * from `face × price` where `price` is the 1..99 probability. On top of the
- * quote the user pays the creator fee (a percentage of the quote) and the mint
- * fee. The creator fee is computed on the QUOTE/COST basis, never on the face.
+ * Quote sats = display shares * price. This is equivalent to the engine's
+ * exact settlement formula because:
  *
- *   quoteSats  = round(shares * price / 100)
+ *   faceSats   = displayShares * 100
+ *   quoteSats  = faceSats * price / 100
+ *              = displayShares * price
+ *
+ * On top of the quote the user pays the creator fee (a percentage of the
+ * quote) and the mint fee. The creator fee is computed on the QUOTE/COST
+ * basis, never on the face.
+ *
+ *   quoteSats  = displayShares * price
  *   creatorFee = round(quoteSats * feePercent / 100)
  *   mintFee    = ceil(quoteSats * mintInputFeePpk / 1000)
  *   totalCost  = quoteSats + creatorFee + mintFee
@@ -34,13 +47,13 @@ export interface TradeCostBreakdown {
 }
 
 export function computeTradeCost(params: {
-  shares: number
+  displayShares: number
   price: number
   feePercent: number
   mintInputFeePpk: number
 }): TradeCostBreakdown {
-  const { shares, price, feePercent, mintInputFeePpk } = params
-  const quoteSats = Math.round((shares * price) / 100)
+  const { displayShares, price, feePercent, mintInputFeePpk } = params
+  const quoteSats = displayShares * price
   const creatorFee = Math.round((quoteSats * feePercent) / 100)
   const mintFee = Math.ceil((quoteSats * mintInputFeePpk) / 1000)
   return {
@@ -56,21 +69,21 @@ export function computeTradeCost(params: {
  * {@link computeTradeCost} shaped to the limit preview panel.
  */
 export function computeLimitOrderPreview(params: {
-  shares: number
+  displayShares: number
   limitPrice: number
   feePercent: number
   mintInputFeePpk: number
 }): LimitOrderPreview {
-  const { shares, limitPrice, feePercent, mintInputFeePpk } = params
+  const { displayShares, limitPrice, feePercent, mintInputFeePpk } = params
   const cost = computeTradeCost({
-    shares,
+    displayShares,
     price: limitPrice,
     feePercent,
     mintInputFeePpk,
   })
   return {
     limitPrice,
-    amount: shares,
+    amount: displayShares,
     quoteSats: cost.quoteSats,
     creatorFee: cost.creatorFee,
     mintFee: cost.mintFee,

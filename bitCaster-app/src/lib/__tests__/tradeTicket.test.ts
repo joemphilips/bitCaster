@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
-import { computeLimitOrderPreview } from "@/lib/tradeCostPreview";
+import {
+  computeLimitOrderPreview,
+  displaySharesToFaceSats,
+} from "@/lib/tradeCostPreview";
 import type { MarketDetail } from "@/types/market-detail";
 
 const market: MarketDetail = {
@@ -229,14 +232,13 @@ describe("buildTradeTicket", () => {
     expect(ticket.request.outcomeId).toBe("Alice");
   });
 
-  it("sends the share count as the face amountSats, not the derived cost", () => {
-    // The buy input is a SHARE/FACE count. The wire amountSats must equal that
-    // share count verbatim — never the display cost (price × shares + fees).
-    const shares = 1000;
+  it("sends protocol face amountSats, not the derived display cost", () => {
+    const displayShares = 10;
+    const faceAmountSats = displaySharesToFaceSats(displayShares);
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
-      amountSats: shares,
+      amountSats: faceAmountSats,
       side: "buy",
       orderType: "limit",
       limitPrice: 40,
@@ -244,18 +246,17 @@ describe("buildTradeTicket", () => {
     });
 
     const preview = computeLimitOrderPreview({
-      shares,
+      displayShares,
       limitPrice: 40,
       feePercent: 2,
       mintInputFeePpk: 0,
     });
 
-    // Wire face amount == share input.
-    expect(ticket.request.amountSats).toBe(shares);
+    expect(ticket.request.amountSats).toBe(faceAmountSats);
     // The cost preview is strictly smaller here (price 40 < 100) and is the
     // thing we must NOT put on the wire.
     expect(preview.totalCost).not.toBe(ticket.request.amountSats);
-    expect(ticket.request.amountSats).toBe(preview.amount);
+    expect(preview.amount).toBe(displayShares);
     // amountSats stays a multiple of 100.
     expect(ticket.request.amountSats % 100).toBe(0);
   });

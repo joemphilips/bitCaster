@@ -18,7 +18,11 @@ import {
 } from "@/lib/markets";
 import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
-import { computeLimitOrderPreview, computeTradeCost } from "@/lib/tradeCostPreview";
+import {
+  computeLimitOrderPreview,
+  computeTradeCost,
+  displaySharesToFaceSats,
+} from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
@@ -493,17 +497,16 @@ export function MarketDetailPage() {
   // creator fee + Total cost are computed on the QUOTE, not the face amount.
   const marketEffectivePrice = tradeSide === "sell" ? 1 : 99;
 
-  // Computed trade preview (market orders). `tradeAmount` is the SHARE/FACE
-  // count and the wire `amountSats`; the cost figures below are display-only
-  // and derive from the quote (face × price / 100), never from the face. The
-  // creator fee is computed on the quote, consistent with the limit path.
+  // Computed trade preview (market orders). `tradeAmount` is user-facing
+  // display shares; boundary calls convert it to protocol face sats via
+  // `displaySharesToFaceSats`.
   const tradePreview = useMemo<TradePreview | null>(() => {
     if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
       return null;
     if (orderType === "limit") return null;
 
     const cost = computeTradeCost({
-      shares: tradeAmount,
+      displayShares: tradeAmount,
       price: marketEffectivePrice,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
@@ -512,7 +515,7 @@ export function MarketDetailPage() {
       amount: tradeAmount,
       predictedOdds: 50, // Placeholder — real computation needs order book depth
       priceImpact: 0,
-      potentialPayout: Math.round((tradeAmount * 100) / 50),
+      potentialPayout: displaySharesToFaceSats(tradeAmount),
       creatorFee: cost.creatorFee,
       platformFee: 0,
       totalCost: cost.totalCost,
@@ -528,20 +531,15 @@ export function MarketDetailPage() {
 
   // Computed limit order preview.
   //
-  // `tradeAmount` is the SHARE/FACE count (the wire `amountSats`, a multiple of
-  // 100). The cost the user pays is derived display-only — it is NEVER sent as
-  // `amountSats`. Quote = face * price / 100 (the engine derives quote sats
-  // from face × price); on top of that the creator fee (on the quote) and the
-  // mint fee. The total is fully reactive to `limitPrice`, `tradeAmount`, the
-  // creator fee percent, and the mint's advertised `input_fee_ppk` — fixing
-  // the prior static `totalCost: tradeAmount` bug.
+  // `tradeAmount` is user-facing display shares. One display share maps to 100
+  // protocol face sats, so the displayed quote is simply shares × limit price.
   const limitOrderPreview = useMemo<LimitOrderPreview | null>(() => {
     if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
       return null;
     if (orderType !== "limit") return null;
 
     return computeLimitOrderPreview({
-      shares: tradeAmount,
+      displayShares: tradeAmount,
       limitPrice,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
@@ -556,17 +554,13 @@ export function MarketDetailPage() {
   ]);
 
   // Derived spend a BUY must cover, used by the pre-submit balance gate and the
-  // top-up modal/overlay. This is the SAME formula that drives the displayed
-  // Total cost (limit preview / market preview), so the gate can never
-  // over-require: for a buy at price < 100 the real spend
-  // (face × price / 100 + creatorFee + mintFee) is strictly less than the face
-  // amount, and gating on face would block trades the user can afford
-  // (P22 C LOW). Sell orders are gated on the sell-side proof balance instead.
+  // top-up modal/overlay. Sells are gated on the protocol face sats represented
+  // by the display share count.
   const requiredBuyCost = useMemo(() => {
     if (!market || !tradeAmount || tradeAmount <= 0) return 0;
     const price = orderType === "limit" ? limitPrice : marketEffectivePrice;
     return computeTradeCost({
-      shares: tradeAmount,
+      displayShares: tradeAmount,
       price,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
@@ -584,6 +578,7 @@ export function MarketDetailPage() {
   // callers that can't promise that must route through `handleTradeConfirm`.
   const placeOrder = useCallback(async (comment?: string) => {
     if (!market || !tradeSelection || !tradeAmount) return;
+    const faceAmountSats = displaySharesToFaceSats(tradeAmount);
     if (tradeSubmitInFlightRef.current) return;
     tradeSubmitInFlightRef.current = true;
     setIsTradeSubmitting(true);
@@ -635,7 +630,7 @@ export function MarketDetailPage() {
       ticket = buildTradeTicket({
         market: latestMarket,
         selection: tradeSelection,
-        amountSats: tradeAmount,
+        amountSats: faceAmountSats,
         side: tradeSide,
         orderType,
         limitPrice,
@@ -689,7 +684,7 @@ export function MarketDetailPage() {
           market: latestMarket,
           selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
           complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
-          amountSats: tradeAmount,
+          amountSats: faceAmountSats,
           reservationId: `order-preflight:${ephemeral.pubkey}`,
         });
       }
@@ -784,11 +779,8 @@ export function MarketDetailPage() {
     if (!market || !tradeSelection || !tradeAmount) return;
     if (tradeSubmitInFlightRef.current) return;
     tradeSubmitInFlightRef.current = true;
-    // Buys are gated on the DERIVED spend (quote + fees), shared with the
-    // displayed Total cost — never on the face amount, which over-requires for
-    // price < 100 (P22 C LOW). Sells are gated on the face count of proofs the
-    // user must hold to sell.
-    const requiredSats = tradeSide === "sell" ? tradeAmount : requiredBuyCost;
+    const faceAmountSats = displaySharesToFaceSats(tradeAmount);
+    const requiredSats = tradeSide === "sell" ? faceAmountSats : requiredBuyCost;
     setIsTradeSubmitting(true);
     try {
       const current =
