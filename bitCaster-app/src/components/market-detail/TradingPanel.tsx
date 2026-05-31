@@ -529,12 +529,13 @@ export function TradingPanel({
     if (!walletReady) return t('wallet.createWallet')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
-    const amountLabel = formatBtc(tradeAmount)
+    const satsAmountLabel = formatBtc(tradeAmount)
+    const sharesAmountLabel = `${tradeAmount.toLocaleString()} ${t('trade.sharesUnit')}`
 
-    if (isSell && isLimit) return t('trade.confirmLimitSell', { amount: amountLabel })
-    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: amountLabel })
-    if (isLimit) return t('trade.confirmLimitBuy', { amount: amountLabel })
-    return t('trade.confirmBuy', { side: sideLabel, amount: amountLabel })
+    if (isSell && isLimit) return t('trade.confirmLimitSell', { amount: sharesAmountLabel })
+    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: satsAmountLabel })
+    if (isLimit) return t('trade.confirmLimitBuy', { amount: sharesAmountLabel })
+    return t('trade.confirmBuy', { side: sideLabel, amount: satsAmountLabel })
   }
 
   return (
@@ -590,8 +591,8 @@ export function TradingPanel({
             </button>
           </div>
 
-          {/* Balance hint for sell shows outcome shares held. Buy balance is
-              shown in the preview summary with the relevant cost rows. */}
+          {/* Sell-side balance shows outcome shares held. Buy-side wallet
+              balance is intentionally omitted from this panel. */}
           {isSell && userHoldings != null && (
             <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
               {t('trade.balance', { count: userHoldings })}

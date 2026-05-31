@@ -42,7 +42,6 @@ import {
 import {
   getBalance,
   useActiveMintInputFeePpk,
-  useBalance,
   useWalletStore,
 } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
@@ -378,10 +377,6 @@ export function MarketDetailPage() {
   const addPendingTrade = usePendingTradesStore((s) => s.add);
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const signerBackupState = useSettingsStore((s) => s.signerBackupState);
-  // Live balance for the active mint so the trading panel can show
-  // "You have N sats" before the user tries to confirm (matches the
-  // pattern cashu.me uses to surface available funds).
-  const activeMintBalance = useBalance(activeMintUrl);
   // Display-only mint fee for the trade cost preview. Read from the
   // `input_fee_ppk` the active mint already advertises on its cached keysets
   // (no extra mint round-trip). 0 for the first-release bitCaster mint config,
@@ -965,7 +960,6 @@ export function MarketDetailPage() {
         onRelatedMarketClick={handleRelatedMarketClick}
         walletReady={setupComplete && nostrSignerMode !== "none"}
         onWalletRequired={handleWalletRequired}
-        walletBalanceSats={activeMintBalance}
       />
       {topUpStage === "modal" && (
         <InsufficientBalanceModal
