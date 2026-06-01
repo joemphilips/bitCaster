@@ -8,8 +8,10 @@ import { BackupSecretsReminderModal } from "@/components/shared/BackupSecretsRem
 import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
 import { useShareMarket } from "@/components/market-detail/useShareMarket";
 import {
+  applyMarketComments,
   applyMarketPriceHistory,
   fetchMarketDetail,
+  fetchMarketComments,
   fetchMarketPriceHistory,
   fetchOrderBook,
   signTradeComment,
@@ -120,8 +122,22 @@ export async function fetchMarketDetailWithBooks(
   conditionId: string,
 ): Promise<MarketDetailType> {
   let detail = await fetchMarketDetail(conditionId);
+  const books = await fetchMarketOrderBooks(conditionId, detail);
+  detail = { ...detail, ...books };
+  return detail;
+}
+
+async function fetchMarketOrderBooks(
+  conditionId: string,
+  detail: MarketDetailType,
+): Promise<Pick<MarketDetailType, "orderBook" | "outcomeOrderBooks">> {
   const outcomeSetIds = outcomeSetIdsForMarketBooks(detail);
-  if (outcomeSetIds.length === 0) return detail;
+  if (outcomeSetIds.length === 0) {
+    return {
+      orderBook: detail.orderBook,
+      outcomeOrderBooks: detail.outcomeOrderBooks,
+    };
+  }
 
   try {
     const entries = await Promise.all(
@@ -136,16 +152,15 @@ export async function fetchMarketDetailWithBooks(
     const outcomeOrderBooks = Object.fromEntries(entries);
     const defaultOrderBook =
       outcomeOrderBooks[outcomeSetIds[0]] ?? detail.orderBook;
-    detail = {
-      ...detail,
-      orderBook: defaultOrderBook,
-      outcomeOrderBooks,
-    };
+    return { orderBook: defaultOrderBook, outcomeOrderBooks };
   } catch {
     // Order book fetch is best-effort; limit orders can still rest.
   }
 
-  return detail;
+  return {
+    orderBook: detail.orderBook,
+    outcomeOrderBooks: detail.outcomeOrderBooks,
+  };
 }
 
 async function getSellSideBalance(
@@ -478,8 +493,15 @@ export function MarketDetailPage() {
     setLoading(true);
     setError(null);
 
-    fetchMarketDetailWithBooks(id)
-      .then(setMarket)
+    fetchMarketDetail(id)
+      .then((detail) => {
+        setMarket(detail);
+        void fetchMarketOrderBooks(id, detail).then((books) => {
+          setMarket((current) =>
+            current?.id === id ? { ...current, ...books } : current,
+          );
+        });
+      })
       .catch(() => {
         setError(
           "Failed to load market. Please check that the mint is running.",
@@ -536,6 +558,55 @@ export function MarketDetailPage() {
       if (timeoutId != null) window.clearTimeout(timeoutId);
     };
   }, [id, market?.id, market?.closingDate, market?.state]);
+
+  useEffect(() => {
+    if (!market?.id) return;
+    let cancelled = false;
+    const loadHistory = async () => {
+      try {
+        const history = await fetchMarketPriceHistory(
+          market.id,
+          chartTimeframe,
+        );
+        if (!cancelled) {
+          setMarket((current) =>
+            current?.id === market.id
+              ? applyMarketPriceHistory(current, history)
+              : current,
+          );
+        }
+      } catch {
+        // Chart history is non-critical; keep the primary market UI visible.
+      }
+    };
+    loadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [market?.id, chartTimeframe]);
+
+  useEffect(() => {
+    if (!market?.id) return;
+    let cancelled = false;
+    const loadComments = async () => {
+      try {
+        const comments = await fetchMarketComments(market.id);
+        if (!cancelled) {
+          setMarket((current) =>
+            current?.id === market.id
+              ? applyMarketComments(current, comments)
+              : current,
+          );
+        }
+      } catch {
+        // Comments are non-blocking for the trading surface.
+      }
+    };
+    loadComments();
+    return () => {
+      cancelled = true;
+    };
+  }, [market?.id]);
 
   // Worst-case effective price for a MARKET order, mirroring the wire price
   // `buildTradeTicket`/`marketPriceFor` resolves (buy crosses up to 99, sell
@@ -933,23 +1004,9 @@ export function MarketDetailPage() {
     [navigate],
   );
 
-  const handleTimeframeChange = useCallback(
-    async (timeframe: ChartTimeframe) => {
-      setChartTimeframe(timeframe);
-      if (!market) return;
-      try {
-        const history = await fetchMarketPriceHistory(market.id, timeframe);
-        setMarket((current) =>
-          current && current.id === market.id
-            ? applyMarketPriceHistory(current, history)
-            : current,
-        );
-      } catch {
-        // Chart history is non-critical; keep the current series visible.
-      }
-    },
-    [market],
-  );
+  const handleTimeframeChange = useCallback((timeframe: ChartTimeframe) => {
+    setChartTimeframe(timeframe);
+  }, []);
 
   // Share button (P7 §/markets/{id}). The hook handles the native share-sheet
   // / clipboard-fallback split internally; the page just hands it the
