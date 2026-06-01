@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
-import { ensureRpcToken } from 'bitcaster-daemon/rpcAuth'
+import { ensureRpcToken } from '@bitcaster-market/daemon/rpcAuth'
 
 const execFileAsync = promisify(execFile)
 

@@ -1,8 +1,10 @@
 {
   "name": "bitcaster-monorepo",
   "private": true,
+  "scripts": {
+    "postinstall": "node scripts/postinstall-build-cli.mjs"
+  },
   "workspaces": [
-    "cashu-ts",
     "bitCaster-app",
     "bitcaster-client-sdk",
     "bitcaster-daemon",

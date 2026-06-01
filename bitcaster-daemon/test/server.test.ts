@@ -38,7 +38,7 @@ test('startDaemonServer serves local health RPC and returns a closeable server',
       result: {
         status: 'ok',
         service: 'bitcaster-daemon',
-        sdk: '@bitcaster/client-sdk',
+        sdk: '@bitcaster-market/client-sdk',
         state: 'missing-profile',
       },
     })
@@ -70,7 +70,7 @@ test('startDaemonServer serves default Unix socket RPC on Unix', async () => {
       result: {
         status: 'ok',
         service: 'bitcaster-daemon',
-        sdk: '@bitcaster/client-sdk',
+        sdk: '@bitcaster-market/client-sdk',
         state: 'missing-profile',
       },
     })

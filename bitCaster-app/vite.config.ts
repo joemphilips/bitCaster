@@ -1,7 +1,10 @@
 import path from "path";
+import { createRequire } from "node:module";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+
+const require = createRequire(import.meta.url);
 
 export default defineConfig({
   plugins: [
@@ -65,14 +68,30 @@ export default defineConfig({
       },
       {
         find: /^@bitcaster\/client-sdk$/,
-        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/index.ts"),
+        replacement: path.resolve(
+          __dirname,
+          "../bitcaster-client-sdk/src/index.ts",
+        ),
       },
       {
         find: /^@bitcaster\/swap-protocol\/(.+)$/,
-        replacement: path.resolve(__dirname, "../bitCaster-swap-protocol/src/$1"),
+        replacement: path.resolve(
+          __dirname,
+          "../bitCaster-swap-protocol/src/$1",
+        ),
       },
-      { find: /^@noble\/curves\/secp256k1\.js$/, replacement: path.resolve(__dirname, "node_modules/@noble/curves/secp256k1.js") },
-      { find: /^@noble\/hashes\/sha2\.js$/, replacement: path.resolve(__dirname, "node_modules/@noble/hashes/sha2.js") },
+      {
+        find: /^@cashu\/cashu-ts$/,
+        replacement: path.resolve(__dirname, "../cashu-ts/lib/cashu-ts.es.js"),
+      },
+      {
+        find: /^@noble\/curves\/secp256k1\.js$/,
+        replacement: require.resolve("@noble/curves/secp256k1.js"),
+      },
+      {
+        find: /^@noble\/hashes\/sha2\.js$/,
+        replacement: require.resolve("@noble/hashes/sha2.js"),
+      },
     ],
   },
   // kormir-wasm is imported with a relative path (`./kormir-wasm-pkg/kormir_wasm`),

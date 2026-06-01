@@ -36,6 +36,7 @@ import {
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
+import { diagnoseProofStates } from '@/lib/proofDiagnostics'
 
 export type ExtendedView =
   | DepositWithdrawView
@@ -259,6 +260,12 @@ export function useDepositWithdrawState(
     async (quote: MintQuoteResponse, mintUrl: string, requested: number) => {
       try {
         const proofs = await mintProofs(requested, quote, mintUrl)
+        await diagnoseProofStates({
+          label: 'top-up:minted-proofs',
+          mintUrl,
+          proofs,
+          extra: { requestedSats: requested },
+        })
         const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl }))
         await addProofs(stored)
         setInvoiceStatus('paid')
