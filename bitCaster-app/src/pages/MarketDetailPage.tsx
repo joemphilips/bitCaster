@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router";
-import { useTranslation } from "react-i18next";
 import { MarketDetail } from "@/components/market-detail";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
 import { NostrAuthRequiredModal } from "@/components/shared/NostrAuthRequiredModal";
@@ -28,6 +27,10 @@ import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
 import { diagnoseProofStates } from "@/lib/proofDiagnostics";
 import {
+  reconcileCompletedPreflightProofOperations,
+  runPreflightMintSingleFlight,
+} from "@/lib/preflightProofRecovery";
+import {
   outcomeLabels,
   outcomeSetIdsForMarketBooks,
   outcomeSetMarketId,
@@ -41,7 +44,7 @@ import {
   markProofOperationCompleted,
   prepareProofOperation,
   releaseProofReservation,
-  removeProofs,
+  replaceProofs,
   reserveProofs,
 } from "@/stores/proof-db";
 import {
@@ -122,10 +125,13 @@ export async function fetchMarketDetailWithBooks(
 
   try {
     const entries = await Promise.all(
-      outcomeSetIds.map(async (outcomeSetId) => [
-        outcomeSetId,
-        await fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId)),
-      ] as const),
+      outcomeSetIds.map(
+        async (outcomeSetId) =>
+          [
+            outcomeSetId,
+            await fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId)),
+          ] as const,
+      ),
     );
     const outcomeOrderBooks = Object.fromEntries(entries);
     const defaultOrderBook =
@@ -195,18 +201,20 @@ async function prepareCollateralLotForCtfSplit(input: {
       regularSplit.send,
       input.faceAmountSats,
     );
-    await removeProofs(regularSplit.spent.map((proof) => proof.secret));
-    await addProofs([
-      ...regularSplit.keep.map((proof) => ({
-        ...proof,
-        mintUrl: input.mintUrl,
-      })),
-      ...exact.inputs.map((proof) => ({
-        ...proof,
-        mintUrl: input.mintUrl,
-        reservedBy: input.reservationId,
-      })),
-    ]);
+    await replaceProofs(
+      regularSplit.spent.map((proof) => proof.secret),
+      [
+        ...regularSplit.keep.map((proof) => ({
+          ...proof,
+          mintUrl: input.mintUrl,
+        })),
+        ...exact.inputs.map((proof) => ({
+          ...proof,
+          mintUrl: input.mintUrl,
+          reservedBy: input.reservationId,
+        })),
+      ],
+    );
     return {
       inputs: exact.inputs,
       spentSecrets: exact.inputs.map((proof) => proof.secret),
@@ -245,7 +253,9 @@ async function prepareCollateralLotForCtfSplit(input: {
 
   const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
-    throw new Error("Cashu wallet adapter does not support fee-aware proof selection.");
+    throw new Error(
+      "Cashu wallet adapter does not support fee-aware proof selection.",
+    );
   }
   const selected = wallet.selectProofsToSend(
     input.available,
@@ -254,7 +264,9 @@ async function prepareCollateralLotForCtfSplit(input: {
     false,
   );
   if (selected.send.length === 0) {
-    throw new Error("No regular collateral proofs are available for CTF split.");
+    throw new Error(
+      "No regular collateral proofs are available for CTF split.",
+    );
   }
   await diagnoseProofStates({
     label: "preflight:regular-split-inputs",
@@ -282,18 +294,20 @@ async function prepareCollateralLotForCtfSplit(input: {
     regularSplit.send,
     input.faceAmountSats,
   );
-  await removeProofs(regularSplit.spent.map((proof) => proof.secret));
-  await addProofs([
-    ...regularSplit.keep.map((proof) => ({
-      ...proof,
-      mintUrl: input.mintUrl,
-    })),
-    ...exact.inputs.map((proof) => ({
-      ...proof,
-      mintUrl: input.mintUrl,
-      reservedBy: input.reservationId,
-    })),
-  ]);
+  await replaceProofs(
+    regularSplit.spent.map((proof) => proof.secret),
+    [
+      ...regularSplit.keep.map((proof) => ({
+        ...proof,
+        mintUrl: input.mintUrl,
+      })),
+      ...exact.inputs.map((proof) => ({
+        ...proof,
+        mintUrl: input.mintUrl,
+        reservedBy: input.reservationId,
+      })),
+    ],
+  );
   return {
     inputs: exact.inputs,
     spentSecrets: exact.inputs.map((proof) => proof.secret),
@@ -389,8 +403,7 @@ async function preparePreflightSplitForLimitBuy(input: {
     throw err;
   }
 
-  await removeProofs([...spentSecrets]);
-  await addProofs(proofsToStore);
+  await replaceProofs([...spentSecrets], proofsToStore);
 
   return {
     reservationId: input.reservationId,
@@ -404,7 +417,6 @@ async function preparePreflightSplitForLimitBuy(input: {
 export function MarketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { t } = useTranslation();
   const setupComplete = useWalletStore((s) => s.setupComplete);
   const walletBackupState = useWalletStore((s) => s.walletBackupState);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
@@ -453,8 +465,12 @@ export function MarketDetailPage() {
   const [lazySetupError, setLazySetupError] = useState<string | null>(null);
   const [lazySetupCreating, setLazySetupCreating] = useState(false);
   const [showBackupReminder, setShowBackupReminder] = useState(false);
-  const [pendingTopUpComment, setPendingTopUpComment] = useState<string | undefined>();
-  const [lazySetupComment, setLazySetupComment] = useState<string | undefined>();
+  const [pendingTopUpComment, setPendingTopUpComment] = useState<
+    string | undefined
+  >();
+  const [lazySetupComment, setLazySetupComment] = useState<
+    string | undefined
+  >();
 
   // Load market data
   const loadMarket = useCallback(() => {
@@ -710,14 +726,29 @@ export function MarketDetailPage() {
         if (!activeMintUrl) {
           throw new Error("Select an active mint before using pre-flight split.");
         }
-        preparedPreflightSplit = await preparePreflightSplitForLimitBuy({
-          mintUrl: activeMintUrl,
-          market: latestMarket,
-          selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
-          complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
-          amountSats: faceAmountSats,
-          reservationId: `order-preflight:${ephemeral.pubkey}`,
-        });
+        preparedPreflightSplit = await runPreflightMintSingleFlight(
+          activeMintUrl,
+          async () => {
+            await reconcileCompletedPreflightProofOperations({
+              mintUrl: activeMintUrl,
+              activeReservationIds: Object.values(
+                usePendingTradesStore.getState().byOrderId,
+              )
+                .map((trade) => trade.preflightSplit?.reservationId)
+                .filter((reservationId): reservationId is string =>
+                  Boolean(reservationId),
+                ),
+            });
+            return preparePreflightSplitForLimitBuy({
+              mintUrl: activeMintUrl,
+              market: latestMarket,
+              selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
+              complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
+              amountSats: faceAmountSats,
+              reservationId: `order-preflight:${ephemeral.pubkey}`,
+            });
+          },
+        );
       }
       const signedComment = comment?.trim()
         ? await signTradeComment(latestMarket.id, comment.trim())
@@ -790,19 +821,20 @@ export function MarketDetailPage() {
       tradeSubmitInFlightRef.current = false;
       setIsTradeSubmitting(false);
     }
-  }, [
-    market,
-    tradeSelection,
-    tradeAmount,
-    tradeSide,
-    orderType,
-    preflightSplit,
-    limitPrice,
-    activeMintUrl,
-    loadMarket,
-    addPendingTrade,
-    t,
-  ]);
+    },
+    [
+      market,
+      tradeSelection,
+      tradeAmount,
+      tradeSide,
+      orderType,
+      preflightSplit,
+      limitPrice,
+      activeMintUrl,
+      loadMarket,
+      addPendingTrade,
+    ],
+  );
 
   // Gate the order submission on sufficient balance. Reads the balance at
   // click-time (not via `useBalance`) so we don't race a stale live-query

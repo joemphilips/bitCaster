@@ -107,7 +107,10 @@ export async function getProofs(
   options: { includeReserved?: boolean } = {},
 ): Promise<StoredProof[]> {
   if (mintUrl) {
-    const rows = await db.proofs.where("mintUrl").equals(normalizeUrl(mintUrl)).toArray();
+    const rows = await db.proofs
+      .where("mintUrl")
+      .equals(normalizeUrl(mintUrl))
+      .toArray();
     const normalized = rows.map(normalizeStoredProof);
     return options.includeReserved
       ? normalized
@@ -191,15 +194,39 @@ export async function getConditionCtfProofs(
 // trailing-slash / protocol-case drift.
 export async function addProofs(proofs: StoredProof[]): Promise<void> {
   const now = Date.now();
-  const stamped = proofs.map((p) => normalizeStoredProof({
-    ...p,
-    receivedAt: p.receivedAt ?? now,
-  }));
+  const stamped = proofs.map((p) =>
+    normalizeStoredProof({
+      ...p,
+      receivedAt: p.receivedAt ?? now,
+    }),
+  );
   await db.proofs.bulkPut(stamped);
 }
 
 export async function removeProofs(secrets: string[]): Promise<void> {
   await db.proofs.bulkDelete(secrets);
+}
+
+export async function replaceProofs(
+  spentSecrets: string[],
+  freshProofs: StoredProof[],
+): Promise<void> {
+  const uniqueSpentSecrets = [...new Set(spentSecrets)];
+  const now = Date.now();
+  const stamped = freshProofs.map((p) =>
+    normalizeStoredProof({
+      ...p,
+      receivedAt: p.receivedAt ?? now,
+    }),
+  );
+  await db.transaction("rw", db.proofs, async () => {
+    if (uniqueSpentSecrets.length > 0) {
+      await db.proofs.bulkDelete(uniqueSpentSecrets);
+    }
+    if (stamped.length > 0) {
+      await db.proofs.bulkPut(stamped);
+    }
+  });
 }
 
 export async function reserveProofs(
@@ -217,13 +244,17 @@ export async function reserveProofs(
   });
 }
 
-export async function releaseProofReservation(reservedBy: string): Promise<void> {
+export async function releaseProofReservation(
+  reservedBy: string,
+): Promise<void> {
   const rows = await db.proofs
     .filter((proof) => proof.reservedBy === reservedBy)
     .toArray();
   if (rows.length === 0) return;
   await db.proofs.bulkPut(
-    rows.map(({ reservedBy: _reservedBy, ...row }) => normalizeStoredProof(row)),
+    rows.map(({ reservedBy: _reservedBy, ...row }) =>
+      normalizeStoredProof(row),
+    ),
   );
 }
 
@@ -241,7 +272,9 @@ export async function releaseProofReservationsBySecret(
 export async function getReservedProofs(
   reservedBy: string,
 ): Promise<StoredProof[]> {
-  const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
+  const rows = await db.proofs
+    .filter((proof) => proof.reservedBy === reservedBy)
+    .toArray();
   return rows.map(normalizeStoredProof);
 }
 
@@ -275,6 +308,38 @@ export async function getProofOperation(
   operationId: string,
 ): Promise<ProofOperationRecord | null> {
   return (await db.proofOperations.get(operationId)) ?? null;
+}
+
+export async function getProofOperations(
+  input: {
+    mintUrl?: string;
+    states?: ProofOperationState[];
+    kinds?: ProofOperationKind[];
+    operationIdPrefix?: string;
+  } = {},
+): Promise<ProofOperationRecord[]> {
+  const mintUrl = input.mintUrl ? normalizeUrl(input.mintUrl) : undefined;
+  const stateSet = input.states ? new Set(input.states) : null;
+  const kindSet = input.kinds ? new Set(input.kinds) : null;
+  return (
+    await db.proofOperations
+      .filter((operation) => {
+        if (mintUrl && operation.mintUrl !== mintUrl) return false;
+        if (stateSet && !stateSet.has(operation.state)) return false;
+        if (kindSet && !kindSet.has(operation.kind)) return false;
+        if (
+          input.operationIdPrefix &&
+          !operation.operationId.startsWith(input.operationIdPrefix)
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .toArray()
+  ).map((operation) => ({
+    ...operation,
+    mintUrl: normalizeUrl(operation.mintUrl),
+  }));
 }
 
 export async function prepareProofOperation(
