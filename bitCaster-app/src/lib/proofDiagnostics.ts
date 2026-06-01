@@ -2,6 +2,9 @@ import type { Proof, ProofState, Wallet as CashuWallet } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 
 const LOCAL_STORAGE_FLAG = "bitcaster.cashuProofDiagnostics";
+const STAGING_DIAGNOSTIC_HOSTNAMES = new Set([
+  "frontend-bitcaster-staging.azurewebsites.net",
+]);
 
 export interface ProofStateDiagnosticSummary {
   enabled: boolean;
@@ -20,7 +23,7 @@ export function isProofDiagnosticsEnabled(): boolean {
   } catch {
     // Ignore storage access failures, e.g. private browsing restrictions.
   }
-  return window.location.hostname.includes("staging");
+  return STAGING_DIAGNOSTIC_HOSTNAMES.has(window.location.hostname);
 }
 
 export async function diagnoseProofStates(input: {

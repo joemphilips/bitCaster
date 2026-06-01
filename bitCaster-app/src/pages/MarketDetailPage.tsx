@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router";
-import { useTranslation } from "react-i18next";
 import { MarketDetail } from "@/components/market-detail";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
 import { NostrAuthRequiredModal } from "@/components/shared/NostrAuthRequiredModal";
@@ -23,11 +22,14 @@ import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
-import { diagnoseProofStates } from "@/lib/proofDiagnostics";
 import {
   reconcileCompletedPreflightProofOperations,
   runPreflightMintSingleFlight,
 } from "@/lib/preflightProofRecovery";
+import {
+  preparePreflightSplitForLimitBuy,
+  type PreparedPreflightSplit,
+} from "@/lib/preflightSplitPreparation";
 import {
   outcomeLabels,
   outcomeSetIdsForMarketBooks,
@@ -35,30 +37,15 @@ import {
   resolveOutcomeSets,
 } from "@/lib/outcomeSets";
 import {
-  addProofs,
-  getBaseProofs,
   getOutcomeProofs,
-  getProofOperation,
-  markProofOperationCompleted,
-  prepareProofOperation,
   releaseProofReservation,
-  replaceProofs,
-  reserveProofs,
 } from "@/stores/proof-db";
 import { getBalance, useBalance, useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
-import {
-  selectCollateralForCtfSplit,
-  splitRegularProofsWithOperation,
-  splitRootCompleteSetForPreflightOrder,
-  type CtfProofOperationRecord,
-  type CtfProofOperationStore,
-} from "@/lib/ctfSplit";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
-import type { Proof } from "@cashu/cashu-ts";
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -109,6 +96,21 @@ function marketShapeMatches(
     JSON.stringify(categoryTagIds(current)) ===
       JSON.stringify(categoryTagIds(latest))
   );
+}
+
+function mergeMarketRefresh(
+  current: MarketDetailType | null,
+  detail: MarketDetailType,
+): MarketDetailType {
+  if (!current || current.id !== detail.id) return detail;
+  return {
+    ...current,
+    ...detail,
+    priceHistory: current.priceHistory,
+    comments: current.comments,
+    relatedMarkets: current.relatedMarkets,
+    recentTrades: current.recentTrades,
+  };
 }
 
 export async function fetchMarketDetailWithBooks(
@@ -171,261 +173,9 @@ async function getSellSideBalance(
   return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
 }
 
-interface PreparedPreflightSplit {
-  reservationId: string;
-  conditionId: string;
-  keepOutcomeSetId: string;
-  lockOutcomeSetId: string;
-  amountSats: number;
-}
-
-interface PreparedCollateralLot {
-  inputs: Proof[];
-  spentSecrets: string[];
-  keepProofs: Proof[];
-}
-
-async function prepareCollateralLotForCtfSplit(input: {
-  mintUrl: string;
-  available: Proof[];
-  faceAmountSats: number;
-  reservationId: string;
-  lotIndex: number;
-}): Promise<PreparedCollateralLot> {
-  const operationId = `${input.reservationId}:regular-split:${input.lotIndex}`;
-  const existingRegularSplit = await getProofOperation(operationId);
-  if (existingRegularSplit) {
-    const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
-    const regularSplit = await splitRegularProofsWithOperation({
-      mintUrl: input.mintUrl,
-      operationId,
-      wallet,
-      proofs: [],
-      amountSats: input.faceAmountSats,
-      proofOperationStore: ctfProofOperationStore,
-    });
-    const exact = await selectCollateralForCtfSplit(
-      input.mintUrl,
-      regularSplit.send,
-      input.faceAmountSats,
-    );
-    await replaceProofs(
-      regularSplit.spent.map((proof) => proof.secret),
-      [
-        ...regularSplit.keep.map((proof) => ({
-          ...proof,
-          mintUrl: input.mintUrl,
-        })),
-        ...exact.inputs.map((proof) => ({
-          ...proof,
-          mintUrl: input.mintUrl,
-          reservedBy: input.reservationId,
-        })),
-      ],
-    );
-    return {
-      inputs: exact.inputs,
-      spentSecrets: exact.inputs.map((proof) => proof.secret),
-      keepProofs: regularSplit.keep,
-    };
-  }
-
-  try {
-    const exact = await selectCollateralForCtfSplit(
-      input.mintUrl,
-      input.available,
-      input.faceAmountSats,
-    );
-    await diagnoseProofStates({
-      label: "preflight:exact-collateral",
-      mintUrl: input.mintUrl,
-      proofs: exact.inputs,
-      extra: {
-        lotIndex: input.lotIndex,
-        faceAmountSats: input.faceAmountSats,
-      },
-    });
-    await reserveProofs(
-      exact.inputs.map((proof) => proof.secret),
-      input.reservationId,
-    );
-    return {
-      inputs: exact.inputs,
-      spentSecrets: exact.inputs.map((proof) => proof.secret),
-      keepProofs: [],
-    };
-  } catch {
-    // No exact net input is available. Split larger/fragmented regular sats
-    // into a gross input that will net to the requested CTF face amount.
-  }
-
-  const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
-  if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
-    throw new Error(
-      "Cashu wallet adapter does not support fee-aware proof selection.",
-    );
-  }
-  const selected = wallet.selectProofsToSend(
-    input.available,
-    input.faceAmountSats,
-    true,
-    false,
-  );
-  if (selected.send.length === 0) {
-    throw new Error(
-      "No regular collateral proofs are available for CTF split.",
-    );
-  }
-  await diagnoseProofStates({
-    label: "preflight:regular-split-inputs",
-    mintUrl: input.mintUrl,
-    proofs: selected.send,
-    wallet,
-    extra: {
-      lotIndex: input.lotIndex,
-      faceAmountSats: input.faceAmountSats,
-    },
-  });
-  const grossCtfInputSats =
-    input.faceAmountSats +
-    amountToNumber(wallet.getFeesForProofs([selected.send[0]]));
-  const regularSplit = await splitRegularProofsWithOperation({
-    mintUrl: input.mintUrl,
-    operationId,
-    wallet,
-    proofs: selected.send,
-    amountSats: grossCtfInputSats,
-    proofOperationStore: ctfProofOperationStore,
-  });
-  const exact = await selectCollateralForCtfSplit(
-    input.mintUrl,
-    regularSplit.send,
-    input.faceAmountSats,
-  );
-  await replaceProofs(
-    regularSplit.spent.map((proof) => proof.secret),
-    [
-      ...regularSplit.keep.map((proof) => ({
-        ...proof,
-        mintUrl: input.mintUrl,
-      })),
-      ...exact.inputs.map((proof) => ({
-        ...proof,
-        mintUrl: input.mintUrl,
-        reservedBy: input.reservationId,
-      })),
-    ],
-  );
-  return {
-    inputs: exact.inputs,
-    spentSecrets: exact.inputs.map((proof) => proof.secret),
-    keepProofs: regularSplit.keep,
-  };
-}
-
-const ctfProofOperationStore: CtfProofOperationStore = {
-  getProofOperation: async (operationId) =>
-    (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
-  prepareProofOperation: async (input) =>
-    (await prepareProofOperation(input)) as CtfProofOperationRecord,
-  markProofOperationCompleted: async (operationId, resultProofs) =>
-    (await markProofOperationCompleted(
-      operationId,
-      resultProofs,
-    )) as CtfProofOperationRecord,
-};
-
-async function preparePreflightSplitForLimitBuy(input: {
-  mintUrl: string;
-  market: MarketDetailType;
-  selectedOutcomeSetId: string;
-  complementOutcomeSetId: string;
-  amountSats: number;
-  reservationId: string;
-}): Promise<PreparedPreflightSplit> {
-  if (input.amountSats % 100 !== 0) {
-    throw new Error("Pre-flight split requires 100 sat order increments.");
-  }
-
-  let available: Proof[] = await getBaseProofs(input.mintUrl);
-  const spentSecrets = new Set<string>();
-  const proofsToStore: Parameters<typeof addProofs>[0] = [];
-  let resolvedKeepOutcomeSetId = input.selectedOutcomeSetId;
-  let resolvedLockOutcomeSetId = input.complementOutcomeSetId;
-
-  try {
-    for (let offset = 0; offset < input.amountSats; offset += 100) {
-      const lotIndex = offset / 100;
-      const collateral = await prepareCollateralLotForCtfSplit({
-        mintUrl: input.mintUrl,
-        available,
-        faceAmountSats: 100,
-        reservationId: input.reservationId,
-        lotIndex,
-      });
-      const operationId = `${input.reservationId}:ctf-split:${lotIndex}`;
-      await diagnoseProofStates({
-        label: "preflight:ctf-split-inputs-before",
-        mintUrl: input.mintUrl,
-        proofs: collateral.inputs,
-        extra: {
-          lotIndex,
-          conditionId: input.market.id,
-          operationId,
-        },
-      });
-      const split = await splitRootCompleteSetForPreflightOrder({
-        mintUrl: input.mintUrl,
-        conditionId: input.market.id,
-        collateralProofs: collateral.inputs,
-        amountSats: 100,
-        keepOutcomeSetId: input.selectedOutcomeSetId,
-        lockOutcomeSetId: input.complementOutcomeSetId,
-        operationId,
-        proofOperationStore: ctfProofOperationStore,
-      });
-
-      resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId;
-      resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId;
-      for (const proof of split.spentSatProofs) spentSecrets.add(proof.secret);
-      for (const [outcomeCollection, proofs] of Object.entries(
-        split.proofsByCollection,
-      )) {
-        proofsToStore.push(
-          ...proofs.map((proof) => ({
-            ...proof,
-            mintUrl: input.mintUrl,
-            conditionId: input.market.id,
-            outcomeCollection,
-            marketId: `${input.market.id}-${outcomeCollection}`,
-            reservedBy: input.reservationId,
-          })),
-        );
-      }
-      available = available
-        .filter((proof) => !collateral.spentSecrets.includes(proof.secret))
-        .concat(collateral.keepProofs);
-    }
-  } catch (err) {
-    await releaseProofReservation(input.reservationId);
-    throw err;
-  }
-
-  await replaceProofs([...spentSecrets], proofsToStore);
-
-  return {
-    reservationId: input.reservationId,
-    conditionId: input.market.id,
-    keepOutcomeSetId: resolvedKeepOutcomeSetId,
-    lockOutcomeSetId: resolvedLockOutcomeSetId,
-    amountSats: input.amountSats,
-  };
-}
-
 export function MarketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { t } = useTranslation();
   const setupComplete = useWalletStore((s) => s.setupComplete);
   const walletBackupState = useWalletStore((s) => s.walletBackupState);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
@@ -479,14 +229,15 @@ export function MarketDetailPage() {
   >();
 
   // Load market data
-  const loadMarket = useCallback(() => {
+  const loadMarket = useCallback((options: { showLoading?: boolean } = {}) => {
     if (!id) return;
-    setLoading(true);
+    const showLoading = options.showLoading ?? true;
+    if (showLoading) setLoading(true);
     setError(null);
 
     fetchMarketDetail(id)
       .then((detail) => {
-        setMarket(detail);
+        setMarket((current) => mergeMarketRefresh(current, detail));
         void fetchMarketOrderBooks(id, detail).then((books) => {
           setMarket((current) =>
             current?.id === id ? { ...current, ...books } : current,
@@ -499,7 +250,7 @@ export function MarketDetailPage() {
         );
       })
       .finally(() => {
-        setLoading(false);
+        if (showLoading) setLoading(false);
       });
   }, [id]);
 
@@ -823,7 +574,7 @@ export function MarketDetailPage() {
         ) {
           setShowBackupReminder(true);
         }
-        loadMarket();
+        loadMarket({ showLoading: false });
       } catch (e) {
         if (preparedPreflightSplit && !submitAttempted) {
           await releaseProofReservation(preparedPreflightSplit.reservationId);
@@ -857,7 +608,6 @@ export function MarketDetailPage() {
       activeMintUrl,
       loadMarket,
       addPendingTrade,
-      t,
     ],
   );
 
@@ -976,7 +726,7 @@ export function MarketDetailPage() {
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
         <div className="text-red-400">{error ?? "Market not found"}</div>
         <button
-          onClick={loadMarket}
+          onClick={() => loadMarket()}
           className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
         >
           Retry
