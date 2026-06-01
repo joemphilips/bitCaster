@@ -1,76 +1,82 @@
-import type { Market, FilterState } from '@/types/market'
-import type { MarketDetail, OrderBook, Order, PriceHistory } from '@/types/market-detail'
-import type { MarketSort } from '@/hooks/useMarketSort'
-import type { components } from '@/generated/api'
+import type { Market, FilterState } from "@/types/market";
+import type {
+  MarketDetail,
+  OrderBook,
+  Order,
+  PriceHistory,
+} from "@/types/market-detail";
+import type { MarketSort } from "@/hooks/useMarketSort";
+import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
   type SubmitOrderRequest as SdkSubmitOrderRequest,
-} from '@bitcaster/client-sdk/engineClient'
-import { getNdk } from '@/lib/nostr'
-import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { bytesToHex } from 'nostr-tools/utils'
-import { isAttestationResolved, normalizeMintdStatus } from './mintdIngress'
+} from "@bitcaster/client-sdk/engineClient";
+import { getNdk } from "@/lib/nostr";
+import { NDKEvent } from "@nostr-dev-kit/ndk";
+import { bytesToHex } from "nostr-tools/utils";
+import { isAttestationResolved, normalizeMintdStatus } from "./mintdIngress";
 
 // Types from generated OpenAPI spec
 
-export type SubmitOrderRequest = components['schemas']['SubmitOrderRequest']
-export type SubmitOrderResponse = components['schemas']['SubmitOrderResponse']
-export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
-export type LevelDto = components['schemas']['LevelDto']
-export type Fill = components['schemas']['Fill']
+export type SubmitOrderRequest = components["schemas"]["SubmitOrderRequest"];
+export type SubmitOrderResponse = components["schemas"]["SubmitOrderResponse"];
+export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
+export type LevelDto = components["schemas"]["LevelDto"];
+export type Fill = components["schemas"]["Fill"];
 export type MarketMetadataSnapshot =
-  components['schemas']['MarketMetadataSnapshot']
-export type CreateMarketRequest = components['schemas']['CreateMarketRequest']
-export type CreateMarketResponse = components['schemas']['CreateMarketResponse']
-export type CreatorMarketEntry = components['schemas']['CreatorMarketEntry']
+  components["schemas"]["MarketMetadataSnapshot"];
+export type CreateMarketRequest = components["schemas"]["CreateMarketRequest"];
+export type CreateMarketResponse =
+  components["schemas"]["CreateMarketResponse"];
+export type CreatorMarketEntry = components["schemas"]["CreatorMarketEntry"];
 export type CreatorMarketsResponse =
-  components['schemas']['CreatorMarketsResponse']
-export type OracleNostrEvent = components['schemas']['OracleNostrEvent']
+  components["schemas"]["CreatorMarketsResponse"];
+export type OracleNostrEvent = components["schemas"]["OracleNostrEvent"];
 export type OracleAttestationResponse =
-  components['schemas']['OracleAttestationResponse']
+  components["schemas"]["OracleAttestationResponse"];
 export type MarketPriceHistoryResponse =
-  components['schemas']['MarketPriceHistoryResponse']
+  components["schemas"]["MarketPriceHistoryResponse"];
 export type MarketCommentsResponse =
-  components['schemas']['MarketCommentsResponse']
-export type NostrKind1Event = components['schemas']['NostrKind1Event']
+  components["schemas"]["MarketCommentsResponse"];
+export type NostrKind1Event = components["schemas"]["NostrKind1Event"];
 
 // CDK mint response types
 
 export interface PartitionInfoEntry {
-  partition: string[]
-  collateral: string
-  parent_collection_id: string
-  keysets: Record<string, string>
+  partition: string[];
+  collateral: string;
+  parent_collection_id: string;
+  keysets: Record<string, string>;
 }
 
 export interface AttestationState {
-  status: 'pending' | 'attested' | 'expired' | 'violation'
-  winning_outcome: string | null
-  attested_at: number | null
+  status: "pending" | "attested" | "expired" | "violation";
+  winning_outcome: string | null;
+  attested_at: number | null;
 }
 
 export interface ConditionInfo {
-  condition_id: string
-  tags?: string[][] // NIP-88 tag array (new spec)
-  description?: string // Legacy field (pre-tags CDK)
-  threshold: number
-  announcements: string[]
-  partitions: PartitionInfoEntry[]
-  attestation: AttestationState
-  condition_type?: string // "enum" (default, omitted) or "numeric"
+  condition_id: string;
+  tags?: string[][]; // NIP-88 tag array (new spec)
+  description?: string; // Legacy field (pre-tags CDK)
+  threshold: number;
+  announcements: string[];
+  partitions: PartitionInfoEntry[];
+  attestation: AttestationState;
+  condition_type?: string; // "enum" (default, omitted) or "numeric"
 }
 
 export function getTagValue(tags: string[][], key: string): string | undefined {
-  const tag = tags.find((t) => t.length >= 2 && t[0] === key)
-  return tag?.[1]
+  const tag = tags.find((t) => t.length >= 2 && t[0] === key);
+  return tag?.[1];
 }
 
 export function getTagValues(tags: string[][], key: string): string[] {
-  const tag = tags.find((t) => t.length >= 2 && t[0] === key)
-  return tag ? tag.slice(1) : []
+  const tag = tags.find((t) => t.length >= 2 && t[0] === key);
+  return tag ? tag.slice(1) : [];
 }
 
-const KNOWN_TAG_KEYS = new Set(['description', 'title', 'n'])
+const KNOWN_TAG_KEYS = new Set(["description", "title", "n"]);
 
 /**
  * Identify the canonical two-outcome `Yes`/`No` universe so the mappers can
@@ -81,19 +87,19 @@ const KNOWN_TAG_KEYS = new Set(['description', 'title', 'n'])
 function isYesNoUniverse(outcomes: readonly string[]): boolean {
   return (
     outcomes.length === 2 &&
-    outcomes[0]?.toLowerCase() === 'yes' &&
-    outcomes[1]?.toLowerCase() === 'no'
-  )
+    outcomes[0]?.toLowerCase() === "yes" &&
+    outcomes[1]?.toLowerCase() === "no"
+  );
 }
 
 export function extractCategoryTagIds(tags: string[][]): string[] {
   return tags
     .filter((t) => t.length >= 2 && !KNOWN_TAG_KEYS.has(t[0]))
-    .map((t) => t[1])
+    .map((t) => t[1]);
 }
 
 interface ConditionsResponse {
-  conditions: ConditionInfo[]
+  conditions: ConditionInfo[];
 }
 
 /**
@@ -102,33 +108,33 @@ interface ConditionsResponse {
  * call mintd directly before value is spent, locked, claimed, or resolved.
  */
 export async function fetchConditions(): Promise<ConditionInfo[]> {
-  const response = await fetch('/v1/conditions')
+  const response = await fetch("/v1/conditions");
   if (!response.ok) {
-    throw new Error(`Failed to fetch conditions: ${response.status}`)
+    throw new Error(`Failed to fetch conditions: ${response.status}`);
   }
-  const data: ConditionsResponse = await response.json()
-  return data.conditions
+  const data: ConditionsResponse = await response.json();
+  return data.conditions;
 }
 
 export async function fetchMarketMetadata(
   marketId: string,
 ): Promise<MarketMetadataSnapshot | null> {
   try {
-    const response = await fetch(`/api/v1/${marketId}/metadata`)
-    if (!response.ok) return null
-    return await response.json()
+    const response = await fetch(`/api/v1/${marketId}/metadata`);
+    if (!response.ok) return null;
+    return await response.json();
   } catch {
-    return null
+    return null;
   }
 }
 
 function applyMetadata<
   T extends {
-    volume: number
-    liquidity: number
-    liquiditySats: number
-    traderCount: number
-    volumeLifetimeSats: number
+    volume: number;
+    liquidity: number;
+    liquiditySats: number;
+    traderCount: number;
+    volumeLifetimeSats: number;
   },
 >(base: T, meta: MarketMetadataSnapshot): T {
   return {
@@ -138,62 +144,63 @@ function applyMetadata<
     liquiditySats: meta.totalLiquiditySats,
     traderCount: meta.uniqueTraderCount,
     volumeLifetimeSats: meta.totalVolumeSats,
-  }
+  };
 }
 
 // =============================================================================
 // Engine markets-query proxy (ADR-009)
 // =============================================================================
 
-const SORT_TO_QUERY: Record<MarketSort, 'Trending' | 'Popular' | 'New'> = {
-  trending: 'Trending',
-  popular: 'Popular',
-  new: 'New',
-}
+const SORT_TO_QUERY: Record<MarketSort, "Trending" | "Popular" | "New"> = {
+  trending: "Trending",
+  popular: "Popular",
+  new: "New",
+};
 
 export interface GetMarketsParams {
   /** Sort dimension. Defaults to engine default (`Trending`) when omitted. */
-  sort?: MarketSort
+  sort?: MarketSort;
   /** Repeatable category-tag filter. OR semantics across the supplied tags. */
-  tags?: string[]
+  tags?: string[];
   /** Bulk-fetch by conditionId (cap 100). Pagination still applies. */
-  ids?: string[]
+  ids?: string[];
   /** State filter — defaults to `Open`. */
-  state?: 'Open' | 'Closed' | 'All'
+  state?: "Open" | "Closed" | "All";
   /** Opaque HMAC-signed cursor returned in the previous response. */
-  cursor?: string
+  cursor?: string;
   /** Page size (default 20, max 50). */
-  pageSize?: number
+  pageSize?: number;
   /** Full-text market search query. */
-  search?: string
+  search?: string;
 }
 
 export interface GetMarketsResult {
   /** Page of markets ordered by the active sort dimension. */
-  markets: Market[]
+  markets: Market[];
   /** Cursor for the next page, or `null` when this is the last page. */
-  nextCursor: string | null
+  nextCursor: string | null;
   /** Mintd-mirror staleness timestamp (ISO-8601). */
-  lastSuccessfulRefreshAt: string
+  lastSuccessfulRefreshAt: string;
 }
 
-export type MarketCatalogueEntry = components['schemas']['MarketCatalogueEntry']
+export type MarketCatalogueEntry =
+  components["schemas"]["MarketCatalogueEntry"];
 export type MarketCatalogueResponse =
-  components['schemas']['MarketCatalogueResponse']
+  components["schemas"]["MarketCatalogueResponse"];
 
 function buildMarketsQueryString(params: GetMarketsParams): string {
-  const search = new URLSearchParams()
-  if (params.sort) search.set('sort', SORT_TO_QUERY[params.sort])
-  if (params.state) search.set('state', params.state)
-  if (params.cursor) search.set('cursor', params.cursor)
-  if (params.pageSize) search.set('page_size', String(params.pageSize))
-  if (params.search?.trim()) search.set('search', params.search.trim())
-  for (const t of params.tags ?? []) search.append('tag', t)
+  const search = new URLSearchParams();
+  if (params.sort) search.set("sort", SORT_TO_QUERY[params.sort]);
+  if (params.state) search.set("state", params.state);
+  if (params.cursor) search.set("cursor", params.cursor);
+  if (params.pageSize) search.set("page_size", String(params.pageSize));
+  if (params.search?.trim()) search.set("search", params.search.trim());
+  for (const t of params.tags ?? []) search.append("tag", t);
   // ?ids= is comma-separated per the OpenAPI spec, not repeated.
   if (params.ids && params.ids.length > 0)
-    search.set('ids', params.ids.join(','))
-  const qs = search.toString()
-  return qs ? `?${qs}` : ''
+    search.set("ids", params.ids.join(","));
+  const qs = search.toString();
+  return qs ? `?${qs}` : "";
 }
 
 /**
@@ -202,17 +209,17 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
  * list needs; the mapper just shapes it into the existing `Market` union.
  */
 export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
-  const outcomes = entry.outcomes ?? []
-  const isYesNo = isYesNoUniverse(outcomes)
+  const outcomes = entry.outcomes ?? [];
+  const isYesNo = isYesNoUniverse(outcomes);
 
-  const closingDate = entry.deadline ?? entry.createdAt
-  const title = entry.title ?? 'Untitled Market'
-  const imageUrl = entry.thumbnailUrl ?? ''
+  const closingDate = entry.deadline ?? entry.createdAt;
+  const title = entry.title ?? "Untitled Market";
+  const imageUrl = entry.thumbnailUrl ?? "";
 
   const base = {
     id: entry.conditionId,
     title,
-    state: normalizeEngineMarketState(entry.state) ?? 'open',
+    state: normalizeEngineMarketState(entry.state) ?? "open",
     imageUrl,
     categoryTags: entry.categoryTags ?? [],
     metaTags: [],
@@ -225,26 +232,26 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     createdDate: entry.createdAt,
     activeSince: entry.createdAt,
     creatorFeePercent: 0,
-    baseMarket: 'sats',
-  }
+    baseMarket: "sats",
+  };
 
   if (isYesNo) {
     return {
       ...base,
-      type: 'yesno',
+      type: "yesno",
       currentOdds: { yes: 50, no: 50 },
-    }
+    };
   }
 
   return {
     ...base,
-    type: 'categorical',
+    type: "categorical",
     outcomes: outcomes.map((label, i) => ({
       id: `outcome-${i}`,
       label,
       odds: 100 / Math.max(outcomes.length, 1),
     })),
-  }
+  };
 }
 
 /**
@@ -256,66 +263,66 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
 export async function getMarkets(
   params: GetMarketsParams = {},
 ): Promise<GetMarketsResult> {
-  const url = `/api/v1/markets/query${buildMarketsQueryString(params)}`
+  const url = `/api/v1/markets/query${buildMarketsQueryString(params)}`;
   const response = await fetch(url, {
-    headers: { Accept: 'application/json' },
-  })
+    headers: { Accept: "application/json" },
+  });
   if (!response.ok) {
-    throw new Error(`Failed to query markets: ${response.status}`)
+    throw new Error(`Failed to query markets: ${response.status}`);
   }
-  const body: MarketCatalogueResponse = await response.json()
-  const markets = (body.markets ?? []).map(mapCatalogueEntryToMarket)
+  const body: MarketCatalogueResponse = await response.json();
+  const markets = (body.markets ?? []).map(mapCatalogueEntryToMarket);
   return {
     markets,
     nextCursor: body.nextCursor ?? null,
     lastSuccessfulRefreshAt: body.lastSuccessfulRefreshAt,
-  }
+  };
 }
 
 export function filterMarkets(
   markets: Market[],
   filter: FilterState,
 ): Market[] {
-  let result = markets
+  let result = markets;
 
   if (filter.searchQuery) {
-    const query = filter.searchQuery.toLowerCase()
-    result = result.filter((m) => m.title.toLowerCase().includes(query))
+    const query = filter.searchQuery.toLowerCase();
+    result = result.filter((m) => m.title.toLowerCase().includes(query));
   }
 
   // Multi-tag OR semantics: a market matches if ANY of its meta/category
   // tags is in the selected set. Empty set means "no tag filter".
   if (filter.selectedTags.length > 0) {
-    const wanted = new Set(filter.selectedTags)
+    const wanted = new Set(filter.selectedTags);
     result = result.filter(
       (m) =>
         m.metaTags.some((id) => wanted.has(id)) ||
         m.categoryTags.some((id) => wanted.has(id)),
-    )
+    );
   }
 
   if (filter.marketTypes.length > 0) {
-    result = result.filter((m) => filter.marketTypes.includes(m.type))
+    result = result.filter((m) => filter.marketTypes.includes(m.type));
   }
 
   if (filter.volumeRange.min !== undefined) {
-    const min = filter.volumeRange.min
-    result = result.filter((m) => m.volume >= min)
+    const min = filter.volumeRange.min;
+    result = result.filter((m) => m.volume >= min);
   }
 
   if (filter.volumeRange.max !== undefined) {
-    const max = filter.volumeRange.max
-    result = result.filter((m) => m.volume <= max)
+    const max = filter.volumeRange.max;
+    result = result.filter((m) => m.volume <= max);
   }
 
   if (filter.closingInDays !== undefined) {
-    const days = filter.closingInDays
-    const cutoff = new Date()
-    cutoff.setDate(cutoff.getDate() + days)
-    result = result.filter((m) => new Date(m.closingDate) <= cutoff)
+    const days = filter.closingInDays;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() + days);
+    result = result.filter((m) => new Date(m.closingDate) <= cutoff);
   }
 
-  return result
+  return result;
 }
 
 // =============================================================================
@@ -323,31 +330,31 @@ export function filterMarkets(
 // =============================================================================
 
 function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
-  const firstPartition = c.partitions[0]
-  const outcomes = firstPartition?.partition ?? []
+  const firstPartition = c.partitions[0];
+  const outcomes = firstPartition?.partition ?? [];
   const mappedOutcomes = outcomes.map((label, i) => ({
     id: `outcome-${i}`,
     label,
     odds: 100 / Math.max(outcomes.length, 1),
-  }))
-  const now = new Date().toISOString()
+  }));
+  const now = new Date().toISOString();
 
-  const isYesNo = isYesNoUniverse(outcomes)
+  const isYesNo = isYesNoUniverse(outcomes);
 
   // Mintd attestation is reduced to outcome metadata per ADR-009 Amendment
   // 2026-05-04. Lifecycle (Open / Closed) reads engine `state` and is merged
   // in by `fetchMarketDetail` after this mapper runs. Normalise the raw
   // mintd value once at the ingress boundary per `bitcaster-coding-guideline`
   // Rule 2; the resolution-info panel consumes the canonical union below.
-  const attestationStatus = normalizeMintdStatus(c.attestation.status)
-  const isResolved = isAttestationResolved(attestationStatus)
-  const tags = c.tags ?? []
-  const description = getTagValue(tags, 'description')?.trim()
+  const attestationStatus = normalizeMintdStatus(c.attestation.status);
+  const isResolved = isAttestationResolved(attestationStatus);
+  const tags = c.tags ?? [];
+  const description = getTagValue(tags, "description")?.trim();
   const title =
-    getTagValue(tags, 'title')?.trim() ??
+    getTagValue(tags, "title")?.trim() ??
     c.description?.trim() ??
     description ??
-    'Untitled Market'
+    "Untitled Market";
 
   const base = {
     id: c.condition_id,
@@ -366,73 +373,73 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     closingDate: null,
     createdDate: now,
     activeSince: now,
-    baseUnit: 'sats',
+    baseUnit: "sats",
     mint: {
-      collateral: firstPartition?.collateral ?? 'sat',
+      collateral: firstPartition?.collateral ?? "sat",
       keysetCount: Object.keys(firstPartition?.keysets ?? {}).length,
     },
     creator: {
-      id: 'unknown',
-      name: 'Unknown',
+      id: "unknown",
+      name: "Unknown",
       totalMarketsCreated: 0,
       feePercent: 0,
     },
     outcomes: mappedOutcomes,
     resolution: {
       criteria: description || title,
-      source: 'oracle' as const,
+      source: "oracle" as const,
       resolutionDate: c.attestation.attested_at
         ? new Date(c.attestation.attested_at * 1000).toISOString()
         : now,
-      status: isResolved ? ('resolved' as const) : ('open' as const),
+      status: isResolved ? ("resolved" as const) : ("open" as const),
       finalOutcome: c.attestation.winning_outcome ?? undefined,
     },
-    priceHistory: { data: [], timeframe: '7d' as const },
+    priceHistory: { data: [], timeframe: "7d" as const },
     orderBook: { bids: [], asks: [], spread: 0 },
     recentTrades: [],
     comments: [],
     relatedMarkets: [],
-  }
+  };
 
   if (isYesNo) {
     return {
       ...base,
-      type: 'yesno',
+      type: "yesno",
       currentOdds: { yes: 50, no: 50 },
-    }
+    };
   }
 
   return {
     ...base,
-    type: 'categorical',
+    type: "categorical",
     outcomePriceHistories: {},
     outcomeOrderBooks: {},
-  }
+  };
 }
 
 function mapCatalogueEntryToMarketDetail(
   entry: MarketCatalogueEntry,
   mintCondition: ConditionInfo | null,
 ): MarketDetail {
-  const firstPartition = mintCondition?.partitions[0]
+  const firstPartition = mintCondition?.partitions[0];
   const outcomes =
     entry.outcomes && entry.outcomes.length > 0
       ? entry.outcomes
-      : (firstPartition?.partition ?? [])
+      : (firstPartition?.partition ?? []);
   const mappedOutcomes = outcomes.map((label, i) => ({
     id: `outcome-${i}`,
     label,
     odds: 100 / Math.max(outcomes.length, 1),
-  }))
-  const now = new Date().toISOString()
-  const createdAt = entry.createdAt ?? now
-  const title = entry.title?.trim() || 'Untitled Market'
-  const description = entry.description?.trim()
-  const creatorPubkey = entry.creatorPubkey?.trim()
-  const normalisedState = normalizeEngineMarketState(entry.state)
-  const finalOutcome = entry.finalOutcome?.trim() || undefined
-  const resolutionDate = entry.closedAt ?? entry.deadline ?? createdAt
-  const isYesNo = isYesNoUniverse(outcomes)
+  }));
+  const now = new Date().toISOString();
+  const createdAt = entry.createdAt ?? now;
+  const title = entry.title?.trim() || "Untitled Market";
+  const description = entry.description?.trim();
+  const creatorPubkey = entry.creatorPubkey?.trim();
+  const normalisedState = normalizeEngineMarketState(entry.state);
+  const finalOutcome = entry.finalOutcome?.trim() || undefined;
+  const resolutionDate = entry.closedAt ?? entry.deadline ?? createdAt;
+  const isYesNo = isYesNoUniverse(outcomes);
 
   const base = {
     id: entry.conditionId,
@@ -452,9 +459,9 @@ function mapCatalogueEntryToMarketDetail(
     closingDate: entry.deadline ?? null,
     createdDate: createdAt,
     activeSince: createdAt,
-    baseUnit: 'sats',
+    baseUnit: "sats",
     mint: {
-      collateral: firstPartition?.collateral ?? 'sat',
+      collateral: firstPartition?.collateral ?? "sat",
       keysetCount: Object.keys(firstPartition?.keysets ?? {}).length,
     },
     creator: creatorPubkey
@@ -465,40 +472,40 @@ function mapCatalogueEntryToMarketDetail(
           feePercent: 0,
         }
       : {
-          id: 'unknown',
-          name: 'Unknown',
+          id: "unknown",
+          name: "Unknown",
           totalMarketsCreated: 0,
           feePercent: 0,
         },
     outcomes: mappedOutcomes,
     resolution: {
       criteria: description || title,
-      source: 'oracle' as const,
+      source: "oracle" as const,
       resolutionDate,
-      status: finalOutcome ? ('resolved' as const) : ('open' as const),
+      status: finalOutcome ? ("resolved" as const) : ("open" as const),
       finalOutcome,
     },
-    priceHistory: { data: [], timeframe: '7d' as const },
+    priceHistory: { data: [], timeframe: "7d" as const },
     orderBook: { bids: [], asks: [], spread: 0 },
     recentTrades: [],
     comments: [],
     relatedMarkets: [],
-  }
+  };
 
   if (isYesNo) {
     return {
       ...base,
-      type: 'yesno',
+      type: "yesno",
       currentOdds: { yes: 50, no: 50 },
-    }
+    };
   }
 
   return {
     ...base,
-    type: 'categorical',
+    type: "categorical",
     outcomePriceHistories: {},
     outcomeOrderBooks: {},
-  }
+  };
 }
 
 /**
@@ -518,22 +525,22 @@ async function fetchEngineCatalogueEntry(
 ): Promise<MarketCatalogueEntry | null> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`
+      const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`;
       const response = await fetch(url, {
-        headers: { Accept: 'application/json' },
-      })
-      if (!response.ok) return null
-      const body: MarketCatalogueResponse = await response.json()
-      const entry = body.markets.find((m) => m.conditionId === conditionId)
-      if (entry) return entry
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) return null;
+      const body: MarketCatalogueResponse = await response.json();
+      const entry = body.markets.find((m) => m.conditionId === conditionId);
+      if (entry) return entry;
     } catch {
-      return null
+      return null;
     }
     if (attempt < attempts - 1) {
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 500))
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 500));
     }
   }
-  return null
+  return null;
 }
 
 /**
@@ -553,54 +560,51 @@ async function fetchEngineCatalogueEntry(
  */
 function normalizeEngineMarketState(
   raw: unknown,
-): MarketCatalogueEntry['state'] | null {
-  if (raw == null) return null
-  const s = String(raw).toLowerCase().trim()
-  if (s === 'open' || s === 'closed') return s
-  return null
+): MarketCatalogueEntry["state"] | null {
+  if (raw == null) return null;
+  const s = String(raw).toLowerCase().trim();
+  if (s === "open" || s === "closed") return s;
+  return null;
 }
 
 export async function fetchMarketDetail(
   conditionId: string,
 ): Promise<MarketDetail> {
-  // Routine detail rendering is engine-first. Mintd can lag or contain stale
-  // mirrored rows during local/staging smoke; use it only as a fallback and
-  // as mint/keyset enrichment once the engine has the public catalogue row.
-  const [engineEntry, conditionsResult, meta, priceHistory, comments] = await Promise.all([
-    fetchEngineCatalogueEntry(conditionId),
+  // First render is engine-first and intentionally narrow: the route shell
+  // should not wait on mintd, comments, or price history. Trading-time paths
+  // perform mint-authority checks where funds can move.
+  const engineEntry = await fetchEngineCatalogueEntry(conditionId);
+  if (engineEntry) {
+    return mapCatalogueEntryToMarketDetail(engineEntry, null);
+  }
+
+  const [conditionsResult, meta] = await Promise.all([
     fetchConditions().catch(() => [] as ConditionInfo[]),
     fetchMarketMetadata(conditionId),
-    fetchMarketPriceHistory(conditionId, '7d').catch(() => null),
-    fetchMarketComments(conditionId).catch(() => null),
-  ])
-  const condition = conditionsResult.find((c) => c.condition_id === conditionId)
-  if (engineEntry) {
-    const detail = mapCatalogueEntryToMarketDetail(engineEntry, condition ?? null)
-    const withHistory = priceHistory ? applyMarketPriceHistory(detail, priceHistory) : detail
-    return comments ? applyMarketComments(withHistory, comments) : withHistory
-  }
+  ]);
+  const condition = conditionsResult.find(
+    (c) => c.condition_id === conditionId,
+  );
   if (!condition) {
-    throw new Error(`Condition not found: ${conditionId}`)
+    throw new Error(`Condition not found: ${conditionId}`);
   }
-  const detail = mapConditionToMarketDetail(condition)
-  const withMetadata = meta ? applyMetadata(detail, meta) : detail
-  const withHistory = priceHistory ? applyMarketPriceHistory(withMetadata, priceHistory) : withMetadata
-  return comments ? applyMarketComments(withHistory, comments) : withHistory
+  const detail = mapConditionToMarketDetail(condition);
+  return meta ? applyMetadata(detail, meta) : detail;
 }
 
 export async function fetchMarketPriceHistory(
   conditionId: string,
-  timeframe: PriceHistory['timeframe'] = '7d',
+  timeframe: PriceHistory["timeframe"] = "7d",
 ): Promise<MarketPriceHistoryResponse> {
-  const params = new URLSearchParams({ timeframe })
+  const params = new URLSearchParams({ timeframe });
   const response = await fetch(
     `/api/v1/markets/${encodeURIComponent(conditionId)}/price-history?${params}`,
-    { headers: { Accept: 'application/json' } },
-  )
+    { headers: { Accept: "application/json" } },
+  );
   if (!response.ok) {
-    throw new Error(`Failed to fetch price history: ${response.status}`)
+    throw new Error(`Failed to fetch price history: ${response.status}`);
   }
-  return (await response.json()) as MarketPriceHistoryResponse
+  return (await response.json()) as MarketPriceHistoryResponse;
 }
 
 export async function fetchMarketComments(
@@ -608,15 +612,15 @@ export async function fetchMarketComments(
 ): Promise<MarketCommentsResponse> {
   const response = await fetch(
     `/api/v1/markets/${encodeURIComponent(conditionId)}/comments`,
-    { headers: { Accept: 'application/json' } },
-  )
+    { headers: { Accept: "application/json" } },
+  );
   if (!response.ok) {
-    throw new Error(`Failed to fetch comments: ${response.status}`)
+    throw new Error(`Failed to fetch comments: ${response.status}`);
   }
-  return (await response.json()) as MarketCommentsResponse
+  return (await response.json()) as MarketCommentsResponse;
 }
 
-function applyMarketComments(
+export function applyMarketComments(
   market: MarketDetail,
   response: MarketCommentsResponse,
 ): MarketDetail {
@@ -625,14 +629,14 @@ function applyMarketComments(
     comments: response.comments.map((comment) => ({
       id: comment.commentId,
       userId: `comment:${comment.commentId}`,
-      userDisplayName: 'Verified trader',
+      userDisplayName: "Verified trader",
       userAvatarUrl: undefined,
       content: comment.content,
       timestamp: comment.createdAt,
       likeCount: 0,
       isLiked: false,
     })),
-  }
+  };
 }
 
 export function applyMarketPriceHistory(
@@ -640,70 +644,73 @@ export function applyMarketPriceHistory(
   response: MarketPriceHistoryResponse,
 ): MarketDetail {
   const byOutcomeLabel = new Map(
-    (market.outcomes ?? []).map((outcome) => [outcome.label, outcome.id] as const),
-  )
+    (market.outcomes ?? []).map(
+      (outcome) => [outcome.label, outcome.id] as const,
+    ),
+  );
   const toPriceHistory = (
-    data: MarketPriceHistoryResponse['outcomes'][number]['data'],
+    data: MarketPriceHistoryResponse["outcomes"][number]["data"],
   ): PriceHistory => ({
-    timeframe: response.timeframe as PriceHistory['timeframe'],
+    timeframe: response.timeframe as PriceHistory["timeframe"],
     data: data.map((point) => ({
       timestamp: point.timestamp,
       price: point.price,
       volume: point.volumeSats,
     })),
-  })
+  });
   const histories = Object.fromEntries(
-    response.outcomes
-      .map((outcome) => {
-        const outcomeId = byOutcomeLabel.get(outcome.outcomeId) ?? outcome.outcomeId
-        return [outcomeId, toPriceHistory(outcome.data)] as const
-      }),
-  )
+    response.outcomes.map((outcome) => {
+      const outcomeId =
+        byOutcomeLabel.get(outcome.outcomeId) ?? outcome.outcomeId;
+      return [outcomeId, toPriceHistory(outcome.data)] as const;
+    }),
+  );
   const primary =
-    market.type === 'yesno'
-      ? histories[byOutcomeLabel.get('YES') ?? byOutcomeLabel.get('Yes') ?? 'outcome-0'] ??
-        histories[Object.keys(histories)[0]]
-      : histories[Object.keys(histories)[0]]
+    market.type === "yesno"
+      ? (histories[
+          byOutcomeLabel.get("YES") ?? byOutcomeLabel.get("Yes") ?? "outcome-0"
+        ] ?? histories[Object.keys(histories)[0]])
+      : histories[Object.keys(histories)[0]];
 
-  if (market.type === 'categorical') {
+  if (market.type === "categorical") {
     return {
       ...market,
       priceHistory: primary ?? market.priceHistory,
       outcomePriceHistories: histories,
-    }
+    };
   }
 
   return {
     ...market,
     priceHistory: primary ?? market.priceHistory,
-  }
+  };
 }
 
 export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
-  let cumulativeBid = 0
+  let cumulativeBid = 0;
   const bids: Order[] = snapshot.bids.map((level) => {
-    cumulativeBid += level.amount
-    return { price: level.price, amount: level.amount, total: cumulativeBid }
-  })
+    cumulativeBid += level.amount;
+    return { price: level.price, amount: level.amount, total: cumulativeBid };
+  });
 
-  let cumulativeAsk = 0
+  let cumulativeAsk = 0;
   const asks: Order[] = snapshot.asks.map((level) => {
-    cumulativeAsk += level.amount
-    return { price: level.price, amount: level.amount, total: cumulativeAsk }
-  })
+    cumulativeAsk += level.amount;
+    return { price: level.price, amount: level.amount, total: cumulativeAsk };
+  });
 
   return {
     bids,
     asks,
     spread: snapshot.spread ?? 0,
-  }
+  };
 }
 
 export async function fetchOrderBook(marketId: string): Promise<OrderBook> {
   const snapshot = await new BitcasterEngineClient({
     baseUrl: window.location.origin,
-  }).getOrderBook(marketId)
-  return mapSnapshotToOrderBook(snapshot as OrderBookSnapshot)
+  }).getOrderBook(marketId);
+  return mapSnapshotToOrderBook(snapshot as OrderBookSnapshot);
 }
 
 export async function submitOrder(
@@ -713,32 +720,37 @@ export async function submitOrder(
   return (await createAuthenticatedBrowserEngineClient().submitOrder(
     marketId,
     params as SdkSubmitOrderRequest,
-  )) as SubmitOrderResponse
+  )) as SubmitOrderResponse;
 }
 
 export async function signTradeComment(
   conditionId: string,
   content: string,
 ): Promise<NostrKind1Event> {
-  const ndk = getNdk()
+  const ndk = getNdk();
   if (!ndk.signer)
-    throw new Error('No Nostr signer configured — connect in Settings first')
-  const event = new NDKEvent(ndk)
-  event.kind = 1
-  event.created_at = Math.floor(Date.now() / 1000)
-  event.content = content
-  event.tags = [['r', `${window.location.origin}/markets/${encodeURIComponent(conditionId)}`]]
-  await event.sign()
-  const raw = event.rawEvent()
+    throw new Error("No Nostr signer configured — connect in Settings first");
+  const event = new NDKEvent(ndk);
+  event.kind = 1;
+  event.created_at = Math.floor(Date.now() / 1000);
+  event.content = content;
+  event.tags = [
+    [
+      "r",
+      `${window.location.origin}/markets/${encodeURIComponent(conditionId)}`,
+    ],
+  ];
+  await event.sign();
+  const raw = event.rawEvent();
   return {
-    id: raw.id ?? '',
-    pubkey: raw.pubkey ?? '',
+    id: raw.id ?? "",
+    pubkey: raw.pubkey ?? "",
     createdAt: raw.created_at ?? event.created_at,
     kind: 1,
     tags: raw.tags ?? event.tags,
     content: raw.content ?? content,
-    sig: raw.sig ?? '',
-  }
+    sig: raw.sig ?? "",
+  };
 }
 
 export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient {
@@ -747,10 +759,10 @@ export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient 
     authorization: async ({ url, method, bodyText }) => {
       const payloadHash = bodyText
         ? await sha256Hex(new TextEncoder().encode(bodyText))
-        : undefined
-      return generateNip98Header(url, method, payloadHash)
+        : undefined;
+      return generateNip98Header(url, method, payloadHash);
     },
-  })
+  });
 }
 
 // =============================================================================
@@ -762,8 +774,8 @@ export class MintError extends Error {
     public readonly code: number,
     public readonly detail: string,
   ) {
-    super(`[Mint] ${detail}`)
-    this.name = 'MintError'
+    super(`[Mint] ${detail}`);
+    this.name = "MintError";
   }
 }
 
@@ -772,39 +784,39 @@ async function parseMintError(
   response: Response,
   fallbackPrefix: string,
 ): Promise<MintError> {
-  let code = 0
-  let detail = `${fallbackPrefix}: ${response.status}`
+  let code = 0;
+  let detail = `${fallbackPrefix}: ${response.status}`;
   try {
-    const text = await response.text()
+    const text = await response.text();
     try {
-      const body = JSON.parse(text)
-      code = typeof body.code === 'number' ? body.code : 0
-      detail = body.detail ?? body.message ?? text
+      const body = JSON.parse(text);
+      code = typeof body.code === "number" ? body.code : 0;
+      detail = body.detail ?? body.message ?? text;
     } catch {
-      detail = text
+      detail = text;
     }
   } catch {
     /* empty */
   }
-  return new MintError(code, detail)
+  return new MintError(code, detail);
 }
 
 export async function registerCondition(params: {
-  tags: string[][]
-  announcementHex: string
+  tags: string[][];
+  announcementHex: string;
 }): Promise<{ condition_id: string }> {
-  const response = await fetch('/v1/conditions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const response = await fetch("/v1/conditions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       tags: params.tags,
       announcements: [params.announcementHex],
     }),
-  })
+  });
   if (!response.ok) {
-    throw await parseMintError(response, 'Failed to register condition')
+    throw await parseMintError(response, "Failed to register condition");
   }
-  return response.json()
+  return response.json();
 }
 
 export async function registerPartition(
@@ -812,19 +824,19 @@ export async function registerPartition(
   partition: string[],
 ): Promise<{ keysets: Record<string, string> }> {
   const response = await fetch(`/v1/conditions/${conditionId}/partitions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      collateral: 'sat',
+      collateral: "sat",
       partition,
       parent_collection_id:
-        '0000000000000000000000000000000000000000000000000000000000000000',
+        "0000000000000000000000000000000000000000000000000000000000000000",
     }),
-  })
+  });
   if (!response.ok) {
-    throw await parseMintError(response, 'Failed to register partition')
+    throw await parseMintError(response, "Failed to register partition");
   }
-  return response.json()
+  return response.json();
 }
 
 /**
@@ -834,8 +846,8 @@ export async function registerPartition(
  * the server actually receives.
  */
 async function sha256Hex(data: BufferSource): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', data)
-  return bytesToHex(new Uint8Array(hash))
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return bytesToHex(new Uint8Array(hash));
 }
 
 /**
@@ -855,23 +867,23 @@ export async function generateNip98Header(
   method: string,
   payloadHash?: string,
 ): Promise<string> {
-  const ndk = getNdk()
+  const ndk = getNdk();
   if (!ndk.signer)
-    throw new Error('No Nostr signer configured — connect in Settings first')
-  const event = new NDKEvent(ndk)
-  event.kind = 27235
-  event.created_at = Math.floor(Date.now() / 1000)
-  event.content = ''
+    throw new Error("No Nostr signer configured — connect in Settings first");
+  const event = new NDKEvent(ndk);
+  event.kind = 27235;
+  event.created_at = Math.floor(Date.now() / 1000);
+  event.content = "";
   event.tags = [
-    ['u', url],
-    ['method', method.toUpperCase()],
-  ]
+    ["u", url],
+    ["method", method.toUpperCase()],
+  ];
   if (payloadHash) {
-    event.tags.push(['payload', payloadHash])
+    event.tags.push(["payload", payloadHash]);
   }
-  await event.sign()
-  const token = btoa(JSON.stringify(event.rawEvent()))
-  return `Nostr ${token}`
+  await event.sign();
+  const token = btoa(JSON.stringify(event.rawEvent()));
+  return `Nostr ${token}`;
 }
 
 export async function createMarket(
@@ -879,41 +891,41 @@ export async function createMarket(
   params: CreateMarketRequest,
   thumbnailFile?: File | null,
 ): Promise<CreateMarketResponse> {
-  const formData = new FormData()
-  formData.append('metadata', JSON.stringify(params))
+  const formData = new FormData();
+  formData.append("metadata", JSON.stringify(params));
   if (thumbnailFile) {
-    formData.append('thumbnail', thumbnailFile)
+    formData.append("thumbnail", thumbnailFile);
   }
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}`
+  const url = `${window.location.origin}/api/v1/markets/${conditionId}`;
   // Multipart bodies need pre-serialization so the NIP-98 `payload` tag binds
   // to the exact bytes (including the random multipart boundary) that fetch
   // will ship. Construct a transient Request to serialize, hash, then send
   // the same bytes with the same Content-Type so server-side SHA-256 matches.
-  const serialized = new Request(url, { method: 'POST', body: formData })
-  const bodyBytes = await serialized.arrayBuffer()
+  const serialized = new Request(url, { method: "POST", body: formData });
+  const bodyBytes = await serialized.arrayBuffer();
   const contentType =
-    serialized.headers.get('Content-Type') ?? 'multipart/form-data'
-  const payloadHash = await sha256Hex(bodyBytes)
-  const authHeader = await generateNip98Header(url, 'POST', payloadHash)
+    serialized.headers.get("Content-Type") ?? "multipart/form-data";
+  const payloadHash = await sha256Hex(bodyBytes);
+  const authHeader = await generateNip98Header(url, "POST", payloadHash);
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': contentType, Authorization: authHeader },
+    method: "POST",
+    headers: { "Content-Type": contentType, Authorization: authHeader },
     body: bodyBytes,
-  })
+  });
   if (!response.ok) {
-    let detail = `HTTP ${response.status}`
+    let detail = `HTTP ${response.status}`;
     try {
-      const body = await response.json()
+      const body = await response.json();
       const raw =
-        body.detail ?? body.title ?? body.message ?? JSON.stringify(body)
+        body.detail ?? body.title ?? body.message ?? JSON.stringify(body);
       detail =
-        typeof raw === 'string' ? raw.slice(0, 500) : String(raw).slice(0, 500)
+        typeof raw === "string" ? raw.slice(0, 500) : String(raw).slice(0, 500);
     } catch {
-      detail = response.statusText || detail
+      detail = response.statusText || detail;
     }
-    throw new Error(`[Matching Engine] Failed to create market: ${detail}`)
+    throw new Error(`[Matching Engine] Failed to create market: ${detail}`);
   }
-  return response.json()
+  return response.json();
 }
 
 export async function submitOracleAttestation(
@@ -923,23 +935,23 @@ export async function submitOracleAttestation(
   const response = await fetch(
     `/api/v1/markets/${encodeURIComponent(conditionId)}/oracle-attestation`,
     {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(event),
     },
-  )
-  const body = (await response.json().catch(() => null)) as
-    | OracleAttestationResponse
-    | null
+  );
+  const body = (await response
+    .json()
+    .catch(() => null)) as OracleAttestationResponse | null;
   if (!response.ok) {
     throw new Error(
       body?.result
         ? `Oracle attestation rejected: ${body.result}`
         : `Oracle attestation rejected: HTTP ${response.status}`,
-    )
+    );
   }
-  if (!body) throw new Error('Oracle attestation response was empty')
-  return body
+  if (!body) throw new Error("Oracle attestation response was empty");
+  return body;
 }
 
 export async function fetchThumbnailUrl(
@@ -947,12 +959,12 @@ export async function fetchThumbnailUrl(
 ): Promise<string | null> {
   try {
     const response = await fetch(`/api/v1/${conditionId}/thumbnail`, {
-      method: 'HEAD',
-    })
-    if (response.ok) return `/api/v1/${conditionId}/thumbnail`
-    return null
+      method: "HEAD",
+    });
+    if (response.ok) return `/api/v1/${conditionId}/thumbnail`;
+    return null;
   } catch {
-    return null
+    return null;
   }
 }
 
@@ -965,13 +977,13 @@ export async function fetchThumbnailUrl(
  * empty-string URL request (the P6 P4.3 regression).
  */
 export function getMarketThumbnail(market: {
-  id: string
-  imageUrl?: string | null
+  id: string;
+  imageUrl?: string | null;
 }): string | null {
-  const explicit = market.imageUrl
-  if (typeof explicit === 'string' && explicit.trim().length > 0)
-    return explicit
-  return null
+  const explicit = market.imageUrl;
+  if (typeof explicit === "string" && explicit.trim().length > 0)
+    return explicit;
+  return null;
 }
 
 // =============================================================================
@@ -979,34 +991,34 @@ export function getMarketThumbnail(market: {
 // =============================================================================
 
 export type RequestLnInvoiceDepositRequest =
-  components['schemas']['RequestLnInvoiceDepositRequest']
+  components["schemas"]["RequestLnInvoiceDepositRequest"];
 export type RequestLnInvoiceDepositResponse =
-  components['schemas']['RequestLnInvoiceDepositResponse']
+  components["schemas"]["RequestLnInvoiceDepositResponse"];
 export type RequestEcashDepositRequest =
-  components['schemas']['RequestEcashDepositRequest']
+  components["schemas"]["RequestEcashDepositRequest"];
 export type RequestEcashDepositResponse =
-  components['schemas']['RequestEcashDepositResponse']
+  components["schemas"]["RequestEcashDepositResponse"];
 export type GetDepositResponseDto =
-  components['schemas']['GetDepositResponseDto']
-export type DepositState = components['schemas']['DepositState']
-export type DepositMethod = components['schemas']['DepositMethod']
+  components["schemas"]["GetDepositResponseDto"];
+export type DepositState = components["schemas"]["DepositState"];
+export type DepositMethod = components["schemas"]["DepositMethod"];
 
 function normalizeDepositState(state: unknown): DepositState {
   switch (state) {
-    case 'Requested':
-    case 'requested':
-      return 'Requested'
-    case 'Paid':
-    case 'paid':
-      return 'Paid'
-    case 'Credited':
-    case 'credited':
-      return 'Credited'
-    case 'Failed':
-    case 'failed':
-      return 'Failed'
+    case "Requested":
+    case "requested":
+      return "Requested";
+    case "Paid":
+    case "paid":
+      return "Paid";
+    case "Credited":
+    case "credited":
+      return "Credited";
+    case "Failed":
+    case "failed":
+      return "Failed";
     default:
-      throw new Error(`Unknown deposit state: ${String(state)}`)
+      throw new Error(`Unknown deposit state: ${String(state)}`);
   }
 }
 
@@ -1020,22 +1032,22 @@ export async function requestLnInvoiceDeposit(
   conditionId: string,
   amountSats: number,
 ): Promise<RequestLnInvoiceDepositResponse> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ln-invoice`
-  const bodyText = JSON.stringify({ amountSats })
-  const bodyBytes = new TextEncoder().encode(bodyText)
-  const payloadHash = await sha256Hex(bodyBytes)
-  const authHeader = await generateNip98Header(url, 'POST', payloadHash)
+  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ln-invoice`;
+  const bodyText = JSON.stringify({ amountSats });
+  const bodyBytes = new TextEncoder().encode(bodyText);
+  const payloadHash = await sha256Hex(bodyBytes);
+  const authHeader = await generateNip98Header(url, "POST", payloadHash);
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: authHeader },
     body: bodyText,
-  })
+  });
   if (!response.ok) {
     throw new Error(
       `[Matching Engine] Failed to request LN deposit: ${response.status} ${await response.text()}`,
-    )
+    );
   }
-  return response.json()
+  return response.json();
 }
 
 /**
@@ -1049,23 +1061,23 @@ export async function requestEcashDeposit(
   amountSats: number,
   proofsToken: string,
 ): Promise<RequestEcashDepositResponse> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`
-  const bodyText = JSON.stringify({ amountSats, proofsToken })
-  const bodyBytes = new TextEncoder().encode(bodyText)
-  const payloadHash = await sha256Hex(bodyBytes)
-  const authHeader = await generateNip98Header(url, 'POST', payloadHash)
+  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`;
+  const bodyText = JSON.stringify({ amountSats, proofsToken });
+  const bodyBytes = new TextEncoder().encode(bodyText);
+  const payloadHash = await sha256Hex(bodyBytes);
+  const authHeader = await generateNip98Header(url, "POST", payloadHash);
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: authHeader },
     body: bodyText,
-  })
+  });
   if (!response.ok) {
     throw new Error(
       `[Matching Engine] Failed to submit ecash deposit: ${response.status} ${await response.text()}`,
-    )
+    );
   }
-  const result = await response.json() as RequestEcashDepositResponse
-  return { ...result, state: normalizeDepositState(result.state) }
+  const result = (await response.json()) as RequestEcashDepositResponse;
+  return { ...result, state: normalizeDepositState(result.state) };
 }
 
 /**
@@ -1078,14 +1090,14 @@ export async function getDepositStatus(
   conditionId: string,
   depositId: string,
 ): Promise<GetDepositResponseDto | null> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/${depositId}`
-  const response = await fetch(url)
-  if (response.status === 404) return null
+  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/${depositId}`;
+  const response = await fetch(url);
+  if (response.status === 404) return null;
   if (!response.ok) {
-    throw new Error(`Failed to read deposit status: ${response.status}`)
+    throw new Error(`Failed to read deposit status: ${response.status}`);
   }
-  const result = await response.json() as GetDepositResponseDto
-  return { ...result, state: normalizeDepositState(result.state) }
+  const result = (await response.json()) as GetDepositResponseDto;
+  return { ...result, state: normalizeDepositState(result.state) };
 }
 
 /**
@@ -1097,9 +1109,9 @@ export async function getDepositStatus(
 export async function fetchCreatorMarkets(
   pubkey: string,
 ): Promise<CreatorMarketsResponse> {
-  const response = await fetch(`/api/v1/creators/${pubkey}/markets`)
+  const response = await fetch(`/api/v1/creators/${pubkey}/markets`);
   if (!response.ok) {
-    throw new Error(`Failed to fetch creator markets: ${response.status}`)
+    throw new Error(`Failed to fetch creator markets: ${response.status}`);
   }
-  return response.json()
+  return response.json();
 }
