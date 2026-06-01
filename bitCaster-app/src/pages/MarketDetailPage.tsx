@@ -21,6 +21,7 @@ import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
+import { diagnoseProofStates } from "@/lib/proofDiagnostics";
 import {
   outcomeLabels,
   outcomeSetIdsForMarketBooks,
@@ -211,6 +212,15 @@ async function prepareCollateralLotForCtfSplit(input: {
       input.available,
       input.faceAmountSats,
     );
+    await diagnoseProofStates({
+      label: "preflight:exact-collateral",
+      mintUrl: input.mintUrl,
+      proofs: exact.inputs,
+      extra: {
+        lotIndex: input.lotIndex,
+        faceAmountSats: input.faceAmountSats,
+      },
+    });
     await reserveProofs(
       exact.inputs.map((proof) => proof.secret),
       input.reservationId,
@@ -238,6 +248,16 @@ async function prepareCollateralLotForCtfSplit(input: {
   if (selected.send.length === 0) {
     throw new Error("No regular collateral proofs are available for CTF split.");
   }
+  await diagnoseProofStates({
+    label: "preflight:regular-split-inputs",
+    mintUrl: input.mintUrl,
+    proofs: selected.send,
+    wallet,
+    extra: {
+      lotIndex: input.lotIndex,
+      faceAmountSats: input.faceAmountSats,
+    },
+  });
   const grossCtfInputSats =
     input.faceAmountSats +
     amountToNumber(wallet.getFeesForProofs([selected.send[0]]));
@@ -314,6 +334,16 @@ async function preparePreflightSplitForLimitBuy(input: {
         lotIndex,
       });
       const operationId = `${input.reservationId}:ctf-split:${lotIndex}`;
+      await diagnoseProofStates({
+        label: "preflight:ctf-split-inputs-before",
+        mintUrl: input.mintUrl,
+        proofs: collateral.inputs,
+        extra: {
+          lotIndex,
+          conditionId: input.market.id,
+          operationId,
+        },
+      });
       const split = await splitRootCompleteSetForPreflightOrder({
         mintUrl: input.mintUrl,
         conditionId: input.market.id,
@@ -599,6 +629,7 @@ export function MarketDetailPage() {
 
     const ephemeral = generateEphemeralKeyPair();
     let preparedPreflightSplit: PreparedPreflightSplit | undefined;
+    let submitAttempted = false;
     try {
       const selectedBook =
         latestMarket.outcomeOrderBooks?.[outcomeSets.selectedOutcomeSetId] ??
@@ -634,6 +665,7 @@ export function MarketDetailPage() {
       const signedComment = comment?.trim()
         ? await signTradeComment(latestMarket.id, comment.trim())
         : undefined;
+      submitAttempted = true;
       const response = await submitOrder(ticket.marketId, {
         ...ticket.request,
         ephemeralPubkey: ephemeral.pubkey,
@@ -681,7 +713,7 @@ export function MarketDetailPage() {
       }
       loadMarket();
     } catch (e) {
-      if (preparedPreflightSplit) {
+      if (preparedPreflightSplit && !submitAttempted) {
         await releaseProofReservation(preparedPreflightSplit.reservationId);
       }
       if (
