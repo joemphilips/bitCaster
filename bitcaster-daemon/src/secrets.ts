@@ -7,6 +7,7 @@ import {
 } from 'node:crypto'
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { normalizeSecp256k1PrivateKeyHex } from './ephemeralKey.ts'
 import { ensureProfileDir, profileDir } from './profile.ts'
 
 export interface DaemonSecrets {
@@ -62,9 +63,10 @@ async function withSecretsUpdateLock<T>(run: () => Promise<T>): Promise<T> {
 export function createDaemonSecrets(now = new Date().toISOString()): DaemonSecrets {
   const nostr = createECDH('secp256k1')
   nostr.generateKeys()
+  const nostrSecretKeyHex = normalizeNostrSecretKeyHex(nostr.getPrivateKey('hex'))
   return {
     walletSeedHex: randomBytes(32).toString('hex'),
-    nostrSecretKeyHex: nostr.getPrivateKey('hex'),
+    nostrSecretKeyHex,
     nostrPublicKeyHex: compressedSecp256k1ToNostrPubkey(
       nostr.getPublicKey(undefined, 'compressed'),
     ),
@@ -84,10 +86,7 @@ export function createDaemonSecretsFromImport(
     input.walletSeedHex,
     'wallet seed',
   )
-  const nostrSecretKeyHex = normalizeHexSecret(
-    input.nostrSecretKeyHex,
-    'nostr secret key',
-  )
+  const nostrSecretKeyHex = normalizeNostrSecretKeyHex(input.nostrSecretKeyHex)
   const nostr = createECDH('secp256k1')
   try {
     nostr.setPrivateKey(Buffer.from(nostrSecretKeyHex, 'hex'))
@@ -226,6 +225,19 @@ function normalizeHexSecret(value: string, label: string): string {
   return normalized
 }
 
+function normalizeNostrSecretKeyHex(value: string): string {
+  const normalized = normalizeSecp256k1PrivateKeyHex(
+    value.trim().replace(/^0x/i, ''),
+  )
+  const nostr = createECDH('secp256k1')
+  try {
+    nostr.setPrivateKey(Buffer.from(normalized, 'hex'))
+  } catch {
+    throw new Error('nostr secret key is not a valid secp256k1 private key')
+  }
+  return normalized
+}
+
 function normalizeSecrets(secrets: Partial<DaemonSecrets>): DaemonSecrets {
   if (
     !secrets.walletSeedHex ||
@@ -235,9 +247,10 @@ function normalizeSecrets(secrets: Partial<DaemonSecrets>): DaemonSecrets {
   ) {
     throw new Error('daemon secrets file is malformed')
   }
+  const nostrSecretKeyHex = normalizeNostrSecretKeyHex(secrets.nostrSecretKeyHex)
   return {
-    walletSeedHex: secrets.walletSeedHex,
-    nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+    walletSeedHex: normalizeHexSecret(secrets.walletSeedHex, 'wallet seed'),
+    nostrSecretKeyHex,
     nostrPublicKeyHex: secrets.nostrPublicKeyHex,
     orderEphemeralKeys: secrets.orderEphemeralKeys ?? {},
     createdAt: secrets.createdAt,

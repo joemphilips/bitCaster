@@ -11,6 +11,7 @@ import { ensureRpcToken, readRpcToken, rpcTokenPath } from '../src/rpcAuth.ts'
 import { acquireDaemonRunLock, runLockPath } from '../src/runLock.ts'
 import {
   createDaemonSecrets,
+  createDaemonSecretsFromImport,
   readSecrets,
   secretsPath,
   updateSecrets,
@@ -71,6 +72,19 @@ test('bitcaster-daemon init imports wallet seed and nostr key', async () => {
     }
     await rm(home, { recursive: true, force: true })
   }
+})
+
+test('daemon imported nostr key preserves fixed 32-byte scalar width', () => {
+  const secrets = createDaemonSecretsFromImport({
+    walletSeedHex: 'ab'.repeat(32),
+    nostrSecretKeyHex: '1',
+  })
+
+  assert.equal(secrets.nostrSecretKeyHex, '1'.padStart(64, '0'))
+  assert.equal(
+    secrets.nostrPublicKeyHex,
+    '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+  )
 })
 
 test('bitcaster-daemon init imports wallet seed and nostr key from files', async () => {
