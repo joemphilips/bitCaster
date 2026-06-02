@@ -16,11 +16,11 @@ const mocks = vi.hoisted(() => {
     partialState,
     pendingState,
     walletState,
-    addProofs: vi.fn(),
     getReservedProofs: vi.fn(),
     markProofOperationCompleted: vi.fn(),
     prepareProofOperation: vi.fn(),
     removeProofs: vi.fn(),
+    replaceProofs: vi.fn(),
     createP2PKWitness: vi.fn(() => 'witness'),
     hexToBytes: vi.fn(() => new Uint8Array(32)),
   }
@@ -39,11 +39,11 @@ vi.mock('@bitcaster/swap-protocol/ecdh', () => ({
 }))
 
 vi.mock('@/stores/proof-db', () => ({
-  addProofs: mocks.addProofs,
   getReservedProofs: mocks.getReservedProofs,
   markProofOperationCompleted: mocks.markProofOperationCompleted,
   prepareProofOperation: mocks.prepareProofOperation,
   removeProofs: mocks.removeProofs,
+  replaceProofs: mocks.replaceProofs,
 }))
 
 vi.mock('@/stores/partialLockFailures', () => ({
@@ -119,22 +119,23 @@ describe('partial-lock recovery', () => {
         { id: 'keyset-C', amount: 100, secret: 'fresh-C', C: '03'.padEnd(66, '1') },
       ]),
     })
-    mocks.addProofs.mockResolvedValue(undefined)
     mocks.removeProofs.mockResolvedValue(undefined)
+    mocks.replaceProofs.mockResolvedValue(undefined)
     mocks.prepareProofOperation.mockResolvedValue({})
     mocks.markProofOperationCompleted.mockResolvedValue({})
   })
 
-  it('PartialLockRefund_IndexedDBFailureMidTransaction_DoesNotOrphan', async () => {
-    mocks.removeProofs.mockRejectedValueOnce(new Error('delete failed'))
+  it('PartialLockRefund_ReplacesLockedProofsAtomically', async () => {
     const { sweepElapsedPartialLockFailures } = await import('../partialLockRecovery')
 
     await sweepElapsedPartialLockFailures()
 
-    expect(mocks.addProofs.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.removeProofs.mock.invocationCallOrder[0],
-    )
-    expect(mocks.addProofs.mock.calls[0][0]).toEqual([
+    expect(mocks.replaceProofs).toHaveBeenCalledOnce()
+    expect(mocks.replaceProofs.mock.calls[0][0]).toEqual([
+      'locked-B',
+      'locked-C',
+    ])
+    expect(mocks.replaceProofs.mock.calls[0][1]).toEqual([
       expect.objectContaining({
         id: 'keyset-B',
         conditionId: 'condition-1',
@@ -148,6 +149,8 @@ describe('partial-lock recovery', () => {
         marketId: 'condition-1-C',
       }),
     ])
-    expect(mocks.partialState.remove).not.toHaveBeenCalled()
+    expect(mocks.removeProofs).not.toHaveBeenCalled()
+    expect(mocks.markProofOperationCompleted).toHaveBeenCalledOnce()
+    expect(mocks.partialState.remove).toHaveBeenCalledWith('trade-1')
   })
 })

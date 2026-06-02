@@ -330,12 +330,22 @@ describe('useDepositWithdrawState', () => {
   describe('onPaste — ecash from unknown mint', () => {
     it('routes redemption through walletOps and stores the returned proofs', async () => {
       const walletOps = await import('@/lib/walletOps')
+      const proofDb = await import('@/stores/proof-db')
+      vi.mocked(proofDb.addProofs).mockClear()
       vi.mocked(walletOps.ingressReceiveCashuToken).mockResolvedValueOnce({
         added: true,
         mintUrl: 'https://testnut.cashu.space',
         source: 'paste',
         amountSats: 50,
-        proofs: [{ secret: 's-new', amount: 50, id: 'kid', C: 'C' } as never],
+        proofs: [{
+          secret: 's-new',
+          amount: 50,
+          id: 'kid-B',
+          C: 'C',
+          conditionId: 'condition-1',
+          outcomeCollection: 'B',
+          marketId: 'condition-1-B',
+        } as never],
       })
       // navigator.clipboard isn't in jsdom by default — install a stub.
       Object.defineProperty(navigator, 'clipboard', {
@@ -356,6 +366,14 @@ describe('useDepositWithdrawState', () => {
       expect(result.current.currentView).toBe('success')
       expect(result.current.successAmount).toBe(50)
       expect(result.current.error).toBeNull()
+      expect(proofDb.addProofs).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mintUrl: 'https://testnut.cashu.space',
+          conditionId: 'condition-1',
+          outcomeCollection: 'B',
+          marketId: 'condition-1-B',
+        }),
+      ])
     })
 
     it('surfaces walletOps receive errors to the red banner without swallowing', async () => {
