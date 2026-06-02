@@ -153,4 +153,23 @@ describe('partial-lock recovery', () => {
     expect(mocks.markProofOperationCompleted).toHaveBeenCalledOnce()
     expect(mocks.partialState.remove).toHaveBeenCalledWith('trade-1')
   })
+
+  it('PartialLockRefund_WhenMintAlreadySpent_RemovesStaleProofsAndCompletesOperation', async () => {
+    const wallet = {
+      receive: vi.fn().mockRejectedValue(new Error('Token already spent')),
+    }
+    mocks.walletState.getWallet.mockResolvedValue(wallet)
+    const { sweepElapsedPartialLockFailures } = await import('../partialLockRecovery')
+
+    await sweepElapsedPartialLockFailures()
+
+    expect(mocks.replaceProofs).not.toHaveBeenCalled()
+    expect(mocks.removeProofs).toHaveBeenCalledOnce()
+    expect(mocks.removeProofs).toHaveBeenCalledWith(['locked-B', 'locked-C'])
+    expect(mocks.markProofOperationCompleted).toHaveBeenCalledWith(
+      'trade-1:partial-lock-refund',
+      { alreadySpent: true },
+    )
+    expect(mocks.partialState.remove).toHaveBeenCalledWith('trade-1')
+  })
 })
