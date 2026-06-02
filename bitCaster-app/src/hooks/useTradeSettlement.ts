@@ -244,6 +244,10 @@ const tradeCreatedInFlight = new Set<string>();
 const joinedTradeIds = new Set<string>();
 const JOIN_ORDER_RETRY_MS = 1_000;
 const MAX_JOIN_ORDER_STATUS_MISSES = 12;
+// Bounded release-blocker recovery: TradeCreated is a one-shot SignalR push
+// from the matching engine. If a maker tab misses it after already joining an
+// own-order group, replay JoinOrder/order-status briefly so the tab can learn
+// the trade id and join the durable trade group.
 const ORDER_STATUS_RECOVERY_MS = 2_000;
 const MAX_ORDER_STATUS_RECOVERY_ATTEMPTS = 45;
 
@@ -347,7 +351,17 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
           (orderStatusRecoveryAttemptsRef.current.get(key) ?? 0) + 1;
         orderStatusRecoveryAttemptsRef.current.set(key, attempts);
 
-        void fetchOrderStatus(latest.marketId, latest.orderId)
+        void (async () => {
+          try {
+            await joinOrder(latest.marketId, latest.orderId);
+          } catch {
+            // Transient hub or projection lag. The REST status fallback below
+            // may still expose the trade id; otherwise the next recovery tick
+            // retries the hub replay path.
+          }
+
+          return fetchOrderStatus(latest.marketId, latest.orderId);
+        })()
           .then((status) => {
             if (!status) return;
             const tradeIds = status.fills

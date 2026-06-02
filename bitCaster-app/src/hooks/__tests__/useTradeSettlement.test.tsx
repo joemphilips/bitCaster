@@ -224,6 +224,30 @@ describe("useTradeSettlement", () => {
     );
   });
 
+  it("replays pending order joins during status recovery", async () => {
+    vi.useFakeTimers();
+    usePendingTradesStore.getState().add({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    await act(async () => {});
+    expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending");
+    expect(mockJoinOrder).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(mockJoinOrder).toHaveBeenCalledTimes(2);
+    expect(mockJoinOrder).toHaveBeenLastCalledWith("cond-YES", "order-pending");
+  });
+
   it("retries pending order group joins after a transient hub failure", async () => {
     vi.useFakeTimers();
     mockJoinOrder

@@ -63,6 +63,28 @@ describe("conditional keyset metadata", () => {
       "Conditional keyset keyset-B belongs to condition condition-2, expected condition-1",
     );
   });
+
+  it("fails closed when a proof keyset is not registered by the mint", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          keysets: [keyset("keyset-A", "condition-1", "A")],
+        }),
+      }),
+    );
+
+    await expect(
+      resolveConditionalProofMetadata(
+        "https://unknown-keyset.example",
+        proof("keyset-Z", "z"),
+        "condition-1",
+      ),
+    ).rejects.toThrow(
+      "Conditional keyset keyset-Z is not known by the mint",
+    );
+  });
 });
 
 function keyset(id: string, conditionId: string, outcomeCollection: string) {

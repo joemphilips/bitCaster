@@ -26,8 +26,13 @@ namespace BitCaster.InMemoryMatchingEngine.Hubs;
 public class TradeHub : Hub<ITradeHubClient>
 {
     private readonly InMemoryTradeRegistry _trades;
+    private readonly InMemoryOrderBookManager _orders;
 
-    public TradeHub(InMemoryTradeRegistry trades) => _trades = trades;
+    public TradeHub(InMemoryTradeRegistry trades, InMemoryOrderBookManager orders)
+    {
+        _trades = trades;
+        _orders = orders;
+    }
 
     /// <summary>
     /// Join the SignalR group for <paramref name="tradeId"/> and replay
@@ -68,14 +73,42 @@ public class TradeHub : Hub<ITradeHubClient>
 
     /// <summary>
     /// Join the per-order notification group used by the production engine to
-    /// wake resting makers when a later taker creates a trade. The mock keeps
-    /// no owner-indexed order notification registry, so this is intentionally
-    /// a no-op group join that lets browser and daemon clients exercise the
-    /// same long-running order subscription path without failing on a missing
-    /// hub method.
+    /// wake resting makers when a later taker creates a trade. Also replay any
+    /// already-created trade ids from order status so reconnect/recovery tests
+    /// exercise the same contract as the real engine.
     /// </summary>
-    public Task JoinOrder(string marketId, Guid orderId)
-        => Groups.AddToGroupAsync(Context.ConnectionId, OrderGroupName(orderId));
+    public async Task JoinOrder(string marketId, Guid orderId)
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, OrderGroupName(orderId));
+
+        var status = _orders.GetOrderStatus(orderId);
+        if (status is null || !string.Equals(status.MarketId, marketId, StringComparison.Ordinal))
+            return;
+
+        foreach (var tradeId in status.Fills
+                     .Select(fill => fill.TradeId)
+                     .Where(tradeId => tradeId.HasValue)
+                     .Select(tradeId => tradeId!.Value)
+                     .Distinct())
+        {
+            var record = _trades.TryGet(tradeId);
+            if (record is null) continue;
+
+            await Clients.Caller.TradeCreated(
+                tradeId,
+                record.SellerPubkey,
+                record.BuyerPubkey,
+                record.SellerLocktime,
+                record.BuyerLocktime,
+                record.MarketId,
+                record.FillAmountSats,
+                record.OutcomeFaceAmountSats,
+                record.QuotePaymentSats,
+                record.SettlementKind,
+                record.SellerKeepOutcomeSetId,
+                record.SellerLockOutcomeSetId);
+        }
+    }
 
     /// <summary>
     /// Relay an opaque ciphertext to the counterparty. <c>settlement-complete</c>
