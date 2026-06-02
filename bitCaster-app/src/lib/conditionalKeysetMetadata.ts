@@ -72,6 +72,26 @@ export async function storedConditionalProofsFromMintMetadata(input: {
   return out;
 }
 
+export async function proofsWithOptionalConditionalMetadata(input: {
+  mintUrl: string;
+  proofs: Proof[];
+}): Promise<Proof[]> {
+  const registry = await tryConditionalKeysetRegistry(input.mintUrl);
+  if (!registry) return input.proofs;
+
+  return input.proofs.map((proof) => {
+    if (!proof.id) return proof;
+    const keyset = registry.get(proof.id);
+    if (!keyset) return proof;
+    return {
+      ...proof,
+      conditionId: keyset.condition_id,
+      outcomeCollection: keyset.outcome_collection,
+      marketId: `${keyset.condition_id}-${keyset.outcome_collection}`,
+    };
+  });
+}
+
 async function conditionalKeysetRegistry(
   mintUrl: string,
 ): Promise<Map<string, ConditionalKeysetInfo>> {
@@ -85,6 +105,16 @@ async function conditionalKeysetRegistry(
     cache.set(normalized, existing);
   }
   return existing;
+}
+
+async function tryConditionalKeysetRegistry(
+  mintUrl: string,
+): Promise<Map<string, ConditionalKeysetInfo> | null> {
+  try {
+    return await conditionalKeysetRegistry(mintUrl);
+  } catch {
+    return null;
+  }
 }
 
 async function fetchConditionalKeysets(
