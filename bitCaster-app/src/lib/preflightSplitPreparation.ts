@@ -20,6 +20,7 @@ import {
 } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import type { MarketDetail as MarketDetailType } from "@/types/market-detail";
+import { storedConditionalProofsFromMintMetadata } from "@/lib/conditionalKeysetMetadata";
 
 export interface PreparedPreflightSplit {
   reservationId: string;
@@ -87,7 +88,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
       resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId;
       await replaceProofs(
         split.spentSatProofs.map((proof) => proof.secret),
-        ctfProofsToStore({
+        await ctfProofsToStore({
           mintUrl: input.mintUrl,
           conditionId: input.market.id,
           reservationId: input.reservationId,
@@ -138,9 +139,7 @@ export async function prepareCollateralLotForCtfSplit(input: {
       regularSplit.send,
       input.faceAmountSats,
     );
-    const regularSpentSecrets = regularSplit.spent.map(
-      (proof) => proof.secret,
-    );
+    const regularSpentSecrets = regularSplit.spent.map((proof) => proof.secret);
     const storedInputStillPresent = input.available.some((proof) =>
       regularSpentSecrets.includes(proof.secret),
     );
@@ -211,7 +210,9 @@ export async function prepareCollateralLotForCtfSplit(input: {
     false,
   );
   if (selected.send.length === 0) {
-    throw new Error("No regular collateral proofs are available for CTF split.");
+    throw new Error(
+      "No regular collateral proofs are available for CTF split.",
+    );
   }
   await diagnoseProofStates({
     label: "preflight:regular-split-inputs",
@@ -260,23 +261,18 @@ export async function prepareCollateralLotForCtfSplit(input: {
   };
 }
 
-function ctfProofsToStore(input: {
+async function ctfProofsToStore(input: {
   mintUrl: string;
   conditionId: string;
   reservationId: string;
   proofsByCollection: Record<string, Proof[]>;
-}): StoredProof[] {
-  return Object.entries(input.proofsByCollection).flatMap(
-    ([outcomeCollection, proofs]) =>
-      proofs.map((proof) => ({
-        ...proof,
-        mintUrl: input.mintUrl,
-        conditionId: input.conditionId,
-        outcomeCollection,
-        marketId: `${input.conditionId}-${outcomeCollection}`,
-        reservedBy: input.reservationId,
-      })),
-  );
+}): Promise<StoredProof[]> {
+  return storedConditionalProofsFromMintMetadata({
+    mintUrl: input.mintUrl,
+    proofs: Object.values(input.proofsByCollection).flat(),
+    expectedConditionId: input.conditionId,
+    reservedBy: input.reservationId,
+  });
 }
 
 const ctfProofOperationStore: CtfProofOperationStore = {

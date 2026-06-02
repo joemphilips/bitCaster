@@ -48,9 +48,9 @@ import {
   preparePreflightSplitForLimitBuy,
 } from "../preflightSplitPreparation";
 
-function proof(secret: string, amount = 100): Proof {
+function proof(secret: string, amount = 100, id = "keyset"): Proof {
   return {
-    id: "keyset",
+    id,
     amount,
     secret,
     C: `02${secret}`.padEnd(66, "0"),
@@ -60,6 +60,18 @@ function proof(secret: string, amount = 100): Proof {
 describe("preflight split preparation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          keysets: [
+            keyset("keyset-YES", "condition", "YES"),
+            keyset("keyset-NO", "condition", "NO"),
+          ],
+        }),
+      }),
+    );
     mocks.getProofOperation.mockResolvedValue(null);
     mocks.diagnoseProofStates.mockResolvedValue(undefined);
     mocks.replaceProofs.mockResolvedValue(undefined);
@@ -109,11 +121,17 @@ describe("preflight split preparation", () => {
         resolvedLockOutcomeSetId: "NO",
         lockCollections: ["NO"],
         keepCollections: ["YES"],
-        lockProofs: [proof(`ctf-no-${collateralProofs[0].secret}`)],
-        keepProofs: [proof(`ctf-yes-${collateralProofs[0].secret}`)],
+        lockProofs: [
+          proof(`ctf-no-${collateralProofs[0].secret}`, 100, "keyset-NO"),
+        ],
+        keepProofs: [
+          proof(`ctf-yes-${collateralProofs[0].secret}`, 100, "keyset-YES"),
+        ],
         proofsByCollection: {
-          YES: [proof(`ctf-yes-${collateralProofs[0].secret}`)],
-          NO: [proof(`ctf-no-${collateralProofs[0].secret}`)],
+          YES: [
+            proof(`ctf-yes-${collateralProofs[0].secret}`, 100, "keyset-YES"),
+          ],
+          NO: [proof(`ctf-no-${collateralProofs[0].secret}`, 100, "keyset-NO")],
         },
         spentSatProofs: collateralProofs,
       }),
@@ -179,3 +197,12 @@ describe("preflight split preparation", () => {
     );
   });
 });
+
+function keyset(id: string, conditionId: string, outcomeCollection: string) {
+  return {
+    id,
+    condition_id: conditionId,
+    outcome_collection: outcomeCollection,
+    outcome_collection_id: outcomeCollection,
+  };
+}

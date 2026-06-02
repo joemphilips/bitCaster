@@ -456,6 +456,85 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BrowserMaker_CliTaker_CategoricalComplementarySettlement_UsesPrimitiveProofMetadata()
+    {
+        var condition = await FindCategoricalConditionAsync();
+        var takerOutcomeSetId = condition.PrimitiveOutcomeSetIds[0];
+        var makerOutcomeSetId = CanonicalOutcomeSet(condition.PrimitiveOutcomeSetIds.Skip(1));
+        var makerMarketId = $"{condition.ConditionId}-{makerOutcomeSetId}";
+        var takerMarketId = $"{condition.ConditionId}-{takerOutcomeSetId}";
+        const int faceAmountSats = 100;
+        const int makerFundingSats = 210;
+        const int makerPrice = 1;
+        const int takerPrice = 99;
+
+        var playwright = await Playwright.CreateAsync();
+        IBrowser? browser = null;
+        try
+        {
+            browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            {
+                Headless = true,
+            });
+
+            var maker = await CreateTradingClientAsync(
+                TradingClientKind.Gui,
+                browser,
+                "88".PadRight(64, '8'));
+            var taker = await CreateTradingClientAsync(
+                TradingClientKind.Cli,
+                null,
+                "99".PadRight(64, '9'));
+
+            await maker.FundSatsAsync(makerFundingSats);
+            await taker.FundSatsAsync(faceAmountSats);
+
+            var makerOrderId = await maker.SubmitRestingComplementaryMakerBuyAsync(
+                condition.ConditionId,
+                makerOutcomeSetId,
+                makerMarketId,
+                makerPrice,
+                faceAmountSats,
+                preflightSplit: true,
+                displayedOutcomeSetId: takerOutcomeSetId);
+            await WaitForEngineBidAsync(makerMarketId, faceAmountSats);
+
+            await maker.AssertReservedOutcomeProofsAsync(
+                condition.ConditionId,
+                makerOutcomeSetId,
+                faceAmountSats);
+            await maker.AssertReservedOutcomeProofsAsync(
+                condition.ConditionId,
+                takerOutcomeSetId,
+                faceAmountSats);
+
+            var tradeId = await taker.SubmitComplementaryTakerBuyAsync(
+                condition.ConditionId,
+                takerOutcomeSetId,
+                takerMarketId,
+                takerPrice,
+                faceAmountSats);
+
+            await maker.RefreshMatchedOrderAsync(makerMarketId, makerOrderId, tradeId);
+            await taker.WaitConfirmedAsync(tradeId);
+
+            await maker.AssertAvailableOutcomeProofsAsync(
+                condition.ConditionId,
+                makerOutcomeSetId,
+                faceAmountSats);
+            await taker.AssertAvailableOutcomeProofsAsync(
+                condition.ConditionId,
+                takerOutcomeSetId,
+                faceAmountSats);
+        }
+        finally
+        {
+            if (browser is not null) await browser.CloseAsync();
+            playwright.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task Cli_ComplementarySettlement_SurvivesMakerActiveSwapRestart()
     {
         var maker = await StartDaemonAsync();
@@ -1273,7 +1352,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             string marketId,
             int price,
             int amountSats,
-            bool preflightSplit);
+            bool preflightSplit,
+            string? displayedOutcomeSetId = null);
 
         Task<string> SubmitComplementaryTakerBuyAsync(
             string conditionId,
@@ -1318,7 +1398,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             string marketId,
             int price,
             int amountSats,
-            bool preflightSplit)
+            bool preflightSplit,
+            string? displayedOutcomeSetId = null)
         {
             var args = new List<string>
             {
@@ -1457,7 +1538,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             string marketId,
             int price,
             int amountSats,
-            bool preflightSplit) =>
+            bool preflightSplit,
+            string? displayedOutcomeSetId = null) =>
             SubmitBrowserLimitBuyRestingAsync(
                 page,
                 conditionId,
@@ -1466,7 +1548,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 price,
                 amountSats,
                 preflightSplit,
-                consoleMessages);
+                consoleMessages,
+                displayedOutcomeSetId);
 
         public Task<string> SubmitComplementaryTakerBuyAsync(
             string conditionId,
@@ -1496,6 +1579,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 conditionId,
                 outcomeSetId,
                 consoleMessages,
+                minimumSats: minimumAvailableSats,
                 availableOnly: true);
 
         public Task AssertReservedOutcomeProofsAsync(
@@ -1507,6 +1591,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 conditionId,
                 outcomeSetId,
                 consoleMessages,
+                minimumSats: minimumReservedSats,
                 reservedOnly: true);
     }
 
@@ -1974,7 +2059,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await limitOrder.ClickAsync();
 
-        var outcomeButton = BinaryOutcomeButton(page, outcomeSetId);
+        var outcomeButton = TradeOutcomeButton(page, outcomeSetId);
         await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await outcomeButton.ClickAsync();
 
@@ -2037,7 +2122,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         int limitPrice,
         int amountSats,
         bool preflight,
-        IReadOnlyList<string> consoleMessages)
+        IReadOnlyList<string> consoleMessages,
+        string? displayedOutcomeSetId = null)
     {
         await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{conditionId}", new PageGotoOptions
         {
@@ -2051,7 +2137,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await limitOrder.ClickAsync();
 
-        var outcomeButton = BinaryOutcomeButton(page, outcomeSetId);
+        var outcomeButton = TradeOutcomeButton(
+            page,
+            displayedOutcomeSetId ?? outcomeSetId,
+            complement: displayedOutcomeSetId is not null);
         await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await outcomeButton.ClickAsync();
 
@@ -2149,7 +2238,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             $"Browser did not invoke SignalR {target} containing {expectedFragment} before the match.");
     }
 
-    private static ILocator BinaryOutcomeButton(IPage page, string outcomeSetId)
+    private static ILocator TradeOutcomeButton(IPage page, string outcomeSetId, bool complement = false)
     {
         if (string.Equals(outcomeSetId, "yes", StringComparison.OrdinalIgnoreCase))
         {
@@ -2165,11 +2254,27 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 .First;
         }
 
-        return page.GetByRole(
-                AriaRole.Button,
-                new() { NameRegex = new Regex($"^{Regex.Escape(outcomeSetId)}\\s", RegexOptions.IgnoreCase) })
+        var outcomeLabel = XPathLiteral(outcomeSetId);
+        var buttonLabel = XPathLiteral(complement ? "Buy NO" : "Buy YES");
+        return page.Locator(
+                $"xpath=//*[normalize-space(.)={outcomeLabel}]/ancestor::*[.//button[normalize-space(.)={buttonLabel}]][1]//button[normalize-space(.)={buttonLabel}]")
             .Filter(new() { Visible = true })
             .First;
+    }
+
+    private static string XPathLiteral(string value)
+    {
+        if (!value.Contains('\''))
+        {
+            return $"'{value}'";
+        }
+
+        if (!value.Contains('"'))
+        {
+            return $"\"{value}\"";
+        }
+
+        return $"concat({string.Join(", \"'\", ", value.Split('\'').Select(part => $"'{part}'"))})";
     }
 
     private static async Task WaitForEngineAskAsync(string marketId, int minimumAmountSats)
@@ -2227,26 +2332,35 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         string conditionId,
         string outcomeSetId,
         IReadOnlyList<string> consoleMessages,
+        int minimumSats = 1,
         bool availableOnly = false,
         bool reservedOnly = false)
     {
         if (availableOnly && reservedOnly)
             throw new ArgumentException("Outcome proof query cannot be both availableOnly and reservedOnly.");
 
-        var marketId = $"{conditionId}-{outcomeSetId}";
+        var outcomeCollections = PrimitiveOutcomeCollections(outcomeSetId);
         var deadline = DateTime.UtcNow.AddSeconds(60);
-        var lastSum = 0;
+        var lastSums = outcomeCollections.ToDictionary(outcome => outcome, _ => 0);
         while (DateTime.UtcNow < deadline)
         {
-            lastSum = await SumBrowserOutcomeProofsAsync(page, marketId, availableOnly, reservedOnly);
-            if (lastSum > 0) return;
+            foreach (var outcomeCollection in outcomeCollections)
+            {
+                var marketId = $"{conditionId}-{outcomeCollection}";
+                lastSums[outcomeCollection] = await SumBrowserOutcomeProofsAsync(
+                    page,
+                    marketId,
+                    availableOnly,
+                    reservedOnly);
+            }
+            if (outcomeCollections.All(outcome => lastSums[outcome] >= minimumSats)) return;
             await Task.Delay(500);
         }
 
         throw await TestHelpers.BuildDiagnosticExceptionAsync(
             page,
             consoleMessages,
-            $"Browser did not persist local outcome proofs for {marketId}. availableOnly={availableOnly}, reservedOnly={reservedOnly}, last sum={lastSum}.");
+            $"Browser did not persist local outcome proofs for {conditionId}-{outcomeSetId}. availableOnly={availableOnly}, reservedOnly={reservedOnly}, expected each primitive >= {minimumSats}, last sums={JsonSerializer.Serialize(lastSums)}.");
     }
 
     private static Task<int> SumBrowserOutcomeProofsAsync(
@@ -2297,8 +2411,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         int minimumSats,
         bool reserved)
     {
+        var outcomeCollections = PrimitiveOutcomeCollections(outcomeSetId);
         var deadline = DateTime.UtcNow.AddSeconds(60);
-        var lastAmount = 0;
+        var lastAmounts = outcomeCollections.ToDictionary(outcome => outcome, _ => 0);
         string? lastBody = null;
         while (DateTime.UtcNow < deadline)
         {
@@ -2314,23 +2429,39 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                              .GetProperty("outcomePositions")
                              .EnumerateArray())
                 {
+                    var outcomeCollection = row.GetProperty("outcomeSetId").GetString();
                     if (row.GetProperty("conditionId").GetString() != conditionId
-                        || row.GetProperty("outcomeSetId").GetString() != outcomeSetId)
+                        || outcomeCollection is null
+                        || !lastAmounts.ContainsKey(outcomeCollection))
                     {
                         continue;
                     }
 
-                    lastAmount = row.GetProperty(reserved ? "reservedSats" : "availableSats").GetInt32();
-                    if (lastAmount >= minimumSats) return;
+                    lastAmounts[outcomeCollection] =
+                        row.GetProperty(reserved ? "reservedSats" : "availableSats").GetInt32();
                 }
+                if (outcomeCollections.All(outcome => lastAmounts[outcome] >= minimumSats)) return;
             }
             await Task.Delay(500);
         }
 
         throw new TimeoutException(
             $"Daemon wallet did not expose {(reserved ? "reserved" : "available")} outcome proofs for {conditionId}-{outcomeSetId}. " +
-            $"Expected >= {minimumSats}, lastAmount={lastAmount}, last={lastBody ?? "(none)"}");
+            $"Expected each primitive >= {minimumSats}, lastAmounts={JsonSerializer.Serialize(lastAmounts)}, last={lastBody ?? "(none)"}");
     }
+
+    private static string[] PrimitiveOutcomeCollections(string outcomeSetId) =>
+        outcomeSetId
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToArray();
+
+    private static string CanonicalOutcomeSet(IEnumerable<string> outcomes) =>
+        string.Join('|', outcomes
+            .Where(outcome => !string.IsNullOrWhiteSpace(outcome))
+            .Select(outcome => outcome.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal));
 
     private async Task<JsonDocument> WaitForTradeRecordAsync(
         DaemonHandle daemon,
@@ -2496,6 +2627,39 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         }
 
         throw new InvalidOperationException("No binary YES/NO CTF condition was available from the mint.");
+    }
+
+    private static async Task<(string ConditionId, string[] PrimitiveOutcomeSetIds)> FindCategoricalConditionAsync()
+    {
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        using var response = await httpClient.GetAsync($"{TestPorts.MintUrl}/v1/conditions");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var doc = await JsonDocument.ParseAsync(stream);
+        foreach (var condition in doc.RootElement.GetProperty("conditions").EnumerateArray())
+        {
+            var conditionId = condition.GetProperty("condition_id").GetString();
+            if (string.IsNullOrWhiteSpace(conditionId) || conditionId.Length != 64)
+                continue;
+            if (!condition.TryGetProperty("partitions", out var partitions)
+                || partitions.ValueKind != JsonValueKind.Array)
+                continue;
+            foreach (var partition in partitions.EnumerateArray())
+            {
+                if (!partition.TryGetProperty("partition", out var outcomes)
+                    || outcomes.ValueKind != JsonValueKind.Array)
+                    continue;
+                var values = outcomes.EnumerateArray()
+                    .Select(item => item.GetString())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value!)
+                    .ToArray();
+                if (values.Length >= 3)
+                    return (conditionId, values);
+            }
+        }
+
+        throw new InvalidOperationException("No categorical CTF condition with at least three outcomes was available from the mint.");
     }
 
     private async Task<ProcessResult> RunNodeAsync(

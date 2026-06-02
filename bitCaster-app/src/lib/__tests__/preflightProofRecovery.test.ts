@@ -33,9 +33,9 @@ import {
   runPreflightMintSingleFlight,
 } from "../preflightProofRecovery";
 
-function proof(secret: string, amount = 100): Proof {
+function proof(secret: string, amount = 100, id = "keyset"): Proof {
   return {
-    id: "keyset",
+    id,
     amount,
     secret,
     C: `02${secret}`.padEnd(66, "0"),
@@ -67,6 +67,18 @@ function operation(
 describe("preflight proof recovery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          keysets: [
+            keyset("keyset-YES", "cond", "YES"),
+            keyset("keyset-NO", "cond", "NO"),
+          ],
+        }),
+      }),
+    );
     mocks.getWallet.mockResolvedValue({ checkProofsStates: vi.fn() });
     mocks.getProofs.mockResolvedValue([
       { ...proof("spent-input"), mintUrl: "https://mint.example" },
@@ -101,7 +113,10 @@ describe("preflight proof recovery", () => {
         operationId: "order-preflight:epub:ctf-split:0",
         kind: "ctf-split",
         metadata: { conditionId: "cond" },
-        resultProofs: { YES: [proof("yes-proof")], NO: [proof("no-proof")] },
+        resultProofs: {
+          YES: [proof("yes-proof", 100, "keyset-YES")],
+          NO: [proof("no-proof", 100, "keyset-NO")],
+        },
       }),
     ]);
 
@@ -115,6 +130,7 @@ describe("preflight proof recovery", () => {
       [
         {
           ...proof("yes-proof"),
+          id: "keyset-YES",
           mintUrl: "https://mint.example",
           conditionId: "cond",
           outcomeCollection: "YES",
@@ -123,6 +139,7 @@ describe("preflight proof recovery", () => {
         },
         {
           ...proof("no-proof"),
+          id: "keyset-NO",
           mintUrl: "https://mint.example",
           conditionId: "cond",
           outcomeCollection: "NO",
@@ -227,3 +244,12 @@ describe("preflight proof recovery", () => {
     ]);
   });
 });
+
+function keyset(id: string, conditionId: string, outcomeCollection: string) {
+  return {
+    id,
+    condition_id: conditionId,
+    outcome_collection: outcomeCollection,
+    outcome_collection_id: outcomeCollection,
+  };
+}
