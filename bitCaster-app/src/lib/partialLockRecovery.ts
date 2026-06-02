@@ -95,6 +95,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
   } catch (error) {
     if (!isAlreadySpentError(error)) throw error
     await removeProofs(locked.map((proof) => proof.secret))
+    await markProofOperationCompleted(operationId, { alreadySpent: true })
     usePartialLockFailuresStore.getState().remove(tradeId)
   }
 }
