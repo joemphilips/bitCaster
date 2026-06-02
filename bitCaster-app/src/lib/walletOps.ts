@@ -1,5 +1,6 @@
 import { PaymentRequest, PaymentRequestTransportType, type Proof } from '@cashu/cashu-ts'
 import { decodeToken, receiveToken } from '@/lib/cashu'
+import { proofsWithOptionalConditionalMetadata } from '@/lib/conditionalKeysetMetadata'
 import { deriveNostrKeyPair, getNostrNprofile } from '@/lib/nip17'
 import { normalizeUrl } from '@/lib/url'
 import { useSettingsStore } from '@/stores/settings'
@@ -114,7 +115,11 @@ export async function ingressReceiveCashuToken(
     ? normalizeUrl(options.mintUrl)
     : normalizeUrl((await decodeToken(token)).mint)
   const registration = await ingressRegisterMint(mintUrl, source)
-  const proofs = await receiveToken(token, mintUrl)
+  const receivedProofs = await receiveToken(token, mintUrl)
+  const proofs = await proofsWithOptionalConditionalMetadata({
+    mintUrl,
+    proofs: receivedProofs,
+  })
   return {
     ...registration,
     proofs,
