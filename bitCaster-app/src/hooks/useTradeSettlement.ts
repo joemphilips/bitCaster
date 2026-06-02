@@ -64,7 +64,11 @@ import {
   replaceProofs,
   type StoredProof,
 } from "@/stores/proof-db";
-import { fetchOrderStatus, splitMarketId } from "@/lib/orderStatus";
+import {
+  fetchOrderStatus,
+  promoteFillsToActiveSwaps,
+  splitMarketId,
+} from "@/lib/orderStatus";
 import { hexToBytes } from "@bitcaster/swap-protocol/ecdh";
 import {
   buyerClaimSwap,
@@ -240,6 +244,8 @@ const tradeCreatedInFlight = new Set<string>();
 const joinedTradeIds = new Set<string>();
 const JOIN_ORDER_RETRY_MS = 1_000;
 const MAX_JOIN_ORDER_STATUS_MISSES = 12;
+const ORDER_STATUS_RECOVERY_MS = 2_000;
+const MAX_ORDER_STATUS_RECOVERY_ATTEMPTS = 45;
 
 /**
  * Mount once near the app root. The hook owns no DOM and renders nothing.
@@ -257,6 +263,10 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     Map<string, ReturnType<typeof setTimeout>>
   >(new Map());
   const orderJoinMissCountsRef = useRef<Map<string, number>>(new Map());
+  const orderStatusRecoveryTimersRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
+  const orderStatusRecoveryAttemptsRef = useRef<Map<string, number>>(new Map());
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
     (swap) => swap.step !== "completed" && swap.step !== "failed",
@@ -312,6 +322,58 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
         orderJoinMissCountsRef.current.delete(key);
       }
     }
+    for (const [key, timer] of orderStatusRecoveryTimersRef.current) {
+      if (!liveKeys.has(key)) {
+        clearTimeout(timer);
+        orderStatusRecoveryTimersRef.current.delete(key);
+        orderStatusRecoveryAttemptsRef.current.delete(key);
+      }
+    }
+
+    const scheduleOrderStatusRecovery = (trade: PendingTrade) => {
+      const key = `${trade.marketId}:${trade.orderId}`;
+      if (orderStatusRecoveryTimersRef.current.has(key)) return;
+
+      const timer = setTimeout(() => {
+        orderStatusRecoveryTimersRef.current.delete(key);
+        const latest =
+          usePendingTradesStore.getState().byOrderId[trade.orderId];
+        if (!latest) {
+          orderStatusRecoveryAttemptsRef.current.delete(key);
+          return;
+        }
+
+        const attempts =
+          (orderStatusRecoveryAttemptsRef.current.get(key) ?? 0) + 1;
+        orderStatusRecoveryAttemptsRef.current.set(key, attempts);
+
+        void fetchOrderStatus(latest.marketId, latest.orderId)
+          .then((status) => {
+            if (!status) return;
+            const tradeIds = status.fills
+              .map((fill) => fill.tradeId)
+              .filter((tradeId): tradeId is string => Boolean(tradeId));
+            if (tradeIds.length > 0) {
+              promoteFillsToActiveSwaps(status.fills, latest, 0);
+              orderStatusRecoveryAttemptsRef.current.delete(key);
+              for (const tradeId of tradeIds) {
+                void joinTrade(tradeId);
+              }
+              return;
+            }
+            if (attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS) {
+              scheduleOrderStatusRecovery(latest);
+            }
+          })
+          .catch(() => {
+            if (attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS) {
+              scheduleOrderStatusRecovery(latest);
+            }
+          });
+      }, ORDER_STATUS_RECOVERY_MS);
+
+      orderStatusRecoveryTimersRef.current.set(key, timer);
+    };
 
     const scheduleOrderJoinRetry = (
       key: string,
@@ -348,6 +410,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
           }
 
           orderJoinMissCountsRef.current.delete(key);
+          scheduleOrderStatusRecovery(trade);
           return joinOrder(trade.marketId, trade.orderId);
         })
         .catch(() => {
@@ -361,7 +424,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     for (const trade of pendingTrades) {
       attemptJoinOrder(trade);
     }
-  }, [pendingTrades, tradeHubEnabled, joinOrder]);
+  }, [pendingTrades, tradeHubEnabled, joinOrder, joinTrade]);
 
   useEffect(() => {
     if (tradeHubEnabled) return;
@@ -371,6 +434,11 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     orderJoinRetryTimersRef.current.clear();
     joinedOrderKeysRef.current.clear();
     orderJoinMissCountsRef.current.clear();
+    for (const timer of orderStatusRecoveryTimersRef.current.values()) {
+      clearTimeout(timer);
+    }
+    orderStatusRecoveryTimersRef.current.clear();
+    orderStatusRecoveryAttemptsRef.current.clear();
   }, [tradeHubEnabled]);
 }
 

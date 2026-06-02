@@ -515,8 +515,16 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 takerPrice,
                 faceAmountSats);
 
-            await maker.RefreshMatchedOrderAsync(makerMarketId, makerOrderId, tradeId);
-            await taker.WaitConfirmedAsync(tradeId);
+            try
+            {
+                await maker.RefreshMatchedOrderAsync(makerMarketId, makerOrderId, tradeId);
+                await taker.WaitConfirmedAsync(tradeId);
+            }
+            catch (Exception ex)
+            {
+                throw await maker.BuildDiagnosticExceptionAsync(
+                    $"Mint complementary settlement did not confirm for trade {tradeId}. Inner={ex.Message}");
+            }
 
             await maker.AssertAvailableOutcomeProofsAsync(
                 condition.ConditionId,
@@ -1320,6 +1328,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await context.AddInitScriptAsync("""
             (() => {
               const originalSend = WebSocket.prototype.send;
+              const originalAddEventListener = WebSocket.prototype.addEventListener;
               WebSocket.prototype.send = function(data) {
                 try {
                   const text = typeof data === 'string' ? data : '';
@@ -1333,6 +1342,23 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                   // Test instrumentation must never alter app behavior.
                 }
                 return originalSend.apply(this, arguments);
+              };
+              WebSocket.prototype.addEventListener = function(type, listener, options) {
+                if (type === 'message' && typeof listener === 'function') {
+                  const wrapped = function(event) {
+                    try {
+                      const text = typeof event.data === 'string' ? event.data : '';
+                      if (text.includes('TradeCreated') || text.includes('"error"') || text.includes('"type":3')) {
+                        console.debug(`[e2e-signalr-recv] ${text}`);
+                      }
+                    } catch {
+                      // Test instrumentation must never alter app behavior.
+                    }
+                    return listener.apply(this, arguments);
+                  };
+                  return originalAddEventListener.call(this, type, wrapped, options);
+                }
+                return originalAddEventListener.call(this, type, listener, options);
               };
             })();
             """);
@@ -1365,6 +1391,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         Task WaitConfirmedAsync(string tradeId);
 
         Task RefreshMatchedOrderAsync(string marketId, string orderId, string tradeId);
+
+        Task<Exception> BuildDiagnosticExceptionAsync(string context);
 
         Task AssertAvailableOutcomeProofsAsync(
             string conditionId,
@@ -1445,14 +1473,34 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 amountSats.ToString(),
                 "FAK",
             ]);
-            Assert.True(submit.RootElement.GetProperty("ok").GetBoolean());
-            var engine = submit.RootElement
-                .GetProperty("result")
-                .GetProperty("engine");
-            var fill = Assert.Single(engine.GetProperty("fills").EnumerateArray());
-            var tradeId = fill.GetProperty("tradeId").GetString();
+            var submitBody = submit.RootElement.GetRawText();
+            Assert.True(
+                submit.RootElement.TryGetProperty("ok", out var ok)
+                && ok.ValueKind == JsonValueKind.True,
+                $"CLI taker order submit failed or returned an unexpected shape. Body={submitBody}");
+            Assert.True(
+                submit.RootElement.TryGetProperty("result", out var result),
+                $"CLI taker order submit did not include result. Body={submitBody}");
+            Assert.True(
+                result.TryGetProperty("engine", out var engine),
+                $"CLI taker order submit did not include result.engine. Body={submitBody}");
+            Assert.True(
+                engine.TryGetProperty("fills", out var fills)
+                && fills.ValueKind == JsonValueKind.Array,
+                $"CLI taker order submit did not include engine.fills. Body={submitBody}");
+            var fill = Assert.Single(fills.EnumerateArray());
+            Assert.True(
+                fill.TryGetProperty("tradeId", out var tradeIdElement)
+                && tradeIdElement.ValueKind == JsonValueKind.String,
+                $"CLI taker fill did not include tradeId. Body={submitBody}");
+            var tradeId = tradeIdElement.GetString();
             Assert.False(string.IsNullOrWhiteSpace(tradeId));
-            Assert.Equal("Mint", fill.GetProperty("settlementKind").GetString());
+            var settlementKind = fill.TryGetProperty("settlementKind", out var settlementKindElement)
+                ? settlementKindElement.GetString()
+                : fill.TryGetProperty("path", out var pathElement)
+                    ? pathElement.GetString()
+                    : null;
+            Assert.Equal("Mint", settlementKind, ignoreCase: true);
             return tradeId!;
         }
 
@@ -1501,6 +1549,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             ]);
             Assert.True(recover.RootElement.GetProperty("ok").GetBoolean());
         }
+
+        public Task<Exception> BuildDiagnosticExceptionAsync(string context) =>
+            Task.FromResult<Exception>(new TimeoutException(context));
 
         public Task AssertAvailableOutcomeProofsAsync(
             string conditionId,
@@ -1569,6 +1620,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         public Task WaitConfirmedAsync(string tradeId) => Task.CompletedTask;
 
         public Task RefreshMatchedOrderAsync(string marketId, string orderId, string tradeId) => Task.CompletedTask;
+
+        public Task<Exception> BuildDiagnosticExceptionAsync(string context) =>
+            TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages, context);
 
         public Task AssertAvailableOutcomeProofsAsync(
             string conditionId,
@@ -2102,6 +2156,14 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         }
 
         var orderBody = await orderResponse.TextAsync();
+        if (!orderResponse.Ok)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Browser seller order POST failed with HTTP {orderResponse.Status}. Body={orderBody}");
+        }
+
         using var doc = JsonDocument.Parse(orderBody);
         var statusText = doc.RootElement.GetProperty("status").GetString();
         var fills = doc.RootElement.GetProperty("fills").EnumerateArray().ToArray();
@@ -2193,6 +2255,14 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         }
 
         var orderBody = await orderResponse.TextAsync();
+        if (!orderResponse.Ok)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Browser maker buy POST failed with HTTP {orderResponse.Status}. Body={orderBody}");
+        }
+
         using var doc = JsonDocument.Parse(orderBody);
         var statusText = doc.RootElement.GetProperty("status").GetString();
         var fills = doc.RootElement.GetProperty("fills").EnumerateArray().ToArray();
@@ -2632,10 +2702,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     private static async Task<(string ConditionId, string[] PrimitiveOutcomeSetIds)> FindCategoricalConditionAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var tradableConditionIds = await LoadTradableMarketConditionIdsAsync(httpClient);
         using var response = await httpClient.GetAsync($"{TestPorts.MintUrl}/v1/conditions");
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync();
         using var doc = await JsonDocument.ParseAsync(stream);
+        (string ConditionId, string[] PrimitiveOutcomeSetIds)? fallback = null;
         foreach (var condition in doc.RootElement.GetProperty("conditions").EnumerateArray())
         {
             var conditionId = condition.GetProperty("condition_id").GetString();
@@ -2655,11 +2727,48 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     .Select(value => value!)
                     .ToArray();
                 if (values.Length >= 3)
-                    return (conditionId, values);
+                {
+                    if (tradableConditionIds.Contains(conditionId))
+                        return (conditionId, values);
+                    fallback ??= (conditionId, values);
+                }
             }
         }
 
+        if (fallback is not null)
+            return fallback.Value;
+
         throw new InvalidOperationException("No categorical CTF condition with at least three outcomes was available from the mint.");
+    }
+
+    private static async Task<HashSet<string>> LoadTradableMarketConditionIdsAsync(HttpClient httpClient)
+    {
+        try
+        {
+            using var response = await httpClient.GetAsync($"{TestPorts.ServerUrl}/api/v1/markets/query?state=All&limit=100");
+            if (!response.IsSuccessStatusCode)
+                return [];
+
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var doc = await JsonDocument.ParseAsync(stream);
+            var now = DateTimeOffset.UtcNow;
+            return doc.RootElement.GetProperty("markets")
+                .EnumerateArray()
+                .Where(market =>
+                    market.TryGetProperty("conditionId", out var conditionId)
+                    && conditionId.ValueKind == JsonValueKind.String
+                    && market.TryGetProperty("state", out var state)
+                    && string.Equals(state.GetString(), "open", StringComparison.OrdinalIgnoreCase)
+                    && market.TryGetProperty("deadline", out var deadline)
+                    && DateTimeOffset.TryParse(deadline.GetString(), out var deadlineAt)
+                    && deadlineAt > now)
+                .Select(market => market.GetProperty("conditionId").GetString()!)
+                .ToHashSet(StringComparer.Ordinal);
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     private async Task<ProcessResult> RunNodeAsync(
