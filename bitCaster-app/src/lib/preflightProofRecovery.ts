@@ -17,6 +17,7 @@ import {
   type StoredProof,
 } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
+import { storedConditionalProofsFromMintMetadata } from "@/lib/conditionalKeysetMetadata";
 
 export interface PreflightProofRecoveryResult {
   operationsChecked: number;
@@ -64,7 +65,7 @@ export async function reconcileCompletedPreflightProofOperations(input: {
       operation.state === "prepared"
         ? await resumePreparedPreflightOperation(operation, input.mintUrl)
         : operation;
-    const recovered = recoveredProofsForOperation(
+    const recovered = await recoveredProofsForOperation(
       completedOperation,
       input.mintUrl,
       activeReservationIds,
@@ -94,11 +95,11 @@ export async function reconcileCompletedPreflightProofOperations(input: {
   return result;
 }
 
-function recoveredProofsForOperation(
+async function recoveredProofsForOperation(
   operation: ProofOperationRecord,
   mintUrl: string,
   activeReservationIds: Set<string>,
-): StoredProof[] {
+): Promise<StoredProof[]> {
   if (operation.kind === "regular-split") {
     return [
       ...proofGroup(operation.resultProofs?.send),
@@ -119,17 +120,12 @@ function recoveredProofsForOperation(
       ? reservationId
       : undefined;
 
-  return Object.entries(operation.resultProofs ?? {}).flatMap(
-    ([outcomeCollection, proofs]) =>
-      proofGroup(proofs).map((proof) => ({
-        ...proof,
-        mintUrl,
-        conditionId,
-        outcomeCollection,
-        marketId: `${conditionId}-${outcomeCollection}`,
-        reservedBy,
-      })),
-  );
+  return storedConditionalProofsFromMintMetadata({
+    mintUrl,
+    proofs: Object.values(operation.resultProofs ?? {}).flatMap(proofGroup),
+    expectedConditionId: conditionId,
+    reservedBy,
+  });
 }
 
 function ctfConditionId(operation: ProofOperationRecord): string | undefined {
@@ -192,7 +188,11 @@ async function resumePreparedPreflightOperation(
 
 function preparedAmountSats(operation: ProofOperationRecord): number {
   const amount = operation.metadata.amount;
-  if (typeof amount === "number" && Number.isSafeInteger(amount) && amount > 0) {
+  if (
+    typeof amount === "number" &&
+    Number.isSafeInteger(amount) &&
+    amount > 0
+  ) {
     return amount;
   }
   const inputTotal = operation.inputs.reduce(

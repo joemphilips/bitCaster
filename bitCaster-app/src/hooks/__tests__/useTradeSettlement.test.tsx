@@ -26,6 +26,7 @@ const {
   mockPrepareProofOperation,
   mockReleaseProofReservationsBySecret,
   mockRemoveProofs,
+  mockReplaceProofs,
   mockReserveProofs,
 } = vi.hoisted(() => ({
   mockAddProofs: vi.fn(),
@@ -37,6 +38,7 @@ const {
   mockPrepareProofOperation: vi.fn(),
   mockReleaseProofReservationsBySecret: vi.fn(),
   mockRemoveProofs: vi.fn(),
+  mockReplaceProofs: vi.fn(),
   mockReserveProofs: vi.fn(),
 }));
 
@@ -44,12 +46,11 @@ const {
   mockSellerLockOutcomeProofs,
   mockSellerPreparePrelockedSwap,
   mockSplitProofsForExactSend,
-} =
-  vi.hoisted(() => ({
-    mockSellerLockOutcomeProofs: vi.fn(),
-    mockSellerPreparePrelockedSwap: vi.fn(),
-    mockSplitProofsForExactSend: vi.fn(),
-  }));
+} = vi.hoisted(() => ({
+  mockSellerLockOutcomeProofs: vi.fn(),
+  mockSellerPreparePrelockedSwap: vi.fn(),
+  mockSplitProofsForExactSend: vi.fn(),
+}));
 
 vi.mock("@/hooks/useTradeHub", () => ({
   useTradeHub: mockUseTradeHub,
@@ -65,6 +66,7 @@ vi.mock("@/stores/proof-db", () => ({
   prepareProofOperation: mockPrepareProofOperation,
   releaseProofReservationsBySecret: mockReleaseProofReservationsBySecret,
   removeProofs: mockRemoveProofs,
+  replaceProofs: mockReplaceProofs,
   reserveProofs: mockReserveProofs,
 }));
 
@@ -78,7 +80,9 @@ vi.mock("@/lib/orderStatus", async (importOriginal) => {
 
 vi.mock("@bitcaster/swap-protocol/atomicSwap", async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import("@bitcaster/swap-protocol/atomicSwap")>();
+    await importOriginal<
+      typeof import("@bitcaster/swap-protocol/atomicSwap")
+    >();
   return {
     ...actual,
     sellerLockOutcomeProofs: mockSellerLockOutcomeProofs,
@@ -92,9 +96,8 @@ vi.mock("@/stores/wallet", () => ({
     selector({ activeMintUrl: "https://mint.example" }),
 }));
 
-const { useTradeSettlement, persistPartialLockFromError } = await import(
-  "../useTradeSettlement"
-);
+const { useTradeSettlement, persistPartialLockFromError } =
+  await import("../useTradeSettlement");
 
 beforeEach(() => {
   vi.useRealTimers();
@@ -114,7 +117,22 @@ beforeEach(() => {
   mockPrepareProofOperation.mockResolvedValue({});
   mockReleaseProofReservationsBySecret.mockResolvedValue(undefined);
   mockRemoveProofs.mockResolvedValue(undefined);
+  mockReplaceProofs.mockResolvedValue(undefined);
   mockReserveProofs.mockResolvedValue(undefined);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        keysets: [
+          keyset("keyset-YES", "cond", "YES"),
+          keyset("keyset-NO", "cond", "NO"),
+          keyset("keyset-B", "condition-1", "B"),
+          keyset("keyset-C", "condition-1", "C"),
+        ],
+      }),
+    }),
+  );
   mockSellerPreparePrelockedSwap.mockResolvedValue({
     adaptorPointCipher: "cipher-adaptor",
     lockedProofsCipher: "cipher-seller",
@@ -123,10 +141,18 @@ beforeEach(() => {
     changeProofs: [],
   });
   mockSellerLockOutcomeProofs.mockImplementation(async (_ctx, proofs) => ({
-    lockedProofs: [proof(100, `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-locked-100`)],
+    lockedProofs: [
+      proof(
+        100,
+        `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-locked-100`,
+      ),
+    ],
     changeProofs: [
       {
-        ...proof(36, `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-change-36`),
+        ...proof(
+          36,
+          `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-change-36`,
+        ),
         id: proofs[0].id,
       },
     ],
@@ -135,7 +161,7 @@ beforeEach(() => {
     const source = params.sourceProofs[0];
     const prefix = source.secret.includes("lock") ? "lock" : "keep";
     return {
-      sendProofs: [proof(100, `${prefix}-exact-100`)],
+      sendProofs: [proof(100, `${prefix}-exact-100`, source.id)],
       changeProofs: [{ ...proof(36, `${prefix}-change-36`), id: source.id }],
       spentProofs: params.sourceProofs,
     };
@@ -225,16 +251,14 @@ describe("useTradeSettlement", () => {
 
   it("waits for order status before joining pending order groups", async () => {
     vi.useFakeTimers();
-    mockFetchOrderStatus
-      .mockResolvedValueOnce(null)
-      .mockResolvedValue({
-        orderId: "order-pending",
-        marketId: "cond-YES",
-        status: "resting",
-        remainingAmountSats: 100,
-        filledAmountSats: 0,
-        fills: [],
-      });
+    mockFetchOrderStatus.mockResolvedValueOnce(null).mockResolvedValue({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      status: "resting",
+      remainingAmountSats: 100,
+      filledAmountSats: 0,
+      fills: [],
+    });
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
@@ -368,7 +392,7 @@ describe("useTradeSettlement", () => {
     const reservationId = `order-preflight:${"02" + "22".repeat(32)}`;
     mockGetReservedProofs.mockResolvedValue([
       {
-        ...proof(136, "reserved-lock-no-136"),
+        ...proof(136, "reserved-lock-no-136", "keyset-NO"),
         mintUrl: "https://mint.example",
         reservedBy: reservationId,
         conditionId: "cond",
@@ -376,7 +400,7 @@ describe("useTradeSettlement", () => {
         marketId: "cond-NO",
       },
       {
-        ...proof(136, "reserved-keep-yes-136"),
+        ...proof(136, "reserved-keep-yes-136", "keyset-YES"),
         mintUrl: "https://mint.example",
         reservedBy: reservationId,
         conditionId: "cond",
@@ -433,7 +457,9 @@ describe("useTradeSettlement", () => {
       });
     });
 
-    await waitFor(() => expect(mockSellerLockOutcomeProofs).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockSellerLockOutcomeProofs).toHaveBeenCalledTimes(1),
+    );
     expect(mockSellerLockOutcomeProofs).toHaveBeenCalledWith(
       expect.objectContaining({ tradeId: "trade-preflight-overpay" }),
       [expect.objectContaining({ secret: "reserved-lock-no-136" })],
@@ -442,29 +468,57 @@ describe("useTradeSettlement", () => {
         operationId: "trade-preflight-overpay/browser/seller-preflight-lock",
       }),
     );
-    await waitFor(() => expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(1),
+    );
     expect(mockSplitProofsForExactSend).toHaveBeenCalledWith(
       expect.objectContaining({
         amountSats: 100,
         operationId:
           "trade-preflight-overpay/browser/seller-preflight-keep-exact-v2/YES",
         preserveSourceKeyset: true,
-        sourceProofs: [expect.objectContaining({ secret: "reserved-keep-yes-136" })],
+        sourceProofs: [
+          expect.objectContaining({ secret: "reserved-keep-yes-136" }),
+        ],
       }),
     );
     expect(mockSellerPreparePrelockedSwap).toHaveBeenCalledWith(
       expect.objectContaining({ tradeId: "trade-preflight-overpay" }),
       [expect.objectContaining({ secret: "lock-locked-100" })],
     );
-    expect(mockRemoveProofs).toHaveBeenCalledWith(["reserved-lock-no-136"]);
-    expect(mockRemoveProofs).toHaveBeenCalledWith(["reserved-keep-yes-136"]);
-    expect(mockReserveProofs).toHaveBeenCalledWith(
-      ["lock-change-36"],
-      reservationId,
+    expect(mockReplaceProofs).toHaveBeenCalledWith(
+      ["reserved-lock-no-136"],
+      [
+        expect.objectContaining({
+          secret: "lock-change-36",
+          id: "keyset-NO",
+          conditionId: "cond",
+          outcomeCollection: "NO",
+          marketId: "cond-NO",
+          reservedBy: reservationId,
+        }),
+      ],
     );
-    expect(mockReserveProofs).toHaveBeenCalledWith(
-      ["keep-change-36"],
-      reservationId,
+    expect(mockReplaceProofs).toHaveBeenCalledWith(
+      ["reserved-keep-yes-136"],
+      [
+        expect.objectContaining({
+          secret: "keep-exact-100",
+          id: "keyset-YES",
+          conditionId: "cond",
+          outcomeCollection: "YES",
+          marketId: "cond-YES",
+          reservedBy: undefined,
+        }),
+        expect.objectContaining({
+          secret: "keep-change-36",
+          id: "keyset-YES",
+          conditionId: "cond",
+          outcomeCollection: "YES",
+          marketId: "cond-YES",
+          reservedBy: reservationId,
+        }),
+      ],
     );
     await waitFor(() =>
       expect(mockSendSwapMessage).toHaveBeenCalledWith(
@@ -522,6 +576,25 @@ describe("useTradeSettlement", () => {
       "locked-B",
       "locked-C",
     ]);
+    expect(mockReplaceProofs).toHaveBeenCalledWith(
+      ["spent-B", "spent-C"],
+      [
+        expect.objectContaining({
+          secret: "locked-B",
+          conditionId: "condition-1",
+          outcomeCollection: "B",
+          marketId: "condition-1-B",
+          reservedBy: "trade-partial-multi",
+        }),
+        expect.objectContaining({
+          secret: "locked-C",
+          conditionId: "condition-1",
+          outcomeCollection: "C",
+          marketId: "condition-1-C",
+          reservedBy: "trade-partial-multi",
+        }),
+      ],
+    );
   });
 
   it("ignores duplicate TradeCreated events after role assignment", async () => {
@@ -636,11 +709,20 @@ describe("useTradeSettlement", () => {
   });
 });
 
-function proof(amount: number, secret: string) {
+function proof(amount: number, secret: string, id = `keyset-${amount}`) {
   return {
-    id: `keyset-${amount}`,
+    id,
     amount,
     secret,
     C: `c-${secret}`,
+  };
+}
+
+function keyset(id: string, conditionId: string, outcomeCollection: string) {
+  return {
+    id,
+    condition_id: conditionId,
+    outcome_collection: outcomeCollection,
+    outcome_collection_id: outcomeCollection,
   };
 }
