@@ -1050,6 +1050,17 @@ function handleTradeStateChanged(
   const action = decideTradeStateChanged(newState);
   if (action === "finish-confirmed") return finishSwap(tradeId, "success");
   if (action === "finish-failed" || action === "finish-refunded") {
+    const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
+    if (swap?.step === "completed") return finishSwap(tradeId, "failed");
+    if (swap && !swap.error) {
+      useActiveSwapsStore
+        .getState()
+        .setStep(
+          tradeId,
+          "failed",
+          "settlement timed out before both parties confirmed",
+        );
+    }
     return finishSwap(tradeId, "failed");
   }
   if (action === "settlement-claim") {
