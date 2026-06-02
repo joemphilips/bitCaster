@@ -168,7 +168,7 @@ describe('partial-lock recovery', () => {
     expect(mocks.removeProofs).toHaveBeenCalledWith(['locked-B', 'locked-C'])
     expect(mocks.markProofOperationCompleted).toHaveBeenCalledWith(
       'trade-1:partial-lock-refund',
-      { alreadySpent: true },
+      { alreadySpent: [] },
     )
     expect(mocks.partialState.remove).toHaveBeenCalledWith('trade-1')
   })
