@@ -15,6 +15,8 @@ Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell 
 
 A resting limit order is an online commitment. The maker must keep a browser tab or bot process connected until the order is filled, cancelled, or expired. When a taker matches the order, the maker must be able to answer the TradeHub messages and lock proofs before the swap timeout.
 
+Once the matching engine commits a match, the matched quantity is removed from the book. If the later wallet-level atomic swap times out or fails, that quantity is not automatically re-rested; makers should treat live orders as committed liquidity and cancel stale orders before they become unavailable.
+
 Professional market makers should run a bot rather than rely on an occasional browser session. `bitcaster-cli` uses `bitcaster-daemon` as its long-running wallet and swap process so non-browser makers can participate without changing the wire protocol.
 
 ## Complementary Matching

@@ -26,6 +26,8 @@ Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell,
 
 For limit buys that may rest on the book, bitCaster enables **Pre-flight split** by default. The wallet asks the mint to split the needed regular sats into the complete outcome set before the order becomes live, then reserves those proofs locally for that order. If the split cannot finish quickly, the order should not remain live. Advanced CLI users can opt out with `--no-preflight-split`, but then settlement depends on regular collateral still being available when a later match arrives.
 
+Matching is final for the order book: once a match is accepted, the matched quantity no longer rests on the book. A later swap failure returns or unlocks wallet proofs according to the atomic-swap rules, but it does not put that order quantity back into the public book automatically.
+
 ## Why atomic swaps matter
 
 An atomic swap guarantees that **either both sides of the trade complete, or neither does**. This is critical for trustless peer-to-peer trading:

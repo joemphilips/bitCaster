@@ -12,6 +12,7 @@ import { generateNip98Header } from '@/lib/markets'
 import { BitcasterEngineClient } from '@bitcaster/client-sdk/engineClient'
 
 export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
+export type FillStatus = components['schemas']['FillStatus']
 
 /**
  * Mirrors `OrderStatusResponse.status` from `openapi.yaml`.
@@ -22,6 +23,21 @@ export type OrderStatus =
   | 'partially_filled'
   | 'filled'
   | 'cancelled'
+
+export function isTerminalFillStatus(status: FillStatus): boolean {
+  switch (status) {
+    case 'Matched':
+      return false
+    case 'Filled':
+      return true
+    default:
+      return assertNever(status)
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled FillStatus: ${value}`)
+}
 
 type PendingTradeForPromotion = {
   orderId: string

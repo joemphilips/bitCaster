@@ -357,10 +357,10 @@ export interface components {
          */
         MatchPath: "Complementary" | "Mint";
         /**
-         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means a DCB reservation exists and atomic-swap settlement is still pending; `Filled` means settlement committed; `Released` means a reservation failed or timed out and no longer consumes order depth.
+         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means atomic-swap settlement is still pending; `Filled` means settlement committed.
          * @enum {string}
          */
-        FillStatus: "Matched" | "Filled" | "Released";
+        FillStatus: "Matched" | "Filled";
         OracleNostrEvent: {
             /** @description NIP-01 event id of the kind-89 attestation. */
             id: string;

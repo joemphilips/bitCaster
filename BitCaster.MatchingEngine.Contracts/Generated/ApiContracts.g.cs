@@ -92,7 +92,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Lifecycle status of a fill-shaped order execution row. `Matched` means a DCB reservation exists and atomic-swap settlement is still pending; `Filled` means settlement committed; `Released` means a reservation failed or timed out and no longer consumes order depth.
+    /// Lifecycle status of a fill-shaped order execution row. `Matched` means atomic-swap settlement is still pending; `Filled` means settlement committed.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -104,9 +104,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"Filled")]
         Filled = 1,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"Released")]
-        Released = 2,
 
     }
 
