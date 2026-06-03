@@ -778,25 +778,6 @@ export class DaemonSwapExecutor {
       )
     }
 
-    const lockCollectionByKeyset = keysetToOutcomeCollection(selectedLock)
-    let locked: LockedOutcomeProofResult
-    try {
-      locked = await this.ops.sellerLockOutcomeProofs(
-        ctx,
-        selectedLock.map(proofWithOutcomeMetadata),
-        amount,
-        `${tradeId}:seller-preflight-lock`,
-      )
-    } catch (err) {
-      await this.persistPartialLock(
-        tradeId,
-        mintUrl,
-        split.conditionId,
-        lockCollectionByKeyset,
-        err,
-      )
-      throw err
-    }
     const keepProofs = await this.prepareReservedExactProofsByOutcomeSet(
       mintUrl,
       selectedKeep,
@@ -805,7 +786,7 @@ export class DaemonSwapExecutor {
     )
     const result = await this.ops.sellerOpenPrelocked(
       ctx,
-      locked.lockedProofs,
+      selectedLock.map(proofWithOutcomeMetadata),
     )
     await updateState((state, now) => {
       const live = state.swaps[tradeId]
@@ -834,16 +815,6 @@ export class DaemonSwapExecutor {
         keepProofs,
         preflight.reservationId,
         now,
-      )
-      addOutcomeProofsByKeyset(
-        state,
-        mintUrl,
-        locked.changeProofs,
-        'reserved',
-        split.conditionId,
-        lockCollectionByKeyset,
-        now,
-        preflight.reservationId,
       )
       live.messages = {
         ...live.messages,

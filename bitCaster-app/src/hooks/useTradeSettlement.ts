@@ -746,31 +746,10 @@ async function prepareMintSellerOpening(
       preflight.lockOutcomeSetId,
       amountSats,
     );
-    const lockCollectionByKeyset = await keysetToOutcomeCollectionFromMint(
-      mintUrl,
-      split.conditionId,
-      selectedLock,
-    );
-    let locked: Awaited<ReturnType<typeof sellerLockOutcomeProofs>>;
-    try {
-      locked = await sellerLockOutcomeProofs(ctx, selectedLock, amountSats, {
-        operationId: proofOperationId(swap.tradeId, "seller-preflight-lock"),
-        proofOperationStore,
-      });
-    } catch (err) {
-      await persistPartialLockFromError({
-        err,
-        swap,
-        mintUrl,
-        conditionId: split.conditionId,
-        collectionByKeyset: lockCollectionByKeyset,
-      });
-      throw err;
-    }
-    const out = await sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
+    const out = await sellerPreparePrelockedSwap(ctx, selectedLock);
     await persistConditionalLockChange({
       spentProofs: selectedLock,
-      changeProofs: locked.changeProofs,
+      changeProofs: [],
       mintUrl,
       conditionId: split.conditionId,
       reservedBy: preflight.reservationId,
