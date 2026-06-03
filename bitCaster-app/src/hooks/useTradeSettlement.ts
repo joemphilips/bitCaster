@@ -243,6 +243,8 @@ async function prepareRegularCollateralForCtfSplit(input: {
 const tradeCreatedInFlight = new Set<string>();
 const joinedTradeIds = new Set<string>();
 const JOIN_ORDER_RETRY_MS = 1_000;
+const JOIN_TRADE_RETRY_MS = 1_000;
+const MAX_JOIN_TRADE_RETRIES = 45;
 const MAX_JOIN_ORDER_STATUS_MISSES = 12;
 // Bounded release-blocker recovery: TradeCreated is a one-shot SignalR push
 // from the matching engine. If a maker tab misses it after already joining an
@@ -271,6 +273,10 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     Map<string, ReturnType<typeof setTimeout>>
   >(new Map());
   const orderStatusRecoveryAttemptsRef = useRef<Map<string, number>>(new Map());
+  const tradeJoinRetryTimersRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
+  const tradeJoinAttemptsRef = useRef<Map<string, number>>(new Map());
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
     (swap) => swap.step !== "completed" && swap.step !== "failed",
@@ -298,15 +304,55 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
 
   useEffect(() => {
     if (!tradeHubEnabled) return;
+    const scheduleTradeJoinRetry = (tradeId: string) => {
+      if (tradeJoinRetryTimersRef.current.has(tradeId)) return;
+      const timer = setTimeout(() => {
+        tradeJoinRetryTimersRef.current.delete(tradeId);
+        joinedTradeIds.delete(tradeId);
+        const latest = useActiveSwapsStore.getState().byTradeId[tradeId];
+        if (!latest || latest.step !== "awaiting-trade-created") {
+          tradeJoinAttemptsRef.current.delete(tradeId);
+          return;
+        }
+        attemptJoinActiveSwap(latest);
+      }, JOIN_TRADE_RETRY_MS);
+      tradeJoinRetryTimersRef.current.set(tradeId, timer);
+    };
+
+    const attemptJoinActiveSwap = (swap: ActiveSwap) => {
+      if (joinedTradeIds.has(swap.tradeId)) return;
+      if (tradeJoinRetryTimersRef.current.has(swap.tradeId)) return;
+      joinedTradeIds.add(swap.tradeId);
+      joinTrade(swap.tradeId)
+        .then(() => {
+          tradeJoinAttemptsRef.current.delete(swap.tradeId);
+        })
+        .catch((err) => {
+          joinedTradeIds.delete(swap.tradeId);
+          const latest = useActiveSwapsStore.getState().byTradeId[swap.tradeId];
+          if (!latest || latest.step !== "awaiting-trade-created") {
+            tradeJoinAttemptsRef.current.delete(swap.tradeId);
+            return;
+          }
+
+          const attempts =
+            (tradeJoinAttemptsRef.current.get(swap.tradeId) ?? 0) + 1;
+          tradeJoinAttemptsRef.current.set(swap.tradeId, attempts);
+          if (attempts >= MAX_JOIN_TRADE_RETRIES) {
+            const message = err instanceof Error ? err.message : String(err);
+            useActiveSwapsStore
+              .getState()
+              .setStep(swap.tradeId, "failed", message);
+            tradeJoinAttemptsRef.current.delete(swap.tradeId);
+            return;
+          }
+          scheduleTradeJoinRetry(swap.tradeId);
+        });
+    };
+
     for (const swap of Object.values(swapsByTradeId)) {
       if (swap.step !== "awaiting-trade-created") continue;
-      if (joinedTradeIds.has(swap.tradeId)) continue;
-      joinedTradeIds.add(swap.tradeId);
-      joinTrade(swap.tradeId).catch((err) => {
-        joinedTradeIds.delete(swap.tradeId);
-        const message = err instanceof Error ? err.message : String(err);
-        useActiveSwapsStore.getState().setStep(swap.tradeId, "failed", message);
-      });
+      attemptJoinActiveSwap(swap);
     }
   }, [swapsByTradeId, tradeHubEnabled, joinTrade, sendSwapMessage]);
 
@@ -362,18 +408,25 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
 
           return fetchOrderStatus(latest.marketId, latest.orderId);
         })()
-          .then((status) => {
+          .then(async (status) => {
             if (!status) return;
             const tradeIds = status.fills
               .map((fill) => fill.tradeId)
               .filter((tradeId): tradeId is string => Boolean(tradeId));
             if (tradeIds.length > 0) {
               promoteFillsToActiveSwaps(status.fills, latest, 0);
-              orderStatusRecoveryAttemptsRef.current.delete(key);
-              for (const tradeId of tradeIds) {
-                void joinTrade(tradeId);
+              try {
+                await Promise.all(
+                  tradeIds.map((tradeId) => joinTrade(tradeId)),
+                );
+                orderStatusRecoveryAttemptsRef.current.delete(key);
+                return;
+              } catch {
+                if (attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS) {
+                  scheduleOrderStatusRecovery(latest);
+                }
+                return;
               }
-              return;
             }
             if (attempts < MAX_ORDER_STATUS_RECOVERY_ATTEMPTS) {
               scheduleOrderStatusRecovery(latest);
@@ -453,6 +506,11 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     }
     orderStatusRecoveryTimersRef.current.clear();
     orderStatusRecoveryAttemptsRef.current.clear();
+    for (const timer of tradeJoinRetryTimersRef.current.values()) {
+      clearTimeout(timer);
+    }
+    tradeJoinRetryTimersRef.current.clear();
+    tradeJoinAttemptsRef.current.clear();
   }, [tradeHubEnabled]);
 }
 
@@ -497,10 +555,6 @@ async function handleTradeCreatedOnce(
       await joinTrade(payload.tradeId);
     } catch (err) {
       joinedTradeIds.delete(payload.tradeId);
-      const message = err instanceof Error ? err.message : String(err);
-      useActiveSwapsStore
-        .getState()
-        .setStep(payload.tradeId, "failed", message);
       return;
     }
   }
