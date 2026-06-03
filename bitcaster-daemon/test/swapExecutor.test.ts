@@ -911,13 +911,17 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
       connection: fakeConnection(sent),
       ops: {
         ...fakeOps(),
-        async sellerLockOutcomeProofs() {
-          throw new Error(
-            'sellerLockOutcomeProofs should not run for prelocked preflight proofs',
-          )
+        async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
+          assert.equal(proofs[0].secret, 'reserved-lock-no')
+          assert.equal(amount, 100)
+          assert.match(operationId, /seller-preflight-lock$/)
+          return {
+            lockedProofs: [cashuProof(100, 'lock-locked-100')],
+            changeProofs: [],
+          }
         },
         async sellerOpenPrelocked(_ctx, proofs) {
-          assert.equal(proofs[0].secret, 'reserved-lock-no')
+          assert.equal(proofs[0].secret, 'lock-locked-100')
           return {
             adaptorPointCipher: 'cipher-adaptor',
             lockedProofsCipher: 'cipher-seller',
@@ -949,8 +953,15 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
     const persisted = await readState()
     assert.equal(persisted?.swaps['trade-preflight'].step, 'seller-opened')
     assert.equal(
-      persisted?.wallet.proofs.find((row) => row.proof.secret === 'reserved-lock-no')
-        ?.state,
+      persisted?.wallet.proofs.find(
+        (row) => row.proof.secret === 'reserved-lock-no',
+      )?.state,
+      undefined,
+    )
+    assert.equal(
+      persisted?.wallet.proofs.find(
+        (row) => row.proof.secret === 'lock-locked-100',
+      )?.state,
       'locked',
     )
     const keep = persisted?.wallet.proofs.find(
@@ -1027,24 +1038,35 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       connection: fakeConnection(sent),
       ops: {
         ...fakeOps(),
-        async sellerLockOutcomeProofs() {
-          throw new Error(
-            'sellerLockOutcomeProofs should not run for prelocked preflight proofs',
-          )
+        async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
+          assert.equal(proofs[0].secret, 'lock-exact-100')
+          assert.equal(amount, 100)
+          assert.match(operationId, /seller-preflight-lock$/)
+          return {
+            lockedProofs: [cashuProof(100, 'lock-locked-100')],
+            changeProofs: [],
+          }
         },
         async splitProofsForExactSend(params) {
           assert.equal(params.amountSats, 100)
           assert.equal(params.preserveSourceKeyset, true)
-          assert.match(params.operationId, /seller-preflight-keep-exact-v2\/YES$/)
-          const prefix = 'keep'
+          assert.match(
+            params.operationId,
+            /seller-preflight-(lock|keep)-exact-v2\/(NO|YES)$/,
+          )
+          const prefix = params.operationId.includes('seller-preflight-lock')
+            ? 'lock'
+            : 'keep'
           return {
             sendProofs: [cashuProof(100, `${prefix}-exact-100`)],
-            changeProofs: [{ ...cashuProof(36, `${prefix}-change-36`), id: 'keyset-136' }],
+            changeProofs: [
+              { ...cashuProof(36, `${prefix}-change-36`), id: 'keyset-136' },
+            ],
             spentProofs: params.sourceProofs,
           }
         },
         async sellerOpenPrelocked(_ctx, proofs) {
-          assert.equal(proofs[0].secret, 'reserved-lock-no-136')
+          assert.equal(proofs[0].secret, 'lock-locked-100')
           return {
             adaptorPointCipher: 'cipher-adaptor',
             lockedProofsCipher: 'cipher-seller',
@@ -1083,21 +1105,30 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       persisted?.wallet.proofs.find(
         (row) => row.proof.secret === 'reserved-lock-no-136',
       )?.state,
-      'locked',
-    )
-    assert.equal(
-      persisted?.wallet.proofs.find((row) => row.proof.secret === 'lock-change-36')
-        ?.state,
       undefined,
     )
     assert.equal(
-      persisted?.wallet.proofs.find((row) => row.proof.secret === 'keep-exact-100')
-        ?.state,
+      persisted?.wallet.proofs.find(
+        (row) => row.proof.secret === 'lock-locked-100',
+      )?.state,
+      'locked',
+    )
+    assert.equal(
+      persisted?.wallet.proofs.find(
+        (row) => row.proof.secret === 'lock-change-36',
+      )?.state,
+      'reserved',
+    )
+    assert.equal(
+      persisted?.wallet.proofs.find(
+        (row) => row.proof.secret === 'keep-exact-100',
+      )?.state,
       'available',
     )
     assert.equal(
-      persisted?.wallet.proofs.find((row) => row.proof.secret === 'keep-change-36')
-        ?.state,
+      persisted?.wallet.proofs.find(
+        (row) => row.proof.secret === 'keep-change-36',
+      )?.state,
       'reserved',
     )
     assert.deepEqual(sent, [

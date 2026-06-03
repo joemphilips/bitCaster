@@ -2707,6 +2707,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     private static async Task<(string ConditionId, string[] PrimitiveOutcomeSetIds)> FindCategoricalConditionAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        if (EnvFlag("BITCASTER_E2E_FORCE_CREATE_CATEGORICAL_MARKET"))
+            return await CreateCategoricalMarketFixtureAsync(httpClient);
+
         var tradableConditionIds = await LoadTradableMarketConditionIdsAsync(httpClient);
         var existing = await TryFindCategoricalConditionAsync(httpClient, tradableConditionIds);
         if (existing is not null)

@@ -778,23 +778,59 @@ export class DaemonSwapExecutor {
       )
     }
 
+    const lockProofs = await this.prepareReservedExactProofsByOutcomeSet(
+      mintUrl,
+      selectedLock,
+      amount,
+      `${tradeId}:seller-preflight-lock-exact-v2`,
+    )
     const keepProofs = await this.prepareReservedExactProofsByOutcomeSet(
       mintUrl,
       selectedKeep,
       amount,
       `${tradeId}:seller-preflight-keep-exact-v2`,
     )
-    const result = await this.ops.sellerOpenPrelocked(
-      ctx,
-      selectedLock.map(proofWithOutcomeMetadata),
-    )
+    await updateState((state, now) => {
+      applyReservedLockProofGroups(
+        state,
+        mintUrl,
+        lockProofs,
+        preflight.reservationId,
+        now,
+      )
+    })
+
+    const lockCollectionByKeyset = keysetToOutcomeCollection(selectedLock)
+    let locked: LockedOutcomeProofResult
+    try {
+      locked = await this.ops.sellerLockOutcomeProofs(
+        ctx,
+        lockProofs.flatMap((group) =>
+          group.split.exactProofs.map((proof) =>
+            proofWithAssetMetadata(proof, group.asset),
+          ),
+        ),
+        amount,
+        `${tradeId}:seller-preflight-lock`,
+      )
+    } catch (err) {
+      await this.persistPartialLock(
+        tradeId,
+        mintUrl,
+        split.conditionId,
+        lockCollectionByKeyset,
+        err,
+      )
+      throw err
+    }
+    const result = await this.ops.sellerOpenPrelocked(ctx, locked.lockedProofs)
     await updateState((state, now) => {
       const live = state.swaps[tradeId]
       if (!live || isTerminal(live)) return
       removeProofsBySecret(
         state,
         mintUrl,
-        selectedLock.map((row) => row.proof),
+        lockProofs.flatMap((group) => group.split.exactProofs),
       )
       addProofs(
         state,
@@ -808,6 +844,16 @@ export class DaemonSwapExecutor {
         },
         now,
         tradeId,
+      )
+      addOutcomeProofsByKeyset(
+        state,
+        mintUrl,
+        locked.changeProofs,
+        'reserved',
+        split.conditionId,
+        lockCollectionByKeyset,
+        now,
+        preflight.reservationId,
       )
       applyReservedKeepProofGroups(
         state,
@@ -1364,6 +1410,56 @@ function applyReservedKeepProofGroups(
   }
 }
 
+function applyReservedLockProofs(
+  state: DaemonState,
+  mintUrl: string,
+  split: ReservedExactProofs,
+  asset: OutcomeAsset,
+  reservationId: string,
+  now: string,
+): void {
+  if (!split.wasSplit) return
+
+  removeProofsBySecret(state, mintUrl, split.spentProofs)
+  addProofs(
+    state,
+    mintUrl,
+    split.exactProofs,
+    'reserved',
+    asset,
+    now,
+    reservationId,
+  )
+  addProofs(
+    state,
+    mintUrl,
+    split.changeProofs,
+    'reserved',
+    asset,
+    now,
+    reservationId,
+  )
+}
+
+function applyReservedLockProofGroups(
+  state: DaemonState,
+  mintUrl: string,
+  groups: ReservedExactProofGroup[],
+  reservationId: string,
+  now: string,
+): void {
+  for (const group of groups) {
+    applyReservedLockProofs(
+      state,
+      mintUrl,
+      group.split,
+      group.asset,
+      reservationId,
+      now,
+    )
+  }
+}
+
 function addProofs(
   state: DaemonState,
   mintUrl: string,
@@ -1585,6 +1681,17 @@ function proofWithOutcomeMetadata(row: StoredProofRecord): CashuProofRecord {
     ...row.proof,
     conditionId: row.asset.conditionId,
     outcomeCollection: row.asset.outcomeSetId,
+  } as CashuProofRecord
+}
+
+function proofWithAssetMetadata(
+  proof: CashuProofRecord,
+  asset: OutcomeAsset,
+): CashuProofRecord {
+  return {
+    ...proof,
+    conditionId: asset.conditionId,
+    outcomeCollection: asset.outcomeSetId,
   } as CashuProofRecord
 }
 

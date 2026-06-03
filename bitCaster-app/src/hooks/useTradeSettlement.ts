@@ -673,6 +673,12 @@ interface ReservedExactProofs {
   wasSplit: boolean;
 }
 
+interface ReservedOutcomeSetExactProofs {
+  exactProofs: Proof[];
+  spentProofs: StoredProof[];
+  changeProofs: Proof[];
+}
+
 async function prepareDirectSellerOpening(
   swap: ActiveSwap,
   ctx: SwapCtx,
@@ -740,16 +746,54 @@ async function prepareMintSellerOpening(
     pendingTrade.preflightSplit.conditionId === split.conditionId
   ) {
     const preflight = pendingTrade.preflightSplit;
-    const selectedLock = await selectReservedPreflightOutcomeSetProofs(
-      preflight.reservationId,
-      split.conditionId,
-      preflight.lockOutcomeSetId,
+    const selectedLock = await prepareReservedPreflightExactOutcomeSetProofs({
+      mintUrl,
+      reservationId: preflight.reservationId,
+      conditionId: split.conditionId,
+      outcomeSetId: preflight.lockOutcomeSetId,
       amountSats,
+      operationId: proofOperationId(
+        swap.tradeId,
+        "seller-preflight-lock-exact-v2",
+      ),
+    });
+    await persistReservedPreflightExactProofs({
+      ...selectedLock,
+      mintUrl,
+      conditionId: split.conditionId,
+      reservedBy: preflight.reservationId,
+    });
+
+    const collectionByKeyset = await keysetToOutcomeCollectionFromMint(
+      mintUrl,
+      split.conditionId,
+      selectedLock.exactProofs,
     );
-    const out = await sellerPreparePrelockedSwap(ctx, selectedLock);
+    let locked: Awaited<ReturnType<typeof sellerLockOutcomeProofs>>;
+    try {
+      locked = await sellerLockOutcomeProofs(
+        ctx,
+        selectedLock.exactProofs,
+        amountSats,
+        {
+          operationId: proofOperationId(swap.tradeId, "seller-preflight-lock"),
+          proofOperationStore,
+        },
+      );
+    } catch (err) {
+      await persistPartialLockFromError({
+        err,
+        swap,
+        mintUrl,
+        conditionId: split.conditionId,
+        collectionByKeyset,
+      });
+      throw err;
+    }
+    const out = await sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
     await persistConditionalLockChange({
-      spentProofs: selectedLock,
-      changeProofs: [],
+      spentProofs: selectedLock.exactProofs,
+      changeProofs: locked.changeProofs,
       mintUrl,
       conditionId: split.conditionId,
       reservedBy: preflight.reservationId,
@@ -868,26 +912,6 @@ async function selectOutcomeProofsForOutcomeSet(
   return selected;
 }
 
-async function selectReservedPreflightOutcomeSetProofs(
-  reservationId: string,
-  conditionId: string,
-  outcomeSetId: string,
-  amountSats: number,
-): Promise<StoredProof[]> {
-  const selected: StoredProof[] = [];
-  for (const outcomeCollection of parseOutcomeSetId(outcomeSetId)) {
-    selected.push(
-      ...(await selectReservedPreflightProofs(
-        reservationId,
-        conditionId,
-        outcomeCollection,
-        amountSats,
-      )),
-    );
-  }
-  return selected;
-}
-
 async function selectReservedPreflightProofs(
   reservationId: string,
   conditionId: string,
@@ -953,6 +977,58 @@ async function prepareReservedPreflightExactProofs(input: {
     changeProofs: split.changeProofs,
     wasSplit: true,
   };
+}
+
+async function prepareReservedPreflightExactOutcomeSetProofs(input: {
+  mintUrl: string;
+  reservationId: string;
+  conditionId: string;
+  outcomeSetId: string;
+  amountSats: number;
+  operationId: string;
+}): Promise<ReservedOutcomeSetExactProofs> {
+  const exactProofs: Proof[] = [];
+  const spentProofs: StoredProof[] = [];
+  const changeProofs: Proof[] = [];
+
+  for (const outcomeCollection of parseOutcomeSetId(input.outcomeSetId)) {
+    const selected = await prepareReservedPreflightExactProofs({
+      ...input,
+      outcomeSetId: outcomeCollection,
+      operationId: `${input.operationId}/${encodeURIComponent(outcomeCollection)}`,
+    });
+    exactProofs.push(...selected.exactProofs);
+    spentProofs.push(...selected.spentProofs);
+    changeProofs.push(...selected.changeProofs);
+  }
+
+  return { exactProofs, spentProofs, changeProofs };
+}
+
+async function persistReservedPreflightExactProofs(input: {
+  exactProofs: Proof[];
+  spentProofs: StoredProof[];
+  changeProofs: Proof[];
+  mintUrl: string;
+  conditionId: string;
+  reservedBy: string;
+}): Promise<void> {
+  const spentSecrets = new Set(input.spentProofs.map((proof) => proof.secret));
+  const isNoop =
+    input.changeProofs.length === 0 &&
+    input.exactProofs.length === input.spentProofs.length &&
+    input.exactProofs.every((proof) => spentSecrets.has(proof.secret));
+  if (isNoop) return;
+
+  await replaceProofs(
+    input.spentProofs.map((proof) => proof.secret),
+    await storedConditionalProofsFromMintMetadata({
+      mintUrl: input.mintUrl,
+      proofs: [...input.exactProofs, ...input.changeProofs],
+      expectedConditionId: input.conditionId,
+      reservedBy: input.reservedBy,
+    }),
+  );
 }
 
 async function releaseMatchedPreflightProofs(input: {
