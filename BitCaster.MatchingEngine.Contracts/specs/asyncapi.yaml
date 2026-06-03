@@ -35,6 +35,41 @@ channels:
         $ref: '#/components/messages/OrderBookUpdatedMessage'
     description: Server pushes an updated order book snapshot to the market group.
 
+  orderAccepted:
+    address: OrderAccepted
+    messages:
+      orderAcceptedMessage:
+        $ref: '#/components/messages/OrderAcceptedMessage'
+    description: Server pushes a public accepted-order delta to the market group.
+
+  orderCancelled:
+    address: OrderCancelled
+    messages:
+      orderCancelledMessage:
+        $ref: '#/components/messages/OrderCancelledMessage'
+    description: Server pushes a public cancellation delta to the market group.
+
+  matched:
+    address: Matched
+    messages:
+      matchedMessage:
+        $ref: '#/components/messages/MatchedMessage'
+    description: Server pushes a public match delta to affected market groups.
+
+  depthChanged:
+    address: DepthChanged
+    messages:
+      depthChangedMessage:
+        $ref: '#/components/messages/DepthChangedMessage'
+    description: Server pushes a compact depth delta to the market group.
+
+  marketStatusChanged:
+    address: MarketStatusChanged
+    messages:
+      marketStatusChangedMessage:
+        $ref: '#/components/messages/MarketStatusChangedMessage'
+    description: Server pushes lifecycle state changes to condition market groups.
+
 operations:
   joinMarket:
     action: send
@@ -68,6 +103,46 @@ operations:
     messages:
       - $ref: '#/channels/orderBookUpdated/messages/orderBookUpdatedMessage'
 
+  orderAccepted:
+    action: receive
+    channel:
+      $ref: '#/channels/orderAccepted'
+    summary: Receive accepted-order delta
+    messages:
+      - $ref: '#/channels/orderAccepted/messages/orderAcceptedMessage'
+
+  orderCancelled:
+    action: receive
+    channel:
+      $ref: '#/channels/orderCancelled'
+    summary: Receive cancellation delta
+    messages:
+      - $ref: '#/channels/orderCancelled/messages/orderCancelledMessage'
+
+  matched:
+    action: receive
+    channel:
+      $ref: '#/channels/matched'
+    summary: Receive match delta
+    messages:
+      - $ref: '#/channels/matched/messages/matchedMessage'
+
+  depthChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/depthChanged'
+    summary: Receive depth delta
+    messages:
+      - $ref: '#/channels/depthChanged/messages/depthChangedMessage'
+
+  marketStatusChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/marketStatusChanged'
+    summary: Receive market status delta
+    messages:
+      - $ref: '#/channels/marketStatusChanged/messages/marketStatusChangedMessage'
+
 components:
   messages:
     JoinMarketRequest:
@@ -96,6 +171,26 @@ components:
       payload:
         $ref: '#/components/schemas/OrderBookSnapshot'
 
+    OrderAcceptedMessage:
+      payload:
+        $ref: '#/components/schemas/OrderAcceptedDelta'
+
+    OrderCancelledMessage:
+      payload:
+        $ref: '#/components/schemas/OrderCancelledDelta'
+
+    MatchedMessage:
+      payload:
+        $ref: '#/components/schemas/MatchedDelta'
+
+    DepthChangedMessage:
+      payload:
+        $ref: '#/components/schemas/DepthDelta'
+
+    MarketStatusChangedMessage:
+      payload:
+        $ref: '#/components/schemas/MarketStatusChanged'
+
   schemas:
     Sats:
       type: integer
@@ -108,6 +203,18 @@ components:
       minimum: 1
       maximum: 99
       description: A probability price representing a percentage chance [1, 99].
+
+    OrderSide:
+      type: string
+      enum:
+        - Buy
+        - Sell
+
+    MatchPath:
+      type: string
+      enum:
+        - Complementary
+        - Mint
 
     LevelDto:
       type: object
@@ -146,3 +253,114 @@ components:
             - integer
             - 'null'
           description: Difference between best ask and best bid. Null if either side is empty.
+
+    OrderAcceptedDelta:
+      type: object
+      required:
+        - marketId
+        - orderId
+        - outcomeId
+        - side
+        - price
+        - remainingAmountSats
+      properties:
+        marketId:
+          type: string
+        orderId:
+          type: string
+          format: uuid
+        outcomeId:
+          type: string
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        price:
+          $ref: '#/components/schemas/Probability'
+        remainingAmountSats:
+          $ref: '#/components/schemas/Sats'
+
+    OrderCancelledDelta:
+      type: object
+      required:
+        - marketId
+        - orderId
+      properties:
+        marketId:
+          type: string
+        orderId:
+          type: string
+          format: uuid
+
+    MatchedDelta:
+      type: object
+      required:
+        - marketId
+        - tradeId
+        - makerOrderId
+        - takerOrderId
+        - executionPrice
+        - amountSats
+        - path
+        - matchedAt
+      properties:
+        marketId:
+          type: string
+        tradeId:
+          type: string
+          format: uuid
+        makerOrderId:
+          type: string
+          format: uuid
+        takerOrderId:
+          type: string
+          format: uuid
+        executionPrice:
+          $ref: '#/components/schemas/Probability'
+        amountSats:
+          $ref: '#/components/schemas/Sats'
+        path:
+          $ref: '#/components/schemas/MatchPath'
+        matchedAt:
+          type: string
+          format: date-time
+
+    DepthDelta:
+      type: object
+      required:
+        - marketId
+        - bids
+        - asks
+      properties:
+        marketId:
+          type: string
+        bids:
+          type: array
+          items:
+            $ref: '#/components/schemas/LevelDto'
+        asks:
+          type: array
+          items:
+            $ref: '#/components/schemas/LevelDto'
+        spread:
+          type:
+            - integer
+            - 'null'
+
+    MarketStatusChanged:
+      type: object
+      required:
+        - conditionId
+        - state
+      properties:
+        conditionId:
+          type: string
+        state:
+          type: string
+        closedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        finalOutcome:
+          type:
+            - string
+            - 'null'

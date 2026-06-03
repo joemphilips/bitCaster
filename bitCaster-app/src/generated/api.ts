@@ -73,7 +73,7 @@ export interface paths {
         };
         /**
          * Fetch verified trade comments for a market
-         * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and intentionally omits submitter pubkeys, order ids, fill ids, ephemeral pubkeys, and counterparty ids.
+         * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and returns the public kind-1 author pubkey while intentionally omitting order ids, fill ids, ephemeral pubkeys, and counterparty ids.
          */
         get: operations["getMarketComments"];
         put?: never;
@@ -357,10 +357,10 @@ export interface components {
          */
         MatchPath: "Complementary" | "Mint";
         /**
-         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means a DCB reservation exists and atomic-swap settlement is still pending; `Filled` means settlement committed; `Released` means a reservation failed or timed out and no longer consumes order depth.
+         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means atomic-swap settlement is still pending; `Filled` means settlement committed.
          * @enum {string}
          */
-        FillStatus: "Matched" | "Filled" | "Released";
+        FillStatus: "Matched" | "Filled";
         OracleNostrEvent: {
             /** @description NIP-01 event id of the kind-89 attestation. */
             id: string;
@@ -599,8 +599,6 @@ export interface components {
             outcomes: components["schemas"]["MarketOutcomePriceHistory"][];
         };
         MarketComment: {
-            /** @description Nostr pubkey that signed the comment. */
-            authorPubkey: string;
             /**
              * Format: uuid
              * @description Opaque stable comment identifier.
@@ -612,6 +610,8 @@ export interface components {
              * @description Timestamp from the signed Nostr kind-1 comment event.
              */
             createdAt: string;
+            /** @description Nostr pubkey that signed the comment. */
+            authorPubkey: string;
         };
         MarketCommentsResponse: {
             conditionId: string;

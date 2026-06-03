@@ -92,7 +92,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Lifecycle status of a fill-shaped order execution row. `Matched` means a DCB reservation exists and atomic-swap settlement is still pending; `Filled` means settlement committed; `Released` means a reservation failed or timed out and no longer consumes order depth.
+    /// Lifecycle status of a fill-shaped order execution row. `Matched` means atomic-swap settlement is still pending; `Filled` means settlement committed.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -104,9 +104,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"Filled")]
         Filled = 1,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"Released")]
-        Released = 2,
 
     }
 
@@ -1062,17 +1059,11 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConstructor]
         public MarketComment(string @authorPubkey, System.Guid @commentId, string @content, System.DateTimeOffset @createdAt)
         {
-            this.AuthorPubkey = @authorPubkey;
             this.CommentId = @commentId;
             this.Content = @content;
             this.CreatedAt = @createdAt;
+            this.AuthorPubkey = @authorPubkey;
         }
-
-        /// <summary>
-        /// Nostr pubkey that signed the comment.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("authorPubkey")]
-        public string AuthorPubkey { get; }
 
         /// <summary>
         /// Opaque stable comment identifier.
@@ -1088,6 +1079,12 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("createdAt")]
         public System.DateTimeOffset CreatedAt { get; }
+
+        /// <summary>
+        /// Nostr pubkey that signed the comment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("authorPubkey")]
+        public string AuthorPubkey { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1128,18 +1125,37 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum SwapFailureKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"PartialLockHeld")]
+        PartialLockHeld = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"InsufficientInventory")]
+        InsufficientInventory = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"MintError")]
+        MintError = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"EngineRejected")]
+        EngineRejected = 3,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SwapFailure
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SwapFailure(string @detail, SwapFailureKind @kind, long? @refundLocktime, System.Collections.Generic.List<string> @affectedKeysets)
+        public SwapFailure(System.Collections.Generic.List<string> @affectedKeysets, string @detail, SwapFailureKind @kind, long? @refundLocktime)
         {
-            this.Detail = @detail;
             this.Kind = @kind;
             this.RefundLocktime = @refundLocktime;
             this.AffectedKeysets = @affectedKeysets;
+            this.Detail = @detail;
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("kind")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<SwapFailureKind>))]
         public SwapFailureKind Kind { get; }
 
         /// <summary>
@@ -2008,24 +2024,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"all")]
         All = 4,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum SwapFailureKind
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"PartialLockHeld")]
-        PartialLockHeld = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"InsufficientInventory")]
-        InsufficientInventory = 1,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"MintError")]
-        MintError = 2,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"EngineRejected")]
-        EngineRejected = 3,
 
     }
 
