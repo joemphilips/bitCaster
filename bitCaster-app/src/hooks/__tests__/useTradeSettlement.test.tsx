@@ -213,6 +213,38 @@ describe("useTradeSettlement", () => {
     expect(mockJoinTrade).toHaveBeenCalledWith("trade-1");
   });
 
+  it("retries active swap trade joins while the trade state is not ready", async () => {
+    vi.useFakeTimers();
+    mockJoinTrade
+      .mockRejectedValueOnce(new Error("Not authorised to join this trade"))
+      .mockResolvedValue(undefined);
+
+    useActiveSwapsStore.getState().promote({
+      tradeId: "trade-retry-active",
+      orderId: "order-1",
+      marketId: "market-1",
+      ephemeralPrivkeyHex: "11".repeat(32),
+      ephemeralPubkeyHex: "22".repeat(32),
+    });
+    renderHook(() => useTradeSettlement(true));
+    await act(async () => {});
+
+    expect(mockJoinTrade).toHaveBeenCalledTimes(1);
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-retry-active"].step,
+    ).toBe("awaiting-trade-created");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(mockJoinTrade).toHaveBeenCalledTimes(2);
+    expect(mockJoinTrade).toHaveBeenLastCalledWith("trade-retry-active");
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-retry-active"].step,
+    ).toBe("awaiting-trade-created");
+  });
+
   it("joins pending order groups so resting makers can receive TradeCreated", async () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
@@ -251,6 +283,49 @@ describe("useTradeSettlement", () => {
 
     expect(mockJoinOrder).toHaveBeenCalledTimes(2);
     expect(mockJoinOrder).toHaveBeenLastCalledWith("cond-YES", "order-pending");
+  });
+
+  it("retries order-status recovered trade joins after transient hub authorization lag", async () => {
+    vi.useFakeTimers();
+    mockFetchOrderStatus.mockResolvedValue({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      status: "matched",
+      remainingAmountSats: 0,
+      filledAmountSats: 100,
+      fills: [{ tradeId: "trade-status-retry" }],
+    });
+    mockJoinTrade
+      .mockRejectedValueOnce(new Error("Not authorised to join this trade"))
+      .mockResolvedValue(undefined);
+    usePendingTradesStore.getState().add({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    await act(async () => {});
+    expect(mockJoinOrder).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(mockJoinTrade).toHaveBeenCalled();
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-status-retry"].step,
+    ).toBe("awaiting-trade-created");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(mockJoinTrade.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(mockJoinTrade).toHaveBeenLastCalledWith("trade-status-retry");
   });
 
   it("retries pending order group joins after a transient hub failure", async () => {
