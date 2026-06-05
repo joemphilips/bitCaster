@@ -8,13 +8,13 @@ import { useMarketDraftStore, defaultDraft } from '@/stores/marketDraft'
 const {
   mockNavigate,
   mockRegisterCondition,
-  mockRegisterPartition,
+  mockEnsureMarketCreationPartitions,
   mockCreateMarket,
   mockCreateEnumAnnouncement,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockRegisterCondition: vi.fn(),
-  mockRegisterPartition: vi.fn(),
+  mockEnsureMarketCreationPartitions: vi.fn(),
   mockCreateMarket: vi.fn(),
   mockCreateEnumAnnouncement: vi.fn(),
 }))
@@ -26,7 +26,7 @@ vi.mock('react-router', async () => {
 
 vi.mock('@/lib/markets', () => ({
   registerCondition: (...args: unknown[]) => mockRegisterCondition(...args),
-  registerPartition: (...args: unknown[]) => mockRegisterPartition(...args),
+  ensureMarketCreationPartitions: (...args: unknown[]) => mockEnsureMarketCreationPartitions(...args),
   createMarket: (...args: unknown[]) => mockCreateMarket(...args),
   MintError: class MintError extends Error {
     constructor(public readonly code: number, public readonly detail: string) {
@@ -87,7 +87,7 @@ function wrapper({ children }: { children: ReactNode }) {
 beforeEach(() => {
   vi.clearAllMocks()
   mockRegisterCondition.mockResolvedValue({ condition_id: 'test-cond-id' })
-  mockRegisterPartition.mockResolvedValue({ keysets: { Yes: 'ks1', No: 'ks2' } })
+  mockEnsureMarketCreationPartitions.mockResolvedValue(undefined)
   mockCreateMarket.mockResolvedValue({ conditionId: 'test-cond-id', marketsCreated: ['test-cond-id-Yes', 'test-cond-id-No'], thumbnailUrl: null })
   mockCreateEnumAnnouncement.mockResolvedValue('announcement-hex')
 
@@ -131,16 +131,15 @@ async function setupDraftForSubmission() {
 }
 
 describe('useMarketCreationState – onCreateMarket', () => {
-  it('calls registerCondition, registerPartition, then createMarket in order', async () => {
+  it('calls registerCondition, ensures partitions, then createMarket in order', async () => {
     const result = await setupDraftForSubmission()
     const callOrder: string[] = []
     mockRegisterCondition.mockImplementation(async () => {
       callOrder.push('condition')
       return { condition_id: 'test-cond-id' }
     })
-    mockRegisterPartition.mockImplementation(async () => {
-      callOrder.push('partition')
-      return { keysets: { Yes: 'ks1', No: 'ks2' } }
+    mockEnsureMarketCreationPartitions.mockImplementation(async () => {
+      callOrder.push('partitions')
     })
     mockCreateMarket.mockImplementation(async () => {
       callOrder.push('createMarket')
@@ -149,7 +148,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     await act(async () => { await result.current.onCreateMarket() })
 
-    expect(callOrder).toEqual(['condition', 'partition', 'createMarket'])
+    expect(callOrder).toEqual(['condition', 'partitions', 'createMarket'])
     expect(mockRegisterCondition).toHaveBeenCalledOnce()
     expect(mockRegisterCondition).toHaveBeenCalledWith({
       tags: [
@@ -158,7 +157,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
       ],
       announcementHex: 'ann-hex-123',
     })
-    expect(mockRegisterPartition).toHaveBeenCalledWith('test-cond-id', ['Yes', 'No'])
+    expect(mockEnsureMarketCreationPartitions).toHaveBeenCalledWith('test-cond-id', ['Yes', 'No'])
     expect(mockCreateMarket).toHaveBeenCalledOnce()
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
       oracleAnnouncementHex: 'ann-hex-123',
@@ -172,14 +171,14 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.submitError).toBe('Mint rejected')
-    expect(mockRegisterPartition).not.toHaveBeenCalled()
+    expect(mockEnsureMarketCreationPartitions).not.toHaveBeenCalled()
     expect(mockCreateMarket).not.toHaveBeenCalled()
     expect(mockNavigate).not.toHaveBeenCalled()
   })
 
-  it('stops and sets error if registerPartition fails', async () => {
+  it('stops and sets error if partition pre-registration fails', async () => {
     const result = await setupDraftForSubmission()
-    mockRegisterPartition.mockRejectedValueOnce(new Error('Partition failed'))
+    mockEnsureMarketCreationPartitions.mockRejectedValueOnce(new Error('Partition failed'))
 
     await act(async () => { await result.current.onCreateMarket() })
 
