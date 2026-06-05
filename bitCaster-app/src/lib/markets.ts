@@ -15,6 +15,11 @@ import { getNdk } from "@/lib/nostr";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "nostr-tools/utils";
 import { isAttestationResolved, normalizeMintdStatus } from "./mintdIngress";
+import {
+  canonicalizeOutcomeSet,
+  complementOutcomeSetId,
+  parseOutcomeSetId,
+} from "./outcomeSets";
 
 // Types from generated OpenAPI spec
 
@@ -837,6 +842,98 @@ export async function registerPartition(
     throw await parseMintError(response, "Failed to register partition");
   }
   return response.json();
+}
+
+function normalizePartitionMember(member: string): string {
+  return canonicalizeOutcomeSet(parseOutcomeSetId(member));
+}
+
+function partitionKey(partition: readonly string[]): string {
+  return JSON.stringify(
+    partition.map(normalizePartitionMember).filter(Boolean).sort(),
+  );
+}
+
+function formatPartition(partition: readonly string[]): string {
+  return `{${partition.join(", ")}}`;
+}
+
+function requiredSingletonComplementPartitions(
+  outcomes: readonly string[],
+): string[][] {
+  const universe = [...new Set(outcomes.map((outcome) => outcome.trim()))].filter(
+    Boolean,
+  );
+  const partitionsByKey = new Map<string, string[]>();
+
+  for (const outcome of universe) {
+    const singleton = canonicalizeOutcomeSet([outcome]);
+    const complement = complementOutcomeSetId(universe, singleton);
+    if (!singleton || !complement) continue;
+
+    const partition = [singleton, complement];
+    const key = partitionKey(partition);
+    if (!partitionsByKey.has(key)) partitionsByKey.set(key, partition);
+  }
+
+  return [...partitionsByKey.values()];
+}
+
+function registeredPartitionKeys(condition: ConditionInfo): Set<string> {
+  return new Set(
+    (condition.partitions ?? []).map((entry) => partitionKey(entry.partition)),
+  );
+}
+
+async function fetchConditionOrThrow(
+  conditionId: string,
+): Promise<ConditionInfo> {
+  const condition = (await fetchConditions()).find(
+    (entry) => entry.condition_id === conditionId,
+  );
+  if (!condition) {
+    throw new Error(
+      `Mint condition ${conditionId} was not found after registration; cannot verify outcome partitions.`,
+    );
+  }
+  return condition;
+}
+
+/**
+ * Ensure every primitive outcome has a matching `{X, Not-X}` CDK partition.
+ * The mint signs one keyset per partition member, so market creation must
+ * register singleton/complement partitions before the engine publishes books.
+ */
+export async function ensureMarketCreationPartitions(
+  conditionId: string,
+  outcomes: readonly string[],
+): Promise<void> {
+  const requiredPartitions = requiredSingletonComplementPartitions(outcomes);
+  const condition = await fetchConditionOrThrow(conditionId);
+  const existing = registeredPartitionKeys(condition);
+  const missing = requiredPartitions.filter(
+    (partition) => !existing.has(partitionKey(partition)),
+  );
+
+  for (const partition of missing) {
+    await registerPartition(conditionId, partition);
+  }
+
+  const verified =
+    missing.length > 0
+      ? registeredPartitionKeys(await fetchConditionOrThrow(conditionId))
+      : existing;
+  const stillMissing = requiredPartitions.filter(
+    (partition) => !verified.has(partitionKey(partition)),
+  );
+
+  if (stillMissing.length > 0) {
+    throw new Error(
+      `Mint condition ${conditionId} is missing outcome partitions: ${stillMissing
+        .map(formatPartition)
+        .join(", ")}`,
+    );
+  }
 }
 
 /**

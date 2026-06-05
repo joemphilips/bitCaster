@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { registerCondition, registerPartition, createMarket, MintError } from '../markets'
+import { registerCondition, registerPartition, ensureMarketCreationPartitions, createMarket, MintError } from '../markets'
 
 const originalFetch = globalThis.fetch
 
@@ -149,6 +149,103 @@ describe('registerPartition', () => {
       expect(e.detail).toBe('not json')
       return true
     })
+  })
+})
+
+function partitionInfo(partition: string[]) {
+  return {
+    partition,
+    collateral: 'sat',
+    parent_collection_id: '0'.repeat(64),
+    keysets: {},
+  }
+}
+
+function conditionListResponse(conditionId: string, partitions: string[][]) {
+  return new Response(
+    JSON.stringify({
+      conditions: [{
+        condition_id: conditionId,
+        tags: [],
+        threshold: 1,
+        announcements: ['ann-hex'],
+        partitions: partitions.map(partitionInfo),
+        attestation: {
+          status: 'pending',
+          winning_outcome: null,
+          attested_at: null,
+        },
+      }],
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+function mockPartitionRegistrationFetch(initialPartitions: string[][], options?: { persistPosts?: boolean }) {
+  const registered = initialPartitions.map((partition) => [...partition])
+  const posted: string[][] = []
+  const persistPosts = options?.persistPosts ?? true
+
+  vi.mocked(globalThis.fetch).mockImplementation(async (url, init) => {
+    const path = String(url)
+    if (path === '/v1/conditions' && !init?.method) {
+      return conditionListResponse('cond-123', registered)
+    }
+    if (path === '/v1/conditions/cond-123/partitions' && init?.method === 'POST') {
+      const body = JSON.parse(init.body as string) as { partition: string[] }
+      posted.push(body.partition)
+      if (persistPosts) registered.push(body.partition)
+      return new Response(JSON.stringify({ keysets: {} }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    throw new Error(`unexpected fetch: ${path}`)
+  })
+
+  return { posted }
+}
+
+describe('ensureMarketCreationPartitions', () => {
+  it('registers one singleton/complement partition per outcome for n-outcome markets', async () => {
+    const { posted } = mockPartitionRegistrationFetch([])
+
+    await ensureMarketCreationPartitions('cond-123', ['Alice', 'Bob', 'Carol'])
+
+    expect(posted).toEqual([
+      ['Alice', 'Bob|Carol'],
+      ['Bob', 'Alice|Carol'],
+      ['Carol', 'Alice|Bob'],
+    ])
+  })
+
+  it('deduplicates a binary market to one {A, B} partition call', async () => {
+    const { posted } = mockPartitionRegistrationFetch([])
+
+    await ensureMarketCreationPartitions('cond-123', ['Yes', 'No'])
+
+    expect(posted).toEqual([['Yes', 'No']])
+  })
+
+  it('re-reads existing partitions and registers only missing singleton/complement partitions', async () => {
+    const { posted } = mockPartitionRegistrationFetch([
+      ['Alice', 'Bob|Carol'],
+    ])
+
+    await ensureMarketCreationPartitions('cond-123', ['Alice', 'Bob', 'Carol'])
+
+    expect(posted).toEqual([
+      ['Bob', 'Alice|Carol'],
+      ['Carol', 'Alice|Bob'],
+    ])
+  })
+
+  it('fails if registered partitions are still not present after registration', async () => {
+    mockPartitionRegistrationFetch([], { persistPosts: false })
+
+    await expect(
+      ensureMarketCreationPartitions('cond-123', ['Yes', 'No']),
+    ).rejects.toThrow('Mint condition cond-123 is missing outcome partitions: {Yes, No}')
   })
 })
 
