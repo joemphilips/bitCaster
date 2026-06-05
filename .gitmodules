@@ -21,3 +21,4 @@
 [submodule "cashu-ts"]
 	path = cashu-ts
 	url = https://github.com/joemphilips/cashu-ts
+	branch = ctf-convert
