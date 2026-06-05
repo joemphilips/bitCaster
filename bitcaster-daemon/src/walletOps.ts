@@ -18,7 +18,7 @@ import {
   type SerializedBlindedSignature,
   type SwapPreview,
 } from '@cashu/cashu-ts'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
@@ -300,7 +300,11 @@ export async function executeCtfConsolidationPlan(
     throw new Error('CTF consolidation plan did not include input proofs')
   }
 
-  const operationId = `ctf-consolidation:${input.conditionId}:${input.type}:${randomUUID()}`
+  const operationId = ctfConsolidationOperationId(
+    input.conditionId,
+    input.type,
+    selectedInputs,
+  )
   await prepareProofOperation({
     operationId,
     kind: 'ctf-consolidation',
@@ -316,6 +320,10 @@ export async function executeCtfConsolidationPlan(
       marketId: input.marketId,
       conditionId: input.conditionId,
       type: input.type,
+      parentCollectionId: input.plan.request.parent_collection_id ?? null,
+      inputCollections: Object.entries(input.plan.request.inputs).flatMap(
+        ([collection, proofs]) => proofs.map(() => collection),
+      ),
       feeSats: input.plan.feeSats,
       collateralOutputSats: input.plan.collateralOutputSats,
     },
@@ -630,15 +638,24 @@ export async function recoverPreparedWalletSends(
   deps: WalletOpsDependencies = {},
 ): Promise<WalletSendRecoveryResult> {
   const state = await ensureState()
-  const prepared = Object.values(state.proofOperations).filter(
-    (entry) => entry.kind === 'wallet-send' && entry.state === 'prepared',
+  const recoverable = Object.values(state.proofOperations).filter(
+    (entry) =>
+      (entry.kind === 'wallet-send' && entry.state === 'prepared') ||
+      (entry.kind === 'ctf-consolidation' &&
+        (entry.state === 'prepared' ||
+          (entry.state === 'completed' &&
+            !isCtfConsolidationFinalized(entry, state.wallet.proofs)))),
   )
   const result: WalletSendRecoveryResult = { recovered: [], pending: [] }
-  for (const entry of prepared) {
+  for (const entry of recoverable) {
     try {
-      const wallet = createWallet(entry.mintUrl, secrets, deps)
-      await wallet.loadMint()
-      await resumeWalletSendOperation(wallet, entry, entry.mintUrl, deps)
+      if (entry.kind === 'ctf-consolidation') {
+        await resumeCtfConsolidationOperation(entry, deps)
+      } else {
+        const wallet = createWallet(entry.mintUrl, secrets, deps)
+        await wallet.loadMint()
+        await resumeWalletSendOperation(wallet, entry, entry.mintUrl, deps)
+      }
       result.recovered.push(entry.operationId)
     } catch (err) {
       result.pending.push({
@@ -648,6 +665,59 @@ export async function recoverPreparedWalletSends(
     }
   }
   return result
+}
+
+async function resumeCtfConsolidationOperation(
+  entry: ProofOperationRecord,
+  deps: WalletOpsDependencies,
+): Promise<Record<string, Proof[]>> {
+  assertCtfConsolidationOperation(entry)
+  const conditionId = readStringMetadata(entry, 'conditionId')
+  if (entry.state === 'completed') {
+    const resultProofs = normalizeProofGroups(entry.resultProofs ?? {})
+    await replaceConsolidatedProofs({
+      mintUrl: entry.mintUrl,
+      conditionId,
+      inputsByCollection: { [COLLATERAL_COLLECTION]: entry.inputs as Proof[] },
+      resultProofs,
+    })
+    return resultProofs
+  }
+  if (entry.state === 'failed') {
+    throw new Error(
+      `Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
+    )
+  }
+
+  const inputsByCollection = await ctfConsolidationInputGroups(entry)
+  const outputsByCollection = deserializeOutputGroups(entry.outputs)
+  const request: CtfConvertRequest = {
+    condition_id: conditionId,
+    ...ctfParentCollectionMetadata(entry),
+    inputs: inputsByCollection,
+    outputs: Object.fromEntries(
+      Object.entries(entry.outputs).map(([collection, outputs]) => [
+        collection,
+        outputs.map((output) => ({
+          ...output.blindedMessage,
+          amount: Amount.from(output.blindedMessage.amount),
+        })),
+      ]),
+    ),
+  }
+
+  const resultProofs = deps.ctfConvert
+    ? await deps.ctfConvert(entry.mintUrl, request, outputsByCollection)
+    : await executeMintCtfConvert(entry.mintUrl, request, outputsByCollection)
+
+  await markProofOperationCompleted(entry.operationId, resultProofs)
+  await replaceConsolidatedProofs({
+    mintUrl: entry.mintUrl,
+    conditionId,
+    inputsByCollection,
+    resultProofs,
+  })
+  return resultProofs
 }
 
 async function resumeWalletSendOperation(
@@ -792,6 +862,127 @@ function assertWalletSendOperation(
       `Proof operation ${entry.operationId} does not match this wallet send`,
     )
   }
+}
+
+function assertCtfConsolidationOperation(entry: ProofOperationRecord): void {
+  if (entry.kind !== 'ctf-consolidation') {
+    throw new Error(
+      `Proof operation ${entry.operationId} does not match CTF consolidation`,
+    )
+  }
+}
+
+function isCtfConsolidationFinalized(
+  entry: ProofOperationRecord,
+  walletProofs: Array<{ mintUrl: string; proof: { secret: string } }>,
+): boolean {
+  const inputSecrets = new Set(entry.inputs.map((proof) => proof.secret))
+  if (
+    walletProofs.some(
+      (record) =>
+        record.mintUrl === entry.mintUrl && inputSecrets.has(record.proof.secret),
+    )
+  ) {
+    return false
+  }
+
+  const resultSecrets = Object.values(entry.resultProofs ?? {})
+    .flat()
+    .map((proof) => proof.secret)
+  return (
+    resultSecrets.length > 0 &&
+    resultSecrets.every((secret) =>
+      walletProofs.some(
+        (record) => record.mintUrl === entry.mintUrl && record.proof.secret === secret,
+      ),
+    )
+  )
+}
+
+function ctfConsolidationOperationId(
+  conditionId: string,
+  type: CtfConsolidationStrategy,
+  inputs: Proof[],
+): string {
+  const inputProofIds = inputs
+    .map((proof) => `${proof.id ?? ''}:${proof.C}`)
+    .sort()
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ conditionId, type, inputProofIds }), 'utf8')
+    .digest('hex')
+    .slice(0, 32)
+  return `ctf-consolidation:${conditionId}:${type}:${digest}`
+}
+
+async function ctfConsolidationInputGroups(
+  entry: ProofOperationRecord,
+): Promise<Record<string, Proof[]>> {
+  const inputCollections = entry.metadata.inputCollections
+  if (
+    Array.isArray(inputCollections) &&
+    inputCollections.length === entry.inputs.length &&
+    inputCollections.every((collection) => typeof collection === 'string')
+  ) {
+    return groupInputsByCollection(
+      entry.inputs as Proof[],
+      inputCollections as string[],
+    )
+  }
+
+  const state = await ensureState()
+  const collectionBySecret = new Map<string, string>()
+  for (const record of state.wallet.proofs) {
+    if (record.mintUrl !== entry.mintUrl) continue
+    collectionBySecret.set(record.proof.secret, proofCollection(record.asset))
+  }
+  const recoveredCollections = entry.inputs.map((proof) =>
+    collectionBySecret.get(proof.secret),
+  )
+  if (recoveredCollections.some((collection) => !collection)) {
+    throw new Error(
+      `Proof operation ${entry.operationId} is missing CTF consolidation input collection metadata`,
+    )
+  }
+  return groupInputsByCollection(
+    entry.inputs as Proof[],
+    recoveredCollections as string[],
+  )
+}
+
+function groupInputsByCollection(
+  inputs: Proof[],
+  collections: string[],
+): Record<string, Proof[]> {
+  const grouped: Record<string, Proof[]> = {}
+  inputs.forEach((proof, index) => {
+    const collection = collections[index]
+    grouped[collection] = [...(grouped[collection] ?? []), normalizeProof(proof)]
+  })
+  return grouped
+}
+
+function normalizeProofGroups(
+  groups: ProofOperationRecord['resultProofs'] | undefined,
+): Record<string, Proof[]> {
+  return Object.fromEntries(
+    Object.entries(groups ?? {}).map(([collection, proofs]) => [
+      collection,
+      proofs.map((proof) => normalizeProof(proof as Proof)),
+    ]),
+  )
+}
+
+function proofCollection(asset: StoredProofAsset): string {
+  return asset.kind === 'sats' ? COLLATERAL_COLLECTION : asset.outcomeSetId
+}
+
+function ctfParentCollectionMetadata(
+  entry: ProofOperationRecord,
+): Pick<CtfConvertRequest, 'parent_collection_id'> {
+  const parentCollectionId = entry.metadata.parentCollectionId
+  return typeof parentCollectionId === 'string' && parentCollectionId.length > 0
+    ? { parent_collection_id: parentCollectionId }
+    : {}
 }
 
 function serializeOutputDataArray(
