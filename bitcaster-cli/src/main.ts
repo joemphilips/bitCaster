@@ -4,7 +4,10 @@ import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { callDaemon } from './rpc.ts'
-import type { DaemonResponse } from '@bitcaster-market/daemon/protocol'
+import type {
+  DaemonResponse,
+  WalletConsolidationResult,
+} from '@bitcaster-market/daemon/protocol'
 
 const [, , command = 'help', ...args] = process.argv
 const execFileAsync = promisify(execFile)
@@ -24,6 +27,9 @@ switch (command) {
   case 'wallet':
     await handleWallet(args)
     break
+  case 'consolidate':
+    await handleConsolidate(args)
+    break
   case 'order':
     await handleOrder(args)
     break
@@ -41,6 +47,39 @@ switch (command) {
   default:
     printHelp()
     if (command !== 'help') process.exitCode = 1
+}
+
+async function handleConsolidate(args: string[]): Promise<void> {
+  if (isHelpRequest(args)) {
+    printConsolidateHelp()
+    return
+  }
+  const parsed = parseConsolidateArgs(args)
+  if (parsed.all) {
+    const balance = await callDaemon<WalletBalanceResult>({ method: 'wallet.balance' })
+    if (!balance.ok) {
+      await printDaemonResult(Promise.resolve(balance))
+      return
+    }
+    const marketIds = uniqueMarketIdsFromWalletBalance(balance.result)
+    for (const marketId of marketIds) {
+      await printConsolidationResponse(
+        await callDaemon<WalletConsolidationResult>({
+          method: 'wallet.consolidateMarket',
+          params: { marketId, type: parsed.type },
+        }),
+        { sweep: true, marketId },
+      )
+    }
+    return
+  }
+  await printConsolidationResponse(
+    await callDaemon<WalletConsolidationResult>({
+      method: 'wallet.consolidateMarket',
+      params: { marketId: parsed.marketId, type: parsed.type },
+    }),
+    { sweep: false, marketId: parsed.marketId },
+  )
 }
 
 async function handleDaemon(args: string[]): Promise<void> {
@@ -241,6 +280,86 @@ async function handleWallet(args: string[]): Promise<void> {
   bitcaster-cli wallet split-complete-set <condition-id> <amount-sats> [--mint <url>] [--operation-id <id>]
   bitcaster-cli wallet operations [--kind <kind>] [--state <state>]
   bitcaster-cli wallet recover`)
+}
+
+interface ConsolidateArgs {
+  all: boolean
+  marketId: string
+  type: 't1' | 't2' | 't3'
+}
+
+interface WalletBalanceResult {
+  outcomePositions?: Array<{
+    conditionId?: string
+    outcomeSetId?: string
+  }>
+}
+
+function parseConsolidateArgs(args: string[]): ConsolidateArgs {
+  let all = false
+  let marketId = ''
+  let type: 't1' | 't2' | 't3' = 't3'
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]
+    if (arg === '--all') {
+      all = true
+    } else if (arg === '--type') {
+      type = parseConsolidationType(requiredArg(args[++i], 'consolidation type'))
+    } else if (arg.startsWith('--')) {
+      throwUsage(`Unknown consolidate option: ${arg}`)
+    } else if (!marketId) {
+      marketId = arg
+    } else {
+      throwUsage('Usage: bitcaster-cli consolidate <market-id> [--type t1|t2|t3]')
+    }
+  }
+  if (all && marketId) {
+    throwUsage('consolidate --all cannot be combined with a market id')
+  }
+  if (!all && !marketId) {
+    throwUsage('Usage: bitcaster-cli consolidate <market-id> [--type t1|t2|t3]')
+  }
+  return { all, marketId, type }
+}
+
+function parseConsolidationType(value: string): 't1' | 't2' | 't3' {
+  const lower = value.toLowerCase()
+  if (lower === 't1' || lower === 't2' || lower === 't3') return lower
+  throwUsage(`Invalid consolidation type: ${value}`)
+}
+
+async function printConsolidationResponse(
+  response: DaemonResponse<WalletConsolidationResult>,
+  options: { sweep: boolean; marketId: string },
+): Promise<void> {
+  if (response.ok) {
+    process.stdout.write(`${JSON.stringify(response, null, 2)}\n`)
+    if (response.result?.status === 'skipped') {
+      process.stderr.write(
+        `Warning: skipped ${options.marketId}: ${response.result.reason ?? 'no matching consolidation'}\n`,
+      )
+    }
+    return
+  }
+  if (response.code === 'ctf-consolidation-no-gain') {
+    process.stderr.write(`Warning: skipped ${options.marketId}: ${response.error ?? 'no net collateral gain'}\n`)
+    return
+  }
+  if (options.sweep && response.code === 'market-not-pending') {
+    process.stderr.write(`Warning: skipped ${options.marketId}: ${response.error ?? 'market is not pending'}\n`)
+    return
+  }
+  process.stderr.write(`${response.error ?? 'consolidation failed'}\n`)
+  process.exitCode = 1
+}
+
+function uniqueMarketIdsFromWalletBalance(balance: WalletBalanceResult | undefined): string[] {
+  const marketIds = new Set<string>()
+  for (const position of balance?.outcomePositions ?? []) {
+    if (!position.conditionId || !position.outcomeSetId) continue
+    marketIds.add(`${position.conditionId}-${position.outcomeSetId}`)
+  }
+  return [...marketIds].sort()
 }
 
 async function handleOrder(args: string[]): Promise<void> {
@@ -527,6 +646,8 @@ Commands:
   health   Check daemon RPC health.
   markets  List markets and inspect market details.
   wallet   Manage wallet balance, Cashu tokens, and wallet operations.
+  consolidate
+           Consolidate pending CTF market positions through the daemon.
   order    Submit, inspect, list, cancel orders, and read order books.
   trade    Recover, list, and watch atomic swap trades.
 
@@ -598,6 +719,17 @@ Subcommands:
   split-complete-set  Split regular ecash into a complete conditional outcome set.
   operations          List prepared or recoverable wallet operations.
   recover             Resume or recover incomplete wallet operations.
+`)
+}
+
+function printConsolidateHelp(): void {
+  process.stdout.write(`bitcaster-cli consolidate
+
+Consolidate pending CTF market positions through bitcaster-daemon.
+
+Usage:
+  bitcaster-cli consolidate <market-id> [--type t1|t2|t3]
+  bitcaster-cli consolidate --all [--type t1|t2|t3]
 `)
 }
 

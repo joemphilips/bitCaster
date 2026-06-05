@@ -6,7 +6,7 @@ import {
 } from 'node:http'
 import { createConnection } from 'node:net'
 import { unlink } from 'node:fs/promises'
-import { Amount, OutputData } from '@cashu/cashu-ts'
+import { Amount, OutputData, type Proof } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
   EngineClientError,
@@ -23,6 +23,11 @@ import {
 } from '@bitcaster-market/client-sdk/outcomeSets'
 import { validateOrderIntent } from '@bitcaster-market/client-sdk/orderValidation'
 import { checkOrderSettlementSupport } from '@bitcaster-market/client-sdk/settlementSupport'
+import {
+  COLLATERAL_COLLECTION,
+  planCtfConsolidation,
+  type CtfConsolidationStrategy,
+} from '@bitcaster-market/client-sdk/ctfConsolidation'
 import {
   CashuMintCtfSplitTransport,
   splitCompleteSetWithOperation,
@@ -57,8 +62,12 @@ import {
   recoverPreparedWalletSends,
   receiveWalletToken,
   sendWalletToken,
+  executeCtfConsolidationPlan,
+  resolveCtfConsolidationInputFees,
+  resolveCtfConsolidationOutputKeysets,
+  resolveMintKeysByKeyset,
   splitAvailableSatProofsForCtfCollateral,
-  type CashuWalletLike,
+  type WalletOpsDependencies,
 } from './walletOps.ts'
 
 export interface DaemonServerOptions {
@@ -163,13 +172,12 @@ async function splitWalletCompleteSet(input: {
   }
 }
 
-export interface DispatchDependencies {
+export interface DispatchDependencies extends WalletOpsDependencies {
   createEngineClient?: (options: {
     baseUrl: string
     nostrSecretKeyHex: string
   }) => EngineClientLike
   generateEphemeralKeypair?: typeof generateOrderEphemeralKeypair
-  createCashuWallet?: (mintUrl: string) => CashuWalletLike
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
 }
@@ -413,6 +421,28 @@ export async function dispatch(
           secrets,
         }),
       }
+    }
+    case 'wallet.consolidateMarket': {
+      const profile = await readProfile()
+      if (!profile) {
+        return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      const secrets = await readSecrets()
+      if (!secrets) {
+        return { ok: false, error: 'daemon secrets are not initialized' }
+      }
+      const client = createEngineClient(deps, {
+        baseUrl: profile.engineBaseUrl,
+        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      })
+      return consolidateMarket({
+        client,
+        marketId: command.params.marketId,
+        type: command.params.type,
+        mintUrl: profile.mintUrl,
+        secrets,
+        deps,
+      })
     }
     case 'wallet.recover': {
       if (!(await readProfile())) {
@@ -692,6 +722,222 @@ export async function dispatch(
       }
     }
   }
+}
+
+async function consolidateMarket(input: {
+  client: EngineClientLike
+  marketId: string
+  type: CtfConsolidationStrategy
+  mintUrl: string
+  secrets: Awaited<ReturnType<typeof readSecrets>>
+  deps: DispatchDependencies
+}): Promise<DaemonResponse> {
+  if (!input.secrets) {
+    return { ok: false, error: 'daemon secrets are not initialized' }
+  }
+  const conditionId = conditionIdFromMarketId(input.marketId)
+  const market = await loadMarket(input.client, conditionId)
+  if (!market) {
+    return {
+      ok: false,
+      code: 'market-not-found',
+      error: `market ${conditionId} was not found`,
+    }
+  }
+  const marketStatus = extractMarketStatus(market)
+  if (marketStatus !== 'pending') {
+    return {
+      ok: false,
+      code: 'market-not-pending',
+      error: `market ${conditionId} is not pending`,
+    }
+  }
+  const outcomes = extractMarketOutcomes(market)
+  if (outcomes.length < 2) {
+    return {
+      ok: false,
+      code: 'invalid-market',
+      error: `market ${conditionId} does not include at least two outcomes`,
+    }
+  }
+
+  const proofsByCollection = await availableMarketProofs({
+    mintUrl: input.mintUrl,
+    conditionId,
+  })
+  const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
+    input.mintUrl,
+    Object.values(proofsByCollection).flatMap((proofs) =>
+      proofs.map((proof) => proof.id),
+    ),
+    input.deps,
+  )
+  const outputKeysetByCollection = await resolveCtfConsolidationOutputKeysets(
+    input.mintUrl,
+    conditionId,
+    input.deps,
+  )
+  const outputKeysets = await resolveMintKeysByKeyset(
+    input.mintUrl,
+    Object.values(outputKeysetByCollection),
+    input.deps,
+  )
+  const outputsByCollection: Record<string, OutputData[]> = {}
+  const plan = planCtfConsolidation({
+    conditionId,
+    parentCollectionId: extractParentCollectionId(market),
+    outcomes,
+    marketStatus,
+    strategy: input.type,
+    proofsByCollection,
+    inputFeePpkByKeyset,
+    outputKeysetByCollection,
+    makeOutputs: ({ collection, amountSats, keysetId }) => {
+      const keyset = outputKeysets[keysetId]
+      if (!keyset) throw new Error(`missing mint keys for output keyset ${keysetId}`)
+      const outputs = OutputData.createRandomData(Amount.from(amountSats), keyset)
+      outputsByCollection[collection] = [
+        ...(outputsByCollection[collection] ?? []),
+        ...outputs,
+      ]
+      return outputs.map((output) => output.blindedMessage)
+    },
+  })
+
+  if (plan.kind === 'noop') {
+    if (plan.reason === 'net-collateral-nonpositive') {
+      return {
+        ok: false,
+        code: 'ctf-consolidation-no-gain',
+        error: `market ${conditionId} consolidation has no net collateral gain`,
+      }
+    }
+    return {
+      ok: true,
+      result: {
+        marketId: input.marketId,
+        conditionId,
+        type: input.type,
+        status: 'skipped',
+        reason: plan.reason,
+        convertFeeSats: plan.feeSats ?? 0,
+        collateralReturnedSats: 0,
+        spentInputs: [],
+        outputs: [],
+      },
+    }
+  }
+
+  return {
+    ok: true,
+    result: await executeCtfConsolidationPlan(
+      {
+        marketId: input.marketId,
+        conditionId,
+        type: input.type,
+        mintUrl: input.mintUrl,
+        plan,
+        outputsByCollection,
+        secrets: input.secrets,
+      },
+      input.deps,
+    ),
+  }
+}
+
+async function availableMarketProofs(input: {
+  mintUrl: string
+  conditionId: string
+}): Promise<Record<string, Proof[]>> {
+  const state = await ensureState()
+  const groups: Record<string, Proof[]> = {}
+  for (const record of state.wallet.proofs) {
+    if (record.mintUrl !== input.mintUrl || record.state !== 'available') continue
+    if (record.asset.kind === 'sats') {
+      groups[COLLATERAL_COLLECTION] = [
+        ...(groups[COLLATERAL_COLLECTION] ?? []),
+        record.proof as Proof,
+      ]
+      continue
+    }
+    if (
+      record.asset.kind === 'outcome' &&
+      record.asset.conditionId === input.conditionId
+    ) {
+      groups[record.asset.outcomeSetId] = [
+        ...(groups[record.asset.outcomeSetId] ?? []),
+        record.proof as Proof,
+      ]
+    }
+  }
+  return groups
+}
+
+async function loadMarket(
+  client: EngineClientLike,
+  conditionId: string,
+): Promise<unknown | null> {
+  if (client.getMarket) return client.getMarket(conditionId)
+  return (
+    await client.queryMarkets({
+      ids: [conditionId],
+      state: 'All',
+      limit: 1,
+    })
+  ).markets[0] ?? null
+}
+
+function extractMarketOutcomes(market: unknown): string[] {
+  if (!market || typeof market !== 'object') return []
+  const outcomes = (market as { outcomes?: unknown }).outcomes
+  if (!Array.isArray(outcomes)) return []
+  return outcomes
+    .map((outcome) => {
+      if (typeof outcome === 'string') return outcome
+      if (outcome && typeof outcome === 'object') {
+        const objectOutcome = outcome as {
+          label?: unknown
+          name?: unknown
+          id?: unknown
+        }
+        for (const key of ['label', 'name', 'id'] as const) {
+          const value = objectOutcome[key]
+          if (typeof value === 'string' && value.trim()) return value
+        }
+      }
+      return null
+    })
+    .filter((outcome): outcome is string => !!outcome)
+}
+
+function extractMarketStatus(market: unknown): string | null {
+  if (!market || typeof market !== 'object') return null
+  const record = market as {
+    status?: unknown
+    state?: unknown
+    attestation?: { status?: unknown }
+  }
+  for (const value of [record.status, record.state, record.attestation?.status]) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+function extractParentCollectionId(market: unknown): string | undefined {
+  if (!market || typeof market !== 'object') return undefined
+  const record = market as {
+    parentCollectionId?: unknown
+    parent_collection_id?: unknown
+  }
+  for (const value of [record.parentCollectionId, record.parent_collection_id]) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+function conditionIdFromMarketId(marketId: string): string {
+  const parsed = splitMarketId(marketId)
+  return parsed?.conditionId ?? marketId
 }
 
 async function maybePreparePreflightSplitForOrder(input: {
