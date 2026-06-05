@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Amount, type Proof } from "@cashu/cashu-ts";
+import {
+  Amount,
+  CheckStateEnum,
+  Wallet as CashuWallet,
+  type ConditionalSwapPreview,
+  type Proof,
+  type ProofState,
+} from "@cashu/cashu-ts";
 import {
   assertConditionalSwapOutputsPinned,
+  conditionalKeysetSwap,
+  type PrepareProofOperationInput,
+  type ProofOperationRecord,
+  type ProofOperationStore,
   type SwapContext,
 } from "../src/atomicSwap.ts";
 import { adapt, generateAdaptorPoint, preSign } from "../src/adaptor.ts";
@@ -44,19 +55,109 @@ test("Block2_MultiLegSwap_LocktimeIdenticalAcrossLegs", () => {
 });
 
 test("conditional swap previews fail before mint when outputs change keyset", () => {
-  assert.throws(
-    () =>
-      assertConditionalSwapOutputsPinned({
-        keysetId: "keyset-A",
-        inputs: [
-          lockedProof(swapContext("trade-output-keyset"), "keyset-A", 100),
-        ],
-        outputDataByLabel: {
-          lock: [outputData("keyset-B", 100)],
-        },
-      }),
-    /output lock uses keyset keyset-B; expected keyset-A/,
+  const conditionalKeysetId = "conditional-keyset-13017";
+  const regularFallbackKeysetId = "regular-fallback-13041";
+  const preview: ConditionalSwapPreview = {
+    keysetId: conditionalKeysetId,
+    inputs: [
+      lockedProof(
+        swapContext("trade-output-keyset"),
+        conditionalKeysetId,
+        100,
+      ),
+    ],
+    outputDataByLabel: {
+      lock: [outputData(regularFallbackKeysetId, 100)],
+    },
+  };
+
+  assert.equal(preview.keysetId, conditionalKeysetId);
+  assert.notEqual(preview.keysetId, regularFallbackKeysetId);
+  assert.deepEqual(
+    Object.entries(preview.outputDataByLabel).map(([label, outputs]) => ({
+      label,
+      count: outputs.length,
+    })),
+    [{ label: "lock", count: 1 }],
   );
+  assert.throws(
+    () => assertConditionalSwapOutputsPinned(preview),
+    /output lock uses keyset regular-fallback-13041; expected conditional-keyset-13017/,
+  );
+});
+
+test("conditional keyset swap stays resumable when completion aborts before signed outputs", async () => {
+  const operationId = "conditional-op-abort-before-sign";
+  const keysetId = "conditional-keyset-resume";
+  const input = proof(keysetId, 100, "conditional-input");
+  const store = new MemoryProofOperationStore();
+  let completionCalls = 0;
+  const originalPrepare = CashuWallet.prototype.prepareConditionalSwap;
+  const originalComplete = CashuWallet.prototype.completeConditionalSwap;
+  const originalCheckProofsStates = CashuWallet.prototype.checkProofsStates;
+
+  CashuWallet.prototype.prepareConditionalSwap = async () =>
+    ({
+      keysetId,
+      inputs: [input],
+      outputDataByLabel: {
+        lock: [outputData(keysetId, 100)],
+      },
+    }) as ConditionalSwapPreview;
+  CashuWallet.prototype.completeConditionalSwap = async () => {
+    completionCalls += 1;
+    if (completionCalls === 1) {
+      throw new Error("abort after inputs accepted before output signatures");
+    }
+    return {
+      lock: [proof(keysetId, 100, "signed-output")],
+    };
+  };
+  CashuWallet.prototype.checkProofsStates = async (): Promise<ProofState[]> => [
+    { Y: "input-y", state: CheckStateEnum.UNSPENT },
+  ];
+
+  try {
+    await assert.rejects(
+      () =>
+        conditionalKeysetSwap(
+          "https://mint.example",
+          [input],
+          [{ label: "lock", kind: "random", amount: 100 }],
+          { operationId, proofOperationStore: store },
+        ),
+      /abort after inputs accepted before output signatures/,
+    );
+
+    const prepared = await store.getProofOperation(operationId);
+    assert.equal(prepared?.state, "prepared");
+    assert.equal(prepared?.resultProofs, undefined);
+
+    const resumed = await conditionalKeysetSwap(
+      "https://mint.example",
+      [input],
+      [{ label: "lock", kind: "random", amount: 100 }],
+      { operationId, proofOperationStore: store },
+    );
+
+    const expectedSignedOutput = {
+      id: keysetId,
+      amount: 100,
+      secret: "signed-output",
+      C: "02signed-output000000000000000000000000000000000000000000000000000",
+    };
+    assert.deepEqual(resumed, {
+      lock: [expectedSignedOutput],
+    });
+    assert.equal(completionCalls, 2);
+    const completed = await store.getProofOperation(operationId);
+    assert.equal(completed?.state, "completed");
+    assert.deepEqual(completed?.resultProofs, resumed);
+  } finally {
+    CashuWallet.prototype.prepareConditionalSwap = originalPrepare;
+    CashuWallet.prototype.completeConditionalSwap = originalComplete;
+    CashuWallet.prototype.checkProofsStates = originalCheckProofsStates;
+  }
 });
 
 function swapContext(tradeId: string): SwapContext {
@@ -111,7 +212,55 @@ function outputData(keysetId: string, amount: number) {
       amount: Amount.from(amount),
       B_: `02${keysetId}`.padEnd(66, "0").slice(0, 66),
     },
-    blindingFactor: "1",
-    secret: `secret-${keysetId}`,
-  } as never;
+    blindingFactor: 1n,
+    secret: new TextEncoder().encode(`secret-${keysetId}`),
+  };
+}
+
+function proof(keysetId: string, amount: number, secret: string): Proof {
+  return {
+    id: keysetId,
+    amount: Amount.from(amount),
+    secret,
+    C: `02${secret}`.padEnd(66, "0").slice(0, 66),
+  } as Proof;
+}
+
+class MemoryProofOperationStore implements ProofOperationStore {
+  readonly records = new Map<string, ProofOperationRecord>();
+
+  async getProofOperation(
+    operationId: string,
+  ): Promise<ProofOperationRecord | null> {
+    return this.records.get(operationId) ?? null;
+  }
+
+  async prepareProofOperation(
+    input: PrepareProofOperationInput,
+  ): Promise<ProofOperationRecord> {
+    const record: ProofOperationRecord = {
+      ...input,
+      state: "prepared",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    this.records.set(input.operationId, record);
+    return record;
+  }
+
+  async markProofOperationCompleted(
+    operationId: string,
+    resultProofs: Record<string, Proof[]>,
+  ): Promise<ProofOperationRecord> {
+    const existing = this.records.get(operationId);
+    if (!existing) throw new Error(`missing operation ${operationId}`);
+    const completed = {
+      ...existing,
+      state: "completed",
+      resultProofs,
+      updatedAt: existing.updatedAt + 1,
+    } satisfies ProofOperationRecord;
+    this.records.set(operationId, completed);
+    return completed;
+  }
 }
