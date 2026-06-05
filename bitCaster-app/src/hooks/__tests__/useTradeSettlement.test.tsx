@@ -568,7 +568,7 @@ describe("useTradeSettlement", () => {
       expect.objectContaining({
         amountSats: 100,
         operationId:
-          "trade-preflight-overpay/browser/seller-preflight-lock-exact-v2/NO",
+          "trade-preflight-overpay/browser/seller-preflight-lock-exact-v2",
         preserveSourceKeyset: true,
         sourceProofs: [
           expect.objectContaining({ secret: "reserved-lock-no-136" }),
@@ -579,7 +579,7 @@ describe("useTradeSettlement", () => {
       expect.objectContaining({
         amountSats: 100,
         operationId:
-          "trade-preflight-overpay/browser/seller-preflight-keep-exact-v2/YES",
+          "trade-preflight-overpay/browser/seller-preflight-keep-exact-v2",
         preserveSourceKeyset: true,
         sourceProofs: [
           expect.objectContaining({ secret: "reserved-keep-yes-136" }),

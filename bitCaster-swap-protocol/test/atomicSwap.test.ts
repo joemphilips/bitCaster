@@ -114,7 +114,7 @@ test("conditional keyset swap stays resumable when completion aborts before sign
     };
   };
   CashuWallet.prototype.checkProofsStates = async (): Promise<ProofState[]> => [
-    { Y: "input-y", state: CheckStateEnum.UNSPENT },
+    { Y: "input-y", state: CheckStateEnum.UNSPENT, witness: null },
   ];
 
   try {
@@ -214,6 +214,7 @@ function outputData(keysetId: string, amount: number) {
     },
     blindingFactor: 1n,
     secret: new TextEncoder().encode(`secret-${keysetId}`),
+    toProof: () => proof(keysetId, amount, `secret-${keysetId}`),
   };
 }
 
@@ -240,6 +241,7 @@ class MemoryProofOperationStore implements ProofOperationStore {
   ): Promise<ProofOperationRecord> {
     const record: ProofOperationRecord = {
       ...input,
+      metadata: input.metadata ?? {},
       state: "prepared",
       createdAt: 1,
       updatedAt: 1,

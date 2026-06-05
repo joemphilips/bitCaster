@@ -79,38 +79,43 @@ describe("preflight split preparation", () => {
     mocks.releaseProofReservation.mockResolvedValue(undefined);
   });
 
-  it("removes the original regular-split inputs from later lot selection", async () => {
-    const originals = [proof("original-1", 250), proof("original-2", 250)];
+  it("prepares one fee-aware composite split for the full order amount", async () => {
+    const originals = [proof("original-1", 250)];
     const wallet = {
       selectProofsToSend: vi.fn((available: Proof[]) => ({
         send: [available[0]],
         keep: [],
       })),
-      getFeesForProofs: vi.fn(() => 0),
+      getFeesForProofs: vi.fn(() => 1),
     };
     mocks.getBaseProofs.mockResolvedValue(originals);
     mocks.getWallet.mockResolvedValue(wallet);
     mocks.selectCollateralForCtfSplit.mockImplementation(
-      async (_mintUrl: string, available: Proof[]) => {
+      async (_mintUrl: string, available: Proof[], faceAmountSats: number) => {
         const child = available.find((p) =>
-          p.secret.startsWith("regular-child-"),
+          p.secret === "regular-child",
         );
         if (!child) throw new Error("fragmented collateral");
         return {
           inputs: [child],
           keep: [],
           inputFeeSats: 0,
-          grossInputSats: 100,
+          grossInputSats: faceAmountSats + 1,
         };
       },
     );
     mocks.splitRegularProofsWithOperation.mockImplementation(
-      async ({ proofs }: { proofs: Proof[] }) => {
+      async ({
+        amountSats,
+        proofs,
+      }: {
+        amountSats: number;
+        proofs: Proof[];
+      }) => {
         const spent = proofs[0];
-        const lot = spent.secret.endsWith("-1") ? "1" : "2";
         return {
-          send: [proof(`regular-child-${lot}`, 100)],
-          keep: [proof(`regular-keep-${lot}`, 150)],
+          send: [proof("regular-child", amountSats)],
+          keep: [proof("regular-keep", 49)],
           spent: [spent],
         };
       },
@@ -122,16 +127,16 @@ describe("preflight split preparation", () => {
         lockCollections: ["NO"],
         keepCollections: ["YES"],
         lockProofs: [
-          proof(`ctf-no-${collateralProofs[0].secret}`, 100, "keyset-NO"),
+          proof(`ctf-no-${collateralProofs[0].secret}`, 200, "keyset-NO"),
         ],
         keepProofs: [
-          proof(`ctf-yes-${collateralProofs[0].secret}`, 100, "keyset-YES"),
+          proof(`ctf-yes-${collateralProofs[0].secret}`, 200, "keyset-YES"),
         ],
         proofsByCollection: {
           YES: [
-            proof(`ctf-yes-${collateralProofs[0].secret}`, 100, "keyset-YES"),
+            proof(`ctf-yes-${collateralProofs[0].secret}`, 200, "keyset-YES"),
           ],
-          NO: [proof(`ctf-no-${collateralProofs[0].secret}`, 100, "keyset-NO")],
+          NO: [proof(`ctf-no-${collateralProofs[0].secret}`, 200, "keyset-NO")],
         },
         spentSatProofs: collateralProofs,
       }),
@@ -146,20 +151,20 @@ describe("preflight split preparation", () => {
       reservationId: "order-preflight:test",
     });
 
-    expect(mocks.splitRegularProofsWithOperation).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ proofs: [originals[0]] }),
+    expect(mocks.splitRegularProofsWithOperation).toHaveBeenCalledTimes(1);
+    expect(mocks.splitRegularProofsWithOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ amountSats: 201, proofs: [originals[0]] }),
     );
-    expect(mocks.splitRegularProofsWithOperation).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ proofs: [originals[1]] }),
+    expect(mocks.splitRootCompleteSetForPreflightOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountSats: 200,
+        collateralProofs: [expect.objectContaining({ amount: 201 })],
+        keepOutcomeSetId: "YES",
+        lockOutcomeSetId: "NO",
+      }),
     );
     expect(mocks.replaceProofs).toHaveBeenCalledWith(
-      ["regular-child-1"],
-      expect.any(Array),
-    );
-    expect(mocks.replaceProofs).toHaveBeenCalledWith(
-      ["regular-child-2"],
+      ["regular-child"],
       expect.any(Array),
     );
   });

@@ -993,7 +993,7 @@ describe('buyerClaimSwap', () => {
     ).rejects.toThrow('Inputs must use the same conditional keyset')
   })
 
-  it('restores a spent first keyset leg and completes the remaining leg on retry', async () => {
+  it('rejects primitive multi-keyset conditional claims before mint settlement', async () => {
     const { sellerCtx, buyerCtx } = swapContexts('trade-browser-multi-claim')
     const sellerOut = await sellerPreparePrelockedSwap(sellerCtx, [
       p2pkLockedProof('alice-B', 7, sellerCtx, 'keyset-B'),
@@ -1006,8 +1006,8 @@ describe('buyerClaimSwap', () => {
       [proof('bob-1', 14)],
     )
     const operationId = 'trade-browser-multi-claim/browser/buyer-claim'
+    const mintSwapCallsBeforeClaim = cashuMockState.mintSwapCalls
 
-    cashuMockState.conditionalSwapError = new Error('network closed after first leg')
     await expect(
       buyerClaimSwap(
         buyerCtx,
@@ -1016,34 +1016,9 @@ describe('buyerClaimSwap', () => {
         buyerOut.sellerPreSigsHex,
         { operationId, proofOperationStore },
       ),
-    ).rejects.toThrow(/network closed/)
-
-    const keysetBOperation = `${operationId}/keyset/keyset-B`
-    expect(proofDbMockState.operations.get(keysetBOperation)).toEqual(
-      expect.objectContaining({ state: 'prepared' }),
-    )
-
-    cashuMockState.conditionalSwapError = null
-    cashuMockState.proofState = 'SPENT'
-    const claimed = await buyerClaimSwap(
-      buyerCtx,
-      sellerOut.adaptorPoint.secret,
-      sellerOut.lockedProofsCipher,
-      buyerOut.sellerPreSigsHex,
-      { operationId, proofOperationStore },
-    )
-
-    expect(cashuMockState.restoreCalls).toBe(1)
-    expect(proofDbMockState.operations.get(keysetBOperation)).toEqual(
-      expect.objectContaining({ state: 'completed' }),
-    )
-    expect(
-      proofDbMockState.operations.get(`${operationId}/keyset/keyset-C`),
-    ).toEqual(expect.objectContaining({ state: 'completed' }))
-    expect(claimed).toEqual([
-      expect.objectContaining({ id: 'keyset-B', amount: 7 }),
-      expect.objectContaining({ id: 'keyset-C', amount: 7 }),
-    ])
+    ).rejects.toThrow('Atomic swap proof set must use exactly one keyset')
+    expect(cashuMockState.mintSwapCalls).toBe(mintSwapCallsBeforeClaim)
+    expect(proofDbMockState.operations.get(operationId)).toBeUndefined()
   })
 })
 

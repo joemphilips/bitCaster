@@ -48,59 +48,52 @@ export async function preparePreflightSplitForLimitBuy(input: {
     throw new Error("Pre-flight split requires 100 sat order increments.");
   }
 
-  let available: Proof[] = await getBaseProofs(input.mintUrl);
+  const available: Proof[] = await getBaseProofs(input.mintUrl);
   let resolvedKeepOutcomeSetId = input.selectedOutcomeSetId;
   let resolvedLockOutcomeSetId = input.complementOutcomeSetId;
 
   try {
-    for (let offset = 0; offset < input.amountSats; offset += 100) {
-      const lotIndex = offset / 100;
-      const collateral = await prepareCollateralLotForCtfSplit({
-        mintUrl: input.mintUrl,
-        available,
-        faceAmountSats: 100,
-        reservationId: input.reservationId,
+    const lotIndex = 0;
+    const collateral = await prepareCollateralLotForCtfSplit({
+      mintUrl: input.mintUrl,
+      available,
+      faceAmountSats: input.amountSats,
+      reservationId: input.reservationId,
+      lotIndex,
+    });
+    const operationId = `${input.reservationId}:ctf-split:${lotIndex}`;
+    await diagnoseProofStates({
+      label: "preflight:ctf-split-inputs-before",
+      mintUrl: input.mintUrl,
+      proofs: collateral.inputs,
+      extra: {
         lotIndex,
-      });
-      const operationId = `${input.reservationId}:ctf-split:${lotIndex}`;
-      await diagnoseProofStates({
-        label: "preflight:ctf-split-inputs-before",
-        mintUrl: input.mintUrl,
-        proofs: collateral.inputs,
-        extra: {
-          lotIndex,
-          conditionId: input.market.id,
-          operationId,
-        },
-      });
-      const split = await splitRootCompleteSetForPreflightOrder({
+        conditionId: input.market.id,
+        operationId,
+      },
+    });
+    const split = await splitRootCompleteSetForPreflightOrder({
+      mintUrl: input.mintUrl,
+      conditionId: input.market.id,
+      collateralProofs: collateral.inputs,
+      amountSats: input.amountSats,
+      keepOutcomeSetId: input.selectedOutcomeSetId,
+      lockOutcomeSetId: input.complementOutcomeSetId,
+      operationId,
+      proofOperationStore: ctfProofOperationStore,
+    });
+
+    resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId;
+    resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId;
+    await replaceProofs(
+      split.spentSatProofs.map((proof) => proof.secret),
+      await ctfProofsToStore({
         mintUrl: input.mintUrl,
         conditionId: input.market.id,
-        collateralProofs: collateral.inputs,
-        amountSats: 100,
-        keepOutcomeSetId: input.selectedOutcomeSetId,
-        lockOutcomeSetId: input.complementOutcomeSetId,
-        operationId,
-        proofOperationStore: ctfProofOperationStore,
-      });
-
-      resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId;
-      resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId;
-      await replaceProofs(
-        split.spentSatProofs.map((proof) => proof.secret),
-        await ctfProofsToStore({
-          mintUrl: input.mintUrl,
-          conditionId: input.market.id,
-          reservationId: input.reservationId,
-          proofsByCollection: split.proofsByCollection,
-        }),
-      );
-      available = available
-        .filter(
-          (proof) => !collateral.availableSpentSecrets.includes(proof.secret),
-        )
-        .concat(collateral.keepProofs);
-    }
+        reservationId: input.reservationId,
+        proofsByCollection: split.proofsByCollection,
+      }),
+    );
   } catch (err) {
     await releaseProofReservation(input.reservationId);
     throw err;

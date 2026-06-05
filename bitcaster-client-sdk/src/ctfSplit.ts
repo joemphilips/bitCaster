@@ -954,18 +954,9 @@ export function selectRootPartitionKeysets(
     return rootPartitions[0].keysets;
   }
 
-  const matches = rootPartitions.filter((partition) => {
-    try {
-      resolveComplementaryOutcomeLegs(
-        selection.lockOutcomeSetId,
-        selection.keepOutcomeSetId,
-        partition.keysets,
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  });
+  const matches = rootPartitions.filter((partition) =>
+    partitionExactlyMatchesSelection(partition.keysets, selection),
+  );
 
   if (matches.length !== 1) {
     throw new Error(
@@ -973,6 +964,29 @@ export function selectRootPartitionKeysets(
     );
   }
   return matches[0].keysets;
+}
+
+function partitionExactlyMatchesSelection(
+  keysets: Record<string, string>,
+  selection: CtfRootPartitionSelection,
+): boolean {
+  const collections = Object.keys(keysets);
+  if (collections.length !== 2) return false;
+
+  const lockSet = parseOutcomeSetToComparableSet(selection.lockOutcomeSetId);
+  const keepSet = parseOutcomeSetToComparableSet(selection.keepOutcomeSetId);
+  const collectionSets = collections.map((collection) =>
+    parseOutcomeSetToComparableSet(collection),
+  );
+
+  return (
+    collectionSets.some((collectionSet) =>
+      outcomeSetsEqual(collectionSet, lockSet),
+    ) &&
+    collectionSets.some((collectionSet) =>
+      outcomeSetsEqual(collectionSet, keepSet),
+    )
+  );
 }
 
 function validateSplitInput(
