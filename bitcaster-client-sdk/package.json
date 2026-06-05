@@ -15,6 +15,10 @@
       "types": "./dist/ctfSplit.d.ts",
       "import": "./dist/ctfSplit.js"
     },
+    "./ctfConsolidation": {
+      "types": "./dist/ctfConsolidation.d.ts",
+      "import": "./dist/ctfConsolidation.js"
+    },
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"

@@ -8,6 +8,7 @@ export type DaemonCommand =
   | { method: 'wallet.receive'; params: WalletReceiveParams }
   | { method: 'wallet.send'; params: { amountSats: number; mintUrl?: string; operationId?: string } }
   | { method: 'wallet.splitCompleteSet'; params: WalletSplitCompleteSetParams }
+  | { method: 'wallet.consolidateMarket'; params: WalletConsolidateMarketParams }
   | { method: 'wallet.operations'; params?: { kind?: string; state?: string } }
   | { method: 'wallet.recover'; params?: undefined }
   | { method: 'order.submit'; params: SubmitOrderParams }
@@ -56,6 +57,30 @@ export interface WalletSplitCompleteSetParams {
   amountSats: number
   mintUrl?: string
   operationId?: string
+}
+
+export interface WalletConsolidateMarketParams {
+  marketId: string
+  type: 't1' | 't2' | 't3'
+}
+
+export interface WalletConsolidationProofSummary {
+  id: string
+  amount: number
+  label: string
+  keysetId: string
+}
+
+export interface WalletConsolidationResult {
+  marketId: string
+  conditionId: string
+  type: 't1' | 't2' | 't3'
+  status: 'consolidated' | 'skipped'
+  reason?: string
+  convertFeeSats: number
+  collateralReturnedSats: number
+  spentInputs: WalletConsolidationProofSummary[]
+  outputs: WalletConsolidationProofSummary[]
 }
 
 export interface DaemonResponse<T = unknown> {
