@@ -549,6 +549,235 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EightOutcomeMarket_PreRegistration_Produces16Keysets()
+    {
+        var outcomes = new[] { "A", "B", "C", "D", "E", "F", "G", "H" };
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            httpClient,
+            outcomes,
+            registerEngine: false,
+            titlePrefix: "WS-P2-H 8-outcome");
+
+        using var response = await httpClient.GetAsync($"{TestPorts.MintUrl}/v1/conditions");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var doc = await JsonDocument.ParseAsync(stream);
+
+        var actual = ReadConditionKeysetLabels(doc, condition.ConditionId);
+        var expected = RequiredOutcomeCollections(outcomes).ToHashSet(StringComparer.Ordinal);
+        Assert.Equal(16, actual.Count);
+        Assert.Equal(
+            expected.Order(StringComparer.Ordinal).ToArray(),
+            actual.Order(StringComparer.Ordinal).ToArray());
+    }
+
+    [Fact]
+    public async Task BrowserMaker_BrowserTaker_4OutcomeCompositeSwap_BobReceivesSingleCompositeToken()
+    {
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            httpClient,
+            ["A", "B", "C", "D"],
+            registerEngine: true,
+            titlePrefix: "WS-P2-H 4-outcome composite");
+        const string aliceOutcomeSetId = "A";
+        var bobOutcomeSetId = ComplementOutcomeSet(condition.PrimitiveOutcomeSetIds, aliceOutcomeSetId);
+        var aliceMarketId = $"{condition.ConditionId}-{aliceOutcomeSetId}";
+        var bobMarketId = $"{condition.ConditionId}-{bobOutcomeSetId}";
+        const int aliceAmountSats = 200;
+        const int bobAmountSats = 100;
+        const int price = 50;
+
+        var playwright = await Playwright.CreateAsync();
+        IBrowser? browser = null;
+        try
+        {
+            browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            {
+                Headless = true,
+            });
+            await using var aliceContext = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                ServiceWorkers = ServiceWorkerPolicy.Block,
+            });
+            await using var bobContext = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                ServiceWorkers = ServiceWorkerPolicy.Block,
+            });
+            await AddSignalRDebugAsync(aliceContext);
+            await AddSignalRDebugAsync(bobContext);
+
+            var alicePage = await aliceContext.NewPageAsync();
+            var bobPage = await bobContext.NewPageAsync();
+            var aliceConsole = TestHelpers.AttachConsoleCapture(alicePage);
+            var bobConsole = TestHelpers.AttachConsoleCapture(bobPage);
+
+            await SetupBrowserWalletAndSignerAsync(alicePage, "aa".PadRight(64, 'a'));
+            await DepositBrowserSatsAsync(alicePage, (aliceAmountSats * 2) + 10, aliceConsole);
+            await SubmitBrowserLimitBuyRestingAsync(
+                alicePage,
+                condition.ConditionId,
+                aliceOutcomeSetId,
+                aliceMarketId,
+                price,
+                aliceAmountSats,
+                preflight: true,
+                aliceConsole);
+            await WaitForEngineBidAsync(aliceMarketId, aliceAmountSats);
+
+            await SetupBrowserWalletAndSignerAsync(bobPage, "bb".PadRight(64, 'b'));
+            await DepositBrowserSatsAsync(bobPage, bobAmountSats, bobConsole);
+            var tradeId = await SubmitBrowserMarketBuyNoAsync(
+                bobPage,
+                condition.ConditionId,
+                aliceOutcomeSetId,
+                bobMarketId,
+                bobAmountSats,
+                bobConsole,
+                limitPrice: price);
+
+            await WaitForBrowserTradeConfirmedAsync(tradeId, aliceConsole, bobConsole);
+            await WaitForBrowserExactOutcomeProofsAsync(
+                bobPage,
+                condition.ConditionId,
+                bobOutcomeSetId,
+                bobConsole,
+                bobAmountSats,
+                availableOnly: true);
+            foreach (var primitive in condition.PrimitiveOutcomeSetIds.Where(outcome => outcome != aliceOutcomeSetId))
+            {
+                await WaitForBrowserExactOutcomeSatsAsync(
+                    bobPage,
+                    condition.ConditionId,
+                    primitive,
+                    bobConsole,
+                    expectedSats: 0,
+                    availableOnly: true);
+            }
+            AssertNoForbiddenBrowserConsole(aliceConsole, bobConsole);
+        }
+        finally
+        {
+            if (browser is not null) await browser.CloseAsync();
+            playwright.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task CliConsolidate_T2_ResidualPlusCollateral()
+    {
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            httpClient,
+            registerEngine: false,
+            titlePrefix: "WS-P2-H consolidate T2");
+        await using var fakeEngine = new FakeMarketServer(
+            condition.ConditionId,
+            condition.PrimitiveOutcomeSetIds,
+            status: "pending");
+        var daemon = await StartDaemonAsync();
+        await ConfigureDaemonEngineAsync(daemon, fakeEngine.Url);
+        var marketId = $"{condition.ConditionId}-{condition.PrimitiveOutcomeSetIds[0]}";
+
+        await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "B|C", amountSats: 2);
+        await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "A|C", amountSats: 2);
+
+        using var result = await RunCliJsonAsync(daemon, [
+            "consolidate",
+            marketId,
+            "--type",
+            "t2",
+        ], TimeSpan.FromSeconds(30));
+
+        AssertConsolidationResult(
+            result,
+            expectedType: "t2",
+            expectedCollateralReturnedSats: 1,
+            ("C", 2),
+            ("*", 1));
+        await WaitForDaemonExactOutcomeSatsAsync(daemon, condition.ConditionId, "C", 2);
+        await WaitForDaemonBaseAvailableSatsAsync(daemon, 1);
+        await AssertConsolidateNonPendingMarketRefusedAsync();
+    }
+
+    [Fact]
+    public async Task CliConsolidate_T1_ComplementFromSingletons()
+    {
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            httpClient,
+            registerEngine: false,
+            titlePrefix: "WS-P2-H consolidate T1");
+        await using var fakeEngine = new FakeMarketServer(
+            condition.ConditionId,
+            condition.PrimitiveOutcomeSetIds,
+            status: "pending");
+        var daemon = await StartDaemonAsync();
+        await ConfigureDaemonEngineAsync(daemon, fakeEngine.Url);
+        var marketId = $"{condition.ConditionId}-{condition.PrimitiveOutcomeSetIds[0]}";
+
+        await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "A", amountSats: 2);
+        await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "B", amountSats: 2);
+        await ReceiveSatsAsync(daemon, amountSats: 1);
+
+        using var result = await RunCliJsonAsync(daemon, [
+            "consolidate",
+            marketId,
+            "--type",
+            "t1",
+        ], TimeSpan.FromSeconds(30));
+
+        AssertConsolidationResult(
+            result,
+            expectedType: "t1",
+            expectedCollateralReturnedSats: 0,
+            ("A|B", 2));
+        await WaitForDaemonExactOutcomeSatsAsync(daemon, condition.ConditionId, "A|B", 2);
+        await WaitForDaemonBaseAvailableSatsAsync(daemon, 0);
+    }
+
+    [Fact]
+    public async Task CliConsolidate_T3_CompleteHoldingToCollateral()
+    {
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            httpClient,
+            registerEngine: false,
+            titlePrefix: "WS-P2-H consolidate T3");
+        await using var fakeEngine = new FakeMarketServer(
+            condition.ConditionId,
+            condition.PrimitiveOutcomeSetIds,
+            status: "pending");
+        var daemon = await StartDaemonAsync();
+        await ConfigureDaemonEngineAsync(daemon, fakeEngine.Url);
+        var marketId = $"{condition.ConditionId}-{condition.PrimitiveOutcomeSetIds[0]}";
+
+        await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "A", amountSats: 2);
+        await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "B", amountSats: 2);
+        await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "C", amountSats: 2);
+
+        using var result = await RunCliJsonAsync(daemon, [
+            "consolidate",
+            marketId,
+            "--type",
+            "t3",
+        ], TimeSpan.FromSeconds(30));
+
+        AssertConsolidationResult(
+            result,
+            expectedType: "t3",
+            expectedCollateralReturnedSats: 1,
+            ("*", 1));
+        await WaitForDaemonBaseAvailableSatsAsync(daemon, 1);
+        foreach (var primitive in condition.PrimitiveOutcomeSetIds)
+        {
+            await WaitForDaemonExactOutcomeSatsAsync(daemon, condition.ConditionId, primitive, 0);
+        }
+    }
+
+    [Fact]
     public async Task Cli_ComplementarySettlement_SurvivesMakerActiveSwapRestart()
     {
         var maker = await StartDaemonAsync();
@@ -1331,7 +1560,16 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         {
             ServiceWorkers = ServiceWorkerPolicy.Block,
         });
-        await context.AddInitScriptAsync("""
+        await AddSignalRDebugAsync(context);
+        var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+        await SetupBrowserWalletAndSignerAsync(page, browserNsec);
+        return new GuiTradingClient(page, consoleMessages);
+    }
+
+    private static Task AddSignalRDebugAsync(IBrowserContext context)
+    {
+        return context.AddInitScriptAsync("""
             (() => {
               const originalSend = WebSocket.prototype.send;
               const originalAddEventListener = WebSocket.prototype.addEventListener;
@@ -1354,7 +1592,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                   const wrapped = function(event) {
                     try {
                       const text = typeof event.data === 'string' ? event.data : '';
-                      if (text.includes('TradeCreated') || text.includes('"error"') || text.includes('"type":3')) {
+                      if (text.includes('TradeCreated') || text.includes('TradeStateChanged') || text.includes('"error"') || text.includes('"type":3')) {
                         console.debug(`[e2e-signalr-recv] ${text}`);
                       }
                     } catch {
@@ -1368,10 +1606,6 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
               };
             })();
             """);
-        var page = await context.NewPageAsync();
-        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
-        await SetupBrowserWalletAndSignerAsync(page, browserNsec);
-        return new GuiTradingClient(page, consoleMessages);
     }
 
     private interface ITradingClient
@@ -1744,6 +1978,24 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         return JsonDocument.Parse(result.Stdout);
     }
 
+    private Task<ProcessResult> RunCliProcessAsync(
+        DaemonHandle daemon,
+        string[] args,
+        TimeSpan? timeout = null) =>
+        RunNodeProcessAsync(BitcasterCliMain, args, daemon, timeout);
+
+    private async Task ConfigureDaemonEngineAsync(DaemonHandle daemon, string engineUrl)
+    {
+        using var config = await RunCliJsonAsync(daemon, [
+            "daemon",
+            "config",
+            "--engine-url",
+            engineUrl,
+        ], TimeSpan.FromSeconds(5));
+        Assert.True(config.RootElement.GetProperty("ok").GetBoolean());
+        await RestartDaemonAsync(daemon);
+    }
+
     private async Task WaitForTradeStepAsync(
         DaemonHandle daemon,
         string tradeId,
@@ -2011,6 +2263,98 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 $"Browser order fill did not include a tradeId. Body={orderBody}");
         }
         return tradeId;
+    }
+
+    private static async Task<string> SubmitBrowserMarketBuyNoAsync(
+        IPage page,
+        string conditionId,
+        string displayedOutcomeSetId,
+        string marketId,
+        int amountSats,
+        IReadOnlyList<string> consoleMessages,
+        int limitPrice)
+    {
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{conditionId}", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var marketOrder = page.GetByRole(AriaRole.Button, new() { Name = "Market" })
+            .Filter(new() { Visible = true })
+            .First;
+        await Assertions.Expect(marketOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await marketOrder.ClickAsync();
+
+        await ClickBuyNoAsync(page, displayedOutcomeSetId);
+
+        var amountInput = page.GetByTestId("trade-amount-input")
+            .Filter(new() { Visible = true })
+            .First;
+        await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await amountInput.FillAsync(amountSats.ToString());
+
+        var priceInput = page.Locator("input[type='number']")
+            .Filter(new() { Visible = true })
+            .Nth(1);
+        if (await priceInput.CountAsync() > 0)
+        {
+            await priceInput.FillAsync(limitPrice.ToString());
+        }
+
+        var confirm = page.GetByTestId("trade-confirm")
+            .Filter(new() { Visible = true })
+            .First;
+        await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
+        var orderResponseTask = page.WaitForResponseAsync(response =>
+            response.Request.Method == "POST"
+            && response.Url.Contains("/orders", StringComparison.Ordinal));
+        await confirm.ClickAsync();
+
+        IResponse orderResponse;
+        try
+        {
+            orderResponse = await orderResponseTask;
+        }
+        catch
+        {
+            var status = await page.GetByTestId("trade-submit-status")
+                .First
+                .TextContentAsync(new() { Timeout = 1_000 })
+                .ContinueWith(t => t.IsCompletedSuccessfully ? t.Result : null);
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Browser Buy No did not POST an order. status={status ?? "(none)"}, expected marketId={marketId}");
+        }
+
+        var orderBody = await orderResponse.TextAsync();
+        if (!orderResponse.Ok)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Browser Buy No order POST failed with HTTP {orderResponse.Status}. Body={orderBody}");
+        }
+
+        using var doc = JsonDocument.Parse(orderBody);
+        var fills = doc.RootElement.GetProperty("fills").EnumerateArray().ToArray();
+        if (fills.Length != 1)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Browser Buy No order did not create one mint fill. Body={orderBody}");
+        }
+        var tradeId = fills[0].GetProperty("tradeId").GetString();
+        if (string.IsNullOrWhiteSpace(tradeId))
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Browser Buy No fill did not include a tradeId. Body={orderBody}");
+        }
+        return tradeId!;
     }
 
     private static async Task SeedBrowserOutcomeProofsAsync(
@@ -2313,6 +2657,54 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         return false;
     }
 
+    private static async Task WaitForBrowserTradeConfirmedAsync(
+        string tradeId,
+        params IReadOnlyList<string>[] consoleLogs)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < deadline)
+        {
+            AssertNoForbiddenBrowserConsole(consoleLogs);
+            if (consoleLogs.Any(log => log.Any(message =>
+                    message.Contains(tradeId, StringComparison.OrdinalIgnoreCase)
+                    && message.Contains("Confirmed", StringComparison.OrdinalIgnoreCase))))
+            {
+                return;
+            }
+            await Task.Delay(500);
+        }
+
+        var tail = consoleLogs
+            .SelectMany(log => log)
+            .Where(message => message.Contains(tradeId, StringComparison.OrdinalIgnoreCase)
+                              || message.Contains("Trade", StringComparison.OrdinalIgnoreCase))
+            .TakeLast(20)
+            .ToArray();
+        throw new TimeoutException(
+            $"Browser trade {tradeId} did not reach CONFIRMED. Tail={JsonSerializer.Serialize(tail)}");
+    }
+
+    private static void AssertNoForbiddenBrowserConsole(params IReadOnlyList<string>[] consoleLogs)
+    {
+        var forbidden = new[]
+        {
+            "Inputs must use the same conditional keyset",
+            "Token Already Spent",
+        };
+        var hit = consoleLogs
+            .SelectMany(log => log)
+            .FirstOrDefault(message => forbidden.Any(term =>
+                message.Contains(term, StringComparison.OrdinalIgnoreCase)));
+        Assert.True(hit is null, $"Forbidden browser console error was observed: {hit}");
+    }
+
+    private static async Task ClickBuyNoAsync(IPage page, string outcomeRow)
+    {
+        var outcomeButton = TradeOutcomeButton(page, outcomeRow, complement: true);
+        await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await outcomeButton.ClickAsync();
+    }
+
     private static ILocator TradeOutcomeButton(IPage page, string outcomeSetId, bool complement = false)
     {
         if (string.Equals(outcomeSetId, "yes", StringComparison.OrdinalIgnoreCase))
@@ -2438,6 +2830,64 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             $"Browser did not persist local outcome proofs for {conditionId}-{outcomeSetId}. availableOnly={availableOnly}, reservedOnly={reservedOnly}, expected each primitive >= {minimumSats}, last sums={JsonSerializer.Serialize(lastSums)}.");
     }
 
+    private static async Task WaitForBrowserExactOutcomeProofsAsync(
+        IPage page,
+        string conditionId,
+        string outcomeSetId,
+        IReadOnlyList<string> consoleMessages,
+        int minimumSats,
+        bool availableOnly = false,
+        bool reservedOnly = false)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        var marketId = $"{conditionId}-{outcomeSetId}";
+        var lastSum = 0;
+        while (DateTime.UtcNow < deadline)
+        {
+            lastSum = await SumBrowserOutcomeProofsAsync(
+                page,
+                marketId,
+                availableOnly,
+                reservedOnly);
+            if (lastSum >= minimumSats) return;
+            await Task.Delay(500);
+        }
+
+        throw await TestHelpers.BuildDiagnosticExceptionAsync(
+            page,
+            consoleMessages,
+            $"Browser did not persist exact local outcome proofs for {marketId}. availableOnly={availableOnly}, reservedOnly={reservedOnly}, expected >= {minimumSats}, last sum={lastSum}.");
+    }
+
+    private static async Task WaitForBrowserExactOutcomeSatsAsync(
+        IPage page,
+        string conditionId,
+        string outcomeSetId,
+        IReadOnlyList<string> consoleMessages,
+        int expectedSats,
+        bool availableOnly = false,
+        bool reservedOnly = false)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        var marketId = $"{conditionId}-{outcomeSetId}";
+        var lastSum = -1;
+        while (DateTime.UtcNow < deadline)
+        {
+            lastSum = await SumBrowserOutcomeProofsAsync(
+                page,
+                marketId,
+                availableOnly,
+                reservedOnly);
+            if (lastSum == expectedSats) return;
+            await Task.Delay(250);
+        }
+
+        throw await TestHelpers.BuildDiagnosticExceptionAsync(
+            page,
+            consoleMessages,
+            $"Browser outcome proof sum for {marketId} was {lastSum}, expected {expectedSats}.");
+    }
+
     private static Task<int> SumBrowserOutcomeProofsAsync(
         IPage page,
         string marketId,
@@ -2523,6 +2973,174 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         throw new TimeoutException(
             $"Daemon wallet did not expose {(reserved ? "reserved" : "available")} outcome proofs for {conditionId}-{outcomeSetId}. " +
             $"Expected each primitive >= {minimumSats}, lastAmounts={JsonSerializer.Serialize(lastAmounts)}, last={lastBody ?? "(none)"}");
+    }
+
+    private async Task WaitForDaemonExactOutcomeSatsAsync(
+        DaemonHandle daemon,
+        string conditionId,
+        string outcomeSetId,
+        int expectedAvailableSats)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        var lastAmount = -1;
+        string? lastBody = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            using var balance = await RunCliJsonAsync(
+                daemon,
+                ["wallet", "balance"],
+                TimeSpan.FromSeconds(5));
+            lastBody = balance.RootElement.GetRawText();
+            if (balance.RootElement.GetProperty("ok").GetBoolean())
+            {
+                lastAmount = 0;
+                foreach (var row in balance.RootElement
+                             .GetProperty("result")
+                             .GetProperty("outcomePositions")
+                             .EnumerateArray())
+                {
+                    if (row.GetProperty("conditionId").GetString() == conditionId
+                        && row.GetProperty("outcomeSetId").GetString() == outcomeSetId)
+                    {
+                        lastAmount = row.GetProperty("availableSats").GetInt32();
+                        break;
+                    }
+                }
+                if (lastAmount == expectedAvailableSats) return;
+            }
+            await Task.Delay(500);
+        }
+
+        throw new TimeoutException(
+            $"Daemon exact outcome balance for {conditionId}-{outcomeSetId} was {lastAmount}, expected {expectedAvailableSats}. Last={lastBody ?? "(none)"}");
+    }
+
+    private async Task WaitForDaemonBaseAvailableSatsAsync(
+        DaemonHandle daemon,
+        int expectedAvailableSats)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        var lastBase = -1;
+        string? lastBody = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            using var balance = await RunCliJsonAsync(
+                daemon,
+                ["wallet", "balance"],
+                TimeSpan.FromSeconds(5));
+            lastBody = balance.RootElement.GetRawText();
+            if (balance.RootElement.GetProperty("ok").GetBoolean())
+            {
+                var result = balance.RootElement.GetProperty("result");
+                var outcomeAvailable = result.GetProperty("outcomePositions")
+                    .EnumerateArray()
+                    .Sum(row => row.GetProperty("availableSats").GetInt32());
+                lastBase = result.GetProperty("totalAvailableSats").GetInt32() - outcomeAvailable;
+                if (lastBase == expectedAvailableSats) return;
+            }
+            await Task.Delay(500);
+        }
+
+        throw new TimeoutException(
+            $"Daemon base available balance was {lastBase}, expected {expectedAvailableSats}. Last={lastBody ?? "(none)"}");
+    }
+
+    private async Task ReceiveOutcomeTokenAsync(
+        DaemonHandle daemon,
+        string conditionId,
+        string outcomeSetId,
+        int amountSats)
+    {
+        var token = await MintTokenAsync("outcome", amountSats, conditionId, outcomeSetId);
+        using var receive = await RunCliJsonAsync(daemon, [
+            "wallet",
+            "receive",
+            token,
+            "--condition-id",
+            conditionId,
+            "--outcome-set",
+            outcomeSetId,
+        ]);
+        Assert.True(receive.RootElement.GetProperty("ok").GetBoolean());
+    }
+
+    private async Task ReceiveSatsAsync(DaemonHandle daemon, int amountSats)
+    {
+        var token = await MintTokenAsync("sats", amountSats);
+        using var receive = await RunCliJsonAsync(daemon, [
+            "wallet",
+            "receive",
+            token,
+        ]);
+        Assert.True(receive.RootElement.GetProperty("ok").GetBoolean());
+    }
+
+    private static void AssertConsolidationResult(
+        JsonDocument doc,
+        string expectedType,
+        int expectedCollateralReturnedSats,
+        params (string Label, int Amount)[] expectedOutputs)
+    {
+        var raw = doc.RootElement.GetRawText();
+        AssertNoProofInternals(raw);
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+        var result = doc.RootElement.GetProperty("result");
+        Assert.Equal("consolidated", result.GetProperty("status").GetString());
+        Assert.Equal(expectedType, result.GetProperty("type").GetString());
+        Assert.Equal(expectedCollateralReturnedSats, result.GetProperty("collateralReturnedSats").GetInt32());
+
+        var outputs = result.GetProperty("outputs")
+            .EnumerateArray()
+            .Select(row => new
+            {
+                Label = row.GetProperty("label").GetString() ?? "",
+                Amount = row.GetProperty("amount").GetInt32(),
+                Id = row.GetProperty("id").GetString() ?? "",
+                KeysetId = row.GetProperty("keysetId").GetString() ?? "",
+            })
+            .ToArray();
+        foreach (var output in outputs)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(output.Id));
+            Assert.False(string.IsNullOrWhiteSpace(output.KeysetId));
+        }
+        Assert.Equal(
+            expectedOutputs
+                .OrderBy(output => output.Label, StringComparer.Ordinal)
+                .ThenBy(output => output.Amount)
+                .ToArray(),
+            outputs
+                .Select(output => (output.Label, output.Amount))
+                .OrderBy(output => output.Label, StringComparer.Ordinal)
+                .ThenBy(output => output.Amount)
+                .ToArray());
+    }
+
+    private static void AssertNoProofInternals(string text)
+    {
+        Assert.DoesNotMatch(
+            new Regex("(secret|witness|mnemonic|nwc|walletSeed|nostrSecret)", RegexOptions.IgnoreCase),
+            text);
+    }
+
+    private async Task AssertConsolidateNonPendingMarketRefusedAsync()
+    {
+        var conditionId = NewConditionId();
+        await using var fakeEngine = new FakeMarketServer(conditionId, ["A", "B", "C"], status: "closed");
+        var daemon = await StartDaemonAsync();
+        await ConfigureDaemonEngineAsync(daemon, fakeEngine.Url);
+
+        var result = await RunCliProcessAsync(daemon, [
+            "consolidate",
+            $"{conditionId}-A",
+            "--type",
+            "t2",
+        ], TimeSpan.FromSeconds(10));
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("is not pending", result.Stderr, StringComparison.OrdinalIgnoreCase);
+        AssertNoProofInternals(result.Stdout);
+        AssertNoProofInternals(result.Stderr);
     }
 
     private static string[] PrimitiveOutcomeCollections(string outcomeSetId) =>
@@ -2769,6 +3387,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             if (!condition.TryGetProperty("partitions", out var partitions)
                 || partitions.ValueKind != JsonValueKind.Array)
                 continue;
+            var observedCollections = new HashSet<string>(StringComparer.Ordinal);
             foreach (var partition in partitions.EnumerateArray())
             {
                 if (!partition.TryGetProperty("partition", out var outcomes)
@@ -2779,18 +3398,39 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     .Where(value => !string.IsNullOrWhiteSpace(value))
                     .Select(value => value!)
                     .ToArray();
-                if (values.Length >= 3)
-                    yield return (conditionId, values);
+                foreach (var value in values)
+                {
+                    observedCollections.Add(value);
+                }
             }
+            var primitives = observedCollections
+                .SelectMany(PrimitiveOutcomeCollections)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            if (primitives.Length >= 3)
+                yield return (conditionId, primitives);
         }
     }
 
     private static async Task<(string ConditionId, string[] PrimitiveOutcomeSetIds)> CreateCategoricalMarketFixtureAsync(
-        HttpClient httpClient)
+        HttpClient httpClient,
+        string[]? outcomes = null,
+        bool registerEngine = true,
+        string? titlePrefix = null)
     {
-        var outcomes = new[] { "A", "B", "C" };
+        outcomes ??= ["A", "B", "C"];
+        outcomes = outcomes
+            .Where(outcome => !string.IsNullOrWhiteSpace(outcome))
+            .Select(outcome => outcome.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (outcomes.Length < 3)
+            throw new ArgumentException("Categorical fixture requires at least three outcomes.", nameof(outcomes));
+
         var unique = Guid.NewGuid().ToString("N")[..8];
-        var title = $"P23-4 staging categorical smoke {unique}";
+        var title = $"{titlePrefix ?? "P23-4 staging categorical smoke"} {unique}";
         var description = "Synthetic open categorical market created by the multi-outcome mint swap smoke.";
         var announcementHex = BuildTestEnumAnnouncementHex(
             outcomes,
@@ -2818,26 +3458,16 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         if (string.IsNullOrWhiteSpace(conditionId))
             throw new InvalidOperationException("Mint condition registration returned an empty condition_id.");
 
-        using var partitionResponse = await httpClient.PostAsJsonAsync(
-            $"{TestPorts.MintUrl}/v1/conditions/{conditionId}/partitions",
-            new
-            {
-                collateral = "sat",
-                partition = outcomes,
-                parent_collection_id = "0000000000000000000000000000000000000000000000000000000000000000",
-            });
-        partitionResponse.EnsureSuccessStatusCode();
+        await RegisterRequiredSingletonComplementPartitionsAsync(httpClient, conditionId, outcomes);
+
+        if (!registerEngine)
+            return (conditionId, outcomes);
 
         var metadata = new
         {
             title,
             description,
-            outcomes = new[]
-            {
-                new { name = outcomes[0], probability = 34 },
-                new { name = outcomes[1], probability = 33 },
-                new { name = outcomes[2], probability = 33 },
-            },
+            outcomes = EqualProbabilityOutcomes(outcomes),
             outcomeType = "categorical",
             liquiditySats = 0,
             categoryTags = new[] { "qa" },
@@ -2868,6 +3498,95 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 $"{createResponse.StatusCode} {await createResponse.Content.ReadAsStringAsync()}");
 
         return (conditionId, outcomes);
+    }
+
+    private static async Task RegisterRequiredSingletonComplementPartitionsAsync(
+        HttpClient httpClient,
+        string conditionId,
+        string[] outcomes)
+    {
+        foreach (var partition in RequiredSingletonComplementPartitions(outcomes))
+        {
+            using var partitionResponse = await httpClient.PostAsJsonAsync(
+                $"{TestPorts.MintUrl}/v1/conditions/{conditionId}/partitions",
+                new
+                {
+                    collateral = "sat",
+                    partition,
+                    parent_collection_id = "0000000000000000000000000000000000000000000000000000000000000000",
+                });
+            partitionResponse.EnsureSuccessStatusCode();
+        }
+    }
+
+    private static string[][] RequiredSingletonComplementPartitions(string[] outcomes)
+    {
+        var partitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        foreach (var outcome in outcomes.Order(StringComparer.Ordinal))
+        {
+            var partition = new[]
+            {
+                outcome,
+                ComplementOutcomeSet(outcomes, outcome),
+            };
+            var normalized = string.Join("\n", partition.Order(StringComparer.Ordinal));
+            partitions.TryAdd(normalized, partition);
+        }
+        return partitions.Values.ToArray();
+    }
+
+    private static string[] RequiredOutcomeCollections(string[] outcomes)
+    {
+        return outcomes
+            .Concat(outcomes.Select(outcome => ComplementOutcomeSet(outcomes, outcome)))
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static string ComplementOutcomeSet(string[] outcomes, string excludedOutcome) =>
+        CanonicalOutcomeSet(outcomes.Where(outcome => outcome != excludedOutcome));
+
+    private static object[] EqualProbabilityOutcomes(string[] outcomes)
+    {
+        var baseProbability = 100 / outcomes.Length;
+        var remaining = 100;
+        return outcomes
+            .Select((outcome, index) =>
+            {
+                var probability = index == outcomes.Length - 1
+                    ? remaining
+                    : baseProbability;
+                remaining -= probability;
+                return new { name = outcome, probability };
+            })
+            .Cast<object>()
+            .ToArray();
+    }
+
+    private static HashSet<string> ReadConditionKeysetLabels(JsonDocument doc, string conditionId)
+    {
+        var labels = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var condition in doc.RootElement.GetProperty("conditions").EnumerateArray())
+        {
+            if (condition.GetProperty("condition_id").GetString() != conditionId)
+                continue;
+            if (!condition.TryGetProperty("partitions", out var partitions)
+                || partitions.ValueKind != JsonValueKind.Array)
+                return labels;
+            foreach (var partition in partitions.EnumerateArray())
+            {
+                if (!partition.TryGetProperty("keysets", out var keysets)
+                    || keysets.ValueKind != JsonValueKind.Object)
+                    continue;
+                foreach (var keyset in keysets.EnumerateObject())
+                {
+                    labels.Add(keyset.Name);
+                }
+            }
+            return labels;
+        }
+        return labels;
     }
 
     private static bool EnvFlag(string name)
@@ -3055,6 +3774,20 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         DaemonHandle? daemon,
         TimeSpan? timeout = null)
     {
+        var result = await RunNodeProcessAsync(script, args, daemon, timeout);
+        if (result.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"node {Path.GetFileName(script)} exited {result.ExitCode}\n" +
+                $"stdout:\n{result.Stdout}\nstderr:\n{result.Stderr}");
+        return result;
+    }
+
+    private async Task<ProcessResult> RunNodeProcessAsync(
+        string script,
+        string[] args,
+        DaemonHandle? daemon,
+        TimeSpan? timeout = null)
+    {
         using var process = StartNode(script, args, daemon);
         using var cts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(20));
         try
@@ -3066,10 +3799,6 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 process.ExitCode,
                 await stdoutTask,
                 await stderrTask);
-            if (result.ExitCode != 0)
-                throw new InvalidOperationException(
-                    $"node {Path.GetFileName(script)} exited {result.ExitCode}\n" +
-                    $"stdout:\n{result.Stdout}\nstderr:\n{result.Stderr}");
             return result;
         }
         catch (OperationCanceledException)
@@ -3178,6 +3907,122 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             dir = dir.Parent;
         }
         throw new DirectoryNotFoundException("Could not locate bitCaster repo root");
+    }
+
+    private sealed class FakeMarketServer : IAsyncDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly Task _loop;
+        private readonly string _conditionId;
+        private readonly string[] _outcomes;
+        private readonly string _status;
+
+        public FakeMarketServer(string conditionId, string[] outcomes, string status)
+        {
+            _conditionId = conditionId;
+            _outcomes = outcomes;
+            _status = status;
+            var port = ReserveTcpPort();
+            Url = $"http://127.0.0.1:{port}";
+            _listener.Prefixes.Add($"{Url}/");
+            _listener.Start();
+            _loop = Task.Run(ServeAsync);
+        }
+
+        public string Url { get; }
+
+        public async ValueTask DisposeAsync()
+        {
+            _listener.Stop();
+            try
+            {
+                await _loop;
+            }
+            catch
+            {
+                // The listener is stopped to terminate the accept loop.
+            }
+            _listener.Close();
+        }
+
+        private async Task ServeAsync()
+        {
+            while (_listener.IsListening)
+            {
+                HttpListenerContext context;
+                try
+                {
+                    context = await _listener.GetContextAsync();
+                }
+                catch when (!_listener.IsListening)
+                {
+                    return;
+                }
+
+                await HandleAsync(context);
+            }
+        }
+
+        private async Task HandleAsync(HttpListenerContext context)
+        {
+            if (string.Equals(context.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(context.Request.Url?.AbsolutePath, "/api/v1/markets/query", StringComparison.Ordinal))
+            {
+                var now = DateTimeOffset.UtcNow;
+                var body = JsonSerializer.Serialize(
+                    new
+                    {
+                        markets = new[]
+                        {
+                            new
+                            {
+                                conditionId = _conditionId,
+                                title = "Closed categorical fixture",
+                                description = "Closed market fixture for CLI consolidation refusal.",
+                                outcomes = _outcomes,
+                                outcomeType = "categorical",
+                                state = _status,
+                                deadline = now.AddMonths(1),
+                                closedAt = string.Equals(_status, "pending", StringComparison.OrdinalIgnoreCase)
+                                    ? (DateTimeOffset?)null
+                                    : now,
+                                finalOutcome = "",
+                                creatorPubkey = "",
+                                createdAt = now.AddMinutes(-5),
+                                lastSuccessfulRefreshAt = now,
+                                lastTradedPrice = (double?)null,
+                                liquiditySats = 0,
+                                categoryTags = Array.Empty<string>(),
+                                thumbnailUrl = "",
+                                traderCount = 0,
+                                volume24hSats = 0,
+                                volume30dSats = 0,
+                                volumeLifetimeSats = 0,
+                            },
+                        },
+                        nextCursor = (string?)null,
+                    },
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                await WriteResponseAsync(context, statusCode: 200, body, "application/json");
+                return;
+            }
+
+            await WriteResponseAsync(context, statusCode: 404, "not found", "text/plain");
+        }
+
+        private static async Task WriteResponseAsync(
+            HttpListenerContext context,
+            int statusCode,
+            string body,
+            string contentType)
+        {
+            var bytes = Encoding.UTF8.GetBytes(body);
+            context.Response.StatusCode = statusCode;
+            context.Response.ContentType = contentType;
+            context.Response.ContentLength64 = bytes.Length;
+            await context.Response.OutputStream.WriteAsync(bytes);
+            context.Response.Close();
+        }
     }
 
     private sealed record Nip98Event
