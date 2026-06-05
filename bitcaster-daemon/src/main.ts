@@ -120,18 +120,18 @@ switch (command) {
         .then((result) => {
           if (result.recovered.length > 0) {
             process.stderr.write(
-              `Recovered wallet send operations: ${result.recovered.join(', ')}\n`,
+              `Recovered wallet operations: ${result.recovered.join(', ')}\n`,
             )
           }
           for (const pending of result.pending) {
             process.stderr.write(
-              `Wallet send operation ${pending.operationId} remains pending: ${pending.error}\n`,
+              `Wallet operation ${pending.operationId} remains pending: ${pending.error}\n`,
             )
           }
         })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
-          process.stderr.write(`Wallet send recovery sweep failed: ${message}\n`)
+          process.stderr.write(`Wallet recovery sweep failed: ${message}\n`)
         })
     }
     if (executor) {

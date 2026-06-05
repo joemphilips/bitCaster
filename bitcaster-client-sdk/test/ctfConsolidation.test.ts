@@ -93,6 +93,45 @@ test("T2 skips when the fee floor consumes the available collateral gain", () =>
   });
 });
 
+test("T1 accepts an outcome amount exactly equal to the fee floor", () => {
+  const result = planCtfConsolidation(
+    params("t1", {
+      A: [proof("ks-A", 1, "a-1")],
+      B: [proof("ks-B", 1, "b-1")],
+      [COLLATERAL_COLLECTION]: [proof("ks-base", 1, "base-1")],
+    }),
+  );
+
+  assert.equal(result.kind, "plan");
+  if (result.kind !== "plan") return;
+  assert.equal(result.feeSats, 1);
+  assert.equal(result.collateralOutputSats, 0);
+  assert.deepEqual(result.inputPayoff, { A: 2, B: 2, C: 1 });
+  assert.deepEqual(result.outputPayoff, { A: 1, B: 1, C: 0 });
+  assert.deepEqual(Object.keys(result.request.outputs), ["A|B"]);
+  assert.deepEqual(result.request.outputs["A|B"], [
+    output("ks-A|B", 1, "A|B"),
+  ]);
+});
+
+test("T3 skips when F equals every input amount and outputs would net to zero", () => {
+  const result = planCtfConsolidation(
+    params("t3", {
+      A: [proof("ks-A", 1, "a-1")],
+      B: [proof("ks-B", 1, "b-1")],
+      C: [proof("ks-C", 1, "c-1")],
+    }),
+  );
+
+  assert.deepEqual(result, {
+    kind: "noop",
+    strategy: "t3",
+    reason: "net-collateral-nonpositive",
+    feeSats: 1,
+    inputPayoff: { A: 1, B: 1, C: 1 },
+  });
+});
+
 test("payoff conservation uses the computed fee floor and covers F greater than 1", () => {
   const proofsByCollection = {
     A: manyProofs("ks-A", 334, "a"),
