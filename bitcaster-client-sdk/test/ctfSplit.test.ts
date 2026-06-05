@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   resolveComplementaryOutcomeLegs,
   resolveMintOutcomeSetKey,
+  selectRootPartitionKeysets,
   splitRegularProofsWithOperation,
   splitCompleteSetWithOperation,
   type CtfPrepareProofOperationInput,
@@ -72,6 +73,23 @@ test("resolveComplementaryOutcomeLegs decomposes compound outcome sets into prim
   );
 });
 
+test("resolveComplementaryOutcomeLegs accepts a composite root collection as one branch", () => {
+  const keysets = {
+    Alice: "keyset-alice",
+    "Bob|Carol|Dave": "keyset-not-alice",
+  };
+
+  assert.deepEqual(
+    resolveComplementaryOutcomeLegs("Alice", "Carol|Bob|Dave", keysets),
+    {
+      resolvedLockOutcomeSetId: "Alice",
+      resolvedKeepOutcomeSetId: "Bob|Carol|Dave",
+      lockCollections: ["Alice"],
+      keepCollections: ["Bob|Carol|Dave"],
+    },
+  );
+});
+
 test("resolveComplementaryOutcomeLegs requires a strict complete primitive partition", () => {
   assert.throws(
     () =>
@@ -83,6 +101,70 @@ test("resolveComplementaryOutcomeLegs requires a strict complete primitive parti
       }),
     /not a complete partition; missing Dave/,
   );
+});
+
+test("selectRootPartitionKeysets chooses the root partition matching the requested split target", () => {
+  const condition = {
+    condition_id: CONDITION_ID,
+    partitions: [
+      {
+        collateral: "sat",
+        parent_collection_id: ROOT_COLLECTION_ID,
+        keysets: {
+          Alice: "keyset-alice",
+          "Bob|Carol|Dave": "keyset-not-alice",
+        },
+      },
+      {
+        collateral: "sat",
+        parent_collection_id: ROOT_COLLECTION_ID,
+        keysets: {
+          Bob: "keyset-bob",
+          "Alice|Carol|Dave": "keyset-not-bob",
+        },
+      },
+      {
+        collateral: "sat",
+        parent_collection_id: ROOT_COLLECTION_ID,
+        keysets: {
+          Carol: "keyset-carol",
+          "Alice|Bob|Dave": "keyset-not-carol",
+        },
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    selectRootPartitionKeysets(condition, {
+      lockOutcomeSetId: "Alice",
+      keepOutcomeSetId: "Carol|Bob|Dave",
+    }),
+    {
+      Alice: "keyset-alice",
+      "Bob|Carol|Dave": "keyset-not-alice",
+    },
+  );
+});
+
+test("selectRootPartitionKeysets keeps binary single-root compatibility without a target", () => {
+  const condition = {
+    condition_id: CONDITION_ID,
+    partitions: [
+      {
+        collateral: "sat",
+        parent_collection_id: ROOT_COLLECTION_ID,
+        keysets: {
+          YES: "keyset-yes",
+          NO: "keyset-no",
+        },
+      },
+    ],
+  };
+
+  assert.deepEqual(selectRootPartitionKeysets(condition), {
+    YES: "keyset-yes",
+    NO: "keyset-no",
+  });
 });
 
 test("splitCompleteSetWithOperation prepares outputs before posting and completes results", async () => {
@@ -312,6 +394,7 @@ test("splitRegularProofsWithOperation replays completed regular splits without m
 });
 
 const CONDITION_ID = "a".repeat(64);
+const ROOT_COLLECTION_ID = "0".repeat(64);
 
 class FakeSplitTransport implements CtfSplitTransport {
   readonly posted: Array<Parameters<CtfSplitTransport["postSplit"]>[0]> = [];

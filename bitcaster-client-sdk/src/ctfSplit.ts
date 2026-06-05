@@ -119,9 +119,17 @@ export interface ComplementaryOutcomeLegResolution {
   keepCollections: string[];
 }
 
+export interface CtfRootPartitionSelection {
+  lockOutcomeSetId: string;
+  keepOutcomeSetId: string;
+}
+
 export interface CtfSplitTransport {
   getKeys(keysetId: string): Promise<MintKeys>;
-  getRootPartitionKeysets(conditionId: string): Promise<Record<string, string>>;
+  getRootPartitionKeysets(
+    conditionId: string,
+    selection?: CtfRootPartitionSelection,
+  ): Promise<Record<string, string>>;
   postSplit(request: {
     condition_id: CtfConvertRequest["condition_id"];
     inputs: Proof[];
@@ -288,6 +296,10 @@ export async function splitRootCompleteSetForSwap(params: {
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
+    {
+      lockOutcomeSetId: params.lockOutcomeSetId,
+      keepOutcomeSetId: params.keepOutcomeSetId,
+    },
   );
   const outcomeLegs = resolveComplementaryOutcomeLegs(
     params.lockOutcomeSetId,
@@ -359,6 +371,10 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
+    {
+      lockOutcomeSetId: params.lockOutcomeSetId,
+      keepOutcomeSetId: params.keepOutcomeSetId,
+    },
   );
   const outcomeLegs = resolveComplementaryOutcomeLegs(
     params.lockOutcomeSetId,
@@ -537,9 +553,11 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
 
   async getRootPartitionKeysets(
     conditionId: string,
+    selection?: CtfRootPartitionSelection,
   ): Promise<Record<string, string>> {
-    return selectSingleRootPartitionKeysets(
+    return selectRootPartitionKeysets(
       await this.mint.getCtfCondition(conditionId),
+      selection,
     );
   }
 
@@ -847,35 +865,20 @@ export function resolveComplementaryOutcomeLegs(
   outcomeCollectionKeysets: Record<string, string>,
 ): ComplementaryOutcomeLegResolution {
   const rootCollections = Object.keys(outcomeCollectionKeysets);
-  const primitiveCollections = new Map<string, string>();
-  for (const collection of rootCollections) {
-    const parts = parseOutcomeSetId(collection);
-    if (parts.length !== 1) {
-      throw new Error(
-        `CTF split root outcome collection ${collection} is not primitive`,
-      );
-    }
-    const comparable = comparableOutcome(parts[0]);
-    if (primitiveCollections.has(comparable)) {
-      throw new Error(
-        `CTF split root outcome collection ${collection} duplicates primitive outcome ${parts[0]}`,
-      );
-    }
-    primitiveCollections.set(comparable, collection);
-  }
+  const rootCollectionSets = buildRootCollectionSets(rootCollections);
 
   const lockSet = parseOutcomeSetToComparableSet(lockOutcomeSetId);
   const keepSet = parseOutcomeSetToComparableSet(keepOutcomeSetId);
-  const lockCollections = resolvePrimitiveOutcomeCollections(
+  const lockCollections = resolveRootOutcomeCollections(
     lockOutcomeSetId,
     lockSet,
-    primitiveCollections,
+    rootCollectionSets,
     "lock",
   );
-  const keepCollections = resolvePrimitiveOutcomeCollections(
+  const keepCollections = resolveRootOutcomeCollections(
     keepOutcomeSetId,
     keepSet,
-    primitiveCollections,
+    rootCollectionSets,
     "keep",
   );
 
@@ -932,8 +935,9 @@ export function requireOutcomeProofsForCollections(
   );
 }
 
-function selectSingleRootPartitionKeysets(
+export function selectRootPartitionKeysets(
   condition: CtfConditionInfo,
+  selection?: CtfRootPartitionSelection,
 ): Record<string, string> {
   const rootPartitions = condition.partitions.filter(
     (partition) =>
@@ -941,12 +945,34 @@ function selectSingleRootPartitionKeysets(
       partition.parent_collection_id === ZERO_COLLECTION_ID &&
       Object.keys(partition.keysets).length >= 2,
   );
-  if (rootPartitions.length !== 1) {
+  if (!selection) {
+    if (rootPartitions.length !== 1) {
+      throw new Error(
+        `Expected exactly one root sat CTF partition for condition ${condition.condition_id}, found ${rootPartitions.length}`,
+      );
+    }
+    return rootPartitions[0].keysets;
+  }
+
+  const matches = rootPartitions.filter((partition) => {
+    try {
+      resolveComplementaryOutcomeLegs(
+        selection.lockOutcomeSetId,
+        selection.keepOutcomeSetId,
+        partition.keysets,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+  if (matches.length !== 1) {
     throw new Error(
-      `Expected exactly one root sat CTF partition for condition ${condition.condition_id}, found ${rootPartitions.length}`,
+      `Expected exactly one root sat CTF partition for condition ${condition.condition_id} matching lock ${selection.lockOutcomeSetId} and keep ${selection.keepOutcomeSetId}, found ${matches.length} of ${rootPartitions.length}`,
     );
   }
-  return rootPartitions[0].keysets;
+  return matches[0].keysets;
 }
 
 function validateSplitInput(
@@ -1202,23 +1228,54 @@ function parseOutcomeSetId(outcomeSetId: string): string[] {
     .filter(Boolean);
 }
 
-function resolvePrimitiveOutcomeCollections(
+function buildRootCollectionSets(
+  rootCollections: string[],
+): Array<{ collection: string; outcomes: Set<string> }> {
+  const seenPrimitive = new Map<string, string>();
+  return rootCollections.map((collection) => {
+    const outcomes = parseOutcomeSetToComparableSet(collection);
+    for (const primitive of outcomes) {
+      const existing = seenPrimitive.get(primitive);
+      if (existing) {
+        throw new Error(
+          `CTF split root outcome collection ${collection} overlaps primitive outcome ${primitive} with ${existing}`,
+        );
+      }
+      seenPrimitive.set(primitive, collection);
+    }
+    return { collection, outcomes };
+  });
+}
+
+function resolveRootOutcomeCollections(
   outcomeSetId: string,
   outcomeSet: Set<string>,
-  primitiveCollections: Map<string, string>,
+  rootCollectionSets: Array<{ collection: string; outcomes: Set<string> }>,
   branch: "lock" | "keep",
 ): string[] {
   const collections: string[] = [];
-  for (const primitive of outcomeSet) {
-    const collection = primitiveCollections.get(primitive);
-    if (!collection) {
-      throw new Error(
-        `CTF split ${branch} outcome ${outcomeSetId} contains primitive ${primitive} with no mint root keyset`,
-      );
-    }
+  const covered = new Set<string>();
+  for (const { collection, outcomes } of rootCollectionSets) {
+    if (!setIsSubset(outcomes, outcomeSet)) continue;
     collections.push(collection);
+    for (const primitive of outcomes) covered.add(primitive);
+  }
+  if (!outcomeSetsEqual(covered, outcomeSet)) {
+    const missing = [...outcomeSet]
+      .filter((primitive) => !covered.has(primitive))
+      .join("|");
+    throw new Error(
+      `CTF split ${branch} outcome ${outcomeSetId} contains primitive ${missing} with no mint root keyset`,
+    );
   }
   return collections;
+}
+
+function setIsSubset(candidate: Set<string>, container: Set<string>): boolean {
+  for (const value of candidate) {
+    if (!container.has(value)) return false;
+  }
+  return true;
 }
 
 function canonicalizeOutcomeSetCollections(collections: string[]): string {
