@@ -108,7 +108,6 @@ import {
   amountToNumber,
   takeProofsForLock,
 } from "@bitcaster/client-sdk/proofSelection";
-import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
 import {
   resolveConditionalProofMetadata,
   storedConditionalProofsFromMintMetadata,
@@ -727,12 +726,6 @@ interface ReservedExactProofs {
   wasSplit: boolean;
 }
 
-interface ReservedOutcomeSetExactProofs {
-  exactProofs: Proof[];
-  spentProofs: StoredProof[];
-  changeProofs: Proof[];
-}
-
 async function prepareDirectSellerOpening(
   swap: ActiveSwap,
   ctx: SwapCtx,
@@ -748,27 +741,10 @@ async function prepareDirectSellerOpening(
     proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
   const outcome = outcomeMetadataForMarket(swap.marketId);
   if (!outcome) throw new Error(`Invalid market id ${swap.marketId}`);
-  const collectionByKeyset = await keysetToOutcomeCollectionFromMint(
-    mintUrl,
-    outcome.conditionId,
-    proofs,
-  );
-  let locked: Awaited<ReturnType<typeof sellerLockOutcomeProofs>>;
-  try {
-    locked = await sellerLockOutcomeProofs(ctx, proofs, amountSats, {
-      operationId: proofOperationId(swap.tradeId, "seller-complementary-lock"),
-      proofOperationStore,
-    });
-  } catch (err) {
-    await persistPartialLockFromError({
-      err,
-      swap,
-      mintUrl,
-      conditionId: outcome.conditionId,
-      collectionByKeyset,
-    });
-    throw err;
-  }
+  const locked = await sellerLockOutcomeProofs(ctx, proofs, amountSats, {
+    operationId: proofOperationId(swap.tradeId, "seller-complementary-lock"),
+    proofOperationStore,
+  });
   await persistConditionalLockChange({
     spentProofs: proofs,
     changeProofs: locked.changeProofs,
@@ -800,7 +776,7 @@ async function prepareMintSellerOpening(
     pendingTrade.preflightSplit.conditionId === split.conditionId
   ) {
     const preflight = pendingTrade.preflightSplit;
-    const selectedLock = await prepareReservedPreflightExactOutcomeSetProofs({
+    const selectedLock = await prepareReservedPreflightExactProofs({
       mintUrl,
       reservationId: preflight.reservationId,
       conditionId: split.conditionId,
@@ -818,32 +794,15 @@ async function prepareMintSellerOpening(
       reservedBy: preflight.reservationId,
     });
 
-    const collectionByKeyset = await keysetToOutcomeCollectionFromMint(
-      mintUrl,
-      split.conditionId,
+    const locked = await sellerLockOutcomeProofs(
+      ctx,
       selectedLock.exactProofs,
+      amountSats,
+      {
+        operationId: proofOperationId(swap.tradeId, "seller-preflight-lock"),
+        proofOperationStore,
+      },
     );
-    let locked: Awaited<ReturnType<typeof sellerLockOutcomeProofs>>;
-    try {
-      locked = await sellerLockOutcomeProofs(
-        ctx,
-        selectedLock.exactProofs,
-        amountSats,
-        {
-          operationId: proofOperationId(swap.tradeId, "seller-preflight-lock"),
-          proofOperationStore,
-        },
-      );
-    } catch (err) {
-      await persistPartialLockFromError({
-        err,
-        swap,
-        mintUrl,
-        conditionId: split.conditionId,
-        collectionByKeyset,
-      });
-      throw err;
-    }
     const out = await sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
     await persistConditionalLockChange({
       spentProofs: selectedLock.exactProofs,
@@ -852,7 +811,7 @@ async function prepareMintSellerOpening(
       conditionId: split.conditionId,
       reservedBy: preflight.reservationId,
     });
-    await releaseMatchedPreflightOutcomeSetProofs({
+    await releaseMatchedPreflightProofs({
       mintUrl,
       reservationId: preflight.reservationId,
       conditionId: split.conditionId,
@@ -866,34 +825,22 @@ async function prepareMintSellerOpening(
     return out;
   }
 
-  const selectedOutcome = await selectOutcomeProofsForOutcomeSet(
+  const selectedOutcome = await selectOutcomeProofs(
     mintUrl,
     split.conditionId,
     split.lockOutcomeSetId,
     amountSats,
   );
   if (selectedOutcome) {
-    const collectionByKeyset = await keysetToOutcomeCollectionFromMint(
-      mintUrl,
-      split.conditionId,
+    const locked = await sellerLockOutcomeProofs(
+      ctx,
       selectedOutcome,
-    );
-    let locked: Awaited<ReturnType<typeof sellerLockOutcomeProofs>>;
-    try {
-      locked = await sellerLockOutcomeProofs(ctx, selectedOutcome, amountSats, {
+      amountSats,
+      {
         operationId: proofOperationId(swap.tradeId, "seller-inventory-lock"),
         proofOperationStore,
-      });
-    } catch (err) {
-      await persistPartialLockFromError({
-        err,
-        swap,
-        mintUrl,
-        conditionId: split.conditionId,
-        collectionByKeyset,
-      });
-      throw err;
-    }
+      },
+    );
     await persistConditionalLockChange({
       spentProofs: selectedOutcome,
       changeProofs: locked.changeProofs,
@@ -946,24 +893,14 @@ async function prepareMintSellerOpening(
   return sellerPreparePrelockedSwap(ctx, splitResult.lockedProofs);
 }
 
-async function selectOutcomeProofsForOutcomeSet(
+async function selectOutcomeProofs(
   mintUrl: string,
   conditionId: string,
   outcomeSetId: string,
   amountSats: number,
 ): Promise<StoredProof[] | null> {
-  const selected: StoredProof[] = [];
-  for (const outcomeCollection of parseOutcomeSetId(outcomeSetId)) {
-    const available = await getOutcomeProofs(
-      mintUrl,
-      conditionId,
-      outcomeCollection,
-    );
-    const leg = takeProofsForLock(available, amountSats);
-    if (!leg) return null;
-    selected.push(...leg);
-  }
-  return selected;
+  const available = await getOutcomeProofs(mintUrl, conditionId, outcomeSetId);
+  return takeProofsForLock(available, amountSats);
 }
 
 async function selectReservedPreflightProofs(
@@ -1033,32 +970,6 @@ async function prepareReservedPreflightExactProofs(input: {
   };
 }
 
-async function prepareReservedPreflightExactOutcomeSetProofs(input: {
-  mintUrl: string;
-  reservationId: string;
-  conditionId: string;
-  outcomeSetId: string;
-  amountSats: number;
-  operationId: string;
-}): Promise<ReservedOutcomeSetExactProofs> {
-  const exactProofs: Proof[] = [];
-  const spentProofs: StoredProof[] = [];
-  const changeProofs: Proof[] = [];
-
-  for (const outcomeCollection of parseOutcomeSetId(input.outcomeSetId)) {
-    const selected = await prepareReservedPreflightExactProofs({
-      ...input,
-      outcomeSetId: outcomeCollection,
-      operationId: `${input.operationId}/${encodeURIComponent(outcomeCollection)}`,
-    });
-    exactProofs.push(...selected.exactProofs);
-    spentProofs.push(...selected.spentProofs);
-    changeProofs.push(...selected.changeProofs);
-  }
-
-  return { exactProofs, spentProofs, changeProofs };
-}
-
 async function persistReservedPreflightExactProofs(input: {
   exactProofs: Proof[];
   spentProofs: StoredProof[];
@@ -1117,23 +1028,6 @@ async function releaseMatchedPreflightProofs(input: {
       })),
     ],
   );
-}
-
-async function releaseMatchedPreflightOutcomeSetProofs(input: {
-  mintUrl: string;
-  reservationId: string;
-  conditionId: string;
-  outcomeSetId: string;
-  amountSats: number;
-  operationId: string;
-}): Promise<void> {
-  for (const outcomeCollection of parseOutcomeSetId(input.outcomeSetId)) {
-    await releaseMatchedPreflightProofs({
-      ...input,
-      outcomeSetId: outcomeCollection,
-      operationId: `${input.operationId}/${encodeURIComponent(outcomeCollection)}`,
-    });
-  }
 }
 
 function mintSellerSplit(
@@ -1366,11 +1260,10 @@ async function loadProofsForLock(
     ? outcomeMetadataForMarket(sellerMarketId)
     : null;
   const proofs = outcome
-    ? await getOutcomeSetProofs(
+    ? await getOutcomeProofs(
         mintUrl,
         outcome.conditionId,
         outcome.outcomeCollection,
-        targetSats,
       )
     : await getBaseProofs(mintUrl);
   if (proofs.length === 0) {
@@ -1392,49 +1285,6 @@ async function loadProofsForLock(
     throw new Error(
       `Insufficient proofs for atomic swap — need ${targetSats} sats`,
     );
-  }
-  return selected;
-}
-
-async function getOutcomeSetProofs(
-  mintUrl: string,
-  conditionId: string,
-  outcomeSetId: string,
-  targetSats?: number,
-): Promise<StoredProof[]> {
-  const selected: StoredProof[] = [];
-  const outcomeCollections = parseOutcomeSetId(outcomeSetId);
-  if (
-    outcomeCollections.length > 1 &&
-    (targetSats === undefined ||
-      !Number.isFinite(targetSats) ||
-      targetSats <= 0)
-  ) {
-    throw new Error(
-      `Composite outcome set ${outcomeSetId} requires an explicit swap amount`,
-    );
-  }
-  for (const outcomeCollection of outcomeCollections) {
-    const available = await getOutcomeProofs(
-      mintUrl,
-      conditionId,
-      outcomeCollection,
-    );
-    if (
-      targetSats === undefined ||
-      !Number.isFinite(targetSats) ||
-      targetSats <= 0
-    ) {
-      selected.push(...available);
-      continue;
-    }
-    const leg = takeProofsForLock(available, targetSats);
-    if (!leg) {
-      throw new Error(
-        `Insufficient ${outcomeCollection} proofs for atomic swap — need ${targetSats} sats`,
-      );
-    }
-    selected.push(...leg);
   }
   return selected;
 }
@@ -1628,30 +1478,6 @@ function isProofLike(value: unknown): value is Proof {
     typeof (value as { secret?: unknown }).secret === "string" &&
     typeof (value as { C?: unknown }).C === "string"
   );
-}
-
-async function keysetToOutcomeCollectionFromMint(
-  mintUrl: string,
-  conditionId: string,
-  proofs: Proof[],
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  for (const proof of proofs) {
-    if (!proof.id) throw new Error("Outcome proof is missing keyset id");
-    const metadata = await resolveOutcomeMetadataForProof(
-      mintUrl,
-      conditionId,
-      proof,
-    );
-    const existing = out.get(proof.id);
-    if (existing && existing !== metadata.outcomeCollection) {
-      throw new Error(
-        `Keyset ${proof.id} maps to both ${existing} and ${metadata.outcomeCollection}`,
-      );
-    }
-    out.set(proof.id, metadata.outcomeCollection);
-  }
-  return out;
 }
 
 async function resolveOutcomeMetadataForProof(
