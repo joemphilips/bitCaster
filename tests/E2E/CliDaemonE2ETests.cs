@@ -2182,17 +2182,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await limitOrder.ClickAsync();
 
-        var outcomeButton = page.GetByRole(
-                AriaRole.Button,
-                new() { NameRegex = new Regex($"^{Regex.Escape(outcomeSetId)}\\s", RegexOptions.IgnoreCase) })
-            .Filter(new() { Visible = true })
-            .First;
+        var outcomeButton = TradeOutcomeButton(page, outcomeSetId);
         await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await outcomeButton.ClickAsync();
 
-        var amountInput = page.GetByTestId("trade-amount-input")
-            .Filter(new() { Visible = true })
-            .First;
+        var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync(amountSats.ToString());
 
@@ -2211,9 +2205,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             await Assertions.Expect(preflightSplit).Not.ToBeCheckedAsync(new() { Timeout = 5_000 });
         }
 
-        var confirm = page.GetByTestId("trade-confirm")
-            .Filter(new() { Visible = true })
-            .First;
+        var confirm = TradeConfirmButton(page);
         await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
         var orderResponseTask = page.WaitForResponseAsync(response =>
             response.Request.Method == "POST"
@@ -2226,7 +2218,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         }
         catch
         {
-            var status = await page.GetByTestId("trade-submit-status")
+            var status = await VisibleTradingPanel(page).GetByTestId("trade-submit-status")
                 .First
                 .TextContentAsync(new() { Timeout = 1_000 })
                 .ContinueWith(t => t.IsCompletedSuccessfully ? t.Result : null);
@@ -2288,9 +2280,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         await ClickBuyNoAsync(page, displayedOutcomeSetId);
 
-        var amountInput = page.GetByTestId("trade-amount-input")
-            .Filter(new() { Visible = true })
-            .First;
+        var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync(amountSats.ToString());
 
@@ -2302,9 +2292,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             await priceInput.FillAsync(limitPrice.ToString());
         }
 
-        var confirm = page.GetByTestId("trade-confirm")
-            .Filter(new() { Visible = true })
-            .First;
+        var confirm = TradeConfirmButton(page);
         await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
         var orderResponseTask = page.WaitForResponseAsync(response =>
             response.Request.Method == "POST"
@@ -2318,7 +2306,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         }
         catch
         {
-            var status = await page.GetByTestId("trade-submit-status")
+            var status = await VisibleTradingPanel(page).GetByTestId("trade-submit-status")
                 .First
                 .TextContentAsync(new() { Timeout = 1_000 })
                 .ContinueWith(t => t.IsCompletedSuccessfully ? t.Result : null);
@@ -2467,9 +2455,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await outcomeButton.ClickAsync();
 
-        var amountInput = page.GetByTestId("trade-amount-input")
-            .Filter(new() { Visible = true })
-            .First;
+        var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync(amountSats.ToString());
 
@@ -2479,9 +2465,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await Assertions.Expect(priceInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await priceInput.FillAsync(limitPrice.ToString());
 
-        var confirm = page.GetByTestId("trade-confirm")
-            .Filter(new() { Visible = true })
-            .First;
+        var confirm = TradeConfirmButton(page);
         await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
         var orderResponseTask = page.WaitForResponseAsync(response =>
             response.Request.Method == "POST"
@@ -2495,7 +2479,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         }
         catch
         {
-            var status = await page.GetByTestId("trade-submit-status")
+            var status = await VisibleTradingPanel(page).GetByTestId("trade-submit-status")
                 .First
                 .TextContentAsync(new() { Timeout = 1_000 })
                 .ContinueWith(t => t.IsCompletedSuccessfully ? t.Result : null);
@@ -2556,9 +2540,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await outcomeButton.ClickAsync();
 
-        var amountInput = page.GetByTestId("trade-amount-input")
-            .Filter(new() { Visible = true })
-            .First;
+        var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync(amountSats.ToString());
 
@@ -2578,9 +2560,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             await Assertions.Expect(preflightSplit).Not.ToBeCheckedAsync(new() { Timeout = 5_000 });
         }
 
-        var confirm = page.GetByTestId("trade-confirm")
-            .Filter(new() { Visible = true })
-            .First;
+        var confirm = TradeConfirmButton(page);
         await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
         var orderResponseTask = page.WaitForResponseAsync(response =>
             response.Request.Method == "POST"
@@ -2594,7 +2574,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         }
         catch
         {
-            var status = await page.GetByTestId("trade-submit-status")
+            var status = await VisibleTradingPanel(page).GetByTestId("trade-submit-status")
                 .First
                 .TextContentAsync(new() { Timeout = 1_000 })
                 .ContinueWith(t => t.IsCompletedSuccessfully ? t.Result : null);
@@ -2702,29 +2682,46 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     {
         var outcomeButton = TradeOutcomeButton(page, outcomeRow, complement: true);
         await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
-        await outcomeButton.ClickAsync();
+        var outcomeHandle = await outcomeButton.ElementHandleAsync(new() { Timeout = 10_000 })
+            ?? throw new InvalidOperationException($"Could not resolve Buy NO button for {outcomeRow}.");
+        await outcomeHandle.EvaluateAsync("button => button.click()");
     }
+
+    private static ILocator VisibleTradingPanel(IPage page) =>
+        page.Locator("[data-trading-panel]")
+            .Filter(new() { Visible = true })
+            .First;
+
+    private static ILocator TradeAmountInput(IPage page) =>
+        VisibleTradingPanel(page).GetByTestId("trade-amount-input")
+            .Filter(new() { Visible = true })
+            .First;
+
+    private static ILocator TradeConfirmButton(IPage page) =>
+        VisibleTradingPanel(page).GetByTestId("trade-confirm")
+            .Filter(new() { Visible = true })
+            .First;
 
     private static ILocator TradeOutcomeButton(IPage page, string outcomeSetId, bool complement = false)
     {
         if (string.Equals(outcomeSetId, "yes", StringComparison.OrdinalIgnoreCase))
         {
-            return page.GetByTestId("trade-outcome-yes")
+            return VisibleTradingPanel(page).GetByTestId("trade-outcome-yes")
                 .Filter(new() { Visible = true })
                 .First;
         }
 
         if (string.Equals(outcomeSetId, "no", StringComparison.OrdinalIgnoreCase))
         {
-            return page.GetByTestId("trade-outcome-no")
+            return VisibleTradingPanel(page).GetByTestId("trade-outcome-no")
                 .Filter(new() { Visible = true })
                 .First;
         }
 
         var outcomeLabel = XPathLiteral(outcomeSetId);
         var buttonLabel = XPathLiteral(complement ? "Buy NO" : "Buy YES");
-        return page.Locator(
-                $"xpath=//*[normalize-space(.)={outcomeLabel}]/ancestor::*[.//button[normalize-space(.)={buttonLabel}]][1]//button[normalize-space(.)={buttonLabel}]")
+        return VisibleTradingPanel(page).Locator(
+                $"xpath=.//span[normalize-space(.)={outcomeLabel}]/ancestor::div[.//button[normalize-space(.)='Buy YES'] and .//button[normalize-space(.)='Buy NO']][1]//button[normalize-space(.)={buttonLabel}]")
             .Filter(new() { Visible = true })
             .First;
     }
