@@ -23,6 +23,7 @@ import {
   computeGrossCtfInputAmountSats,
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
+  type CtfGrossInputPlanningKeyset,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
 } from '@bitcaster-market/client-sdk/ctfSplit'
@@ -31,7 +32,10 @@ import {
   type CtfConsolidationPlan,
   type CtfConsolidationStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
-import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import {
+  amountToNumber,
+  computeInputFeeSatsForProofs,
+} from '@bitcaster-market/client-sdk/proofSelection'
 import {
   addAvailableProofs,
   completeReservedSatSend,
@@ -73,7 +77,6 @@ export interface CashuWalletLike {
     exactMatch?: boolean,
   ): { keep: Proof[]; send: Proof[] }
   getFeesForProofs?(proofs: Proof[]): unknown
-  getFeesForKeyset?(nInputs: number, keysetId: string): unknown
   getKeyset?(keysetId?: string): {
     id: string
     keys: Record<string, string> | Record<number, string>
@@ -250,9 +253,14 @@ export async function splitAvailableSatProofsForCtfCollateral(
   await wallet.loadMint()
   const existing = await getProofOperation(operationId)
   if (existing) {
+    const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(
+      mintUrl,
+      wallet,
+      deps,
+    )
     const grossCtfInputSats = computeGrossCtfInputAmountSats({
       faceAmountSats: amountSats,
-      wallet,
+      keyset: grossPlanningKeyset,
     })
     const split = await splitRegularProofsWithOperation({
       mintUrl,
@@ -262,7 +270,12 @@ export async function splitAvailableSatProofsForCtfCollateral(
       amountSats: grossCtfInputSats,
       proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
     })
-    const exact = await selectCollateralForCtfSplit(mintUrl, split.send, amountSats)
+    const exact = await validateExactCtfCollateralFromProofs(
+      mintUrl,
+      split.send,
+      amountSats,
+      deps,
+    )
     return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
   }
 
@@ -276,6 +289,18 @@ export async function splitAvailableSatProofsForCtfCollateral(
     .map((record) => record.proof as Proof)
 
   try {
+    const exact = await validateExactCtfCollateralFromProofs(
+      mintUrl,
+      available,
+      amountSats,
+      deps,
+    )
+    return { inputs: exact.inputs, spent: [], keep: [] }
+  } catch {
+    // Fall through to wallet-backed selection, then to a regular split if needed.
+  }
+
+  try {
     const exact = await selectCollateralForCtfSplit(mintUrl, available, amountSats)
     return { inputs: exact.inputs, spent: [], keep: [] }
   } catch {
@@ -285,9 +310,14 @@ export async function splitAvailableSatProofsForCtfCollateral(
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
     throw new Error('cashu wallet does not support fee-aware proof selection')
   }
+  const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(
+    mintUrl,
+    wallet,
+    deps,
+  )
   const grossCtfInputSats = computeGrossCtfInputAmountSats({
     faceAmountSats: amountSats,
-    wallet,
+    keyset: grossPlanningKeyset,
   })
   const selected = wallet.selectProofsToSend(available, grossCtfInputSats, true, false)
   if (selected.send.length === 0) {
@@ -301,8 +331,68 @@ export async function splitAvailableSatProofsForCtfCollateral(
     amountSats: grossCtfInputSats,
     proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
   })
-  const exact = await selectCollateralForCtfSplit(mintUrl, split.send, amountSats)
+  const exact = await validateExactCtfCollateralFromProofs(
+    mintUrl,
+    split.send,
+    amountSats,
+    deps,
+  )
   return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
+}
+
+async function resolveGrossCtfInputPlanningKeyset(
+  mintUrl: string,
+  wallet: CashuWalletLike,
+  deps: WalletOpsDependencies,
+): Promise<CtfGrossInputPlanningKeyset> {
+  const keysetId = wallet.keysetId ?? wallet.getKeyset?.()?.id
+  if (!keysetId) {
+    throw new Error('cashu wallet did not expose an active keyset id')
+  }
+  const keysets = await resolveMintKeysByKeyset(mintUrl, [keysetId], deps)
+  const keyset = keysets[keysetId]
+  if (!keyset) {
+    throw new Error(`mint did not return keys for keyset ${keysetId}`)
+  }
+  return {
+    id: keyset.id,
+    keys: keyset.keys,
+    input_fee_ppk: keyset.input_fee_ppk ?? 0,
+  }
+}
+
+async function validateExactCtfCollateralFromProofs(
+  mintUrl: string,
+  proofs: Proof[],
+  faceAmountSats: number,
+  deps: WalletOpsDependencies,
+): Promise<{
+  inputs: Proof[]
+  keep: Proof[]
+  inputFeeSats: number
+  grossInputSats: number
+}> {
+  const inputs = proofs.map(normalizeProof)
+  const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
+    mintUrl,
+    inputs.map((proof) => proof.id),
+    deps,
+  )
+  const inputFeeSats = computeInputFeeSatsForProofs(
+    inputs,
+    inputFeePpkByKeyset,
+  )
+  const grossInputSats = inputs.reduce(
+    (acc, proof) => acc + amountToNumber(proof.amount),
+    0,
+  )
+  const netInputSats = grossInputSats - inputFeeSats
+  if (netInputSats !== faceAmountSats) {
+    throw new Error(
+      `CTF split inputs net ${netInputSats} sats after ${inputFeeSats} sats input fee, expected ${faceAmountSats}`,
+    )
+  }
+  return { inputs, keep: [], inputFeeSats, grossInputSats }
 }
 
 export async function executeCtfConsolidationPlan(

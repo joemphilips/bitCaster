@@ -5,6 +5,7 @@ import {
   Wallet as CashuWallet,
   getEncodedToken,
   type MintQuoteResponse,
+  type MintKeys,
   type PartialMintQuoteResponse,
   type Proof,
 } from '@cashu/cashu-ts'
@@ -75,15 +76,36 @@ async function mintRegularProofsForCtfSplit(
   mintUrl: string,
   faceAmountSats: number,
 ): Promise<Proof[]> {
-  const wallet = new CashuWallet(new CashuMint(mintUrl), { unit: 'sat' })
+  const mint = new CashuMint(mintUrl)
+  const keyset = await getActiveSatCollateralKeyset(mint)
+  const wallet = new CashuWallet(mint, { unit: 'sat' })
   await wallet.loadMint()
   const grossAmountSats = computeGrossCtfInputAmountSats({
     faceAmountSats,
-    wallet,
+    keyset: {
+      id: keyset.id,
+      keys: keyset.keys,
+      input_fee_ppk: keyset.input_fee_ppk ?? 0,
+    },
   })
   const quote = await wallet.createMintQuote(grossAmountSats)
   await waitForPaidQuote(wallet, quote)
   return wallet.mintProofs(grossAmountSats, quote.quote)
+}
+
+async function getActiveSatCollateralKeyset(mint: CashuMint): Promise<MintKeys> {
+  const active = (await mint.getKeySets()).keysets.find(
+    (keyset) => keyset.active && keyset.unit === 'sat',
+  )
+  if (!active) {
+    throw new Error('mint did not return an active sat collateral keyset')
+  }
+  const response = await mint.getKeys(active.id)
+  const keyset = response.keysets.find((candidate) => candidate.id === active.id)
+  if (!keyset) {
+    throw new Error(`mint did not return keys for keyset ${active.id}`)
+  }
+  return keyset
 }
 
 async function getCtfCondition(

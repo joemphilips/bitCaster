@@ -16,7 +16,10 @@ import { readProfile } from './profile.ts'
 import type { DaemonSecrets } from './secrets.ts'
 import { readSecrets } from './secrets.ts'
 import type { TradeRuntimeConnection } from './tradeRuntime.ts'
-import { splitAvailableSatProofsForCtfCollateral } from './walletOps.ts'
+import {
+  splitAvailableSatProofsForCtfCollateral,
+  type WalletOpsDependencies,
+} from './walletOps.ts'
 import {
   type CashuProofRecord,
   type DaemonState,
@@ -159,16 +162,19 @@ export interface DaemonSwapOps {
 export interface DaemonSwapExecutorOptions {
   connection: TradeRuntimeConnection
   ops?: DaemonSwapOps
+  walletOpsDeps?: WalletOpsDependencies
 }
 
 export class DaemonSwapExecutor {
   private readonly connection: TradeRuntimeConnection
   private readonly ops: DaemonSwapOps
+  private readonly walletOpsDeps: WalletOpsDependencies
   private readonly inFlight = new Set<string>()
 
   constructor(options: DaemonSwapExecutorOptions) {
     this.connection = options.connection
     this.ops = options.ops ?? unsupportedSwapOps()
+    this.walletOpsDeps = options.walletOpsDeps ?? {}
   }
 
   async onTradeCreated(swap: LocalSwapRecord | null): Promise<void> {
@@ -667,6 +673,7 @@ export class DaemonSwapExecutor {
       mintUrl,
       `${tradeId}:seller-regular-ctf-input`,
       secrets,
+      this.walletOpsDeps,
     )
     const result = await this.ops.sellerOpenMint(
       ctx,

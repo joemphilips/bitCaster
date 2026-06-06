@@ -395,24 +395,24 @@ test("splitRegularProofsWithOperation replays completed regular splits without m
 });
 
 test("computeGrossCtfInputAmountSats funds the convert fee from the output proof count", () => {
-  const wallet = feePlanningWallet(1, { 1: "k1", 2: "k2", 4: "k4" });
+  const keyset = feePlanningKeyset(1, { 1: "k1", 2: "k2", 4: "k4" });
 
   assert.equal(
     computeGrossCtfInputAmountSats({
       faceAmountSats: 2,
-      wallet,
+      keyset,
     }),
     3,
   );
 });
 
 test("computeGrossCtfInputAmountSats handles F greater than 1 for many proofs", () => {
-  const wallet = feePlanningWallet(1, { 1: "k1" });
+  const keyset = feePlanningKeyset(1, { 1: "k1" });
 
   assert.equal(
     computeGrossCtfInputAmountSats({
       faceAmountSats: 1001,
-      wallet,
+      keyset,
     }),
     1003,
   );
@@ -560,17 +560,13 @@ function signature(
   };
 }
 
-function feePlanningWallet(
+function feePlanningKeyset(
   inputFeePpk: number,
   keys: Record<number, string>,
 ) {
   return {
-    keysetId: "regular-keyset",
-    getKeyset: () => ({
-      id: "regular-keyset",
-      keys,
-    }),
-    getFeesForKeyset: (nInputs: number) =>
-      Math.ceil((nInputs * inputFeePpk) / 1_000),
+    id: "regular-keyset",
+    keys,
+    input_fee_ppk: inputFeePpk,
   };
 }
