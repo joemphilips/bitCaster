@@ -208,6 +208,7 @@ function CategoricalOutcomes({
             </div>
             <div className="grid grid-cols-2 gap-2">
               <button
+                data-testid={`buy-yes-${outcome.label}`}
                 onClick={() => onTradeSelect?.({ side: 'yes', outcomeId: outcome.id })}
                 className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-colors ${
                   isSelected && tradeSelection?.side === 'yes'
@@ -218,6 +219,7 @@ function CategoricalOutcomes({
                 {isSell ? t('trade.sellYes') : t('trade.buyYes')}
               </button>
               <button
+                data-testid={`buy-no-${outcome.label}`}
                 onClick={() => onTradeSelect?.({ side: 'no', outcomeId: outcome.id })}
                 className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-colors ${
                   isSelected && tradeSelection?.side === 'no'
