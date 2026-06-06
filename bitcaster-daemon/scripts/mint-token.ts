@@ -63,13 +63,23 @@ if (mode === 'sats') {
 
 async function mintRegularProofs(
   mintUrl: string,
-  amountSats: number,
+  faceAmountSats: number,
 ): Promise<Proof[]> {
-  const wallet = new CashuWallet(new CashuMint(mintUrl), { unit: 'sat' })
+  const mint = new CashuMint(mintUrl)
+  const keyset = await getActiveSatCollateralKeyset(mint)
+  const wallet = new CashuWallet(mint, { unit: 'sat' })
   await wallet.loadMint()
-  const quote = await wallet.createMintQuote(amountSats)
+  const grossAmountSats = computeGrossCtfInputAmountSats({
+    faceAmountSats,
+    keyset: {
+      id: keyset.id,
+      keys: keyset.keys,
+      input_fee_ppk: keyset.input_fee_ppk ?? 0,
+    },
+  })
+  const quote = await wallet.createMintQuote(grossAmountSats)
   await waitForPaidQuote(wallet, quote)
-  return wallet.mintProofs(amountSats, quote.quote)
+  return wallet.mintProofs(grossAmountSats, quote.quote)
 }
 
 async function mintRegularProofsForCtfSplit(
