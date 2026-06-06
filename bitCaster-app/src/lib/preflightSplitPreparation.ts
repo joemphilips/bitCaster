@@ -1,7 +1,7 @@
-import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import type { Proof } from "@cashu/cashu-ts";
 import { diagnoseProofStates } from "@/lib/proofDiagnostics";
 import {
+  computeGrossCtfInputAmountSats,
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
   splitRootCompleteSetForPreflightOrder,
@@ -119,12 +119,16 @@ export async function prepareCollateralLotForCtfSplit(input: {
   const existingRegularSplit = await getProofOperation(operationId);
   if (existingRegularSplit) {
     const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
+    const grossCtfInputSats = computeGrossCtfInputAmountSats({
+      faceAmountSats: input.faceAmountSats,
+      wallet,
+    });
     const regularSplit = await splitRegularProofsWithOperation({
       mintUrl: input.mintUrl,
       operationId,
       wallet,
       proofs: [],
-      amountSats: input.faceAmountSats,
+      amountSats: grossCtfInputSats,
       proofOperationStore: ctfProofOperationStore,
     });
     const exact = await selectCollateralForCtfSplit(
@@ -196,9 +200,13 @@ export async function prepareCollateralLotForCtfSplit(input: {
       "Cashu wallet adapter does not support fee-aware proof selection.",
     );
   }
+  const grossCtfInputSats = computeGrossCtfInputAmountSats({
+    faceAmountSats: input.faceAmountSats,
+    wallet,
+  });
   const selected = wallet.selectProofsToSend(
     input.available,
-    input.faceAmountSats,
+    grossCtfInputSats,
     true,
     false,
   );
@@ -217,9 +225,6 @@ export async function prepareCollateralLotForCtfSplit(input: {
       faceAmountSats: input.faceAmountSats,
     },
   });
-  const grossCtfInputSats =
-    input.faceAmountSats +
-    amountToNumber(wallet.getFeesForProofs([selected.send[0]]));
   const regularSplit = await splitRegularProofsWithOperation({
     mintUrl: input.mintUrl,
     operationId,

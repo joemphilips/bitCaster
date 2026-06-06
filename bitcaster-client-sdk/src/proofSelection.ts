@@ -53,6 +53,29 @@ export function keysetToOutcomeCollection<T>(
   return result
 }
 
+export function computeInputFeeSatsFromPpk(inputFeePpk: number): number {
+  if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
+    throw new Error('input_fee_ppk total must be a non-negative safe integer')
+  }
+  return Math.ceil(inputFeePpk / 1_000)
+}
+
+export function computeInputFeeSatsForProofs(
+  proofs: readonly AmountProofLike[],
+  inputFeePpkByKeyset: Record<string, number>,
+): number {
+  let feePpk = 0
+  for (const proof of proofs) {
+    if (!proof.id) throw new Error('Input proof is missing keyset id')
+    const inputFeePpk = inputFeePpkByKeyset[proof.id]
+    if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
+      throw new Error(`Missing input_fee_ppk for keyset ${proof.id}`)
+    }
+    feePpk += inputFeePpk
+  }
+  return computeInputFeeSatsFromPpk(feePpk)
+}
+
 function takeProofsForLockFromSingleKeyset<T extends AmountProofLike>(
   source: readonly T[],
   target: number,

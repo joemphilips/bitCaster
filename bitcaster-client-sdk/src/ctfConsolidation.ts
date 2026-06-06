@@ -3,7 +3,10 @@ import type {
   Proof,
   SerializedBlindedMessage,
 } from "@cashu/cashu-ts";
-import { amountToNumber } from "./proofSelection.ts";
+import {
+  amountToNumber,
+  computeInputFeeSatsForProofs,
+} from "./proofSelection.ts";
 import { canonicalizeOutcomeSet, parseOutcomeSetId } from "./outcomeSets.ts";
 
 export const COLLATERAL_COLLECTION = "*";
@@ -103,22 +106,7 @@ export function computeConvertFeeSats(
   proofs: readonly Proof[],
   inputFeePpkByKeyset: Record<string, number>,
 ): number {
-  return Math.ceil(computeConvertFeePpk(proofs, inputFeePpkByKeyset) / 1_000);
-}
-
-function computeConvertFeePpk(
-  proofs: readonly Proof[],
-  inputFeePpkByKeyset: Record<string, number>,
-): number {
-  let feePpk = 0;
-  for (const proof of proofs) {
-    const inputFeePpk = inputFeePpkByKeyset[proof.id];
-    if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
-      throw new Error(`Missing input_fee_ppk for keyset ${proof.id}`);
-    }
-    feePpk += inputFeePpk;
-  }
-  return feePpk;
+  return computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset);
 }
 
 export function payoffVector(

@@ -13,8 +13,12 @@ import {
   type SerializedBlindedMessage,
   type SerializedBlindedSignature,
   type SwapPreview,
+  splitAmount,
 } from "@cashu/cashu-ts";
-import { amountToNumber } from "./proofSelection.ts";
+import {
+  amountToNumber,
+  computeInputFeeSatsForProofs,
+} from "./proofSelection.ts";
 
 export interface CtfConditionPartition {
   collateral: string;
@@ -88,6 +92,15 @@ export interface SplitCollateralSelection {
   keep: Proof[];
   inputFeeSats: number;
   grossInputSats: number;
+}
+
+export interface CtfGrossInputPlanningWallet {
+  keysetId?: string;
+  getKeyset?(keysetId?: string): {
+    id: string;
+    keys: Record<string, string> | Record<number, string>;
+  };
+  getFeesForKeyset?(nInputs: number, keysetId: string): unknown;
 }
 
 export interface MintSplitForSwapResult {
@@ -262,7 +275,10 @@ export async function selectCollateralForCtfSplit(
   );
   const selectedSend = selected.send.map(normalizeProof);
   const selectedKeep = selected.keep.map(normalizeProof);
-  const inputFeeSats = amountToNumber(wallet.getFeesForProofs(selectedSend));
+  const inputFeeSats = computeInputFeeSatsForProofs(
+    selectedSend,
+    inputFeePpkByKeyset(selectedSend, (keysetId) => wallet.getKeyset(keysetId).fee),
+  );
   const grossInputSats = selectedSend.reduce(
     (acc, proof) => acc + amountToNumber(proof.amount),
     0,
@@ -280,6 +296,64 @@ export async function selectCollateralForCtfSplit(
     inputFeeSats,
     grossInputSats,
   };
+}
+
+export function computeGrossCtfInputAmountSats(params: {
+  faceAmountSats: number;
+  wallet: CtfGrossInputPlanningWallet;
+  keysetId?: string;
+}): number {
+  const { faceAmountSats, wallet } = params;
+  if (!Number.isSafeInteger(faceAmountSats) || faceAmountSats <= 0) {
+    throw new Error("faceAmountSats must be a positive safe integer");
+  }
+  if (!wallet.getKeyset || !wallet.getFeesForKeyset) {
+    throw new Error(
+      "Cashu wallet adapter does not support CTF input fee planning",
+    );
+  }
+  const getFeesForKeyset = wallet.getFeesForKeyset;
+
+  const keysetId = params.keysetId ?? wallet.keysetId;
+  if (!keysetId) {
+    throw new Error("Cashu wallet adapter did not expose an active keyset id");
+  }
+  const keyset = wallet.getKeyset(keysetId);
+  if (!keyset?.id || !keyset.keys || Object.keys(keyset.keys).length === 0) {
+    throw new Error(`Cashu wallet keyset ${keysetId} has no spendable keys`);
+  }
+
+  let grossAmountSats = faceAmountSats;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const feeSats = ctfInputFeeForGrossAmount(
+      getFeesForKeyset,
+      keyset,
+      grossAmountSats,
+    );
+    const nextGrossAmountSats = faceAmountSats + feeSats;
+    if (nextGrossAmountSats === grossAmountSats) return grossAmountSats;
+    grossAmountSats = nextGrossAmountSats;
+  }
+
+  const scanLimit = faceAmountSats + Math.max(faceAmountSats, 10_000);
+  for (
+    grossAmountSats = faceAmountSats;
+    grossAmountSats <= scanLimit;
+    grossAmountSats += 1
+  ) {
+    const feeSats = ctfInputFeeForGrossAmount(
+      getFeesForKeyset,
+      keyset,
+      grossAmountSats,
+    );
+    if (grossAmountSats - feeSats === faceAmountSats) {
+      return grossAmountSats;
+    }
+  }
+
+  throw new Error(
+    `Could not find gross CTF input amount that nets ${faceAmountSats} sats after input fees`,
+  );
 }
 
 export async function splitRootCompleteSetForSwap(params: {
@@ -1030,13 +1104,16 @@ async function validateInputBalance(
   amountSats: number,
   getKeys: (keysetId: string) => Promise<MintKeys>,
 ): Promise<void> {
-  let feePpk = 0;
+  const inputFeePpkByKeyset: Record<string, number> = {};
   for (const proof of inputs) {
     const keyset = await getKeys(proof.id);
-    feePpk += keyset.input_fee_ppk ?? 0;
+    inputFeePpkByKeyset[proof.id] = keyset.input_fee_ppk ?? 0;
   }
 
-  const inputFeeSats = Math.ceil(feePpk / 1_000);
+  const inputFeeSats = computeInputFeeSatsForProofs(
+    inputs,
+    inputFeePpkByKeyset,
+  );
   const inputAmountSats = inputs.reduce(
     (acc, proof) => acc + amountToNumber(proof.amount),
     0,
@@ -1048,6 +1125,29 @@ async function validateInputBalance(
       `CTF split inputs net ${netInputSats} sats after ${inputFeeSats} sats input fee, expected ${amountSats}`,
     );
   }
+}
+
+function inputFeePpkByKeyset(
+  proofs: readonly Pick<Proof, "id">[],
+  getInputFeePpk: (keysetId: string) => number,
+): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const proof of proofs) {
+    result[proof.id] = getInputFeePpk(proof.id);
+  }
+  return result;
+}
+
+function ctfInputFeeForGrossAmount(
+  getFeesForKeyset: (nInputs: number, keysetId: string) => unknown,
+  keyset: { id: string; keys: Record<string, string> | Record<number, string> },
+  grossAmountSats: number,
+): number {
+  const outputProofCount = splitAmount(
+    Amount.from(grossAmountSats),
+    keyset.keys,
+  ).length;
+  return amountToNumber(getFeesForKeyset(outputProofCount, keyset.id));
 }
 
 function validateOutputs(
