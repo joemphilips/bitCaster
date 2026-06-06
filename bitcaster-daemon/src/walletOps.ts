@@ -501,8 +501,12 @@ export async function resolveCtfConsolidationOutputKeysets(
   const entries: Array<[string, string]> = [[COLLATERAL_COLLECTION, activeCollateral.id]]
   for (const keyset of keysets) {
     if (!keyset.active || keyset.condition_id !== conditionId) continue
-    const collection = keyset.outcome_collection_id || keyset.outcome_collection
-    if (collection) entries.push([collection, keyset.id])
+    for (const collection of [
+      keyset.outcome_collection,
+      keyset.outcome_collection_id,
+    ]) {
+      if (collection) entries.push([collection, keyset.id])
+    }
   }
   return Object.fromEntries(entries)
 }
