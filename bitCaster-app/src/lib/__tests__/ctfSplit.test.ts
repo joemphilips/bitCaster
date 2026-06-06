@@ -83,7 +83,13 @@ const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(
     }
 
     const ctfMintState = {
-      partitions: [] as Array<Record<string, string>>,
+      partitions: [] as MockPartitionEntry[],
+      conditionalKeysets: [] as Array<{
+        id: string;
+        condition_id: string;
+        outcome_collection: string;
+        outcome_collection_id: string;
+      }>,
       splitRequests: [] as Array<{
         condition_id: string;
         inputs: Proof[];
@@ -114,12 +120,17 @@ const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(
       async getCtfCondition(conditionIdArg: string) {
         return {
           condition_id: conditionIdArg,
-          partitions: ctfMintState.partitions.map((keysets) => ({
+          partitions: ctfMintState.partitions.map((entry) => ({
             collateral: "sat",
             parent_collection_id: "0".repeat(64),
-            keysets,
+            partition: entry.partition,
+            keysets: entry.keysets,
           })),
         };
+      }
+
+      async getConditionalKeysets() {
+        return { keysets: ctfMintState.conditionalKeysets };
       }
 
       async ctfConvert(request: {
@@ -212,12 +223,32 @@ function proofOperationStore(): CtfProofOperationStore {
 }
 
 function mockMintCondition(
-  partitions: Record<string, string> | Array<Record<string, string>>,
+  partitions:
+    | Record<string, string>
+    | Array<Record<string, string>>
+    | Array<{ partition?: string[]; keysets: Record<string, string> }>,
 ) {
-  ctfMintState.partitions = Array.isArray(partitions)
-    ? partitions
-    : [partitions];
+  const entries = Array.isArray(partitions) ? partitions : [partitions];
+  ctfMintState.partitions = entries.map(toMockPartitionEntry);
+  ctfMintState.conditionalKeysets = [];
   ctfMintState.splitRequests = [];
+}
+
+interface MockPartitionEntry {
+  partition?: string[];
+  keysets: Record<string, string>;
+}
+
+function toMockPartitionEntry(
+  entry: Record<string, string> | MockPartitionEntry,
+): MockPartitionEntry {
+  return isMockPartitionEntry(entry) ? entry : { keysets: entry };
+}
+
+function isMockPartitionEntry(
+  entry: Record<string, string> | MockPartitionEntry,
+): entry is MockPartitionEntry {
+  return "keysets" in entry;
 }
 
 describe("splitRootCompleteSetForSwap", () => {
@@ -298,6 +329,54 @@ describe("splitRootCompleteSetForSwap", () => {
     expect(result.proofsByCollection.YES[0].secret).toBe(
       "proof-random-keyset-yes",
     );
+  });
+
+  it("pre-flight resolves id-keyed composite complement partitions", async () => {
+    const aCollectionId = "a".repeat(64);
+    const notACollectionId = "b".repeat(64);
+    mockMintCondition([
+      {
+        partition: ["A", "B|C|D"],
+        keysets: {
+          [aCollectionId]: "keyset-a",
+          [notACollectionId]: "keyset-not-a",
+        },
+      },
+    ]);
+    ctfMintState.conditionalKeysets = [
+      {
+        id: "keyset-a",
+        condition_id: conditionId,
+        outcome_collection: "A",
+        outcome_collection_id: aCollectionId,
+      },
+      {
+        id: "keyset-not-a",
+        condition_id: conditionId,
+        outcome_collection: "B|C|D",
+        outcome_collection_id: notACollectionId,
+      },
+    ];
+
+    const result = await splitRootCompleteSetForPreflightOrder({
+      mintUrl: "https://mint.example",
+      conditionId,
+      collateralProofs: [inputProof],
+      amountSats: 100,
+      lockOutcomeSetId: "B|C|D",
+      keepOutcomeSetId: "A",
+      operationId: "op-preflight-id-keyed",
+      proofOperationStore: proofOperationStore(),
+    });
+
+    const splitRequest = ctfMintState.splitRequests[0];
+    expect(Object.keys(splitRequest.outputs)).toEqual(["A", "B|C|D"]);
+    expect(splitRequest.outputs.A[0].B_).toBe("random-keyset-a");
+    expect(splitRequest.outputs["B|C|D"][0].B_).toBe(
+      "random-keyset-not-a",
+    );
+    expect(result.keepProofs[0].id).toBe("keyset-a");
+    expect(result.lockProofs[0].id).toBe("keyset-not-a");
   });
 
   it("throws before posting when no exact singleton/composite partition exists", async () => {

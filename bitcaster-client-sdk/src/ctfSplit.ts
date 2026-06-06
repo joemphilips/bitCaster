@@ -21,9 +21,18 @@ import {
 } from "./proofSelection.ts";
 
 export interface CtfConditionPartition {
+  partition?: string[];
   collateral: string;
   parent_collection_id: string;
   keysets: Record<string, string>;
+}
+
+export interface CtfConditionalKeysetInfo {
+  id: string;
+  condition_id: string;
+  outcome_collection: string;
+  outcome_collection_id: string;
+  active?: boolean;
 }
 
 export interface CtfConditionInfo {
@@ -591,12 +600,18 @@ export async function splitCompleteSet(
 export class CashuMintCtfSplitTransport implements CtfSplitTransport {
   private readonly mint: CashuMint & {
     getCtfCondition(conditionId: string): Promise<CtfConditionInfo>;
+    getConditionalKeysets(query?: {
+      active?: boolean;
+    }): Promise<{ keysets: CtfConditionalKeysetInfo[] }>;
     ctfConvert(request: CtfConvertRequest): Promise<CtfConvertResponse>;
   };
 
   constructor(mintUrl: string) {
     this.mint = new CashuMint(mintUrl) as CashuMint & {
       getCtfCondition(conditionId: string): Promise<CtfConditionInfo>;
+      getConditionalKeysets(query?: {
+        active?: boolean;
+      }): Promise<{ keysets: CtfConditionalKeysetInfo[] }>;
       ctfConvert(request: CtfConvertRequest): Promise<CtfConvertResponse>;
     };
   }
@@ -618,9 +633,19 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
     conditionId: string,
     selection?: CtfRootPartitionSelection,
   ): Promise<Record<string, string>> {
+    const condition = await this.mint.getCtfCondition(conditionId);
+    let conditionalKeysets: CtfConditionalKeysetInfo[] = [];
+    try {
+      conditionalKeysets = (
+        await this.mint.getConditionalKeysets({ active: true })
+      ).keysets;
+    } catch {
+      conditionalKeysets = [];
+    }
     return selectRootPartitionKeysets(
-      await this.mint.getCtfCondition(conditionId),
+      condition,
       selection,
+      conditionalKeysets,
     );
   }
 
@@ -1001,13 +1026,23 @@ export function requireOutcomeProofsForCollections(
 export function selectRootPartitionKeysets(
   condition: CtfConditionInfo,
   selection?: CtfRootPartitionSelection,
+  conditionalKeysets: CtfConditionalKeysetInfo[] = [],
 ): Record<string, string> {
-  const rootPartitions = condition.partitions.filter(
-    (partition) =>
-      partition.collateral === "sat" &&
-      partition.parent_collection_id === ZERO_COLLECTION_ID &&
-      Object.keys(partition.keysets).length >= 2,
-  );
+  const rootPartitions = condition.partitions
+    .filter(
+      (partition) =>
+        partition.collateral === "sat" &&
+        partition.parent_collection_id === ZERO_COLLECTION_ID &&
+        Object.keys(partition.keysets).length >= 2,
+    )
+    .map((partition) => ({
+      ...partition,
+      keysets: normalizeRootPartitionKeysets(
+        condition.condition_id,
+        partition,
+        conditionalKeysets,
+      ),
+    }));
   if (!selection) {
     if (rootPartitions.length !== 1) {
       throw new Error(
@@ -1050,6 +1085,80 @@ function partitionExactlyMatchesSelection(
       outcomeSetsEqual(collectionSet, keepSet),
     )
   );
+}
+
+function normalizeRootPartitionKeysets(
+  conditionId: string,
+  partition: CtfConditionPartition,
+  conditionalKeysets: CtfConditionalKeysetInfo[],
+): Record<string, string> {
+  const lookup = buildOutcomeCollectionKeysetLookup(
+    conditionId,
+    partition.keysets,
+    conditionalKeysets,
+  );
+  const normalized = new Map<string, string>();
+  const partitionMembers =
+    partition.partition && partition.partition.length > 0
+      ? partition.partition
+      : Object.keys(partition.keysets);
+
+  for (const collection of partitionMembers) {
+    const keysetId = lookup.get(collection);
+    if (keysetId) normalized.set(collection, keysetId);
+  }
+
+  for (const [collection, keysetId] of Object.entries(partition.keysets)) {
+    if (isOutcomeCollectionId(collection)) {
+      const keyset = conditionalKeysets.find(
+        (candidate) =>
+          sameConditionId(candidate.condition_id, conditionId) &&
+          candidate.outcome_collection_id === collection,
+      );
+      if (keyset?.outcome_collection) {
+        normalized.set(keyset.outcome_collection, keysetId);
+      }
+    } else {
+      normalized.set(collection, keysetId);
+    }
+  }
+
+  return Object.fromEntries(normalized);
+}
+
+function buildOutcomeCollectionKeysetLookup(
+  conditionId: string,
+  keysets: Record<string, string>,
+  conditionalKeysets: CtfConditionalKeysetInfo[],
+): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const [collection, keysetId] of Object.entries(keysets)) {
+    lookup.set(collection, keysetId);
+  }
+  const partitionKeysetIds = new Set(Object.values(keysets));
+  for (const keyset of conditionalKeysets) {
+    if (!sameConditionId(keyset.condition_id, conditionId)) continue;
+    const keysetId =
+      keysets[keyset.outcome_collection] ??
+      keysets[keyset.outcome_collection_id] ??
+      keyset.id;
+    if (!partitionKeysetIds.has(keysetId)) continue;
+    for (const collection of [
+      keyset.outcome_collection,
+      keyset.outcome_collection_id,
+    ]) {
+      if (collection) lookup.set(collection, keysetId);
+    }
+  }
+  return lookup;
+}
+
+function isOutcomeCollectionId(value: string): boolean {
+  return /^[0-9a-fA-F]{64}$/.test(value);
+}
+
+function sameConditionId(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 function validateSplitInput(
