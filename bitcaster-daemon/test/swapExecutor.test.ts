@@ -811,6 +811,56 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
     const executor = new DaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: mintFakeOps(),
+      walletOpsDeps: {
+        createCashuWallet() {
+          return {
+            keysetId: 'keyset-100',
+            async loadMint() {},
+            async receive() {
+              return []
+            },
+            async send() {
+              return { keep: [], send: [] }
+            },
+            selectProofsToSend(proofs) {
+              return { keep: [], send: proofs }
+            },
+            getFeesForProofs() {
+              return 0
+            },
+            async prepareSwapToSend(amount, proofs) {
+              return {
+                amount,
+                fees: 0,
+                inputs: proofs,
+                keysetId: 'keyset-100',
+                sendOutputs: [],
+                keepOutputs: [],
+                unselectedProofs: [],
+              }
+            },
+            async completeSwap(preview) {
+              return { keep: [], send: preview.inputs }
+            },
+          }
+        },
+        async resolveMintKeysByKeyset(_mintUrl, keysetIds) {
+          return Object.fromEntries(
+            keysetIds.map((id) => [
+              id,
+              {
+                id,
+                unit: 'sat',
+                keys: { 1: 'k1' },
+                input_fee_ppk: 0,
+              },
+            ]),
+          )
+        },
+        async resolveInputFeePpkByKeyset(_mintUrl, keysetIds) {
+          return Object.fromEntries(keysetIds.map((id) => [id, 0]))
+        },
+      },
     })
 
     await executor.onTradeCreated(
@@ -830,7 +880,11 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
     )
 
     const persisted = await readState()
-    assert.equal(persisted?.swaps['trade-3'].step, 'seller-opened')
+    assert.equal(
+      persisted?.swaps['trade-3'].step,
+      'seller-opened',
+      persisted?.swaps['trade-3'].error,
+    )
     assert.equal(
       persisted?.wallet.proofs.some((row) => row.proof.secret === 'secret-100'),
       false,
