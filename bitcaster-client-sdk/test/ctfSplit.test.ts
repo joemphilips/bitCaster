@@ -147,6 +147,53 @@ test("selectRootPartitionKeysets chooses the root partition matching the request
   );
 });
 
+test("selectRootPartitionKeysets resolves id-keyed root partitions through conditional metadata", () => {
+  const aliceCollectionId = "a".repeat(64);
+  const notAliceCollectionId = "b".repeat(64);
+  const condition = {
+    condition_id: CONDITION_ID,
+    partitions: [
+      {
+        partition: ["Alice", "Bob|Carol|Dave"],
+        collateral: "sat",
+        parent_collection_id: ROOT_COLLECTION_ID,
+        keysets: {
+          [aliceCollectionId]: "keyset-alice",
+          [notAliceCollectionId]: "keyset-not-alice",
+        },
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    selectRootPartitionKeysets(
+      condition,
+      {
+        lockOutcomeSetId: "Alice",
+        keepOutcomeSetId: "Carol|Bob|Dave",
+      },
+      [
+        {
+          id: "keyset-alice",
+          condition_id: CONDITION_ID,
+          outcome_collection: "Alice",
+          outcome_collection_id: aliceCollectionId,
+        },
+        {
+          id: "keyset-not-alice",
+          condition_id: CONDITION_ID,
+          outcome_collection: "Bob|Carol|Dave",
+          outcome_collection_id: notAliceCollectionId,
+        },
+      ],
+    ),
+    {
+      Alice: "keyset-alice",
+      "Bob|Carol|Dave": "keyset-not-alice",
+    },
+  );
+});
+
 test("selectRootPartitionKeysets keeps binary single-root compatibility without a target", () => {
   const condition = {
     condition_id: CONDITION_ID,

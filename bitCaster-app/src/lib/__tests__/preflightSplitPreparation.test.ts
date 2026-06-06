@@ -87,6 +87,7 @@ describe("preflight split preparation", () => {
   it("prepares one fee-aware composite split for the full order amount", async () => {
     const originals = [proof("original-1", 250)];
     const wallet = {
+      ...planningWallet("regular-keyset"),
       selectProofsToSend: vi.fn((available: Proof[]) => ({
         send: [available[0]],
         keep: [],
@@ -160,6 +161,14 @@ describe("preflight split preparation", () => {
     expect(mocks.splitRegularProofsWithOperation).toHaveBeenCalledWith(
       expect.objectContaining({ amountSats: 201, proofs: [originals[0]] }),
     );
+    expect(mocks.computeGrossCtfInputAmountSats).toHaveBeenCalledWith({
+      faceAmountSats: 200,
+      keyset: {
+        id: "regular-keyset",
+        keys: { 1: "02".padEnd(66, "1") },
+        input_fee_ppk: 1,
+      },
+    });
     expect(mocks.splitRootCompleteSetForPreflightOrder).toHaveBeenCalledWith(
       expect.objectContaining({
         amountSats: 200,
@@ -178,7 +187,7 @@ describe("preflight split preparation", () => {
     const original = proof("original-1", 250);
     const child = proof("regular-child-1", 100);
     mocks.getProofOperation.mockResolvedValue({ operationId: "existing" });
-    mocks.getWallet.mockResolvedValue({});
+    mocks.getWallet.mockResolvedValue(planningWallet("regular-keyset"));
     mocks.splitRegularProofsWithOperation.mockResolvedValue({
       send: [child],
       keep: [proof("regular-keep-1", 150)],
@@ -214,5 +223,22 @@ function keyset(id: string, conditionId: string, outcomeCollection: string) {
     condition_id: conditionId,
     outcome_collection: outcomeCollection,
     outcome_collection_id: outcomeCollection,
+  };
+}
+
+function planningWallet(keysetId: string) {
+  return {
+    keysetId,
+    mint: {
+      getKeys: vi.fn(async () => ({
+        keysets: [
+          {
+            id: keysetId,
+            keys: { 1: "02".padEnd(66, "1") },
+            input_fee_ppk: 1,
+          },
+        ],
+      })),
+    },
   };
 }

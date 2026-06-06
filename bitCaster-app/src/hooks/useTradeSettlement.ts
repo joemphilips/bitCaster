@@ -113,6 +113,7 @@ import {
   resolveConditionalProofMetadata,
   storedConditionalProofsFromMintMetadata,
 } from "@/lib/conditionalKeysetMetadata";
+import { resolveGrossCtfInputPlanningKeyset } from "@/lib/ctfGrossInputPlanning";
 
 // ---------------------------------------------------------------------------
 // Public hook
@@ -152,9 +153,10 @@ async function prepareRegularCollateralForCtfSplit(input: {
   const existingRegularSplit = await getProofOperation(input.operationId);
   if (existingRegularSplit) {
     const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
+    const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(wallet);
     const grossCtfInputSats = computeGrossCtfInputAmountSats({
       faceAmountSats: input.faceAmountSats,
-      wallet,
+      keyset: grossPlanningKeyset,
     });
     const regularSplit = await splitRegularProofsWithOperation({
       mintUrl: input.mintUrl,
@@ -202,9 +204,10 @@ async function prepareRegularCollateralForCtfSplit(input: {
       "Cashu wallet adapter does not support fee-aware proof selection.",
     );
   }
+  const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(wallet);
   const grossCtfInputSats = computeGrossCtfInputAmountSats({
     faceAmountSats: input.faceAmountSats,
-    wallet,
+    keyset: grossPlanningKeyset,
   });
   const selected = wallet.selectProofsToSend(
     input.available,
