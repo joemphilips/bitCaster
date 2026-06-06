@@ -421,9 +421,12 @@ export async function splitRootCompleteSet(
   inputs: Proof[],
   amountSats: number,
   options: CtfSplitOptions = {},
+  selection?: CtfRootPartitionSelection,
 ): Promise<Record<string, Proof[]>> {
-  const outcomeCollectionKeysets =
-    await transport.getRootPartitionKeysets(conditionId);
+  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
+    conditionId,
+    selection,
+  );
   return splitCompleteSet(
     transport,
     conditionId,
