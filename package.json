@@ -9,6 +9,7 @@
     "bitcaster-client-sdk",
     "bitcaster-daemon",
     "bitcaster-cli",
-    "bitCaster-swap-protocol"
+    "bitCaster-swap-protocol",
+    "cashu-ts"
   ]
 }
