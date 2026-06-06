@@ -10,6 +10,7 @@ import {
 } from '@cashu/cashu-ts'
 import {
   CashuMintCtfSplitTransport,
+  computeGrossCtfInputAmountSats,
   splitRootCompleteSet,
   type CtfConditionInfo,
   type CtfRootPartitionSelection,
@@ -33,11 +34,12 @@ if (!Number.isInteger(amountSats) || amountSats <= 0) {
   throw new Error(`amount must be a positive integer: ${rawAmount}`)
 }
 
-const sats = await mintRegularProofs(mintUrl, amountSats)
 if (mode === 'sats') {
+  const sats = await mintRegularProofs(mintUrl, amountSats)
   printToken(mintUrl, sats)
 } else if (mode === 'outcome') {
   if (!conditionId || !outcomeSetId) usage()
+  const sats = await mintRegularProofsForCtfSplit(mintUrl, amountSats)
   const condition = await getCtfCondition(mintUrl, conditionId)
   const selection = selectMintRootPartitionForOutcome(condition, outcomeSetId)
   const split = await splitRootCompleteSet(
@@ -67,6 +69,21 @@ async function mintRegularProofs(
   const quote = await wallet.createMintQuote(amountSats)
   await waitForPaidQuote(wallet, quote)
   return wallet.mintProofs(amountSats, quote.quote)
+}
+
+async function mintRegularProofsForCtfSplit(
+  mintUrl: string,
+  faceAmountSats: number,
+): Promise<Proof[]> {
+  const wallet = new CashuWallet(new CashuMint(mintUrl), { unit: 'sat' })
+  await wallet.loadMint()
+  const grossAmountSats = computeGrossCtfInputAmountSats({
+    faceAmountSats,
+    wallet,
+  })
+  const quote = await wallet.createMintQuote(grossAmountSats)
+  await waitForPaidQuote(wallet, quote)
+  return wallet.mintProofs(grossAmountSats, quote.quote)
 }
 
 async function getCtfCondition(

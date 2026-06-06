@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  computeGrossCtfInputAmountSats,
   resolveComplementaryOutcomeLegs,
   resolveMintOutcomeSetKey,
   selectRootPartitionKeysets,
@@ -393,6 +394,30 @@ test("splitRegularProofsWithOperation replays completed regular splits without m
   assert.equal(wallet.completeCalls, 0);
 });
 
+test("computeGrossCtfInputAmountSats funds the convert fee from the output proof count", () => {
+  const wallet = feePlanningWallet(1, { 1: "k1", 2: "k2", 4: "k4" });
+
+  assert.equal(
+    computeGrossCtfInputAmountSats({
+      faceAmountSats: 2,
+      wallet,
+    }),
+    3,
+  );
+});
+
+test("computeGrossCtfInputAmountSats handles F greater than 1 for many proofs", () => {
+  const wallet = feePlanningWallet(1, { 1: "k1" });
+
+  assert.equal(
+    computeGrossCtfInputAmountSats({
+      faceAmountSats: 1001,
+      wallet,
+    }),
+    1003,
+  );
+});
+
 const CONDITION_ID = "a".repeat(64);
 const ROOT_COLLECTION_ID = "0".repeat(64);
 
@@ -532,5 +557,20 @@ function signature(
     amount: message.amount,
     id: message.id,
     C_: `C-${message.B_}`,
+  };
+}
+
+function feePlanningWallet(
+  inputFeePpk: number,
+  keys: Record<number, string>,
+) {
+  return {
+    keysetId: "regular-keyset",
+    getKeyset: () => ({
+      id: "regular-keyset",
+      keys,
+    }),
+    getFeesForKeyset: (nInputs: number) =>
+      Math.ceil((nInputs * inputFeePpk) / 1_000),
   };
 }

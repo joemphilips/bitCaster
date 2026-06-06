@@ -660,29 +660,14 @@ export class DaemonSwapExecutor {
       return
     }
 
-    const exactSatRows = selectProofs(
-      await readState(),
-      mintUrl,
-      (proof) => proof.asset.kind === 'sats',
+    const secrets = await readSecrets()
+    if (!secrets) throw new Error('daemon secrets are not initialized')
+    const collateral = await splitAvailableSatProofsForCtfCollateral(
       amount,
+      mintUrl,
+      `${tradeId}:seller-regular-ctf-input`,
+      secrets,
     )
-    const collateral =
-      exactSatRows && sumProofRows(exactSatRows) === amount
-        ? {
-            inputs: exactSatRows.map((row) => row.proof),
-            spent: [] as CashuProofRecord[],
-            keep: [] as CashuProofRecord[],
-          }
-        : await (async () => {
-            const secrets = await readSecrets()
-            if (!secrets) throw new Error('daemon secrets are not initialized')
-            return splitAvailableSatProofsForCtfCollateral(
-              amount,
-              mintUrl,
-              `${tradeId}:seller-regular-ctf-input`,
-              secrets,
-            )
-          })()
     const result = await this.ops.sellerOpenMint(
       ctx,
       {

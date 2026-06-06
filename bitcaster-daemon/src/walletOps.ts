@@ -20,6 +20,7 @@ import {
 } from '@cashu/cashu-ts'
 import { createHash, randomUUID } from 'node:crypto'
 import {
+  computeGrossCtfInputAmountSats,
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
   type CtfProofOperationRecord,
@@ -72,6 +73,12 @@ export interface CashuWalletLike {
     exactMatch?: boolean,
   ): { keep: Proof[]; send: Proof[] }
   getFeesForProofs?(proofs: Proof[]): unknown
+  getFeesForKeyset?(nInputs: number, keysetId: string): unknown
+  getKeyset?(keysetId?: string): {
+    id: string
+    keys: Record<string, string> | Record<number, string>
+  }
+  keysetId?: string
 }
 
 export interface WalletOpsDependencies {
@@ -243,12 +250,16 @@ export async function splitAvailableSatProofsForCtfCollateral(
   await wallet.loadMint()
   const existing = await getProofOperation(operationId)
   if (existing) {
+    const grossCtfInputSats = computeGrossCtfInputAmountSats({
+      faceAmountSats: amountSats,
+      wallet,
+    })
     const split = await splitRegularProofsWithOperation({
       mintUrl,
       operationId,
       wallet,
       proofs: [],
-      amountSats,
+      amountSats: grossCtfInputSats,
       proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
     })
     const exact = await selectCollateralForCtfSplit(mintUrl, split.send, amountSats)
@@ -274,11 +285,14 @@ export async function splitAvailableSatProofsForCtfCollateral(
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
     throw new Error('cashu wallet does not support fee-aware proof selection')
   }
-  const selected = wallet.selectProofsToSend(available, amountSats, true, false)
+  const grossCtfInputSats = computeGrossCtfInputAmountSats({
+    faceAmountSats: amountSats,
+    wallet,
+  })
+  const selected = wallet.selectProofsToSend(available, grossCtfInputSats, true, false)
   if (selected.send.length === 0) {
     throw new Error(`insufficient available sats in mint ${mintUrl}`)
   }
-  const grossCtfInputSats = amountSats + amountToNumber(wallet.getFeesForProofs([selected.send[0]]))
   const split = await splitRegularProofsWithOperation({
     mintUrl,
     operationId,
