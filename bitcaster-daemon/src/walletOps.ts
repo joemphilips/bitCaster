@@ -801,7 +801,6 @@ async function resumeCtfConsolidationOperation(
   const outputsByCollection = deserializeOutputGroups(entry.outputs)
   const request: CtfConvertRequest = {
     condition_id: conditionId,
-    ...ctfParentCollectionMetadata(entry),
     inputs: inputsByCollection,
     outputs: Object.fromEntries(
       Object.entries(entry.outputs).map(([collection, outputs]) => [
@@ -1082,15 +1081,6 @@ function normalizeProofGroups(
 
 function proofCollection(asset: StoredProofAsset): string {
   return asset.kind === 'sats' ? COLLATERAL_COLLECTION : asset.outcomeSetId
-}
-
-function ctfParentCollectionMetadata(
-  entry: ProofOperationRecord,
-): Pick<CtfConvertRequest, 'parent_collection_id'> {
-  const parentCollectionId = entry.metadata.parentCollectionId
-  return typeof parentCollectionId === 'string' && parentCollectionId.length > 0
-    ? { parent_collection_id: parentCollectionId }
-    : {}
 }
 
 function serializeOutputDataArray(

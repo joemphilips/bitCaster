@@ -93,10 +93,12 @@ describe('registerCondition', () => {
   })
   it('sends collateral and requested outcome collections when provided', async () => {
     mockFetchSuccess({ condition_id: 'cond-123', keysets: { Yes: 'ks1', No: 'ks2' } })
+    const fee = [{ amount: 1, secret: 'fee-secret', C: 'fee-C' }] as any
     await registerCondition({
       ...conditionParams,
       collateral: 'sat',
       outcomeCollections: ['Yes', 'No'],
+      fee,
     })
 
     const call = vi.mocked(globalThis.fetch).mock.calls[0]
@@ -106,6 +108,7 @@ describe('registerCondition', () => {
       announcements: [conditionParams.announcementHex],
       collateral: 'sat',
       outcome_collections: ['Yes', 'No'],
+      fee,
     })
   })
 })

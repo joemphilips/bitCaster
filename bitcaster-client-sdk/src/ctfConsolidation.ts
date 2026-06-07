@@ -22,7 +22,8 @@ export type CtfConsolidationNoopReason =
   | "net-collateral-nonpositive"
   | "collateral-top-up-mismatch"
   | "missing-output-keyset"
-  | "unsupported-residual";
+  | "unsupported-residual"
+  | "unsupported-parent";
 
 export interface CtfConsolidationOutputFactoryInput {
   collection: string;
@@ -85,6 +86,9 @@ export function planCtfConsolidation(
 ): CtfConsolidationResult {
   if (params.marketStatus !== "pending") {
     return noop(params.strategy, "market-not-pending");
+  }
+  if (params.parentCollectionId?.trim()) {
+    return noop(params.strategy, "unsupported-parent");
   }
 
   const market = normalizeMarket(params.outcomes, params.proofsByCollection);
@@ -330,9 +334,6 @@ function buildPlan(
     outputPayoff,
     request: {
       condition_id: params.conditionId,
-      ...(params.parentCollectionId
-        ? { parent_collection_id: params.parentCollectionId }
-        : {}),
       inputs: inputProofsByCollection,
       outputs: requestOutputs,
     },

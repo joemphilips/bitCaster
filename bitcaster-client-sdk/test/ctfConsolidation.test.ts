@@ -132,6 +132,23 @@ test("T3 skips when F equals every input amount and outputs would net to zero", 
   });
 });
 
+test("skips parent-scoped consolidation because CDK convert is root-only", () => {
+  const result = planCtfConsolidation({
+    ...params("t3", {
+      A: [proof("ks-A", 10, "a-10")],
+      B: [proof("ks-B", 10, "b-10")],
+      C: [proof("ks-C", 10, "c-10")],
+    }),
+    parentCollectionId: "A|B",
+  });
+
+  assert.deepEqual(result, {
+    kind: "noop",
+    strategy: "t3",
+    reason: "unsupported-parent",
+  });
+});
+
 test("payoff conservation uses the computed fee floor and covers F greater than 1", () => {
   const proofsByCollection = {
     A: manyProofs("ks-A", 334, "a"),

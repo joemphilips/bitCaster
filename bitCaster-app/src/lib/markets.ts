@@ -6,6 +6,7 @@ import type {
   PriceHistory,
 } from "@/types/market-detail";
 import type { MarketSort } from "@/hooks/useMarketSort";
+import type { Proof } from "@cashu/cashu-ts";
 import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
@@ -818,6 +819,7 @@ export async function registerCondition(params: {
   announcementHex: string;
   collateral?: string;
   outcomeCollections?: readonly string[];
+  fee?: readonly Proof[];
 }): Promise<{ condition_id: string; keysets: Record<string, string> }> {
   const response = await fetch("/v1/conditions", {
     method: "POST",
@@ -829,6 +831,7 @@ export async function registerCondition(params: {
       ...(params.outcomeCollections
         ? { outcome_collections: params.outcomeCollections }
         : {}),
+      ...(params.fee ? { fee: params.fee } : {}),
     }),
   });
   if (!response.ok) {

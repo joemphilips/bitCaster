@@ -16,9 +16,12 @@ import { fetchOracleAnnouncements } from '@/lib/oracle'
 import {
   registerCondition,
   createMarket,
+  requiredMarketCreationOutcomeCollections,
 } from '@/lib/markets'
 import { createEnumAnnouncement } from '@/lib/kormir'
 import { buildEventId } from '@/lib/slug'
+import { detectMintCapabilities } from '@/lib/mints'
+import { useWalletStore } from '@/stores/wallet'
 
 /**
  * Default creator fee applied to every market created via the wizard. The
@@ -33,6 +36,25 @@ const DEFAULT_CREATOR_FEE_PERCENT = 0
 export const MAX_MARKET_OUTCOMES = 8
 
 const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
+
+function activeMintCapabilities() {
+  const wallet = useWalletStore.getState()
+  const mint = wallet.mints.find((candidate) => candidate.url === wallet.activeMintUrl)
+  return detectMintCapabilities(mint?.info)
+}
+
+function registrationFeeForPolicy(
+  outcomes: readonly string[],
+  settings: NonNullable<ReturnType<typeof activeMintCapabilities>['ctfSettings']>,
+): number {
+  const numKeysets =
+    settings.defaultKeysetCreation === 'none'
+      ? requiredMarketCreationOutcomeCollections(outcomes).length
+      : settings.defaultKeysetCreation === 'one-vs-rest'
+        ? new Set(outcomes.map((outcome) => outcome.trim()).filter(Boolean)).size
+        : Math.max(0, 2 ** outcomes.length - 2)
+  return settings.registrationFeeBase + settings.registrationFeePerKeyset * numKeysets
+}
 
 /** Check whether outcome probabilities sum to exactly 100. */
 export function probabilitySumValid(outcomes: WizardOutcome[]): boolean {
@@ -472,11 +494,33 @@ export function useMarketCreationState() {
         throw new Error(`At most ${MAX_MARKET_OUTCOMES} outcomes are supported.`)
       }
 
+      const ctfCapabilities = activeMintCapabilities()
+      if (!ctfCapabilities.ctfSettings) {
+        throw new Error(
+          ctfCapabilities.ctf
+            ? 'Active mint CTF settings are missing or invalid. Refresh mint info or choose another mint.'
+            : 'Active mint does not advertise CTF support.',
+        )
+      }
+      const ctfSettings = ctfCapabilities.ctfSettings
+      const requiredRegistrationFee = registrationFeeForPolicy(outcomes, ctfSettings)
+      if (requiredRegistrationFee > 0) {
+        throw new Error(
+          `This mint requires a ${requiredRegistrationFee} sat condition registration fee. ` +
+            'Market creation fee payment is not wired in this app yet.',
+        )
+      }
+      const outcomeCollections =
+        ctfSettings?.defaultKeysetCreation === 'none'
+          ? requiredMarketCreationOutcomeCollections(outcomes)
+          : undefined
+
       // 1. Register condition on the mint
       const { condition_id } = await registerCondition({
         tags,
         announcementHex,
         collateral: 'sat',
+        outcomeCollections,
       })
 
       // 2. Create market on matching engine (includes thumbnail + CPMM pools)
