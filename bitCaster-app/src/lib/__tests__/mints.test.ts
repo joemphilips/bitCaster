@@ -32,4 +32,42 @@ describe('detectMintCapabilities', () => {
   it('returns ctf:false when info is missing the nuts map entirely', () => {
     expect(detectMintCapabilities({ name: 'Truncated' })).toEqual({ ctf: false })
   })
+
+  it('parses CTF keyset policy and registration fee settings', () => {
+    const info = {
+      nuts: {
+        CTF: {
+          default_keyset_creation: 'one-vs-rest',
+          registration_fee_base: '10',
+          registration_fee_per_keyset: 2,
+        },
+      },
+    }
+
+    expect(detectMintCapabilities(info)).toEqual({
+      ctf: true,
+      ctfSettings: {
+        defaultKeysetCreation: 'one-vs-rest',
+        registrationFeeBase: 10,
+        registrationFeePerKeyset: 2,
+      },
+    })
+  })
+
+  it('leaves CTF settings undefined when the advertised policy is missing or invalid', () => {
+    expect(detectMintCapabilities({ nuts: { CTF: { supported: true } } })).toEqual({
+      ctf: true,
+    })
+    expect(
+      detectMintCapabilities({
+        nuts: {
+          CTF: {
+            default_keyset_creation: 'invalid',
+            registration_fee_base: 0,
+            registration_fee_per_keyset: 0,
+          },
+        },
+      }),
+    ).toEqual({ ctf: true })
+  })
 })

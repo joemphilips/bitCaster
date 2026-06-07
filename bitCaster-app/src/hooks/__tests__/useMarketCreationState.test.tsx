@@ -10,11 +10,29 @@ const {
   mockRegisterCondition,
   mockCreateMarket,
   mockCreateEnumAnnouncement,
+  mockWalletState,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockRegisterCondition: vi.fn(),
   mockCreateMarket: vi.fn(),
   mockCreateEnumAnnouncement: vi.fn(),
+  mockWalletState: {
+    activeMintUrl: 'https://mint.example.test',
+    mints: [
+      {
+        url: 'https://mint.example.test',
+        info: {
+          nuts: {
+            CTF: {
+              default_keyset_creation: 'one-vs-rest',
+              registration_fee_base: 0,
+              registration_fee_per_keyset: 0,
+            },
+          },
+        },
+      },
+    ],
+  },
 }))
 
 vi.mock('react-router', async () => {
@@ -25,6 +43,7 @@ vi.mock('react-router', async () => {
 vi.mock('@/lib/markets', () => ({
   registerCondition: (...args: unknown[]) => mockRegisterCondition(...args),
   createMarket: (...args: unknown[]) => mockCreateMarket(...args),
+  requiredMarketCreationOutcomeCollections: (outcomes: readonly string[]) => outcomes,
   MintError: class MintError extends Error {
     constructor(public readonly code: number, public readonly detail: string) {
       super(detail)
@@ -53,7 +72,7 @@ vi.mock('@/lib/kormir', () => ({
 // not exercise the wallet at all.
 vi.mock('@/stores/wallet', () => ({
   useWalletStore: {
-    getState: () => ({ mnemonic: null }),
+    getState: () => mockWalletState,
   },
 }))
 
@@ -86,6 +105,21 @@ beforeEach(() => {
   mockRegisterCondition.mockResolvedValue({ condition_id: 'test-cond-id', keysets: { Yes: 'ks1', No: 'ks2' } })
   mockCreateMarket.mockResolvedValue({ conditionId: 'test-cond-id', marketsCreated: ['test-cond-id-Yes', 'test-cond-id-No'], thumbnailUrl: null })
   mockCreateEnumAnnouncement.mockResolvedValue('announcement-hex')
+  mockWalletState.activeMintUrl = 'https://mint.example.test'
+  mockWalletState.mints = [
+    {
+      url: 'https://mint.example.test',
+      info: {
+        nuts: {
+          CTF: {
+            default_keyset_creation: 'one-vs-rest',
+            registration_fee_base: 0,
+            registration_fee_per_keyset: 0,
+          },
+        },
+      },
+    },
+  ]
 
   // Configure Nostr so oracle announcements are fetched
   useSettingsStore.setState({ nostrSignerMode: 'nip07' })
@@ -127,7 +161,7 @@ async function setupDraftForSubmission() {
 }
 
 describe('useMarketCreationState – onCreateMarket', () => {
-  it('calls registerCondition with requested keysets, then createMarket in order', async () => {
+  it('uses the mint default keyset policy when registering the condition', async () => {
     const result = await setupDraftForSubmission()
     const callOrder: string[] = []
     mockRegisterCondition.mockImplementation(async () => {
@@ -150,11 +184,53 @@ describe('useMarketCreationState – onCreateMarket', () => {
       ],
       announcementHex: 'ann-hex-123',
       collateral: 'sat',
+      outcomeCollections: undefined,
     })
     expect(mockCreateMarket).toHaveBeenCalledOnce()
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
       oracleAnnouncementHex: 'ann-hex-123',
     })
+  })
+
+  it('requests outcome collections explicitly when the mint default policy is none', async () => {
+    mockWalletState.mints[0].info.nuts.CTF.default_keyset_creation = 'none'
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(mockRegisterCondition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collateral: 'sat',
+        outcomeCollections: ['Yes', 'No'],
+      }),
+    )
+  })
+
+  it('blocks market creation when the mint requires a registration fee', async () => {
+    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 10
+    mockWalletState.mints[0].info.nuts.CTF.registration_fee_per_keyset = 2
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(result.current.submitError).toBe(
+      'This mint requires a 14 sat condition registration fee. Market creation fee payment is not wired in this app yet.',
+    )
+    expect(mockRegisterCondition).not.toHaveBeenCalled()
+    expect(mockCreateMarket).not.toHaveBeenCalled()
+  })
+
+  it('blocks market creation when CTF settings are missing or invalid', async () => {
+    ;(mockWalletState.mints[0].info.nuts as any).CTF = { supported: true }
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(result.current.submitError).toBe(
+      'Active mint CTF settings are missing or invalid. Refresh mint info or choose another mint.',
+    )
+    expect(mockRegisterCondition).not.toHaveBeenCalled()
+    expect(mockCreateMarket).not.toHaveBeenCalled()
   })
 
   it('stops and sets error if registerCondition fails', async () => {
