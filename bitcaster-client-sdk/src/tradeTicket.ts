@@ -31,11 +31,11 @@ export class TradeTicketError extends Error {
   }
 }
 
-function canonicalOutcomeName(
+function resolveTradeOutcome(
   market: SdkMarketForTrading,
   selection: SdkTradeSelection,
-): string | null {
-  return resolveOutcomeSets(market, selection)?.selectedOutcomeSetId ?? null
+): ReturnType<typeof resolveOutcomeSets> {
+  return resolveOutcomeSets(market, selection)
 }
 
 function marketPriceFor(
@@ -104,8 +104,8 @@ export function buildTradeTicket(params: {
     )
   }
 
-  const outcomeName = canonicalOutcomeName(market, selection)
-  if (!outcomeName) {
+  const resolvedOutcome = resolveTradeOutcome(market, selection)
+  if (!resolvedOutcome) {
     throw new TradeTicketError(
       'missing-selection',
       'Choose an outcome before placing an order.',
@@ -125,7 +125,8 @@ export function buildTradeTicket(params: {
       : marketPriceFor(side, orderBook, complementaryOrderBook)
 
   const request: SdkSubmitOrderRequest = {
-    outcomeId: outcomeName,
+    outcomeId: resolvedOutcome.publicOutcomeSetId,
+    tokenSide: resolvedOutcome.tokenSide,
     side: requestSide,
     price,
     amountSats,
@@ -133,7 +134,7 @@ export function buildTradeTicket(params: {
   }
 
   return {
-    marketId: `${market.id}-${outcomeName}`,
+    marketId: `${market.id}-${resolvedOutcome.publicOutcomeSetId}`,
     request,
   }
 }

@@ -516,6 +516,51 @@ export async function resolveRootPreflightOutputAmountSats(params: {
   return preflightOutputAmountSats;
 }
 
+export async function resolveRootDirectLockOutputAmountSats(params: {
+  mintUrl: string;
+  conditionId: string;
+  amountSats: number;
+  lockOutcomeSetId: string;
+  keepOutcomeSetId: string;
+}): Promise<number> {
+  const transport = new CashuMintCtfSplitTransport(params.mintUrl);
+  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
+    params.conditionId,
+    {
+      lockOutcomeSetId: params.lockOutcomeSetId,
+      keepOutcomeSetId: params.keepOutcomeSetId,
+    },
+  );
+  const outcomeLegs = resolveComplementaryOutcomeLegs(
+    params.lockOutcomeSetId,
+    params.keepOutcomeSetId,
+    outcomeCollectionKeysets,
+  );
+
+  let outputAmountSats = params.amountSats;
+  for (const collection of outcomeLegs.lockCollections) {
+    const keysetId = outcomeCollectionKeysets[collection];
+    if (!keysetId) {
+      throw new Error(
+        `CTF split lock outcome ${collection} has no root keyset for condition ${params.conditionId}`,
+      );
+    }
+    const keyset = await transport.getKeys(keysetId);
+    outputAmountSats = Math.max(
+      outputAmountSats,
+      computeGrossCtfInputAmountSats({
+        faceAmountSats: params.amountSats,
+        keyset: {
+          id: keyset.id,
+          keys: keyset.keys,
+          input_fee_ppk: keyset.input_fee_ppk ?? 0,
+        },
+      }),
+    );
+  }
+  return outputAmountSats;
+}
+
 export async function splitRootCompleteSet(
   transport: CtfSplitTransport,
   conditionId: string,
@@ -1076,7 +1121,7 @@ export function selectRootPartitionKeysets(
   }
 
   const selected = selectKeysetsMatchingSelection(rootKeysets, selection);
-  if (Object.keys(selected).length !== 2) {
+  if (Object.keys(selected).length < 2) {
     throw new Error(
       `Expected root sat CTF keysets for condition ${condition.condition_id} matching lock ${selection.lockOutcomeSetId} and keep ${selection.keepOutcomeSetId}, found ${Object.keys(selected).length} of ${Object.keys(rootKeysets).length}`,
     );
@@ -1090,7 +1135,7 @@ function selectKeysetsMatchingSelection(
 ): Record<string, string> {
   const lockSet = parseOutcomeSetToComparableSet(selection.lockOutcomeSetId);
   const keepSet = parseOutcomeSetToComparableSet(selection.keepOutcomeSetId);
-  return Object.fromEntries(
+  const exact = Object.fromEntries(
     Object.entries(keysets).filter(([collection]) => {
       const collectionSet = parseOutcomeSetToComparableSet(collection);
       return (
@@ -1099,6 +1144,21 @@ function selectKeysetsMatchingSelection(
       );
     }),
   );
+  if (Object.keys(exact).length === 2) return exact;
+
+  const targetSet = new Set([...lockSet, ...keepSet]);
+  const expanded = new Map<string, string>();
+  const covered = new Set<string>();
+  for (const [collection, keysetId] of Object.entries(keysets)) {
+    const collectionSet = parseOutcomeSetToComparableSet(collection);
+    if (![...collectionSet].every((outcome) => targetSet.has(outcome))) {
+      continue;
+    }
+    expanded.set(collection, keysetId);
+    for (const outcome of collectionSet) covered.add(outcome);
+  }
+
+  return outcomeSetsEqual(covered, targetSet) ? Object.fromEntries(expanded) : exact;
 }
 
 function normalizeRootConditionKeysets(

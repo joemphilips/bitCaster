@@ -23,6 +23,7 @@ export type DaemonCommand =
 export interface SubmitOrderParams {
   marketId: string
   outcomeId: string
+  tokenSide?: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
   amountSats: number

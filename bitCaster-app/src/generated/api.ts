@@ -342,6 +342,11 @@ export interface components {
          */
         OrderSide: "Buy" | "Sell";
         /**
+         * @description Which token on the primitive outcome book is being traded. `Outcome` means the selected primitive outcome named by outcomeId; `Complement` means the one-vs-rest complement of that outcome.
+         * @enum {string}
+         */
+        TokenSide: "Outcome" | "Complement";
+        /**
          * @description Execution semantics of an order.
          * @enum {string}
          */
@@ -445,8 +450,9 @@ export interface components {
             makerEphemeralPubkey?: string;
         };
         SubmitOrderRequest: {
-            /** @description The outcome or finite outcome set to trade (e.g. "Alice", "YES", or "B|C"). Must match the outcome-set segment of marketId. */
+            /** @description The primitive outcome to trade (e.g. "Alice" or "YES"). Must match the outcomeName segment of marketId and must not contain "|". */
             outcomeId: string;
+            tokenSide: components["schemas"]["TokenSide"];
             side: components["schemas"]["OrderSide"];
             price: components["schemas"]["Probability"];
             /** @description Limit-order size as conditional-token face amount. First release requires this to be divisible by 100 sats so integer-cent prices produce exact quote payments. */
@@ -487,6 +493,7 @@ export interface components {
             filledAmountSats: components["schemas"]["Sats"];
             /** @description All fills and active DCB mint-match reservation handles produced against this order so far. */
             fills: components["schemas"]["Fill"][];
+            tokenSide: components["schemas"]["TokenSide"];
         };
         RestingOrderResponse: {
             /**
@@ -496,8 +503,9 @@ export interface components {
             orderId: string;
             /** @description The market this order belongs to. */
             marketId: string;
-            /** @description The outcome this order trades. */
+            /** @description The primitive route outcome this order trades against. */
             outcomeId: string;
+            tokenSide: components["schemas"]["TokenSide"];
             side: components["schemas"]["OrderSide"];
             price: components["schemas"]["Probability"];
             remainingAmountSats: components["schemas"]["Sats"];
@@ -761,7 +769,7 @@ export interface components {
         MarketCatalogueEntry: {
             /** @description The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market. */
             conditionId: string;
-            /** @description Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`. Finite categorical outcome-set books use multiple outcome names separated by "|", for example `"{conditionId}-B|C"`. */
+            /** @description Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`; the one-vs-rest complement is selected on order submission with `tokenSide = "Complement"` rather than a compound public market ID. */
             outcomes: string[];
             /** @description Optional human-readable title from market registration. Null when the creator did not supply one. */
             title?: string | null;
@@ -855,7 +863,7 @@ export interface components {
     };
     responses: never;
     parameters: {
-        /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. */
         MarketId: string;
         /** @description The condition identifier (hex string derived from the oracle announcement). */
         ConditionId: string;
@@ -1079,7 +1087,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -1109,7 +1117,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -1152,7 +1160,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. */
                 marketId: components["parameters"]["MarketId"];
                 /** @description The order's unique identifier. */
                 orderId: string;
@@ -1191,7 +1199,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. */
                 marketId: components["parameters"]["MarketId"];
                 /** @description The unique identifier of the order to cancel. */
                 orderId: string;
@@ -1228,7 +1236,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -1251,7 +1259,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;
@@ -1281,7 +1289,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description The market to trade on, in the format "{conditionId}-{outcomeSet}" (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite categorical markets, multiple outcome names separated by "|" represent the order book for that exact outcome set. Clients should URL-encode the path segment when needed. */
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SubmitOrderRequest.tokenSide to choose the primitive outcome token or its one-vs-rest complement. */
                 marketId: components["parameters"]["MarketId"];
             };
             cookie?: never;

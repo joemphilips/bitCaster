@@ -16,6 +16,7 @@ export interface EngineAuthorizationRequest {
 
 export interface SubmitOrderRequest {
   outcomeId: string
+  tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
   amountSats: number
@@ -68,6 +69,7 @@ export interface OrderStatusResponse {
   remainingAmountSats: number
   filledAmountSats: number
   fills: Fill[]
+  tokenSide: 'Outcome' | 'Complement'
 }
 
 export interface LevelDto {

@@ -49,14 +49,14 @@ describe('fetchOrderStatus', () => {
 })
 
 describe('splitMarketId', () => {
-  it('splits on the first hyphen so outcome names with hyphens survive', () => {
+  it('splits on the last hyphen so condition ids with hyphens survive', () => {
     expect(splitMarketId('deadbeef-Alice')).toEqual({
       conditionId: 'deadbeef',
       outcomeName: 'Alice',
     })
-    expect(splitMarketId('cond123-Alice-Smith')).toEqual({
-      conditionId: 'cond123',
-      outcomeName: 'Alice-Smith',
+    expect(splitMarketId('cond-123-Alice')).toEqual({
+      conditionId: 'cond-123',
+      outcomeName: 'Alice',
     })
   })
 

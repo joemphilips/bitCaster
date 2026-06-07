@@ -38,6 +38,7 @@ import {
   OutputData,
   Wallet as CashuWallet,
   hashToCurve,
+  splitAmount,
 } from "@cashu/cashu-ts";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import {
@@ -659,16 +660,17 @@ export async function sellerLockOutcomeProofs(
   const keyset = await fetchMintKeys(mint, keysetId);
   const feeSats = conditionalInputFee(outcomeProofs.length, keyset);
   const netInput = sumProofs(outcomeProofs) - feeSats;
-  if (netInput < amount) {
+  const lockAmount = grossConditionalAmountForNetClaim(amount, keyset);
+  if (netInput < lockAmount) {
     throw new Error(
-      `sellerLockOutcomeProofs: outcome proofs for keyset ${keysetId} net ${netInput} sats, need ${amount} to lock`,
+      `sellerLockOutcomeProofs: outcome proofs for keyset ${keysetId} net ${netInput} sats, need ${lockAmount} to lock`,
     );
   }
 
   const groups: ConditionalSwapOutputGroup[] = [
-    { label: "lock", kind: "p2pk", amount, p2pk },
+    { label: "lock", kind: "p2pk", amount: lockAmount, p2pk },
   ];
-  const changeAmount = netInput - amount;
+  const changeAmount = netInput - lockAmount;
   if (changeAmount > 0) {
     groups.push({ label: "change", kind: "random", amount: changeAmount });
   }
@@ -689,6 +691,22 @@ export async function sellerLockOutcomeProofs(
 function conditionalInputFee(proofCount: number, keyset: MintKeys): number {
   const feePpk = keyset.input_fee_ppk ?? 0;
   return Math.ceil((proofCount * feePpk) / 1000);
+}
+
+function grossConditionalAmountForNetClaim(
+  netAmount: number,
+  keyset: MintKeys,
+): number {
+  let grossAmount = netAmount;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const proofCount = splitAmount(Amount.from(grossAmount), keyset.keys).length;
+    const nextGrossAmount = netAmount + conditionalInputFee(proofCount, keyset);
+    if (nextGrossAmount === grossAmount) return grossAmount;
+    grossAmount = nextGrossAmount;
+  }
+  throw new Error(
+    `Unable to gross conditional claim amount ${netAmount} for keyset ${keyset.id}`,
+  );
 }
 
 interface P2PKLock {
@@ -1094,22 +1112,35 @@ async function claimConditionalProofsAtMint(
   options: ProofOperationOptions,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl);
-  const keysetId = singleProofKeysetId(inputProofs);
-  const keyset = await fetchMintKeys(mint, keysetId);
-  const netAmount =
-    sumProofs(inputProofs) - conditionalInputFee(inputProofs.length, keyset);
-  if (netAmount <= 0) {
-    throw new Error(
-      `buyerClaimSwap: conditional claim proofs for keyset ${keysetId} are exhausted by input fees`,
+  const proofGroups = proofGroupsByKeyset(inputProofs);
+  const claimed: Proof[] = [];
+
+  for (const [index, [keysetId, proofs]] of proofGroups.entries()) {
+    const keyset = await fetchMintKeys(mint, keysetId);
+    const netAmount =
+      sumProofs(proofs) - conditionalInputFee(proofs.length, keyset);
+    if (netAmount <= 0) {
+      throw new Error(
+        `buyerClaimSwap: conditional claim proofs for keyset ${keysetId} are exhausted by input fees`,
+      );
+    }
+    const result = await conditionalKeysetSwap(
+      mintUrl,
+      proofs,
+      [{ label: "keep", kind: "random", amount: netAmount }],
+      proofGroups.length === 1
+        ? options
+        : {
+            ...options,
+            operationId: options.operationId
+              ? `${options.operationId}:${index}:${keysetId}`
+              : undefined,
+          },
     );
+    claimed.push(...(result.keep ?? []));
   }
-  const result = await conditionalKeysetSwap(
-    mintUrl,
-    inputProofs,
-    [{ label: "keep", kind: "random", amount: netAmount }],
-    options,
-  );
-  return result.keep ?? [];
+
+  return claimed;
 }
 
 async function receiveProofsAtMint(
@@ -1592,6 +1623,20 @@ function singleProofKeysetId(proofs: Proof[]): string {
     throw new Error("Atomic swap proof set must use exactly one keyset");
   }
   return [...ids][0];
+}
+
+function proofGroupsByKeyset(proofs: Proof[]): Array<[string, Proof[]]> {
+  const groups = new Map<string, Proof[]>();
+  for (const proof of proofs) {
+    if (!proof.id) {
+      throw new Error("Atomic swap proof set contains proof without keyset");
+    }
+    groups.set(proof.id, [...(groups.get(proof.id) ?? []), proof]);
+  }
+  if (groups.size === 0) {
+    throw new Error("Atomic swap proof set is empty");
+  }
+  return [...groups.entries()];
 }
 
 function stripLocalProofMetadata(proof: Proof): Proof {

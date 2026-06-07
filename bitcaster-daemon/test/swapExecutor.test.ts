@@ -861,6 +861,16 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
         async resolveInputFeePpkByKeyset(_mintUrl, keysetIds) {
           return Object.fromEntries(keysetIds.map((id) => [id, 0]))
         },
+        async resolveRootDirectLockOutputAmountSats(params) {
+          assert.deepEqual(params, {
+            mintUrl: profile.mintUrl,
+            conditionId: 'cond',
+            amountSats: 100,
+            keepOutcomeSetId: 'YES',
+            lockOutcomeSetId: 'NO',
+          })
+          return 100
+        },
       },
     })
 
@@ -1249,11 +1259,13 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
         ...fakeOps(),
         async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
           assert.equal(proofs[0].secret, 'reserved-lock-no-136')
-          assert.equal(amount, 136)
+          assert.equal(amount, 100)
           assert.match(operationId, /seller-preflight-lock$/)
           return {
-            lockedProofs: [cashuProof(136, 'lock-locked-136')],
-            changeProofs: [],
+            lockedProofs: [cashuProof(100, 'lock-locked-100')],
+            changeProofs: [
+              { ...cashuProof(36, 'lock-change-36'), id: 'keyset-136' },
+            ],
           }
         },
         async splitProofsForExactSend(params) {
@@ -1275,7 +1287,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
           }
         },
         async sellerOpenPrelocked(_ctx, proofs) {
-          assert.equal(proofs[0].secret, 'lock-locked-136')
+          assert.equal(proofs[0].secret, 'lock-locked-100')
           return {
             adaptorPointCipher: 'cipher-adaptor',
             lockedProofsCipher: 'cipher-seller',
@@ -1318,7 +1330,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
     )
     assert.equal(
       persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'lock-locked-136',
+        (row) => row.proof.secret === 'lock-locked-100',
       )?.state,
       'locked',
     )
@@ -1326,7 +1338,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       persisted?.wallet.proofs.find(
         (row) => row.proof.secret === 'lock-change-36',
       )?.state,
-      undefined,
+      'reserved',
     )
     assert.equal(
       persisted?.wallet.proofs.find(
@@ -1640,13 +1652,14 @@ function cashuProof(amount: number, secret: string): CashuProofRecord {
 }
 
 function newTestDaemonSwapExecutor(
-  options: Omit<DaemonSwapExecutorOptions, 'walletOpsDeps'>,
+  options: DaemonSwapExecutorOptions,
 ): DaemonSwapExecutor {
   return new DaemonSwapExecutor({
     ...options,
     walletOpsDeps: {
       resolveInputFeePpkByKeyset: async (_mintUrl, keysetIds) =>
         Object.fromEntries(keysetIds.map((keysetId) => [keysetId, 0])),
+      ...options.walletOpsDeps,
     },
   })
 }

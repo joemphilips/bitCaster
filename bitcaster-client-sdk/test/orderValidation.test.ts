@@ -5,6 +5,7 @@ import { validateOrderIntent } from '../src/orderValidation.ts'
 const validOrder = {
   marketId: 'cond-YES',
   outcomeId: 'YES',
+  tokenSide: 'Outcome',
   side: 'Buy',
   price: 42,
   amountSats: 100,
@@ -25,6 +26,13 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
     [null, /missing order request/],
     [{ ...validOrder, marketId: '' }, /market id is required/],
     [{ ...validOrder, outcomeId: '   ' }, /outcome id is required/],
+    [{ ...validOrder, marketId: 'cond-B|C', outcomeId: 'B' }, /market id must be a primitive outcome book/],
+    [{ ...validOrder, outcomeId: 'B|C' }, /outcome id must be a primitive outcome name/],
+    [
+      { ...validOrder, marketId: 'cond-NO', outcomeId: 'YES' },
+      /outcome id must match the primitive outcome segment/,
+    ],
+    [{ ...validOrder, tokenSide: 'Either' }, /tokenSide must be Outcome or Complement/],
     [{ ...validOrder, side: 'Hold' }, /side must be Buy or Sell/],
     [{ ...validOrder, price: 0 }, /price must be an integer from 1 to 99/],
     [{ ...validOrder, price: 100 }, /price must be an integer from 1 to 99/],

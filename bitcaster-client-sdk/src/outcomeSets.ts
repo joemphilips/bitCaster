@@ -1,6 +1,8 @@
 import type { SdkMarketForTrading, SdkTradeSelection } from './types.ts'
 
 export interface ResolvedOutcomeSets {
+  publicOutcomeSetId: string
+  tokenSide: 'Outcome' | 'Complement'
   selectedOutcomeSetId: string
   complementOutcomeSetId: string
 }
@@ -41,14 +43,9 @@ export function outcomeSetMarketId(
 
 export function outcomeSetIdsForMarketBooks(market: SdkMarketForTrading): string[] {
   const universe = outcomeLabels(market)
-  const ids = new Set<string>()
-  for (const outcome of universe) {
-    const selected = canonicalizeOutcomeSet([outcome])
-    if (selected) ids.add(selected)
-    const complement = complementOutcomeSetId(universe, selected)
-    if (complement) ids.add(complement)
-  }
-  return [...ids]
+  return universe
+    .map((outcome) => canonicalizeOutcomeSet([outcome]))
+    .filter(Boolean)
 }
 
 export function resolveOutcomeSets(
@@ -62,8 +59,10 @@ export function resolveOutcomeSets(
   if (!primitive) return null
 
   const primitiveSetId = canonicalizeOutcomeSet([primitive])
+  const tokenSide =
+    selection.side === 'no' || selection.side === 'lo' ? 'Complement' : 'Outcome'
   const selectedOutcomeSetId =
-    market.type === 'categorical' && selection.side === 'no'
+    tokenSide === 'Complement'
       ? complementOutcomeSetId(universe, primitiveSetId)
       : primitiveSetId
   if (!selectedOutcomeSetId) return null
@@ -75,6 +74,8 @@ export function resolveOutcomeSets(
   if (!complementOutcomeSetIdValue) return null
 
   return {
+    publicOutcomeSetId: primitiveSetId,
+    tokenSide,
     selectedOutcomeSetId,
     complementOutcomeSetId: complementOutcomeSetIdValue,
   }
@@ -92,8 +93,12 @@ function selectedPrimitiveOutcome(
     )
   }
 
-  if (selection.side === 'yes' || selection.side === 'no') {
-    return findOutcomeByName(universe, selection.side)
+  if (selection.side === 'yes') {
+    return findOutcomeByName(universe, 'yes')
+  }
+
+  if (selection.side === 'no') {
+    return findOutcomeByName(universe, 'yes') ?? universe[0] ?? null
   }
 
   if (selection.side === 'hi' || selection.side === 'lo') {

@@ -112,6 +112,20 @@ export interface WalletOpsDependencies {
     mintUrl: string,
     conditionId: string,
   ) => Promise<string[]>
+  resolveRootPreflightOutputAmountSats?: (params: {
+    mintUrl: string
+    conditionId: string
+    amountSats: number
+    lockOutcomeSetId: string
+    keepOutcomeSetId: string
+  }) => Promise<number>
+  resolveRootDirectLockOutputAmountSats?: (params: {
+    mintUrl: string
+    conditionId: string
+    amountSats: number
+    lockOutcomeSetId: string
+    keepOutcomeSetId: string
+  }) => Promise<number>
 }
 
 export interface WalletOpsSecrets {

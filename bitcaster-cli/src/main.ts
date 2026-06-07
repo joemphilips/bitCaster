@@ -375,9 +375,19 @@ async function handleOrder(args: string[]): Promise<void> {
     const price = parseIntegerArg(args[4], 'price')
     const amountSats = parseIntegerArg(args[5], 'amount sats')
     const timeInForce = parseTimeInForce(args[6] ?? 'GTC')
-    const params = {
+    const params: {
+      marketId: string
+      outcomeId: string
+      tokenSide: 'Outcome' | 'Complement'
+      side: 'Buy' | 'Sell'
+      price: number
+      amountSats: number
+      timeInForce: 'FAK' | 'FOK' | 'GTC'
+      preflightSplit: boolean
+    } = {
       marketId,
       outcomeId,
+      tokenSide: 'Outcome',
       side,
       price,
       amountSats,
@@ -388,6 +398,8 @@ async function handleOrder(args: string[]): Promise<void> {
       const arg = args[i]
       if (arg === '--no-preflight-split') {
         params.preflightSplit = false
+      } else if (arg === '--token-side') {
+        params.tokenSide = parseTokenSide(requiredArg(args[++i], 'token side'))
       } else {
         throwUsage(`Unknown order submit option: ${arg}`)
       }
@@ -439,7 +451,7 @@ async function handleOrder(args: string[]): Promise<void> {
     return
   }
   throwUsage(`Usage:
-  bitcaster-cli order submit <market-id> <outcome-id> <Buy|Sell> <price> <amount-sats> [GTC|FAK|FOK] [--no-preflight-split]
+  bitcaster-cli order submit <market-id> <outcome-id> <Buy|Sell> <price> <amount-sats> [GTC|FAK|FOK] [--token-side Outcome|Complement] [--no-preflight-split]
   bitcaster-cli order status <market-id> <order-id>
   bitcaster-cli order list [--market <market-id>] [--status <status>]
   bitcaster-cli order cancel <market-id> <order-id>
@@ -597,6 +609,12 @@ function parseSide(value: string): 'Buy' | 'Sell' {
   throwUsage(`Invalid side: ${value}`)
 }
 
+function parseTokenSide(value: string): 'Outcome' | 'Complement' {
+  if (value === 'Outcome' || value === 'outcome') return 'Outcome'
+  if (value === 'Complement' || value === 'complement') return 'Complement'
+  throwUsage(`Invalid token side: ${value}`)
+}
+
 function parseTimeInForce(value: string): 'FAK' | 'FOK' | 'GTC' {
   const upper = value.toUpperCase()
   if (upper === 'FAK' || upper === 'FOK' || upper === 'GTC') return upper
@@ -739,7 +757,7 @@ function printOrderHelp(): void {
 Submit, inspect, list, cancel orders, and read order books.
 
 Usage:
-  bitcaster-cli order submit <market-id> <outcome-id> <Buy|Sell> <price> <amount-sats> [GTC|FAK|FOK] [--no-preflight-split]
+  bitcaster-cli order submit <market-id> <outcome-id> <Buy|Sell> <price> <amount-sats> [GTC|FAK|FOK] [--token-side Outcome|Complement] [--no-preflight-split]
   bitcaster-cli order status <market-id> <order-id>
   bitcaster-cli order list [--market <market-id>] [--status <status>]
   bitcaster-cli order cancel <market-id> <order-id>

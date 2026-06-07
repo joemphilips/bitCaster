@@ -1046,6 +1046,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
       assert.deepEqual(capturedRequest, {
         outcomeId: 'YES',
+        tokenSide: 'Outcome',
         side: 'Buy',
         price: 42,
         amountSats: 100,
@@ -1075,9 +1076,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         async submitOrder() {
           throw new EngineClientError(
             400,
-            '{"code":"InvalidOutcomeSet","detail":"OutcomeId must match the marketId outcome set."}',
-            'InvalidOutcomeSet',
-            'OutcomeId must match the marketId outcome set.',
+            '{"code":"InvalidOutcome","detail":"OutcomeId must match the primitive outcome segment of marketId."}',
+            'InvalidOutcome',
+            'OutcomeId must match the primitive outcome segment of marketId.',
           )
         },
         async getOrderStatus() {
@@ -1098,8 +1099,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         {
           method: 'order.submit',
           params: {
-            marketId: 'cond-Bob|Carol',
-            outcomeId: 'Bob|Carol',
+            marketId: 'cond-Bob',
+            outcomeId: 'Bob',
             side: 'Buy',
             price: 42,
             amountSats: 100,
@@ -1118,10 +1119,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
 
       assert.equal(response.ok, false)
-      assert.equal(response.code, 'InvalidOutcomeSet')
+      assert.equal(response.code, 'InvalidOutcome')
       assert.equal(
         response.error,
-        'OutcomeId must match the marketId outcome set.',
+        'OutcomeId must match the primitive outcome segment of marketId.',
       )
       assert.deepEqual((await readState())?.orders, {})
       if (priorState) await writeState(priorState)
@@ -1156,6 +1157,30 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             price: 42,
             amountSats: 100,
             timeInForce: 'IOC',
+          },
+          {
+            marketId: 'cond-Bob|Carol',
+            outcomeId: 'Bob',
+            side: 'Buy',
+            price: 42,
+            amountSats: 100,
+            timeInForce: 'GTC',
+          },
+          {
+            marketId: 'cond-Bob',
+            outcomeId: 'Bob|Carol',
+            side: 'Buy',
+            price: 42,
+            amountSats: 100,
+            timeInForce: 'GTC',
+          },
+          {
+            marketId: 'cond-Bob',
+            outcomeId: 'Carol',
+            side: 'Buy',
+            price: 42,
+            amountSats: 100,
+            timeInForce: 'GTC',
           },
         ]) {
           let generatedEphemeral = false
@@ -1573,6 +1598,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       assert.equal(response.ok, true)
       assert.deepEqual(capturedRequest, {
         outcomeId: 'YES',
+        tokenSide: 'Outcome',
         side: 'Sell',
         price: 42,
         amountSats: 100,

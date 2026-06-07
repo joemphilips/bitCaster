@@ -316,15 +316,14 @@ export function usePendingTradesPoller(): void {
 
 /**
  * Split a marketId of the form `{conditionId}-{outcomeName}` back into its
- * parts. `conditionId` is a lowercase hex string (32 bytes → 64 chars), so
- * splitting on the first hyphen is safe even if outcome names later grow
- * hyphens of their own. Returns `null` for malformed IDs so callers can fall
- * back to the raw string.
+ * parts. Public market ids use primitive outcome names, while condition ids
+ * may come from external systems with their own separator conventions.
+ * Returns `null` for malformed IDs so callers can fall back to the raw string.
  */
 export function splitMarketId(
   marketId: string,
 ): { conditionId: string; outcomeName: string } | null {
-  const idx = marketId.indexOf('-')
+  const idx = marketId.lastIndexOf('-')
   if (idx <= 0 || idx >= marketId.length - 1) return null
   return {
     conditionId: marketId.slice(0, idx),

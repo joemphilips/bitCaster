@@ -131,16 +131,22 @@ beforeEach(() => {
   });
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    vi.fn().mockImplementation(async () => {
+      const body = {
         keysets: [
           keyset("keyset-YES", "cond", "YES"),
           keyset("keyset-NO", "cond", "NO"),
           keyset("keyset-B", "condition-1", "B"),
           keyset("keyset-C", "condition-1", "C"),
         ],
-      }),
+      };
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      };
     }),
   );
   mockSellerPreparePrelockedSwap.mockResolvedValue({
@@ -673,20 +679,8 @@ describe("useTradeSettlement", () => {
         quotePaymentSats: 50,
       });
     });
-
     await waitFor(() =>
-      expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(2),
-    );
-    expect(mockSplitProofsForExactSend).toHaveBeenCalledWith(
-      expect.objectContaining({
-        amountSats: 100,
-        operationId:
-          "trade-preflight-overpay/browser/seller-preflight-lock-exact-v2",
-        preserveSourceKeyset: true,
-        sourceProofs: [
-          expect.objectContaining({ secret: "reserved-lock-no-136" }),
-        ],
-      }),
+      expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(1),
     );
     expect(mockSplitProofsForExactSend).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -701,7 +695,7 @@ describe("useTradeSettlement", () => {
     );
     expect(mockSellerLockOutcomeProofs).toHaveBeenCalledWith(
       expect.objectContaining({ tradeId: "trade-preflight-overpay" }),
-      [expect.objectContaining({ secret: "lock-exact-100" })],
+      [expect.objectContaining({ secret: "reserved-lock-no-136" })],
       100,
       expect.objectContaining({
         operationId: "trade-preflight-overpay/browser/seller-preflight-lock",
@@ -715,14 +709,6 @@ describe("useTradeSettlement", () => {
       ["reserved-lock-no-136"],
       [
         expect.objectContaining({
-          secret: "lock-exact-100",
-          id: "keyset-NO",
-          conditionId: "cond",
-          outcomeCollection: "NO",
-          marketId: "cond-NO",
-          reservedBy: reservationId,
-        }),
-        expect.objectContaining({
           secret: "lock-change-36",
           id: "keyset-NO",
           conditionId: "cond",
@@ -732,7 +718,6 @@ describe("useTradeSettlement", () => {
         }),
       ],
     );
-    expect(mockReplaceProofs).toHaveBeenCalledWith(["lock-exact-100"], []);
     expect(mockReplaceProofs).toHaveBeenCalledWith(
       ["reserved-keep-yes-136"],
       [
@@ -955,6 +940,10 @@ function proof(amount: number, secret: string, id = `keyset-${amount}`) {
 function keyset(id: string, conditionId: string, outcomeCollection: string) {
   return {
     id,
+    unit: "sat",
+    active: true,
+    input_fee_ppk: 0,
+    keys: { "1": "02" + "11".repeat(32) },
     condition_id: conditionId,
     outcome_collection: outcomeCollection,
     outcome_collection_id: outcomeCollection,

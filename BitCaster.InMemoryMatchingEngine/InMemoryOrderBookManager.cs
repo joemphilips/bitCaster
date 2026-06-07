@@ -134,8 +134,7 @@ public class InMemoryOrderBookManager
         if (!_books.TryGetValue(marketId, out var book))
             return new OrderBookSnapshot([], [], marketId, null);
 
-        var parts = marketId.Split('-', 2);
-        var outcomeId = parts.Length > 1 ? parts[1] : marketId;
+        var outcomeId = MarketParts.TryParse(marketId)?.OutcomeSetId ?? marketId;
 
         lock (book)
             return book.SnapshotForOutcome(marketId, outcomeId);
@@ -525,7 +524,7 @@ internal sealed record MarketParts(string ConditionId, string OutcomeSetId)
 {
     public static MarketParts? TryParse(string marketId)
     {
-        var index = marketId.IndexOf('-');
+        var index = marketId.LastIndexOf('-');
         if (index <= 0 || index == marketId.Length - 1) return null;
         return new MarketParts(marketId[..index], marketId[(index + 1)..]);
     }

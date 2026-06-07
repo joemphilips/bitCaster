@@ -413,6 +413,7 @@ describe("submitOrder", () => {
   it("submits an authenticated order without a maker heartbeat preflight", async () => {
     await submitOrder("cond-123-YES", {
       outcomeId: "YES",
+      tokenSide: "Outcome",
       side: "Buy",
       price: 50,
       amountSats: 100,

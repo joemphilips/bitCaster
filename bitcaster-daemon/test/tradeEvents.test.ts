@@ -177,6 +177,57 @@ test('TradeCreated mint seller matches keep path and buyer matches lock path', a
   }
 })
 
+test('TradeCreated binds known public complement order by submitted trade id', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-public-complement-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const state = emptyDaemonState()
+    state.orders['buyer-order'] = {
+      orderId: 'buyer-order',
+      marketId: 'cond-A',
+      status: 'matched',
+      ephemeralPubkey: `03${'22'.repeat(32)}`,
+      tradeIds: ['trade-known-complement'],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.swaps['trade-known-complement'] = {
+      tradeId: 'trade-known-complement',
+      marketId: 'cond-A',
+      orderId: 'buyer-order',
+      messages: {},
+      step: 'awaiting-trade-created',
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeState(state)
+
+    const created = await recordTradeCreated({
+      tradeId: 'trade-known-complement',
+      sellerPubkey: `02${'33'.repeat(32)}`,
+      buyerPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: '2026-05-21T00:02:00.000Z',
+      buyerLocktime: '2026-05-21T00:01:00.000Z',
+      marketId: 'cond-B|C',
+      outcomeFaceAmountSats: 100,
+      quotePaymentSats: 99,
+      settlementKind: 'Mint',
+      sellerKeepOutcomeSetId: 'A',
+      sellerLockOutcomeSetId: 'B|C',
+    })
+
+    assert.equal(created?.orderId, 'buyer-order')
+    assert.equal(created?.marketId, 'cond-A')
+    assert.equal(created?.role, 'buyer')
+    assert.equal(created?.step, 'opened')
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('TradeCreated mint match rejects mismatched keep or lock paths', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-path-mismatch-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME

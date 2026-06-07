@@ -105,6 +105,7 @@ export type StoredProofAsset =
 export interface LocalOrderRecord {
   orderId: string
   marketId: string
+  tokenSide?: 'Outcome' | 'Complement'
   status: string
   ephemeralPubkey?: string
   preflightSplit?: LocalOrderPreflightSplit
@@ -615,6 +616,7 @@ export async function recordSubmittedOrder(
   ephemeralPubkey: string,
   engineResponse: unknown,
   preflightSplit?: LocalOrderPreflightSplit | null,
+  tokenSide?: 'Outcome' | 'Complement',
 ): Promise<LocalOrderRecord> {
   const orderId = readStringProperty(engineResponse, 'orderId')
   if (!orderId) {
@@ -626,6 +628,7 @@ export async function recordSubmittedOrder(
     engineResponse,
     ephemeralPubkey,
     preflightSplit,
+    tokenSide,
   )
 }
 
@@ -662,6 +665,7 @@ function upsertOrderFromEngine(
   engineStatus: unknown,
   ephemeralPubkey?: string,
   preflightSplit?: LocalOrderPreflightSplit | null,
+  tokenSide?: 'Outcome' | 'Complement',
 ): Promise<LocalOrderRecord> {
   return updateState((state, now) => {
     const existing = state.orders[orderId]
@@ -672,9 +676,11 @@ function upsertOrderFromEngine(
         ...extractTradeIds(engineStatus),
       ]),
     ]
+    const nextTokenSide = tokenSide ?? existing?.tokenSide
     const record: LocalOrderRecord = {
       orderId,
       marketId,
+      ...(nextTokenSide ? { tokenSide: nextTokenSide } : {}),
       status,
       ephemeralPubkey: ephemeralPubkey ?? existing?.ephemeralPubkey,
       ...(preflightSplit === null
@@ -750,7 +756,7 @@ export async function recordTradeCreated(
 
     const record: LocalSwapRecord = {
       tradeId: payload.tradeId,
-      marketId: payload.marketId ?? match.marketId,
+      marketId: match.marketId,
       orderId: match.orderId,
       role: decision.role ?? existing?.role,
       counterpartyPubkey: decision.counterpartyPubkey ?? existing?.counterpartyPubkey,
@@ -1066,6 +1072,13 @@ function findOrderForTradeCreated(
         : ephemeralPubkey === buyer
           ? 'buyer'
           : null
+    if (role && order.tradeIds.includes(payload.tradeId)) {
+      return {
+        orderId: order.orderId,
+        marketId: order.marketId,
+        ephemeralPubkey: order.ephemeralPubkey!,
+      }
+    }
     if (role && tradeCreatedMatchesOrderPath(order, payload, role)) {
       return {
         orderId: order.orderId,
@@ -1095,6 +1108,13 @@ function tradeCreatedMatchesOrderPath(
     return true
   }
 
+  if (
+    order.marketId === payload.marketId &&
+    (role === 'buyer' || order.tokenSide === 'Complement')
+  ) {
+    return true
+  }
+
   const market = parseMarketId(payload.marketId)
   if (!market) return true
 
@@ -1108,7 +1128,7 @@ function tradeCreatedMatchesOrderPath(
 function parseMarketId(
   marketId: string,
 ): { conditionId: string; outcomeSetId: string } | null {
-  const dash = marketId.indexOf('-')
+  const dash = marketId.lastIndexOf('-')
   if (dash <= 0 || dash >= marketId.length - 1) return null
   return {
     conditionId: marketId.slice(0, dash),

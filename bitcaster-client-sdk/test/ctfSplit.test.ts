@@ -129,6 +129,29 @@ test("selectRootPartitionKeysets chooses the root partition matching the request
   );
 });
 
+test("selectRootPartitionKeysets expands one-vs-rest primitive root partitions", () => {
+  const condition = {
+    condition_id: CONDITION_ID,
+    keysets: {
+      Alice: "keyset-alice",
+      Bob: "keyset-bob",
+      Carol: "keyset-carol",
+    },
+  };
+
+  assert.deepEqual(
+    selectRootPartitionKeysets(condition, {
+      lockOutcomeSetId: "Alice",
+      keepOutcomeSetId: "Bob|Carol",
+    }),
+    {
+      Alice: "keyset-alice",
+      Bob: "keyset-bob",
+      Carol: "keyset-carol",
+    },
+  );
+});
+
 test("selectRootPartitionKeysets resolves id-keyed root keysets through conditional metadata", () => {
   const aliceCollectionId = "a".repeat(64);
   const notAliceCollectionId = "b".repeat(64);

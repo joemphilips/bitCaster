@@ -160,7 +160,7 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
     baseUrl: 'https://engine.example',
     fetchImpl: async () =>
       new Response(
-        'OutcomeId must match the marketId outcome set.',
+        'OutcomeId must match the primitive outcome segment of marketId.',
         {
           status: 400,
           headers: { 'content-type': 'text/plain' },
@@ -172,6 +172,7 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
     () =>
       client.submitOrder('condition-Bob%7CCarol', {
         outcomeId: 'Alice',
+        tokenSide: 'Outcome',
         side: 'Buy',
         price: 42,
         amountSats: 100,
@@ -181,6 +182,6 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
     (err) =>
       err instanceof EngineClientError &&
       err.status === 400 &&
-      err.detail === 'OutcomeId must match the marketId outcome set.',
+      err.detail === 'OutcomeId must match the primitive outcome segment of marketId.',
   )
 })
