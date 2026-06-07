@@ -21,6 +21,7 @@ import {
 } from '../src/state.ts'
 import {
   DaemonSwapExecutor,
+  type DaemonSwapExecutorOptions,
   type DaemonSwapOps,
 } from '../src/swapExecutor.ts'
 import type { TradeRuntimeConnection } from '../src/tradeRuntime.ts'
@@ -55,7 +56,7 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
     await writeState(state)
 
     const sent: string[] = []
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: fakeOps(),
     })
@@ -144,7 +145,7 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
     await writeState(state)
 
     const sent: string[] = []
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: {
         ...fakeOps(),
@@ -270,7 +271,7 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
     await writeState(state)
 
     const refunded: string[] = []
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection([]),
       ops: {
         ...fakeOps(),
@@ -375,7 +376,7 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
     )
     await writeState(state)
 
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection([]),
       ops: {
         ...fakeOps(),
@@ -458,7 +459,7 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
     })
     await writeState(state)
 
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection([]),
       ops: {
         ...fakeOps(),
@@ -512,7 +513,7 @@ test('DaemonSwapExecutor leaves persisted seller open resumable when hub send fa
     )
     await writeState(state)
 
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: throwingSendConnection(),
       ops: fakeOps(),
     })
@@ -573,7 +574,7 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
     )
     await writeState(state)
 
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection([]),
       ops: {
         ...fakeOps(),
@@ -641,7 +642,7 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
     await writeState(state)
 
     const sent: string[] = []
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: buyerFakeOps(),
     })
@@ -736,7 +737,7 @@ test('DaemonSwapExecutor resume sweep retries active claim after retryable timeo
 
     const sent: string[] = []
     let attempts = 0
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: {
         ...buyerFakeOps(),
@@ -808,7 +809,7 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
     await writeState(state)
 
     const sent: string[] = []
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: mintFakeOps(),
       walletOpsDeps: {
@@ -961,7 +962,7 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
     await writeState(state)
 
     const sent: string[] = []
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: {
         ...fakeOps(),
@@ -1034,6 +1035,160 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
   }
 })
 
+test('DaemonSwapExecutor uses primitive local inventory before pre-flight for composite mint seller open', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-primitive-before-preflight-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-preflight'] = {
+      ...orderKey(secrets),
+      orderId: 'order-preflight',
+    }
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const reservationId = `order-preflight:${orderKey(secrets).publicKeyHex}`
+    const state = emptyDaemonState()
+    state.orders['order-preflight'] = {
+      orderId: 'order-preflight',
+      marketId: 'cond-A',
+      status: 'resting',
+      ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      preflightSplit: {
+        reservationId,
+        conditionId: 'cond',
+        keepOutcomeSetId: 'A',
+        lockOutcomeSetId: 'B|C',
+        amountSats: 100,
+      },
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.wallet.proofs.push(
+      {
+        ...proofRecord(profile.mintUrl, 100, 'available', {
+          kind: 'outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'B',
+        }),
+        proof: { ...cashuProof(100, 'primitive-b'), id: 'keyset-B' },
+      },
+      {
+        ...proofRecord(profile.mintUrl, 100, 'available', {
+          kind: 'outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'C',
+        }),
+        proof: { ...cashuProof(100, 'primitive-c'), id: 'keyset-C' },
+      },
+      {
+        ...proofRecord(profile.mintUrl, 100, 'reserved', {
+          kind: 'outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'B|C',
+        }),
+        reservedBy: reservationId,
+        proof: { ...cashuProof(100, 'reserved-composite'), id: 'keyset-BC' },
+      },
+    )
+    await writeState(state)
+
+    const sent: string[] = []
+    const lockCalls: string[] = []
+    const executor = newTestDaemonSwapExecutor({
+      connection: fakeConnection(sent),
+      ops: {
+        ...fakeOps(),
+        async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
+          assert.equal(amount, 100)
+          lockCalls.push(`${operationId}:${proofs[0].secret}`)
+          return {
+            lockedProofs: [
+              {
+                ...cashuProof(100, `locked-${proofs[0].secret}`),
+                id: proofs[0].id,
+              },
+            ],
+            changeProofs: [],
+          }
+        },
+        async splitProofsForExactSend() {
+          throw new Error('pre-flight split proof path must not run when primitive inventory is available')
+        },
+        async sellerOpenPrelocked(_ctx, proofs) {
+          assert.deepEqual(
+            proofs.map((proof) => proof.secret).sort(),
+            ['locked-primitive-b', 'locked-primitive-c'],
+          )
+          return {
+            adaptorPointCipher: 'cipher-adaptor',
+            lockedProofsCipher: 'cipher-seller',
+            adaptorSecretHex: 'aa',
+            adaptorPointHex: 'bb',
+            lockedProofs: proofs,
+            changeProofs: [],
+          }
+        },
+      },
+    })
+
+    await executor.onTradeCreated(
+      await recordTradeCreated({
+        tradeId: 'trade-primitive-before-preflight',
+        sellerPubkey: orderKey(secrets).publicKeyHex,
+        buyerPubkey: `03${'57'.repeat(32)}`,
+        sellerLocktime: '2026-05-21T00:02:00.000Z',
+        buyerLocktime: '2026-05-21T00:01:00.000Z',
+        marketId: 'cond-A',
+        outcomeFaceAmountSats: 100,
+        quotePaymentSats: 42,
+        settlementKind: 'Mint',
+        sellerKeepOutcomeSetId: 'A',
+        sellerLockOutcomeSetId: 'B|C',
+      }),
+    )
+
+    const persisted = await readState()
+    assert.equal(
+      persisted?.swaps['trade-primitive-before-preflight'].step,
+      'seller-opened',
+      persisted?.swaps['trade-primitive-before-preflight'].error,
+    )
+    assert.deepEqual(lockCalls.sort(), [
+      'trade-primitive-before-preflight:seller-inventory-lock:B:primitive-b',
+      'trade-primitive-before-preflight:seller-inventory-lock:C:primitive-c',
+    ])
+    assert.equal(
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'reserved-composite')?.state,
+      'reserved',
+    )
+    assert.equal(
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'locked-primitive-b')?.asset.kind,
+      'outcome',
+    )
+    assert.equal(
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'locked-primitive-b')?.asset
+        .outcomeSetId,
+      'B',
+    )
+    assert.equal(
+      persisted?.wallet.proofs.find((row) => row.proof.secret === 'locked-primitive-c')?.asset
+        .outcomeSetId,
+      'C',
+    )
+    assert.deepEqual(sent, [
+      'trade-primitive-before-preflight:adaptor-point:cipher-adaptor',
+      'trade-primitive-before-preflight:locked-proofs-seller:cipher-seller',
+    ])
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before seller open', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-preflight-overpay-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
@@ -1088,16 +1243,16 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
     await writeState(state)
 
     const sent: string[] = []
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: {
         ...fakeOps(),
         async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
-          assert.equal(proofs[0].secret, 'lock-exact-100')
-          assert.equal(amount, 100)
+          assert.equal(proofs[0].secret, 'reserved-lock-no-136')
+          assert.equal(amount, 136)
           assert.match(operationId, /seller-preflight-lock$/)
           return {
-            lockedProofs: [cashuProof(100, 'lock-locked-100')],
+            lockedProofs: [cashuProof(136, 'lock-locked-136')],
             changeProofs: [],
           }
         },
@@ -1120,7 +1275,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
           }
         },
         async sellerOpenPrelocked(_ctx, proofs) {
-          assert.equal(proofs[0].secret, 'lock-locked-100')
+          assert.equal(proofs[0].secret, 'lock-locked-136')
           return {
             adaptorPointCipher: 'cipher-adaptor',
             lockedProofsCipher: 'cipher-seller',
@@ -1163,7 +1318,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
     )
     assert.equal(
       persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'lock-locked-100',
+        (row) => row.proof.secret === 'lock-locked-136',
       )?.state,
       'locked',
     )
@@ -1171,7 +1326,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       persisted?.wallet.proofs.find(
         (row) => row.proof.secret === 'lock-change-36',
       )?.state,
-      'reserved',
+      undefined,
     )
     assert.equal(
       persisted?.wallet.proofs.find(
@@ -1223,7 +1378,7 @@ test('DaemonSwapExecutor resends persisted seller opening messages after restart
     await writeState(state)
 
     const sent: string[] = []
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
     })
 
@@ -1268,7 +1423,7 @@ test('DaemonSwapExecutor resends persisted buyer response and completion after r
     await writeState(state)
 
     const sent: string[] = []
-    const executor = new DaemonSwapExecutor({
+    const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
     })
 
@@ -1482,4 +1637,16 @@ function cashuProof(amount: number, secret: string): CashuProofRecord {
     secret,
     C: `c-${secret}`,
   }
+}
+
+function newTestDaemonSwapExecutor(
+  options: Omit<DaemonSwapExecutorOptions, 'walletOpsDeps'>,
+): DaemonSwapExecutor {
+  return new DaemonSwapExecutor({
+    ...options,
+    walletOpsDeps: {
+      resolveInputFeePpkByKeyset: async (_mintUrl, keysetIds) =>
+        Object.fromEntries(keysetIds.map((keysetId) => [keysetId, 0])),
+    },
+  })
 }

@@ -201,7 +201,7 @@ public static class MarketQueryEndpoint
         List<string> CategoryTags,
         string AttestationStatus)
     {
-        private static readonly HashSet<string> KnownTagKeys = new(StringComparer.Ordinal) { "description", "n" };
+        private static readonly HashSet<string> KnownTagKeys = new(StringComparer.Ordinal) { "description", "title", "n" };
 
         public static MintdConditionDto FromJson(JsonElement c)
         {
@@ -210,9 +210,10 @@ public static class MarketQueryEndpoint
                 ? s.GetString() ?? "pending"
                 : "pending";
             var (title, categoryTags) = ParseTags(c);
-            var outcomes =
-                MarketEndpoints.TryGetRegisteredOutcomes(conditionId)?.ToList()
-                ?? ParseSingletonPartitionMembers(c);
+            var registeredOutcomes = MarketEndpoints.TryGetRegisteredOutcomes(conditionId)?.ToList();
+            var outcomes = registeredOutcomes is { Count: > 0 }
+                ? registeredOutcomes
+                : ParseSingletonPartitionMembers(c);
             return new MintdConditionDto(conditionId, title, outcomes, categoryTags, attestationStatus);
         }
 
@@ -230,7 +231,8 @@ public static class MarketQueryEndpoint
                     var key = pair[0].GetString();
                     var value = pair[1].GetString();
                     if (key is null || value is null) continue;
-                    if (key == "description") title ??= value;
+                    if (key == "title") title ??= value;
+                    else if (key == "description") title ??= value;
                     else if (!KnownTagKeys.Contains(key)) category.Add(value);
                 }
             }
@@ -256,6 +258,18 @@ public static class MarketQueryEndpoint
                         outcomes.Add(member);
                 }
             }
+            return OrderAtomicOutcomes(outcomes);
+        }
+
+        private static List<string> OrderAtomicOutcomes(List<string> outcomes)
+        {
+            if (outcomes.Count == 2
+                && outcomes.Any(outcome => string.Equals(outcome, "Yes", StringComparison.OrdinalIgnoreCase))
+                && outcomes.Any(outcome => string.Equals(outcome, "No", StringComparison.OrdinalIgnoreCase)))
+            {
+                return ["Yes", "No"];
+            }
+
             return outcomes;
         }
     }

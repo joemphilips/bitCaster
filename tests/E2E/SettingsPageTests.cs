@@ -83,7 +83,7 @@ public class SettingsPageTests : IAsyncLifetime
                     setupComplete: true,
                     mints: [{{
                         url: '{mintUrl}',
-                        info: {{ name: 'Test Mint', description: 'A test mint for E2E', icon_url: null, nuts: {{ CTF: {{ supported: true }} }} }},
+                        info: {{ name: 'Test Mint', description: 'A test mint for E2E', icon_url: null, nuts: {TestHelpers.CtfNutsJson} }},
                         keysets: [{{ id: '00abc123', unit: 'sat', active: true }}]
                     }}],
                     activeMintUrl: '{mintUrl}',
@@ -262,7 +262,7 @@ public class SettingsPageTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{mintUrl}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
+                    mints: [{{ url: '{mintUrl}', info: {{ name: 'Test Mint', nuts: {TestHelpers.CtfNutsJson} }} }}],
                     activeMintUrl: '{mintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
@@ -345,7 +345,7 @@ public class SettingsPageTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{mintUrl}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
+                    mints: [{{ url: '{mintUrl}', info: {{ name: 'Test Mint', nuts: {TestHelpers.CtfNutsJson} }} }}],
                     activeMintUrl: '{mintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
@@ -461,7 +461,7 @@ public class SettingsPageTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{mintUrl}', info: {{ name: 'CDK Mint', description: 'A CDK test mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
+                    mints: [{{ url: '{mintUrl}', info: {{ name: 'CDK Mint', description: 'A CDK test mint', nuts: {TestHelpers.CtfNutsJson} }} }}],
                     activeMintUrl: '{mintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}

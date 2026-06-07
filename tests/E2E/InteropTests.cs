@@ -64,7 +64,7 @@ public class InteropTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
+                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {TestHelpers.CtfNutsJson} }} }}],
                     activeMintUrl: '{TestPorts.MintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
@@ -424,8 +424,8 @@ public class InteropTests : IAsyncLifetime
             return JSON.stringify({ dbs: dbNames, proofCount, balance, error });
         }");
         var consoleLog = string.Join("\n", bitCasterConsole.TakeLast(20));
-        Assert.True(dbInfo.Contains("\"balance\":100"),
-            $"Expected balance 100 in IndexedDB. DB info: {dbInfo}\nConsole:\n{consoleLog}");
+        Assert.True(dbInfo.Contains("\"balance\":99"),
+            $"Expected spendable balance 99 in IndexedDB after mint input fee. DB info: {dbInfo}\nConsole:\n{consoleLog}");
     }
 
     /// <summary>
@@ -625,8 +625,8 @@ public class InteropTests : IAsyncLifetime
 
         await CashuMeReceiveEcashToken(cashuMePage, bitCasterToken, cashuMeConsole);
 
-        // Verify cashu.me balance shows 100 sats
-        var balanceText = cashuMePage.Locator("text=/100/");
+        // Verify cashu.me shows the spendable balance after mint input fee.
+        var balanceText = cashuMePage.Locator("text=/99/");
         try
         {
             await Assertions.Expect(balanceText.First).ToBeVisibleAsync(new() { Timeout = 10_000 });
@@ -634,7 +634,7 @@ public class InteropTests : IAsyncLifetime
         catch
         {
             throw await TestHelpers.BuildDiagnosticExceptionAsync(cashuMePage, cashuMeConsole,
-                "cashu.me did not show expected balance of 100 sats after receiving bitCaster token.");
+                "cashu.me did not show expected spendable balance of 99 sats after receiving bitCaster token.");
         }
     }
 
@@ -671,7 +671,7 @@ public class InteropTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
+                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {TestHelpers.CtfNutsJson} }} }}],
                     activeMintUrl: '{TestPorts.MintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}

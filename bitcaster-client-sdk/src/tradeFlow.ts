@@ -134,15 +134,21 @@ export function decideSwapMessage(
     return { messages, action: 'none' }
   }
 
-  cacheSwapCipher(messages, input.messageType, input.ciphertext)
   const messageKey = messageStoreKey(input.messageType)
+  const alreadyHadMessage = Boolean(messages[messageKey])
+  cacheSwapCipher(messages, input.messageType, input.ciphertext)
   if (
     input.role === 'seller' &&
     input.messageType === TRADE_MESSAGE_TYPES.lockedProofsBuyer
   ) {
     return { messages, messageKey, action: 'settlement-claim' }
   }
-  if (input.role === 'buyer' && hasBothSellerCiphers(messages)) {
+  if (
+    input.role === 'buyer' &&
+    hasBothSellerCiphers(messages) &&
+    !messages.lockedProofsBuyer &&
+    !alreadyHadMessage
+  ) {
     return { messages, messageKey, action: 'buyer-respond' }
   }
   return { messages, messageKey, action: 'none' }

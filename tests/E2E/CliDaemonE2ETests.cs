@@ -22,6 +22,12 @@ namespace BitCaster.E2ETest;
 /// </summary>
 public sealed class CliDaemonE2ETests : IAsyncLifetime
 {
+    private const int MintInputFeePpk = 1;
+    private static readonly JsonSerializerOptions BrowserDiagnosticJsonOptions = new()
+    {
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+    };
+
     private readonly string _repoRoot = FindRepoRoot();
     private readonly List<DaemonHandle> _daemons = [];
 
@@ -387,6 +393,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         const int makerFundingSats = 210;
         const int makerPrice = 1;
         const int takerPrice = 99;
+        var expectedSpendableOutcomeSats = SpendableCtfSats(faceAmountSats);
 
         var playwright = makerKind == TradingClientKind.Gui || takerKind == TradingClientKind.Gui
             ? await Playwright.CreateAsync()
@@ -428,11 +435,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 await maker.AssertReservedOutcomeProofsAsync(
                     condition.ConditionId,
                     makerOutcomeSetId,
-                    faceAmountSats);
+                    expectedSpendableOutcomeSats);
                 await maker.AssertReservedOutcomeProofsAsync(
                     condition.ConditionId,
                     takerOutcomeSetId,
-                    faceAmountSats);
+                    expectedSpendableOutcomeSats);
             }
 
             var tradeId = await taker.SubmitComplementaryTakerBuyAsync(
@@ -449,11 +456,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             await maker.AssertAvailableOutcomeProofsAsync(
                 condition.ConditionId,
                 makerOutcomeSetId,
-                faceAmountSats);
+                expectedSpendableOutcomeSats);
             await taker.AssertAvailableOutcomeProofsAsync(
                 condition.ConditionId,
                 takerOutcomeSetId,
-                faceAmountSats);
+                expectedSpendableOutcomeSats);
         }
         finally
         {
@@ -465,7 +472,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     [Fact]
     public async Task BrowserMaker_CliTaker_CategoricalComplementarySettlement_UsesPrimitiveProofMetadata()
     {
-        var condition = await FindCategoricalConditionAsync();
+        using var fixtureHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            fixtureHttpClient,
+            titlePrefix: "E2E categorical complementary");
         var takerOutcomeSetId = condition.PrimitiveOutcomeSetIds[0];
         var makerOutcomeSetId = CanonicalOutcomeSet(condition.PrimitiveOutcomeSetIds.Skip(1));
         var makerMarketId = $"{condition.ConditionId}-{makerOutcomeSetId}";
@@ -474,6 +484,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         const int makerFundingSats = 210;
         const int makerPrice = 1;
         const int takerPrice = 99;
+        var expectedSpendableOutcomeSats = SpendableCtfSats(faceAmountSats);
 
         var playwright = await Playwright.CreateAsync();
         IBrowser? browser = null;
@@ -509,11 +520,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             await maker.AssertReservedOutcomeProofsAsync(
                 condition.ConditionId,
                 makerOutcomeSetId,
-                faceAmountSats);
+                expectedSpendableOutcomeSats);
             await maker.AssertReservedOutcomeProofsAsync(
                 condition.ConditionId,
                 takerOutcomeSetId,
-                faceAmountSats);
+                expectedSpendableOutcomeSats);
 
             var tradeId = await taker.SubmitComplementaryTakerBuyAsync(
                 condition.ConditionId,
@@ -536,11 +547,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             await maker.AssertAvailableOutcomeProofsAsync(
                 condition.ConditionId,
                 makerOutcomeSetId,
-                faceAmountSats);
+                expectedSpendableOutcomeSats);
             await taker.AssertAvailableOutcomeProofsAsync(
                 condition.ConditionId,
                 takerOutcomeSetId,
-                faceAmountSats);
+                expectedSpendableOutcomeSats);
         }
         finally
         {
@@ -639,7 +650,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 bobConsole,
                 limitPrice: price);
 
-            await WaitForBrowserTradeConfirmedAsync(tradeId, aliceConsole, bobConsole);
+            await WaitForBrowserTradeConfirmedAsync(
+                tradeId,
+                [(alicePage, aliceConsole), (bobPage, bobConsole)]);
             await WaitForBrowserExactOutcomeProofsAsync(
                 bobPage,
                 condition.ConditionId,
@@ -788,8 +801,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var takerMarketId = $"{condition.ConditionId}-{condition.YesOutcomeSetId}";
         const int faceAmountSats = 100;
         const int quoteAmountSats = 50;
+        const int makerFundingSats = 210;
+        var takerFundingSats = GrossCtfFaceAmountForSpendableSats(quoteAmountSats);
 
-        var makerSatToken = await MintTokenAsync("sats", faceAmountSats);
+        var makerSatToken = await MintTokenAsync("sats", makerFundingSats);
         using var makerReceive = await RunCliJsonAsync(maker, [
             "wallet",
             "receive",
@@ -797,7 +812,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         ]);
         Assert.True(makerReceive.RootElement.GetProperty("ok").GetBoolean());
 
-        var takerSatToken = await MintTokenAsync("sats", quoteAmountSats);
+        var takerSatToken = await MintTokenAsync("sats", takerFundingSats);
         using var takerReceive = await RunCliJsonAsync(taker, [
             "wallet",
             "receive",
@@ -852,8 +867,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var takerMarketId = $"{condition.ConditionId}-{condition.YesOutcomeSetId}";
         const int faceAmountSats = 100;
         const int quoteAmountSats = 50;
+        const int makerFundingSats = 210;
+        var takerFundingSats = GrossCtfFaceAmountForSpendableSats(quoteAmountSats);
 
-        var makerSatToken = await MintTokenAsync("sats", faceAmountSats);
+        var makerSatToken = await MintTokenAsync("sats", makerFundingSats);
         using var makerReceive = await RunCliJsonAsync(maker, [
             "wallet",
             "receive",
@@ -861,7 +878,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         ]);
         Assert.True(makerReceive.RootElement.GetProperty("ok").GetBoolean());
 
-        var takerSatToken = await MintTokenAsync("sats", quoteAmountSats);
+        var takerSatToken = await MintTokenAsync("sats", takerFundingSats);
         using var takerReceive = await RunCliJsonAsync(taker, [
             "wallet",
             "receive",
@@ -915,11 +932,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var condition = await FindFundableOutcomeAsync();
         var marketId = $"{condition.ConditionId}-{condition.OutcomeSetId}";
         const int amountSats = 100;
+        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
         const string price = "50";
 
         var sellerOutcomeToken = await MintTokenAsync(
             "outcome",
-            amountSats,
+            sellerOutcomeFaceAmountSats,
             condition.ConditionId,
             condition.OutcomeSetId);
         using var sellerReceive = await RunCliJsonAsync(seller, [
@@ -993,15 +1011,17 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     public async Task BrowserBuyer_CliDaemonSeller_DirectSettlement_ReachesConfirmed()
     {
         var seller = await StartDaemonAsync();
-        var condition = await FindBinaryConditionAsync();
+        using var fixtureHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateBinaryMarketFixtureAsync(fixtureHttpClient);
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
+        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
         const string price = "50";
 
         var sellerOutcomeToken = await MintTokenAsync(
             "outcome",
-            amountSats,
+            sellerOutcomeFaceAmountSats,
             condition.ConditionId,
             tradingOutcomeSetId);
         using var sellerReceive = await RunCliJsonAsync(seller, [
@@ -1045,11 +1065,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
+        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
         const string price = "50";
 
         var sellerOutcomeToken = await MintTokenAsync(
             "outcome",
-            amountSats,
+            sellerOutcomeFaceAmountSats,
             condition.ConditionId,
             tradingOutcomeSetId);
         using var sellerReceive = await RunCliJsonAsync(seller, [
@@ -1095,11 +1116,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
+        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
         const string price = "50";
 
         var sellerOutcomeToken = await MintTokenAsync(
             "outcome",
-            amountSats,
+            sellerOutcomeFaceAmountSats,
             condition.ConditionId,
             tradingOutcomeSetId);
         using var sellerReceive = await RunCliJsonAsync(seller, [
@@ -1179,10 +1201,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
+        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
         const int price = 50;
+        var expectedSellerSpendableSats = SpendableCtfSats(amountSats * price / 100);
         var sellerOutcomeProofs = await MintProofsJsonAsync(
             "outcome",
-            amountSats,
+            sellerOutcomeFaceAmountSats,
             condition.ConditionId,
             tradingOutcomeSetId);
 
@@ -1203,6 +1227,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 {
                     ServiceWorkers = ServiceWorkerPolicy.Block,
                 });
+                await AddSignalRDebugAsync(sellerContext);
+                await AddSignalRDebugAsync(buyerContext);
 
                 var sellerPage = await sellerContext.NewPageAsync();
                 var buyerPage = await buyerContext.NewPageAsync();
@@ -1225,8 +1251,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     marketId,
                     price,
                     amountSats,
-                    sellerConsole);
+                    sellerConsole,
+                    requireOrderJoin: true);
                 await WaitForEngineAskAsync(marketId, amountSats);
+                await sellerPage.BringToFrontAsync();
 
                 await SetupBrowserWalletAndSignerAsync(
                     buyerPage,
@@ -1242,6 +1270,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     limitPrice: price);
                 Assert.False(string.IsNullOrWhiteSpace(tradeId));
 
+                await WaitForBrowserTradeConfirmedAsync(
+                    tradeId,
+                    [(sellerPage, sellerConsole), (buyerPage, buyerConsole)]);
                 await WaitForBrowserOutcomeProofsAsync(
                     buyerPage,
                     condition.ConditionId,
@@ -1249,7 +1280,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     buyerConsole);
                 await WaitForBrowserBaseProofsAsync(
                     sellerPage,
-                    amountSats * price / 100,
+                    expectedSellerSpendableSats,
                     sellerConsole);
             }
             finally
@@ -1271,10 +1302,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
+        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
         const int price = 50;
         var sellerOutcomeProofs = await MintProofsJsonAsync(
             "outcome",
-            amountSats,
+            sellerOutcomeFaceAmountSats,
             condition.ConditionId,
             tradingOutcomeSetId);
 
@@ -1342,7 +1374,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 await WaitForTradeStepAsync(buyer, tradeId!, "confirmed");
                 await WaitForBrowserBaseProofsAsync(
                     sellerPage,
-                    amountSats * price / 100,
+                    SpendableCtfSats(amountSats * price / 100),
                     sellerConsole);
             }
             finally
@@ -1364,10 +1396,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
+        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
         const int price = 50;
         var sellerOutcomeProofs = await MintProofsJsonAsync(
             "outcome",
-            amountSats,
+            sellerOutcomeFaceAmountSats,
             condition.ConditionId,
             tradingOutcomeSetId);
 
@@ -1437,7 +1470,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 await WaitForTradeStepAsync(buyer, tradeId!, "confirmed");
                 await WaitForBrowserBaseProofsAsync(
                     sellerPage,
-                    amountSats * price / 100,
+                    SpendableCtfSats(amountSats * price / 100),
                     sellerConsole);
             }
             finally
@@ -1459,10 +1492,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
+        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
         const int price = 50;
         var sellerOutcomeProofs = await MintProofsJsonAsync(
             "outcome",
-            amountSats,
+            sellerOutcomeFaceAmountSats,
             condition.ConditionId,
             tradingOutcomeSetId);
 
@@ -1532,7 +1566,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 await WaitForTradeStepAsync(buyer, tradeId!, "confirmed");
                 await WaitForBrowserBaseProofsAsync(
                     sellerPage,
-                    amountSats * price / 100,
+                    SpendableCtfSats(amountSats * price / 100),
                     sellerConsole);
             }
             finally
@@ -2064,6 +2098,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     marketId,
                     amountSats,
                     consoleMessages);
+                await WaitForBrowserTradeConfirmedAsync(
+                    tradeId,
+                    [(page, consoleMessages)]);
                 await WaitForBrowserOutcomeProofsAsync(
                     page,
                     conditionId,
@@ -2097,6 +2134,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
+                    walletBackupState: 'confirmed',
                     mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {{}} }} }}],
                     activeMintUrl: '{TestPorts.MintUrl}',
                     keysetCounters: {{}},
@@ -2111,6 +2149,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     language: 'en',
                     theme: 'dark',
                     nostrSignerMode: 'nsec',
+                    signerBackupState: 'confirmed',
                     nsecSecret: '{nsec}',
                     nostrProfile: null,
                     nostrProfileFetchStatus: 'idle',
@@ -2434,7 +2473,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         string marketId,
         int limitPrice,
         int amountSats,
-        IReadOnlyList<string> consoleMessages)
+        IReadOnlyList<string> consoleMessages,
+        bool requireOrderJoin = false)
     {
         await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{conditionId}", new PageGotoOptions
         {
@@ -2510,6 +2550,27 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 page,
                 consoleMessages,
                 $"Browser seller order should rest before buyer arrives. Body={orderBody}");
+        }
+        var orderId = doc.RootElement.GetProperty("orderId").GetString();
+        if (string.IsNullOrWhiteSpace(orderId))
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Browser seller order response did not include orderId. Body={orderBody}");
+        }
+
+        var joined = await TryWaitForSignalRInvocationAsync(
+            consoleMessages,
+            "JoinOrder",
+            orderId!,
+            timeout: requireOrderJoin ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(5));
+        if (requireOrderJoin && !joined)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Browser seller did not join order group for {orderId} before taker fill.");
         }
     }
 
@@ -2623,9 +2684,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     private static async Task<bool> TryWaitForSignalRInvocationAsync(
         IReadOnlyList<string> consoleMessages,
         string target,
-        string expectedFragment)
+        string expectedFragment,
+        TimeSpan? timeout = null)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
         while (DateTime.UtcNow < deadline)
         {
             if (consoleMessages.Any(message =>
@@ -2642,29 +2704,189 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
     private static async Task WaitForBrowserTradeConfirmedAsync(
         string tradeId,
-        params IReadOnlyList<string>[] consoleLogs)
+        IReadOnlyList<(IPage Page, IReadOnlyList<string> Console)> browsers)
     {
         var deadline = DateTime.UtcNow.AddSeconds(60);
         while (DateTime.UtcNow < deadline)
         {
-            AssertNoForbiddenBrowserConsole(consoleLogs);
-            if (consoleLogs.Any(log => log.Any(message =>
+            AssertNoForbiddenBrowserConsole(browsers.Select(browser => browser.Console).ToArray());
+            if (browsers.Any(browser => browser.Console.Any(message =>
                     message.Contains(tradeId, StringComparison.OrdinalIgnoreCase)
                     && message.Contains("Confirmed", StringComparison.OrdinalIgnoreCase))))
             {
                 return;
             }
+            var liveSwapState = await ReadBrowserSwapDiagnosticsAsync(
+                tradeId,
+                browsers.Select(browser => browser.Page));
+            if (liveSwapState.Contains("\"step\":\"completed\"", StringComparison.Ordinal))
+            {
+                return;
+            }
+            if (AllWatchedBrowserSwapWorkCompleted(liveSwapState, browsers.Count, tradeId))
+            {
+                return;
+            }
+            if (liveSwapState.Contains("\"step\":\"failed\"", StringComparison.Ordinal))
+            {
+                throw new TimeoutException(
+                    $"Browser trade {tradeId} failed before confirmation. SwapState={liveSwapState}");
+            }
             await Task.Delay(500);
         }
 
-        var tail = consoleLogs
-            .SelectMany(log => log)
+        var tail = browsers
+            .SelectMany(browser => browser.Console)
             .Where(message => message.Contains(tradeId, StringComparison.OrdinalIgnoreCase)
                               || message.Contains("Trade", StringComparison.OrdinalIgnoreCase))
             .TakeLast(20)
             .ToArray();
+        var swapState = await ReadBrowserSwapDiagnosticsAsync(tradeId, browsers.Select(browser => browser.Page));
+        if (AllWatchedBrowserSwapWorkCompleted(swapState, browsers.Count, tradeId))
+        {
+            return;
+        }
         throw new TimeoutException(
-            $"Browser trade {tradeId} did not reach CONFIRMED. Tail={JsonSerializer.Serialize(tail)}");
+            $"Browser trade {tradeId} did not reach CONFIRMED. " +
+            $"SwapState={swapState}. Tail={JsonSerializer.Serialize(tail)}");
+    }
+
+    private static bool AllWatchedBrowserSwapWorkCompleted(
+        string serializedSnapshots,
+        int browserCount,
+        string tradeId)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(serializedSnapshots);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                return false;
+            var snapshots = doc.RootElement.EnumerateArray().ToArray();
+            if (snapshots.Length != browserCount || snapshots.Length == 0)
+                return false;
+            return snapshots.All(snapshot =>
+                snapshot.TryGetProperty("activeTrade", out var activeTrade)
+                && activeTrade.ValueKind == JsonValueKind.Null
+                && snapshot.TryGetProperty("activeTradeIds", out var activeTradeIds)
+                && activeTradeIds.ValueKind == JsonValueKind.Array
+                && !activeTradeIds.EnumerateArray().Any()
+                && snapshot.TryGetProperty("proofSummary", out var proofSummary)
+                && proofSummary.TryGetProperty("operations", out var operations)
+                && operations.ValueKind == JsonValueKind.Array
+                && operations.EnumerateArray().Any(operation =>
+                    operation.TryGetProperty("operationId", out var operationId)
+                    && operationId.ValueKind == JsonValueKind.String
+                    && operationId.GetString()?.StartsWith(
+                        $"{tradeId}/browser/",
+                        StringComparison.Ordinal) == true
+                    && operationId.GetString()?.EndsWith(
+                        "-claim",
+                        StringComparison.Ordinal) == true
+                    && operation.TryGetProperty("state", out var state)
+                    && state.ValueKind == JsonValueKind.String
+                    && string.Equals(
+                        state.GetString(),
+                        "completed",
+                        StringComparison.Ordinal)));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<string> ReadBrowserSwapDiagnosticsAsync(
+        string tradeId,
+        IEnumerable<IPage> pages)
+    {
+        var snapshots = new List<object?>();
+        foreach (var page in pages)
+        {
+            try
+            {
+                var snapshot = await page.EvaluateAsync<object?>(
+                    @"async (tradeId) => {
+                        const active = await import('/src/stores/activeSwaps.ts');
+                        const pending = await import('/src/stores/pendingTrades.ts');
+                        const activeState = active.useActiveSwapsStore.getState();
+                        const pendingState = pending.usePendingTradesStore.getState();
+                        const req = indexedDB.open('bitcaster');
+                        const db = await new Promise((resolve, reject) => {
+                            req.onsuccess = () => resolve(req.result);
+                            req.onerror = () => reject(req.error);
+                            req.onupgradeneeded = () => {};
+                        });
+                        let proofSummary = { total: 0, baseAvailable: 0, baseReserved: 0, rows: [], operations: [] };
+                        try {
+                            if (db.objectStoreNames.contains('proofs')) {
+                                const tx = db.transaction('proofs', 'readonly');
+                                const store = tx.objectStore('proofs');
+                                const proofs = await new Promise((resolve, reject) => {
+                                    const r = store.getAll();
+                                    r.onsuccess = () => resolve(r.result);
+                                    r.onerror = () => reject(r.error);
+                                });
+                                const isBase = (p) =>
+                                    !p.marketId &&
+                                    !p.conditionId &&
+                                    !p.condition_id &&
+                                    !p.outcomeCollection &&
+                                    !p.outcome_collection;
+                                proofSummary = {
+                                    total: proofs.reduce((sum, p) => sum + Number(p.amount ?? 0), 0),
+                                    baseAvailable: proofs
+                                        .filter((p) => isBase(p) && !p.reservedBy)
+                                        .reduce((sum, p) => sum + Number(p.amount ?? 0), 0),
+                                    baseReserved: proofs
+                                        .filter((p) => isBase(p) && p.reservedBy)
+                                        .reduce((sum, p) => sum + Number(p.amount ?? 0), 0),
+                                    rows: proofs.map((p) => ({
+                                        amount: Number(p.amount ?? 0),
+                                        id: p.id,
+                                        reservedBy: p.reservedBy ?? null,
+                                        conditionId: p.conditionId ?? p.condition_id ?? null,
+                                        outcomeCollection: p.outcomeCollection ?? p.outcome_collection ?? null
+                                    })),
+                                    operations: []
+                                };
+                            }
+                            if (db.objectStoreNames.contains('proofOperations')) {
+                                const tx = db.transaction('proofOperations', 'readonly');
+                                const store = tx.objectStore('proofOperations');
+                                const operations = await new Promise((resolve, reject) => {
+                                    const r = store.getAll();
+                                    r.onsuccess = () => resolve(r.result);
+                                    r.onerror = () => reject(r.error);
+                                });
+                                proofSummary.operations = operations.map((op) => ({
+                                    operationId: op.operationId,
+                                    kind: op.kind,
+                                    state: op.state,
+                                    inputAmounts: (op.inputs ?? []).map((p) => Number(p.amount ?? 0)),
+                                    resultKeys: op.resultProofs ? Object.keys(op.resultProofs) : []
+                                }));
+                            }
+                        } finally {
+                            db.close();
+                        }
+                        return {
+                            url: window.location.href,
+                            activeTrade: activeState.byTradeId[tradeId] ?? null,
+                            activeTradeIds: Object.keys(activeState.byTradeId),
+                            pendingOrderIds: Object.keys(pendingState.byOrderId),
+                            pendingTrades: pendingState.byOrderId,
+                            proofSummary
+                        };
+                    }",
+                    tradeId);
+                snapshots.Add(snapshot);
+            }
+            catch (Exception ex)
+            {
+                snapshots.Add(new { error = ex.Message });
+            }
+        }
+        return JsonSerializer.Serialize(snapshots, BrowserDiagnosticJsonOptions);
     }
 
     private static void AssertNoForbiddenBrowserConsole(params IReadOnlyList<string>[] consoleLogs)
@@ -2915,7 +3137,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         if (availableOnly && reservedOnly)
             throw new ArgumentException("Outcome proof query cannot be both availableOnly and reservedOnly.");
 
-        var outcomeCollections = PrimitiveOutcomeCollections(outcomeSetId);
+        var outcomeCollections = OutcomeCollectionsForProofAssertion(outcomeSetId);
         var deadline = DateTime.UtcNow.AddSeconds(60);
         var lastSums = outcomeCollections.ToDictionary(outcome => outcome, _ => 0);
         while (DateTime.UtcNow < deadline)
@@ -2936,7 +3158,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         throw await TestHelpers.BuildDiagnosticExceptionAsync(
             page,
             consoleMessages,
-            $"Browser did not persist local outcome proofs for {conditionId}-{outcomeSetId}. availableOnly={availableOnly}, reservedOnly={reservedOnly}, expected each primitive >= {minimumSats}, last sums={JsonSerializer.Serialize(lastSums)}.");
+            $"Browser did not persist local outcome proofs for {conditionId}-{outcomeSetId}. availableOnly={availableOnly}, reservedOnly={reservedOnly}, expected each collection >= {minimumSats}, last sums={JsonSerializer.Serialize(lastSums)}.");
     }
 
     private static async Task WaitForBrowserExactOutcomeProofsAsync(
@@ -3045,7 +3267,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         int minimumSats,
         bool reserved)
     {
-        var outcomeCollections = PrimitiveOutcomeCollections(outcomeSetId);
+        var outcomeCollections = OutcomeCollectionsForProofAssertion(outcomeSetId);
         var deadline = DateTime.UtcNow.AddSeconds(60);
         var lastAmounts = outcomeCollections.ToDictionary(outcome => outcome, _ => 0);
         string? lastBody = null;
@@ -3081,7 +3303,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         throw new TimeoutException(
             $"Daemon wallet did not expose {(reserved ? "reserved" : "available")} outcome proofs for {conditionId}-{outcomeSetId}. " +
-            $"Expected each primitive >= {minimumSats}, lastAmounts={JsonSerializer.Serialize(lastAmounts)}, last={lastBody ?? "(none)"}");
+            $"Expected each collection >= {minimumSats}, lastAmounts={JsonSerializer.Serialize(lastAmounts)}, last={lastBody ?? "(none)"}");
     }
 
     private async Task WaitForDaemonExactOutcomeSatsAsync(
@@ -3258,6 +3480,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .ToArray();
 
+    private static string[] OutcomeCollectionsForProofAssertion(string outcomeSetId) =>
+        outcomeSetId.Contains('|', StringComparison.Ordinal)
+            ? [outcomeSetId]
+            : PrimitiveOutcomeCollections(outcomeSetId);
+
     private static string CanonicalOutcomeSet(IEnumerable<string> outcomes) =>
         string.Join('|', outcomes
             .Where(outcome => !string.IsNullOrWhiteSpace(outcome))
@@ -3337,6 +3564,22 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         return result.Stdout.Trim();
     }
 
+    private static int SpendableCtfSats(int faceAmountSats) =>
+        faceAmountSats - InputFeeSats(faceAmountSats);
+
+    private static int GrossCtfFaceAmountForSpendableSats(int spendableAmountSats)
+    {
+        var faceAmountSats = spendableAmountSats;
+        while (SpendableCtfSats(SpendableCtfSats(faceAmountSats)) < spendableAmountSats)
+        {
+            faceAmountSats++;
+        }
+        return faceAmountSats;
+    }
+
+    private static int InputFeeSats(int amountSats) =>
+        (int)Math.Ceiling(amountSats * MintInputFeePpk / 1000.0);
+
     private async Task<string> MintProofsJsonAsync(
         string mode,
         int amountSats,
@@ -3399,6 +3642,29 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync();
         using var doc = await JsonDocument.ParseAsync(stream);
+
+        var seeded = EnumerateBinaryConditions(doc)
+            .FirstOrDefault(condition =>
+                condition.Title.Contains("Will Bitcoin reach $100K", StringComparison.OrdinalIgnoreCase));
+        if (seeded.ConditionId is not null)
+            return (seeded.ConditionId, seeded.YesOutcomeSetId, seeded.NoOutcomeSetId);
+
+        var engineVisibleIds = await LoadCatalogueConditionIdsAsync(httpClient);
+        var engineVisible = EnumerateBinaryConditions(doc)
+            .FirstOrDefault(condition => engineVisibleIds.Contains(condition.ConditionId));
+        if (engineVisible.ConditionId is not null)
+            return (engineVisible.ConditionId, engineVisible.YesOutcomeSetId, engineVisible.NoOutcomeSetId);
+
+        var fallback = EnumerateBinaryConditions(doc).FirstOrDefault();
+        if (fallback.ConditionId is not null)
+            return (fallback.ConditionId, fallback.YesOutcomeSetId, fallback.NoOutcomeSetId);
+
+        throw new InvalidOperationException("No binary YES/NO CTF condition was available from the mint.");
+    }
+
+    private static IEnumerable<(string ConditionId, string Title, string YesOutcomeSetId, string NoOutcomeSetId)> EnumerateBinaryConditions(
+        JsonDocument doc)
+    {
         foreach (var condition in doc.RootElement.GetProperty("conditions").EnumerateArray())
         {
             var conditionId = condition.GetProperty("condition_id").GetString();
@@ -3414,10 +3680,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             var yes = values.FirstOrDefault(value => string.Equals(value, "YES", StringComparison.OrdinalIgnoreCase));
             var no = values.FirstOrDefault(value => string.Equals(value, "NO", StringComparison.OrdinalIgnoreCase));
             if (yes is not null && no is not null)
-                return (conditionId, yes, no);
+                yield return (conditionId, ReadConditionTitle(condition), yes, no);
         }
-
-        throw new InvalidOperationException("No binary YES/NO CTF condition was available from the mint.");
     }
 
     private static async Task<(string ConditionId, string[] PrimitiveOutcomeSetIds)> FindCategoricalConditionAsync()
@@ -3584,6 +3848,78 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 $"{createResponse.StatusCode} {await createResponse.Content.ReadAsStringAsync()}");
 
         return (conditionId, outcomes);
+    }
+
+    private static async Task<(string ConditionId, string YesOutcomeSetId, string NoOutcomeSetId)> CreateBinaryMarketFixtureAsync(
+        HttpClient httpClient,
+        string? titlePrefix = null)
+    {
+        string[] outcomes = ["Yes", "No"];
+        var unique = Guid.NewGuid().ToString("N")[..8];
+        var title = $"{titlePrefix ?? "E2E binary direct"} {unique}";
+        var description = "Synthetic open binary market created by the direct settlement smoke.";
+        var announcementHex = BuildTestEnumAnnouncementHex(
+            outcomes,
+            $"e2e-binary-direct-{unique}",
+            DateTimeOffset.UtcNow.AddMonths(6));
+
+        using var conditionResponse = await httpClient.PostAsJsonAsync(
+            $"{TestPorts.MintUrl}/v1/conditions",
+            new
+            {
+                threshold = 1,
+                tags = new[]
+                {
+                    new[] { "title", title },
+                    new[] { "description", description },
+                    new[] { "t", "qa" },
+                },
+                announcements = new[] { announcementHex },
+                condition_type = "enum",
+                collateral = "sat",
+            });
+        conditionResponse.EnsureSuccessStatusCode();
+        await using var conditionStream = await conditionResponse.Content.ReadAsStreamAsync();
+        using var conditionDoc = await JsonDocument.ParseAsync(conditionStream);
+        var conditionId = conditionDoc.RootElement.GetProperty("condition_id").GetString();
+        if (string.IsNullOrWhiteSpace(conditionId))
+            throw new InvalidOperationException("Mint condition registration returned an empty condition_id.");
+
+        var metadata = new
+        {
+            title,
+            description,
+            outcomes = EqualProbabilityOutcomes(outcomes),
+            outcomeType = "yesno",
+            liquiditySats = 0,
+            categoryTags = new[] { "qa" },
+            oracleAnnouncementHex = announcementHex,
+        };
+        using var form = new MultipartFormDataContent
+        {
+            {
+                new StringContent(
+                    JsonSerializer.Serialize(metadata, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Encoding.UTF8,
+                    "application/json"),
+                "metadata"
+            }
+        };
+        var bodyBytes = await form.ReadAsByteArrayAsync();
+        var createUrl = $"{TestPorts.ServerUrl}/api/v1/markets/{conditionId}";
+        using var request = new HttpRequestMessage(HttpMethod.Post, createUrl);
+        request.Headers.Add("Authorization", CreateNip98AuthHeader("POST", createUrl, bodyBytes));
+        request.Content = new ByteArrayContent(bodyBytes);
+        foreach (var header in form.Headers)
+            request.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+
+        using var createResponse = await httpClient.SendAsync(request);
+        if (!createResponse.IsSuccessStatusCode && createResponse.StatusCode != HttpStatusCode.Conflict)
+            throw new InvalidOperationException(
+                $"Engine binary market fixture registration failed: " +
+                $"{createResponse.StatusCode} {await createResponse.Content.ReadAsStringAsync()}");
+
+        return (conditionId, "Yes", "No");
     }
 
     private static string[] RequiredOutcomeCollections(string[] outcomes)
@@ -3811,6 +4147,58 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         {
             return [];
         }
+    }
+
+    private static async Task<HashSet<string>> LoadCatalogueConditionIdsAsync(HttpClient httpClient)
+    {
+        try
+        {
+            using var response = await httpClient.GetAsync($"{TestPorts.ServerUrl}/api/v1/markets/query?state=All&limit=500");
+            if (!response.IsSuccessStatusCode)
+                return [];
+
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var doc = await JsonDocument.ParseAsync(stream);
+            return doc.RootElement.GetProperty("markets")
+                .EnumerateArray()
+                .Where(market =>
+                    market.TryGetProperty("conditionId", out var conditionId)
+                    && conditionId.ValueKind == JsonValueKind.String)
+                .Select(market => market.GetProperty("conditionId").GetString()!)
+                .ToHashSet(StringComparer.Ordinal);
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static string ReadConditionTitle(JsonElement condition)
+    {
+        if (condition.TryGetProperty("tags", out var tags) && tags.ValueKind == JsonValueKind.Array)
+        {
+            string? description = null;
+            foreach (var entry in tags.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Array)
+                    continue;
+                var values = entry.EnumerateArray().ToArray();
+                if (values.Length < 2)
+                    continue;
+                var key = values[0].GetString();
+                var value = values[1].GetString();
+                if (key == "title" && !string.IsNullOrWhiteSpace(value))
+                    return value;
+                if (key == "description" && !string.IsNullOrWhiteSpace(value))
+                    description ??= value;
+            }
+            if (!string.IsNullOrWhiteSpace(description))
+                return description;
+        }
+
+        if (condition.TryGetProperty("description", out var legacy))
+            return legacy.GetString() ?? string.Empty;
+        return string.Empty;
     }
 
     private async Task<ProcessResult> RunNodeAsync(

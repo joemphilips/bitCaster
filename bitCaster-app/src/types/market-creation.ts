@@ -122,6 +122,10 @@ export interface MarketCreationWizardProps {
   /** Error message from submission */
   submitError: string | null
 
+  registrationFeePrompt: { feeSats: number; balanceSats: number } | null
+  registrationFeeTopUp: { feeSats: number; balanceSats: number } | null
+  registrationFeeTopUpStage: 'closed' | 'modal' | 'overlay'
+
   /**
    * Set after `createMarket` succeeds — the wizard renders the DepositStep
    * when this is non-null. The user funds the market's CPMM bot then
@@ -238,4 +242,10 @@ export interface MarketCreationWizardProps {
 
   /** Called when user clicks Create Market */
   onCreateMarket?: () => void
+
+  onConfirmRegistrationFee: () => void
+  onCancelRegistrationFee: () => void
+  onStartRegistrationFeeTopUp: () => void
+  onCancelRegistrationFeeTopUp: () => void
+  onRegistrationFeeTopUpSuccess: () => void
 }

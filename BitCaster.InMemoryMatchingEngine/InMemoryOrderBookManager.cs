@@ -160,7 +160,7 @@ public class InMemoryOrderBookManager
 
             incoming.RemainingSats -= fillAmount;
             maker.RemainingSats -= fillAmount;
-            var fill = BuildFill(incoming, maker, fillAmount);
+            var fill = BuildFill(book.MarketId, incoming, maker, fillAmount);
             fills.Add(fill);
             book.RecordFill(incoming.Id, maker.Id, fill);
         }
@@ -252,10 +252,11 @@ public class InMemoryOrderBookManager
             .Select(entry => (entry.Parts!.OutcomeSetId, entry.Value));
     }
 
-    private static Fill BuildFill(RestingOrder taker, RestingOrder maker, long amount)
+    private static Fill BuildFill(string marketId, RestingOrder taker, RestingOrder maker, long amount)
     {
         var tradeId = Guid.NewGuid();
-        return new Fill(
+        var quotePaymentSats = amount * maker.Price / 100;
+        var fill = new Fill(
             amountSats: amount,
             executionPrice: maker.Price,
             filledAt: DateTimeOffset.UtcNow,
@@ -266,6 +267,11 @@ public class InMemoryOrderBookManager
             status: FillStatus.Filled,
             takerOrderId: taker.Id,
             tradeId: tradeId);
+        fill.AdditionalProperties["settlementMarketId"] = marketId;
+        fill.AdditionalProperties["settlementKind"] = "DirectSwap";
+        fill.AdditionalProperties["outcomeFaceAmountSats"] = amount;
+        fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSats;
+        return fill;
     }
 
     private static Fill BuildMintFill(

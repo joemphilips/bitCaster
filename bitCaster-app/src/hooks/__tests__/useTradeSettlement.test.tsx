@@ -43,10 +43,12 @@ const {
 }));
 
 const {
+  mockBuyerPrepareSwap,
   mockSellerLockOutcomeProofs,
   mockSellerPreparePrelockedSwap,
   mockSplitProofsForExactSend,
 } = vi.hoisted(() => ({
+  mockBuyerPrepareSwap: vi.fn(),
   mockSellerLockOutcomeProofs: vi.fn(),
   mockSellerPreparePrelockedSwap: vi.fn(),
   mockSplitProofsForExactSend: vi.fn(),
@@ -85,6 +87,7 @@ vi.mock("@bitcaster/swap-protocol/atomicSwap", async (importOriginal) => {
     >();
   return {
     ...actual,
+    buyerPrepareSwap: mockBuyerPrepareSwap,
     sellerLockOutcomeProofs: mockSellerLockOutcomeProofs,
     sellerPreparePrelockedSwap: mockSellerPreparePrelockedSwap,
     splitProofsForExactSend: mockSplitProofsForExactSend,
@@ -119,6 +122,13 @@ beforeEach(() => {
   mockRemoveProofs.mockResolvedValue(undefined);
   mockReplaceProofs.mockResolvedValue(undefined);
   mockReserveProofs.mockResolvedValue(undefined);
+  mockBuyerPrepareSwap.mockResolvedValue({
+    lockedProofsCipher: "cipher-buyer",
+    lockedProofs: [proof(50, "buyer-locked-50", "base-keyset")],
+    changeProofs: [proof(36, "buyer-change-36", "base-keyset")],
+    preSigsHex: ["pre-buyer"],
+    sellerPreSigsHex: ["pre-seller"],
+  });
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue({
@@ -490,6 +500,109 @@ describe("useTradeSettlement", () => {
     expect(swap.role).toBe("seller");
     expect(swap.sellerKeepOutcomeSetId).toBe("YES");
     expect(swap.sellerLockOutcomeSetId).toBe("NO");
+  });
+
+  it("recovers a buyer response from an existing proof operation without selecting depleted wallet proofs", async () => {
+    const originalInputs = [proof(64, "buyer-original-64", "base-keyset")];
+    mockGetProofOperation.mockImplementation(async (operationId: string) =>
+      operationId === "trade-buyer-recover/browser/buyer-lock"
+        ? {
+            operationId,
+            kind: "swap-lock",
+            state: "completed",
+            mintUrl: "https://mint.example",
+            inputs: originalInputs,
+            outputs: {},
+            metadata: {},
+            resultProofs: {
+              send: [proof(50, "buyer-locked-50", "base-keyset")],
+              keep: [proof(14, "buyer-change-14", "base-keyset")],
+            },
+            lastError: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }
+        : null,
+    );
+    mockGetBaseProofs.mockResolvedValue([
+      proof(32, "depleted-change-32", "base-keyset"),
+      proof(4, "depleted-change-4", "base-keyset"),
+    ]);
+    usePendingTradesStore.getState().add({
+      orderId: "order-buyer-recover",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+      }) => void;
+      onSwapMessageReceived: (msg: {
+        tradeId: string;
+        messageType: string;
+        ciphertext: string;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-buyer-recover",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-YES",
+        outcomeFaceAmountSats: 100,
+        quotePaymentSats: 50,
+      });
+    });
+    await act(async () => {
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-recover",
+        messageType: "adaptor-point",
+        ciphertext: "cipher-adaptor",
+      });
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-recover",
+        messageType: "locked-proofs-seller",
+        ciphertext: "cipher-seller",
+      });
+    });
+
+    await waitFor(() =>
+      expect(mockSendSwapMessage).toHaveBeenCalledWith(
+        "trade-buyer-recover",
+        "locked-proofs-buyer",
+        "cipher-buyer",
+      ),
+    );
+    expect(mockGetBaseProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).toHaveBeenCalledWith(
+      expect.objectContaining({ tradeId: "trade-buyer-recover" }),
+      "cipher-adaptor",
+      "cipher-seller",
+      originalInputs,
+      50,
+      expect.objectContaining({
+        operationId: "trade-buyer-recover/browser/buyer-lock",
+      }),
+    );
+    const swap =
+      useActiveSwapsStore.getState().byTradeId["trade-buyer-recover"];
+    expect(swap.messages.lockedProofsBuyer).toBe("cipher-buyer");
+    expect(swap.buyerState?.lockedProofsCipher).toBe("cipher-buyer");
   });
 
   it("splits oversized reserved pre-flight proofs before sending a mint seller opening", async () => {

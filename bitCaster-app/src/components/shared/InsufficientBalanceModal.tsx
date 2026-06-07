@@ -6,6 +6,8 @@ interface InsufficientBalanceModalProps {
   balance: number
   /** What the pending trade will cost in sats, all-in. */
   required: number
+  title?: string
+  requiredDescription?: string
   onCancel: () => void
   onTopUp: () => void
 }
@@ -19,6 +21,8 @@ interface InsufficientBalanceModalProps {
 export function InsufficientBalanceModal({
   balance,
   required,
+  title,
+  requiredDescription,
   onCancel,
   onTopUp,
 }: InsufficientBalanceModalProps) {
@@ -35,11 +39,11 @@ export function InsufficientBalanceModal({
         </div>
 
         <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
-          {t('insufficientBalance.title')}
+          {title ?? t('insufficientBalance.title')}
         </h2>
 
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
-          {t('insufficientBalance.tradeNeeds')}{' '}
+          {requiredDescription ?? t('insufficientBalance.tradeNeeds')}{' '}
           <span className="font-mono text-slate-700 dark:text-slate-200">
             {t('insufficientBalance.sats', { count: required })}
           </span>

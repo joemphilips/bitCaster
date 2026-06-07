@@ -11,6 +11,9 @@ import { InitialLiquidity } from './InitialLiquidity'
 import { ReviewAndCreate } from './ReviewAndCreate'
 import { ResumeBanner } from './ResumeBanner'
 import { DepositStep } from './DepositStep'
+import { RegistrationFeeConfirmationModal } from './RegistrationFeeConfirmationModal'
+import { InsufficientBalanceModal } from '@/components/shared/InsufficientBalanceModal'
+import { TopUpOverlay } from '@/components/market-detail/TopUpOverlay'
 
 export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const { t } = useTranslation()
@@ -22,6 +25,9 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     signerMode,
     isSubmitting,
     submitError,
+    registrationFeePrompt,
+    registrationFeeTopUp,
+    registrationFeeTopUpStage,
     onOracleChoiceSelect,
     onAnnouncementSelect,
     onExit,
@@ -46,6 +52,11 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onLiquiditySatsChange,
     onDescriptionChange,
     onCreateMarket,
+    onConfirmRegistrationFee,
+    onCancelRegistrationFee,
+    onStartRegistrationFeeTopUp,
+    onCancelRegistrationFeeTopUp,
+    onRegistrationFeeTopUpSuccess,
     createdMarketConditionId,
     createdMarketLiquiditySats,
   } = props
@@ -78,6 +89,40 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
       )}
     </>
   )
+  const registrationFeeDeficit = registrationFeeTopUp
+    ? Math.max(registrationFeeTopUp.feeSats - registrationFeeTopUp.balanceSats, 0)
+    : 0
+  const feeOverlays = (
+    <>
+      {registrationFeePrompt && (
+        <RegistrationFeeConfirmationModal
+          feeSats={registrationFeePrompt.feeSats}
+          balanceSats={registrationFeePrompt.balanceSats}
+          onCancel={onCancelRegistrationFee}
+          onConfirm={onConfirmRegistrationFee}
+        />
+      )}
+      {registrationFeeTopUpStage === 'modal' && registrationFeeTopUp && (
+        <InsufficientBalanceModal
+          balance={registrationFeeTopUp.balanceSats}
+          required={registrationFeeTopUp.feeSats}
+          title="Top up for market creation"
+          requiredDescription="Market creation needs"
+          onCancel={onCancelRegistrationFeeTopUp}
+          onTopUp={onStartRegistrationFeeTopUp}
+        />
+      )}
+      {registrationFeeTopUpStage === 'overlay' && registrationFeeTopUp && (
+        <TopUpOverlay
+          deficit={registrationFeeDeficit}
+          minimumDescription={`Top up at least ${registrationFeeDeficit.toLocaleString()} sats to cover the market creation fee.`}
+          minimumErrorDescription={`Amount must be at least ${registrationFeeDeficit} sats to cover the market creation fee.`}
+          onSuccess={onRegistrationFeeTopUpSuccess}
+          onCancel={onCancelRegistrationFeeTopUp}
+        />
+      )}
+    </>
+  )
 
   // Deposit step takes priority once the market is created. `clearDraft()`
   // in `onCreateMarket` resets the draft store (currentStep becomes 1)
@@ -95,6 +140,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             defaultAmountSats={createdMarketLiquiditySats ?? 0}
           />
         </div>
+        {feeOverlays}
       </div>
     )
   }
@@ -114,6 +160,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           onContinue={onNext}
           onExit={onExit}
         />
+        {feeOverlays}
       </>
     )
   }
@@ -204,6 +251,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
         )}
 
       </div>
+      {feeOverlays}
     </div>
   )
 }

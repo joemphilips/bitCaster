@@ -54,7 +54,7 @@ public class P4StagingRegressionTests : IAsyncLifetime
     {
         var mnemonic = TestMnemonics.Get();
         var nutsJson = withCtfNuts
-            ? "{ '4': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, '5': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, 'CTF': { supported: true } }"
+            ? TestHelpers.CtfNutsJson
             : "{ '4': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, '5': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] } }";
 
         await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions

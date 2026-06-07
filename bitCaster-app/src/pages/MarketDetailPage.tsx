@@ -92,6 +92,10 @@ function categoryTagIds(market: MarketDetailType): string[] {
   return market.categoryTags.map((tag) => tag.id).sort();
 }
 
+function sortedOutcomeLabels(market: MarketDetailType): string[] {
+  return [...outcomeLabels(market)].sort();
+}
+
 function marketShapeMatches(
   current: MarketDetailType,
   latest: MarketDetailType,
@@ -99,8 +103,8 @@ function marketShapeMatches(
   return (
     current.title === latest.title &&
     current.type === latest.type &&
-    JSON.stringify(outcomeLabels(current)) ===
-      JSON.stringify(outcomeLabels(latest)) &&
+    JSON.stringify(sortedOutcomeLabels(current)) ===
+      JSON.stringify(sortedOutcomeLabels(latest)) &&
     JSON.stringify(categoryTagIds(current)) ===
       JSON.stringify(categoryTagIds(latest))
   );

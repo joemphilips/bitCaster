@@ -154,7 +154,7 @@ public class ClosedMarketUiTests : IAsyncLifetime
                         info: {{
                             name: 'Default Mint',
                             version: 'Nutshell/0.16.0',
-                            nuts: {{ '4': {{ methods: [] }}, '5': {{ methods: [] }}, 'CTF': {{ supported: true }} }}
+                            nuts: {TestHelpers.CtfNutsJson}
                         }},
                         keysets: [{{ id: '00abc123', unit: 'sat', active: true }}]
                     }}],

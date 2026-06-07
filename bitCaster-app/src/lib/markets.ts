@@ -6,7 +6,11 @@ import type {
   PriceHistory,
 } from "@/types/market-detail";
 import type { MarketSort } from "@/hooks/useMarketSort";
-import type { Proof } from "@cashu/cashu-ts";
+import type {
+  Proof,
+  SerializedBlindedMessage,
+  SerializedBlindedSignature,
+} from "@cashu/cashu-ts";
 import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
@@ -91,6 +95,17 @@ function isYesNoUniverse(outcomes: readonly string[]): boolean {
   );
 }
 
+function orderAtomicOutcomes(outcomes: string[]): string[] {
+  if (
+    outcomes.length === 2 &&
+    outcomes.some((outcome) => outcome.toLowerCase() === "yes") &&
+    outcomes.some((outcome) => outcome.toLowerCase() === "no")
+  ) {
+    return ["Yes", "No"];
+  }
+  return outcomes;
+}
+
 function atomicOutcomesFromKeysets(
   keysets: Record<string, string> | undefined,
 ): string[] {
@@ -104,7 +119,7 @@ function atomicOutcomesFromKeysets(
       outcomes.push(name);
     }
   }
-  return outcomes;
+  return orderAtomicOutcomes(outcomes);
 }
 
 export function extractCategoryTagIds(tags: string[][]): string[] {
@@ -224,7 +239,7 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
  * list needs; the mapper just shapes it into the existing `Market` union.
  */
 export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
-  const outcomes = entry.outcomes ?? [];
+  const outcomes = orderAtomicOutcomes(entry.outcomes ?? []);
   const isYesNo = isYesNoUniverse(outcomes);
 
   const closingDate = entry.deadline ?? entry.createdAt;
@@ -435,10 +450,11 @@ function mapCatalogueEntryToMarketDetail(
   entry: MarketCatalogueEntry,
   mintCondition: ConditionInfo | null,
 ): MarketDetail {
-  const outcomes =
+  const outcomes = orderAtomicOutcomes(
     entry.outcomes && entry.outcomes.length > 0
       ? entry.outcomes
-      : atomicOutcomesFromKeysets(mintCondition?.keysets);
+      : atomicOutcomesFromKeysets(mintCondition?.keysets),
+  );
   const mappedOutcomes = outcomes.map((label, i) => ({
     id: `outcome-${i}`,
     label,
@@ -855,7 +871,12 @@ export async function registerCondition(params: {
   collateral?: string;
   outcomeCollections?: readonly string[];
   fee?: readonly Proof[];
-}): Promise<{ condition_id: string; keysets: Record<string, string> }> {
+  outputs?: readonly SerializedBlindedMessage[];
+}): Promise<{
+  condition_id: string;
+  keysets: Record<string, string>;
+  change?: SerializedBlindedSignature[];
+}> {
   const response = await fetch("/v1/conditions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -867,6 +888,7 @@ export async function registerCondition(params: {
         ? { outcome_collections: params.outcomeCollections }
         : {}),
       ...(params.fee ? { fee: params.fee } : {}),
+      ...(params.outputs ? { outputs: params.outputs } : {}),
     }),
   });
   if (!response.ok) {

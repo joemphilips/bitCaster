@@ -310,6 +310,7 @@ export async function sellerPrepareSwap(
     ctx,
     proofs,
     ctx.sellerLocktime,
+    undefined,
     options.operationId,
     options.proofOperationStore,
   );
@@ -849,6 +850,7 @@ export async function buyerPrepareSwap(
   aliceAdaptorPointCipher: string,
   aliceLockedProofsCipher: string,
   satProofs: Proof[],
+  amountSats: number,
   options: ProofOperationOptions = {},
 ): Promise<{
   lockedProofsCipher: string;
@@ -858,6 +860,10 @@ export async function buyerPrepareSwap(
   preSigsHex: string[];
   sellerPreSigsHex: string[];
 }> {
+  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
+    throw new Error("buyerPrepareSwap: amountSats must be a positive integer");
+  }
+
   // Decrypt Alice's messages
   const aptPlain = await decryptMsg(ctx, aliceAdaptorPointCipher);
   const lockedPlain = await decryptMsg(ctx, aliceLockedProofsCipher);
@@ -886,6 +892,7 @@ export async function buyerPrepareSwap(
     ctx,
     satProofs,
     ctx.buyerLocktime,
+    amountSats,
     options.operationId,
     options.proofOperationStore,
   );
@@ -1023,6 +1030,7 @@ async function lockProofsForSwap(
   ctx: SwapContext,
   sourceProofs: Proof[],
   locktime: number,
+  lockAmountSats: number | undefined,
   operationId?: string,
   proofOperationStore?: ProofOperationStore,
 ): Promise<LockedProofResult> {
@@ -1032,9 +1040,18 @@ async function lockProofsForSwap(
     sourceProofs,
   );
 
-  const amount = sumProofs(sourceProofs) - inputFeeSats;
-  if (amount <= 0)
+  const netInputSats = sumProofs(sourceProofs) - inputFeeSats;
+  if (netInputSats <= 0)
     throw new Error("Not enough proofs to cover Cashu swap fees");
+  const amount = lockAmountSats ?? netInputSats;
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    throw new Error("Atomic swap lock amount must be a positive integer");
+  }
+  if (amount > netInputSats) {
+    throw new Error(
+      `Atomic swap proofs net ${netInputSats} sats after input fees, need ${amount} to lock`,
+    );
+  }
 
   const outputConfig: OutputConfig = {
     send: {

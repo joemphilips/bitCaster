@@ -13,6 +13,9 @@ export function MarketCreationPage() {
       signerMode={state.signerMode}
       isSubmitting={state.isSubmitting}
       submitError={state.submitError}
+      registrationFeePrompt={state.registrationFeePrompt}
+      registrationFeeTopUp={state.registrationFeeTopUp}
+      registrationFeeTopUpStage={state.registrationFeeTopUpStage}
       onOracleChoiceSelect={state.onOracleChoiceSelect}
       onAnnouncementSelect={state.onAnnouncementSelect}
       onExit={state.onExit}
@@ -37,6 +40,11 @@ export function MarketCreationPage() {
       onLiquiditySatsChange={state.onLiquiditySatsChange}
       onDescriptionChange={state.onDescriptionChange}
       onCreateMarket={state.onCreateMarket}
+      onConfirmRegistrationFee={state.onConfirmRegistrationFee}
+      onCancelRegistrationFee={state.onCancelRegistrationFee}
+      onStartRegistrationFeeTopUp={state.onStartRegistrationFeeTopUp}
+      onCancelRegistrationFeeTopUp={state.onCancelRegistrationFeeTopUp}
+      onRegistrationFeeTopUpSuccess={state.onRegistrationFeeTopUpSuccess}
       createdMarketConditionId={state.createdMarketConditionId}
       createdMarketLiquiditySats={state.createdMarketLiquiditySats}
     />
