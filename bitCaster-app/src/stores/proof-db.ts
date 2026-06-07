@@ -34,6 +34,7 @@ export type ProofOperationKind =
   | "swap-refund"
   | "ctf-split"
   | "ctf-redeem"
+  | "ctf-condition-registration"
   | "regular-split"
   | "proof-split";
 export type ProofOperationState = "prepared" | "completed" | "failed";

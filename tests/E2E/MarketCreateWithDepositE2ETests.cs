@@ -80,7 +80,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     /// </summary>
     private static async Task SeedWizardEnvironmentAsync(IPage page)
     {
-        await TestHelpers.SetupComplete(page, TestPorts.Vite);
+        await TestHelpers.SetupComplete(page, TestPorts.Vite, TestPorts.MintUrl);
         await page.EvaluateAsync($@"
             localStorage.setItem('bitcaster-settings', JSON.stringify({{
                 state: {{

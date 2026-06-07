@@ -22,6 +22,7 @@ describe('useActiveSwapsStore', () => {
     useActiveSwapsStore.getState().setBuyerState('trade-1', {
       ownPreSigsHex: ['own'],
       lockedSatProofs,
+      lockedProofsCipher: 'cipher-buyer',
       sellerPreSigsHex: ['seller'],
     })
 

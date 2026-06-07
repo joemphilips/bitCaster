@@ -92,13 +92,15 @@ describe('registerCondition', () => {
     await expect(registerCondition(conditionParams)).rejects.toThrow('Failed to fetch')
   })
   it('sends collateral and requested outcome collections when provided', async () => {
-    mockFetchSuccess({ condition_id: 'cond-123', keysets: { Yes: 'ks1', No: 'ks2' } })
+    mockFetchSuccess({ condition_id: 'cond-123', keysets: { Yes: 'ks1', No: 'ks2' }, change: [] })
     const fee = [{ amount: 1, secret: 'fee-secret', C: 'fee-C' }] as any
+    const outputs = [{ amount: 1, id: 'regular-keyset', B_: 'B_' }] as any
     await registerCondition({
       ...conditionParams,
       collateral: 'sat',
       outcomeCollections: ['Yes', 'No'],
       fee,
+      outputs,
     })
 
     const call = vi.mocked(globalThis.fetch).mock.calls[0]
@@ -109,6 +111,7 @@ describe('registerCondition', () => {
       collateral: 'sat',
       outcome_collections: ['Yes', 'No'],
       fee,
+      outputs,
     })
   })
 })

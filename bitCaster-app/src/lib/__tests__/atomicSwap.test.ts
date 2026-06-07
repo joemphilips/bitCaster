@@ -733,6 +733,7 @@ describe('buyerPrepareSwap', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
 
     const sharedKey = await deriveEncryptionKey(
@@ -759,6 +760,7 @@ describe('buyerPrepareSwap', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
 
     const sharedKey = await deriveEncryptionKey(
@@ -938,6 +940,7 @@ describe('buyerClaimSwap', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
     const operationId = 'trade-browser-conditional-claim/browser/buyer-claim'
 
@@ -974,6 +977,7 @@ describe('buyerClaimSwap', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
     cashuMockState.conditionalSwapError = new Error(
       'Inputs must use the same conditional keyset',
@@ -1004,6 +1008,7 @@ describe('buyerClaimSwap', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 14)],
+      14,
     )
     const operationId = 'trade-browser-multi-claim/browser/buyer-claim'
     const mintSwapCallsBeforeClaim = cashuMockState.mintSwapCalls
@@ -1133,6 +1138,7 @@ describe('browser proof operation recovery', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
     const operationId = 'trade-browser-claim/browser/seller-claim'
 

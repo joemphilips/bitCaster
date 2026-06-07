@@ -76,7 +76,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker mints a complete CTF set to settle. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
+    /// How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, optional pre-flight reservation, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]

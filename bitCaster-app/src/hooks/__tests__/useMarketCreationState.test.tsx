@@ -7,13 +7,15 @@ import { useMarketDraftStore, defaultDraft } from '@/stores/marketDraft'
 
 const {
   mockNavigate,
-  mockRegisterCondition,
+  mockRegisterConditionWithFee,
+  mockGetAvailableRegularBalanceSats,
   mockCreateMarket,
   mockCreateEnumAnnouncement,
   mockWalletState,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
-  mockRegisterCondition: vi.fn(),
+  mockRegisterConditionWithFee: vi.fn(),
+  mockGetAvailableRegularBalanceSats: vi.fn(),
   mockCreateMarket: vi.fn(),
   mockCreateEnumAnnouncement: vi.fn(),
   mockWalletState: {
@@ -41,7 +43,6 @@ vi.mock('react-router', async () => {
 })
 
 vi.mock('@/lib/markets', () => ({
-  registerCondition: (...args: unknown[]) => mockRegisterCondition(...args),
   createMarket: (...args: unknown[]) => mockCreateMarket(...args),
   requiredMarketCreationOutcomeCollections: (outcomes: readonly string[]) => outcomes,
   MintError: class MintError extends Error {
@@ -49,6 +50,28 @@ vi.mock('@/lib/markets', () => ({
       super(detail)
       this.name = 'MintError'
     }
+  },
+}))
+
+vi.mock('@/lib/marketRegistrationFee', () => ({
+  MAX_CONDITION_REGISTRATION_FEE_SATS: 1000,
+  getAvailableRegularBalanceSats: (...args: unknown[]) =>
+    mockGetAvailableRegularBalanceSats(...args),
+  registerConditionWithFee: (...args: unknown[]) =>
+    mockRegisterConditionWithFee(...args),
+  registrationFeeForPolicy: (
+    outcomes: readonly string[],
+    settings: {
+      defaultKeysetCreation: 'none' | 'one-vs-rest' | 'all'
+      registrationFeeBase: number
+      registrationFeePerKeyset: number
+    },
+  ) => {
+    const numKeysets =
+      settings.defaultKeysetCreation === 'all'
+        ? Math.max(0, 2 ** outcomes.length - 2)
+        : new Set(outcomes.map((outcome) => outcome.trim()).filter(Boolean)).size
+    return settings.registrationFeeBase + settings.registrationFeePerKeyset * numKeysets
   },
 }))
 
@@ -102,7 +125,8 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockRegisterCondition.mockResolvedValue({ condition_id: 'test-cond-id', keysets: { Yes: 'ks1', No: 'ks2' } })
+  mockRegisterConditionWithFee.mockResolvedValue({ condition_id: 'test-cond-id', keysets: { Yes: 'ks1', No: 'ks2' } })
+  mockGetAvailableRegularBalanceSats.mockResolvedValue(1000)
   mockCreateMarket.mockResolvedValue({ conditionId: 'test-cond-id', marketsCreated: ['test-cond-id-Yes', 'test-cond-id-No'], thumbnailUrl: null })
   mockCreateEnumAnnouncement.mockResolvedValue('announcement-hex')
   mockWalletState.activeMintUrl = 'https://mint.example.test'
@@ -164,7 +188,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
   it('uses the mint default keyset policy when registering the condition', async () => {
     const result = await setupDraftForSubmission()
     const callOrder: string[] = []
-    mockRegisterCondition.mockImplementation(async () => {
+    mockRegisterConditionWithFee.mockImplementation(async () => {
       callOrder.push('condition')
       return { condition_id: 'test-cond-id', keysets: { Yes: 'ks1', No: 'ks2' } }
     })
@@ -176,15 +200,19 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(callOrder).toEqual(['condition', 'createMarket'])
-    expect(mockRegisterCondition).toHaveBeenCalledOnce()
-    expect(mockRegisterCondition).toHaveBeenCalledWith({
-      tags: [
-        ['title', 'Test Market'],
-        ['description', 'Test description'],
-      ],
-      announcementHex: 'ann-hex-123',
-      collateral: 'sat',
-      outcomeCollections: undefined,
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledOnce()
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledWith({
+      mintUrl: 'https://mint.example.test',
+      requiredFeeSats: 0,
+      request: {
+        tags: [
+          ['title', 'Test Market'],
+          ['description', 'Test description'],
+        ],
+        announcementHex: 'ann-hex-123',
+        collateral: 'sat',
+        outcomeCollections: undefined,
+      },
     })
     expect(mockCreateMarket).toHaveBeenCalledOnce()
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
@@ -198,25 +226,99 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     await act(async () => { await result.current.onCreateMarket() })
 
-    expect(mockRegisterCondition).toHaveBeenCalledWith(
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
-        collateral: 'sat',
-        outcomeCollections: ['Yes', 'No'],
+        request: expect.objectContaining({
+          collateral: 'sat',
+          outcomeCollections: ['Yes', 'No'],
+        }),
       }),
     )
   })
 
-  it('blocks market creation when the mint requires a registration fee', async () => {
+  it('omits client-defined collections when the mint default policy is all', async () => {
+    mockWalletState.mints[0].info.nuts.CTF.default_keyset_creation = 'all'
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          collateral: 'sat',
+          outcomeCollections: undefined,
+        }),
+      }),
+    )
+  })
+
+  it('prompts before paying a non-zero registration fee', async () => {
     mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 10
     mockWalletState.mints[0].info.nuts.CTF.registration_fee_per_keyset = 2
     const result = await setupDraftForSubmission()
 
     await act(async () => { await result.current.onCreateMarket() })
 
-    expect(result.current.submitError).toBe(
-      'This mint requires a 14 sat condition registration fee. Market creation fee payment is not wired in this app yet.',
+    expect(result.current.registrationFeePrompt).toEqual({
+      feeSats: 14,
+      balanceSats: 1000,
+    })
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
+    expect(mockCreateMarket).not.toHaveBeenCalled()
+
+    await act(async () => { await result.current.onConfirmRegistrationFee() })
+
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
+      expect.objectContaining({ requiredFeeSats: 14 }),
     )
-    expect(mockRegisterCondition).not.toHaveBeenCalled()
+    expect(mockCreateMarket).toHaveBeenCalledOnce()
+  })
+
+  it('shows the top-up gate when the registration fee exceeds available regular balance', async () => {
+    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 10
+    mockWalletState.mints[0].info.nuts.CTF.registration_fee_per_keyset = 2
+    mockGetAvailableRegularBalanceSats.mockResolvedValueOnce(3)
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(result.current.registrationFeeTopUpStage).toBe('modal')
+    expect(result.current.registrationFeeTopUp).toEqual({
+      feeSats: 14,
+      balanceSats: 3,
+    })
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
+  })
+
+  it('rechecks the registration fee after top-up success', async () => {
+    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 10
+    mockWalletState.mints[0].info.nuts.CTF.registration_fee_per_keyset = 2
+    mockGetAvailableRegularBalanceSats
+      .mockResolvedValueOnce(3)
+      .mockResolvedValueOnce(1000)
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { await result.current.onCreateMarket() })
+    await act(async () => { await result.current.onRegistrationFeeTopUpSuccess() })
+
+    expect(result.current.registrationFeeTopUpStage).toBe('closed')
+    expect(result.current.registrationFeePrompt).toEqual({
+      feeSats: 14,
+      balanceSats: 1000,
+    })
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
+  })
+
+  it('blocks market creation when the registration fee exceeds the app cap', async () => {
+    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 1001
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(result.current.submitError).toBe(
+      'This mint requires a 1001 sat condition registration fee, which exceeds the 1000 sat app limit.',
+    )
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
     expect(mockCreateMarket).not.toHaveBeenCalled()
   })
 
@@ -229,13 +331,13 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(result.current.submitError).toBe(
       'Active mint CTF settings are missing or invalid. Refresh mint info or choose another mint.',
     )
-    expect(mockRegisterCondition).not.toHaveBeenCalled()
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
     expect(mockCreateMarket).not.toHaveBeenCalled()
   })
 
   it('stops and sets error if registerCondition fails', async () => {
     const result = await setupDraftForSubmission()
-    mockRegisterCondition.mockRejectedValueOnce(new Error('Mint rejected'))
+    mockRegisterConditionWithFee.mockRejectedValueOnce(new Error('Mint rejected'))
 
     await act(async () => { await result.current.onCreateMarket() })
 

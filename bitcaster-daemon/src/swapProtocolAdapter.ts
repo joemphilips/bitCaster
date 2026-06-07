@@ -84,6 +84,7 @@ interface AtomicSwapModule {
     adaptorPointCipher: string,
     lockedProofsSellerCipher: string,
     proofs: CashuProofRecord[],
+    amountSats: number,
     options?: ProofOperationOptions,
   ): Promise<{
     lockedProofsCipher: string
@@ -275,13 +276,14 @@ export function createRealDaemonSwapOps(
       } satisfies SellerMintOpenResult
     },
 
-    async buyerRespond(ctx, messages, proofs) {
+    async buyerRespond(ctx, messages, proofs, amountSats) {
       const atomicSwap = await loadAtomicSwapModule()
       const out = await atomicSwap.buyerPrepareSwap(
         toAtomicCtx(ctx),
         messages.adaptorPoint,
         messages.lockedProofsSeller,
         proofs,
+        amountSats,
         proofOperationOptions(ctx.tradeId, 'buyer-lock'),
       )
       return {

@@ -53,6 +53,8 @@ export interface BuyerProtocolState {
   ownPreSigsHex: string[]
   /** The proofs Bob locked to Alice; needed for the NUT-07 poll. */
   lockedSatProofs: Proof[]
+  /** Bob's encrypted locked-proofs message; replayed seller messages resend this. */
+  lockedProofsCipher: string
   /** Alice's pre-sigs from her locked-proofs message — adapted on claim. */
   sellerPreSigsHex: string[]
 }

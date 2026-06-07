@@ -106,10 +106,11 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
             adaptorPointCipher,
             lockedProofsSellerCipher,
             proofs,
+            amountSats,
             options,
           ) {
             calls.push(
-              `buyerPrepare:${options?.operationId}:${ctx.role}:${adaptorPointCipher}:${lockedProofsSellerCipher}:${proofs[0].secret}`,
+              `buyerPrepare:${options?.operationId}:${ctx.role}:${amountSats}:${adaptorPointCipher}:${lockedProofsSellerCipher}:${proofs[0].secret}`,
             )
             return {
               lockedProofsCipher: 'cipher-b',
@@ -199,6 +200,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       ctx('buyer'),
       { adaptorPoint: 'cipher-a', lockedProofsSeller: 'cipher-s' },
       [proof(42, 'buyer-input')],
+      42,
     )
     assert.deepEqual(buyerRespond.preSigsHex, ['pre-b'])
 
@@ -234,7 +236,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
     assert.deepEqual(calls, [
       'sellerPrepare:trade-1/seller-lock:32:seller-input',
       'sellerPrelocked:trade-1:prelocked-input',
-      'buyerPrepare:trade-1/buyer-lock:buyer:cipher-a:cipher-s:buyer-input',
+      'buyerPrepare:trade-1/buyer-lock:buyer:42:cipher-a:cipher-s:buyer-input',
       'sellerLockOutcome:trade-1/seller-inventory-lock:trade-1:100:outcome-input',
       'ctfSplit:trade-1/seller-mint-ctf-split:cond:YES:NO:2',
       'sellerPrelocked:trade-1:lock-proof',

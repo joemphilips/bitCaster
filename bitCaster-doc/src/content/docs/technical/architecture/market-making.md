@@ -49,7 +49,7 @@ From a trader's perspective, CPMM orders are indistinguishable from orders place
 ### Market Creation Flow
 
 1. Creator fills the market creation wizard (oracle, outcomes, liquidity amount)
-2. Frontend registers the condition and partition with CDK mintd
+2. Frontend registers the condition with CDK mintd, using mint-managed keysets or explicit one-vs-rest outcome collections
 3. Frontend registers the market with the matching engine
 4. Creator funds the CPMM bot through the deposit flow (Lightning invoice or Cashu token)
 5. The deposit is verified, the complete CTF outcome-token inventory is minted, and the bot account is credited

@@ -14,7 +14,6 @@ import { useMarketDraftStore } from '@/stores/marketDraft'
 import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
 import { fetchOracleAnnouncements } from '@/lib/oracle'
 import {
-  registerCondition,
   createMarket,
   requiredMarketCreationOutcomeCollections,
 } from '@/lib/markets'
@@ -22,6 +21,13 @@ import { createEnumAnnouncement } from '@/lib/kormir'
 import { buildEventId } from '@/lib/slug'
 import { detectMintCapabilities } from '@/lib/mints'
 import { useWalletStore } from '@/stores/wallet'
+import { refreshMintInfoWithoutActivating } from '@/lib/walletOps'
+import {
+  MAX_CONDITION_REGISTRATION_FEE_SATS,
+  getAvailableRegularBalanceSats,
+  registerConditionWithFee,
+  registrationFeeForPolicy,
+} from '@/lib/marketRegistrationFee'
 
 /**
  * Default creator fee applied to every market created via the wizard. The
@@ -36,24 +42,20 @@ const DEFAULT_CREATOR_FEE_PERCENT = 0
 export const MAX_MARKET_OUTCOMES = 8
 
 const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
+type RegistrationFeePrompt = { feeSats: number; balanceSats: number }
+type RegistrationFeeTopUpStage = 'closed' | 'modal' | 'overlay'
 
-function activeMintCapabilities() {
+async function activeMintCapabilities() {
   const wallet = useWalletStore.getState()
-  const mint = wallet.mints.find((candidate) => candidate.url === wallet.activeMintUrl)
-  return detectMintCapabilities(mint?.info)
-}
-
-function registrationFeeForPolicy(
-  outcomes: readonly string[],
-  settings: NonNullable<ReturnType<typeof activeMintCapabilities>['ctfSettings']>,
-): number {
-  const numKeysets =
-    settings.defaultKeysetCreation === 'none'
-      ? requiredMarketCreationOutcomeCollections(outcomes).length
-      : settings.defaultKeysetCreation === 'one-vs-rest'
-        ? new Set(outcomes.map((outcome) => outcome.trim()).filter(Boolean)).size
-        : Math.max(0, 2 ** outcomes.length - 2)
-  return settings.registrationFeeBase + settings.registrationFeePerKeyset * numKeysets
+  let mint = wallet.mints.find((candidate) => candidate.url === wallet.activeMintUrl)
+  let capabilities = detectMintCapabilities(mint?.info)
+  if (mint && !capabilities.ctfSettings) {
+    await refreshMintInfoWithoutActivating(mint.url)
+    const refreshed = useWalletStore.getState()
+    mint = refreshed.mints.find((candidate) => candidate.url === refreshed.activeMintUrl)
+    capabilities = detectMintCapabilities(mint?.info)
+  }
+  return capabilities
 }
 
 /** Check whether outcome probabilities sum to exactly 100. */
@@ -112,6 +114,12 @@ export function useMarketCreationState() {
   const [oracleAnnouncements, setOracleAnnouncements] = useState<OracleAnnouncement[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [registrationFeePrompt, setRegistrationFeePrompt] =
+    useState<RegistrationFeePrompt | null>(null)
+  const [registrationFeeTopUpStage, setRegistrationFeeTopUpStage] =
+    useState<RegistrationFeeTopUpStage>('closed')
+  const [registrationFeeTopUp, setRegistrationFeeTopUp] =
+    useState<RegistrationFeePrompt | null>(null)
   // Set after `createMarket` succeeds — the wizard then renders the deposit
   // step (the user must fund the market's CPMM bot before it goes live).
   // Holding this in component state, not the localStorage draft, because:
@@ -408,7 +416,7 @@ export function useMarketCreationState() {
     updateDraft({ stepReviewAndCreate: { description } })
   }, [updateDraft])
 
-  const onCreateMarket = useCallback(async () => {
+  const submitMarket = useCallback(async (options: { registrationFeeConfirmed: boolean }) => {
     if (isSubmitting) return
     setIsSubmitting(true)
     setSubmitError(null)
@@ -428,22 +436,10 @@ export function useMarketCreationState() {
         ...categoryTags.map((t) => ['t', t] as string[]),
       ]
 
-      // Resolve the oracle announcement hex and the outcome labels. These
-      // come from two different sources depending on whether the user is
-      // reusing an existing announcement or publishing a new one as their
-      // own oracle.
-      let announcementHex: string
+      // Resolve outcome labels before any mint mutation or self-oracle publish
+      // so registration-fee checks can stop safely.
       let outcomes: string[]
-      let creatorOracle:
-        | { type: 'self'; eventId: string; outcomes: string[] }
-        | undefined
-
       if (choice === 'become-oracle') {
-        if (nostrSignerMode !== 'nsec') {
-          throw new Error(
-            'You must register a nostr private key (nsec) in Settings to become an oracle.',
-          )
-        }
         const draftOutcomes = draft.stepOutcomes?.outcomes
         if (!draftOutcomes || draftOutcomes.length < 2) {
           throw new Error('At least two outcomes are required to create an oracle event.')
@@ -464,6 +460,72 @@ export function useMarketCreationState() {
           throw new Error('Invalid closing date.')
         }
         outcomes = draftOutcomes.map((o) => o.label)
+      } else {
+        const announcement = oracleAnnouncements.find(
+          (a) => a.id === draft.stepOracleCheck?.selectedAnnouncementId,
+        )
+        if (!announcement) throw new Error('No oracle announcement selected')
+        outcomes = draft.stepOutcomes?.outcomes?.map((o) => o.label) ?? announcement.outcomes
+      }
+      if (outcomes.length > MAX_MARKET_OUTCOMES) {
+        throw new Error(`At most ${MAX_MARKET_OUTCOMES} outcomes are supported.`)
+      }
+
+      const ctfCapabilities = await activeMintCapabilities()
+      if (!ctfCapabilities.ctfSettings) {
+        throw new Error(
+          ctfCapabilities.ctf
+            ? 'Active mint CTF settings are missing or invalid. Refresh mint info or choose another mint.'
+            : 'Active mint does not advertise CTF support.',
+        )
+      }
+      const ctfSettings = ctfCapabilities.ctfSettings
+      const requiredRegistrationFee = registrationFeeForPolicy(outcomes, ctfSettings)
+      if (requiredRegistrationFee > MAX_CONDITION_REGISTRATION_FEE_SATS) {
+        throw new Error(
+          `This mint requires a ${requiredRegistrationFee} sat condition registration fee, ` +
+            `which exceeds the ${MAX_CONDITION_REGISTRATION_FEE_SATS} sat app limit.`,
+        )
+      }
+
+      const wallet = useWalletStore.getState()
+      const activeMintUrl = wallet.activeMintUrl
+      if (!activeMintUrl) {
+        throw new Error('No active mint is configured.')
+      }
+      if (requiredRegistrationFee > 0 && !options.registrationFeeConfirmed) {
+        const balance = await getAvailableRegularBalanceSats(activeMintUrl)
+        if (balance < requiredRegistrationFee) {
+          setRegistrationFeeTopUp({
+            feeSats: requiredRegistrationFee,
+            balanceSats: balance,
+          })
+          setRegistrationFeeTopUpStage('modal')
+          return
+        }
+        setRegistrationFeePrompt({
+          feeSats: requiredRegistrationFee,
+          balanceSats: balance,
+        })
+        return
+      }
+
+      // Resolve the oracle announcement hex after fee gates. For self-oracle
+      // creation this avoids publishing an announcement when the user cannot
+      // or does not want to pay the mint registration fee.
+      let announcementHex: string
+      let creatorOracle:
+        | { type: 'self'; eventId: string; outcomes: string[] }
+        | undefined
+
+      if (choice === 'become-oracle') {
+        if (nostrSignerMode !== 'nsec') {
+          throw new Error(
+            'You must register a nostr private key (nsec) in Settings to become an oracle.',
+          )
+        }
+        const closingDate = draft.stepBasicInfo?.closingDate
+        const maturityEpoch = Math.floor(new Date(closingDate ?? '').getTime() / 1000)
         const eventId = buildEventId(title || 'market')
         const relayUrls = relays.map((r) => r.url)
         if (relayUrls.length === 0) {
@@ -488,39 +550,22 @@ export function useMarketCreationState() {
         )
         if (!announcement) throw new Error('No oracle announcement selected')
         announcementHex = announcement.id
-        outcomes = draft.stepOutcomes?.outcomes?.map((o) => o.label) ?? announcement.outcomes
-      }
-      if (outcomes.length > MAX_MARKET_OUTCOMES) {
-        throw new Error(`At most ${MAX_MARKET_OUTCOMES} outcomes are supported.`)
-      }
-
-      const ctfCapabilities = activeMintCapabilities()
-      if (!ctfCapabilities.ctfSettings) {
-        throw new Error(
-          ctfCapabilities.ctf
-            ? 'Active mint CTF settings are missing or invalid. Refresh mint info or choose another mint.'
-            : 'Active mint does not advertise CTF support.',
-        )
-      }
-      const ctfSettings = ctfCapabilities.ctfSettings
-      const requiredRegistrationFee = registrationFeeForPolicy(outcomes, ctfSettings)
-      if (requiredRegistrationFee > 0) {
-        throw new Error(
-          `This mint requires a ${requiredRegistrationFee} sat condition registration fee. ` +
-            'Market creation fee payment is not wired in this app yet.',
-        )
       }
       const outcomeCollections =
-        ctfSettings?.defaultKeysetCreation === 'none'
+        ctfSettings.defaultKeysetCreation === 'none'
           ? requiredMarketCreationOutcomeCollections(outcomes)
           : undefined
 
       // 1. Register condition on the mint
-      const { condition_id } = await registerCondition({
-        tags,
-        announcementHex,
-        collateral: 'sat',
-        outcomeCollections,
+      const { condition_id } = await registerConditionWithFee({
+        mintUrl: activeMintUrl,
+        requiredFeeSats: requiredRegistrationFee,
+        request: {
+          tags,
+          announcementHex,
+          collateral: 'sat',
+          outcomeCollections,
+        },
       })
 
       // 2. Create market on matching engine (includes thumbnail + CPMM pools)
@@ -583,6 +628,34 @@ export function useMarketCreationState() {
     }
   }, [oracleAnnouncements, thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays, clearDraft])
 
+  const onCreateMarket = useCallback(async () => {
+    await submitMarket({ registrationFeeConfirmed: false })
+  }, [submitMarket])
+
+  const onConfirmRegistrationFee = useCallback(async () => {
+    setRegistrationFeePrompt(null)
+    await submitMarket({ registrationFeeConfirmed: true })
+  }, [submitMarket])
+
+  const onCancelRegistrationFee = useCallback(() => {
+    setRegistrationFeePrompt(null)
+  }, [])
+
+  const onStartRegistrationFeeTopUp = useCallback(() => {
+    setRegistrationFeeTopUpStage('overlay')
+  }, [])
+
+  const onCancelRegistrationFeeTopUp = useCallback(() => {
+    setRegistrationFeeTopUpStage('closed')
+    setRegistrationFeeTopUp(null)
+  }, [])
+
+  const onRegistrationFeeTopUpSuccess = useCallback(async () => {
+    setRegistrationFeeTopUpStage('closed')
+    setRegistrationFeeTopUp(null)
+    await submitMarket({ registrationFeeConfirmed: false })
+  }, [submitMarket])
+
   // Available category tags (could be fetched from an API in the future)
   const categoryTags = ['politics', 'sports', 'crypto', 'tech', 'entertainment', 'science', 'finance']
 
@@ -595,6 +668,9 @@ export function useMarketCreationState() {
     thumbnailFile,
     isSubmitting,
     submitError,
+    registrationFeePrompt,
+    registrationFeeTopUp,
+    registrationFeeTopUpStage,
     createdMarketConditionId,
     createdMarketLiquiditySats,
     onOracleChoiceSelect,
@@ -621,5 +697,10 @@ export function useMarketCreationState() {
     onLiquiditySatsChange,
     onDescriptionChange,
     onCreateMarket,
+    onConfirmRegistrationFee,
+    onCancelRegistrationFee,
+    onStartRegistrationFeeTopUp,
+    onCancelRegistrationFeeTopUp,
+    onRegistrationFeeTopUpSuccess,
   }
 }

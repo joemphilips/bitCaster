@@ -23,6 +23,8 @@ function assertNeverWaitResult(r: never): never {
 interface TopUpOverlayProps {
   /** Minimum sats the user must top up — the trade deficit. */
   deficit: number
+  minimumDescription?: string
+  minimumErrorDescription?: string
   /** Called after proofs have landed in the store. */
   onSuccess: () => void
   /** User aborted the top-up. */
@@ -35,7 +37,13 @@ interface TopUpOverlayProps {
  * user picks an amount (prefilled `deficit + FEE_BUFFER_SATS`, floor `deficit`),
  * sees a bolt11, and the overlay tears itself down once proofs are stored.
  */
-export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps) {
+export function TopUpOverlay({
+  deficit,
+  minimumDescription,
+  minimumErrorDescription,
+  onSuccess,
+  onCancel,
+}: TopUpOverlayProps) {
   const { t } = useTranslation()
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
   const prefill = Math.max(deficit + FEE_BUFFER_SATS, 1)
@@ -120,7 +128,10 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
   const startInvoice = useCallback(async () => {
     if (inflightRef.current) return
     if (amount < deficit) {
-      setError(`Amount must be at least ${deficit} sats to cover this trade.`)
+      setError(
+        minimumErrorDescription ??
+          `Amount must be at least ${deficit} sats to cover this trade.`,
+      )
       return
     }
     const requested = amount
@@ -204,7 +215,7 @@ export function TopUpOverlay({ deficit, onSuccess, onCancel }: TopUpOverlayProps
         </div>
 
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          {t('topUp.minimumDesc', { sats: deficit.toLocaleString() })}
+          {minimumDescription ?? t('topUp.minimumDesc', { sats: deficit.toLocaleString() })}
         </p>
 
         <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">

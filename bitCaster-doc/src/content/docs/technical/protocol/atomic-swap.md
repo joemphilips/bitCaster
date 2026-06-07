@@ -98,28 +98,26 @@ again. The timeout must be scheduled after the seller-side locktime plus a
 grace window; timing out at the buyer-side locktime can abort a swap that is
 still valid on the protocol timeline.
 
-For a resting buy that can become the mint maker, clients SHOULD
-pre-flight split before order submission. The maker selects regular sats,
-submits a CTF split to the mint for the complete outcome set, stores the
-resulting outcome proofs in local wallet state, and reserves both the keep side
-and the lock side under the order. If the mint is unavailable or
-the client cannot reserve enough collateral within the user-visible submission
-window, the client SHOULD fail submission or cancel/release the order path
-rather than publish a maker order that cannot settle. Implementations may expose
-an explicit opt-out, such as `--no-preflight-split`, but then they must reserve
-regular collateral and fail closed if it is unavailable when the match arrives.
+For a resting buy that can become the mint maker, clients MAY offer an
+order-local pre-flight split before submission. The maker selects regular sats,
+submits a CTF split to the mint for the needed complementary collections,
+stores the resulting outcome proofs in local wallet state, and reserves both the
+keep side and the lock side under the order. This is a reliability option, not a
+different wire protocol.
 
 For categorical outcome sets, the engine-level set id may contain multiple
-primitive outcomes (for example `B|C`). The mint still issues one conditional
-keyset per primitive root outcome, so wallet implementations decompose a
-logical lock or keep side into primitive keyset legs. Each primitive lock leg
-must prepare successfully before the seller publishes the atomic-swap opening
-messages.
+primitive outcomes (for example `B|C`). Wallet implementations try local
+inventory first: exact `B|C` if present, otherwise primitive legs such as `B`
+plus `C` when every primitive complement leg is present. Primitive legs are
+locked as separate keyset swaps and combined into one seller opening; they are
+not converted into `B|C` first. If local inventory is insufficient, an opted-in
+pre-flight reservation may be used. If that is also unavailable, the maker may
+split regular collateral at match time. Every lock leg must prepare
+successfully before the seller publishes the atomic-swap opening messages.
 
-Pre-flight split is a wallet-local safety mechanism, not a different wire
-protocol. When a mint match arrives, the maker still acts as Alice in
-the seller branch below: the reserved outcome proofs are locked to
-the taker, while the maker's kept outcome proofs become visible only for the
+When a mint match arrives, the maker still acts as Alice in the seller branch
+below. If pre-flight proofs are used, the reserved outcome proofs are locked to
+the taker while the maker's kept outcome proofs become visible only for the
 matched quantity. For partial fills, remaining pre-split proofs must stay
 reserved for the unfilled order quantity.
 
