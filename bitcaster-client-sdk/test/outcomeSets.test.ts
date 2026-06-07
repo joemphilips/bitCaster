@@ -19,6 +19,15 @@ const categoricalMarket: SdkMarketForTrading = {
   ],
 }
 
+const yesNoMarket: SdkMarketForTrading = {
+  id: 'condition-yesno',
+  type: 'yesno',
+  outcomes: [
+    { id: 'yes', label: 'Yes' },
+    { id: 'no', label: 'No' },
+  ],
+}
+
 test('canonicalizeOutcomeSet produces stable finite outcome-set ids', () => {
   assert.equal(canonicalizeOutcomeSet(['Carol', 'Alice', 'Alice']), 'Alice|Carol')
   assert.deepEqual(parseOutcomeSetId(' Bob | Alice | '), ['Bob', 'Alice'])
@@ -32,30 +41,40 @@ test('resolveOutcomeSets preserves categorical YES oracle labels', () => {
   assert.deepEqual(
     resolveOutcomeSets(categoricalMarket, { side: 'yes', outcomeId: 'alice' }),
     {
+      publicOutcomeSetId: 'Alice',
+      tokenSide: 'Outcome',
       selectedOutcomeSetId: 'Alice',
       complementOutcomeSetId: 'Bob|Carol',
     },
   )
 })
 
-test('resolveOutcomeSets maps categorical NO to the complement outcome set', () => {
+test('resolveOutcomeSets maps categorical NO to primitive public route plus internal complement', () => {
   assert.deepEqual(
     resolveOutcomeSets(categoricalMarket, { side: 'no', outcomeId: 'alice' }),
     {
+      publicOutcomeSetId: 'Alice',
+      tokenSide: 'Complement',
       selectedOutcomeSetId: 'Bob|Carol',
       complementOutcomeSetId: 'Alice',
     },
   )
 })
 
-test('outcomeSetIdsForMarketBooks enumerates direct and complement books', () => {
+test('resolveOutcomeSets maps binary NO to the Yes primitive complement', () => {
+  assert.deepEqual(resolveOutcomeSets(yesNoMarket, { side: 'no' }), {
+    publicOutcomeSetId: 'Yes',
+    tokenSide: 'Complement',
+    selectedOutcomeSetId: 'No',
+    complementOutcomeSetId: 'Yes',
+  })
+})
+
+test('outcomeSetIdsForMarketBooks enumerates primitive public books only', () => {
   assert.deepEqual(new Set(outcomeSetIdsForMarketBooks(categoricalMarket)), new Set([
     'Alice',
     'Bob',
     'Carol',
-    'Alice|Bob',
-    'Alice|Carol',
-    'Bob|Carol',
   ]))
 })
 

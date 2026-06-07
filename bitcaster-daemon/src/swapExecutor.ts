@@ -1,6 +1,5 @@
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
   keysetToOutcomeCollection as keysetToOutcomeCollectionShared,
   takeProofsForLock,
 } from '@bitcaster-market/client-sdk/proofSelection'
@@ -22,6 +21,9 @@ import {
   splitAvailableSatProofsForCtfCollateral,
   type WalletOpsDependencies,
 } from './walletOps.ts'
+import {
+  resolveRootDirectLockOutputAmountSats,
+} from '@bitcaster-market/client-sdk/ctfSplit'
 import {
   type CashuProofRecord,
   type DaemonState,
@@ -504,59 +506,6 @@ export class DaemonSwapExecutor {
     }
   }
 
-  private async persistPartialLock(
-    tradeId: string,
-    mintUrl: string,
-    conditionId: string,
-    collectionByKeyset: Map<string, string>,
-    err: unknown,
-  ): Promise<void> {
-    const partial = partialLockFromError(err)
-    if (!partial) return
-    await updateState((state, now) => {
-      removeProofsBySecret(state, mintUrl, partial.spentProofs)
-      addOutcomeProofsByKeyset(
-        state,
-        mintUrl,
-        partial.lockedProofs,
-        'locked',
-        conditionId,
-        collectionByKeyset,
-        now,
-        tradeId,
-      )
-      addOutcomeProofsByKeyset(
-        state,
-        mintUrl,
-        partial.changeProofs,
-        'available',
-        conditionId,
-        collectionByKeyset,
-        now,
-      )
-      const live = state.swaps[tradeId]
-      if (live) {
-        live.failure = partialLockRecordFromParts(
-          tradeId,
-          conditionId,
-          collectionByKeyset,
-          err,
-          partial,
-        )
-      }
-    })
-    if (err && typeof err === 'object') {
-      ;(err as { failure?: PartialLockHeldRecord }).failure =
-        partialLockRecordFromParts(
-          tradeId,
-          conditionId,
-          collectionByKeyset,
-          err,
-          partial,
-        )
-    }
-  }
-
   private async lockOutcomeProofRowGroups(input: {
     tradeId: string
     ctx: DaemonSwapContext
@@ -770,8 +719,18 @@ export class DaemonSwapExecutor {
 
     const secrets = await readSecrets()
     if (!secrets) throw new Error('daemon secrets are not initialized')
+    const resolveSplitAmount =
+      this.walletOpsDeps.resolveRootDirectLockOutputAmountSats ??
+      resolveRootDirectLockOutputAmountSats
+    const splitAmount = await resolveSplitAmount({
+      mintUrl,
+      conditionId: split.conditionId,
+      amountSats: amount,
+      keepOutcomeSetId: split.keepOutcomeSetId,
+      lockOutcomeSetId: split.lockOutcomeSetId,
+    })
     const collateral = await splitAvailableSatProofsForCtfCollateral(
-      amount,
+      splitAmount,
       mintUrl,
       `${tradeId}:seller-regular-ctf-input`,
       secrets,
@@ -783,7 +742,7 @@ export class DaemonSwapExecutor {
         conditionId: split.conditionId,
         keepOutcomeSetId: split.keepOutcomeSetId,
         lockOutcomeSetId: split.lockOutcomeSetId,
-        amountSats: amount,
+        amountSats: splitAmount,
       },
       collateral.inputs,
     )
@@ -885,8 +844,6 @@ export class DaemonSwapExecutor {
       amount,
       `${tradeId}:seller-preflight-keep-exact-v2`,
     )
-    const lockInputProofs = lockProofs.flatMap((group) => group.split.exactProofs)
-    const lockAmount = await this.netProofAmount(mintUrl, lockInputProofs)
     await updateState((state, now) => {
       applyReservedLockProofGroups(
         state,
@@ -898,29 +855,45 @@ export class DaemonSwapExecutor {
     })
 
     const lockCollectionByKeyset = keysetToOutcomeCollection(selectedLock)
-    let locked: LockedOutcomeProofResult
+    const lockedProofs: CashuProofRecord[] = []
+    const changeProofs: CashuProofRecord[] = []
+    const spentProofs: CashuProofRecord[] = []
     try {
-      locked = await this.ops.sellerLockOutcomeProofs(
-        ctx,
-        lockProofs.flatMap((group) =>
+      for (const group of lockProofs) {
+        const locked = await this.ops.sellerLockOutcomeProofs(
+          ctx,
           group.split.exactProofs.map((proof) =>
             proofWithAssetMetadata(proof, group.asset),
           ),
-        ),
-        lockAmount,
-        `${tradeId}:seller-preflight-lock`,
-      )
+          amount,
+          lockProofs.length === 1
+            ? `${tradeId}:seller-preflight-lock`
+            : `${tradeId}:seller-preflight-lock:${encodeURIComponent(group.asset.outcomeSetId)}`,
+        )
+        lockedProofs.push(...locked.lockedProofs)
+        changeProofs.push(...locked.changeProofs)
+        spentProofs.push(...group.split.exactProofs)
+      }
     } catch (err) {
-      await this.persistPartialLock(
-        tradeId,
-        mintUrl,
-        split.conditionId,
-        lockCollectionByKeyset,
-        err,
-      )
+      const partial = partialLockFromError(err)
+      const combinedPartial = {
+        spentProofs: [...spentProofs, ...(partial?.spentProofs ?? [])],
+        lockedProofs: [...lockedProofs, ...(partial?.lockedProofs ?? [])],
+        changeProofs: [...changeProofs, ...(partial?.changeProofs ?? [])],
+      }
+      if (combinedPartial.lockedProofs.length > 0) {
+        await this.persistPartialLockParts(
+          tradeId,
+          mintUrl,
+          split.conditionId,
+          lockCollectionByKeyset,
+          err,
+          combinedPartial,
+        )
+      }
       throw err
     }
-    const result = await this.ops.sellerOpenPrelocked(ctx, locked.lockedProofs)
+    const result = await this.ops.sellerOpenPrelocked(ctx, lockedProofs)
     await updateState((state, now) => {
       const live = state.swaps[tradeId]
       if (!live || isTerminal(live)) return
@@ -945,7 +918,7 @@ export class DaemonSwapExecutor {
       addOutcomeProofsByKeyset(
         state,
         mintUrl,
-        locked.changeProofs,
+        changeProofs,
         'reserved',
         split.conditionId,
         lockCollectionByKeyset,
@@ -1060,25 +1033,6 @@ export class DaemonSwapExecutor {
       })
     }
     return groups
-  }
-
-  private async netProofAmount(
-    mintUrl: string,
-    proofs: CashuProofRecord[],
-  ): Promise<number> {
-    const keysetIds = proofs.map((proof) => proof.id)
-    if (keysetIds.some((keysetId) => !keysetId)) {
-      throw new Error('cannot compute net proof amount for proof without keyset id')
-    }
-    const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
-      mintUrl,
-      keysetIds as string[],
-      this.walletOpsDeps,
-    )
-    return (
-      proofs.reduce((acc, proof) => acc + amountToNumber(proof.amount), 0) -
-      computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset)
-    )
   }
 
   private async buyerRespond(tradeId: string): Promise<void> {
@@ -1197,9 +1151,17 @@ export class DaemonSwapExecutor {
         lockedProofsSellerCipher: swap.messages.lockedProofsSeller,
         sellerPreSigsHex: swap.sellerPreSigsHex,
       })
-      const compoundOutcomeSet = parseOutcomeSetId(asset.outcomeSetId).length > 1
+      const receivedAsset =
+        swap.settlementKind === 'Mint' && swap.sellerLockOutcomeSetId
+          ? {
+              kind: 'outcome' as const,
+              conditionId: asset.conditionId,
+              outcomeSetId: swap.sellerLockOutcomeSetId,
+            }
+          : asset
+      const compoundOutcomeSet = parseOutcomeSetId(receivedAsset.outcomeSetId).length > 1
       const collectionByKeyset = compoundOutcomeSet
-        ? await loadRootCollectionByKeyset(profile.mintUrl, asset.conditionId)
+        ? await loadRootCollectionByKeyset(profile.mintUrl, receivedAsset.conditionId)
         : null
       await updateState((state, now) => {
         const live = state.swaps[tradeId]
@@ -1210,12 +1172,12 @@ export class DaemonSwapExecutor {
             profile.mintUrl,
             fresh,
             'available',
-            asset.conditionId,
+            receivedAsset.conditionId,
             collectionByKeyset,
             now,
           )
         } else {
-          addProofs(state, profile.mintUrl, fresh, 'available', asset, now)
+          addProofs(state, profile.mintUrl, fresh, 'available', receivedAsset, now)
         }
         live.step = 'awaiting-confirmation'
         live.updatedAt = now
@@ -1940,11 +1902,23 @@ async function loadRootCollectionByKeyset(
     throw new Error(`Failed to load condition ${conditionId} keysets: ${response.status}`)
   }
   const body = (await response.json()) as {
-    condition?: { keysets?: Record<string, string> }
+    condition?: {
+      keysets?: Record<string, string>
+      partitions?: Array<{ keysets?: Record<string, string> }>
+    }
     keysets?: Record<string, string>
+    partitions?: Array<{ keysets?: Record<string, string> }>
   }
   const result = new Map<string, string>()
-  for (const [collection, keysetId] of Object.entries(body.condition?.keysets ?? body.keysets ?? {})) {
+  const condition = body.condition ?? body
+  const keysets = {
+    ...(condition.partitions ?? []).reduce<Record<string, string>>(
+      (acc, partition) => ({ ...acc, ...(partition.keysets ?? {}) }),
+      {},
+    ),
+    ...(condition.keysets ?? {}),
+  }
+  for (const [collection, keysetId] of Object.entries(keysets)) {
     if (!keysetId) continue
     const existing = result.get(keysetId)
     if (existing && existing !== collection) {

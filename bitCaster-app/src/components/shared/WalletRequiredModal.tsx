@@ -12,7 +12,10 @@ export function WalletRequiredModal({ onClose }: WalletRequiredModalProps) {
   const location = useLocation()
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center">
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center"
+      data-testid="wallet-required-modal"
+    >
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
       <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 max-w-sm mx-4 text-center">
@@ -40,6 +43,7 @@ export function WalletRequiredModal({ onClose }: WalletRequiredModalProps) {
               onClose()
               navigate('/setup', { state: { from: location.pathname + location.search } })
             }}
+            data-testid="wallet-required-create"
             className="flex-1 py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] text-white font-semibold transition-colors"
           >
             {t('wallet.createWallet')}

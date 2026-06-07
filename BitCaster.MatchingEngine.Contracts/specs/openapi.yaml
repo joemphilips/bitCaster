@@ -660,11 +660,11 @@ components:
       schema:
         type: string
       description: >
-        The market to trade on, in the format "{conditionId}-{outcomeSet}"
-        (e.g. "deadbeef…abc-Alice" or "deadbeef…abc-B|C"). For finite
-        categorical markets, multiple outcome names separated by "|" represent
-        the order book for that exact outcome set. Clients should URL-encode
-        the path segment when needed.
+        The primitive outcome book to trade on, in the format
+        "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public
+        market IDs never contain finite outcome-set separators such as "|";
+        use SubmitOrderRequest.tokenSide to choose the primitive outcome token
+        or its one-vs-rest complement.
 
     ConditionId:
       name: conditionId
@@ -694,6 +694,16 @@ components:
         - Buy
         - Sell
       description: Direction of an order relative to the outcome token.
+
+    TokenSide:
+      type: string
+      enum:
+        - Outcome
+        - Complement
+      description: >
+        Which token on the primitive outcome book is being traded. `Outcome`
+        means the selected primitive outcome named by outcomeId; `Complement`
+        means the one-vs-rest complement of that outcome.
 
     OrderType:
       type: string
@@ -911,6 +921,7 @@ components:
       type: object
       required:
         - outcomeId
+        - tokenSide
         - side
         - price
         - amountSats
@@ -919,8 +930,10 @@ components:
         outcomeId:
           type: string
           description: >
-            The outcome or finite outcome set to trade (e.g. "Alice", "YES",
-            or "B|C"). Must match the outcome-set segment of marketId.
+            The primitive outcome to trade (e.g. "Alice" or "YES"). Must match
+            the outcomeName segment of marketId and must not contain "|".
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
         side:
           $ref: '#/components/schemas/OrderSide'
         price:
@@ -1003,6 +1016,7 @@ components:
         - remainingAmountSats
         - filledAmountSats
         - fills
+        - tokenSide
       properties:
         orderId:
           type: string
@@ -1033,6 +1047,8 @@ components:
           description: >
             All fills and active DCB mint-match reservation handles
             produced against this order so far.
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
 
     RestingOrderResponse:
       type: object
@@ -1046,6 +1062,7 @@ components:
         - amountSats
         - timeInForce
         - placedAt
+        - tokenSide
       properties:
         orderId:
           type: string
@@ -1056,7 +1073,9 @@ components:
           description: The market this order belongs to.
         outcomeId:
           type: string
-          description: The outcome this order trades.
+          description: The primitive route outcome this order trades against.
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
         side:
           $ref: '#/components/schemas/OrderSide'
         price:
@@ -1652,9 +1671,9 @@ components:
           type: array
           description: >
             Outcome names sourced from the mintd condition snapshot. Singleton
-            outcome books use `marketId = "{conditionId}-{outcomeName}"`.
-            Finite categorical outcome-set books use multiple outcome names
-            separated by "|", for example `"{conditionId}-B|C"`.
+            outcome books use `marketId = "{conditionId}-{outcomeName}"`;
+            the one-vs-rest complement is selected on order submission with
+            `tokenSide = "Complement"` rather than a compound public market ID.
           items:
             type: string
         title:

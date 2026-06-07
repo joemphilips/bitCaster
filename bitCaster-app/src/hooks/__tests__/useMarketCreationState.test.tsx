@@ -90,6 +90,10 @@ vi.mock('@/lib/kormir', () => ({
   createEnumAnnouncement: (...args: unknown[]) => mockCreateEnumAnnouncement(...args),
 }))
 
+vi.mock('@/lib/walletOps', () => ({
+  refreshMintInfoWithoutActivating: vi.fn().mockResolvedValue(undefined),
+}))
+
 // Stub the wallet store — the real module transitively imports `@cashu/cashu-ts`
 // which fails to load cleanly under Vitest's ESM resolver, and this test does
 // not exercise the wallet at all.

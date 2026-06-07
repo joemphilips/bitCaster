@@ -161,7 +161,7 @@ components:
           marketId:
             type: string
             description: >
-              The market ID in the format "{conditionId}-{outcomeSet}".
+              The primitive market ID in the format "{conditionId}-{outcomeName}".
 
     LeaveMarketRequest:
       payload:
@@ -172,7 +172,7 @@ components:
           marketId:
             type: string
             description: >
-              The market ID in the format "{conditionId}-{outcomeSet}".
+              The primitive market ID in the format "{conditionId}-{outcomeName}".
 
     OrderBookUpdatedMessage:
       payload:
@@ -244,7 +244,7 @@ components:
         marketId:
           type: string
           description: >
-            The market ID in the format "{conditionId}-{outcomeSet}".
+            The primitive market ID in the format "{conditionId}-{outcomeName}".
         bids:
           type: array
           items:

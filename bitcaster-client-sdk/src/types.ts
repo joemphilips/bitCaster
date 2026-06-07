@@ -32,6 +32,7 @@ export interface SdkTradeSelection {
 
 export interface SdkSubmitOrderRequest {
   outcomeId: string
+  tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
   amountSats: number

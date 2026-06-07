@@ -148,7 +148,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         var modalHeading = page.GetByText("Wallet Required");
         await Assertions.Expect(modalHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
 
-        var createButton = page.GetByRole(AriaRole.Button, new() { Name = "Create Wallet" });
+        var createButton = page.GetByTestId("wallet-required-create");
         await Assertions.Expect(createButton).ToBeVisibleAsync();
     }
 
@@ -169,7 +169,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await buyYesButton.ClickAsync();
 
         // Click "Create Wallet" in the modal
-        var createButton = page.GetByRole(AriaRole.Button, new() { Name = "Create Wallet" });
+        var createButton = page.GetByTestId("wallet-required-create");
         await Assertions.Expect(createButton).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await createButton.ClickAsync();
 

@@ -11,6 +11,8 @@ bitCaster uses a central limit order book (CLOB). Limit orders rest on the book,
 
 Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell for the same outcome set, **Mint** = Buy vs Buy for exactly complementary outcome sets (maker mints a complete CTF set as the splitter), **Merge** = Sell vs Sell that combines into a complete set (not yet supported in bitCaster).
 
+Public trading books are primitive outcome books. A categorical market with outcomes `A`, `B`, and `C` exposes `A / Not A`, `B / Not B`, and `C / Not C` books; clients submit to `condition-A`, `condition-B`, or `condition-C` and choose the selected token or its one-vs-rest complement in the order body. Compound ids such as `B|C` remain internal settlement and mint keyset identifiers, not public market routes.
+
 ## Online Requirement
 
 A resting limit order is an online commitment. The maker must keep a browser tab or bot process connected until the order is filled, cancelled, or expired. When a taker matches the order, the maker must be able to answer the TradeHub messages and lock proofs before the swap timeout.

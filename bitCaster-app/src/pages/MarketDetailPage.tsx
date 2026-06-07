@@ -510,7 +510,7 @@ export function MarketDetailPage() {
         limitPrice,
         orderBook:
           latestMarket.outcomeOrderBooks?.[
-            outcomeSets.selectedOutcomeSetId
+            outcomeSets.publicOutcomeSetId
           ] ?? null,
         complementaryOrderBook:
           latestMarket.outcomeOrderBooks?.[
@@ -533,7 +533,7 @@ export function MarketDetailPage() {
     let submitAttempted = false;
     try {
       const selectedBook =
-        latestMarket.outcomeOrderBooks?.[outcomeSets.selectedOutcomeSetId] ??
+        latestMarket.outcomeOrderBooks?.[outcomeSets.publicOutcomeSetId] ??
         null;
       const complementBook =
         latestMarket.outcomeOrderBooks?.[outcomeSets.complementOutcomeSetId] ??

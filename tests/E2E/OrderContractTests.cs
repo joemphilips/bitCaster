@@ -37,6 +37,7 @@ public class OrderContractTests : IAsyncLifetime
         var body = new
         {
             outcomeId = "Yes",
+            tokenSide = "Outcome",
             side = "Buy",
             price = 50,
             amountSats = 100,
@@ -44,7 +45,7 @@ public class OrderContractTests : IAsyncLifetime
             ephemeralPubkey = pubkey,
         };
 
-        var res = await _http!.PostAsJsonAsync("/api/v1/test-market/orders", body);
+        var res = await _http!.PostAsJsonAsync("/api/v1/test-Yes/orders", body);
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
         var json = await res.Content.ReadAsStringAsync();
@@ -61,6 +62,7 @@ public class OrderContractTests : IAsyncLifetime
         var submit = new
         {
             outcomeId = "Yes",
+            tokenSide = "Outcome",
             side = "Buy",
             price = 50,
             amountSats = 100,
@@ -68,19 +70,19 @@ public class OrderContractTests : IAsyncLifetime
             ephemeralPubkey = pubkey,
         };
 
-        var submitRes = await _http!.PostAsJsonAsync("/api/v1/status-market/orders", submit);
+        var submitRes = await _http!.PostAsJsonAsync("/api/v1/status-Yes/orders", submit);
         Assert.Equal(HttpStatusCode.OK, submitRes.StatusCode);
         var submitJson = JsonDocument.Parse(await submitRes.Content.ReadAsStringAsync());
         var orderId = submitJson.RootElement.GetProperty("orderId").GetString();
         Assert.NotNull(orderId);
 
-        var statusRes = await _http!.GetAsync($"/api/v1/status-market/orders/{orderId}");
+        var statusRes = await _http!.GetAsync($"/api/v1/status-Yes/orders/{orderId}");
         Assert.Equal(HttpStatusCode.OK, statusRes.StatusCode);
 
         using var doc = JsonDocument.Parse(await statusRes.Content.ReadAsStringAsync());
         var root = doc.RootElement;
         Assert.Equal(orderId, root.GetProperty("orderId").GetString());
-        Assert.Equal("status-market", root.GetProperty("marketId").GetString());
+        Assert.Equal("status-Yes", root.GetProperty("marketId").GetString());
         // The InMemoryMatchingEngine never matches, so new orders sit resting
         // with zero fills and the full amount outstanding.
         Assert.Equal("resting", root.GetProperty("status").GetString());
@@ -104,6 +106,7 @@ public class OrderContractTests : IAsyncLifetime
         var body = new
         {
             outcomeId = "Yes",
+            tokenSide = "Outcome",
             side = "Buy",
             price = 50,
             amountSats = 100,
@@ -112,7 +115,7 @@ public class OrderContractTests : IAsyncLifetime
             ephemeralPubkey = "04deadbeef",
         };
 
-        var res = await _http!.PostAsJsonAsync("/api/v1/test-market/orders", body);
+        var res = await _http!.PostAsJsonAsync("/api/v1/test-Yes/orders", body);
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
     }
 }

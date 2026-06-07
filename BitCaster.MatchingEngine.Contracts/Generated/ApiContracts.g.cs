@@ -42,6 +42,22 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
+    /// Which token on the primitive outcome book is being traded. `Outcome` means the selected primitive outcome named by outcomeId; `Complement` means the one-vs-rest complement of that outcome.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum TokenSide
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Outcome")]
+        Outcome = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Complement")]
+        Complement = 1,
+
+    }
+
+    /// <summary>
     /// Execution semantics of an order.
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -408,9 +424,10 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(long @amountSats, NostrKind1Event @comment, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce)
+        public SubmitOrderRequest(long @amountSats, NostrKind1Event @comment, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce, TokenSide @tokenSide)
         {
             this.OutcomeId = @outcomeId;
+            this.TokenSide = @tokenSide;
             this.Side = @side;
             this.Price = @price;
             this.AmountSats = @amountSats;
@@ -420,11 +437,15 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// The outcome or finite outcome set to trade (e.g. "Alice", "YES", or "B|C"). Must match the outcome-set segment of marketId.
+        /// The primitive outcome to trade (e.g. "Alice" or "YES"). Must match the outcomeName segment of marketId and must not contain "|".
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
         public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
         [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
@@ -523,7 +544,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(long @filledAmountSats, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSats, string @status)
+        public OrderStatusResponse(long @filledAmountSats, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSats, string @status, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -531,6 +552,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.RemainingAmountSats = @remainingAmountSats;
             this.FilledAmountSats = @filledAmountSats;
             this.Fills = @fills;
+            this.TokenSide = @tokenSide;
         }
 
         /// <summary>
@@ -569,6 +591,10 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("fills")]
         public System.Collections.Generic.List<Fill> Fills { get; }
 
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
+
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
@@ -584,11 +610,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RestingOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RestingOrderResponse(long @amountSats, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSats, OrderSide @side, TimeInForce @timeInForce)
+        public RestingOrderResponse(long @amountSats, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSats, OrderSide @side, TimeInForce @timeInForce, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
             this.OutcomeId = @outcomeId;
+            this.TokenSide = @tokenSide;
             this.Side = @side;
             this.Price = @price;
             this.RemainingAmountSats = @remainingAmountSats;
@@ -612,10 +639,14 @@ namespace BitCaster.MatchingEngine.Contracts
         public string MarketId { get; }
 
         /// <summary>
-        /// The outcome this order trades.
+        /// The primitive route outcome this order trades against.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
         public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
         [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
@@ -1699,7 +1730,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ConditionId { get; }
 
         /// <summary>
-        /// Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`. Finite categorical outcome-set books use multiple outcome names separated by "|", for example `"{conditionId}-B|C"`.
+        /// Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`; the one-vs-rest complement is selected on order submission with `tokenSide = "Complement"` rather than a compound public market ID.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]

@@ -169,6 +169,7 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
     ...actual,
     CheckStateEnum: { SPENT: 'SPENT', UNSPENT: 'UNSPENT' },
     OutputData: MockOutputData,
+    splitAmount: vi.fn(() => [1]),
     Mint: vi.fn(function MockMint() {
       return {
         getInfo: vi.fn().mockResolvedValue({
@@ -997,7 +998,7 @@ describe('buyerClaimSwap', () => {
     ).rejects.toThrow('Inputs must use the same conditional keyset')
   })
 
-  it('rejects primitive multi-keyset conditional claims before mint settlement', async () => {
+  it('claims primitive multi-keyset conditional proofs one keyset at a time', async () => {
     const { sellerCtx, buyerCtx } = swapContexts('trade-browser-multi-claim')
     const sellerOut = await sellerPreparePrelockedSwap(sellerCtx, [
       p2pkLockedProof('alice-B', 7, sellerCtx, 'keyset-B'),
@@ -1011,19 +1012,23 @@ describe('buyerClaimSwap', () => {
       14,
     )
     const operationId = 'trade-browser-multi-claim/browser/buyer-claim'
-    const mintSwapCallsBeforeClaim = cashuMockState.mintSwapCalls
 
-    await expect(
-      buyerClaimSwap(
-        buyerCtx,
-        sellerOut.adaptorPoint.secret,
-        sellerOut.lockedProofsCipher,
-        buyerOut.sellerPreSigsHex,
-        { operationId, proofOperationStore },
-      ),
-    ).rejects.toThrow('Atomic swap proof set must use exactly one keyset')
-    expect(cashuMockState.mintSwapCalls).toBe(mintSwapCallsBeforeClaim)
-    expect(proofDbMockState.operations.get(operationId)).toBeUndefined()
+    const claimed = await buyerClaimSwap(
+      buyerCtx,
+      sellerOut.adaptorPoint.secret,
+      sellerOut.lockedProofsCipher,
+      buyerOut.sellerPreSigsHex,
+      { operationId, proofOperationStore },
+    )
+
+    expect(claimed.map((proof) => proof.id).sort()).toEqual(['keyset-B', 'keyset-C'])
+    expect(cashuMockState.mintSwapCalls).toBe(2)
+    expect(
+      proofDbMockState.operations.get(`${operationId}:0:keyset-B`),
+    ).toEqual(expect.objectContaining({ kind: 'conditional-keyset-swap' }))
+    expect(
+      proofDbMockState.operations.get(`${operationId}:1:keyset-C`),
+    ).toEqual(expect.objectContaining({ kind: 'conditional-keyset-swap' }))
   })
 })
 

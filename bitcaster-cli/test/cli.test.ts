@@ -150,6 +150,18 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'GTC',
       '--no-preflight-split',
     ])
+    await runCli(daemonUrl, [
+      'order',
+      'submit',
+      'cond-A',
+      'A',
+      'Buy',
+      '60',
+      '100',
+      'FAK',
+      '--token-side',
+      'Complement',
+    ])
     await runCli(daemonUrl, ['order', 'status', 'cond-YES', 'order-1'])
     await runCli(daemonUrl, [
       'order',
@@ -223,6 +235,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
         params: {
           marketId: 'cond-YES',
           outcomeId: 'YES',
+          tokenSide: 'Outcome',
           side: 'Buy',
           price: 42,
           amountSats: 100,
@@ -235,11 +248,25 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
         params: {
           marketId: 'cond-NO',
           outcomeId: 'NO',
+          tokenSide: 'Outcome',
           side: 'Buy',
           price: 55,
           amountSats: 200,
           timeInForce: 'GTC',
           preflightSplit: false,
+        },
+      },
+      {
+        method: 'order.submit',
+        params: {
+          marketId: 'cond-A',
+          outcomeId: 'A',
+          tokenSide: 'Complement',
+          side: 'Buy',
+          price: 60,
+          amountSats: 100,
+          timeInForce: 'FAK',
+          preflightSplit: true,
         },
       },
       {

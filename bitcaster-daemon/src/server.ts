@@ -19,7 +19,6 @@ import {
 } from '@bitcaster-market/client-sdk/engineClient'
 import {
   complementOutcomeSetId,
-  outcomeSetMarketId,
 } from '@bitcaster-market/client-sdk/outcomeSets'
 import { validateOrderIntent } from '@bitcaster-market/client-sdk/orderValidation'
 import { checkOrderSettlementSupport } from '@bitcaster-market/client-sdk/settlementSupport'
@@ -528,7 +527,11 @@ export async function dispatch(
       }
     }
     case 'order.submit': {
-      const requestValidation = validateOrderIntent(command.params)
+      const orderParams = {
+        tokenSide: 'Outcome' as const,
+        ...command.params,
+      }
+      const requestValidation = validateOrderIntent(orderParams)
       if (!requestValidation.valid) {
         return { ok: false, error: requestValidation.message }
       }
@@ -541,7 +544,7 @@ export async function dispatch(
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
       const settlementSupport = checkOrderSettlementSupport({
-        request: { side: command.params.side },
+        request: { side: orderParams.side },
       })
       if (!settlementSupport.supported) {
         return { ok: false, error: settlementSupport.message }
@@ -555,23 +558,25 @@ export async function dispatch(
       const preparedPreflight = await maybePreparePreflightSplitForOrder({
         client,
         mintUrl: profile.mintUrl,
-        marketId: command.params.marketId,
-        outcomeId: command.params.outcomeId,
-        side: command.params.side,
-        price: command.params.price,
-        amountSats: command.params.amountSats,
-        timeInForce: command.params.timeInForce,
-        preflightSplit: command.params.preflightSplit,
+        marketId: orderParams.marketId,
+        outcomeId: orderParams.outcomeId,
+        side: orderParams.side,
+        tokenSide: orderParams.tokenSide,
+        price: orderParams.price,
+        amountSats: orderParams.amountSats,
+        timeInForce: orderParams.timeInForce,
+        preflightSplit: orderParams.preflightSplit,
         ephemeralPubkey: ephemeral.publicKeyHex,
       })
       let submitted: SubmitOrderResponse
       try {
-        submitted = await client.submitOrder(command.params.marketId, {
-          outcomeId: command.params.outcomeId,
-          side: command.params.side,
-          price: command.params.price,
-          amountSats: command.params.amountSats,
-          timeInForce: command.params.timeInForce,
+        submitted = await client.submitOrder(orderParams.marketId, {
+          outcomeId: orderParams.outcomeId,
+          tokenSide: orderParams.tokenSide,
+          side: orderParams.side,
+          price: orderParams.price,
+          amountSats: orderParams.amountSats,
+          timeInForce: orderParams.timeInForce,
           ephemeralPubkey: ephemeral.publicKeyHex,
         })
       } catch (err) {
@@ -588,15 +593,16 @@ export async function dispatch(
         throw err
       }
       const local = await recordSubmittedOrder(
-        command.params.marketId,
+        orderParams.marketId,
         ephemeral.publicKeyHex,
         submitted,
         preparedPreflight,
+        orderParams.tokenSide,
       )
       await updateSecrets((current, now) => {
         current.orderEphemeralKeys[submitted.orderId] = {
           orderId: submitted.orderId,
-          marketId: command.params.marketId,
+          marketId: orderParams.marketId,
           privateKeyHex: ephemeral.privateKeyHex,
           publicKeyHex: ephemeral.publicKeyHex,
           createdAt: now,
@@ -961,6 +967,7 @@ async function maybePreparePreflightSplitForOrder(input: {
   marketId: string
   outcomeId: string
   side: 'Buy' | 'Sell'
+  tokenSide: 'Outcome' | 'Complement'
   price: number
   amountSats: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
@@ -976,7 +983,7 @@ async function maybePreparePreflightSplitForOrder(input: {
   }
   if (input.outcomeId !== market.outcomeSetId) {
     throw new Error(
-      'pre-flight split requires outcomeId to match the submitted outcome-set market id',
+      'pre-flight split requires outcomeId to match the submitted primitive market id',
     )
   }
   const outcomeLabels = await loadOutcomeLabels(
@@ -991,13 +998,17 @@ async function maybePreparePreflightSplitForOrder(input: {
   if (!complement) {
     throw new Error('pre-flight split could not resolve a complementary outcome set')
   }
-  if (await wouldOrderCross(input.client, input.marketId, complement, input.price)) {
+  if (await wouldOrderCross(input.client, input.marketId, input.price)) {
     return null
   }
 
   const reservationId = `order-preflight:${input.ephemeralPubkey}`
-  let resolvedKeepOutcomeSetId = market.outcomeSetId
-  let resolvedLockOutcomeSetId = complement
+  const keepOutcomeSetId =
+    input.tokenSide === 'Complement' ? complement : market.outcomeSetId
+  const lockOutcomeSetId =
+    input.tokenSide === 'Complement' ? market.outcomeSetId : complement
+  let resolvedKeepOutcomeSetId = keepOutcomeSetId
+  let resolvedLockOutcomeSetId = lockOutcomeSetId
   try {
     for (let offset = 0; offset < input.amountSats; offset += 100) {
       const chunkAmountSats = Math.min(100, input.amountSats - offset)
@@ -1006,8 +1017,8 @@ async function maybePreparePreflightSplitForOrder(input: {
           mintUrl: input.mintUrl,
           conditionId: market.conditionId,
           amountSats: chunkAmountSats,
-          keepOutcomeSetId: market.outcomeSetId,
-          lockOutcomeSetId: complement,
+          keepOutcomeSetId,
+          lockOutcomeSetId,
         })
       const secrets = await readSecrets()
       if (!secrets) throw new Error('daemon secrets are not initialized')
@@ -1037,8 +1048,8 @@ async function maybePreparePreflightSplitForOrder(input: {
         conditionId: market.conditionId,
         collateralProofs: collateral.inputs,
         amountSats: preflightOutputAmountSats,
-        keepOutcomeSetId: market.outcomeSetId,
-        lockOutcomeSetId: complement,
+        keepOutcomeSetId,
+        lockOutcomeSetId,
         operationId: `${reservationId}:ctf-split:${offset / 100}`,
         proofOperationStore: ctfProofOperationStore,
       })
@@ -1145,19 +1156,13 @@ async function loadMintOutcomeLabels(
 async function wouldOrderCross(
   client: EngineClientLike,
   marketId: string,
-  complementOutcomeSetId: string,
   price: number,
 ): Promise<boolean> {
-  const market = splitMarketId(marketId)
-  if (!market) return false
   const selectedBook = await client.getOrderBook(marketId)
   if ((selectedBook.asks[0]?.price ?? Number.POSITIVE_INFINITY) <= price) {
     return true
   }
-  const complementBook = await client.getOrderBook(
-    outcomeSetMarketId(market.conditionId, complementOutcomeSetId),
-  )
-  return (complementBook.bids[0]?.price ?? Number.NEGATIVE_INFINITY) + price >= 100
+  return false
 }
 
 async function reserveSelectedSatProofs(
@@ -1319,7 +1324,7 @@ async function replaceReservedSatProofsWithReservedOutcomes(input: {
 function splitMarketId(
   marketId: string,
 ): { conditionId: string; outcomeSetId: string } | null {
-  const dash = marketId.indexOf('-')
+  const dash = marketId.lastIndexOf('-')
   if (dash <= 0 || dash >= marketId.length - 1) return null
   return {
     conditionId: marketId.slice(0, dash),

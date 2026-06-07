@@ -19,6 +19,8 @@ swap protocol.
 
 Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell, **Mint** = Buy vs Buy (maker splits a complete set), **Merge** = Sell vs Sell (combine into a complete set; not yet supported in bitCaster).
 
+For categorical markets, the public trading UI presents primitive books such as `A / Not A`; compound outcome collections such as `B|C` are wallet and settlement details used after a match is made.
+
 ## Mint vs complementary matches
 
 - **Mint match** — a YES buyer is matched with a NO buyer, or in a categorical market a buyer of one outcome set is matched with a buyer of the exact complementary set. The maker creates or selects the complete outcome-token set, keeps the side they wanted, and atomically swaps the other side to the taker for sats.

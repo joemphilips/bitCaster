@@ -4,6 +4,7 @@ export type SupportedTimeInForce = 'FAK' | 'FOK' | 'GTC'
 export interface OrderIntentForValidation {
   marketId?: unknown
   outcomeId?: unknown
+  tokenSide?: unknown
   side?: unknown
   price?: unknown
   amountSats?: unknown
@@ -27,6 +28,35 @@ export function validateOrderIntent(
   }
   if (!isNonEmptyString(intent.outcomeId)) {
     return { valid: false, message: 'Order rejected: outcome id is required.' }
+  }
+  if (intent.marketId.includes('|')) {
+    return {
+      valid: false,
+      message: 'Order rejected: market id must be a primitive outcome book.',
+    }
+  }
+  if (intent.outcomeId.includes('|')) {
+    return {
+      valid: false,
+      message: 'Order rejected: outcome id must be a primitive outcome name.',
+    }
+  }
+  const marketOutcomeSegment = primitiveOutcomeSegment(intent.marketId)
+  if (
+    !marketOutcomeSegment ||
+    marketOutcomeSegment !== intent.outcomeId
+  ) {
+    return {
+      valid: false,
+      message:
+        'Order rejected: outcome id must match the primitive outcome segment of market id.',
+    }
+  }
+  if (intent.tokenSide !== 'Outcome' && intent.tokenSide !== 'Complement') {
+    return {
+      valid: false,
+      message: 'Order rejected: tokenSide must be Outcome or Complement.',
+    }
   }
   if (intent.side !== 'Buy' && intent.side !== 'Sell') {
     return {
@@ -79,4 +109,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function primitiveOutcomeSegment(marketId: string): string | null {
+  const index = marketId.lastIndexOf('-')
+  if (index <= 0 || index >= marketId.length - 1) return null
+  return marketId.slice(index + 1)
 }

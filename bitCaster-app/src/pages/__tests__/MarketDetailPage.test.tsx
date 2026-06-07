@@ -76,16 +76,13 @@ describe('fetchMarketDetailWithBooks', () => {
 
     const detail = await fetchMarketDetailWithBooks('condition-1')
 
-    expect(fetchOrderBook).toHaveBeenCalledTimes(6)
+    expect(fetchOrderBook).toHaveBeenCalledTimes(3)
     expect(vi.mocked(fetchOrderBook).mock.calls.map(([marketId]) => marketId)).toEqual([
       'condition-1-Alice',
-      'condition-1-Bob|Carol',
       'condition-1-Bob',
-      'condition-1-Alice|Carol',
       'condition-1-Carol',
-      'condition-1-Alice|Bob',
     ])
     expect(detail.outcomeOrderBooks).toHaveProperty('Alice')
-    expect(detail.outcomeOrderBooks).toHaveProperty('Bob|Carol')
+    expect(detail.outcomeOrderBooks).not.toHaveProperty('Bob|Carol')
   })
 })

@@ -21,6 +21,8 @@ public static class OrderEndpoints
             IHubContext<MarketHub, IMarketHubClient> marketHub,
             IHubContext<TradeHub, ITradeHubClient> tradeHub) =>
         {
+            if (marketId.Contains('|', StringComparison.Ordinal))
+                return Results.BadRequest("Invalid market ID format. Expected: {conditionId}-{outcomeName}");
             if (req.AmountSats <= 0)
                 return Results.BadRequest("AmountSats must be positive.");
 
@@ -29,6 +31,12 @@ public static class OrderEndpoints
 
             if (string.IsNullOrWhiteSpace(req.OutcomeId))
                 return Results.BadRequest("OutcomeId is required.");
+            if (req.OutcomeId.Contains('|', StringComparison.Ordinal))
+                return Results.BadRequest("OutcomeId must be a primitive outcome name.");
+
+            var resolvedRoute = ResolveOrderRoute(marketId, req);
+            if (resolvedRoute is null)
+                return Results.BadRequest("OutcomeId must match the primitive outcome segment of marketId.");
 
             // Identify the taker. The mock parses NIP-98 without verifying the
             // signature — sufficient for dev/E2E, unsafe in prod (enforced by
@@ -45,8 +53,8 @@ public static class OrderEndpoints
             }
 
             var result = bookManager.SubmitOrder(
-                marketId,
-                req.OutcomeId,
+                resolvedRoute.InternalMarketId,
+                resolvedRoute.InternalOutcomeSetId,
                 req.Side,
                 req.Price,
                 req.AmountSats,
@@ -91,16 +99,17 @@ public static class OrderEndpoints
             InMemoryOrderBookManager bookManager) =>
         {
             var status = bookManager.GetOrderStatus(orderId);
-            if (status is null || status.MarketId != marketId)
+            if (status is null || !PublicRouteMatchesInternalMarket(marketId, status.MarketId))
                 return Results.NotFound();
 
             return Results.Ok(new OrderStatusResponse(
                 filledAmountSats: status.FilledAmountSats,
                 fills: status.Fills,
-                marketId: status.MarketId,
+                marketId: marketId,
                 orderId: status.OrderId,
                 remainingAmountSats: status.RemainingAmountSats,
-                status: status.Status));
+                status: status.Status,
+                tokenSide: PublicTokenSideForInternalMarket(marketId, status.MarketId)));
         });
 
         app.MapDelete("/api/v1/{marketId}/orders/{orderId:guid}", async (
@@ -111,7 +120,7 @@ public static class OrderEndpoints
         {
             if (!bookManager.CancelOrder(orderId, out var storedMarketId) ||
                 storedMarketId is null ||
-                storedMarketId != marketId)
+                !PublicRouteMatchesInternalMarket(marketId, storedMarketId))
             {
                 return Results.NotFound();
             }
@@ -121,6 +130,78 @@ public static class OrderEndpoints
 
             return Results.Ok();
         });
+    }
+
+    private sealed record ResolvedOrderRoute(string InternalMarketId, string InternalOutcomeSetId);
+
+    private static ResolvedOrderRoute? ResolveOrderRoute(string publicMarketId, SubmitOrderRequest req)
+    {
+        var parts = MarketParts.TryParse(publicMarketId);
+        if (parts is null || !string.Equals(req.OutcomeId, parts.OutcomeSetId, StringComparison.Ordinal))
+            return null;
+
+        var internalOutcomeSetId = req.TokenSide == TokenSide.Complement
+            ? ResolveComplement(parts.ConditionId, parts.OutcomeSetId)
+            : parts.OutcomeSetId;
+        if (string.IsNullOrWhiteSpace(internalOutcomeSetId))
+            return null;
+
+        return new ResolvedOrderRoute(
+            $"{parts.ConditionId}-{internalOutcomeSetId}",
+            internalOutcomeSetId);
+    }
+
+    private static bool PublicRouteMatchesInternalMarket(string publicMarketId, string internalMarketId)
+    {
+        if (string.Equals(publicMarketId, internalMarketId, StringComparison.Ordinal))
+            return true;
+
+        var publicParts = MarketParts.TryParse(publicMarketId);
+        var internalParts = MarketParts.TryParse(internalMarketId);
+        if (publicParts is null || internalParts is null ||
+            !string.Equals(publicParts.ConditionId, internalParts.ConditionId, StringComparison.Ordinal))
+            return false;
+
+        return string.Equals(
+            ResolveComplement(publicParts.ConditionId, publicParts.OutcomeSetId),
+            internalParts.OutcomeSetId,
+            StringComparison.Ordinal);
+    }
+
+    private static TokenSide PublicTokenSideForInternalMarket(string publicMarketId, string internalMarketId)
+    {
+        if (string.Equals(publicMarketId, internalMarketId, StringComparison.Ordinal))
+            return TokenSide.Outcome;
+
+        var publicParts = MarketParts.TryParse(publicMarketId);
+        var internalParts = MarketParts.TryParse(internalMarketId);
+        if (publicParts is null || internalParts is null ||
+            !string.Equals(publicParts.ConditionId, internalParts.ConditionId, StringComparison.Ordinal))
+            return TokenSide.Outcome;
+
+        return string.Equals(
+            ResolveComplement(publicParts.ConditionId, publicParts.OutcomeSetId),
+            internalParts.OutcomeSetId,
+            StringComparison.Ordinal)
+            ? TokenSide.Complement
+            : TokenSide.Outcome;
+    }
+
+    private static string? ResolveComplement(string conditionId, string primitiveOutcome)
+    {
+        var outcomes = MarketEndpoints.TryGetRegisteredOutcomes(conditionId);
+        if (outcomes is null || outcomes.Count == 0)
+        {
+            return primitiveOutcome.Equals("YES", StringComparison.OrdinalIgnoreCase) ? "NO" :
+                primitiveOutcome.Equals("NO", StringComparison.OrdinalIgnoreCase) ? "YES" :
+                null;
+        }
+
+        var complement = outcomes
+            .Where(outcome => !string.Equals(outcome, primitiveOutcome, StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        return complement.Length == 0 ? null : string.Join('|', complement);
     }
 
     /// <summary>

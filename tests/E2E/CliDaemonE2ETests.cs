@@ -135,15 +135,18 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     {
         var maker = await StartDaemonAsync();
         var taker = await StartDaemonAsync();
-        var conditionId = NewConditionId();
-        var noMarketId = $"{conditionId}-NO";
-        var yesMarketId = $"{conditionId}-YES";
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateBinaryMarketFixtureAsync(
+            httpClient,
+            titlePrefix: "E2E binary complement");
+        var noMarketId = $"{condition.ConditionId}-{condition.NoOutcomeSetId}";
+        var yesMarketId = $"{condition.ConditionId}-{condition.YesOutcomeSetId}";
 
         using var makerSubmit = await RunCliJsonAsync(maker, [
             "order",
             "submit",
             noMarketId,
-            "NO",
+            condition.NoOutcomeSetId,
             "Buy",
             "55",
             "100",
@@ -163,7 +166,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             "order",
             "submit",
             yesMarketId,
-            "YES",
+            condition.YesOutcomeSetId,
             "Buy",
             "50",
             "100",
@@ -181,8 +184,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         Assert.Equal("Mint", fill.GetProperty("settlementKind").GetString());
         Assert.Equal(100, fill.GetProperty("outcomeFaceAmountSats").GetInt32());
         Assert.Equal(50, fill.GetProperty("quotePaymentSats").GetInt32());
-        Assert.Equal("NO", fill.GetProperty("sellerKeepOutcomeSetId").GetString());
-        Assert.Equal("YES", fill.GetProperty("sellerLockOutcomeSetId").GetString());
+        Assert.Equal(condition.NoOutcomeSetId, fill.GetProperty("sellerKeepOutcomeSetId").GetString());
+        Assert.Equal(condition.YesOutcomeSetId, fill.GetProperty("sellerLockOutcomeSetId").GetString());
         Assert.Equal(0, takerEngine.GetProperty("remainingAmountSats").GetInt32());
 
         using var makerTrade = await WaitForTradeRecordAsync(
@@ -190,10 +193,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             tradeId!,
             record => HasMintMetadata(
                 record,
-                yesMarketId,
+                noMarketId,
                 expectedRole: "seller",
-                sellerKeepOutcomeSetId: "NO",
-                sellerLockOutcomeSetId: "YES",
+                sellerKeepOutcomeSetId: condition.NoOutcomeSetId,
+                sellerLockOutcomeSetId: condition.YesOutcomeSetId,
                 outcomeFaceAmountSats: 100,
                 quotePaymentSats: 50),
             "resting maker mint TradeCreated");
@@ -204,8 +207,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 record,
                 yesMarketId,
                 expectedRole: "buyer",
-                sellerKeepOutcomeSetId: "NO",
-                sellerLockOutcomeSetId: "YES",
+                sellerKeepOutcomeSetId: condition.NoOutcomeSetId,
+                sellerLockOutcomeSetId: condition.YesOutcomeSetId,
                 outcomeFaceAmountSats: 100,
                 quotePaymentSats: 50),
             "incoming taker mint TradeCreated");
@@ -225,21 +228,28 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     {
         var maker = await StartDaemonAsync();
         var taker = await StartDaemonAsync();
-        var conditionId = NewConditionId();
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            httpClient,
+            outcomes: ["Alice", "Bob", "Carol"],
+            titlePrefix: "E2E categorical complement");
+        var conditionId = condition.ConditionId;
         const string makerOutcomeSetId = "Bob|Carol";
         const string takerOutcomeSetId = "Alice";
-        var makerMarketId = $"{conditionId}-{makerOutcomeSetId}";
+        var makerMarketId = $"{conditionId}-{takerOutcomeSetId}";
         var takerMarketId = $"{conditionId}-{takerOutcomeSetId}";
 
         using var makerSubmit = await RunCliJsonAsync(maker, [
             "order",
             "submit",
             makerMarketId,
-            makerOutcomeSetId,
+            takerOutcomeSetId,
             "Buy",
             "60",
             "100",
             "GTC",
+            "--token-side",
+            "Complement",
             "--no-preflight-split",
         ]);
 
@@ -311,21 +321,28 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     {
         var maker = await StartDaemonAsync();
         var taker = await StartDaemonAsync();
-        var conditionId = NewConditionId();
-        const string makerOutcomeSetId = "Alice|Bob";
-        const string takerOutcomeSetId = "Alice";
-        var makerMarketId = $"{conditionId}-{makerOutcomeSetId}";
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            httpClient,
+            outcomes: ["Alice", "Bob", "Carol"],
+            titlePrefix: "E2E categorical overlap");
+        var conditionId = condition.ConditionId;
+        const string makerPrimitiveOutcomeSetId = "Alice";
+        const string takerOutcomeSetId = "Bob";
+        var makerMarketId = $"{conditionId}-{makerPrimitiveOutcomeSetId}";
         var takerMarketId = $"{conditionId}-{takerOutcomeSetId}";
 
         using var makerSubmit = await RunCliJsonAsync(maker, [
             "order",
             "submit",
             makerMarketId,
-            makerOutcomeSetId,
+            makerPrimitiveOutcomeSetId,
             "Buy",
             "60",
             "100",
             "GTC",
+            "--token-side",
+            "Complement",
             "--no-preflight-split",
         ]);
         Assert.True(makerSubmit.RootElement.GetProperty("ok").GetBoolean());
@@ -3638,28 +3655,24 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     private static async Task<(string ConditionId, string YesOutcomeSetId, string NoOutcomeSetId)> FindBinaryConditionAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var engineVisibleIds = await LoadTradableMarketConditionIdsAsync(httpClient);
         using var response = await httpClient.GetAsync($"{TestPorts.MintUrl}/v1/conditions");
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync();
         using var doc = await JsonDocument.ParseAsync(stream);
 
         var seeded = EnumerateBinaryConditions(doc)
-            .FirstOrDefault(condition =>
-                condition.Title.Contains("Will Bitcoin reach $100K", StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(condition => engineVisibleIds.Contains(condition.ConditionId)
+                && condition.Title.Contains("Will Bitcoin reach $100K", StringComparison.OrdinalIgnoreCase));
         if (seeded.ConditionId is not null)
             return (seeded.ConditionId, seeded.YesOutcomeSetId, seeded.NoOutcomeSetId);
 
-        var engineVisibleIds = await LoadCatalogueConditionIdsAsync(httpClient);
         var engineVisible = EnumerateBinaryConditions(doc)
             .FirstOrDefault(condition => engineVisibleIds.Contains(condition.ConditionId));
         if (engineVisible.ConditionId is not null)
             return (engineVisible.ConditionId, engineVisible.YesOutcomeSetId, engineVisible.NoOutcomeSetId);
 
-        var fallback = EnumerateBinaryConditions(doc).FirstOrDefault();
-        if (fallback.ConditionId is not null)
-            return (fallback.ConditionId, fallback.YesOutcomeSetId, fallback.NoOutcomeSetId);
-
-        throw new InvalidOperationException("No binary YES/NO CTF condition was available from the mint.");
+        return await CreateBinaryMarketFixtureAsync(httpClient);
     }
 
     private static IEnumerable<(string ConditionId, string Title, string YesOutcomeSetId, string NoOutcomeSetId)> EnumerateBinaryConditions(

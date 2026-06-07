@@ -85,6 +85,7 @@ import {
 } from "@bitcaster/swap-protocol/atomicSwap";
 import {
   computeGrossCtfInputAmountSats,
+  resolveRootDirectLockOutputAmountSats,
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
   splitRootCompleteSetForSwap,
@@ -108,7 +109,6 @@ import {
 } from "@bitcaster/client-sdk/tradeFlow";
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
   takeProofsForLock,
 } from "@bitcaster/client-sdk/proofSelection";
 import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
@@ -671,6 +671,14 @@ function tradeCreatedMatchesPendingOrderPath(
     return true;
   }
 
+  if (
+    role === "buyer" &&
+    payload.marketId &&
+    pendingTrade.marketId === payload.marketId
+  ) {
+    return true;
+  }
+
   const market = payload.marketId ? splitMarketId(payload.marketId) : null;
   if (!market) return true;
 
@@ -741,6 +749,11 @@ interface ReservedExactProofs {
 interface SelectedOutcomeProofGroup {
   outcomeSetId: string;
   proofs: StoredProof[];
+}
+
+interface SelectedPreflightProofGroup {
+  outcomeSetId: string;
+  proofs: ReservedExactProofs;
 }
 
 async function prepareDirectSellerOpening(
@@ -826,38 +839,81 @@ async function prepareMintSellerOpening(
     pendingTrade.preflightSplit.conditionId === split.conditionId
   ) {
     const preflight = pendingTrade.preflightSplit;
-    const selectedLock = await prepareReservedPreflightExactProofs({
-      mintUrl,
-      reservationId: preflight.reservationId,
-      conditionId: split.conditionId,
-      outcomeSetId: preflight.lockOutcomeSetId,
-      amountSats,
-      operationId: proofOperationId(
-        swap.tradeId,
-        "seller-preflight-lock-exact-v2",
-      ),
-      preserveGrossLot: true,
-    });
-    await persistReservedPreflightExactProofs({
-      ...selectedLock,
-      mintUrl,
-      conditionId: split.conditionId,
-      reservedBy: preflight.reservationId,
-    });
+    let selectedLockGroups: SelectedPreflightProofGroup[];
+    try {
+      selectedLockGroups = [
+        {
+          outcomeSetId: preflight.lockOutcomeSetId,
+          proofs: await prepareReservedPreflightExactProofs({
+            mintUrl,
+            reservationId: preflight.reservationId,
+            conditionId: split.conditionId,
+            outcomeSetId: preflight.lockOutcomeSetId,
+            amountSats,
+            operationId: proofOperationId(
+              swap.tradeId,
+              `seller-preflight-lock-exact-v2/${encodeURIComponent(preflight.lockOutcomeSetId)}`,
+            ),
+            preserveGrossLot: true,
+          }),
+        },
+      ];
+    } catch (exactErr) {
+      const lockOutcomeSetIds = parseOutcomeSetId(preflight.lockOutcomeSetId);
+      if (lockOutcomeSetIds.length <= 1) throw exactErr;
+      selectedLockGroups = await Promise.all(
+        lockOutcomeSetIds.map(async (outcomeSetId) => ({
+          outcomeSetId,
+          proofs: await prepareReservedPreflightExactProofs({
+            mintUrl,
+            reservationId: preflight.reservationId,
+            conditionId: split.conditionId,
+            outcomeSetId,
+            amountSats,
+            operationId: proofOperationId(
+              swap.tradeId,
+              `seller-preflight-lock-exact-v2/${encodeURIComponent(outcomeSetId)}`,
+            ),
+            preserveGrossLot: true,
+          }),
+        })),
+      );
+    }
+    for (const group of selectedLockGroups) {
+      await persistReservedPreflightExactProofs({
+        ...group.proofs,
+        mintUrl,
+        conditionId: split.conditionId,
+        reservedBy: preflight.reservationId,
+      });
+    }
 
-    const locked = await sellerLockOutcomeProofs(
-      ctx,
-      selectedLock.exactProofs,
-      await netProofAmount(mintUrl, selectedLock.exactProofs),
-      {
-        operationId: proofOperationId(swap.tradeId, "seller-preflight-lock"),
-        proofOperationStore,
-      },
-    );
-    const out = await sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
+    const spentProofs: Proof[] = [];
+    const lockedProofs: Proof[] = [];
+    const changeProofs: Proof[] = [];
+    for (const group of selectedLockGroups) {
+      const locked = await sellerLockOutcomeProofs(
+        ctx,
+        group.proofs.exactProofs,
+        amountSats,
+        {
+          operationId: proofOperationId(
+            swap.tradeId,
+            selectedLockGroups.length === 1
+              ? "seller-preflight-lock"
+              : `seller-preflight-lock/${encodeURIComponent(group.outcomeSetId)}`,
+          ),
+          proofOperationStore,
+        },
+      );
+      spentProofs.push(...group.proofs.exactProofs);
+      lockedProofs.push(...locked.lockedProofs);
+      changeProofs.push(...locked.changeProofs);
+    }
+    const out = await sellerPreparePrelockedSwap(ctx, lockedProofs);
     await persistConditionalLockChange({
-      spentProofs: selectedLock.exactProofs,
-      changeProofs: locked.changeProofs,
+      spentProofs,
+      changeProofs,
       mintUrl,
       conditionId: split.conditionId,
       reservedBy: preflight.reservationId,
@@ -876,13 +932,20 @@ async function prepareMintSellerOpening(
     return out;
   }
 
+  const splitOutputAmountSats = await resolveRootDirectLockOutputAmountSats({
+    mintUrl,
+    conditionId: split.conditionId,
+    amountSats,
+    lockOutcomeSetId: split.lockOutcomeSetId,
+    keepOutcomeSetId: split.keepOutcomeSetId,
+  });
   const existingOperation = await getProofOperation(operationId);
   const collateralProofs = existingOperation
     ? existingOperation.inputs
     : await prepareRegularCollateralForCtfSplit({
         mintUrl,
         available: await getBaseProofs(mintUrl),
-        faceAmountSats: amountSats,
+        faceAmountSats: splitOutputAmountSats,
         reservationId: `trade-collateral:${swap.tradeId}`,
         operationId: proofOperationId(swap.tradeId, "seller-regular-ctf-input"),
       });
@@ -891,7 +954,7 @@ async function prepareMintSellerOpening(
     mintUrl,
     conditionId: split.conditionId,
     collateralProofs,
-    amountSats,
+    amountSats: splitOutputAmountSats,
     lockOutcomeSetId: split.lockOutcomeSetId,
     keepOutcomeSetId: split.keepOutcomeSetId,
     p2pk: {
@@ -1152,20 +1215,6 @@ async function prepareReservedPreflightExactProofs(input: {
     changeProofs: split.changeProofs,
     wasSplit: true,
   };
-}
-
-async function netProofAmount(
-  mintUrl: string,
-  proofs: Proof[],
-): Promise<number> {
-  const inputFeePpkByKeyset = await inputFeePpkByKeysetForProofs(
-    mintUrl,
-    proofs,
-  );
-  return (
-    proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0) -
-    computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset)
-  );
 }
 
 async function inputFeePpkByKeysetForProofs(

@@ -42,6 +42,7 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
   assert.equal(ticket.marketId, 'condition-yesno-Yes')
   assert.deepEqual(ticket.request, {
     outcomeId: 'Yes',
+    tokenSide: 'Outcome',
     side: 'Buy',
     price: 50,
     amountSats: 100,
@@ -49,7 +50,7 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
   })
 })
 
-test('buildTradeTicket builds categorical NO tickets against compound complements', () => {
+test('buildTradeTicket builds categorical NO tickets on primitive route with complement token side', () => {
   const ticket = buildTradeTicket({
     market: categoricalMarket,
     selection: { side: 'no', outcomeId: 'alice' },
@@ -60,8 +61,9 @@ test('buildTradeTicket builds categorical NO tickets against compound complement
     orderBook: liquidBook,
   })
 
-  assert.equal(ticket.marketId, `${categoricalMarket.id}-Bob|Carol`)
-  assert.equal(ticket.request.outcomeId, 'Bob|Carol')
+  assert.equal(ticket.marketId, `${categoricalMarket.id}-Alice`)
+  assert.equal(ticket.request.outcomeId, 'Alice')
+  assert.equal(ticket.request.tokenSide, 'Complement')
 })
 
 test('buildTradeTicket builds two-outcome categorical NO tickets against a primitive complement', () => {
@@ -81,8 +83,9 @@ test('buildTradeTicket builds two-outcome categorical NO tickets against a primi
     orderBook: liquidBook,
   })
 
-  assert.equal(ticket.marketId, 'condition-category-Bob')
-  assert.equal(ticket.request.outcomeId, 'Bob')
+  assert.equal(ticket.marketId, 'condition-category-Alice')
+  assert.equal(ticket.request.outcomeId, 'Alice')
+  assert.equal(ticket.request.tokenSide, 'Complement')
 })
 
 test('buildTradeTicket prices executable market buys as aggressive FAK orders', () => {
@@ -145,6 +148,7 @@ test('buildTradeTicket builds direct sell orders after same-outcome CTF swaps ar
   assert.equal(ticket.marketId, 'condition-yesno-Yes')
   assert.deepEqual(ticket.request, {
     outcomeId: 'Yes',
+    tokenSide: 'Outcome',
     side: 'Sell',
     price: 50,
     amountSats: 100,
