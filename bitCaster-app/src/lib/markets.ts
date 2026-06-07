@@ -47,13 +47,6 @@ export type NostrKind1Event = components["schemas"]["NostrKind1Event"];
 
 // CDK mint response types
 
-export interface PartitionInfoEntry {
-  partition: string[];
-  collateral: string;
-  parent_collection_id: string;
-  keysets: Record<string, string>;
-}
-
 export interface AttestationState {
   status: "pending" | "attested" | "expired" | "violation";
   winning_outcome: string | null;
@@ -66,7 +59,7 @@ export interface ConditionInfo {
   description?: string; // Legacy field (pre-tags CDK)
   threshold: number;
   announcements: string[];
-  partitions: PartitionInfoEntry[];
+  keysets: Record<string, string>;
   attestation: AttestationState;
   condition_type?: string; // "enum" (default, omitted) or "numeric"
 }
@@ -95,6 +88,22 @@ function isYesNoUniverse(outcomes: readonly string[]): boolean {
     outcomes[0]?.toLowerCase() === "yes" &&
     outcomes[1]?.toLowerCase() === "no"
   );
+}
+
+function atomicOutcomesFromKeysets(
+  keysets: Record<string, string> | undefined,
+): string[] {
+  const outcomes: string[] = [];
+  const seen = new Set<string>();
+  for (const collection of Object.keys(keysets ?? {})) {
+    for (const rawName of parseOutcomeSetId(collection)) {
+      const name = rawName.trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      outcomes.push(name);
+    }
+  }
+  return outcomes;
 }
 
 export function extractCategoryTagIds(tags: string[][]): string[] {
@@ -335,8 +344,7 @@ export function filterMarkets(
 // =============================================================================
 
 function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
-  const firstPartition = c.partitions[0];
-  const outcomes = firstPartition?.partition ?? [];
+  const outcomes = atomicOutcomesFromKeysets(c.keysets);
   const mappedOutcomes = outcomes.map((label, i) => ({
     id: `outcome-${i}`,
     label,
@@ -380,8 +388,8 @@ function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
     activeSince: now,
     baseUnit: "sats",
     mint: {
-      collateral: firstPartition?.collateral ?? "sat",
-      keysetCount: Object.keys(firstPartition?.keysets ?? {}).length,
+      collateral: "sat",
+      keysetCount: Object.keys(c.keysets ?? {}).length,
     },
     creator: {
       id: "unknown",
@@ -426,11 +434,10 @@ function mapCatalogueEntryToMarketDetail(
   entry: MarketCatalogueEntry,
   mintCondition: ConditionInfo | null,
 ): MarketDetail {
-  const firstPartition = mintCondition?.partitions[0];
   const outcomes =
     entry.outcomes && entry.outcomes.length > 0
       ? entry.outcomes
-      : (firstPartition?.partition ?? []);
+      : atomicOutcomesFromKeysets(mintCondition?.keysets);
   const mappedOutcomes = outcomes.map((label, i) => ({
     id: `outcome-${i}`,
     label,
@@ -466,8 +473,8 @@ function mapCatalogueEntryToMarketDetail(
     activeSince: createdAt,
     baseUnit: "sats",
     mint: {
-      collateral: firstPartition?.collateral ?? "sat",
-      keysetCount: Object.keys(firstPartition?.keysets ?? {}).length,
+      collateral: "sat",
+      keysetCount: Object.keys(mintCondition?.keysets ?? {}).length,
     },
     creator: creatorPubkey
       ? {
@@ -809,13 +816,19 @@ async function parseMintError(
 export async function registerCondition(params: {
   tags: string[][];
   announcementHex: string;
-}): Promise<{ condition_id: string }> {
+  collateral?: string;
+  outcomeCollections?: readonly string[];
+}): Promise<{ condition_id: string; keysets: Record<string, string> }> {
   const response = await fetch("/v1/conditions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       tags: params.tags,
       announcements: [params.announcementHex],
+      ...(params.collateral ? { collateral: params.collateral } : {}),
+      ...(params.outcomeCollections
+        ? { outcome_collections: params.outcomeCollections }
+        : {}),
     }),
   });
   if (!response.ok) {
@@ -824,116 +837,26 @@ export async function registerCondition(params: {
   return response.json();
 }
 
-export async function registerPartition(
-  conditionId: string,
-  partition: string[],
-): Promise<{ keysets: Record<string, string> }> {
-  const response = await fetch(`/v1/conditions/${conditionId}/partitions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      collateral: "sat",
-      partition,
-      parent_collection_id:
-        "0000000000000000000000000000000000000000000000000000000000000000",
-    }),
-  });
-  if (!response.ok) {
-    throw await parseMintError(response, "Failed to register partition");
-  }
-  return response.json();
-}
-
 function normalizePartitionMember(member: string): string {
   return canonicalizeOutcomeSet(parseOutcomeSetId(member));
 }
 
-function partitionKey(partition: readonly string[]): string {
-  return JSON.stringify(
-    partition.map(normalizePartitionMember).filter(Boolean).sort(),
-  );
-}
-
-function formatPartition(partition: readonly string[]): string {
-  return `{${partition.join(", ")}}`;
-}
-
-function requiredSingletonComplementPartitions(
+export function requiredMarketCreationOutcomeCollections(
   outcomes: readonly string[],
-): string[][] {
+): string[] {
   const universe = [...new Set(outcomes.map((outcome) => outcome.trim()))].filter(
     Boolean,
   );
-  const partitionsByKey = new Map<string, string[]>();
+  const collections = new Map<string, string>();
 
   for (const outcome of universe) {
     const singleton = canonicalizeOutcomeSet([outcome]);
     const complement = complementOutcomeSetId(universe, singleton);
-    if (!singleton || !complement) continue;
-
-    const partition = [singleton, complement];
-    const key = partitionKey(partition);
-    if (!partitionsByKey.has(key)) partitionsByKey.set(key, partition);
+    if (singleton) collections.set(normalizePartitionMember(singleton), singleton);
+    if (complement) collections.set(normalizePartitionMember(complement), complement);
   }
 
-  return [...partitionsByKey.values()];
-}
-
-function registeredPartitionKeys(condition: ConditionInfo): Set<string> {
-  return new Set(
-    (condition.partitions ?? []).map((entry) => partitionKey(entry.partition)),
-  );
-}
-
-async function fetchConditionOrThrow(
-  conditionId: string,
-): Promise<ConditionInfo> {
-  const condition = (await fetchConditions()).find(
-    (entry) => entry.condition_id === conditionId,
-  );
-  if (!condition) {
-    throw new Error(
-      `Mint condition ${conditionId} was not found after registration; cannot verify outcome partitions.`,
-    );
-  }
-  return condition;
-}
-
-/**
- * Ensure every primitive outcome has a matching `{X, Not-X}` CDK partition.
- * The mint signs one keyset per partition member, so market creation must
- * register singleton/complement partitions before the engine publishes books.
- */
-export async function ensureMarketCreationPartitions(
-  conditionId: string,
-  outcomes: readonly string[],
-): Promise<void> {
-  const requiredPartitions = requiredSingletonComplementPartitions(outcomes);
-  const condition = await fetchConditionOrThrow(conditionId);
-  const existing = registeredPartitionKeys(condition);
-  const missing = requiredPartitions.filter(
-    (partition) => !existing.has(partitionKey(partition)),
-  );
-
-  for (const partition of missing) {
-    await registerPartition(conditionId, partition);
-  }
-
-  const verified =
-    missing.length > 0
-      ? registeredPartitionKeys(await fetchConditionOrThrow(conditionId))
-      : existing;
-  const stillMissing = requiredPartitions.filter(
-    (partition) => !verified.has(partitionKey(partition)),
-  );
-
-  if (stillMissing.length > 0) {
-    throw new Error(
-      `Mint condition ${conditionId} is missing outcome partitions: ${stillMissing
-        .map(formatPartition)
-        .join(", ")}`,
-    );
-  }
+  return [...collections.values()];
 }
 
 /**

@@ -30,6 +30,7 @@ import {
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import {
   CashuMintCtfSplitTransport,
+  resolveRootPreflightOutputAmountSats,
   splitCompleteSetWithOperation,
   splitRootCompleteSetForPreflightOrder,
   type CtfProofOperationRecord,
@@ -266,9 +267,23 @@ async function handleRequest(
   try {
     return writeJson(res, 200, await dispatch(command, deps))
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return writeJson(res, 500, { ok: false, error: message })
+    return writeJson(res, 500, normalizeRpcError(err))
   }
+}
+
+function normalizeRpcError(err: unknown): DaemonResponse {
+  if (!(err instanceof Error)) {
+    return { ok: false, error: String(err) }
+  }
+
+  const status =
+    'status' in err && typeof err.status === 'number' ? err.status : undefined
+  const cause =
+    'cause' in err && err.cause instanceof Error ? err.cause.message : undefined
+  const detail = [err.message, status ? `status=${status}` : null, cause]
+    .filter(Boolean)
+    .join('; ')
+  return { ok: false, error: detail || err.message }
 }
 
 export async function dispatch(
@@ -985,10 +1000,19 @@ async function maybePreparePreflightSplitForOrder(input: {
   let resolvedLockOutcomeSetId = complement
   try {
     for (let offset = 0; offset < input.amountSats; offset += 100) {
+      const chunkAmountSats = Math.min(100, input.amountSats - offset)
+      const preflightOutputAmountSats =
+        await resolveRootPreflightOutputAmountSats({
+          mintUrl: input.mintUrl,
+          conditionId: market.conditionId,
+          amountSats: chunkAmountSats,
+          keepOutcomeSetId: market.outcomeSetId,
+          lockOutcomeSetId: complement,
+        })
       const secrets = await readSecrets()
       if (!secrets) throw new Error('daemon secrets are not initialized')
       const collateral = await splitAvailableSatProofsForCtfCollateral(
-        100,
+        preflightOutputAmountSats,
         input.mintUrl,
         `${reservationId}:regular-split:${offset / 100}`,
         secrets,
@@ -1012,7 +1036,7 @@ async function maybePreparePreflightSplitForOrder(input: {
         mintUrl: input.mintUrl,
         conditionId: market.conditionId,
         collateralProofs: collateral.inputs,
-        amountSats: 100,
+        amountSats: preflightOutputAmountSats,
         keepOutcomeSetId: market.outcomeSetId,
         lockOutcomeSetId: complement,
         operationId: `${reservationId}:ctf-split:${offset / 100}`,
@@ -1097,24 +1121,21 @@ async function loadMintOutcomeLabels(
     const body = (await response.json()) as {
       conditions?: Array<{
         condition_id?: unknown
-        partitions?: unknown
+        keysets?: unknown
       }>
     }
     const condition = body.conditions?.find(
       (candidate) => candidate.condition_id === conditionId,
     )
-    const partitions = Array.isArray(condition?.partitions)
-      ? condition.partitions
-      : []
-    for (const partition of partitions) {
-      if (!partition || typeof partition !== 'object') continue
-      const rawLabels = (partition as { partition?: unknown }).partition
-      if (!Array.isArray(rawLabels)) continue
-      const labels = rawLabels.filter(
-        (label): label is string => typeof label === 'string' && !!label.trim(),
-      )
-      if (labels.length >= 2) return labels
+    if (!condition?.keysets || typeof condition.keysets !== 'object') return []
+    const labels = new Set<string>()
+    for (const collection of Object.keys(condition.keysets as Record<string, unknown>)) {
+      for (const label of collection.split('|')) {
+        const trimmed = label.trim()
+        if (trimmed) labels.add(trimmed)
+      }
     }
+    if (labels.size >= 2) return [...labels]
   } catch {
     return []
   }

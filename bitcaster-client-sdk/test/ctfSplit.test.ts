@@ -107,32 +107,14 @@ test("resolveComplementaryOutcomeLegs requires a strict complete primitive parti
 test("selectRootPartitionKeysets chooses the root partition matching the requested split target", () => {
   const condition = {
     condition_id: CONDITION_ID,
-    partitions: [
-      {
-        collateral: "sat",
-        parent_collection_id: ROOT_COLLECTION_ID,
-        keysets: {
-          Alice: "keyset-alice",
-          "Bob|Carol|Dave": "keyset-not-alice",
-        },
-      },
-      {
-        collateral: "sat",
-        parent_collection_id: ROOT_COLLECTION_ID,
-        keysets: {
-          Bob: "keyset-bob",
-          "Alice|Carol|Dave": "keyset-not-bob",
-        },
-      },
-      {
-        collateral: "sat",
-        parent_collection_id: ROOT_COLLECTION_ID,
-        keysets: {
-          Carol: "keyset-carol",
-          "Alice|Bob|Dave": "keyset-not-carol",
-        },
-      },
-    ],
+    keysets: {
+      Alice: "keyset-alice",
+      "Bob|Carol|Dave": "keyset-not-alice",
+      Bob: "keyset-bob",
+      "Alice|Carol|Dave": "keyset-not-bob",
+      Carol: "keyset-carol",
+      "Alice|Bob|Dave": "keyset-not-carol",
+    },
   };
 
   assert.deepEqual(
@@ -147,22 +129,15 @@ test("selectRootPartitionKeysets chooses the root partition matching the request
   );
 });
 
-test("selectRootPartitionKeysets resolves id-keyed root partitions through conditional metadata", () => {
+test("selectRootPartitionKeysets resolves id-keyed root keysets through conditional metadata", () => {
   const aliceCollectionId = "a".repeat(64);
   const notAliceCollectionId = "b".repeat(64);
   const condition = {
     condition_id: CONDITION_ID,
-    partitions: [
-      {
-        partition: ["Alice", "Bob|Carol|Dave"],
-        collateral: "sat",
-        parent_collection_id: ROOT_COLLECTION_ID,
-        keysets: {
-          [aliceCollectionId]: "keyset-alice",
-          [notAliceCollectionId]: "keyset-not-alice",
-        },
-      },
-    ],
+    keysets: {
+      [aliceCollectionId]: "keyset-alice",
+      [notAliceCollectionId]: "keyset-not-alice",
+    },
   };
 
   assert.deepEqual(
@@ -197,16 +172,10 @@ test("selectRootPartitionKeysets resolves id-keyed root partitions through condi
 test("selectRootPartitionKeysets keeps binary single-root compatibility without a target", () => {
   const condition = {
     condition_id: CONDITION_ID,
-    partitions: [
-      {
-        collateral: "sat",
-        parent_collection_id: ROOT_COLLECTION_ID,
-        keysets: {
-          YES: "keyset-yes",
-          NO: "keyset-no",
-        },
-      },
-    ],
+    keysets: {
+      YES: "keyset-yes",
+      NO: "keyset-no",
+    },
   };
 
   assert.deepEqual(selectRootPartitionKeysets(condition), {
@@ -466,7 +435,6 @@ test("computeGrossCtfInputAmountSats handles F greater than 1 for many proofs", 
 });
 
 const CONDITION_ID = "a".repeat(64);
-const ROOT_COLLECTION_ID = "0".repeat(64);
 
 class FakeSplitTransport implements CtfSplitTransport {
   readonly posted: Array<Parameters<CtfSplitTransport["postSplit"]>[0]> = [];

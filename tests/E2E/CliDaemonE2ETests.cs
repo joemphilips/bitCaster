@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
@@ -2188,7 +2189,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await amountInput.FillAsync(amountSats.ToString());
+        await FillNumberInputAsync(amountInput, amountSats);
 
         var priceInput = page.Locator("input[type='number']")
             .Filter(new() { Visible = true })
@@ -2271,8 +2272,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
         });
+        await EnsureMarketDetailOpenAsync(page, conditionId, consoleMessages);
 
-        var marketOrder = page.GetByRole(AriaRole.Button, new() { Name = "Market" })
+        var marketOrder = VisibleTradingPanel(page)
+            .GetByRole(AriaRole.Button, new() { Name = "Market", Exact = true })
             .Filter(new() { Visible = true })
             .First;
         await Assertions.Expect(marketOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
@@ -2282,7 +2285,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await amountInput.FillAsync(amountSats.ToString());
+        await FillNumberInputAsync(amountInput, amountSats);
 
         var priceInput = page.Locator("input[type='number']")
             .Filter(new() { Visible = true })
@@ -2457,7 +2460,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await amountInput.FillAsync(amountSats.ToString());
+        await FillNumberInputAsync(amountInput, amountSats);
 
         var priceInput = page.Locator("input[type='number']")
             .Filter(new() { Visible = true })
@@ -2542,7 +2545,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await amountInput.FillAsync(amountSats.ToString());
+        await FillNumberInputAsync(amountInput, amountSats);
 
         var priceInput = page.Locator("input[type='number']")
             .Filter(new() { Visible = true })
@@ -2680,11 +2683,79 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
     private static async Task ClickBuyNoAsync(IPage page, string outcomeRow)
     {
-        var outcomeButton = TradeOutcomeButton(page, outcomeRow, complement: true);
-        await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
-        var outcomeHandle = await outcomeButton.ElementHandleAsync(new() { Timeout = 10_000 })
-            ?? throw new InvalidOperationException($"Could not resolve Buy NO button for {outcomeRow}.");
-        await outcomeHandle.EvaluateAsync("button => button.click()");
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var outcomeButton = TradeOutcomeButton(page, outcomeRow, complement: true);
+            await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
+            try
+            {
+                await outcomeButton.ClickAsync(new() { Force = true, Timeout = 1_000 });
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                try
+                {
+                    var outcomeHandle = await outcomeButton.ElementHandleAsync(new() { Timeout = 1_000 });
+                    if (outcomeHandle is not null)
+                    {
+                        await outcomeHandle.EvaluateAsync("button => button.click()");
+                    }
+                }
+                catch (Exception fallbackEx)
+                {
+                    lastError = fallbackEx;
+                }
+            }
+
+            if (await TradeAmountInput(page).CountAsync() > 0)
+            {
+                return;
+            }
+
+            await Task.Delay(250);
+        }
+
+        if (lastError is not null)
+        {
+            throw lastError;
+        }
+    }
+
+    private static async Task EnsureMarketDetailOpenAsync(
+        IPage page,
+        string conditionId,
+        IReadOnlyList<string> consoleMessages)
+    {
+        var expectedPath = $"/markets/{conditionId}";
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                await Assertions.Expect(VisibleTradingPanel(page))
+                    .ToBeVisibleAsync(new() { Timeout = 10_000 });
+                if (page.Url.Contains(expectedPath, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+            catch
+            {
+                // Retry the detail URL once before building the full page diagnostic.
+            }
+
+            await page.GotoAsync($"{TestPorts.FrontendUrl}{expectedPath}", new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.NetworkIdle,
+                Timeout = 30_000,
+            });
+        }
+
+        throw await TestHelpers.BuildDiagnosticExceptionAsync(
+            page,
+            consoleMessages,
+            $"Market detail trading panel did not render for {conditionId}.");
     }
 
     private static ILocator VisibleTradingPanel(IPage page) =>
@@ -2702,6 +2773,64 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             .Filter(new() { Visible = true })
             .First;
 
+    private static async Task FillNumberInputAsync(ILocator input, int value)
+    {
+        var text = value.ToString(CultureInfo.InvariantCulture);
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                await input.FillAsync(text, new() { Timeout = 1_000 });
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                try
+                {
+                    var handle = await input.ElementHandleAsync(new() { Timeout = 1_000 });
+                    if (handle is not null)
+                    {
+                        await handle.EvaluateAsync(
+                            @"(element, nextValue) => {
+                                const setter = Object.getOwnPropertyDescriptor(
+                                    window.HTMLInputElement.prototype,
+                                    'value'
+                                ).set;
+                                setter.call(element, String(nextValue));
+                                element.dispatchEvent(new Event('input', { bubbles: true }));
+                                element.dispatchEvent(new Event('change', { bubbles: true }));
+                            }",
+                            text);
+                    }
+                }
+                catch (Exception fallbackEx)
+                {
+                    lastError = fallbackEx;
+                }
+            }
+
+            try
+            {
+                if (await input.InputValueAsync(new() { Timeout = 1_000 }) == text)
+                {
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+
+            await Task.Delay(250);
+        }
+
+        if (lastError is not null)
+        {
+            throw lastError;
+        }
+    }
+
     private static ILocator TradeOutcomeButton(IPage page, string outcomeSetId, bool complement = false)
     {
         if (string.Equals(outcomeSetId, "yes", StringComparison.OrdinalIgnoreCase))
@@ -2718,27 +2847,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 .First;
         }
 
-        var outcomeLabel = XPathLiteral(outcomeSetId);
-        var buttonLabel = XPathLiteral(complement ? "Buy NO" : "Buy YES");
-        return VisibleTradingPanel(page).Locator(
-                $"xpath=.//span[normalize-space(.)={outcomeLabel}]/ancestor::div[.//button[normalize-space(.)='Buy YES'] and .//button[normalize-space(.)='Buy NO']][1]//button[normalize-space(.)={buttonLabel}]")
+        var testId = $"{(complement ? "buy-no" : "buy-yes")}-{outcomeSetId}";
+        return page.GetByTestId(testId)
             .Filter(new() { Visible = true })
             .First;
-    }
-
-    private static string XPathLiteral(string value)
-    {
-        if (!value.Contains('\''))
-        {
-            return $"'{value}'";
-        }
-
-        if (!value.Contains('"'))
-        {
-            return $"\"{value}\"";
-        }
-
-        return $"concat({string.Join(", \"'\", ", value.Split('\'').Select(part => $"'{part}'"))})";
     }
 
     private static async Task WaitForEngineAskAsync(string marketId, int minimumAmountSats)
@@ -3265,16 +3377,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             var conditionId = condition.GetProperty("condition_id").GetString();
             if (string.IsNullOrWhiteSpace(conditionId) || conditionId.Length != 64)
                 continue;
-            if (!condition.TryGetProperty("partitions", out var partitions)
-                || partitions.ValueKind != JsonValueKind.Array)
+            if (!condition.TryGetProperty("keysets", out var keysets)
+                || keysets.ValueKind != JsonValueKind.Object)
                 continue;
-            foreach (var partition in partitions.EnumerateArray())
+            foreach (var keyset in keysets.EnumerateObject())
             {
-                if (!partition.TryGetProperty("partition", out var outcomes)
-                    || outcomes.ValueKind != JsonValueKind.Array)
-                    continue;
-                var outcome = outcomes.EnumerateArray()
-                    .Select(item => item.GetString())
+                var outcome = PrimitiveOutcomeCollections(keyset.Name)
                     .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
                 if (!string.IsNullOrWhiteSpace(outcome))
                     return (conditionId, outcome);
@@ -3296,24 +3404,17 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             var conditionId = condition.GetProperty("condition_id").GetString();
             if (string.IsNullOrWhiteSpace(conditionId) || conditionId.Length != 64)
                 continue;
-            if (!condition.TryGetProperty("partitions", out var partitions)
-                || partitions.ValueKind != JsonValueKind.Array)
+            if (!condition.TryGetProperty("keysets", out var keysets)
+                || keysets.ValueKind != JsonValueKind.Object)
                 continue;
-            foreach (var partition in partitions.EnumerateArray())
-            {
-                if (!partition.TryGetProperty("partition", out var outcomes)
-                    || outcomes.ValueKind != JsonValueKind.Array)
-                    continue;
-                var values = outcomes.EnumerateArray()
-                    .Select(item => item.GetString())
-                    .Where(value => !string.IsNullOrWhiteSpace(value))
-                    .Select(value => value!)
-                    .ToArray();
-                var yes = values.FirstOrDefault(value => string.Equals(value, "YES", StringComparison.OrdinalIgnoreCase));
-                var no = values.FirstOrDefault(value => string.Equals(value, "NO", StringComparison.OrdinalIgnoreCase));
-                if (yes is not null && no is not null)
-                    return (conditionId, yes, no);
-            }
+            var values = keysets.EnumerateObject()
+                .SelectMany(keyset => PrimitiveOutcomeCollections(keyset.Name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var yes = values.FirstOrDefault(value => string.Equals(value, "YES", StringComparison.OrdinalIgnoreCase));
+            var no = values.FirstOrDefault(value => string.Equals(value, "NO", StringComparison.OrdinalIgnoreCase));
+            if (yes is not null && no is not null)
+                return (conditionId, yes, no);
         }
 
         throw new InvalidOperationException("No binary YES/NO CTF condition was available from the mint.");
@@ -3381,24 +3482,13 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             var conditionId = condition.GetProperty("condition_id").GetString();
             if (string.IsNullOrWhiteSpace(conditionId) || conditionId.Length != 64)
                 continue;
-            if (!condition.TryGetProperty("partitions", out var partitions)
-                || partitions.ValueKind != JsonValueKind.Array)
+            if (!condition.TryGetProperty("keysets", out var keysets)
+                || keysets.ValueKind != JsonValueKind.Object)
                 continue;
             var observedCollections = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var partition in partitions.EnumerateArray())
+            foreach (var keyset in keysets.EnumerateObject())
             {
-                if (!partition.TryGetProperty("partition", out var outcomes)
-                    || outcomes.ValueKind != JsonValueKind.Array)
-                    continue;
-                var values = outcomes.EnumerateArray()
-                    .Select(item => item.GetString())
-                    .Where(value => !string.IsNullOrWhiteSpace(value))
-                    .Select(value => value!)
-                    .ToArray();
-                foreach (var value in values)
-                {
-                    observedCollections.Add(value);
-                }
+                observedCollections.Add(keyset.Name);
             }
             var primitives = observedCollections
                 .SelectMany(PrimitiveOutcomeCollections)
@@ -3447,6 +3537,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 },
                 announcements = new[] { announcementHex },
                 condition_type = "enum",
+                collateral = "sat",
             });
         conditionResponse.EnsureSuccessStatusCode();
         await using var conditionStream = await conditionResponse.Content.ReadAsStreamAsync();
@@ -3454,8 +3545,6 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var conditionId = conditionDoc.RootElement.GetProperty("condition_id").GetString();
         if (string.IsNullOrWhiteSpace(conditionId))
             throw new InvalidOperationException("Mint condition registration returned an empty condition_id.");
-
-        await RegisterRequiredSingletonComplementPartitionsAsync(httpClient, conditionId, outcomes);
 
         if (!registerEngine)
             return (conditionId, outcomes);
@@ -3497,41 +3586,6 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         return (conditionId, outcomes);
     }
 
-    private static async Task RegisterRequiredSingletonComplementPartitionsAsync(
-        HttpClient httpClient,
-        string conditionId,
-        string[] outcomes)
-    {
-        foreach (var partition in RequiredSingletonComplementPartitions(outcomes))
-        {
-            using var partitionResponse = await httpClient.PostAsJsonAsync(
-                $"{TestPorts.MintUrl}/v1/conditions/{conditionId}/partitions",
-                new
-                {
-                    collateral = "sat",
-                    partition,
-                    parent_collection_id = "0000000000000000000000000000000000000000000000000000000000000000",
-                });
-            partitionResponse.EnsureSuccessStatusCode();
-        }
-    }
-
-    private static string[][] RequiredSingletonComplementPartitions(string[] outcomes)
-    {
-        var partitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
-        foreach (var outcome in outcomes.Order(StringComparer.Ordinal))
-        {
-            var partition = new[]
-            {
-                outcome,
-                ComplementOutcomeSet(outcomes, outcome),
-            };
-            var normalized = string.Join("\n", partition.Order(StringComparer.Ordinal));
-            partitions.TryAdd(normalized, partition);
-        }
-        return partitions.Values.ToArray();
-    }
-
     private static string[] RequiredOutcomeCollections(string[] outcomes)
     {
         return outcomes
@@ -3568,18 +3622,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         {
             if (condition.GetProperty("condition_id").GetString() != conditionId)
                 continue;
-            if (!condition.TryGetProperty("partitions", out var partitions)
-                || partitions.ValueKind != JsonValueKind.Array)
+            if (!condition.TryGetProperty("keysets", out var keysets)
+                || keysets.ValueKind != JsonValueKind.Object)
                 return labels;
-            foreach (var partition in partitions.EnumerateArray())
+            foreach (var keyset in keysets.EnumerateObject())
             {
-                if (!partition.TryGetProperty("keysets", out var keysets)
-                    || keysets.ValueKind != JsonValueKind.Object)
-                    continue;
-                foreach (var keyset in keysets.EnumerateObject())
-                {
-                    labels.Add(keyset.Name);
-                }
+                labels.Add(keyset.Name);
             }
             return labels;
         }

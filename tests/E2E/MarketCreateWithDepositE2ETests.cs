@@ -223,7 +223,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         {
             throw await TestHelpers.BuildDiagnosticExceptionAsync(
                 page, console,
-                "DepositStep never rendered after clicking Create Market — the kormir publish + mint registerCondition/registerPartition + engine createMarket chain failed somewhere.");
+                "DepositStep never rendered after clicking Create Market — the kormir publish + mint registerCondition + engine createMarket chain failed somewhere.");
         }
 
         var text = await conditionIdEl.InnerTextAsync();

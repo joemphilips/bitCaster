@@ -38,7 +38,7 @@ seed_market() {
     --arg desc "$description" \
     --arg tlv "$hex_tlv" \
     --arg ticker "$ticker" \
-    '{threshold: 1, tags: [["description", $desc], ["n", $ticker]], announcements: [$tlv], condition_type: "enum"}')
+    '{threshold: 1, tags: [["description", $desc], ["n", $ticker]], announcements: [$tlv], condition_type: "enum", collateral: "sat"}')
 
   local cond_resp
   cond_resp=$(curl -sf -X POST "${MINT_URL}/v1/conditions" \
@@ -52,24 +52,7 @@ seed_market() {
   condition_id=$(echo "$cond_resp" | jq -r '.condition_id')
   echo "  condition_id: ${condition_id}"
 
-  # Build partition array
-  local partition_json
-  partition_json=$(printf '%s\n' "${outcomes[@]}" | jq -R . | jq -s .)
-
-  local part_body
-  part_body=$(jq -n \
-    --argjson partition "$partition_json" \
-    '{collateral: "sat", partition: $partition, parent_collection_id: "0000000000000000000000000000000000000000000000000000000000000000"}')
-
-  local part_resp
-  part_resp=$(curl -sf -X POST "${MINT_URL}/v1/conditions/${condition_id}/partitions" \
-    -H "Content-Type: application/json" \
-    -d "$part_body") || {
-    echo "  ERROR: Failed to register partition" >&2
-    return 1
-  }
-
-  echo "  keysets: $(echo "$part_resp" | jq -c '.keysets')"
+  echo "  keysets: $(echo "$cond_resp" | jq -c '.keysets')"
 }
 
 # Market 1: Will Bitcoin reach $100K before end of 2026?

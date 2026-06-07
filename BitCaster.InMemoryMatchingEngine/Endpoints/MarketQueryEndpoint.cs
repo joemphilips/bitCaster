@@ -210,7 +210,9 @@ public static class MarketQueryEndpoint
                 ? s.GetString() ?? "pending"
                 : "pending";
             var (title, categoryTags) = ParseTags(c);
-            var outcomes = ParseFirstPartition(c);
+            var outcomes =
+                MarketEndpoints.TryGetRegisteredOutcomes(conditionId)?.ToList()
+                ?? ParseSingletonPartitionMembers(c);
             return new MintdConditionDto(conditionId, title, outcomes, categoryTags, attestationStatus);
         }
 
@@ -237,19 +239,22 @@ public static class MarketQueryEndpoint
             return (title ?? "Untitled Market", category);
         }
 
-        private static List<string> ParseFirstPartition(JsonElement c)
+        private static List<string> ParseSingletonPartitionMembers(JsonElement c)
         {
-            if (!c.TryGetProperty("partitions", out var partitions) || partitions.ValueKind != JsonValueKind.Array)
+            if (!c.TryGetProperty("keysets", out var keysets) || keysets.ValueKind != JsonValueKind.Object)
                 return new();
-            var first = partitions.EnumerateArray().FirstOrDefault();
-            if (first.ValueKind != JsonValueKind.Object) return new();
-            if (!first.TryGetProperty("partition", out var partition) || partition.ValueKind != JsonValueKind.Array)
-                return new();
+
             var outcomes = new List<string>();
-            foreach (var item in partition.EnumerateArray())
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var keyset in keysets.EnumerateObject())
             {
-                var name = item.GetString();
-                if (name is not null) outcomes.Add(name);
+                foreach (var member in keyset.Name.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    if (string.IsNullOrWhiteSpace(member))
+                        continue;
+                    if (seen.Add(member))
+                        outcomes.Add(member);
+                }
             }
             return outcomes;
         }

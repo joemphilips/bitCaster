@@ -492,6 +492,7 @@
     "outcomeWithProbability": "{{label}} ({{probability}}%)",
     "probabilitiesMustSumTo100": "確率の合計は 100% である必要があります (現在 {{total}}%)",
     "probabilityRangeError": "各確率は 1% 以上 99% 以下である必要があります",
+    "outcomeLabelSeparatorError": "| は内部アウトカムセット用に予約されているため、アウトカムラベルには使用できません",
     "openSettings": "設定を開く",
     "closeMarketCreation": "マーケット作成を閉じる",
     "dismissResumeBanner": "再開バナーを閉じる",

@@ -53,12 +53,7 @@ public class ClosedMarketUiTests : IAsyncLifetime
             ""tags"": [[""description"", ""{title}""]],
             ""threshold"": 1,
             ""announcements"": [""ann""],
-            ""partitions"": [{{
-                ""partition"": [""YES"", ""NO""],
-                ""collateral"": ""sat"",
-                ""parent_collection_id"": ""0000000000000000000000000000000000000000000000000000000000000000"",
-                ""keysets"": {{}}
-            }}],
+            ""keysets"": {{ ""YES"": ""ks-yes"", ""NO"": ""ks-no"" }},
             ""attestation"": {{
                 ""status"": ""{attestationStatus}"",
                 ""winning_outcome"": {winning},

@@ -24,8 +24,6 @@ import {
 
 const [, , mode, mintUrl, rawAmount, conditionId, outcomeSetId] = process.argv
 const jsonOutput = process.argv.includes('--json')
-const ROOT_COLLECTION_ID = '0'.repeat(64)
-
 if (!mode || !mintUrl || !rawAmount) {
   usage()
 }
@@ -133,27 +131,19 @@ function selectMintRootPartitionForOutcome(
   outcomeSetId: string,
 ): CtfRootPartitionSelection {
   const target = canonicalizeOutcomeSet(parseOutcomeSetId(outcomeSetId))
-  const matches = condition.partitions
-    .filter(
-      (partition) =>
-        partition.collateral === 'sat' &&
-        partition.parent_collection_id === ROOT_COLLECTION_ID &&
-        Object.keys(partition.keysets).length === 2,
-    )
-    .filter((partition) =>
-      Object.keys(partition.keysets).some(
-        (collection) =>
-          canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
-      ),
-    )
+  const keysetCollections = Object.keys(condition.keysets)
+  const matches = keysetCollections.filter(
+    (collection) =>
+      canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
+  )
 
   if (matches.length !== 1) {
     throw new Error(
-      `Expected exactly one root sat CTF partition for condition ${condition.condition_id} containing outcome set ${outcomeSetId}, found ${matches.length}`,
+      `Expected exactly one root sat CTF keyset for condition ${condition.condition_id} containing outcome set ${outcomeSetId}, found ${matches.length}`,
     )
   }
 
-  const universe = Object.keys(matches[0].keysets).flatMap(parseOutcomeSetId)
+  const universe = keysetCollections.flatMap(parseOutcomeSetId)
   const complement = complementOutcomeSetId(universe, outcomeSetId)
   if (!target || !complement) {
     throw new Error(

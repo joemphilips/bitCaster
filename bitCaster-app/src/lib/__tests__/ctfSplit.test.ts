@@ -83,7 +83,7 @@ const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(
     }
 
     const ctfMintState = {
-      partitions: [] as MockPartitionEntry[],
+      keysets: {} as Record<string, string>,
       conditionalKeysets: [] as Array<{
         id: string;
         condition_id: string;
@@ -120,12 +120,7 @@ const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(
       async getCtfCondition(conditionIdArg: string) {
         return {
           condition_id: conditionIdArg,
-          partitions: ctfMintState.partitions.map((entry) => ({
-            collateral: "sat",
-            parent_collection_id: "0".repeat(64),
-            partition: entry.partition,
-            keysets: entry.keysets,
-          })),
+          keysets: ctfMintState.keysets,
         };
       }
 
@@ -223,13 +218,16 @@ function proofOperationStore(): CtfProofOperationStore {
 }
 
 function mockMintCondition(
-  partitions:
+  keysets:
     | Record<string, string>
     | Array<Record<string, string>>
     | Array<{ partition?: string[]; keysets: Record<string, string> }>,
 ) {
-  const entries = Array.isArray(partitions) ? partitions : [partitions];
-  ctfMintState.partitions = entries.map(toMockPartitionEntry);
+  const entries = Array.isArray(keysets) ? keysets : [keysets];
+  ctfMintState.keysets = Object.assign(
+    {},
+    ...entries.map((entry) => toMockPartitionEntry(entry).keysets),
+  );
   ctfMintState.conditionalKeysets = [];
   ctfMintState.splitRequests = [];
 }
@@ -331,7 +329,7 @@ describe("splitRootCompleteSetForSwap", () => {
     );
   });
 
-  it("pre-flight resolves id-keyed composite complement partitions", async () => {
+  it("pre-flight resolves id-keyed composite complement keysets", async () => {
     const aCollectionId = "a".repeat(64);
     const notACollectionId = "b".repeat(64);
     mockMintCondition([

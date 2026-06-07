@@ -9,7 +9,7 @@ public static partial class MarketEndpoints
 {
     private const int MaxOutcomes = 8;
 
-    private sealed record MarketRecord(CreateMarketResponse Response, DateTimeOffset CreatedAt);
+    private sealed record MarketRecord(CreateMarketResponse Response, DateTimeOffset CreatedAt, IReadOnlyList<string> Outcomes);
 
     private static readonly ConcurrentDictionary<string, MarketRecord> Markets = new();
 
@@ -64,6 +64,8 @@ public static partial class MarketEndpoints
                 return Results.BadRequest("At least 2 outcomes are required");
             if (metadata.Outcomes.Count > MaxOutcomes)
                 return Results.BadRequest($"At most {MaxOutcomes} outcomes are supported");
+            if (metadata.Outcomes.Any(o => o.Name.Contains('|', StringComparison.Ordinal)))
+                return Results.BadRequest("Outcome names must not contain '|'");
 
             var probSum = metadata.Outcomes.Sum(o => o.Probability);
             if (probSum != 100)
@@ -143,7 +145,10 @@ public static partial class MarketEndpoints
                 marketsCreated: marketsCreated,
                 thumbnailUrl: thumbnailUrl);
 
-            var record = new MarketRecord(response, DateTimeOffset.UtcNow);
+            var record = new MarketRecord(
+                response,
+                DateTimeOffset.UtcNow,
+                metadata.Outcomes.Select(o => o.Name).ToList());
 
             // Atomically check-and-insert to avoid TOCTOU race
             if (!Markets.TryAdd(conditionId, record))
@@ -190,4 +195,7 @@ public static partial class MarketEndpoints
             return Results.Ok(response);
         });
     }
+
+    internal static IReadOnlyList<string>? TryGetRegisteredOutcomes(string conditionId) =>
+        Markets.TryGetValue(conditionId, out var record) ? record.Outcomes : null;
 }

@@ -442,27 +442,22 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
   let fetchMock: ReturnType<typeof vi.fn>;
   let originalFetch: typeof globalThis.fetch;
 
-  interface MintdPartition {
-    partition: string[];
-    collateral: string;
-    parent_collection_id: string;
-    keysets: Record<string, string>;
-  }
+  const defaultKeysets: Record<string, string> = {
+    Yes: "00".repeat(32),
+    No: "11".repeat(32),
+  };
 
-  const defaultPartitions: MintdPartition[] = [
-    {
-      partition: ["Yes", "No"],
-      collateral: "sat",
-      parent_collection_id: "0".repeat(64),
-      keysets: {
-        keyset_a: "00".repeat(32),
-        keyset_b: "11".repeat(32),
-      },
-    },
-  ];
+  const categoricalCompositeKeysets: Record<string, string> = {
+    A: "00".repeat(32),
+    "B|C": "01".repeat(32),
+    B: "02".repeat(32),
+    "A|C": "03".repeat(32),
+    C: "04".repeat(32),
+    "A|B": "05".repeat(32),
+  };
 
   function mintdConditionsResponse(
-    partitions: MintdPartition[] = defaultPartitions,
+    keysets: Record<string, string> = defaultKeysets,
   ): Response {
     return new Response(
       JSON.stringify({
@@ -479,7 +474,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             ],
             threshold: 1,
             announcements: ["ann1"],
-            partitions,
+            keysets,
             attestation: {
               status: "pending",
               winning_outcome: null,
@@ -496,13 +491,14 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     state: "open" | "closed",
     thumbnailUrl: string | null,
     creatorPubkey: string | null = null,
+    outcomes: string[] = ["Yes", "No"],
   ): Response {
     return new Response(
       JSON.stringify({
         markets: [
           {
             conditionId: "abc123",
-            outcomes: ["Yes", "No"],
+            outcomes,
             title: "Will BTC hit 100K?",
             description: "Creator supplied detailed resolution rules.",
             thumbnailUrl,
@@ -566,6 +562,23 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
+  it("uses engine registration outcomes for categorical display labels", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/v1/conditions"))
+        return mintdConditionsResponse(categoricalCompositeKeysets);
+      if (url.includes("/api/v1/markets/query"))
+        return engineQueryResponse("open", null, null, ["A", "B", "C"]);
+      return emptyMetadataResponse();
+    });
+
+    const detail = await fetchMarketDetail("abc123");
+
+    expect(detail.type).toBe("categorical");
+    const labels = detail.outcomes?.map((outcome) => outcome.label) ?? [];
+    expect(labels).toEqual(["A", "B", "C"]);
+    expect(labels).not.toContain("B|C");
+  });
+
   it("does not let metadata overwrite catalogue-derived market metrics", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions")) return mintdConditionsResponse();
@@ -606,7 +619,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
                 tags: [["description", "Stale mint title"]],
                 threshold: 1,
                 announcements: ["ann1"],
-                partitions: defaultPartitions,
+                keysets: defaultKeysets,
                 attestation: {
                   status: "attested",
                   winning_outcome: "No",
@@ -653,7 +666,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
 
   it("preserves oracle identity while explicitly degrading missing mint metadata", async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url.includes("/v1/conditions")) return mintdConditionsResponse([]);
+      if (url.includes("/v1/conditions")) return mintdConditionsResponse({});
       if (url.includes("/api/v1/markets/query")) {
         return engineQueryResponse(
           "open",
@@ -698,6 +711,23 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(detail.imageUrl).toBeUndefined();
   });
 
+  it("reconstructs categorical display labels from singleton partition members in mintd-only fallback", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/v1/conditions"))
+        return mintdConditionsResponse(categoricalCompositeKeysets);
+      if (url.includes("/api/v1/markets/query"))
+        return new Response("boom", { status: 500 });
+      return emptyMetadataResponse();
+    });
+
+    const detail = await fetchMarketDetail("abc123");
+
+    expect(detail.type).toBe("categorical");
+    const labels = detail.outcomes?.map((outcome) => outcome.label) ?? [];
+    expect(labels).toEqual(["A", "B", "C"]);
+    expect(labels).not.toContain("B|C");
+  });
+
   it("uses the mintd description tag as resolution criteria when rendering mintd-only detail", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions")) {
@@ -716,7 +746,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
                 ],
                 threshold: 1,
                 announcements: ["ann1"],
-                partitions: defaultPartitions,
+                keysets: defaultKeysets,
                 attestation: {
                   status: "pending",
                   winning_outcome: null,

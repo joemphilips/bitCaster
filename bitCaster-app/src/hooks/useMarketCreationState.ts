@@ -15,7 +15,6 @@ import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
 import { fetchOracleAnnouncements } from '@/lib/oracle'
 import {
   registerCondition,
-  ensureMarketCreationPartitions,
   createMarket,
 } from '@/lib/markets'
 import { createEnumAnnouncement } from '@/lib/kormir'
@@ -477,12 +476,10 @@ export function useMarketCreationState() {
       const { condition_id } = await registerCondition({
         tags,
         announcementHex,
+        collateral: 'sat',
       })
 
-      // 2. Register singleton/complement partitions on the mint
-      await ensureMarketCreationPartitions(condition_id, outcomes)
-
-      // 3. Create market on matching engine (includes thumbnail + CPMM pools)
+      // 2. Create market on matching engine (includes thumbnail + CPMM pools)
       const createResponse = await createMarket(
         condition_id,
         {

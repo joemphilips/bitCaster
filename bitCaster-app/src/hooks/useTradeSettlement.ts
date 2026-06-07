@@ -51,6 +51,7 @@ import {
   type PendingTrade,
 } from "@/stores/pendingTrades";
 import { useWalletStore } from "@/stores/wallet";
+import { Mint as CashuMint } from "@cashu/cashu-ts";
 import {
   addProofs,
   getBaseProofs,
@@ -107,6 +108,7 @@ import {
 } from "@bitcaster/client-sdk/tradeFlow";
 import {
   amountToNumber,
+  computeInputFeeSatsForProofs,
   takeProofsForLock,
 } from "@bitcaster/client-sdk/proofSelection";
 import {
@@ -795,6 +797,7 @@ async function prepareMintSellerOpening(
         swap.tradeId,
         "seller-preflight-lock-exact-v2",
       ),
+      preserveGrossLot: true,
     });
     await persistReservedPreflightExactProofs({
       ...selectedLock,
@@ -806,7 +809,7 @@ async function prepareMintSellerOpening(
     const locked = await sellerLockOutcomeProofs(
       ctx,
       selectedLock.exactProofs,
-      amountSats,
+      await netProofAmount(mintUrl, selectedLock.exactProofs),
       {
         operationId: proofOperationId(swap.tradeId, "seller-preflight-lock"),
         proofOperationStore,
@@ -917,6 +920,7 @@ async function selectReservedPreflightProofs(
   conditionId: string,
   outcomeSetId: string,
   amountSats: number,
+  preserveGrossLot = false,
 ): Promise<StoredProof[]> {
   const reserved = await getReservedProofs(reservationId);
   const candidates = reserved.filter(
@@ -924,6 +928,8 @@ async function selectReservedPreflightProofs(
       proof.conditionId === conditionId &&
       proof.outcomeCollection === outcomeSetId,
   );
+  if (preserveGrossLot && candidates.length > 0) return candidates;
+
   const selected = takeProofsForLock(candidates, amountSats);
   const total =
     selected?.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0) ??
@@ -943,17 +949,27 @@ async function prepareReservedPreflightExactProofs(input: {
   outcomeSetId: string;
   amountSats: number;
   operationId: string;
+  preserveGrossLot?: boolean;
 }): Promise<ReservedExactProofs> {
   const selected = await selectReservedPreflightProofs(
     input.reservationId,
     input.conditionId,
     input.outcomeSetId,
     input.amountSats,
+    input.preserveGrossLot,
   );
   const total = selected.reduce(
     (sum, proof) => sum + amountToNumber(proof.amount),
     0,
   );
+  if (input.preserveGrossLot) {
+    return {
+      exactProofs: selected,
+      spentProofs: selected,
+      changeProofs: [],
+      wasSplit: false,
+    };
+  }
   if (total === input.amountSats) {
     return {
       exactProofs: selected,
@@ -977,6 +993,30 @@ async function prepareReservedPreflightExactProofs(input: {
     changeProofs: split.changeProofs,
     wasSplit: true,
   };
+}
+
+async function netProofAmount(
+  mintUrl: string,
+  proofs: Proof[],
+): Promise<number> {
+  const mint = new CashuMint(mintUrl);
+  const inputFeePpkByKeyset: Record<string, number> = {};
+  for (const proof of proofs) {
+    if (!proof.id) throw new Error("Proof is missing keyset id");
+    if (inputFeePpkByKeyset[proof.id] !== undefined) continue;
+    const response = await mint.getKeys(proof.id);
+    const keyset = response.keysets.find(
+      (candidate) => candidate.id === proof.id,
+    );
+    if (!keyset) {
+      throw new Error(`Mint did not return keys for keyset ${proof.id}`);
+    }
+    inputFeePpkByKeyset[proof.id] = keyset.input_fee_ppk ?? 0;
+  }
+  return (
+    proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0) -
+    computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset)
+  );
 }
 
 async function persistReservedPreflightExactProofs(input: {
