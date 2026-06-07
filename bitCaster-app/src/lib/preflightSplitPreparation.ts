@@ -2,6 +2,7 @@ import type { Proof } from "@cashu/cashu-ts";
 import { diagnoseProofStates } from "@/lib/proofDiagnostics";
 import {
   computeGrossCtfInputAmountSats,
+  resolveRootPreflightOutputAmountSats,
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
   splitRootCompleteSetForPreflightOrder,
@@ -55,10 +56,18 @@ export async function preparePreflightSplitForLimitBuy(input: {
 
   try {
     const lotIndex = 0;
+    const preflightOutputAmountSats =
+      await resolveRootPreflightOutputAmountSats({
+        mintUrl: input.mintUrl,
+        conditionId: input.market.id,
+        amountSats: input.amountSats,
+        keepOutcomeSetId: input.selectedOutcomeSetId,
+        lockOutcomeSetId: input.complementOutcomeSetId,
+      });
     const collateral = await prepareCollateralLotForCtfSplit({
       mintUrl: input.mintUrl,
       available,
-      faceAmountSats: input.amountSats,
+      faceAmountSats: preflightOutputAmountSats,
       reservationId: input.reservationId,
       lotIndex,
     });
@@ -77,7 +86,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
       mintUrl: input.mintUrl,
       conditionId: input.market.id,
       collateralProofs: collateral.inputs,
-      amountSats: input.amountSats,
+      amountSats: preflightOutputAmountSats,
       keepOutcomeSetId: input.selectedOutcomeSetId,
       lockOutcomeSetId: input.complementOutcomeSetId,
       operationId,

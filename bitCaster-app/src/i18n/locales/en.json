@@ -512,6 +512,7 @@
     "outcomeWithProbability": "{{label}} ({{probability}}%)",
     "probabilitiesMustSumTo100": "Probabilities must sum to 100% (currently {{total}}%)",
     "probabilityRangeError": "Each probability must be between 1% and 99%",
+    "outcomeLabelSeparatorError": "Outcome labels cannot contain | because it is reserved for internal outcome sets",
     "openSettings": "Open Settings",
     "closeMarketCreation": "Close market creation",
     "dismissResumeBanner": "Dismiss resume banner",

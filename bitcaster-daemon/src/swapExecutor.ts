@@ -1,5 +1,6 @@
 import {
   amountToNumber,
+  computeInputFeeSatsForProofs,
   keysetToOutcomeCollection as keysetToOutcomeCollectionShared,
   takeProofsForLock,
 } from '@bitcaster-market/client-sdk/proofSelection'
@@ -17,6 +18,7 @@ import type { DaemonSecrets } from './secrets.ts'
 import { readSecrets } from './secrets.ts'
 import type { TradeRuntimeConnection } from './tradeRuntime.ts'
 import {
+  resolveCtfConsolidationInputFees,
   splitAvailableSatProofsForCtfCollateral,
   type WalletOpsDependencies,
 } from './walletOps.ts'
@@ -743,15 +745,14 @@ export class DaemonSwapExecutor {
     preflight: LocalOrderPreflightSplit,
   ): Promise<void> {
     const state = await readState()
-    const selectedLock = selectReservedProofsForOutcomeSet(
+    const selectedLock = selectReservedProofRowsForOutcomeSet(
       state,
       mintUrl,
       preflight.reservationId,
       split.conditionId,
       preflight.lockOutcomeSetId,
-      amount,
     )
-    if (!selectedLock) {
+    if (!selectedLock || sumProofRows(selectedLock) < amount) {
       throw new Error(
         `insufficient pre-flight lock proofs for mint seller open (${amount} sats)`,
       )
@@ -775,6 +776,7 @@ export class DaemonSwapExecutor {
       selectedLock,
       amount,
       `${tradeId}:seller-preflight-lock-exact-v2`,
+      (rows) => Math.max(amount, sumProofRows(rows)),
     )
     const keepProofs = await this.prepareReservedExactProofsByOutcomeSet(
       mintUrl,
@@ -782,6 +784,8 @@ export class DaemonSwapExecutor {
       amount,
       `${tradeId}:seller-preflight-keep-exact-v2`,
     )
+    const lockInputProofs = lockProofs.flatMap((group) => group.split.exactProofs)
+    const lockAmount = await this.netProofAmount(mintUrl, lockInputProofs)
     await updateState((state, now) => {
       applyReservedLockProofGroups(
         state,
@@ -802,7 +806,7 @@ export class DaemonSwapExecutor {
             proofWithAssetMetadata(proof, group.asset),
           ),
         ),
-        amount,
+        lockAmount,
         `${tradeId}:seller-preflight-lock`,
       )
     } catch (err) {
@@ -920,6 +924,7 @@ export class DaemonSwapExecutor {
     selected: StoredProofRecord[],
     amount: number,
     operationId: string,
+    amountForRows?: (rows: StoredProofRecord[]) => number,
   ): Promise<ReservedExactProofGroup[]> {
     const byOutcome = new Map<string, StoredProofRecord[]>()
     for (const row of selected) {
@@ -943,7 +948,7 @@ export class DaemonSwapExecutor {
         split: await this.prepareReservedExactProofs(
           mintUrl,
           rows,
-          amount,
+          amountForRows?.(rows) ?? amount,
           `${operationId}/${encodeURIComponent(outcomeSetId)}`,
         ),
         asset: {
@@ -954,6 +959,25 @@ export class DaemonSwapExecutor {
       })
     }
     return groups
+  }
+
+  private async netProofAmount(
+    mintUrl: string,
+    proofs: CashuProofRecord[],
+  ): Promise<number> {
+    const keysetIds = proofs.map((proof) => proof.id)
+    if (keysetIds.some((keysetId) => !keysetId)) {
+      throw new Error('cannot compute net proof amount for proof without keyset id')
+    }
+    const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
+      mintUrl,
+      keysetIds as string[],
+      this.walletOpsDeps,
+    )
+    return (
+      proofs.reduce((acc, proof) => acc + amountToNumber(proof.amount), 0) -
+      computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset)
+    )
   }
 
   private async buyerRespond(tradeId: string): Promise<void> {
@@ -1281,6 +1305,17 @@ function selectOutcomeProofsForOutcomeSet(
   outcomeSetId: string,
   amount: number,
 ): StoredProofRecord[] | null {
+  const exact = selectProofs(
+    state,
+    mintUrl,
+    (proof) =>
+      proof.asset.kind === 'outcome' &&
+      proof.asset.conditionId === conditionId &&
+      proof.asset.outcomeSetId === outcomeSetId,
+    amount,
+  )
+  if (exact) return exact
+
   const selected: StoredProofRecord[] = []
   for (const outcomeCollection of parseOutcomeSetId(outcomeSetId)) {
     const leg = selectProofs(
@@ -1329,6 +1364,18 @@ function selectReservedProofsForOutcomeSet(
   outcomeSetId: string,
   amount: number,
 ): StoredProofRecord[] | null {
+  const exact = selectReservedProofs(
+    state,
+    mintUrl,
+    reservedBy,
+    (proof) =>
+      proof.asset.kind === 'outcome' &&
+      proof.asset.conditionId === conditionId &&
+      proof.asset.outcomeSetId === outcomeSetId,
+    amount,
+  )
+  if (exact) return exact
+
   const selected: StoredProofRecord[] = []
   for (const outcomeCollection of parseOutcomeSetId(outcomeSetId)) {
     const leg = selectReservedProofs(
@@ -1342,6 +1389,42 @@ function selectReservedProofsForOutcomeSet(
       amount,
     )
     if (!leg) return null
+    selected.push(...leg)
+  }
+  return selected
+}
+
+function selectReservedProofRowsForOutcomeSet(
+  state: DaemonState | null,
+  mintUrl: string,
+  reservedBy: string,
+  conditionId: string,
+  outcomeSetId: string,
+): StoredProofRecord[] | null {
+  const rows = state?.wallet.proofs ?? []
+  const exact = rows.filter(
+    (proof) =>
+      proof.mintUrl === mintUrl &&
+      proof.state === 'reserved' &&
+      proof.reservedBy === reservedBy &&
+      proof.asset.kind === 'outcome' &&
+      proof.asset.conditionId === conditionId &&
+      proof.asset.outcomeSetId === outcomeSetId,
+  )
+  if (exact.length > 0) return exact
+
+  const selected: StoredProofRecord[] = []
+  for (const outcomeCollection of parseOutcomeSetId(outcomeSetId)) {
+    const leg = rows.filter(
+      (proof) =>
+        proof.mintUrl === mintUrl &&
+        proof.state === 'reserved' &&
+        proof.reservedBy === reservedBy &&
+        proof.asset.kind === 'outcome' &&
+        proof.asset.conditionId === conditionId &&
+        proof.asset.outcomeSetId === outcomeCollection,
+    )
+    if (leg.length === 0) return null
     selected.push(...leg)
   }
   return selected
@@ -1703,26 +1786,17 @@ async function loadRootCollectionByKeyset(
     throw new Error(`Failed to load condition ${conditionId} keysets: ${response.status}`)
   }
   const body = (await response.json()) as {
-    condition?: { partitions?: Array<{ parent_collection_id?: unknown; keysets?: Record<string, string> }> }
-    partitions?: Array<{ parent_collection_id?: unknown; keysets?: Record<string, string> }>
+    condition?: { keysets?: Record<string, string> }
+    keysets?: Record<string, string>
   }
-  const partitions = body.condition?.partitions ?? body.partitions ?? []
   const result = new Map<string, string>()
-  for (const partition of partitions) {
-    if (
-      typeof partition.parent_collection_id === 'string' &&
-      !/^0{64}$/i.test(partition.parent_collection_id)
-    ) {
-      continue
+  for (const [collection, keysetId] of Object.entries(body.condition?.keysets ?? body.keysets ?? {})) {
+    if (!keysetId) continue
+    const existing = result.get(keysetId)
+    if (existing && existing !== collection) {
+      throw new Error(`Keyset ${keysetId} maps to both ${existing} and ${collection}`)
     }
-    for (const [collection, keysetId] of Object.entries(partition.keysets ?? {})) {
-      if (!keysetId) continue
-      const existing = result.get(keysetId)
-      if (existing && existing !== collection) {
-        throw new Error(`Keyset ${keysetId} maps to both ${existing} and ${collection}`)
-      }
-      result.set(keysetId, collection)
-    }
+    result.set(keysetId, collection)
   }
   if (result.size === 0) {
     throw new Error(`Condition ${conditionId} did not include root outcome keysets`)

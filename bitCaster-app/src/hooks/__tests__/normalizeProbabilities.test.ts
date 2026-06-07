@@ -5,7 +5,7 @@ import type { WizardOutcome } from '@/types/market-creation'
 vi.mock('@/lib/oracle', () => ({ fetchOracleAnnouncements: vi.fn().mockResolvedValue([]) }))
 vi.mock('@/lib/markets', () => ({
   registerCondition: vi.fn(),
-  registerPartition: vi.fn(),
+  requiredMarketCreationOutcomeCollections: vi.fn(),
   uploadThumbnail: vi.fn(),
   registerLiquidity: vi.fn(),
 }))

@@ -20,13 +20,6 @@ import {
   computeInputFeeSatsForProofs,
 } from "./proofSelection.ts";
 
-export interface CtfConditionPartition {
-  partition?: string[];
-  collateral: string;
-  parent_collection_id: string;
-  keysets: Record<string, string>;
-}
-
 export interface CtfConditionalKeysetInfo {
   id: string;
   condition_id: string;
@@ -37,7 +30,7 @@ export interface CtfConditionalKeysetInfo {
 
 export interface CtfConditionInfo {
   condition_id: string;
-  partitions: CtfConditionPartition[];
+  keysets: Record<string, string>;
 }
 
 export interface CtfSplitOutputData {
@@ -482,6 +475,45 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
     proofsByCollection,
     spentSatProofs: normalizedCollateral,
   };
+}
+
+export async function resolveRootPreflightOutputAmountSats(params: {
+  mintUrl: string;
+  conditionId: string;
+  amountSats: number;
+  lockOutcomeSetId: string;
+  keepOutcomeSetId: string;
+}): Promise<number> {
+  const transport = new CashuMintCtfSplitTransport(params.mintUrl);
+  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
+    params.conditionId,
+    {
+      lockOutcomeSetId: params.lockOutcomeSetId,
+      keepOutcomeSetId: params.keepOutcomeSetId,
+    },
+  );
+
+  let preflightOutputAmountSats = params.amountSats;
+  for (const keysetId of Object.values(outcomeCollectionKeysets)) {
+    const keyset = await transport.getKeys(keysetId);
+    const planningKeyset = {
+      id: keyset.id,
+      keys: keyset.keys,
+      input_fee_ppk: keyset.input_fee_ppk ?? 0,
+    };
+    const claimInputAmountSats = computeGrossCtfInputAmountSats({
+      faceAmountSats: params.amountSats,
+      keyset: planningKeyset,
+    });
+    preflightOutputAmountSats = Math.max(
+      preflightOutputAmountSats,
+      computeGrossCtfInputAmountSats({
+        faceAmountSats: claimInputAmountSats,
+        keyset: planningKeyset,
+      }),
+    );
+  }
+  return preflightOutputAmountSats;
 }
 
 export async function splitRootCompleteSet(
@@ -1028,87 +1060,64 @@ export function selectRootPartitionKeysets(
   selection?: CtfRootPartitionSelection,
   conditionalKeysets: CtfConditionalKeysetInfo[] = [],
 ): Record<string, string> {
-  const rootPartitions = condition.partitions
-    .filter(
-      (partition) =>
-        partition.collateral === "sat" &&
-        partition.parent_collection_id === ZERO_COLLECTION_ID &&
-        Object.keys(partition.keysets).length >= 2,
-    )
-    .map((partition) => ({
-      ...partition,
-      keysets: normalizeRootPartitionKeysets(
-        condition.condition_id,
-        partition,
-        conditionalKeysets,
-      ),
-    }));
+  const rootKeysets = normalizeRootConditionKeysets(
+    condition.condition_id,
+    condition.keysets,
+    conditionalKeysets,
+  );
+
   if (!selection) {
-    if (rootPartitions.length !== 1) {
+    if (Object.keys(rootKeysets).length < 2) {
       throw new Error(
-        `Expected exactly one root sat CTF partition for condition ${condition.condition_id}, found ${rootPartitions.length}`,
+        `Expected at least two root sat CTF keysets for condition ${condition.condition_id}, found ${Object.keys(rootKeysets).length}`,
       );
     }
-    return rootPartitions[0].keysets;
+    return rootKeysets;
   }
 
-  const matches = rootPartitions.filter((partition) =>
-    partitionExactlyMatchesSelection(partition.keysets, selection),
-  );
-
-  if (matches.length !== 1) {
+  const selected = selectKeysetsMatchingSelection(rootKeysets, selection);
+  if (Object.keys(selected).length !== 2) {
     throw new Error(
-      `Expected exactly one root sat CTF partition for condition ${condition.condition_id} matching lock ${selection.lockOutcomeSetId} and keep ${selection.keepOutcomeSetId}, found ${matches.length} of ${rootPartitions.length}`,
+      `Expected root sat CTF keysets for condition ${condition.condition_id} matching lock ${selection.lockOutcomeSetId} and keep ${selection.keepOutcomeSetId}, found ${Object.keys(selected).length} of ${Object.keys(rootKeysets).length}`,
     );
   }
-  return matches[0].keysets;
+  return selected;
 }
 
-function partitionExactlyMatchesSelection(
+function selectKeysetsMatchingSelection(
   keysets: Record<string, string>,
   selection: CtfRootPartitionSelection,
-): boolean {
-  const collections = Object.keys(keysets);
-  if (collections.length !== 2) return false;
-
+): Record<string, string> {
   const lockSet = parseOutcomeSetToComparableSet(selection.lockOutcomeSetId);
   const keepSet = parseOutcomeSetToComparableSet(selection.keepOutcomeSetId);
-  const collectionSets = collections.map((collection) =>
-    parseOutcomeSetToComparableSet(collection),
-  );
-
-  return (
-    collectionSets.some((collectionSet) =>
-      outcomeSetsEqual(collectionSet, lockSet),
-    ) &&
-    collectionSets.some((collectionSet) =>
-      outcomeSetsEqual(collectionSet, keepSet),
-    )
+  return Object.fromEntries(
+    Object.entries(keysets).filter(([collection]) => {
+      const collectionSet = parseOutcomeSetToComparableSet(collection);
+      return (
+        outcomeSetsEqual(collectionSet, lockSet) ||
+        outcomeSetsEqual(collectionSet, keepSet)
+      );
+    }),
   );
 }
 
-function normalizeRootPartitionKeysets(
+function normalizeRootConditionKeysets(
   conditionId: string,
-  partition: CtfConditionPartition,
+  keysets: Record<string, string>,
   conditionalKeysets: CtfConditionalKeysetInfo[],
 ): Record<string, string> {
   const lookup = buildOutcomeCollectionKeysetLookup(
     conditionId,
-    partition.keysets,
+    keysets,
     conditionalKeysets,
   );
   const normalized = new Map<string, string>();
-  const partitionMembers =
-    partition.partition && partition.partition.length > 0
-      ? partition.partition
-      : Object.keys(partition.keysets);
-
-  for (const collection of partitionMembers) {
+  for (const collection of Object.keys(keysets)) {
     const keysetId = lookup.get(collection);
     if (keysetId) normalized.set(collection, keysetId);
   }
 
-  for (const [collection, keysetId] of Object.entries(partition.keysets)) {
+  for (const [collection, keysetId] of Object.entries(keysets)) {
     if (isOutcomeCollectionId(collection)) {
       const keyset = conditionalKeysets.find(
         (candidate) =>
@@ -1537,5 +1546,3 @@ function hexToBytes(hex: string): Uint8Array {
   }
   return bytes;
 }
-
-const ZERO_COLLECTION_ID = "0".repeat(64);

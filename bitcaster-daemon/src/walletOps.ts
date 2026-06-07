@@ -1299,13 +1299,10 @@ async function getConditionKeysetIds(
     throw new Error(`condition keyset lookup failed with HTTP ${response.status}`)
   }
   const body = (await response.json()) as {
-    condition?: { partitions?: Array<{ keysets?: Record<string, string> }> }
-    partitions?: Array<{ keysets?: Record<string, string> }>
+    condition?: { keysets?: Record<string, string> }
+    keysets?: Record<string, string>
   }
-  const partitions = body.condition?.partitions ?? body.partitions ?? []
-  const keysets = partitions.flatMap((partition) =>
-    Object.values(partition.keysets ?? {}),
-  )
+  const keysets = Object.values(body.condition?.keysets ?? body.keysets ?? {})
   if (!keysets.length) {
     throw new Error(`condition ${conditionId} did not include CTF keysets`)
   }

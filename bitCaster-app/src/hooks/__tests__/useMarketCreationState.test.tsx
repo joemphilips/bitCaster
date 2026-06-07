@@ -8,13 +8,11 @@ import { useMarketDraftStore, defaultDraft } from '@/stores/marketDraft'
 const {
   mockNavigate,
   mockRegisterCondition,
-  mockEnsureMarketCreationPartitions,
   mockCreateMarket,
   mockCreateEnumAnnouncement,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockRegisterCondition: vi.fn(),
-  mockEnsureMarketCreationPartitions: vi.fn(),
   mockCreateMarket: vi.fn(),
   mockCreateEnumAnnouncement: vi.fn(),
 }))
@@ -26,7 +24,6 @@ vi.mock('react-router', async () => {
 
 vi.mock('@/lib/markets', () => ({
   registerCondition: (...args: unknown[]) => mockRegisterCondition(...args),
-  ensureMarketCreationPartitions: (...args: unknown[]) => mockEnsureMarketCreationPartitions(...args),
   createMarket: (...args: unknown[]) => mockCreateMarket(...args),
   MintError: class MintError extends Error {
     constructor(public readonly code: number, public readonly detail: string) {
@@ -86,8 +83,7 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockRegisterCondition.mockResolvedValue({ condition_id: 'test-cond-id' })
-  mockEnsureMarketCreationPartitions.mockResolvedValue(undefined)
+  mockRegisterCondition.mockResolvedValue({ condition_id: 'test-cond-id', keysets: { Yes: 'ks1', No: 'ks2' } })
   mockCreateMarket.mockResolvedValue({ conditionId: 'test-cond-id', marketsCreated: ['test-cond-id-Yes', 'test-cond-id-No'], thumbnailUrl: null })
   mockCreateEnumAnnouncement.mockResolvedValue('announcement-hex')
 
@@ -131,15 +127,12 @@ async function setupDraftForSubmission() {
 }
 
 describe('useMarketCreationState – onCreateMarket', () => {
-  it('calls registerCondition, ensures partitions, then createMarket in order', async () => {
+  it('calls registerCondition with requested keysets, then createMarket in order', async () => {
     const result = await setupDraftForSubmission()
     const callOrder: string[] = []
     mockRegisterCondition.mockImplementation(async () => {
       callOrder.push('condition')
-      return { condition_id: 'test-cond-id' }
-    })
-    mockEnsureMarketCreationPartitions.mockImplementation(async () => {
-      callOrder.push('partitions')
+      return { condition_id: 'test-cond-id', keysets: { Yes: 'ks1', No: 'ks2' } }
     })
     mockCreateMarket.mockImplementation(async () => {
       callOrder.push('createMarket')
@@ -148,7 +141,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     await act(async () => { await result.current.onCreateMarket() })
 
-    expect(callOrder).toEqual(['condition', 'partitions', 'createMarket'])
+    expect(callOrder).toEqual(['condition', 'createMarket'])
     expect(mockRegisterCondition).toHaveBeenCalledOnce()
     expect(mockRegisterCondition).toHaveBeenCalledWith({
       tags: [
@@ -156,8 +149,8 @@ describe('useMarketCreationState – onCreateMarket', () => {
         ['description', 'Test description'],
       ],
       announcementHex: 'ann-hex-123',
+      collateral: 'sat',
     })
-    expect(mockEnsureMarketCreationPartitions).toHaveBeenCalledWith('test-cond-id', ['Yes', 'No'])
     expect(mockCreateMarket).toHaveBeenCalledOnce()
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
       oracleAnnouncementHex: 'ann-hex-123',
@@ -171,18 +164,6 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.submitError).toBe('Mint rejected')
-    expect(mockEnsureMarketCreationPartitions).not.toHaveBeenCalled()
-    expect(mockCreateMarket).not.toHaveBeenCalled()
-    expect(mockNavigate).not.toHaveBeenCalled()
-  })
-
-  it('stops and sets error if partition pre-registration fails', async () => {
-    const result = await setupDraftForSubmission()
-    mockEnsureMarketCreationPartitions.mockRejectedValueOnce(new Error('Partition failed'))
-
-    await act(async () => { await result.current.onCreateMarket() })
-
-    expect(result.current.submitError).toBe('Partition failed')
     expect(mockCreateMarket).not.toHaveBeenCalled()
     expect(mockNavigate).not.toHaveBeenCalled()
   })

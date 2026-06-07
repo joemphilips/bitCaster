@@ -240,12 +240,14 @@ export function OutcomesStep({
   // Categorical outcomes
   const catSumOk = outcomes ? probabilitySumValid(outcomes) : false
   const catRangeOk = outcomes ? allProbabilitiesInRange(outcomes) : false
+  const labelsAvoidOutcomeSetSeparator = outcomes ? outcomes.every((o) => !o.label.includes('|')) : false
   const canAddOutcome = (outcomes?.length ?? 0) < MAX_MARKET_OUTCOMES
   const canProceed =
     outcomes &&
     outcomes.length >= 2 &&
     outcomes.length <= MAX_MARKET_OUTCOMES &&
     outcomes.every((o) => o.label.trim().length > 0) &&
+    labelsAvoidOutcomeSetSeparator &&
     catSumOk &&
     catRangeOk
 
@@ -321,6 +323,11 @@ export function OutcomesStep({
           </div>
           <div className="mb-8">
             <ProbabilityBar outcomes={outcomes} sumOk={catSumOk} rangeOk={catRangeOk} />
+            {!labelsAvoidOutcomeSetSeparator && (
+              <p className="text-xs text-red-400 mt-2">
+                {t('marketCreation.outcomeLabelSeparatorError')}
+              </p>
+            )}
           </div>
         </>
       )}

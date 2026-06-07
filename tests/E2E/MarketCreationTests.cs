@@ -444,10 +444,11 @@ public class MarketCreationTests : IAsyncLifetime
         var firstCondition = mintDoc.RootElement.GetProperty("conditions").EnumerateArray().First();
         var conditionId = firstCondition.GetProperty("condition_id").GetString()!;
 
-        // Extract outcome names from the seeded condition's first partition
-        var partition = firstCondition.GetProperty("partitions").EnumerateArray().First()
-            .GetProperty("partition");
-        var outcomeNames = partition.EnumerateArray().Select(p => p.GetString()!).ToList();
+        // Extract outcome names from the seeded condition's flat keyset map.
+        var outcomeNames = firstCondition.GetProperty("keysets").EnumerateObject()
+            .SelectMany(keyset => keyset.Name.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         var probPerOutcome = 100 / outcomeNames.Count;
         var outcomes = outcomeNames.Select((name, i) => new
         {
