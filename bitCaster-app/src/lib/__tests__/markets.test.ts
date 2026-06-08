@@ -347,6 +347,7 @@ describe("deposit API normalization", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
   });
@@ -587,6 +588,43 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     const labels = detail.outcomes?.map((outcome) => outcome.label) ?? [];
     expect(labels).toEqual(["A", "B", "C"]);
     expect(labels).not.toContain("B|C");
+  });
+
+  it("waits for a newly registered market to appear in the engine catalogue", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/v1/conditions"))
+        return mintdConditionsResponse(categoricalCompositeKeysets);
+      if (url.includes("/api/v1/markets/query")) {
+        const queryCalls = fetchMock.mock.calls.filter((call) =>
+          String(call[0]).includes("/api/v1/markets/query"),
+        ).length;
+        if (queryCalls < 3) {
+          return new Response(
+            JSON.stringify({
+              markets: [],
+              nextCursor: null,
+              lastSuccessfulRefreshAt: "2026-05-04T00:00:00Z",
+            }),
+            { status: 200 },
+          );
+        }
+        return engineQueryResponse("open", null, null, ["A", "B", "C"]);
+      }
+      return emptyMetadataResponse();
+    });
+
+    const detailPromise = fetchMarketDetail("abc123");
+    await vi.advanceTimersByTimeAsync(2_000);
+    const detail = await detailPromise;
+
+    expect(detail.type).toBe("categorical");
+    expect(detail.outcomes?.map((outcome) => outcome.label)).toEqual([
+      "A",
+      "B",
+      "C",
+    ]);
+    expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
   it("fails closed when the engine entry lacks creator outcome metadata", async () => {

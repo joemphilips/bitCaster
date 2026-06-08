@@ -400,9 +400,13 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
  * Returns `null` when the engine has no record of the market or the request
  * fails.
  */
+const MARKET_DETAIL_CATALOGUE_RETRY_ATTEMPTS = 31
+const MARKET_DETAIL_CATALOGUE_RETRY_DELAY_MS = 1_000
+
 async function fetchEngineCatalogueEntry(
   conditionId: string,
-  attempts = 5,
+  attempts = MARKET_DETAIL_CATALOGUE_RETRY_ATTEMPTS,
+  retryDelayMs = MARKET_DETAIL_CATALOGUE_RETRY_DELAY_MS,
 ): Promise<MarketCatalogueEntry | null> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -418,7 +422,7 @@ async function fetchEngineCatalogueEntry(
       return null;
     }
     if (attempt < attempts - 1) {
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 500));
+      await new Promise((resolve) => globalThis.setTimeout(resolve, retryDelayMs));
     }
   }
   return null;
