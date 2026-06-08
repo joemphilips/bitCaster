@@ -1,5 +1,6 @@
 import { useActiveSwapsStore } from "@/stores/activeSwaps";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { getNip17ListenerDiagnostics } from "@/lib/nip17-listener";
 
 type SanitizedActiveSwap = {
   tradeId: string;
@@ -30,6 +31,7 @@ declare global {
   interface Window {
     __BITCASTER_E2E__?: {
       getSwapDiagnostics: (tradeId: string) => SwapDiagnosticsSnapshot;
+      getNip17ListenerDiagnostics: typeof getNip17ListenerDiagnostics;
     };
   }
 }
@@ -59,7 +61,10 @@ export function getSwapDiagnostics(tradeId: string): SwapDiagnosticsSnapshot {
 
 export function installE2EDiagnostics(): void {
   if (typeof window === "undefined") return;
-  window.__BITCASTER_E2E__ = { getSwapDiagnostics };
+  window.__BITCASTER_E2E__ = {
+    getSwapDiagnostics,
+    getNip17ListenerDiagnostics,
+  };
 }
 
 function sanitizeActiveSwap(
