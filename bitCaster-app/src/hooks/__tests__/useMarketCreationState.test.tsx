@@ -11,6 +11,9 @@ const {
   mockGetAvailableRegularBalanceSats,
   mockCreateMarket,
   mockCreateEnumAnnouncement,
+  mockEnsureKormirNsec,
+  mockGetOracleAnnouncementEventId,
+  mockRefreshMintInfoWithoutActivating,
   mockWalletState,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
@@ -18,6 +21,9 @@ const {
   mockGetAvailableRegularBalanceSats: vi.fn(),
   mockCreateMarket: vi.fn(),
   mockCreateEnumAnnouncement: vi.fn(),
+  mockEnsureKormirNsec: vi.fn(),
+  mockGetOracleAnnouncementEventId: vi.fn(),
+  mockRefreshMintInfoWithoutActivating: vi.fn(),
   mockWalletState: {
     activeMintUrl: 'https://mint.example.test',
     mints: [
@@ -75,23 +81,16 @@ vi.mock('@/lib/marketRegistrationFee', () => ({
   },
 }))
 
-vi.mock('@/lib/oracle', () => ({
-  fetchOracleAnnouncements: vi.fn().mockResolvedValue([{
-    id: 'ann-hex-123',
-    eventId: 'evt-1',
-    oraclePubkey: 'pubkey-1',
-    description: 'Test announcement',
-    resolutionDate: new Date(Date.now() + 86400000).toISOString(),
-    outcomes: ['Yes', 'No'],
-  }]),
-}))
-
 vi.mock('@/lib/kormir', () => ({
   createEnumAnnouncement: (...args: unknown[]) => mockCreateEnumAnnouncement(...args),
+  ensureKormirNsec: (...args: unknown[]) => mockEnsureKormirNsec(...args),
+  getOracleAnnouncementEventId: (...args: unknown[]) =>
+    mockGetOracleAnnouncementEventId(...args),
 }))
 
 vi.mock('@/lib/walletOps', () => ({
-  refreshMintInfoWithoutActivating: vi.fn().mockResolvedValue(undefined),
+  refreshMintInfoWithoutActivating: (...args: unknown[]) =>
+    mockRefreshMintInfoWithoutActivating(...args),
 }))
 
 // Stub the wallet store — the real module transitively imports `@cashu/cashu-ts`
@@ -117,9 +116,6 @@ vi.mock('@/lib/nip17', () => ({
   }),
 }))
 
-// Stub env var before importing the hook (module-level const reads it at import time)
-vi.stubEnv('VITE_ORACLE_PUBKEY', 'fake-oracle-pubkey')
-
 // Must import after mocks and env stub
 const { useMarketCreationState } = await import('../useMarketCreationState')
 
@@ -133,6 +129,9 @@ beforeEach(() => {
   mockGetAvailableRegularBalanceSats.mockResolvedValue(1000)
   mockCreateMarket.mockResolvedValue({ conditionId: 'test-cond-id', marketsCreated: ['test-cond-id-Yes', 'test-cond-id-No'], thumbnailUrl: null })
   mockCreateEnumAnnouncement.mockResolvedValue('announcement-hex')
+  mockEnsureKormirNsec.mockResolvedValue(undefined)
+  mockGetOracleAnnouncementEventId.mockResolvedValue('c'.repeat(64))
+  mockRefreshMintInfoWithoutActivating.mockResolvedValue(undefined)
   mockWalletState.activeMintUrl = 'https://mint.example.test'
   mockWalletState.mints = [
     {
@@ -149,8 +148,11 @@ beforeEach(() => {
     },
   ]
 
-  // Configure Nostr so oracle announcements are fetched
-  useSettingsStore.setState({ nostrSignerMode: 'nip07' })
+  useSettingsStore.setState({
+    nostrSignerMode: 'nsec',
+    nsecSecret: '11'.repeat(32),
+    relays: [{ url: 'wss://relay.example.test', connectionStatus: 'connected' }],
+  })
   // Reset the persisted wizard draft so each test starts from a clean
   // "no work in progress" state.
   useMarketDraftStore.setState({ draft: defaultDraft(), hasSavedDraft: false })
@@ -159,30 +161,22 @@ beforeEach(() => {
 async function setupDraftForSubmission() {
   const { result } = renderHook(() => useMarketCreationState(), { wrapper })
 
-  // Wait for oracle announcements to load
-  await act(async () => { await new Promise((r) => setTimeout(r, 50)) })
-
-  // Select oracle announcement
-  await act(async () => { result.current.onAnnouncementSelect('ann-hex-123') })
-
-  // Navigate through steps: step 1 → 2
-  await act(async () => { result.current.onNext() })
-  // Step 2: select outcome type
+  // Step 1: select outcome type
   await act(async () => { result.current.onOutcomeTypeSelect('yesno') })
   await act(async () => { result.current.onNext() })
-  // Step 3: basic info
+  // Step 2: basic info
   await act(async () => { result.current.onTitleChange('Test Market') })
   await act(async () => {
     const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16)
     result.current.onClosingDateChange(future)
   })
   await act(async () => { result.current.onNext() })
-  // Step 4: outcomes (default 50/50)
+  // Step 3: outcomes (default 50/50)
   await act(async () => { result.current.onNext() })
-  // Step 5: liquidity
+  // Step 4: liquidity
   await act(async () => { result.current.onLiquiditySatsChange(10000) })
   await act(async () => { result.current.onNext() })
-  // Step 6: description
+  // Step 5: description
   await act(async () => { result.current.onDescriptionChange('Test description') })
 
   return result
@@ -213,14 +207,14 @@ describe('useMarketCreationState – onCreateMarket', () => {
           ['title', 'Test Market'],
           ['description', 'Test description'],
         ],
-        announcementHex: 'ann-hex-123',
+        announcementHex: 'announcement-hex',
         collateral: 'sat',
         outcomeCollections: undefined,
       },
     })
     expect(mockCreateMarket).toHaveBeenCalledOnce()
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
-      oracleAnnouncementHex: 'ann-hex-123',
+      oracleAnnouncementHex: 'announcement-hex',
     })
   })
 
@@ -238,6 +232,38 @@ describe('useMarketCreationState – onCreateMarket', () => {
         }),
       }),
     )
+  })
+
+  it('refreshes the active mint before rejecting missing CTF metadata', async () => {
+    mockWalletState.activeMintUrl = 'http://localhost:8086'
+    mockWalletState.mints = []
+    mockRefreshMintInfoWithoutActivating.mockImplementation(async () => {
+      mockWalletState.mints = [
+        {
+          url: 'http://localhost:8086',
+          info: {
+            nuts: {
+              CTF: {
+                default_keyset_creation: 'one-vs-rest',
+                registration_fee_base: 1,
+                registration_fee_per_keyset: 1,
+              },
+            },
+          },
+        },
+      ]
+    })
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(mockRefreshMintInfoWithoutActivating).toHaveBeenCalledWith('http://localhost:8086')
+    expect(result.current.registrationFeePrompt).toEqual({
+      feeSats: 3,
+      balanceSats: 1000,
+    })
+    expect(result.current.submitError).toBeNull()
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
   })
 
   it('omits client-defined collections when the mint default policy is all', async () => {
@@ -322,6 +348,23 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(result.current.submitError).toBe(
       'This mint requires a 1001 sat condition registration fee, which exceeds the 1000 sat app limit.',
     )
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
+    expect(mockCreateMarket).not.toHaveBeenCalled()
+  })
+
+  it('requires an nsec-backed Nostr identity before mint or engine market creation', async () => {
+    const result = await setupDraftForSubmission()
+    useSettingsStore.setState({
+      nostrSignerMode: 'none',
+      nsecSecret: null,
+    })
+
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(result.current.submitError).toBe('You must register a nostr key to become an oracle')
+    expect(mockGetAvailableRegularBalanceSats).not.toHaveBeenCalled()
+    expect(mockEnsureKormirNsec).not.toHaveBeenCalled()
+    expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled()
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
     expect(mockCreateMarket).not.toHaveBeenCalled()
   })
@@ -411,12 +454,11 @@ describe('useMarketCreationState – onCreateMarket', () => {
     useCreatorMarketsStore.setState({ markets: [] })
     useSettingsStore.setState({
       nostrSignerMode: 'nsec',
+      nsecSecret: '11'.repeat(32),
       relays: [{ url: 'wss://relay.example.test', connectionStatus: 'connected' }],
     })
     const { result } = renderHook(() => useMarketCreationState(), { wrapper })
 
-    await act(async () => { result.current.onOracleChoiceSelect('become-oracle') })
-    await act(async () => { result.current.onNext() })
     await act(async () => { result.current.onOutcomeTypeSelect('yesno') })
     await act(async () => { result.current.onNext() })
     await act(async () => { result.current.onTitleChange('Will BTC hit $150k?') })
@@ -432,6 +474,10 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     await act(async () => { await result.current.onCreateMarket() })
 
+    expect(mockEnsureKormirNsec).toHaveBeenCalledWith(
+      ['wss://relay.example.test'],
+      '11'.repeat(32),
+    )
     expect(mockCreateEnumAnnouncement).toHaveBeenCalledWith(
       ['wss://relay.example.test'],
       expect.stringMatching(/^will_btc_hit_150k_[0-9a-f]{12}$/),
@@ -443,6 +489,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     const entry = useCreatorMarketsStore.getState().markets[0]
     expect(entry.oracle?.type).toBe('self')
     expect(entry.oracle?.eventId).toMatch(/^will_btc_hit_150k_[0-9a-f]{12}$/)
+    expect(entry.oracle?.announcementEventId).toBe('c'.repeat(64))
     expect(entry.oracle?.outcomes).toEqual(['Yes', 'No'])
   })
 })

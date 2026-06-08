@@ -248,6 +248,34 @@ describe('Portfolio', () => {
       expect(screen.getByText('Will Bitcoin reach $100K?')).toBeInTheDocument()
     })
 
+    it('renders complement positions with a public NOT label', () => {
+      renderPortfolio({
+        positions: [
+          {
+            id: 'cond-abc-B|C',
+            marketId: 'cond-abc-B|C',
+            marketTitle: 'Which team wins?',
+            marketImageUrl: '',
+            mintUrl: 'https://mint.bitcaster.io',
+            side: 'outcome',
+            outcomeId: 'B|C',
+            outcomeLabel: 'NOT A',
+            shares: 25,
+            avgBuyPrice: 0,
+            currentPrice: 0,
+            currentValueSats: 25,
+            profitLossSats: 0,
+            profitLossPercent: 0,
+            status: 'active',
+            acquiredDate: '2026-01-01T00:00:00Z',
+          },
+        ],
+      })
+
+      expect(screen.getByText('NOT A')).toBeInTheDocument()
+      expect(screen.queryByText('B|C')).not.toBeInTheDocument()
+    })
+
     it('switches to closed positions tab', async () => {
       const onPositionsTabChange = vi.fn()
       renderPortfolio({ onPositionsTabChange })

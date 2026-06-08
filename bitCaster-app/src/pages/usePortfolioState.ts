@@ -6,6 +6,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { safeHostname } from '@/lib/url'
 import type { MarketCatalogueEntry, MarketCatalogueResponse } from '@/lib/markets'
+import { outcomeSetDisplayLabel } from '@/lib/outcomeSets'
 import type {
   WalletState,
   BaseCurrency,
@@ -218,6 +219,11 @@ export function usePortfolioState(): PortfolioState & {
     ])
     return entries.map((entry): Position => {
       const market = catalogue.get(entry.conditionId)
+      const outcomeLabel = outcomeSetDisplayLabel(
+        market?.outcomes ?? [],
+        entry.outcomeCollection,
+      )
+      const finalOutcome = market?.finalOutcome?.trim()
       const isClosed = String(market?.state ?? '').toLowerCase() === 'closed'
       // Single source-of-truth winner/value derivation (P22 Link F HIGH).
       // A keyset is a WINNING keyset iff the attested final outcome is a member
@@ -233,7 +239,7 @@ export function usePortfolioState(): PortfolioState & {
       // (the group key includes it), so it is a single leg here.
       const { status: winnerStatus, claimableValue } = deriveWinner({
         isClosed,
-        finalOutcome: market?.finalOutcome,
+        finalOutcome,
         legs: [
           { outcomeCollection: entry.outcomeCollection, amount: entry.amount },
         ],
@@ -259,7 +265,7 @@ export function usePortfolioState(): PortfolioState & {
         marketImageUrl: market?.thumbnailUrl ?? '',
         side: positionSide(entry.outcomeCollection),
         outcomeId: entry.outcomeCollection,
-        outcomeLabel: entry.outcomeCollection,
+        outcomeLabel,
         shares: entry.amount,
         avgBuyPrice: 0,
         currentPrice: isClosed && isWinner ? 100 : 0,

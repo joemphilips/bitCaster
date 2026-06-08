@@ -152,6 +152,7 @@ export interface CreatedMarket {
   oracle?: {
     type: 'self'
     eventId: string
+    announcementEventId?: string
     outcomes: string[]
     /**
      * TLV-hex of the kormir DLC oracle announcement. Mirrored client-side so a

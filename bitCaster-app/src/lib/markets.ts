@@ -19,12 +19,9 @@ import {
 import { getNdk } from "@/lib/nostr";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "nostr-tools/utils";
-import { isAttestationResolved, normalizeMintdStatus } from "./mintdIngress";
-import {
-  canonicalizeOutcomeSet,
-  complementOutcomeSetId,
-  parseOutcomeSetId,
-} from "./outcomeSets";
+import { toWireAmountBearing } from "@bitcaster/client-sdk/ctfRegistration";
+
+export { requiredMarketCreationOutcomeCollections } from "@bitcaster/client-sdk/ctfRegistration";
 
 // Types from generated OpenAPI spec
 
@@ -33,8 +30,6 @@ export type SubmitOrderResponse = components["schemas"]["SubmitOrderResponse"];
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type LevelDto = components["schemas"]["LevelDto"];
 export type Fill = components["schemas"]["Fill"];
-export type MarketMetadataSnapshot =
-  components["schemas"]["MarketMetadataSnapshot"];
 export type CreateMarketRequest = components["schemas"]["CreateMarketRequest"];
 export type CreateMarketResponse =
   components["schemas"]["CreateMarketResponse"];
@@ -106,22 +101,6 @@ function orderAtomicOutcomes(outcomes: string[]): string[] {
   return outcomes;
 }
 
-function atomicOutcomesFromKeysets(
-  keysets: Record<string, string> | undefined,
-): string[] {
-  const outcomes: string[] = [];
-  const seen = new Set<string>();
-  for (const collection of Object.keys(keysets ?? {})) {
-    for (const rawName of parseOutcomeSetId(collection)) {
-      const name = rawName.trim();
-      if (!name || seen.has(name)) continue;
-      seen.add(name);
-      outcomes.push(name);
-    }
-  }
-  return orderAtomicOutcomes(outcomes);
-}
-
 export function extractCategoryTagIds(tags: string[][]): string[] {
   return tags
     .filter((t) => t.length >= 2 && !KNOWN_TAG_KEYS.has(t[0]))
@@ -144,37 +123,6 @@ export async function fetchConditions(): Promise<ConditionInfo[]> {
   }
   const data: ConditionsResponse = await response.json();
   return data.conditions;
-}
-
-export async function fetchMarketMetadata(
-  marketId: string,
-): Promise<MarketMetadataSnapshot | null> {
-  try {
-    const response = await fetch(`/api/v1/${marketId}/metadata`);
-    if (!response.ok) return null;
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
-function applyMetadata<
-  T extends {
-    volume: number;
-    liquidity: number;
-    liquiditySats: number;
-    traderCount: number;
-    volumeLifetimeSats: number;
-  },
->(base: T, meta: MarketMetadataSnapshot): T {
-  return {
-    ...base,
-    volume: meta.totalVolumeSats,
-    liquidity: meta.totalLiquiditySats,
-    liquiditySats: meta.totalLiquiditySats,
-    traderCount: meta.uniqueTraderCount,
-    volumeLifetimeSats: meta.totalVolumeSats,
-  };
 }
 
 // =============================================================================
@@ -276,8 +224,8 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   return {
     ...base,
     type: "categorical",
-    outcomes: outcomes.map((label, i) => ({
-      id: `outcome-${i}`,
+    outcomes: outcomes.map((label) => ({
+      id: label,
       label,
       odds: 100 / Math.max(outcomes.length, 1),
     })),
@@ -359,104 +307,10 @@ export function filterMarkets(
 // Market Detail Data Fetching
 // =============================================================================
 
-function mapConditionToMarketDetail(c: ConditionInfo): MarketDetail {
-  const outcomes = atomicOutcomesFromKeysets(c.keysets);
-  const mappedOutcomes = outcomes.map((label, i) => ({
-    id: `outcome-${i}`,
-    label,
-    odds: 100 / Math.max(outcomes.length, 1),
-  }));
-  const now = new Date().toISOString();
-
-  const isYesNo = isYesNoUniverse(outcomes);
-
-  // Mintd attestation is reduced to outcome metadata per ADR-009 Amendment
-  // 2026-05-04. Lifecycle (Open / Closed) reads engine `state` and is merged
-  // in by `fetchMarketDetail` after this mapper runs. Normalise the raw
-  // mintd value once at the ingress boundary per `bitcaster-coding-guideline`
-  // Rule 2; the resolution-info panel consumes the canonical union below.
-  const attestationStatus = normalizeMintdStatus(c.attestation.status);
-  const isResolved = isAttestationResolved(attestationStatus);
-  const tags = c.tags ?? [];
-  const description = getTagValue(tags, "description")?.trim();
-  const title =
-    getTagValue(tags, "title")?.trim() ??
-    c.description?.trim() ??
-    description ??
-    "Untitled Market";
-
-  const base = {
-    id: c.condition_id,
-    title,
-    imageUrl: undefined,
-    categoryTags: extractCategoryTagIds(tags).map((id) => ({
-      id,
-      label: id,
-      marketCount: 0,
-    })),
-    volume: 0,
-    liquidity: 0,
-    liquiditySats: 0,
-    traderCount: 0,
-    volumeLifetimeSats: 0,
-    closingDate: null,
-    createdDate: now,
-    activeSince: now,
-    baseUnit: "sats",
-    mint: {
-      collateral: "sat",
-      keysetCount: Object.keys(c.keysets ?? {}).length,
-    },
-    creator: {
-      id: "unknown",
-      name: "Unknown",
-      totalMarketsCreated: 0,
-      feePercent: 0,
-    },
-    outcomes: mappedOutcomes,
-    resolution: {
-      criteria: description || title,
-      source: "oracle" as const,
-      resolutionDate: c.attestation.attested_at
-        ? new Date(c.attestation.attested_at * 1000).toISOString()
-        : now,
-      status: isResolved ? ("resolved" as const) : ("open" as const),
-      finalOutcome: c.attestation.winning_outcome ?? undefined,
-    },
-    priceHistory: { data: [], timeframe: "7d" as const },
-    orderBook: { bids: [], asks: [], spread: 0 },
-    recentTrades: [],
-    comments: [],
-    relatedMarkets: [],
-  };
-
-  if (isYesNo) {
-    return {
-      ...base,
-      type: "yesno",
-      currentOdds: { yes: 50, no: 50 },
-    };
-  }
-
-  return {
-    ...base,
-    type: "categorical",
-    outcomePriceHistories: {},
-    outcomeOrderBooks: {},
-  };
-}
-
-function mapCatalogueEntryToMarketDetail(
-  entry: MarketCatalogueEntry,
-  mintCondition: ConditionInfo | null,
-): MarketDetail {
-  const outcomes = orderAtomicOutcomes(
-    entry.outcomes && entry.outcomes.length > 0
-      ? entry.outcomes
-      : atomicOutcomesFromKeysets(mintCondition?.keysets),
-  );
-  const mappedOutcomes = outcomes.map((label, i) => ({
-    id: `outcome-${i}`,
+function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDetail {
+  const outcomes = orderAtomicOutcomes(entry.outcomes ?? []);
+  const mappedOutcomes = outcomes.map((label) => ({
+    id: label,
     label,
     odds: 100 / Math.max(outcomes.length, 1),
   }));
@@ -491,7 +345,7 @@ function mapCatalogueEntryToMarketDetail(
     baseUnit: "sats",
     mint: {
       collateral: "sat",
-      keysetCount: Object.keys(mintCondition?.keysets ?? {}).length,
+      keysetCount: 0,
     },
     creator: creatorPubkey
       ? {
@@ -539,14 +393,12 @@ function mapCatalogueEntryToMarketDetail(
 
 /**
  * Resolve the engine catalogue entry for a single `conditionId`. Used by the
- * detail page to read engine-authoritative fields (`state`, `thumbnailUrl`,
- * `volumeLifetimeSats`, `liquiditySats`, `traderCount`) that mintd does not
- * carry. ADR-009 Amendment 2026-05-04
- * splits the trust contract: mintd is the existence + outcome-metadata
- * authority; the engine is the lifecycle + analytics + thumbnail authority.
+ * detail page to read engine-authoritative fields (`outcomes`, `state`,
+ * `thumbnailUrl`, `volumeLifetimeSats`, `liquiditySats`, `traderCount`).
+ * Creator-defined outcome order comes from engine registration metadata, not
+ * mintd's one-vs-rest keysets.
  * Returns `null` when the engine has no record of the market or the request
- * fails — the detail page falls back to mintd-only data and renders the
- * safer "Open" pre-fetch view.
+ * fails.
  */
 async function fetchEngineCatalogueEntry(
   conditionId: string,
@@ -600,25 +452,18 @@ export async function fetchMarketDetail(
   conditionId: string,
 ): Promise<MarketDetail> {
   // First render is engine-first and intentionally narrow: the route shell
-  // should not wait on mintd, comments, or price history. Trading-time paths
-  // perform mint-authority checks where funds can move.
+  // should not wait on mintd, comments, or price history. Public market
+  // outcome order is creator metadata recorded by the engine; mintd keysets
+  // are one-vs-rest implementation details and are not an ordered display
+  // contract.
   const engineEntry = await fetchEngineCatalogueEntry(conditionId);
-  if (engineEntry) {
-    return mapCatalogueEntryToMarketDetail(engineEntry, null);
+  if (!engineEntry) {
+    throw new Error(`Market not found: ${conditionId}`);
   }
-
-  const [conditionsResult, meta] = await Promise.all([
-    fetchConditions().catch(() => [] as ConditionInfo[]),
-    fetchMarketMetadata(conditionId),
-  ]);
-  const condition = conditionsResult.find(
-    (c) => c.condition_id === conditionId,
-  );
-  if (!condition) {
-    throw new Error(`Condition not found: ${conditionId}`);
+  if (!engineEntry.outcomes || engineEntry.outcomes.length === 0) {
+    throw new Error(`Market ${conditionId} is missing outcome metadata`);
   }
-  const detail = mapConditionToMarketDetail(condition);
-  return meta ? applyMetadata(detail, meta) : detail;
+  return mapCatalogueEntryToMarketDetail(engineEntry);
 }
 
 export async function fetchMarketPriceHistory(
@@ -887,36 +732,14 @@ export async function registerCondition(params: {
       ...(params.outcomeCollections
         ? { outcome_collections: params.outcomeCollections }
         : {}),
-      ...(params.fee ? { fee: params.fee } : {}),
-      ...(params.outputs ? { outputs: params.outputs } : {}),
+      ...(params.fee ? { fee: params.fee.map(toWireAmountBearing) } : {}),
+      ...(params.outputs ? { outputs: params.outputs.map(toWireAmountBearing) } : {}),
     }),
   });
   if (!response.ok) {
     throw await parseMintError(response, "Failed to register condition");
   }
   return response.json();
-}
-
-function normalizePartitionMember(member: string): string {
-  return canonicalizeOutcomeSet(parseOutcomeSetId(member));
-}
-
-export function requiredMarketCreationOutcomeCollections(
-  outcomes: readonly string[],
-): string[] {
-  const universe = [...new Set(outcomes.map((outcome) => outcome.trim()))].filter(
-    Boolean,
-  );
-  const collections = new Map<string, string>();
-
-  for (const outcome of universe) {
-    const singleton = canonicalizeOutcomeSet([outcome]);
-    const complement = complementOutcomeSetId(universe, singleton);
-    if (singleton) collections.set(normalizePartitionMember(singleton), singleton);
-    if (complement) collections.set(normalizePartitionMember(complement), complement);
-  }
-
-  return [...collections.values()];
 }
 
 /**

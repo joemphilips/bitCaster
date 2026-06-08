@@ -1,6 +1,7 @@
 export * from './types.ts'
 export * from './ctfSplit.ts'
 export * from './ctfConsolidation.ts'
+export * from './ctfRegistration.ts'
 export * from './engineClient.ts'
 export * from './outcomeSets.ts'
 export * from './orderValidation.ts'

@@ -35,10 +35,13 @@ const KIND_DLC_ORACLE_ATTESTATION = 89 as const
  *   envelope pubkey and the TLV oracle pubkey disagree and the engine rejects.
  * @param attestationHex - hex-encoded rust-dlc `OracleAttestation` bytes, exactly
  *   as returned by {@link signEnumAttestation} / `kormir.sign_enum_event`.
+ * @param announcementEventId - Nostr kind-88 announcement event id tagged by
+ *   the kind-89 attestation.
  */
 export function buildOracleAttestationEvent(
   nsec: string,
   attestationHex: string,
+  announcementEventId: string,
 ): OracleNostrEvent {
   const privateKey = decodeNsecToBytes(nsec)
   const content = base64FromBytes(decodeAttestationHex(attestationHex))
@@ -46,7 +49,7 @@ export function buildOracleAttestationEvent(
     {
       kind: KIND_DLC_ORACLE_ATTESTATION,
       created_at: Math.floor(Date.now() / 1000),
-      tags: [],
+      tags: [['e', announcementEventId]],
       content,
     },
     privateKey,
@@ -57,6 +60,7 @@ export function buildOracleAttestationEvent(
     pubkey: signed.pubkey,
     createdAt: signed.created_at,
     kind: KIND_DLC_ORACLE_ATTESTATION,
+    tags: signed.tags,
     content: signed.content,
     sig: signed.sig,
   }

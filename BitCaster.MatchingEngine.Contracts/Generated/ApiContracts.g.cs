@@ -127,12 +127,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OracleNostrEvent
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OracleNostrEvent(string @content, long @createdAt, string @id, OracleNostrEventKind @kind, string @pubkey, string @sig)
+        public OracleNostrEvent(string @content, long @createdAt, string @id, OracleNostrEventKind @kind, string @pubkey, string @sig, System.Collections.Generic.List<System.Collections.Generic.List<string>> @tags)
         {
             this.Id = @id;
             this.Pubkey = @pubkey;
             this.CreatedAt = @createdAt;
             this.Kind = @kind;
+            this.Tags = @tags;
             this.Content = @content;
             this.Sig = @sig;
         }
@@ -162,7 +163,13 @@ namespace BitCaster.MatchingEngine.Contracts
         public OracleNostrEventKind Kind { get; }
 
         /// <summary>
-        /// Base64-encoded kormir/rust-dlc oracle_attestation payload.
+        /// NIP-01 tags committed into the event id. NIP-88 attestations include an e-tag pointing to the kind-88 announcement event id.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("tags")]
+        public System.Collections.Generic.List<System.Collections.Generic.List<string>> Tags { get; }
+
+        /// <summary>
+        /// Base64-encoded DLC oracle_attestation payload.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("content")]
         public string Content { get; }

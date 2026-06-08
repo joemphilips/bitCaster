@@ -131,13 +131,66 @@ public class InMemoryOrderBookManager
 
     public OrderBookSnapshot GetSnapshot(string marketId)
     {
+        var outcomeId = MarketParts.TryParse(marketId)?.OutcomeSetId ?? marketId;
+        var directSnapshot = SnapshotForInternalBook(marketId, outcomeId);
+        var complementAsks = ComplementAskLevels(marketId);
+        if (complementAsks.Count == 0)
+            return directSnapshot;
+
+        var asks = MergeLevels(directSnapshot.Asks.Concat(complementAsks), descending: false);
+        int? spread = directSnapshot.Bids.Count > 0 && asks.Count > 0
+            ? asks[0].Price - directSnapshot.Bids[0].Price
+            : null;
+        return new OrderBookSnapshot(asks, directSnapshot.Bids, marketId, spread);
+    }
+
+    private OrderBookSnapshot SnapshotForInternalBook(string marketId, string outcomeId)
+    {
         if (!_books.TryGetValue(marketId, out var book))
             return new OrderBookSnapshot([], [], marketId, null);
 
-        var outcomeId = MarketParts.TryParse(marketId)?.OutcomeSetId ?? marketId;
-
         lock (book)
             return book.SnapshotForOutcome(marketId, outcomeId);
+    }
+
+    private List<LevelDto> ComplementAskLevels(string publicMarketId)
+    {
+        var publicParts = MarketParts.TryParse(publicMarketId);
+        if (publicParts is null) return [];
+
+        var complementBook = _books
+            .Where(entry =>
+            {
+                var parts = MarketParts.TryParse(entry.Key);
+                return parts is not null
+                       && parts.ConditionId == publicParts.ConditionId
+                       && !string.Equals(parts.OutcomeSetId, publicParts.OutcomeSetId, StringComparison.Ordinal)
+                       && OutcomeSetComplement.AreComplements(parts.OutcomeSetId, publicParts.OutcomeSetId);
+            })
+            .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+            .Select(entry => (entry.Key, entry.Value))
+            .FirstOrDefault();
+
+        if (complementBook.Value is null) return [];
+
+        var complementOutcomeId = MarketParts.TryParse(complementBook.Key)?.OutcomeSetId;
+        if (string.IsNullOrWhiteSpace(complementOutcomeId)) return [];
+
+        lock (complementBook.Value)
+        {
+            return complementBook.Value.BuyDepthForOutcome(complementOutcomeId)
+                .Select(level => new LevelDto(level.Amount, 100 - level.Price))
+                .ToList();
+        }
+    }
+
+    private static List<LevelDto> MergeLevels(IEnumerable<LevelDto> levels, bool descending)
+    {
+        var grouped = levels
+            .GroupBy(level => level.Price)
+            .Select(group => new LevelDto(group.Sum(level => level.Amount), group.Key));
+        return (descending ? grouped.OrderByDescending(level => level.Price) : grouped.OrderBy(level => level.Price))
+            .ToList();
     }
 
     /// <summary>
@@ -448,6 +501,11 @@ internal sealed class OrderBook
         int? spread = bids.Count > 0 && asks.Count > 0 ? asks[0].Price - bids[0].Price : null;
         return new OrderBookSnapshot(asks, bids, marketId, spread);
     }
+
+    public List<LevelDto> BuyDepthForOutcome(string outcomeId) =>
+        AggregateLevels(
+            _resting.Where(o => o.OutcomeId == outcomeId && o.Side == OrderSide.Buy),
+            descending: true);
 
     private static List<LevelDto> AggregateLevels(IEnumerable<RestingOrder> orders, bool descending)
     {

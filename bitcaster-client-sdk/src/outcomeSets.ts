@@ -48,6 +48,24 @@ export function outcomeSetIdsForMarketBooks(market: SdkMarketForTrading): string
     .filter(Boolean)
 }
 
+export function outcomeSetDisplayLabel(
+  universe: readonly string[],
+  outcomeSetId: string,
+): string {
+  const members = parseOutcomeSetId(outcomeSetId)
+  if (members.length === 0) return outcomeSetId
+  if (members.length === 1) return members[0]
+
+  const uniqueUniverse = [...new Set(universe.map((outcome) => outcome.trim()).filter(Boolean))]
+  if (uniqueUniverse.length > 2 && members.length === uniqueUniverse.length - 1) {
+    const memberSet = new Set(members)
+    const missing = uniqueUniverse.filter((outcome) => !memberSet.has(outcome))
+    if (missing.length === 1) return `NOT ${missing[0]}`
+  }
+
+  return 'Complement'
+}
+
 export function resolveOutcomeSets(
   market: SdkMarketForTrading,
   selection: SdkTradeSelection,
@@ -60,7 +78,11 @@ export function resolveOutcomeSets(
 
   const primitiveSetId = canonicalizeOutcomeSet([primitive])
   const tokenSide =
-    selection.side === 'no' || selection.side === 'lo' ? 'Complement' : 'Outcome'
+    market.type === 'categorical' && selection.side === 'no'
+      ? 'Complement'
+      : selection.side === 'lo'
+        ? 'Complement'
+        : 'Outcome'
   const selectedOutcomeSetId =
     tokenSide === 'Complement'
       ? complementOutcomeSetId(universe, primitiveSetId)
@@ -87,9 +109,14 @@ function selectedPrimitiveOutcome(
   universe: string[],
 ): string | null {
   if (market.type === 'categorical') {
+    const selectedOutcomeId = selection.outcomeId
+    if (!selectedOutcomeId) return null
     return (
-      (market.outcomes ?? []).find((outcome) => outcome.id === selection.outcomeId)
-        ?.label ?? null
+      (market.outcomes ?? []).find(
+        (outcome) =>
+          outcome.id === selectedOutcomeId ||
+          outcome.label === selectedOutcomeId,
+      )?.label ?? null
     )
   }
 
@@ -98,7 +125,12 @@ function selectedPrimitiveOutcome(
   }
 
   if (selection.side === 'no') {
-    return findOutcomeByName(universe, 'yes') ?? universe[0] ?? null
+    return (
+      findOutcomeByName(universe, 'no') ??
+      universe.find((outcome) => outcome.toLowerCase() !== 'yes') ??
+      universe[0] ??
+      null
+    )
   }
 
   if (selection.side === 'hi' || selection.side === 'lo') {

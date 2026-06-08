@@ -754,6 +754,7 @@ components:
         - pubkey
         - createdAt
         - kind
+        - tags
         - content
         - sig
       properties:
@@ -774,9 +775,16 @@ components:
           enum:
             - 89
           description: Nostr event kind for DLC oracle attestations.
+        tags:
+          type: array
+          description: NIP-01 tags committed into the event id. NIP-88 attestations include an e-tag pointing to the kind-88 announcement event id.
+          items:
+            type: array
+            items:
+              type: string
         content:
           type: string
-          description: Base64-encoded kormir/rust-dlc oracle_attestation payload.
+          description: Base64-encoded DLC oracle_attestation payload.
         sig:
           type: string
           pattern: '^[0-9a-fA-F]{128}$'

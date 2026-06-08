@@ -28,6 +28,8 @@ import type {
   Announcement as KormirAnnouncement,
   Attestation as KormirAttestation,
 } from './kormir-wasm-pkg/kormir_wasm'
+import { nip19 } from 'nostr-tools'
+import { getPublicKey } from 'nostr-tools/pure'
 
 // Re-export the wasm-bindgen types under friendlier names so callers do not
 // have to reach into the generated `kormir-wasm-pkg` directory.
@@ -39,6 +41,7 @@ type StoredKormirEvent = {
   event_name?: unknown
   announcement?: unknown
   attestation?: unknown
+  announcement_event_id?: unknown
 }
 
 const NIP88_TITLE_MAX_CHARS = 100
@@ -127,6 +130,24 @@ export async function restoreKormirWithNsec(nsec: string): Promise<void> {
   instancePromise = null
 }
 
+export async function ensureKormirNsec(
+  relays: string[],
+  nsec: string,
+): Promise<void> {
+  const desiredPubkey = pubkeyFromNsec(nsec)
+  try {
+    const currentPubkey = normalizeKormirPublicKey(
+      (await getKormir(relays)).get_public_key(),
+    )
+    if (currentPubkey === desiredPubkey) return
+  } catch {
+    // If kormir cannot construct with the current browser store, restore the
+    // requested nsec below. The caller is about to create a new event, so
+    // clearing stale kormir state is acceptable here.
+  }
+  await restoreKormirWithNsec(nsec)
+}
+
 /**
  * Get a connected {@link Kormir} instance, initializing and connecting it to
  * the provided relays on first call.
@@ -147,7 +168,16 @@ export async function getKormir(relays: string[]): Promise<KormirType> {
     instancePromise = (async () => {
       const mod = await loadKormirModule()
       if (pendingNsec !== null) {
-        await mod.Kormir.restore(pendingNsec)
+        const stagedNsec = pendingNsec
+        const existing = await mod.Kormir.new(relays).catch(() => null)
+        if (
+          existing &&
+          normalizeKormirPublicKey(existing.get_public_key()) === pubkeyFromNsec(stagedNsec)
+        ) {
+          pendingNsec = null
+          return existing
+        }
+        await mod.Kormir.restore(stagedNsec)
         pendingNsec = null
       }
       return mod.Kormir.new(relays)
@@ -281,6 +311,17 @@ export async function signEnumAttestation(
   }
 }
 
+export async function getOracleAnnouncementEventId(
+  relays: string[],
+  eventId: string,
+): Promise<string | null> {
+  const kormir = await getKormir(relays)
+  const stored = await findStoredKormirEvent(kormir, eventId)
+  return typeof stored?.announcement_event_id === 'string'
+    ? stored.announcement_event_id
+    : null
+}
+
 /**
  * Return the oracle public key (hex-encoded 32-byte x-only Schnorr key).
  * This matches the Nostr pubkey derived from the same nsec.
@@ -316,4 +357,31 @@ function describeThrown(err: unknown): string {
     if (typeof message === 'string' && message.length > 0) return message
   }
   return String(err)
+}
+
+function pubkeyFromNsec(nsec: string): string {
+  const trimmed = nsec.trim()
+  if (trimmed.startsWith('nsec1')) {
+    const decoded = nip19.decode(trimmed)
+    if (decoded.type !== 'nsec') throw new Error('Expected an nsec private key')
+    return getPublicKey(decoded.data)
+  }
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    return getPublicKey(hexToBytes(trimmed))
+  }
+  throw new Error('Expected an nsec1... or 64-character hex private key')
+}
+
+function normalizeKormirPublicKey(pubkey: string): string {
+  const trimmed = pubkey.trim().toLowerCase()
+  if (/^(02|03)[0-9a-f]{64}$/.test(trimmed)) return trimmed.slice(2)
+  return trimmed
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  }
+  return out
 }

@@ -1062,7 +1062,7 @@ export function resolveComplementaryOutcomeLegs(
       (collection) => !seen.has(collection),
     );
     throw new Error(
-      `CTF split lock and keep outcomes are not a complete partition; missing ${missing.join("|")}`,
+      `CTF split lock and keep outcomes do not cover the full primitive outcome set; missing ${missing.join("|")}`,
     );
   }
 
@@ -1204,14 +1204,14 @@ function buildOutcomeCollectionKeysetLookup(
   for (const [collection, keysetId] of Object.entries(keysets)) {
     lookup.set(collection, keysetId);
   }
-  const partitionKeysetIds = new Set(Object.values(keysets));
+  const conditionKeysetIds = new Set(Object.values(keysets));
   for (const keyset of conditionalKeysets) {
     if (!sameConditionId(keyset.condition_id, conditionId)) continue;
     const keysetId =
       keysets[keyset.outcome_collection] ??
       keysets[keyset.outcome_collection_id] ??
       keyset.id;
-    if (!partitionKeysetIds.has(keysetId)) continue;
+    if (!conditionKeysetIds.has(keysetId)) continue;
     for (const collection of [
       keyset.outcome_collection,
       keyset.outcome_collection_id,

@@ -381,7 +381,9 @@ export interface components {
              * @enum {integer}
              */
             kind: 89;
-            /** @description Base64-encoded kormir/rust-dlc oracle_attestation payload. */
+            /** @description NIP-01 tags committed into the event id. NIP-88 attestations include an e-tag pointing to the kind-88 announcement event id. */
+            tags: string[][];
+            /** @description Base64-encoded DLC oracle_attestation payload. */
             content: string;
             /** @description BIP-340 Schnorr signature over the NIP-01 event id. */
             sig: string;

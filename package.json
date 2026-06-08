@@ -11,5 +11,8 @@
     "bitcaster-cli",
     "bitCaster-swap-protocol",
     "cashu-ts"
-  ]
+  ],
+  "devDependencies": {
+    "jsdom": "^28.1.0"
+  }
 }

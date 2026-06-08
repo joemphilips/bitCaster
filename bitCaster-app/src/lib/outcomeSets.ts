@@ -2,6 +2,7 @@ export {
   canonicalizeOutcomeSet,
   complementOutcomeSetId,
   outcomeLabels,
+  outcomeSetDisplayLabel,
   outcomeSetIdsForMarketBooks,
   outcomeSetMarketId,
   parseOutcomeSetId,

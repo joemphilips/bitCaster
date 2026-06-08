@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Buffers.Binary;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
@@ -495,7 +494,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             titlePrefix: "E2E categorical complementary");
         var takerOutcomeSetId = condition.PrimitiveOutcomeSetIds[0];
         var makerOutcomeSetId = CanonicalOutcomeSet(condition.PrimitiveOutcomeSetIds.Skip(1));
-        var makerMarketId = $"{condition.ConditionId}-{makerOutcomeSetId}";
+        var makerMarketId = $"{condition.ConditionId}-{takerOutcomeSetId}";
         var takerMarketId = $"{condition.ConditionId}-{takerOutcomeSetId}";
         const int faceAmountSats = 100;
         const int makerFundingSats = 210;
@@ -532,7 +531,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 faceAmountSats,
                 preflightSplit: true,
                 displayedOutcomeSetId: takerOutcomeSetId);
-            await WaitForEngineBidAsync(makerMarketId, faceAmountSats);
+            await WaitForEngineAskAsync(makerMarketId, faceAmountSats);
 
             await maker.AssertReservedOutcomeProofsAsync(
                 condition.ConditionId,
@@ -1721,17 +1720,23 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             bool preflightSplit,
             string? displayedOutcomeSetId = null)
         {
+            var requestOutcomeSetId = displayedOutcomeSetId ?? outcomeSetId;
             var args = new List<string>
             {
                 "order",
                 "submit",
                 marketId,
-                outcomeSetId,
+                requestOutcomeSetId,
                 "Buy",
                 price.ToString(),
                 amountSats.ToString(),
                 "GTC",
             };
+            if (displayedOutcomeSetId is not null)
+            {
+                args.Add("--token-side");
+                args.Add("Complement");
+            }
             if (!preflightSplit)
             {
                 args.Add("--no-preflight-split");
@@ -1971,6 +1976,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
     private string MintDaemonTokenScript =>
         Path.Combine(_repoRoot, "bitcaster-daemon", "scripts", "mint-token.ts");
+
+    private string RegisterConditionScript =>
+        Path.Combine(_repoRoot, "bitcaster-daemon", "scripts", "register-condition.ts");
 
     private async Task<DaemonHandle> StartDaemonAsync()
     {
@@ -3581,6 +3589,28 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         return result.Stdout.Trim();
     }
 
+    private async Task<string?> RegisterMintConditionWithFeeAsync(
+        string title,
+        string description,
+        string announcementHex,
+        string[] outcomes)
+    {
+        var result = await RunNodeAsync(
+            RegisterConditionScript,
+            [
+                TestPorts.MintUrl,
+                title,
+                description,
+                "sat",
+                JsonSerializer.Serialize(new[] { announcementHex }),
+                JsonSerializer.Serialize(outcomes),
+            ],
+            daemon: null,
+            timeout: TimeSpan.FromSeconds(60));
+        using var doc = JsonDocument.Parse(result.Stdout);
+        return doc.RootElement.GetProperty("condition_id").GetString();
+    }
+
     private static int SpendableCtfSats(int faceAmountSats) =>
         faceAmountSats - InputFeeSats(faceAmountSats);
 
@@ -3652,7 +3682,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         throw new InvalidOperationException("No fundable CTF condition/outcome was available from the mint.");
     }
 
-    private static async Task<(string ConditionId, string YesOutcomeSetId, string NoOutcomeSetId)> FindBinaryConditionAsync()
+    private async Task<(string ConditionId, string YesOutcomeSetId, string NoOutcomeSetId)> FindBinaryConditionAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         var engineVisibleIds = await LoadTradableMarketConditionIdsAsync(httpClient);
@@ -3697,7 +3727,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         }
     }
 
-    private static async Task<(string ConditionId, string[] PrimitiveOutcomeSetIds)> FindCategoricalConditionAsync()
+    private async Task<(string ConditionId, string[] PrimitiveOutcomeSetIds)> FindCategoricalConditionAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         if (EnvFlag("BITCASTER_E2E_FORCE_CREATE_CATEGORICAL_MARKET"))
@@ -3777,7 +3807,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         }
     }
 
-    private static async Task<(string ConditionId, string[] PrimitiveOutcomeSetIds)> CreateCategoricalMarketFixtureAsync(
+    private async Task<(string ConditionId, string[] PrimitiveOutcomeSetIds)> CreateCategoricalMarketFixtureAsync(
         HttpClient httpClient,
         string[]? outcomes = null,
         bool registerEngine = true,
@@ -3796,30 +3826,16 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var unique = Guid.NewGuid().ToString("N")[..8];
         var title = $"{titlePrefix ?? "P23-4 staging categorical smoke"} {unique}";
         var description = "Synthetic open categorical market created by the multi-outcome mint swap smoke.";
-        var announcementHex = BuildTestEnumAnnouncementHex(
+        var announcementHex = await BuildTestEnumAnnouncementHexAsync(
             outcomes,
             $"p23-4-categorical-smoke-{unique}",
             DateTimeOffset.UtcNow.AddMonths(6));
 
-        using var conditionResponse = await httpClient.PostAsJsonAsync(
-            $"{TestPorts.MintUrl}/v1/conditions",
-            new
-            {
-                threshold = 1,
-                tags = new[]
-                {
-                    new[] { "title", title },
-                    new[] { "description", description },
-                    new[] { "t", "qa" },
-                },
-                announcements = new[] { announcementHex },
-                condition_type = "enum",
-                collateral = "sat",
-            });
-        conditionResponse.EnsureSuccessStatusCode();
-        await using var conditionStream = await conditionResponse.Content.ReadAsStreamAsync();
-        using var conditionDoc = await JsonDocument.ParseAsync(conditionStream);
-        var conditionId = conditionDoc.RootElement.GetProperty("condition_id").GetString();
+        var conditionId = await RegisterMintConditionWithFeeAsync(
+            title,
+            description,
+            announcementHex,
+            outcomes);
         if (string.IsNullOrWhiteSpace(conditionId))
             throw new InvalidOperationException("Mint condition registration returned an empty condition_id.");
 
@@ -3863,7 +3879,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         return (conditionId, outcomes);
     }
 
-    private static async Task<(string ConditionId, string YesOutcomeSetId, string NoOutcomeSetId)> CreateBinaryMarketFixtureAsync(
+    private async Task<(string ConditionId, string YesOutcomeSetId, string NoOutcomeSetId)> CreateBinaryMarketFixtureAsync(
         HttpClient httpClient,
         string? titlePrefix = null)
     {
@@ -3871,30 +3887,16 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var unique = Guid.NewGuid().ToString("N")[..8];
         var title = $"{titlePrefix ?? "E2E binary direct"} {unique}";
         var description = "Synthetic open binary market created by the direct settlement smoke.";
-        var announcementHex = BuildTestEnumAnnouncementHex(
+        var announcementHex = await BuildTestEnumAnnouncementHexAsync(
             outcomes,
             $"e2e-binary-direct-{unique}",
             DateTimeOffset.UtcNow.AddMonths(6));
 
-        using var conditionResponse = await httpClient.PostAsJsonAsync(
-            $"{TestPorts.MintUrl}/v1/conditions",
-            new
-            {
-                threshold = 1,
-                tags = new[]
-                {
-                    new[] { "title", title },
-                    new[] { "description", description },
-                    new[] { "t", "qa" },
-                },
-                announcements = new[] { announcementHex },
-                condition_type = "enum",
-                collateral = "sat",
-            });
-        conditionResponse.EnsureSuccessStatusCode();
-        await using var conditionStream = await conditionResponse.Content.ReadAsStreamAsync();
-        using var conditionDoc = await JsonDocument.ParseAsync(conditionStream);
-        var conditionId = conditionDoc.RootElement.GetProperty("condition_id").GetString();
+        var conditionId = await RegisterMintConditionWithFeeAsync(
+            title,
+            description,
+            announcementHex,
+            outcomes);
         if (string.IsNullOrWhiteSpace(conditionId))
             throw new InvalidOperationException("Mint condition registration returned an empty condition_id.");
 
@@ -4036,100 +4038,86 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         return $"Nostr {Convert.ToBase64String(Encoding.UTF8.GetBytes(json))}";
     }
 
-    private static string BuildTestEnumAnnouncementHex(
+    private async Task<string> BuildTestEnumAnnouncementHexAsync(
         string[] outcomes,
         string eventId,
         DateTimeOffset maturity)
     {
-        var oracleKey = new Key(Enumerable.Repeat((byte)0x11, 32).ToArray());
-        var oraclePubkey = oracleKey.CreateTaprootKeyPair().PubKey.ToBytes();
-        var nonceKey = new Key(Enumerable.Repeat((byte)0x22, 32).ToArray());
-        var noncePubkey = nonceKey.CreateTaprootKeyPair().PubKey.ToBytes();
-
-        var maturityEpoch = checked((uint)maturity.ToUnixTimeSeconds());
-        var oracleEventBody = BuildDlcOracleEventBody(
-            maturityEpoch,
-            eventId,
-            noncePubkey,
-            outcomes);
-        var oracleEventTlv = WrapDlcTlv(typeId: 55330, body: oracleEventBody);
-        var eventHash = SHA256.HashData(oracleEventBody.ToArray());
-        var announcementSig = oracleKey
-            .SignTaprootKeySpend(new uint256(eventHash), TaprootSigHash.Default)
-            .SchnorrSignature
-            .ToBytes();
-
-        var announcementBody = new List<byte>(64 + 32 + oracleEventTlv.Count);
-        announcementBody.AddRange(announcementSig);
-        announcementBody.AddRange(oraclePubkey);
-        announcementBody.AddRange(oracleEventTlv);
-
-        var announcementTlv = WrapDlcTlv(typeId: 55332, body: announcementBody);
-        return Convert.ToHexString(announcementTlv.ToArray()).ToLowerInvariant();
+        var result = await RunCargoAsync(
+            [
+                "run",
+                "--quiet",
+                "--manifest-path",
+                "dlcdevkit/Cargo.toml",
+                "-p",
+                "kormir",
+                "--example",
+                "bitcaster_create_enum",
+                "--",
+                eventId,
+                checked(((uint)maturity.ToUnixTimeSeconds()).ToString(CultureInfo.InvariantCulture)),
+                JsonSerializer.Serialize(outcomes),
+            ],
+            timeout: TimeSpan.FromSeconds(90));
+        return result.Stdout.Trim();
     }
 
-    private static List<byte> BuildDlcOracleEventBody(
-        uint maturityEpoch,
-        string eventId,
-        byte[] noncePubkey,
-        string[] outcomes)
+    private async Task<ProcessResult> RunCargoAsync(
+        string[] args,
+        TimeSpan? timeout = null)
     {
-        var body = new List<byte>();
-        body.Add(0x00);
-        body.Add(0x01);
-        body.AddRange(noncePubkey);
-
-        Span<byte> maturity = stackalloc byte[4];
-        BinaryPrimitives.WriteUInt32BigEndian(maturity, maturityEpoch);
-        body.AddRange(maturity.ToArray());
-
-        body.AddRange(WrapDlcTlv(55302, BuildDlcEnumDescriptor(outcomes)));
-
-        var eventIdBytes = Encoding.UTF8.GetBytes(eventId);
-        body.AddRange(EncodeDlcBigSize((ulong)eventIdBytes.Length));
-        body.AddRange(eventIdBytes);
-        return body;
-    }
-
-    private static List<byte> BuildDlcEnumDescriptor(params string[] outcomes)
-    {
-        var body = new List<byte>();
-        body.Add(0x00);
-        body.Add((byte)outcomes.Length);
-        foreach (var outcome in outcomes)
-        {
-            var bytes = Encoding.UTF8.GetBytes(outcome);
-            body.AddRange(EncodeDlcBigSize((ulong)bytes.Length));
-            body.AddRange(bytes);
-        }
-        return body;
-    }
-
-    private static List<byte> WrapDlcTlv(ulong typeId, List<byte> body)
-    {
-        var result = new List<byte>(body.Count + 8);
-        result.AddRange(EncodeDlcBigSize(typeId));
-        result.AddRange(EncodeDlcBigSize((ulong)body.Count));
-        result.AddRange(body);
+        var result = await RunProcessAsync(
+            "cargo",
+            args,
+            _repoRoot,
+            timeout ?? TimeSpan.FromSeconds(60));
+        if (result.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"cargo {string.Join(' ', args)} exited {result.ExitCode}\n" +
+                $"stdout:\n{result.Stdout}\nstderr:\n{result.Stderr}");
         return result;
     }
 
-    private static IEnumerable<byte> EncodeDlcBigSize(ulong value)
+    private static async Task<ProcessResult> RunProcessAsync(
+        string fileName,
+        string[] args,
+        string workingDirectory,
+        TimeSpan timeout)
     {
-        if (value < 0xfd) return new[] { (byte)value };
-        if (value <= 0xffff) return new byte[] { 0xfd, (byte)(value >> 8), (byte)value };
-        if (value <= 0xffff_ffff)
+        using var process = StartProcess(fileName, args, workingDirectory);
+        using var cts = new CancellationTokenSource(timeout);
+        try
         {
-            var bytes = new byte[5];
-            bytes[0] = 0xfe;
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(1), (uint)value);
-            return bytes;
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
+            var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
+            await process.WaitForExitAsync(cts.Token);
+            return new ProcessResult(
+                process.ExitCode,
+                await stdoutTask,
+                await stderrTask);
         }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            throw new TimeoutException($"Timed out running {fileName}");
+        }
+    }
 
-        var u64 = new byte[9];
-        u64[0] = 0xff;
-        BinaryPrimitives.WriteUInt64BigEndian(u64.AsSpan(1), value);
-        return u64;
+    private static Process StartProcess(
+        string fileName,
+        string[] args,
+        string workingDirectory)
+    {
+        var startInfo = new ProcessStartInfo(fileName)
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var arg in args)
+            startInfo.ArgumentList.Add(arg);
+        return Process.Start(startInfo)
+            ?? throw new InvalidOperationException($"Failed to start {fileName}");
     }
 
     private static async Task<HashSet<string>> LoadTradableMarketConditionIdsAsync(HttpClient httpClient)

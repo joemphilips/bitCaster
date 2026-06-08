@@ -228,6 +228,50 @@ test('TradeCreated binds known public complement order by submitted trade id', a
   }
 })
 
+test('TradeCreated binds buyer complement order by settlement metadata', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-buyer-complement-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const state = emptyDaemonState()
+    state.orders['buyer-order'] = {
+      orderId: 'buyer-order',
+      marketId: 'cond-YES',
+      tokenSide: 'Complement',
+      status: 'matched',
+      ephemeralPubkey: `03${'22'.repeat(32)}`,
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeState(state)
+
+    const created = await recordTradeCreated({
+      tradeId: 'trade-buyer-complement',
+      sellerPubkey: `02${'33'.repeat(32)}`,
+      buyerPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: '2026-05-21T00:02:00.000Z',
+      buyerLocktime: '2026-05-21T00:01:00.000Z',
+      marketId: 'cond-NO',
+      outcomeFaceAmountSats: 100,
+      quotePaymentSats: 99,
+      settlementKind: 'Mint',
+      sellerKeepOutcomeSetId: 'YES',
+      sellerLockOutcomeSetId: 'NO',
+    })
+
+    assert.equal(created?.orderId, 'buyer-order')
+    assert.equal(created?.marketId, 'cond-YES')
+    assert.equal(created?.role, 'buyer')
+    assert.equal(created?.sellerKeepOutcomeSetId, 'YES')
+    assert.equal(created?.sellerLockOutcomeSetId, 'NO')
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('TradeCreated mint match rejects mismatched keep or lock paths', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-path-mismatch-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME

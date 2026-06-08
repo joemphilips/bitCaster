@@ -4,20 +4,21 @@ import type {
   WizardDraft,
   WizardStep,
   WizardStepBasicInfo,
-  OracleCheckChoice,
   OutcomeType,
-  OracleAnnouncement,
   WizardOutcome,
 } from '@/types/market-creation'
 import { useSettingsStore } from '@/stores/settings'
 import { useMarketDraftStore } from '@/stores/marketDraft'
 import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
-import { fetchOracleAnnouncements } from '@/lib/oracle'
 import {
   createMarket,
   requiredMarketCreationOutcomeCollections,
 } from '@/lib/markets'
-import { createEnumAnnouncement } from '@/lib/kormir'
+import {
+  createEnumAnnouncement,
+  ensureKormirNsec,
+  getOracleAnnouncementEventId,
+} from '@/lib/kormir'
 import { buildEventId } from '@/lib/slug'
 import { detectMintCapabilities } from '@/lib/mints'
 import { useWalletStore } from '@/stores/wallet'
@@ -41,7 +42,7 @@ import {
 const DEFAULT_CREATOR_FEE_PERCENT = 0
 export const MAX_MARKET_OUTCOMES = 8
 
-const ORACLE_PUBKEY = import.meta.env.VITE_ORACLE_PUBKEY as string | undefined
+const NSEC_ORACLE_REQUIRED_MESSAGE = 'You must register a nostr key to become an oracle'
 type RegistrationFeePrompt = { feeSats: number; balanceSats: number }
 type RegistrationFeeTopUpStage = 'closed' | 'modal' | 'overlay'
 
@@ -49,6 +50,12 @@ async function activeMintCapabilities() {
   const wallet = useWalletStore.getState()
   let mint = wallet.mints.find((candidate) => candidate.url === wallet.activeMintUrl)
   let capabilities = detectMintCapabilities(mint?.info)
+  if (!mint && wallet.activeMintUrl) {
+    await refreshMintInfoWithoutActivating(wallet.activeMintUrl)
+    const refreshed = useWalletStore.getState()
+    mint = refreshed.mints.find((candidate) => candidate.url === refreshed.activeMintUrl)
+    capabilities = detectMintCapabilities(mint?.info)
+  }
   if (mint && !capabilities.ctfSettings) {
     await refreshMintInfoWithoutActivating(mint.url)
     const refreshed = useWalletStore.getState()
@@ -96,7 +103,6 @@ function defaultYesNoOutcomes(): WizardOutcome[] {
 export function useMarketCreationState() {
   const navigate = useNavigate()
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode)
-  const isNostrConfigured = nostrSignerMode !== 'none'
   const relays = useSettingsStore((s) => s.relays)
 
   // The draft store lives in localStorage so closing the wizard mid-flow
@@ -111,7 +117,6 @@ export function useMarketCreationState() {
   const [hasSavedDraft] = useState(() => useMarketDraftStore.getState().hasSavedDraft)
 
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null)
-  const [oracleAnnouncements, setOracleAnnouncements] = useState<OracleAnnouncement[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [registrationFeePrompt, setRegistrationFeePrompt] =
@@ -147,45 +152,9 @@ export function useMarketCreationState() {
     }
   }, [])
 
-  // Fetch oracle announcements when Nostr is configured
-  useEffect(() => {
-    if (!isNostrConfigured || !ORACLE_PUBKEY) return
-    let cancelled = false
-    fetchOracleAnnouncements(ORACLE_PUBKEY).then((announcements) => {
-      if (!cancelled) setOracleAnnouncements(announcements)
-    })
-    return () => { cancelled = true }
-  }, [isNostrConfigured])
-
   const updateDraft = useCallback((patch: Partial<WizardDraft>) => {
     setDraft((prev) => ({ ...prev, ...patch, lastModified: new Date().toISOString() }))
   }, [])
-
-  // --- Oracle Check (Step 1) ---
-  const onOracleChoiceSelect = useCallback((choice: OracleCheckChoice) => {
-    updateDraft({
-      stepOracleCheck: {
-        choice,
-        selectedAnnouncementId: null,
-      },
-    })
-  }, [updateDraft])
-
-  const onAnnouncementSelect = useCallback((announcementId: string) => {
-    updateDraft({
-      stepOracleCheck: {
-        choice: 'existing',
-        selectedAnnouncementId: announcementId,
-      },
-    })
-  }, [updateDraft])
-
-  const onExit = useCallback(() => {
-    // Route to Settings with the Nostr category pre-expanded so the user can
-    // configure their nsec. Without the ?category query param they would
-    // land on the default General section and have to click to find Nostr.
-    navigate('/settings?category=nostr')
-  }, [navigate])
 
   const onClose = useCallback(() => {
     // Fall back to /creator when deep-linked with no history to walk back to.
@@ -199,17 +168,14 @@ export function useMarketCreationState() {
   // --- Navigation ---
   const onNext = useCallback(() => {
     setDraft((prev) => {
-      const next = Math.min(prev.currentStep + 1, 6) as WizardStep
+      const next = Math.min(prev.currentStep + 1, 5) as WizardStep
       const updated: WizardDraft = { ...prev, currentStep: next, lastModified: new Date().toISOString() }
 
       // Initialize step data on entry
-      if (next === 2 && !updated.stepGetStarted) {
-        updated.stepGetStarted = { outcomeType: null }
-      }
-      if (next === 3 && !updated.stepBasicInfo) {
+      if (next === 2 && !updated.stepBasicInfo) {
         updated.stepBasicInfo = { imageFile: null, title: '', categoryTags: [], closingDate: '' }
       }
-      if (next === 4 && !updated.stepOutcomes) {
+      if (next === 3 && !updated.stepOutcomes) {
         const outcomeType = updated.stepGetStarted?.outcomeType ?? 'yesno'
         if (outcomeType === 'numeric') {
           updated.stepOutcomes = { outcomeType, outcomes: null }
@@ -220,10 +186,10 @@ export function useMarketCreationState() {
           }
         }
       }
-      if (next === 5 && !updated.stepInitialLiquidity) {
+      if (next === 4 && !updated.stepInitialLiquidity) {
         updated.stepInitialLiquidity = { liquiditySats: 0 }
       }
-      if (next === 6 && !updated.stepReviewAndCreate) {
+      if (next === 5 && !updated.stepReviewAndCreate) {
         updated.stepReviewAndCreate = { description: '' }
       }
       return updated
@@ -411,7 +377,7 @@ export function useMarketCreationState() {
     updateDraft({ stepInitialLiquidity: { liquiditySats: sats } })
   }, [updateDraft])
 
-  // --- Review & Create (Step 6) ---
+  // --- Review & Create (Step 5) ---
   const onDescriptionChange = useCallback((description: string) => {
     updateDraft({ stepReviewAndCreate: { description } })
   }, [updateDraft])
@@ -426,7 +392,6 @@ export function useMarketCreationState() {
     const draft = useMarketDraftStore.getState().draft
 
     try {
-      const choice = draft.stepOracleCheck?.choice
       const title = draft.stepBasicInfo?.title ?? ''
       const description = draft.stepReviewAndCreate?.description ?? ''
       const categoryTags = draft.stepBasicInfo?.categoryTags ?? []
@@ -438,35 +403,31 @@ export function useMarketCreationState() {
 
       // Resolve outcome labels before any mint mutation or self-oracle publish
       // so registration-fee checks can stop safely.
-      let outcomes: string[]
-      if (choice === 'become-oracle') {
-        const draftOutcomes = draft.stepOutcomes?.outcomes
-        if (!draftOutcomes || draftOutcomes.length < 2) {
-          throw new Error('At least two outcomes are required to create an oracle event.')
-        }
-        const outcomeType = draft.stepOutcomes?.outcomeType
-        if (outcomeType === 'numeric') {
-          throw new Error(
-            'Numeric oracle events are not yet supported in the become-oracle flow. ' +
-              'Please select an existing announcement.',
-          )
-        }
-        const closingDate = draft.stepBasicInfo?.closingDate
-        if (!closingDate) {
-          throw new Error('A closing date is required to publish an oracle announcement.')
-        }
-        const maturityEpoch = Math.floor(new Date(closingDate).getTime() / 1000)
-        if (!Number.isFinite(maturityEpoch) || maturityEpoch <= 0) {
-          throw new Error('Invalid closing date.')
-        }
-        outcomes = draftOutcomes.map((o) => o.label)
-      } else {
-        const announcement = oracleAnnouncements.find(
-          (a) => a.id === draft.stepOracleCheck?.selectedAnnouncementId,
-        )
-        if (!announcement) throw new Error('No oracle announcement selected')
-        outcomes = draft.stepOutcomes?.outcomes?.map((o) => o.label) ?? announcement.outcomes
+      if (nostrSignerMode !== 'nsec') {
+        throw new Error(NSEC_ORACLE_REQUIRED_MESSAGE)
       }
+      const nsecSecret = useSettingsStore.getState().nsecSecret
+      if (!nsecSecret) {
+        throw new Error(NSEC_ORACLE_REQUIRED_MESSAGE)
+      }
+
+      const draftOutcomes = draft.stepOutcomes?.outcomes
+      if (!draftOutcomes || draftOutcomes.length < 2) {
+        throw new Error('At least two outcomes are required to create an oracle event.')
+      }
+      const outcomeType = draft.stepOutcomes?.outcomeType
+      if (outcomeType === 'numeric') {
+        throw new Error('Numeric oracle events are not yet supported.')
+      }
+      const closingDate = draft.stepBasicInfo?.closingDate
+      if (!closingDate) {
+        throw new Error('A closing date is required to publish an oracle announcement.')
+      }
+      const maturityEpoch = Math.floor(new Date(closingDate).getTime() / 1000)
+      if (!Number.isFinite(maturityEpoch) || maturityEpoch <= 0) {
+        throw new Error('Invalid closing date.')
+      }
+      const outcomes = draftOutcomes.map((o) => o.label)
       if (outcomes.length > MAX_MARKET_OUTCOMES) {
         throw new Error(`At most ${MAX_MARKET_OUTCOMES} outcomes are supported.`)
       }
@@ -515,43 +476,41 @@ export function useMarketCreationState() {
       // or does not want to pay the mint registration fee.
       let announcementHex: string
       let creatorOracle:
-        | { type: 'self'; eventId: string; outcomes: string[]; announcementHex?: string }
+        | {
+            type: 'self'
+            eventId: string
+            announcementEventId?: string
+            outcomes: string[]
+            announcementHex?: string
+          }
         | undefined
 
-      if (choice === 'become-oracle') {
-        if (nostrSignerMode !== 'nsec') {
-          throw new Error(
-            'You must register a nostr private key (nsec) in Settings to become an oracle.',
-          )
-        }
-        const closingDate = draft.stepBasicInfo?.closingDate
-        const maturityEpoch = Math.floor(new Date(closingDate ?? '').getTime() / 1000)
-        const eventId = buildEventId(title || 'market')
-        const relayUrls = relays.map((r) => r.url)
-        if (relayUrls.length === 0) {
-          throw new Error(
-            'Add at least one Nostr relay in Settings before publishing an oracle announcement.',
-          )
-        }
-        // kormir.create_enum_event both constructs the DLC announcement and
-        // publishes the kind-88 event to the configured relays.
-        announcementHex = await createEnumAnnouncement(
-          relayUrls,
-          eventId,
-          outcomes,
-          maturityEpoch,
-          title,
-          description,
+      const eventId = buildEventId(title || 'market')
+      const relayUrls = relays.map((r) => r.url)
+      if (relayUrls.length === 0) {
+        throw new Error(
+          'Add at least one Nostr relay in Settings before publishing an oracle announcement.',
         )
-        // Persist the announcement hex so a fresh browser profile can recover
-        // the committed-nonce material needed to resolve this market (P22 B1b).
-        creatorOracle = { type: 'self', eventId, outcomes, announcementHex }
-      } else {
-        const announcement = oracleAnnouncements.find(
-          (a) => a.id === draft.stepOracleCheck?.selectedAnnouncementId,
-        )
-        if (!announcement) throw new Error('No oracle announcement selected')
-        announcementHex = announcement.id
+      }
+      await ensureKormirNsec(relayUrls, nsecSecret)
+      // kormir.create_enum_event both constructs the DLC announcement and
+      // publishes the kind-88 event to the configured relays.
+      announcementHex = await createEnumAnnouncement(
+        relayUrls,
+        eventId,
+        outcomes,
+        maturityEpoch,
+        title,
+        description,
+      )
+      const announcementEventId =
+        (await getOracleAnnouncementEventId(relayUrls, eventId)) ?? undefined
+      creatorOracle = {
+        type: 'self',
+        eventId,
+        announcementEventId,
+        outcomes,
+        announcementHex,
       }
       const outcomeCollections =
         ctfSettings.defaultKeysetCreation === 'none'
@@ -628,7 +587,7 @@ export function useMarketCreationState() {
     } finally {
       setIsSubmitting(false)
     }
-  }, [oracleAnnouncements, thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays, clearDraft])
+  }, [thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays, clearDraft])
 
   const onCreateMarket = useCallback(async () => {
     await submitMarket({ registrationFeeConfirmed: false })
@@ -664,9 +623,7 @@ export function useMarketCreationState() {
   return {
     draft,
     hasSavedDraft,
-    oracleAnnouncements,
     categoryTags,
-    signerMode: nostrSignerMode,
     thumbnailFile,
     isSubmitting,
     submitError,
@@ -675,9 +632,6 @@ export function useMarketCreationState() {
     registrationFeeTopUpStage,
     createdMarketConditionId,
     createdMarketLiquiditySats,
-    onOracleChoiceSelect,
-    onAnnouncementSelect,
-    onExit,
     onClose,
     clearDraft,
     onNext,

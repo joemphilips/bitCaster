@@ -1118,6 +1118,17 @@ function tradeCreatedMatchesOrderPath(
   const market = parseMarketId(payload.marketId)
   if (!market) return true
 
+  const sellerKeepMarketId = `${market.conditionId}-${payload.sellerKeepOutcomeSetId}`
+  const sellerLockMarketId = `${market.conditionId}-${payload.sellerLockOutcomeSetId}`
+  if (order.tokenSide === 'Complement') {
+    if (role === 'buyer' && order.marketId === sellerKeepMarketId) {
+      return true
+    }
+    if (role === 'seller' && order.marketId === sellerLockMarketId) {
+      return true
+    }
+  }
+
   const expectedOutcomeSetId =
     role === 'seller'
       ? payload.sellerKeepOutcomeSetId
