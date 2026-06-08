@@ -1,11 +1,11 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
-import { useWalletStore } from '@/stores/wallet'
+import { useSettingsStore } from '@/stores/settings'
 
-const { mockFetchCreatorMarkets, mockDeriveNostrKeyPair } = vi.hoisted(() => ({
+const { mockFetchCreatorMarkets, mockResolveCreatorPubkey } = vi.hoisted(() => ({
   mockFetchCreatorMarkets: vi.fn(),
-  mockDeriveNostrKeyPair: vi.fn(),
+  mockResolveCreatorPubkey: vi.fn(),
 }))
 
 vi.mock('@/lib/markets', async () => {
@@ -16,8 +16,8 @@ vi.mock('@/lib/markets', async () => {
   }
 })
 
-vi.mock('@/lib/nip17', () => ({
-  deriveNostrKeyPair: (...args: unknown[]) => mockDeriveNostrKeyPair(...args),
+vi.mock('@/lib/identityOps', () => ({
+  resolveCreatorPubkey: (...args: unknown[]) => mockResolveCreatorPubkey(...args),
 }))
 
 import { useCreatorDashboardState } from '../useCreatorDashboardState'
@@ -28,17 +28,20 @@ const CONDITION_B = 'd'.repeat(64)
 
 beforeEach(() => {
   mockFetchCreatorMarkets.mockReset()
-  mockDeriveNostrKeyPair.mockReset()
+  mockResolveCreatorPubkey.mockReset()
   useCreatorMarketsStore.setState({ markets: [] })
-  useWalletStore.setState({ mnemonic: '' })
-  mockDeriveNostrKeyPair.mockReturnValue({
-    privateKeyHex: 'f'.repeat(64),
-    publicKey: FAKE_PUBKEY,
+  useSettingsStore.setState({
+    nostrSignerMode: 'none',
+    nsecSecret: null,
+    nostrProfile: null,
   })
+  mockResolveCreatorPubkey.mockImplementation((input: { nostrSignerMode: string }) =>
+    input.nostrSignerMode === 'none' ? null : FAKE_PUBKEY,
+  )
 })
 
 describe('useCreatorDashboardState', () => {
-  it('returns an empty state when no wallet is configured', () => {
+  it('returns an empty state when no Nostr identity is configured', () => {
     mockFetchCreatorMarkets.mockResolvedValue({ pubkey: FAKE_PUBKEY, markets: [] })
 
     const { result } = renderHook(() => useCreatorDashboardState())
@@ -51,7 +54,11 @@ describe('useCreatorDashboardState', () => {
   })
 
   it('merges backend volume data with local store markets', async () => {
-    useWalletStore.setState({ mnemonic: 'test mnemonic seed' })
+    useSettingsStore.setState({
+      nostrSignerMode: 'nsec',
+      nsecSecret: '11'.repeat(32),
+      nostrProfile: null,
+    })
     useCreatorMarketsStore.setState({
       markets: [
         {
@@ -104,7 +111,11 @@ describe('useCreatorDashboardState', () => {
   })
 
   it('maps engine closed state to a resolved creator-market row', async () => {
-    useWalletStore.setState({ mnemonic: 'test mnemonic seed' })
+    useSettingsStore.setState({
+      nostrSignerMode: 'nsec',
+      nsecSecret: '11'.repeat(32),
+      nostrProfile: null,
+    })
     useCreatorMarketsStore.setState({
       markets: [
         {
@@ -147,7 +158,11 @@ describe('useCreatorDashboardState', () => {
   })
 
   it('falls back to zero volume on backend error and surfaces the error', async () => {
-    useWalletStore.setState({ mnemonic: 'test mnemonic seed' })
+    useSettingsStore.setState({
+      nostrSignerMode: 'nsec',
+      nsecSecret: '11'.repeat(32),
+      nostrProfile: null,
+    })
     useCreatorMarketsStore.setState({
       markets: [
         {
@@ -170,5 +185,28 @@ describe('useCreatorDashboardState', () => {
     expect(result.current.markets).toHaveLength(1)
     expect(result.current.markets[0].volume).toBe(0)
     expect(result.current.stats.totalVolumeSats).toBe(0)
+  })
+
+  it('fetches creator markets under the resolved signer pubkey', async () => {
+    const signerPubkey = 'e'.repeat(64)
+    useSettingsStore.setState({
+      nostrSignerMode: 'nsec',
+      nsecSecret: '11'.repeat(32),
+      nostrProfile: { pubkey: signerPubkey, displayName: '', avatar: '', nip05: '', nip05verified: false, bio: '' },
+    })
+    mockResolveCreatorPubkey.mockReturnValue(signerPubkey)
+    mockFetchCreatorMarkets.mockResolvedValue({ pubkey: signerPubkey, markets: [] })
+
+    const { result } = renderHook(() => useCreatorDashboardState())
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    expect(mockResolveCreatorPubkey).toHaveBeenCalledWith({
+      nostrSignerMode: 'nsec',
+      nsecSecret: '11'.repeat(32),
+      nostrProfilePubkey: signerPubkey,
+    })
+    expect(mockFetchCreatorMarkets).toHaveBeenCalledWith(signerPubkey)
+    expect(result.current.pubkey).toBe(signerPubkey)
   })
 })

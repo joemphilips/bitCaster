@@ -124,6 +124,7 @@ export interface CreatedMarket {
   oracle?: {
     type: 'self'
     eventId: string
+    announcementEventId?: string
     outcomes: string[]
     attestationHex?: string
     attestedOutcome?: string

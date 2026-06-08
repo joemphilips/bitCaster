@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from 'lucide-react'
 import { formatBtc } from '@/lib/format'
-import { signEnumOracleAttestationEvent } from '@/lib/oracleAttestation'
+import { buildOracleAttestationEvent } from '@/lib/oracleAttestation'
+import { getOracleAnnouncementEventId, signEnumAttestation } from '@/lib/kormir'
 import { submitOracleAttestation } from '@/lib/markets'
 import { useCreatorDashboardState } from '@/hooks/useCreatorDashboardState'
 import { MyMarkets } from '@/components/portfolio/MyMarkets'
@@ -58,6 +59,7 @@ export function CreatorDashboard() {
   const { stats, markets, isLoading, error, pubkey, refresh } = useCreatorDashboardState()
   const signerMode = useSettingsStore((s) => s.nostrSignerMode)
   const nsecSecret = useSettingsStore((s) => s.nsecSecret)
+  const relays = useSettingsStore((s) => s.relays)
   const markOracleAttested = useCreatorMarketsStore((s) => s.markOracleAttested)
 
   const handleCreateMarket = () => navigate('/creator/new')
@@ -79,21 +81,37 @@ export function CreatorDashboard() {
       setResolutionError(t('creator.nsecRequiredToResolve'))
       return
     }
+    const relayUrls = relays.map((relay) => relay.url)
+    if (relayUrls.length === 0) {
+      setResolutionError(t('creator.relayRequiredToResolve'))
+      return
+    }
     const confirmed = window.confirm(
       t('creator.closeMarketConfirm', { title: market.title, outcome }),
     )
     if (!confirmed) return
     setResolvingMarketId(marketId)
     try {
-      const attestation = signEnumOracleAttestationEvent(
-        nsecSecret,
+      const attestationHex = await signEnumAttestation(
+        relayUrls,
         market.oracle.eventId,
         outcome,
+      )
+      const announcementEventId =
+        market.oracle.announcementEventId ??
+        (await getOracleAnnouncementEventId(relayUrls, market.oracle.eventId))
+      if (!announcementEventId) {
+        throw new Error(t('creator.missingAnnouncementEventId'))
+      }
+      const attestation = buildOracleAttestationEvent(
+        nsecSecret,
+        attestationHex,
+        announcementEventId,
       )
       await submitOracleAttestation(marketId, attestation)
       markOracleAttested(marketId, {
         outcome,
-        attestationHex: attestation.content,
+        attestationHex,
         attestedAt: new Date().toISOString(),
       })
       setResolutionSuccess(t('creator.attestationPublished', { outcome }))

@@ -1,9 +1,11 @@
 import { useState } from 'react'
-import { ArrowLeft, X } from 'lucide-react'
+import { ArrowLeft, KeyRound, Loader2, X } from 'lucide-react'
+import { Link } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import type { MarketCreationWizardProps } from '@/types/market-creation'
+import { createGeneratedNostrIdentity } from '@/lib/identityOps'
+import { useSettingsStore } from '@/stores/settings'
 import { StepIndicator } from './StepIndicator'
-import { OracleCheck } from './OracleCheck'
 import { GetStarted } from './GetStarted'
 import { BasicInfo } from './BasicInfo'
 import { OutcomesStep } from './OutcomesStep'
@@ -17,20 +19,18 @@ import { TopUpOverlay } from '@/components/market-detail/TopUpOverlay'
 
 export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const { t } = useTranslation()
+  const hasNsecOracleKey = useSettingsStore(
+    (s) => s.nostrSignerMode === 'nsec' && !!s.nsecSecret,
+  )
   const {
     draft,
     hasSavedDraft,
-    oracleAnnouncements,
     categoryTags,
-    signerMode,
     isSubmitting,
     submitError,
     registrationFeePrompt,
     registrationFeeTopUp,
     registrationFeeTopUpStage,
-    onOracleChoiceSelect,
-    onAnnouncementSelect,
-    onExit,
     onClose,
     clearDraft,
     onNext,
@@ -106,8 +106,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
         <InsufficientBalanceModal
           balance={registrationFeeTopUp.balanceSats}
           required={registrationFeeTopUp.feeSats}
-          title="Top up for market creation"
-          requiredDescription="Market creation needs"
+          title={t('marketCreation.registrationFeeTopUpTitle')}
+          requiredDescription={t('marketCreation.registrationFeeTopUpRequiredDescription')}
           onCancel={onCancelRegistrationFeeTopUp}
           onTopUp={onStartRegistrationFeeTopUp}
         />
@@ -115,8 +115,12 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
       {registrationFeeTopUpStage === 'overlay' && registrationFeeTopUp && (
         <TopUpOverlay
           deficit={registrationFeeDeficit}
-          minimumDescription={`Top up at least ${registrationFeeDeficit.toLocaleString()} sats to cover the market creation fee.`}
-          minimumErrorDescription={`Amount must be at least ${registrationFeeDeficit} sats to cover the market creation fee.`}
+          minimumDescription={t('marketCreation.registrationFeeTopUpMinimumDescription', {
+            sats: registrationFeeDeficit.toLocaleString(),
+          })}
+          minimumErrorDescription={t('marketCreation.registrationFeeTopUpMinimumError', {
+            sats: registrationFeeDeficit.toLocaleString(),
+          })}
           onSuccess={onRegistrationFeeTopUpSuccess}
           onCancel={onCancelRegistrationFeeTopUp}
         />
@@ -127,8 +131,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
   // Deposit step takes priority once the market is created. `clearDraft()`
   // in `onCreateMarket` resets the draft store (currentStep becomes 1)
   // before `setCreatedMarketConditionId` re-renders us, which without this
-  // override would bounce the user back to OracleCheck even though the
-  // market is already registered on the mint and engine. The matching test
+  // override would bounce the user back to the first wizard step even though
+  // the market is already registered on the mint and engine. The matching test
   // is `MarketCreateWithDepositE2ETests.DepositStep_LightningHappyPath`.
   if (createdMarketConditionId) {
     return (
@@ -145,33 +149,27 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     )
   }
 
-  // Step 1: Oracle Check — full-screen standalone
-  if (currentStep === 1) {
+  if (!hasNsecOracleKey) {
     return (
-      <>
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
         {header}
-        <OracleCheck
-          choice={draft.stepOracleCheck?.choice ?? null}
-          selectedAnnouncementId={draft.stepOracleCheck?.selectedAnnouncementId ?? null}
-          announcements={oracleAnnouncements}
-          signerMode={signerMode}
-          onChoiceSelect={onOracleChoiceSelect}
-          onAnnouncementSelect={onAnnouncementSelect}
-          onContinue={onNext}
-          onExit={onExit}
-        />
+        <div className="flex-1 flex items-start justify-center px-4 py-8">
+          <NostrKeyRequired />
+        </div>
         {feeOverlays}
-      </>
+      </div>
     )
   }
 
-  // Steps 2-6: Wizard with step indicator
+  // Steps 1-5: Wizard with step indicator. The old oracle-announcement
+  // chooser is intentionally gone: creator markets always use the creator's
+  // own nsec-backed oracle identity.
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
       {header}
       <div className="w-full max-w-2xl mx-auto px-4 pt-8 pb-4">
         <div className="h-10 mb-4">
-          {currentStep > 2 && (
+          {currentStep > 1 && (
             <button
               onClick={() => onBack?.()}
               className="flex items-center gap-1.5 text-sm font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
@@ -186,7 +184,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
       </div>
 
       <div className="flex-1 flex items-start justify-center px-4 py-8">
-        {currentStep === 2 && (
+        {currentStep === 1 && (
           <GetStarted
             outcomeType={draft.stepGetStarted?.outcomeType ?? null}
             onOutcomeTypeSelect={onOutcomeTypeSelect}
@@ -194,7 +192,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           />
         )}
 
-        {currentStep === 3 && draft.stepBasicInfo && (
+        {currentStep === 2 && draft.stepBasicInfo && (
           <BasicInfo
             data={draft.stepBasicInfo}
             categoryTags={categoryTags}
@@ -206,7 +204,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           />
         )}
 
-        {currentStep === 4 && draft.stepOutcomes && (
+        {currentStep === 3 && draft.stepOutcomes && (
           <OutcomesStep
             outcomeType={draft.stepOutcomes.outcomeType}
             outcomes={draft.stepOutcomes.outcomes}
@@ -227,7 +225,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           />
         )}
 
-        {currentStep === 5 && draft.stepInitialLiquidity && (
+        {currentStep === 4 && draft.stepInitialLiquidity && (
           <InitialLiquidity
             liquiditySats={draft.stepInitialLiquidity.liquiditySats}
             onNext={() => {
@@ -237,7 +235,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           />
         )}
 
-        {currentStep === 6 && !createdMarketConditionId && (
+        {currentStep === 5 && !createdMarketConditionId && (
           <ReviewAndCreate
             description={draft.stepReviewAndCreate?.description ?? ''}
             basicInfo={draft.stepBasicInfo}
@@ -252,6 +250,72 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
 
       </div>
       {feeOverlays}
+    </div>
+  )
+}
+
+function NostrKeyRequired() {
+  const { t } = useTranslation()
+  const [isCreating, setIsCreating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleCreate = async () => {
+    if (isCreating) return
+    setIsCreating(true)
+    setError(null)
+    const result = await createGeneratedNostrIdentity()
+    if (!result.ok) {
+      setError(result.error ?? t('marketCreation.nostrKeyCreateFailed'))
+    }
+    setIsCreating(false)
+  }
+
+  return (
+    <div className="w-full max-w-xl">
+      <div className="mb-6 inline-flex h-12 w-12 items-center justify-center rounded-full bg-blue-500/10 text-blue-400">
+        <KeyRound className="h-5 w-5" strokeWidth={1.75} />
+      </div>
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
+        {t('marketCreation.mustRegisterNostrKey')}
+      </h2>
+      <p className="text-sm text-slate-400 mb-6">
+        {t('marketCreation.nsecRequired')}
+      </p>
+      <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 p-4 mb-6">
+        <p className="text-sm text-blue-100">
+          {t('marketCreation.preferExistingNostrKey')}
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <Link
+          to="/settings?category=nostr"
+          className="w-full rounded-full bg-blue-600 px-4 py-3 text-center text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition-colors hover:bg-blue-700"
+        >
+          {t('marketCreation.registerOwnNostrKey')}
+        </Link>
+        <button
+          type="button"
+          onClick={handleCreate}
+          disabled={isCreating}
+          className="w-full rounded-full border border-slate-700 bg-slate-900 px-4 py-3 text-sm font-semibold text-slate-100 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:text-slate-500"
+        >
+          {isCreating ? (
+            <span className="inline-flex items-center justify-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t('marketCreation.creatingNostrKey')}
+            </span>
+          ) : (
+            t('marketCreation.createNostrKey')
+          )}
+        </button>
+      </div>
+
+      {error && (
+        <div role="alert" className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-4">
+          <p className="text-sm text-red-400">{error}</p>
+        </div>
+      )}
     </div>
   )
 }

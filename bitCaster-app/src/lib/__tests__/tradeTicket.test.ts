@@ -147,6 +147,8 @@ describe("buildTradeTicket", () => {
     });
 
     expect(ticket.marketId).toBe("condition-1-No");
+    expect(ticket.request.outcomeId).toBe("No");
+    expect(ticket.request.tokenSide).toBe("Outcome");
     expect(ticket.request.price).toBe(99);
     expect(ticket.request.timeInForce).toBe("FAK");
   });
@@ -172,6 +174,8 @@ describe("buildTradeTicket", () => {
     });
 
     expect(ticket.marketId).toBe("condition-1-No");
+    expect(ticket.request.outcomeId).toBe("No");
+    expect(ticket.request.tokenSide).toBe("Outcome");
     expect(ticket.request.price).toBe(99);
     expect(ticket.request.timeInForce).toBe("FAK");
   });
@@ -205,6 +209,31 @@ describe("buildTradeTicket", () => {
     expect(ticket.marketId).toBe("condition-2-Alice");
     expect(ticket.request.outcomeId).toBe("Alice");
     expect(ticket.request.tokenSide).toBe("Complement");
+  });
+
+  it("uses primitive labels as stable categorical selection ids across refresh order changes", () => {
+    const refreshedMarket: MarketDetail = {
+      ...categoricalMarket,
+      outcomes: [
+        { id: "Carol", label: "Carol", odds: 33.33 },
+        { id: "Alice", label: "Alice", odds: 33.33 },
+        { id: "Bob", label: "Bob", odds: 33.33 },
+      ],
+    };
+
+    const ticket = buildTradeTicket({
+      market: refreshedMarket,
+      selection: { side: "yes", outcomeId: "Alice" },
+      amountSats: 100,
+      side: "buy",
+      orderType: "limit",
+      limitPrice: 45,
+      orderBook: market.orderBook,
+    });
+
+    expect(ticket.marketId).toBe("condition-2-Alice");
+    expect(ticket.request.outcomeId).toBe("Alice");
+    expect(ticket.request.tokenSide).toBe("Outcome");
   });
 
   it("builds two-outcome categorical NO tickets with the selected primitive route", () => {

@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { deriveNostrKeyPair } from '@/lib/nip17'
+import { resolveNsecIdentity } from '@/lib/identityOps'
 import { fetchBookmarks, publishBookmarks } from '@/lib/nip78Bookmarks'
 import { bookmarkSetsEqual, useBookmarkStore } from './bookmarks'
-import { useWalletStore } from './wallet'
+import { useSettingsStore } from './settings'
 
 const PUBLISH_DEBOUNCE_MS = 800
 
 /**
  * Keep the local bookmark store in sync with the user's NIP-78 bookmark
- * event on Nostr relays. Only active while a mnemonic is configured.
+ * event on Nostr relays. Only active while an nsec-backed Nostr identity is
+ * configured.
  *
  *  - On mount: fetch the remote bookmark set and union it with the local
  *    set. Publish back if the local set had entries missing from the
@@ -19,25 +20,25 @@ const PUBLISH_DEBOUNCE_MS = 800
  * Mount this once at the application root.
  */
 export function useBookmarkSync(): void {
-  const mnemonic = useWalletStore((s) => s.mnemonic)
+  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode)
+  const nsecSecret = useSettingsStore((s) => s.nsecSecret)
   const markets = useBookmarkStore((s) => s.markets)
   const replace = useBookmarkStore((s) => s.replace)
   const [initialSyncDone, setInitialSyncDone] = useState(false)
   const lastPublished = useRef<string[] | null>(null)
-  // deriveNostrKeyPair runs BIP-39 PBKDF2, so derive once per mnemonic and
-  // reuse the cached keys for every subsequent publish.
   const keysRef = useRef<{ privateKeyHex: string; publicKey: string } | null>(
     null,
   )
 
-  // Initial fetch + merge whenever the mnemonic changes.
+  // Initial fetch + merge whenever the active nsec identity changes.
   useEffect(() => {
     setInitialSyncDone(false)
     lastPublished.current = null
     keysRef.current = null
-    if (!mnemonic) return
+    if (nostrSignerMode !== 'nsec') return
 
-    const keys = deriveNostrKeyPair(mnemonic)
+    const keys = resolveNsecIdentity(nsecSecret)
+    if (!keys) return
     keysRef.current = keys
 
     let cancelled = false
@@ -72,11 +73,11 @@ export function useBookmarkSync(): void {
     return () => {
       cancelled = true
     }
-  }, [mnemonic, replace])
+  }, [nostrSignerMode, nsecSecret, replace])
 
   // Publish to relays whenever the local set changes after the initial sync.
   useEffect(() => {
-    if (!mnemonic || !initialSyncDone) return
+    if (nostrSignerMode !== 'nsec' || !initialSyncDone) return
     const keys = keysRef.current
     if (!keys) return
     if (
@@ -91,5 +92,5 @@ export function useBookmarkSync(): void {
       publishBookmarks(keys.privateKeyHex, snapshot).catch(() => {})
     }, PUBLISH_DEBOUNCE_MS)
     return () => clearTimeout(handle)
-  }, [mnemonic, markets, initialSyncDone])
+  }, [nostrSignerMode, markets, initialSyncDone])
 }

@@ -457,6 +457,15 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     "A|B": "05".repeat(32),
   };
 
+  const categoricalComplementFirstKeysets: Record<string, string> = {
+    "B|C": "01".repeat(32),
+    A: "00".repeat(32),
+    B: "02".repeat(32),
+    "A|C": "03".repeat(32),
+    C: "04".repeat(32),
+    "A|B": "05".repeat(32),
+  };
+
   function mintdConditionsResponse(
     keysets: Record<string, string> = defaultKeysets,
   ): Response {
@@ -566,7 +575,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
   it("uses engine registration outcomes for categorical display labels", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions"))
-        return mintdConditionsResponse(categoricalCompositeKeysets);
+        return mintdConditionsResponse(categoricalComplementFirstKeysets);
       if (url.includes("/api/v1/markets/query"))
         return engineQueryResponse("open", null, null, ["A", "B", "C"]);
       return emptyMetadataResponse();
@@ -578,6 +587,21 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     const labels = detail.outcomes?.map((outcome) => outcome.label) ?? [];
     expect(labels).toEqual(["A", "B", "C"]);
     expect(labels).not.toContain("B|C");
+  });
+
+  it("fails closed when the engine entry lacks creator outcome metadata", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/v1/conditions"))
+        return mintdConditionsResponse(categoricalCompositeKeysets);
+      if (url.includes("/api/v1/markets/query"))
+        return engineQueryResponse("open", null, null, []);
+      return emptyMetadataResponse();
+    });
+
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow(
+      "Market abc123 is missing outcome metadata",
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
   it("does not let metadata overwrite catalogue-derived market metrics", async () => {
@@ -698,21 +722,20 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(detail.resolution.status).toBe("open");
   });
 
-  it("falls back gracefully when the engine query fails (mintd-only render)", async () => {
+  it("fails closed when the engine query fails instead of reconstructing from mintd keysets", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions")) return mintdConditionsResponse();
       if (url.includes("/api/v1/markets/query"))
         return new Response("boom", { status: 500 });
       return emptyMetadataResponse();
     });
-    const detail = await fetchMarketDetail("abc123");
-    // No engine state → undefined → useMarketState() treats as Open.
-    expect(detail.state).toBeUndefined();
-    // Thumbnail unset → consumer falls back to placeholder asset.
-    expect(detail.imageUrl).toBeUndefined();
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow(
+      "Market not found: abc123",
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
-  it("reconstructs categorical display labels from singleton partition members in mintd-only fallback", async () => {
+  it("does not reconstruct categorical display labels from mintd keysets", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions"))
         return mintdConditionsResponse(categoricalCompositeKeysets);
@@ -721,15 +744,13 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
       return emptyMetadataResponse();
     });
 
-    const detail = await fetchMarketDetail("abc123");
-
-    expect(detail.type).toBe("categorical");
-    const labels = detail.outcomes?.map((outcome) => outcome.label) ?? [];
-    expect(labels).toEqual(["A", "B", "C"]);
-    expect(labels).not.toContain("B|C");
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow(
+      "Market not found: abc123",
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
-  it("uses the mintd description tag as resolution criteria when rendering mintd-only detail", async () => {
+  it("does not use mintd description tags as market detail fallback", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions")) {
         return new Response(
@@ -764,12 +785,10 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
       return emptyMetadataResponse();
     });
 
-    const detail = await fetchMarketDetail("abc123");
-
-    expect(detail.title).toBe("Will BTC hit 100K?");
-    expect(detail.resolution.criteria).toBe(
-      "Resolve YES only if the oracle attests BTC traded above $100,000 before close.",
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow(
+      "Market not found: abc123",
     );
+    expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
   it("queries the engine catalogue with state=All so closed markets surface", async () => {

@@ -6,6 +6,9 @@ namespace BitCaster.E2ETest;
 
 public class MarketCreationTests : IAsyncLifetime
 {
+    private const string TestNsec =
+        "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
+
     private IPlaywright? _playwright;
     private IBrowser? _browser;
 
@@ -81,30 +84,31 @@ public class MarketCreationTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Navigate from /creator/new step 1 past oracle check to step 2.
-    /// Uses the "become oracle" path, which requires a persisted nsec signer
-    /// mode in the settings store (kormir needs the raw secp256k1 secret to
-    /// produce DLC Schnorr signatures locally, so NIP-07 is not accepted).
+    /// Navigate to the first wizard step. The old oracle-choice step is gone:
+    /// every creator is their own oracle, and missing nsec configuration is an
+    /// entry gate before the wizard starts.
     /// </summary>
-    private async Task NavigateToStep2(IPage page)
+    private async Task NavigateToStep2(IPage page, bool configureNsecSigner = true)
     {
         await SetupComplete(page);
-        // Persist nostrSignerMode=nsec so OracleCheck enables the become-oracle
-        // path. The zustand settings store writes to localStorage under
-        // "bitcaster-settings"; we inject it directly rather than going through
-        // the Settings UI to keep the test focused on the market-creation flow.
-        await page.EvaluateAsync(@"
-            localStorage.setItem('bitcaster-settings', JSON.stringify({
-                state: {
-                    baseCurrency: 'BTC',
-                    language: 'en',
-                    theme: 'dark',
-                    nostrSignerMode: 'nsec',
-                    relays: [],
-                },
-                version: 0
-            }));
-        ");
+        if (configureNsecSigner)
+        {
+            // Persist a real nsec so tests that exercise wizard navigation are
+            // not blocked by the creator-oracle identity entry gate.
+            await page.EvaluateAsync($@"
+                localStorage.setItem('bitcaster-settings', JSON.stringify({{
+                    state: {{
+                        baseCurrency: 'BTC',
+                        language: 'en',
+                        theme: 'dark',
+                        nostrSignerMode: 'nsec',
+                        nsecSecret: '{TestNsec}',
+                        relays: [],
+                    }},
+                    version: 0
+                }}));
+            ");
+        }
 
         await page.GotoAsync($"{TestPorts.FrontendUrl}/creator/new", new PageGotoOptions
         {
@@ -112,18 +116,6 @@ public class MarketCreationTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        // Step 1: Oracle Check — choose "become oracle" path
-        var becomeOracle = page.GetByText("No / I want to be an oracle");
-        await Assertions.Expect(becomeOracle).ToBeVisibleAsync(new() { Timeout = 10_000 });
-        await becomeOracle.ClickAsync();
-
-        // Click "Continue as Oracle" to proceed. This button only renders when
-        // canBecomeOracle is true (signerMode === 'nsec').
-        var continueBtn = page.GetByRole(AriaRole.Button, new() { Name = "Continue as Oracle" });
-        await Assertions.Expect(continueBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await continueBtn.ClickAsync();
-
-        // Verify we're on step 2
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Get Started" });
         await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
@@ -131,9 +123,9 @@ public class MarketCreationTests : IAsyncLifetime
     /// <summary>
     /// Navigate to a specific wizard step. Steps 3+ require filling in previous steps.
     /// </summary>
-    private async Task NavigateToStep(IPage page, int targetStep)
+    private async Task NavigateToStep(IPage page, int targetStep, bool configureNsecSigner = true)
     {
-        await NavigateToStep2(page);
+        await NavigateToStep2(page, configureNsecSigner);
         if (targetStep <= 2) return;
 
         // Step 2 → 3: Select "Yes / No" outcome type
@@ -184,25 +176,22 @@ public class MarketCreationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task WizardStep1_BecomeOracle_AdvancesToStep2()
+    public async Task WizardStep1_ShowsGetStarted()
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await NavigateToStep2(page);
 
-        // The "Get Started" heading should be visible (step 2)
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Get Started" });
         await Assertions.Expect(heading).ToBeVisibleAsync();
     }
 
     [Fact]
-    public async Task WizardStep1_BecomeOracle_WithoutNsec_ShowsSettingsGateAndNavigates()
+    public async Task CreateMarket_WithoutNsec_ShowsSettingsGate()
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await SetupComplete(page);
-        // Deliberately not injecting bitcaster-settings — the default
-        // nostrSignerMode='none' is the state under test.
 
         await page.GotoAsync($"{TestPorts.FrontendUrl}/creator/new", new PageGotoOptions
         {
@@ -210,28 +199,16 @@ public class MarketCreationTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        var becomeOracle = page.GetByText("No / I want to be an oracle");
-        await Assertions.Expect(becomeOracle).ToBeVisibleAsync(new() { Timeout = 10_000 });
-        await becomeOracle.ClickAsync();
-
-        var warning = page.GetByRole(AriaRole.Heading, new()
-        {
-            Name = "You must register a nostr key to become an oracle",
-        });
+        var warning = page.GetByText("You must register a nostr key to become an oracle");
         await Assertions.Expect(warning).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await Assertions.Expect(page.GetByText("Register your own Nostr key")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Create Nostr key" }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Get Started" }))
+            .Not.ToBeVisibleAsync();
 
-        var continueBtn = page.GetByRole(AriaRole.Button, new() { Name = "Continue as Oracle" });
-        await Assertions.Expect(continueBtn).ToHaveCountAsync(0);
-
-        var settingsBtn = page.GetByRole(AriaRole.Button, new() { Name = "Go to Nostr Settings" });
-        await Assertions.Expect(settingsBtn).ToBeVisibleAsync();
-        await settingsBtn.ClickAsync();
-
-        await Assertions.Expect(page).ToHaveURLAsync(
-            new Regex(@"/settings\?category=nostr"));
-
-        var nostrCategory = page.GetByText("Nostr Settings").First;
-        await Assertions.Expect(nostrCategory).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await page.GetByText("Register your own Nostr key").ClickAsync();
+        await Assertions.Expect(page).ToHaveURLAsync(new Regex(@"/settings\?category=nostr"));
     }
 
     [Fact]
@@ -289,8 +266,8 @@ public class MarketCreationTests : IAsyncLifetime
         await Assertions.Expect(startOverBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await startOverBtn.ClickAsync();
 
-        var oracleHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Oracle Announcement" });
-        await Assertions.Expect(oracleHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        var getStartedHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Get Started" });
+        await Assertions.Expect(getStartedHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
 
         var banner = page.GetByText("Picked up where you left off");
         await Assertions.Expect(banner).ToHaveCountAsync(0);

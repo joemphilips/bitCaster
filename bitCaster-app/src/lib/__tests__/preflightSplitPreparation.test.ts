@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   selectCollateralForCtfSplit: vi.fn(),
   splitRegularProofsWithOperation: vi.fn(),
   splitRootCompleteSetForPreflightOrder: vi.fn(),
+  resolveRootPreflightOutputAmountSats: vi.fn(),
   getWallet: vi.fn(),
 }));
 
@@ -27,6 +28,8 @@ vi.mock("@/lib/ctfSplit", () => ({
   splitRegularProofsWithOperation: mocks.splitRegularProofsWithOperation,
   splitRootCompleteSetForPreflightOrder:
     mocks.splitRootCompleteSetForPreflightOrder,
+  resolveRootPreflightOutputAmountSats:
+    mocks.resolveRootPreflightOutputAmountSats,
 }));
 vi.mock("@/stores/proof-db", () => ({
   getBaseProofs: mocks.getBaseProofs,
@@ -77,6 +80,9 @@ describe("preflight split preparation", () => {
     mocks.getProofOperation.mockResolvedValue(null);
     mocks.computeGrossCtfInputAmountSats.mockImplementation(
       ({ faceAmountSats }: { faceAmountSats: number }) => faceAmountSats + 1,
+    );
+    mocks.resolveRootPreflightOutputAmountSats.mockImplementation(
+      ({ amountSats }: { amountSats: number }) => amountSats,
     );
     mocks.diagnoseProofStates.mockResolvedValue(undefined);
     mocks.replaceProofs.mockResolvedValue(undefined);

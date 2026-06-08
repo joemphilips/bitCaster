@@ -8,12 +8,16 @@ import type { DashboardStats } from '@/types/market-management'
 const {
   mockUseCreatorDashboardState,
   mockNavigate,
+  mockBuildOracleAttestationEvent,
   mockSignEnumAttestation,
+  mockGetOracleAnnouncementEventId,
   mockSubmitOracleAttestation,
 } = vi.hoisted(() => ({
   mockUseCreatorDashboardState: vi.fn(),
   mockNavigate: vi.fn(),
+  mockBuildOracleAttestationEvent: vi.fn(),
   mockSignEnumAttestation: vi.fn(),
+  mockGetOracleAnnouncementEventId: vi.fn(),
   mockSubmitOracleAttestation: vi.fn(),
 }))
 
@@ -27,7 +31,13 @@ vi.mock('react-router', async () => {
 })
 
 vi.mock('@/lib/oracleAttestation', () => ({
-  signEnumOracleAttestationEvent: (...args: unknown[]) => mockSignEnumAttestation(...args),
+  buildOracleAttestationEvent: (...args: unknown[]) => mockBuildOracleAttestationEvent(...args),
+}))
+
+vi.mock('@/lib/kormir', () => ({
+  signEnumAttestation: (...args: unknown[]) => mockSignEnumAttestation(...args),
+  getOracleAnnouncementEventId: (...args: unknown[]) =>
+    mockGetOracleAnnouncementEventId(...args),
 }))
 
 vi.mock('@/lib/markets', async (importOriginal) => {
@@ -65,15 +75,19 @@ function renderDashboard() {
 beforeEach(() => {
   mockNavigate.mockReset()
   mockUseCreatorDashboardState.mockReset()
-  mockSignEnumAttestation.mockReset()
-  mockSignEnumAttestation.mockReturnValue({
+  mockBuildOracleAttestationEvent.mockReset()
+  mockBuildOracleAttestationEvent.mockReturnValue({
     id: 'event-id',
     pubkey: 'a'.repeat(64),
     createdAt: 1,
     kind: 89,
-    content: 'attestation-hex',
+    content: 'attestation-base64',
     sig: 'b'.repeat(128),
   })
+  mockSignEnumAttestation.mockReset()
+  mockSignEnumAttestation.mockResolvedValue('attestation-hex')
+  mockGetOracleAnnouncementEventId.mockReset()
+  mockGetOracleAnnouncementEventId.mockResolvedValue('c'.repeat(64))
   mockSubmitOracleAttestation.mockReset()
   mockSubmitOracleAttestation.mockResolvedValue({ result: 'Closed' })
   vi.stubGlobal('confirm', vi.fn(() => true))
@@ -219,6 +233,7 @@ describe('CreatorDashboard', () => {
         oracle: {
           type: 'self',
           eventId: 'will_btc_hit_150k_abcd',
+          announcementEventId: 'c'.repeat(64),
           outcomes: ['Yes', 'No'],
         },
       },
@@ -238,6 +253,7 @@ describe('CreatorDashboard', () => {
         oracle: {
           type: 'self',
           eventId: 'will_btc_hit_150k_abcd',
+          announcementEventId: 'c'.repeat(64),
           outcomes: ['Yes', 'No'],
         },
       }],
@@ -256,16 +272,21 @@ describe('CreatorDashboard', () => {
     await user.click(screen.getByRole('button', { name: /close market/i }))
 
     expect(mockSignEnumAttestation).toHaveBeenCalledWith(
-      'nsec1test',
+      ['wss://relay.example.test'],
       'will_btc_hit_150k_abcd',
       'Yes',
+    )
+    expect(mockBuildOracleAttestationEvent).toHaveBeenCalledWith(
+      'nsec1test',
+      'attestation-hex',
+      'c'.repeat(64),
     )
     expect(mockSubmitOracleAttestation).toHaveBeenCalledWith('a'.repeat(64), {
       id: 'event-id',
       pubkey: 'a'.repeat(64),
       createdAt: 1,
       kind: 89,
-      content: 'attestation-hex',
+      content: 'attestation-base64',
       sig: 'b'.repeat(128),
     })
     expect(useCreatorMarketsStore.getState().markets[0].oracle).toMatchObject({

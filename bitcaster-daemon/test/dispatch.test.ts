@@ -1069,6 +1069,84 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
     })
 
+    await t.test('order.submit starts runtime with complement order subscription state', async () => {
+      const priorState = await readState()
+      await writeState(emptyDaemonState())
+      try {
+        const engine: EngineClientLike = {
+          async submitOrder(_marketId, request) {
+            return {
+              orderId: 'order-complement',
+              status: 'resting',
+              remainingAmountSats: request.amountSats,
+              fills: [],
+              ephemeralPubkey: request.ephemeralPubkey,
+            }
+          },
+          async getOrderStatus() {
+            throw new Error('getOrderStatus unused')
+          },
+          async cancelOrder() {
+            throw new Error('cancelOrder unused')
+          },
+          async getOrderBook() {
+            throw new Error('getOrderBook unused')
+          },
+          async queryMarkets() {
+            throw new Error('queryMarkets unused')
+          },
+          async getMarket() {
+            throw new Error('getMarket unused')
+          },
+        }
+        let runtimeOrder:
+          | {
+              marketId: string
+              tokenSide?: 'Outcome' | 'Complement'
+              orderId: string
+            }
+          | undefined
+
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              tokenSide: 'Complement',
+              side: 'Buy',
+              price: 99,
+              amountSats: 100,
+              timeInForce: 'GTC',
+            },
+          },
+          {
+            createEngineClient() {
+              return engine
+            },
+            generateEphemeralKeypair: () => ({
+              privateKeyHex: '33'.repeat(32),
+              publicKeyHex: `02${'44'.repeat(32)}`,
+            }),
+            tradeRuntime: {
+              async start(state) {
+                runtimeOrder = state.orders['order-complement']
+                return { orders: [], trades: [] }
+              },
+              async stop() {},
+            },
+          },
+        )
+
+        assert.equal(response.ok, true)
+        assert.equal(runtimeOrder?.orderId, 'order-complement')
+        assert.equal(runtimeOrder?.marketId, 'cond-YES')
+        assert.equal(runtimeOrder?.tokenSide, 'Complement')
+      } finally {
+        if (priorState) await writeState(priorState)
+      }
+    })
+
     await t.test('order.submit propagates engine machine-code rejections', async () => {
       const priorState = await readState()
       await writeState(emptyDaemonState())

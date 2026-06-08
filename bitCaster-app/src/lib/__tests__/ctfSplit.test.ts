@@ -221,31 +221,30 @@ function mockMintCondition(
   keysets:
     | Record<string, string>
     | Array<Record<string, string>>
-    | Array<{ partition?: string[]; keysets: Record<string, string> }>,
+    | Array<{ keysets: Record<string, string> }>,
 ) {
   const entries = Array.isArray(keysets) ? keysets : [keysets];
   ctfMintState.keysets = Object.assign(
     {},
-    ...entries.map((entry) => toMockPartitionEntry(entry).keysets),
+    ...entries.map((entry) => toMockConditionKeysetEntry(entry).keysets),
   );
   ctfMintState.conditionalKeysets = [];
   ctfMintState.splitRequests = [];
 }
 
-interface MockPartitionEntry {
-  partition?: string[];
+interface MockConditionKeysetEntry {
   keysets: Record<string, string>;
 }
 
-function toMockPartitionEntry(
-  entry: Record<string, string> | MockPartitionEntry,
-): MockPartitionEntry {
-  return isMockPartitionEntry(entry) ? entry : { keysets: entry };
+function toMockConditionKeysetEntry(
+  entry: Record<string, string> | MockConditionKeysetEntry,
+): MockConditionKeysetEntry {
+  return isMockConditionKeysetEntry(entry) ? entry : { keysets: entry };
 }
 
-function isMockPartitionEntry(
-  entry: Record<string, string> | MockPartitionEntry,
-): entry is MockPartitionEntry {
+function isMockConditionKeysetEntry(
+  entry: Record<string, string> | MockConditionKeysetEntry,
+): entry is MockConditionKeysetEntry {
   return "keysets" in entry;
 }
 
@@ -255,7 +254,7 @@ describe("splitRootCompleteSetForSwap", () => {
     mockMintCondition({});
   });
 
-  it("keys split outputs by the exact singleton/composite mint partition and locks the resolved branch", async () => {
+  it("keys split outputs by the exact singleton/composite mint keysets and locks the resolved branch", async () => {
     mockMintCondition([
       {
         Alice: "keyset-alice",
@@ -334,7 +333,6 @@ describe("splitRootCompleteSetForSwap", () => {
     const notACollectionId = "b".repeat(64);
     mockMintCondition([
       {
-        partition: ["A", "B|C|D"],
         keysets: {
           [aCollectionId]: "keyset-a",
           [notACollectionId]: "keyset-not-a",
@@ -377,7 +375,7 @@ describe("splitRootCompleteSetForSwap", () => {
     expect(result.lockProofs[0].id).toBe("keyset-not-a");
   });
 
-  it("throws before posting when no exact singleton/composite partition exists", async () => {
+  it("throws before posting when no exact singleton/composite keyset pair exists", async () => {
     mockMintCondition([
       {
         Alice: "keyset-alice",
@@ -403,7 +401,7 @@ describe("splitRootCompleteSetForSwap", () => {
         proofOperationStore: proofOperationStore(),
       }),
     ).rejects.toThrow(
-      "Expected exactly one root sat CTF partition for condition",
+      "CTF split root outcome collection Alice|Bob overlaps primitive outcome Alice with Alice",
     );
     expect(ctfMintState.splitRequests).toHaveLength(0);
   });

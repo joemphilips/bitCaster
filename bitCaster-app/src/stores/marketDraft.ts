@@ -6,7 +6,6 @@ export function defaultDraft(): WizardDraft {
   return {
     currentStep: 1,
     lastModified: new Date().toISOString(),
-    stepOracleCheck: null,
     stepGetStarted: null,
     stepBasicInfo: null,
     stepOutcomes: null,

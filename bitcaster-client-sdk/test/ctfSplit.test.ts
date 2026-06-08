@@ -91,7 +91,7 @@ test("resolveComplementaryOutcomeLegs accepts a composite root collection as one
   );
 });
 
-test("resolveComplementaryOutcomeLegs requires a strict complete primitive partition", () => {
+test("resolveComplementaryOutcomeLegs requires strict complete primitive coverage", () => {
   assert.throws(
     () =>
       resolveComplementaryOutcomeLegs("Bob|Carol", "Alice", {
@@ -100,7 +100,7 @@ test("resolveComplementaryOutcomeLegs requires a strict complete primitive parti
         Carol: "keyset-carol",
         Dave: "keyset-dave",
       }),
-    /not a complete partition; missing Dave/,
+    /do not cover the full primitive outcome set; missing Dave/,
   );
 });
 

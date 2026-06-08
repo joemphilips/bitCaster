@@ -2,6 +2,8 @@ import { useSettingsStore } from '@/stores/settings'
 import { useWalletStore } from '@/stores/wallet'
 import type { NostrSignerMode } from '@/types/settings'
 import { generateSecretKey, nip19 } from 'nostr-tools'
+import { getPublicKey } from 'nostr-tools/pure'
+import { bytesToHex, hexToBytes } from 'nostr-tools/utils'
 import {
   fetchAndStoreNostrProfile,
   loginWithExtension,
@@ -15,7 +17,73 @@ export interface IdentityActionResult {
   error?: string
 }
 
+export interface CreatorPubkeyInput {
+  nostrSignerMode: NostrSignerMode
+  nsecSecret: string | null | undefined
+  nostrProfilePubkey?: string | null | undefined
+}
+
+export interface NsecIdentity {
+  privateKeyHex: string
+  publicKey: string
+}
+
 let rehydratePromise: Promise<void> | null = null
+
+export function resolveCreatorPubkey(input: CreatorPubkeyInput): string | null {
+  return resolveSignerPubkey(input)
+}
+
+function resolveSignerPubkey(input: CreatorPubkeyInput): string | null {
+  if (input.nostrSignerMode === 'nsec' && input.nsecSecret) {
+    try {
+      return nsecIdentity(input.nsecSecret).publicKey
+    } catch {
+      return normalizePubkey(input.nostrProfilePubkey)
+    }
+  }
+
+  if (input.nostrSignerMode === 'nip07') {
+    return normalizePubkey(input.nostrProfilePubkey)
+  }
+
+  return null
+}
+
+export function resolveNsecIdentity(nsec: string | null | undefined): NsecIdentity | null {
+  if (!nsec) return null
+  try {
+    return nsecIdentity(nsec)
+  } catch {
+    return null
+  }
+}
+
+function nsecIdentity(nsec: string): NsecIdentity {
+  const privateKey = privateKeyBytesFromNsec(nsec)
+  return {
+    privateKeyHex: bytesToHex(privateKey),
+    publicKey: getPublicKey(privateKey),
+  }
+}
+
+function privateKeyBytesFromNsec(nsec: string): Uint8Array {
+  const trimmed = nsec.trim()
+  if (trimmed.startsWith('nsec1')) {
+    const decoded = nip19.decode(trimmed)
+    if (decoded.type !== 'nsec') throw new Error('Expected an nsec private key')
+    return decoded.data
+  }
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    return hexToBytes(trimmed)
+  }
+  throw new Error('Expected an nsec1... or 64-character hex private key')
+}
+
+function normalizePubkey(pubkey: string | null | undefined): string | null {
+  const normalized = pubkey?.trim().toLowerCase()
+  return normalized && /^[0-9a-f]{64}$/.test(normalized) ? normalized : null
+}
 
 function waitForSettingsHydration(): Promise<void> {
   if (useSettingsStore.persist.hasHydrated()) {
@@ -93,19 +161,33 @@ export async function userConnectNsecIdentity(
   }
 }
 
+export async function createGeneratedNostrIdentity(): Promise<IdentityActionResult> {
+  const settings = useSettingsStore.getState()
+  try {
+    const nsec = nip19.nsecEncode(generateSecretKey())
+    await loginWithNsec(nsec)
+    settings.setSignerMode('nsec')
+    settings.setNsecSecret(nsec)
+    settings.setSignerSource('implicit-generated')
+    settings.setSignerBackupState('needs_backup')
+    refreshNostrProfile().catch(() => {})
+    return { ok: true }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Failed to create Nostr key',
+    }
+  }
+}
+
 export async function createImplicitWalletAndNostrIdentity(): Promise<IdentityActionResult> {
   const wallet = useWalletStore.getState()
   const settings = useSettingsStore.getState()
   try {
     await wallet.ensureImplicitWallet()
     if (settings.nostrSignerMode === 'none') {
-      const nsec = nip19.nsecEncode(generateSecretKey())
-      await loginWithNsec(nsec)
-      settings.setSignerMode('nsec')
-      settings.setNsecSecret(nsec)
-      settings.setSignerSource('implicit-generated')
-      settings.setSignerBackupState('needs_backup')
-      refreshNostrProfile().catch(() => {})
+      const result = await createGeneratedNostrIdentity()
+      if (!result.ok) return result
     }
     return { ok: true }
   } catch (err) {

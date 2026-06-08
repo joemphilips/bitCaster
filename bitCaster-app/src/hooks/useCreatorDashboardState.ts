@@ -3,12 +3,12 @@ import {
   fetchCreatorMarkets,
   type CreatorMarketEntry,
 } from '@/lib/markets'
-import { deriveNostrKeyPair } from '@/lib/nip17'
+import { resolveCreatorPubkey } from '@/lib/identityOps'
 import {
   useCreatorMarketsStore,
   type StoredCreatorMarket,
 } from '@/stores/creatorMarkets'
-import { useWalletStore } from '@/stores/wallet'
+import { useSettingsStore } from '@/stores/settings'
 import { assertNever } from '@/lib/enumDiscipline'
 import type { CreatedMarket, CreatedMarketStatus } from '@/types/portfolio'
 import type { DashboardStats } from '@/types/market-management'
@@ -89,17 +89,20 @@ function emptyStats(): DashboardStats {
  * empty state instead of throwing.
  */
 export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
-  const mnemonic = useWalletStore((s) => s.mnemonic)
+  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode)
+  const nsecSecret = useSettingsStore((s) => s.nsecSecret)
+  const nostrProfilePubkey = useSettingsStore((s) => s.nostrProfile?.pubkey ?? null)
   const storedMarkets = useCreatorMarketsStore((s) => s.markets)
 
-  const pubkey = useMemo(() => {
-    if (!mnemonic) return null
-    try {
-      return deriveNostrKeyPair(mnemonic).publicKey
-    } catch {
-      return null
-    }
-  }, [mnemonic])
+  const pubkey = useMemo(
+    () =>
+      resolveCreatorPubkey({
+        nostrSignerMode,
+        nsecSecret,
+        nostrProfilePubkey,
+      }),
+    [nostrSignerMode, nsecSecret, nostrProfilePubkey],
+  )
 
   const [backendMarkets, setBackendMarkets] = useState<CreatorMarketEntry[]>([])
   // Initial state is `false` unconditionally. The effect below flips this to

@@ -12,15 +12,16 @@ import {
 } from "@cashu/cashu-ts";
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
   sumProofs,
   takeProofsForLock,
 } from "@bitcaster/client-sdk/proofSelection";
-import type { CtfMintSettings } from "@/lib/mints";
+import {
+  registrationFeeForPolicy,
+  requiredMarketCreationOutcomeCollections,
+} from "@bitcaster/client-sdk/ctfRegistration";
 import {
   MintError,
   registerCondition,
-  requiredMarketCreationOutcomeCollections,
 } from "@/lib/markets";
 import { getWallet } from "@/lib/cashu";
 import { hexToBytes } from "@/lib/ecdh";
@@ -57,34 +58,13 @@ type RegistrationOutputData = OutputDataLike & {
   toProof(sig: SerializedBlindedSignature, keyset: MintKeys): Proof;
 };
 
-export function registrationFeeForPolicy(
-  outcomes: readonly string[],
-  settings: CtfMintSettings,
-): number {
-  const numKeysets =
-    settings.defaultKeysetCreation === "none"
-      ? requiredMarketCreationOutcomeCollections(outcomes).length
-      : settings.defaultKeysetCreation === "one-vs-rest"
-        ? new Set(outcomes.map((outcome) => outcome.trim()).filter(Boolean))
-            .size
-        : Math.max(0, 2 ** outcomes.length - 2);
-  const fee =
-    settings.registrationFeeBase +
-    settings.registrationFeePerKeyset * numKeysets;
-  if (!Number.isSafeInteger(fee) || fee < 0) {
-    throw new Error("Active mint registration fee settings are invalid.");
-  }
-  return fee;
-}
+export { registrationFeeForPolicy, requiredMarketCreationOutcomeCollections };
 
 export async function getAvailableRegularBalanceSats(
   mintUrl: string,
 ): Promise<number> {
   const proofs = await getBaseProofs(mintUrl);
-  return spendableProofAmount(
-    proofs,
-    await inputFeePpkByKeysetForProofs(mintUrl, proofs),
-  );
+  return sumProofs(proofs);
 }
 
 export async function registerConditionWithFee(input: {
@@ -114,14 +94,9 @@ export async function registerConditionWithFee(input: {
   }
 
   const available = await getBaseProofs(input.mintUrl);
-  const inputFeePpkByKeyset = await inputFeePpkByKeysetForProofs(
-    input.mintUrl,
-    available,
-  );
   const selected = takeProofsForLock(
     available,
     input.requiredFeeSats,
-    inputFeePpkByKeyset,
   );
   if (!selected) {
     throw new Error(
@@ -130,12 +105,7 @@ export async function registerConditionWithFee(input: {
   }
 
   const selectedTotal = sumProofs(selected);
-  const selectedInputFeeSats = computeInputFeeSatsForProofs(
-    selected,
-    inputFeePpkByKeyset,
-  );
-  const selectedSpendableSats = selectedTotal - selectedInputFeeSats;
-  const changeAmount = selectedSpendableSats - input.requiredFeeSats;
+  const changeAmount = selectedTotal - input.requiredFeeSats;
   const changeOutputs =
     changeAmount > 0
       ? await prepareRegularOutputs(input.mintUrl, changeAmount)
@@ -150,8 +120,6 @@ export async function registerConditionWithFee(input: {
     metadata: {
       requiredFeeSats: input.requiredFeeSats,
       selectedTotalSats: selectedTotal,
-      selectedInputFeeSats,
-      selectedSpendableSats,
       request: stableRegistrationRequest(input.request),
     },
   });
@@ -302,10 +270,21 @@ async function prepareRegularOutputs(
 ): Promise<RegistrationOutputData[]> {
   const wallet = await getWallet(mintUrl);
   const keyset = await getActiveRegularKeyset(wallet);
-  return OutputData.createRandomData(
+  const positiveOutputs = OutputData.createRandomData(
     Amount.from(amountSats),
     keyset,
   ) as RegistrationOutputData[];
+  return positiveOutputs.map(
+    (output) =>
+      new OutputData(
+        {
+          ...output.blindedMessage,
+          amount: Amount.from(0),
+        },
+        output.blindingFactor,
+        output.secret,
+      ) as RegistrationOutputData,
+  );
 }
 
 async function getActiveRegularKeyset(wallet: CashuWallet): Promise<MintKeys> {
@@ -320,60 +299,41 @@ async function getActiveRegularKeyset(wallet: CashuWallet): Promise<MintKeys> {
   return keyset;
 }
 
-async function inputFeePpkByKeysetForProofs(
-  mintUrl: string,
-  proofs: Array<Pick<Proof, "id">>,
-): Promise<Record<string, number>> {
-  const keysetIds = [...new Set(proofs.map((proof) => proof.id).filter(Boolean))] as string[];
-  if (keysetIds.length === 0) return {};
-  const mint = new CashuMint(mintUrl);
-  const result: Record<string, number> = {};
-  for (const keysetId of keysetIds) {
-    const response = await mint.getKeys(keysetId);
-    const keyset = response.keysets.find((candidate) => candidate.id === keysetId);
-    if (!keyset) throw new Error(`Mint did not return keys for keyset ${keysetId}`);
-    result[keysetId] = keyset.input_fee_ppk ?? 0;
-  }
-  return result;
-}
-
-function spendableProofAmount(
-  proofs: readonly Proof[],
-  inputFeePpkByKeyset: Record<string, number>,
-): number {
-  if (proofs.length === 0) return 0;
-  return sumProofs(proofs) - computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset);
-}
-
 async function buildChangeProofs(
   mintUrl: string,
   outputData: RegistrationOutputData[],
   signatures: SerializedBlindedSignature[],
 ): Promise<Proof[]> {
-  if (signatures.length !== outputData.length) {
+  if (signatures.length > outputData.length) {
     throw new Error(
-      `Mint returned ${signatures.length} registration-fee change signatures, expected ${outputData.length}`,
+      `Mint returned ${signatures.length} registration-fee change signatures, but only ${outputData.length} change outputs were prepared`,
     );
   }
   const result: Proof[] = [];
-  for (let index = 0; index < outputData.length; index++) {
+  for (let index = 0; index < signatures.length; index++) {
     const output = outputData[index];
-    const signature = signatures[index];
+    const signature = normalizeChangeSignature(signatures[index]);
     validateChangeSignature(output.blindedMessage, signature);
-    const keyset = await getKeyset(mintUrl, output.blindedMessage.id);
+    const keyset = await getKeyset(mintUrl, signature.id);
     result.push(output.toProof(signature, keyset));
   }
   return result;
+}
+
+function normalizeChangeSignature(
+  signature: SerializedBlindedSignature,
+): SerializedBlindedSignature {
+  return {
+    ...signature,
+    amount: Amount.from(amountToNumber(signature.amount)) as never,
+  };
 }
 
 function validateChangeSignature(
   output: SerializedBlindedMessage,
   signature: SerializedBlindedSignature,
 ): void {
-  if (
-    signature.id !== output.id ||
-    amountToNumber(signature.amount) !== amountToNumber(output.amount)
-  ) {
+  if (signature.id !== output.id || amountToNumber(signature.amount) <= 0) {
     throw new Error("Mint returned a registration-fee change signature for the wrong output");
   }
 }

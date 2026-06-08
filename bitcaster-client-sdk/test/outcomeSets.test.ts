@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   canonicalizeOutcomeSet,
   complementOutcomeSetId,
+  outcomeSetDisplayLabel,
   outcomeSetIdsForMarketBooks,
   parseOutcomeSetId,
   resolveOutcomeSets,
@@ -61,10 +62,10 @@ test('resolveOutcomeSets maps categorical NO to primitive public route plus inte
   )
 })
 
-test('resolveOutcomeSets maps binary NO to the Yes primitive complement', () => {
+test('resolveOutcomeSets maps binary NO to the No primitive outcome', () => {
   assert.deepEqual(resolveOutcomeSets(yesNoMarket, { side: 'no' }), {
-    publicOutcomeSetId: 'Yes',
-    tokenSide: 'Complement',
+    publicOutcomeSetId: 'No',
+    tokenSide: 'Outcome',
     selectedOutcomeSetId: 'No',
     complementOutcomeSetId: 'Yes',
   })
@@ -76,6 +77,19 @@ test('outcomeSetIdsForMarketBooks enumerates primitive public books only', () =>
     'Bob',
     'Carol',
   ]))
+})
+
+test('outcomeSetDisplayLabel hides internal one-vs-rest complement ids', () => {
+  assert.equal(
+    outcomeSetDisplayLabel(['A', 'B', 'C'], 'B|C'),
+    'NOT A',
+  )
+  assert.equal(
+    outcomeSetDisplayLabel(['Alice', 'Bob', 'Carol'], 'Bob|Carol'),
+    'NOT Alice',
+  )
+  assert.equal(outcomeSetDisplayLabel(['Yes', 'No'], 'No'), 'No')
+  assert.equal(outcomeSetDisplayLabel([], 'B|C'), 'Complement')
 })
 
 test('resolveOutcomeSets fails closed for missing or unmatched selections', () => {

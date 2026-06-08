@@ -1,32 +1,23 @@
-import { schnorr } from '@noble/curves/secp256k1.js'
-import { sha256 } from '@noble/hashes/sha2.js'
 import { nip19 } from 'nostr-tools'
 import { finalizeEvent } from 'nostr-tools/pure'
 import type { components } from '@/generated/api'
 
 export type OracleNostrEvent = components['schemas']['OracleNostrEvent']
 
-const DLC_ATTESTATION_TAG = 'DLC/oracle/attestation/v0'
 const KIND_DLC_ORACLE_ATTESTATION = 89 as const
 
-export function signEnumOracleAttestationEvent(
+export function buildOracleAttestationEvent(
   nsec: string,
-  eventId: string,
-  outcome: string,
+  attestationHex: string,
+  announcementEventId: string,
 ): OracleNostrEvent {
   const privateKey = decodeNsecToBytes(nsec)
-  const outcomeBytes = new TextEncoder().encode(outcome)
-  const digest = taggedHash(DLC_ATTESTATION_TAG, outcomeBytes)
-  const attestationSignature = schnorr.sign(digest, privateKey)
-  const oraclePubkey = schnorr.getPublicKey(privateKey)
-  const content = base64FromBytes(
-    buildAttestationTlv(eventId, oraclePubkey, attestationSignature, outcome),
-  )
+  const content = base64FromBytes(hexToBytes(attestationHex))
   const signed = finalizeEvent(
     {
       kind: KIND_DLC_ORACLE_ATTESTATION,
       created_at: Math.floor(Date.now() / 1000),
-      tags: [],
+      tags: [['e', announcementEventId]],
       content,
     },
     privateKey,
@@ -37,6 +28,7 @@ export function signEnumOracleAttestationEvent(
     pubkey: signed.pubkey,
     createdAt: signed.created_at,
     kind: KIND_DLC_ORACLE_ATTESTATION,
+    tags: signed.tags,
     content: signed.content,
     sig: signed.sig,
   }
@@ -59,60 +51,16 @@ function decodeNsecToBytes(nsec: string): Uint8Array {
   throw new Error('Expected an nsec1... or 64-character hex private key')
 }
 
-function taggedHash(tag: string, message: Uint8Array): Uint8Array {
-  const tagHash = sha256(new TextEncoder().encode(tag))
-  const buf = new Uint8Array(tagHash.length * 2 + message.length)
-  buf.set(tagHash, 0)
-  buf.set(tagHash, tagHash.length)
-  buf.set(message, tagHash.length * 2)
-  return sha256(buf)
-}
-
-function buildAttestationTlv(
-  eventId: string,
-  oraclePubkey: Uint8Array,
-  signature: Uint8Array,
-  outcome: string,
-): Uint8Array {
-  const eventIdBytes = new TextEncoder().encode(eventId)
-  const outcomeBytes = new TextEncoder().encode(outcome)
-  const chunks = [
-    encodeBigSize(eventIdBytes.length),
-    eventIdBytes,
-    oraclePubkey,
-    new Uint8Array([0x00, 0x01]),
-    signature,
-    encodeBigSize(outcomeBytes.length),
-    outcomeBytes,
-  ]
-  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    out.set(chunk, offset)
-    offset += chunk.length
+function hexToBytes(hex: string): Uint8Array {
+  const trimmed = hex.trim()
+  if (!/^(?:[0-9a-fA-F]{2})+$/.test(trimmed)) {
+    throw new Error('Expected hex-encoded DLC oracle attestation')
+  }
+  const out = new Uint8Array(trimmed.length / 2)
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Number.parseInt(trimmed.slice(i * 2, i * 2 + 2), 16)
   }
   return out
-}
-
-function encodeBigSize(value: number): Uint8Array {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error('BigSize value must be a non-negative safe integer')
-  }
-  if (value < 0xfd) return new Uint8Array([value])
-  if (value <= 0xffff) {
-    return new Uint8Array([0xfd, (value >> 8) & 0xff, value & 0xff])
-  }
-  if (value <= 0xffffffff) {
-    return new Uint8Array([
-      0xfe,
-      (value >>> 24) & 0xff,
-      (value >>> 16) & 0xff,
-      (value >>> 8) & 0xff,
-      value & 0xff,
-    ])
-  }
-  throw new Error('BigSize values above uint32 are not needed for attestations')
 }
 
 function base64FromBytes(bytes: Uint8Array): string {

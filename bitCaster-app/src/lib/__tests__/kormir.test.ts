@@ -2,13 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   __setKormirModuleForTest,
   createEnumAnnouncement,
+  ensureKormirNsec,
   getKormir,
+  getOracleAnnouncementEventId,
   getOraclePublicKey,
   resetKormir,
   restoreKormirWithNsec,
   setPendingKormirNsec,
   signEnumAttestation,
 } from '../kormir'
+import { getPublicKey } from 'nostr-tools/pure'
 
 // ---------------------------------------------------------------------------
 // Fake kormir-wasm module used in place of the real dynamic import.
@@ -22,7 +25,7 @@ interface FakeKormir {
   get_public_key: ReturnType<typeof vi.fn>
 }
 
-function buildFakeModule() {
+function buildFakeModule(publicKey = '02abc') {
   const defaultInit = vi.fn().mockResolvedValue({})
   const restore = vi.fn().mockResolvedValue(undefined)
   let nextId = 0
@@ -33,7 +36,7 @@ function buildFakeModule() {
       create_enum_event: vi.fn().mockResolvedValue('deadbeef'),
       sign_enum_event: vi.fn().mockResolvedValue('beeff00d'),
       list_events: vi.fn().mockResolvedValue([]),
-      get_public_key: vi.fn().mockReturnValue('02abc'),
+      get_public_key: vi.fn().mockReturnValue(publicKey),
     }
     return fake
   })
@@ -145,18 +148,17 @@ describe('kormir wrapper', () => {
     const { module, restore, newFn } = buildFakeModule()
     __setKormirModuleForTest(module)
 
-    setPendingKormirNsec('nsec1deferred')
+    setPendingKormirNsec('11'.repeat(32))
     // No kormir calls yet — the nsec should be remembered, not applied.
     expect(restore).not.toHaveBeenCalled()
     expect(newFn).not.toHaveBeenCalled()
 
     await getKormir(['wss://a'])
 
-    // restore must be called before new so kormir picks up the right key.
-    expect(restore).toHaveBeenCalledWith('nsec1deferred')
-    expect(newFn).toHaveBeenCalledTimes(1)
-    expect(restore.mock.invocationCallOrder[0]).toBeLessThan(
-      newFn.mock.invocationCallOrder[0],
+    expect(restore).toHaveBeenCalledWith('11'.repeat(32))
+    expect(newFn).toHaveBeenCalledTimes(2)
+    expect(newFn.mock.invocationCallOrder[0]).toBeLessThan(
+      restore.mock.invocationCallOrder[0],
     )
   })
 
@@ -164,7 +166,7 @@ describe('kormir wrapper', () => {
     const { module, restore } = buildFakeModule()
     __setKormirModuleForTest(module)
 
-    setPendingKormirNsec('nsec1deferred')
+    setPendingKormirNsec('11'.repeat(32))
     await getKormir(['wss://a'])
     // Reset the in-memory instance so the next call rebuilds, but no new
     // pending nsec has been set.
@@ -172,6 +174,18 @@ describe('kormir wrapper', () => {
     await getKormir(['wss://a'])
 
     expect(restore).toHaveBeenCalledTimes(1)
+  })
+
+  it('setPendingKormirNsec keeps existing kormir storage when the key already matches', async () => {
+    const nsecHex = '11'.repeat(32)
+    const { module, restore, newFn } = buildFakeModule(`02${getPublicKey(hexToBytes(nsecHex))}`)
+    __setKormirModuleForTest(module)
+
+    setPendingKormirNsec(nsecHex)
+    await getKormir(['wss://a'])
+
+    expect(restore).not.toHaveBeenCalled()
+    expect(newFn).toHaveBeenCalledTimes(1)
   })
 
   it('setPendingKormirNsec(null) forgets a previously-staged key', async () => {
@@ -238,6 +252,23 @@ describe('kormir wrapper', () => {
     expect(hex).toBe('f00dbabe')
   })
 
+  it('getOracleAnnouncementEventId reads the stored kind-88 Nostr event id', async () => {
+    const { module } = buildFakeModule()
+    __setKormirModuleForTest(module)
+
+    const instance = (await getKormir(['wss://a'])) as unknown as FakeKormir
+    instance.list_events.mockResolvedValueOnce([
+      {
+        event_name: 'event_1',
+        announcement_event_id: 'c'.repeat(64),
+      },
+    ])
+
+    await expect(getOracleAnnouncementEventId(['wss://a'], 'event_1')).resolves.toBe(
+      'c'.repeat(64),
+    )
+  })
+
   it('getOraclePublicKey returns the key from the kormir instance', async () => {
     const { module } = buildFakeModule()
     __setKormirModuleForTest(module)
@@ -246,4 +277,35 @@ describe('kormir wrapper', () => {
 
     expect(key).toBe('02abc')
   })
+
+  it('ensureKormirNsec does not restore when kormir already uses the requested key', async () => {
+    const nsecHex = '11'.repeat(32)
+    const publicKey = `02${getPublicKey(hexToBytes(nsecHex))}`
+    const { module, restore } = buildFakeModule(publicKey)
+    __setKormirModuleForTest(module)
+
+    await ensureKormirNsec(['wss://a'], nsecHex)
+
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  it('ensureKormirNsec restores and rebuilds when kormir uses a different key', async () => {
+    const { module, restore, newFn } = buildFakeModule(`02${'22'.repeat(32)}`)
+    __setKormirModuleForTest(module)
+
+    await ensureKormirNsec(['wss://a'], '11'.repeat(32))
+
+    expect(restore).toHaveBeenCalledWith('11'.repeat(32))
+    expect(newFn).toHaveBeenCalledTimes(1)
+    await getKormir(['wss://a'])
+    expect(newFn).toHaveBeenCalledTimes(2)
+  })
 })
+
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  }
+  return out
+}

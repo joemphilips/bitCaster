@@ -1,25 +1,5 @@
 // =============================================================================
-// Oracle Check Types (Step 1)
-// =============================================================================
-
-export type OracleCheckChoice = 'existing' | 'become-oracle'
-
-export interface OracleAnnouncement {
-  id: string
-  eventId: string           // Nostr event hex id (kind 88)
-  oraclePubkey: string
-  description: string
-  resolutionDate: string    // ISO 8601
-  outcomes: string[]
-}
-
-export interface WizardStepOracleCheck {
-  choice: OracleCheckChoice | null
-  selectedAnnouncementId: string | null
-}
-
-// =============================================================================
-// Get Started Types (Step 2)
+// Get Started Types (Step 1)
 // =============================================================================
 
 export type OutcomeType = 'yesno' | 'categorical' | 'numeric'
@@ -29,7 +9,7 @@ export interface WizardStepGetStarted {
 }
 
 // =============================================================================
-// Basic Info Types (Step 3)
+// Basic Info Types (Step 2)
 // =============================================================================
 
 export interface WizardStepBasicInfo {
@@ -40,7 +20,7 @@ export interface WizardStepBasicInfo {
 }
 
 // =============================================================================
-// Outcomes Types (Step 4)
+// Outcomes Types (Step 3)
 // =============================================================================
 
 export interface WizardOutcome {
@@ -61,7 +41,7 @@ export interface WizardStepOutcomes {
 }
 
 // =============================================================================
-// Initial Liquidity Types (Step 5)
+// Initial Liquidity Types (Step 4)
 // =============================================================================
 
 export interface WizardStepInitialLiquidity {
@@ -69,7 +49,7 @@ export interface WizardStepInitialLiquidity {
 }
 
 // =============================================================================
-// Review & Create Types (Step 6)
+// Review & Create Types (Step 5)
 // =============================================================================
 
 export interface WizardStepReviewAndCreate {
@@ -80,12 +60,11 @@ export interface WizardStepReviewAndCreate {
 // Top-level Wizard Draft
 // =============================================================================
 
-export type WizardStep = 1 | 2 | 3 | 4 | 5 | 6
+export type WizardStep = 1 | 2 | 3 | 4 | 5
 
 export interface WizardDraft {
   currentStep: WizardStep
   lastModified: string
-  stepOracleCheck: WizardStepOracleCheck | null
   stepGetStarted: WizardStepGetStarted | null
   stepBasicInfo: WizardStepBasicInfo | null
   stepOutcomes: WizardStepOutcomes | null
@@ -101,20 +80,8 @@ export interface MarketCreationWizardProps {
   /** Current wizard draft state */
   draft: WizardDraft
 
-  /** Available oracle announcements for step 1 */
-  oracleAnnouncements: OracleAnnouncement[]
-
   /** Available category tags for basic info */
   categoryTags: string[]
-
-  /**
-   * Current Nostr signer mode from settings. Controls which oracle choices
-   * are available in step 1:
-   * - 'none' — no Nostr signer; cannot even browse announcements
-   * - 'nip07' — can use existing announcements, cannot become oracle
-   * - 'nsec' — full access, can become oracle
-   */
-  signerMode: import('./settings').NostrSignerMode
 
   /** Whether market creation is in progress */
   isSubmitting: boolean
@@ -143,19 +110,6 @@ export interface MarketCreationWizardProps {
    * tick) wipes the draft before DepositStep mounts.
    */
   createdMarketLiquiditySats: number | null
-
-  // -------------------------------------------------------------------------
-  // Oracle Check Callbacks (Step 1)
-  // -------------------------------------------------------------------------
-
-  /** Called when user selects oracle check choice */
-  onOracleChoiceSelect?: (choice: OracleCheckChoice) => void
-
-  /** Called when user selects an oracle announcement */
-  onAnnouncementSelect?: (announcementId: string) => void
-
-  /** Called when user exits the wizard (e.g. "Go to Settings") */
-  onExit?: () => void
 
   /** True when the wizard is being re-entered with a previously-saved draft. */
   hasSavedDraft: boolean
@@ -234,7 +188,7 @@ export interface MarketCreationWizardProps {
   onLiquiditySatsChange?: (sats: number) => void
 
   // -------------------------------------------------------------------------
-  // Review Callbacks (Step 6)
+  // Review Callbacks (Step 5)
   // -------------------------------------------------------------------------
 
   /** Called when user updates the description */

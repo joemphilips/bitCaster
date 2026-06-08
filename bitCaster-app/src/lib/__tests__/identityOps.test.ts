@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => {
     loginWithNsecOrNcryptsec: vi.fn().mockResolvedValue({ signer: {}, nsec: 'nsec1decrypted' }),
     generateSecretKey: vi.fn(() => new Uint8Array(32).fill(7)),
     nsecEncode: vi.fn(() => 'nsec1generated'),
+    nsecDecode: vi.fn(() => ({ type: 'nsec', data: new Uint8Array(32).fill(8) })),
   }
 })
 
@@ -72,6 +73,7 @@ vi.mock('nostr-tools', () => ({
   generateSecretKey: mocks.generateSecretKey,
   nip19: {
     nsecEncode: mocks.nsecEncode,
+    decode: mocks.nsecDecode,
   },
 }))
 
@@ -95,6 +97,7 @@ describe('identityOps', () => {
     mocks.walletState.ensureImplicitWallet.mockClear()
     mocks.generateSecretKey.mockClear()
     mocks.nsecEncode.mockClear()
+    mocks.nsecDecode.mockClear()
     vi.mocked(mocks.settingsState.setSignerMode).mockClear()
     vi.mocked(mocks.settingsState.setSignerSource).mockClear()
     vi.mocked(mocks.settingsState.setSignerBackupState).mockClear()
@@ -179,6 +182,20 @@ describe('identityOps', () => {
     expect(mocks.settingsState.setSignerBackupState).toHaveBeenCalledWith('needs_backup')
   })
 
+  it('creates a generated nsec identity without touching wallet state', async () => {
+    const result = await identityOps.createGeneratedNostrIdentity()
+
+    expect(result).toEqual({ ok: true })
+    expect(mocks.walletState.ensureImplicitWallet).not.toHaveBeenCalled()
+    expect(mocks.generateSecretKey).toHaveBeenCalledOnce()
+    expect(mocks.nsecEncode).toHaveBeenCalledWith(new Uint8Array(32).fill(7))
+    expect(mocks.loginWithNsec).toHaveBeenCalledWith('nsec1generated')
+    expect(mocks.settingsState.setSignerMode).toHaveBeenCalledWith('nsec')
+    expect(mocks.settingsState.setNsecSecret).toHaveBeenCalledWith('nsec1generated')
+    expect(mocks.settingsState.setSignerSource).toHaveBeenCalledWith('implicit-generated')
+    expect(mocks.settingsState.setSignerBackupState).toHaveBeenCalledWith('needs_backup')
+  })
+
   it('does not overwrite an existing NIP-07 signer during implicit wallet setup', async () => {
     mocks.settingsState.nostrSignerMode = 'nip07'
     mocks.settingsState.signerSource = 'nip07'
@@ -204,5 +221,34 @@ describe('identityOps', () => {
     expect(mocks.generateSecretKey).not.toHaveBeenCalled()
     expect(mocks.loginWithNsec).not.toHaveBeenCalled()
     expect(mocks.settingsState.nsecSecret).toBe('nsec1user')
+  })
+
+  it('resolves creator pubkey from active nsec signer before wallet mnemonic', () => {
+    const signerPrivateKeyHex = '11'.repeat(32)
+
+    const pubkey = identityOps.resolveCreatorPubkey({
+      nostrSignerMode: 'nsec',
+      nsecSecret: signerPrivateKeyHex,
+      nostrProfilePubkey: null,
+    })
+
+    expect(pubkey).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('does not resolve creator pubkey from wallet mnemonic when no signer identity is configured', () => {
+    const pubkey = identityOps.resolveCreatorPubkey({
+      nostrSignerMode: 'none',
+      nsecSecret: null,
+      nostrProfilePubkey: null,
+    })
+
+    expect(pubkey).toBeNull()
+  })
+
+  it('returns nsec private/public keys for NIP-78 sync', () => {
+    const identity = identityOps.resolveNsecIdentity('11'.repeat(32))
+
+    expect(identity?.privateKeyHex).toBe('11'.repeat(32))
+    expect(identity?.publicKey).toMatch(/^[0-9a-f]{64}$/)
   })
 })

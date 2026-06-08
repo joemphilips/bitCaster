@@ -93,8 +93,12 @@ describe('registerCondition', () => {
   })
   it('sends collateral and requested outcome collections when provided', async () => {
     mockFetchSuccess({ condition_id: 'cond-123', keysets: { Yes: 'ks1', No: 'ks2' }, change: [] })
-    const fee = [{ amount: 1, secret: 'fee-secret', C: 'fee-C' }] as any
-    const outputs = [{ amount: 1, id: 'regular-keyset', B_: 'B_' }] as any
+    const stringifyingAmount = {
+      toNumber: () => 2,
+      toJSON: () => '2',
+    }
+    const fee = [{ amount: stringifyingAmount, secret: 'fee-secret', C: 'fee-C' }] as any
+    const outputs = [{ amount: stringifyingAmount, id: 'regular-keyset', B_: 'B_' }] as any
     await registerCondition({
       ...conditionParams,
       collateral: 'sat',
@@ -110,9 +114,11 @@ describe('registerCondition', () => {
       announcements: [conditionParams.announcementHex],
       collateral: 'sat',
       outcome_collections: ['Yes', 'No'],
-      fee,
-      outputs,
+      fee: [{ amount: 2, secret: 'fee-secret', C: 'fee-C' }],
+      outputs: [{ amount: 2, id: 'regular-keyset', B_: 'B_' }],
     })
+    expect(typeof body.fee[0].amount).toBe('number')
+    expect(typeof body.outputs[0].amount).toBe('number')
   })
 })
 

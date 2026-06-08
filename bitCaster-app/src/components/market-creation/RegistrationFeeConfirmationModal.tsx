@@ -1,4 +1,5 @@
 import { Zap } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 interface RegistrationFeeConfirmationModalProps {
   feeSats: number
@@ -13,6 +14,8 @@ export function RegistrationFeeConfirmationModal({
   onCancel,
   onConfirm,
 }: RegistrationFeeConfirmationModalProps) {
+  const { t } = useTranslation()
+
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onCancel} />
@@ -23,22 +26,22 @@ export function RegistrationFeeConfirmationModal({
         </div>
 
         <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
-          Pay market creation fee
+          {t('marketCreation.registrationFeeTitle')}
         </h2>
 
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
-          This mint charges{' '}
-          <span className="font-mono text-slate-700 dark:text-slate-200">
-            {feeSats.toLocaleString()} sats
-          </span>{' '}
-          to register the market condition and keysets.
+          {t('marketCreation.registrationFeeDescription', {
+            sats: feeSats.toLocaleString(),
+          })}
         </p>
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
-          Your active mint balance is{' '}
+          {t('marketCreation.registrationFeeBalancePrefix')}{' '}
           <span className="font-mono text-slate-700 dark:text-slate-200">
-            {balanceSats.toLocaleString()} sats
-          </span>
-          .
+            {t('marketCreation.liquiditySats', {
+              count: balanceSats.toLocaleString(),
+            })}
+          </span>{' '}
+          {t('marketCreation.registrationFeeBalanceSuffix')}
         </p>
 
         <div className="flex gap-3">
@@ -47,14 +50,14 @@ export function RegistrationFeeConfirmationModal({
             onClick={onCancel}
             className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             data-testid="registration-fee-confirm"
             onClick={onConfirm}
             className="flex-1 py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] text-white font-semibold transition-colors"
           >
-            Pay fee
+            {t('marketCreation.registrationFeeConfirm')}
           </button>
         </div>
       </div>

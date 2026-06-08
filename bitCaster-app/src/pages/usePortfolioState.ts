@@ -6,6 +6,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { safeHostname } from '@/lib/url'
 import type { MarketCatalogueEntry, MarketCatalogueResponse } from '@/lib/markets'
+import { outcomeSetDisplayLabel } from '@/lib/outcomeSets'
 import type {
   WalletState,
   BaseCurrency,
@@ -238,6 +239,10 @@ export function usePortfolioState(): PortfolioState & {
     ])
     return entries.map((entry): Position => {
       const market = catalogue.get(entry.conditionId)
+      const outcomeLabel = outcomeSetDisplayLabel(
+        market?.outcomes ?? [],
+        entry.outcomeCollection,
+      )
       const finalOutcome = market?.finalOutcome?.trim()
       const isClosed = String(market?.state ?? '').toLowerCase() === 'closed'
       const isWinner =
@@ -260,7 +265,7 @@ export function usePortfolioState(): PortfolioState & {
         marketImageUrl: market?.thumbnailUrl ?? '',
         side: positionSide(entry.outcomeCollection),
         outcomeId: entry.outcomeCollection,
-        outcomeLabel: entry.outcomeCollection,
+        outcomeLabel,
         shares: entry.amount,
         avgBuyPrice: 0,
         currentPrice: isClosed ? (isWinner ? 100 : 0) : 0,

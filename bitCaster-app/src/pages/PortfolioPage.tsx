@@ -96,7 +96,7 @@ export function PortfolioPage() {
       setClaimingPositionId(positionId);
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId);
-        const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
+        const outcomeCollection = position.outcomeId;
         if (!outcomeCollection)
           throw new Error("Position does not include an outcome label");
         const proofs = await getOutcomeProofs(

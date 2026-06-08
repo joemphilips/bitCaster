@@ -1,5 +1,4 @@
 export { MarketCreationWizard } from './MarketCreationWizard'
-export { OracleCheck } from './OracleCheck'
 export { StepIndicator } from './StepIndicator'
 export { GetStarted } from './GetStarted'
 export { BasicInfo } from './BasicInfo'
