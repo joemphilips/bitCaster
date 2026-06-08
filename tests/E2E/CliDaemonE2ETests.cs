@@ -552,7 +552,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             try
             {
                 await maker.RefreshMatchedOrderAsync(makerMarketId, makerOrderId, tradeId);
-                await taker.WaitConfirmedAsync(tradeId);
+                await Task.WhenAll(
+                    maker.WaitConfirmedAsync(tradeId),
+                    taker.WaitConfirmedAsync(tradeId));
             }
             catch (Exception ex)
             {
@@ -1914,7 +1916,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 consoleMessages,
                 limitPrice: price);
 
-        public Task WaitConfirmedAsync(string tradeId) => Task.CompletedTask;
+        public Task WaitConfirmedAsync(string tradeId) =>
+            WaitForBrowserTradeConfirmedAsync(tradeId, [(page, consoleMessages)]);
 
         public Task RefreshMatchedOrderAsync(string marketId, string orderId, string tradeId) => Task.CompletedTask;
 
@@ -2240,8 +2243,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
         });
+        await EnsureMarketDetailOpenAsync(page, conditionId, consoleMessages);
 
-        var limitOrder = page.GetByRole(AriaRole.Button, new() { Name = "Limit" })
+        var limitOrder = VisibleTradingPanel(page)
+            .GetByRole(AriaRole.Button, new() { Name = "Limit", Exact = true })
             .Filter(new() { Visible = true })
             .First;
         await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
@@ -2506,14 +2511,17 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
         });
+        await EnsureMarketDetailOpenAsync(page, conditionId, consoleMessages);
 
-        var sellToggle = page.GetByRole(AriaRole.Button, new() { Name = "Sell", Exact = true })
+        var sellToggle = VisibleTradingPanel(page)
+            .GetByRole(AriaRole.Button, new() { Name = "Sell", Exact = true })
             .Filter(new() { Visible = true })
             .First;
         await Assertions.Expect(sellToggle).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await sellToggle.ClickAsync();
 
-        var limitOrder = page.GetByRole(AriaRole.Button, new() { Name = "Limit" })
+        var limitOrder = VisibleTradingPanel(page)
+            .GetByRole(AriaRole.Button, new() { Name = "Limit", Exact = true })
             .Filter(new() { Visible = true })
             .First;
         await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
@@ -2615,8 +2623,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
         });
+        await EnsureMarketDetailOpenAsync(page, conditionId, consoleMessages);
 
-        var limitOrder = page.GetByRole(AriaRole.Button, new() { Name = "Limit" })
+        var limitOrder = VisibleTradingPanel(page)
+            .GetByRole(AriaRole.Button, new() { Name = "Limit", Exact = true })
             .Filter(new() { Visible = true })
             .First;
         await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
@@ -2831,10 +2841,14 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             {
                 var snapshot = await page.EvaluateAsync<object?>(
                     @"async (tradeId) => {
-                        const active = await import('/src/stores/activeSwaps.ts');
-                        const pending = await import('/src/stores/pendingTrades.ts');
-                        const activeState = active.useActiveSwapsStore.getState();
-                        const pendingState = pending.usePendingTradesStore.getState();
+                        const appDiagnostics =
+                            window.__BITCASTER_E2E__?.getSwapDiagnostics?.(tradeId)
+                            ?? {
+                                activeTrade: null,
+                                activeTradeIds: [],
+                                pendingOrderIds: [],
+                                pendingTrades: {}
+                            };
                         const req = indexedDB.open('bitcaster');
                         const db = await new Promise((resolve, reject) => {
                             req.onsuccess = () => resolve(req.result);
@@ -2896,10 +2910,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                         }
                         return {
                             url: window.location.href,
-                            activeTrade: activeState.byTradeId[tradeId] ?? null,
-                            activeTradeIds: Object.keys(activeState.byTradeId),
-                            pendingOrderIds: Object.keys(pendingState.byOrderId),
-                            pendingTrades: pendingState.byOrderId,
+                            activeTrade: appDiagnostics.activeTrade,
+                            activeTradeIds: appDiagnostics.activeTradeIds,
+                            pendingOrderIds: appDiagnostics.pendingOrderIds,
+                            pendingTrades: appDiagnostics.pendingTrades,
                             proofSummary
                         };
                     }",
@@ -2976,12 +2990,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         IReadOnlyList<string> consoleMessages)
     {
         var expectedPath = $"/markets/{conditionId}";
-        for (var attempt = 0; attempt < 2; attempt++)
+        for (var attempt = 0; attempt < 4; attempt++)
         {
             try
             {
                 await Assertions.Expect(VisibleTradingPanel(page))
-                    .ToBeVisibleAsync(new() { Timeout = 10_000 });
+                    .ToBeVisibleAsync(new() { Timeout = 15_000 });
                 if (page.Url.Contains(expectedPath, StringComparison.Ordinal))
                 {
                     return;

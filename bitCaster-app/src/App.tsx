@@ -34,6 +34,9 @@ import {
 } from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
+import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
+
+installE2EDiagnostics();
 
 /**
  * Paths that render full-window wizards without the app shell. Keeping
