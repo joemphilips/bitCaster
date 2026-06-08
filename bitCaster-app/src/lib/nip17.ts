@@ -24,6 +24,7 @@ import { bytesToHex, hexToBytes } from "nostr-tools/utils";
 import NDK, {
   NDKPrivateKeySigner,
   NDKEvent,
+  NDKRelayStatus,
   type NDKFilter,
 } from "@nostr-dev-kit/ndk";
 import { DEFAULT_RELAYS } from "./nostr";
@@ -212,7 +213,7 @@ export async function subscribeNip17DMs(
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const checkConnected = () => {
       for (const relay of ndk.pool.relays.values()) {
-        if (relay.status === 1) { // WebSocket.OPEN
+        if (relay.status >= NDKRelayStatus.CONNECTED) {
           if (!resolved) {
             resolved = true;
             if (interval) clearInterval(interval);

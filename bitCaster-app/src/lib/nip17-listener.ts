@@ -27,6 +27,7 @@ interface ListenerHandle {
   unsub: () => void
   mnemonic: string
   relayKey: string
+  startedAt: number
 }
 
 let _current: ListenerHandle | null = null
@@ -115,7 +116,7 @@ export async function startNip17Listener(
     },
     relays.length > 0 ? relays : undefined
   )
-  _current = { unsub, mnemonic, relayKey }
+  _current = { unsub, mnemonic, relayKey, startedAt: Date.now() }
 }
 
 export function stopNip17Listener(): void {
@@ -126,6 +127,18 @@ export function stopNip17Listener(): void {
 /** Test helper — exposes the running listener handle. */
 export function __getNip17ListenerHandleForTests(): ListenerHandle | null {
   return _current
+}
+
+export function getNip17ListenerDiagnostics(): {
+  active: boolean
+  relayKey: string | null
+  startedAt: number | null
+} {
+  return {
+    active: _current !== null,
+    relayKey: _current?.relayKey ?? null,
+    startedAt: _current?.startedAt ?? null,
+  }
 }
 
 /** Test helper — reset dedup state between tests. */
