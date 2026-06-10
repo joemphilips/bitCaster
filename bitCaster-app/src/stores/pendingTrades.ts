@@ -29,6 +29,9 @@ export interface PendingTrade {
   ephemeralPrivkey: string
   /** Unix ms when the order was submitted — useful for TTL/expiry handling. */
   submittedAt: number
+  /** Market base asset and denominator captured from the accepted order. */
+  baseAsset?: string | null
+  divisibility?: number | null
   /** Reserved complete-set proofs created before a mint-maker buy rests. */
   preflightSplit?: PendingPreflightSplit
 }

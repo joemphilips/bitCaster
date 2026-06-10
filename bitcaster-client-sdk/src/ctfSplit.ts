@@ -19,6 +19,10 @@ import {
   amountToNumber,
   computeInputFeeSatsForProofs,
 } from "./proofSelection.ts";
+import {
+  normalizeMarketBaseAsset,
+  type MarketBaseAsset,
+} from "./marketUnits.ts";
 
 export interface CtfConditionalKeysetInfo {
   id: string;
@@ -95,6 +99,8 @@ export interface SplitCollateralSelection {
   inputFeeSats: number;
   grossInputSats: number;
 }
+
+export type CtfCollateralBaseAsset = MarketBaseAsset | string | null | undefined;
 
 export interface CtfGrossInputPlanningKeyset {
   id: string;
@@ -185,6 +191,7 @@ export interface RegularProofSplitResult {
 
 export async function splitRegularProofsWithOperation(params: {
   mintUrl: string;
+  baseAsset?: CtfCollateralBaseAsset;
   operationId: string;
   wallet: RegularSplitWallet;
   proofs: Proof[];
@@ -233,6 +240,7 @@ export async function splitRegularProofsWithOperation(params: {
       amount: amountToNumber(preview.amount),
       fees: amountToNumber(preview.fees),
       keysetId: preview.keysetId,
+      baseAsset: normalizeMarketBaseAsset(params.baseAsset),
       unselectedProofs: preview.unselectedProofs ?? [],
     },
   });
@@ -253,13 +261,16 @@ export async function selectCollateralForCtfSplit(
   mintUrl: string,
   availableProofs: Proof[],
   faceAmountSats: number,
+  baseAsset?: CtfCollateralBaseAsset,
 ): Promise<SplitCollateralSelection> {
   if (!Number.isSafeInteger(faceAmountSats) || faceAmountSats <= 0) {
     throw new Error("faceAmountSats must be a positive safe integer");
   }
 
   const mint = new CashuMint(mintUrl);
-  const wallet = new CashuWallet(mint, { unit: "sat" });
+  const wallet = new CashuWallet(mint, {
+    unit: normalizeMarketBaseAsset(baseAsset),
+  });
   await wallet.loadMint();
   if (!wallet.selectProofsToSend) {
     throw new Error(
@@ -346,6 +357,7 @@ export function computeGrossCtfInputAmountSats(params: {
 
 export async function splitRootCompleteSetForSwap(params: {
   mintUrl: string;
+  baseAsset?: CtfCollateralBaseAsset;
   conditionId: string;
   collateralProofs: Proof[];
   amountSats: number;
@@ -379,6 +391,7 @@ export async function splitRootCompleteSetForSwap(params: {
     collateralProofs: normalizedCollateral,
     outcomeCollectionKeysets,
     amountSats: params.amountSats,
+    baseAsset: params.baseAsset,
     proofOperationStore: params.proofOperationStore,
     makeOutputs: ({ collection, amountSats, keyset }) => {
       if (lockCollections.has(collection)) {
@@ -422,6 +435,7 @@ export async function splitRootCompleteSetForSwap(params: {
 
 export async function splitRootCompleteSetForPreflightOrder(params: {
   mintUrl: string;
+  baseAsset?: CtfCollateralBaseAsset;
   conditionId: string;
   collateralProofs: Proof[];
   amountSats: number;
@@ -452,6 +466,7 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
     collateralProofs: normalizedCollateral,
     outcomeCollectionKeysets,
     amountSats: params.amountSats,
+    baseAsset: params.baseAsset,
     proofOperationStore: params.proofOperationStore,
     makeOutputs: ({ amountSats, keyset }) =>
       RegularOutputData.createRandomData(Amount.from(amountSats), keyset),
@@ -479,6 +494,7 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
 
 export async function resolveRootPreflightOutputAmountSats(params: {
   mintUrl: string;
+  baseAsset?: CtfCollateralBaseAsset;
   conditionId: string;
   amountSats: number;
   lockOutcomeSetId: string;
@@ -518,6 +534,7 @@ export async function resolveRootPreflightOutputAmountSats(params: {
 
 export async function resolveRootDirectLockOutputAmountSats(params: {
   mintUrl: string;
+  baseAsset?: CtfCollateralBaseAsset;
   conditionId: string;
   amountSats: number;
   lockOutcomeSetId: string;
@@ -739,6 +756,7 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
 
 export async function splitCompleteSetWithOperation(params: {
   mintUrl: string;
+  baseAsset?: CtfCollateralBaseAsset;
   operationId: string;
   transport: CtfSplitTransport;
   conditionId: string;
@@ -790,6 +808,7 @@ export async function splitCompleteSetWithOperation(params: {
           metadata: {
             conditionId: params.conditionId,
             amountSats: params.amountSats,
+            baseAsset: normalizeMarketBaseAsset(params.baseAsset),
             outcomeCollectionKeysets: params.outcomeCollectionKeysets,
           },
         });
@@ -822,7 +841,9 @@ async function resumeCtfSplit(
     );
   }
 
-  const wallet = new CashuWallet(new CashuMint(mintUrl), { unit: "sat" });
+  const wallet = new CashuWallet(new CashuMint(mintUrl), {
+    unit: readOperationBaseAsset(entry.metadata),
+  });
   await wallet.loadMint();
   if (!wallet.checkProofsStates) {
     throw new Error(
@@ -844,6 +865,7 @@ async function resumeCtfSplit(
     const metadata = entry.metadata as {
       conditionId?: string;
       amountSats?: number;
+      baseAsset?: string | null;
       outcomeCollectionKeysets?: Record<string, string>;
     };
     if (
@@ -876,6 +898,12 @@ async function resumeCtfSplit(
 
   throw new Error(
     `Proof operation ${entry.operationId} is still pending at the mint`,
+  );
+}
+
+function readOperationBaseAsset(metadata: Record<string, unknown>): MarketBaseAsset {
+  return normalizeMarketBaseAsset(
+    typeof metadata.baseAsset === "string" ? metadata.baseAsset : undefined,
   );
 }
 

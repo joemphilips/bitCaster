@@ -1,6 +1,12 @@
 import { Plus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { WizardOutcome, OutcomeType } from '@/types/market-creation'
+import type { WizardOutcome, OutcomeType, MarketBaseAsset } from '@/types/market-creation'
+import {
+  DEFAULT_MARKET_BASE_ASSET,
+  DEFAULT_MARKET_DIVISIBILITY,
+  SUPPORTED_MARKET_DIVISIBILITIES,
+  marketUnitLabel,
+} from '@bitcaster/client-sdk/marketUnits'
 import {
   MAX_MARKET_OUTCOMES,
   probabilitySumValid,
@@ -14,6 +20,8 @@ interface OutcomesStepProps {
   hiBound?: number
   precision?: number
   unit?: string
+  baseAsset?: MarketBaseAsset
+  divisibility?: number
   onAddOutcome?: () => void
   onRemoveOutcome?: (outcomeId: string) => void
   onOutcomeLabelChange?: (outcomeId: string, label: string) => void
@@ -23,6 +31,8 @@ interface OutcomesStepProps {
   onHiBoundChange?: (value: number) => void
   onPrecisionChange?: (value: number) => void
   onUnitChange?: (value: string) => void
+  onBaseAssetChange?: (value: MarketBaseAsset) => void
+  onDivisibilityChange?: (value: number) => void
   onNext?: () => void
 }
 
@@ -67,6 +77,63 @@ function ProbabilityBar({ outcomes, sumOk, rangeOk }: { outcomes: WizardOutcome[
   )
 }
 
+function MarketUnitControls({
+  baseAsset,
+  divisibility,
+  onBaseAssetChange,
+  onDivisibilityChange,
+}: {
+  baseAsset?: MarketBaseAsset
+  divisibility?: number
+  onBaseAssetChange?: (value: MarketBaseAsset) => void
+  onDivisibilityChange?: (value: number) => void
+}) {
+  const { t } = useTranslation()
+  const selectedBaseAsset = baseAsset ?? DEFAULT_MARKET_BASE_ASSET
+  const selectedDivisibility = divisibility ?? DEFAULT_MARKET_DIVISIBILITY
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+      <div>
+        <label className="block text-sm font-medium text-slate-300 mb-2">
+          {t('marketCreation.baseAsset')}
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          {(['sat', 'usd'] as const).map((asset) => (
+            <button
+              key={asset}
+              type="button"
+              onClick={() => onBaseAssetChange?.(asset)}
+              className={`px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                selectedBaseAsset === asset
+                  ? 'border-blue-500 bg-blue-500/15 text-white'
+                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'
+              }`}
+            >
+              {marketUnitLabel(asset)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-300 mb-2">
+          {t('marketCreation.divisibility')}
+        </label>
+        <select
+          value={selectedDivisibility}
+          onChange={(event) => onDivisibilityChange?.(Number(event.target.value))}
+          className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
+        >
+          {SUPPORTED_MARKET_DIVISIBILITIES.map((value) => (
+            <option key={value} value={value}>
+              {value.toLocaleString()}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  )
+}
+
 export function OutcomesStep({
   outcomeType,
   outcomes,
@@ -74,6 +141,8 @@ export function OutcomesStep({
   hiBound,
   precision,
   unit,
+  baseAsset,
+  divisibility,
   onAddOutcome,
   onRemoveOutcome,
   onOutcomeLabelChange,
@@ -83,6 +152,8 @@ export function OutcomesStep({
   onHiBoundChange,
   onPrecisionChange,
   onUnitChange,
+  onBaseAssetChange,
+  onDivisibilityChange,
   onNext,
 }: OutcomesStepProps) {
   const { t } = useTranslation()
@@ -179,6 +250,13 @@ export function OutcomesStep({
           {t('marketCreation.marketOutcomesDesc')}
         </p>
 
+        <MarketUnitControls
+          baseAsset={baseAsset}
+          divisibility={divisibility}
+          onBaseAssetChange={onBaseAssetChange}
+          onDivisibilityChange={onDivisibilityChange}
+        />
+
         <div className="space-y-3 mb-4">
           {outcomes.map((outcome) => (
             <div key={outcome.id} className="p-4 rounded-lg bg-slate-900 border border-slate-700">
@@ -257,6 +335,13 @@ export function OutcomesStep({
       <p className="text-sm text-slate-400 mb-8">
         {t('marketCreation.defineOutcomesDesc')}
       </p>
+
+      <MarketUnitControls
+        baseAsset={baseAsset}
+        divisibility={divisibility}
+        onBaseAssetChange={onBaseAssetChange}
+        onDivisibilityChange={onDivisibilityChange}
+      />
 
       <div className="space-y-3 mb-4">
         {outcomes?.map((outcome) => (

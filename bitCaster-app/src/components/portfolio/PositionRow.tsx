@@ -1,13 +1,17 @@
 import type { KeyboardEvent } from "react";
+import { Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Position } from "@/types/portfolio";
-import { formatBtc } from "@/lib/format";
+import {
+  formatMarketSubunits,
+  normalizeMarketBaseAsset,
+} from "@bitcaster/client-sdk/marketUnits";
 
 interface PositionRowProps {
   position: Position;
   onSell?: (positionId: string) => void;
   onClaim?: (positionId: string) => void;
-  onRemove?: (positionId: string) => void;
+  onDiscard?: (positionId: string) => void;
   onView?: (positionId: string) => void;
 }
 
@@ -15,7 +19,7 @@ export function PositionRow({
   position,
   onSell,
   onClaim,
-  onRemove,
+  onDiscard,
   onView,
 }: PositionRowProps) {
   const { t } = useTranslation();
@@ -25,6 +29,13 @@ export function PositionRow({
   // once in usePortfolioState. They can never disagree, so the Remove button
   // can never be offered on a position the badge calls "Won".
   const { isWinner, isLoser, isPending } = position;
+  const baseAsset = normalizeMarketBaseAsset(position.baseAsset);
+  const canClaim =
+    position.canClaimPayout ??
+    (position.status === "closed" && isWinner);
+  const canDiscard =
+    position.canDiscard ??
+    (position.status === "closed" && isLoser && !isWinner && !isPending);
   const sideLabel = position.side.toUpperCase();
   const showOutcomeLabel =
     position.outcomeLabel &&
@@ -36,11 +47,9 @@ export function PositionRow({
     handleView();
   };
 
-  const handleRemove = (event: { stopPropagation: () => void }) => {
+  const handleDiscard = (event: { stopPropagation: () => void }) => {
     event.stopPropagation();
-    // Confirm step: these are bearer proofs — removing them is permanent.
-    if (!window.confirm(t("portfolio.removeLostConfirm"))) return;
-    onRemove?.(position.id);
+    onDiscard?.(position.id);
   };
 
   return (
@@ -106,7 +115,7 @@ export function PositionRow({
             </span>
           )}
           <span className="text-xs text-slate-400 dark:text-slate-500">
-            {position.shares} shares
+            {position.shares.toLocaleString()} shares
           </span>
         </div>
       </div>
@@ -114,13 +123,13 @@ export function PositionRow({
       {/* Value & P/L */}
       <div className="text-right shrink-0">
         <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-          {formatBtc(position.currentValueSats)}
+          {formatMarketSubunits(position.currentValueSats, baseAsset)}
         </div>
         <div
           className={`text-xs font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}
         >
           {isPositive ? "+" : ""}
-          {formatBtc(position.profitLossSats)} ({isPositive ? "+" : ""}
+          {formatMarketSubunits(position.profitLossSats, baseAsset)} ({isPositive ? "+" : ""}
           {position.profitLossPercent.toFixed(1)}%)
         </div>
       </div>
@@ -138,7 +147,7 @@ export function PositionRow({
           {t("common.sell")}
         </button>
       )}
-      {isWinner && onClaim && (
+      {canClaim && onClaim && (
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -150,13 +159,18 @@ export function PositionRow({
           {t("common.claim")}
         </button>
       )}
-      {isLoser && onRemove && (
+      {canDiscard && onDiscard && (
         <button
-          onClick={handleRemove}
-          aria-label={t("portfolio.removeAria", { title: position.marketTitle })}
-          className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-100 dark:bg-slate-700 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/30 transition-colors"
+          onClick={handleDiscard}
+          aria-label={t("portfolio.discardLostPosition", {
+            title: position.marketTitle,
+          })}
+          title={t("portfolio.discardLostPosition", {
+            title: position.marketTitle,
+          })}
+          className="shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
         >
-          {t("common.remove")}
+          <Trash2 className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
     </div>

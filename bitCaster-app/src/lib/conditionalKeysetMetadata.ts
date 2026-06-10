@@ -1,4 +1,5 @@
 import type { Proof } from "@cashu/cashu-ts";
+import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { normalizeUrl } from "@/lib/url";
 import type { StoredProof } from "@/stores/proof-db";
 
@@ -54,8 +55,10 @@ export async function storedConditionalProofsFromMintMetadata(input: {
   proofs: Proof[];
   expectedConditionId?: string;
   reservedBy?: string;
+  baseAsset?: string | null;
 }): Promise<StoredProof[]> {
   const out: StoredProof[] = [];
+  const baseAsset = normalizeMarketBaseAsset(input.baseAsset);
   for (const proof of input.proofs) {
     const metadata = await resolveConditionalProofMetadata(
       input.mintUrl,
@@ -67,6 +70,7 @@ export async function storedConditionalProofsFromMintMetadata(input: {
       ...metadata,
       mintUrl: input.mintUrl,
       reservedBy: input.reservedBy,
+      baseAsset,
     });
   }
   return out;

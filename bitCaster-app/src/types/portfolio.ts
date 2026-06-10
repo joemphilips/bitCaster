@@ -60,6 +60,10 @@ export interface Position {
   side: PositionSide
   outcomeId?: string
   outcomeLabel?: string
+  canClaimPayout?: boolean
+  canDiscard?: boolean
+  baseAsset?: 'sat' | 'usd' | 'jpy'
+  divisibility?: number
   shares: number
   avgBuyPrice: number
   currentPrice: number
@@ -106,7 +110,7 @@ export interface Position {
 
 export interface Fund {
   id: string
-  unit: 'sats' | 'usd'
+  unit: 'sats' | 'usd' | 'jpy'
   amount: number
   mintUrl: string
 }
@@ -122,6 +126,7 @@ export interface ActivityItem {
   id: string
   type: ActivityType
   amountSats: number
+  baseAsset?: 'sat' | 'usd' | 'jpy'
   date: string
   status: ActivityStatus
   txId: string | null
@@ -144,6 +149,8 @@ export interface CreatedMarket {
   imageUrl: string
   status: CreatedMarketStatus
   createdDate: string
+  baseAsset?: 'sat' | 'usd' | 'jpy'
+  divisibility?: number
   resolvedDate?: string
   refundedDate?: string
   volume: number
@@ -240,11 +247,8 @@ export interface PortfolioProps {
   /** Called when user claims payout from a winning position */
   onClaimPayout?: (positionId: string) => void
 
-  /**
-   * Called when user removes a LOST position — deletes its local CTF proofs
-   * without a mint redeem. Only offered for losers (P22 F2).
-   */
-  onRemovePosition?: (positionId: string) => void
+  /** Called when user removes a losing closed CTF position from local wallet state */
+  onDiscardLostPosition?: (positionId: string) => void
 
   /** Called when user clicks to view a fund */
   onViewFund?: (fundId: string) => void

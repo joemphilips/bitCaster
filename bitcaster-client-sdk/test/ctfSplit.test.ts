@@ -213,6 +213,7 @@ test("splitCompleteSetWithOperation prepares outputs before posting and complete
 
   const result = await splitCompleteSetWithOperation({
     mintUrl: "https://mint.example",
+    baseAsset: "usd",
     operationId: "op-1",
     transport,
     conditionId: CONDITION_ID,
@@ -237,6 +238,7 @@ test("splitCompleteSetWithOperation prepares outputs before posting and complete
   assert.equal(record?.state, "completed");
   assert.equal(record?.metadata.conditionId, CONDITION_ID);
   assert.equal(record?.metadata.amountSats, 100);
+  assert.equal(record?.metadata.baseAsset, "usd");
   assert.deepEqual(record?.metadata.outcomeCollectionKeysets, {
     YES: "keyset-yes",
     NO: "keyset-no",
@@ -385,6 +387,7 @@ test("splitRegularProofsWithOperation turns a larger regular proof into an exact
 
   const split = await splitRegularProofsWithOperation({
     mintUrl: "https://mint.example",
+    baseAsset: "usd",
     operationId: "regular-op-210",
     wallet,
     proofs: [proof("regular-keyset", 210, "input-210")],
@@ -398,6 +401,7 @@ test("splitRegularProofsWithOperation turns a larger regular proof into an exact
   assert.equal(wallet.prepareCalls, 1);
   assert.equal(wallet.completeCalls, 1);
   assert.equal(store.records.get("regular-op-210")?.state, "completed");
+  assert.equal(store.records.get("regular-op-210")?.metadata.baseAsset, "usd");
 });
 
 test("splitRegularProofsWithOperation replays completed regular splits without mint calls", async () => {

@@ -1,3 +1,9 @@
+import {
+  normalizeMarketDivisibility,
+  validatePriceNumerator,
+  validateWholeShareFaceAmount,
+} from './marketUnits.ts'
+
 export type SupportedOrderSide = 'Buy' | 'Sell'
 export type SupportedTimeInForce = 'FAK' | 'FOK' | 'GTC'
 
@@ -8,6 +14,7 @@ export interface OrderIntentForValidation {
   side?: unknown
   price?: unknown
   amountSats?: unknown
+  divisibility?: unknown
   timeInForce?: unknown
 }
 
@@ -65,28 +72,25 @@ export function validateOrderIntent(
     }
   }
   const price = intent.price
-  if (
-    typeof price !== 'number' ||
-    !Number.isInteger(price) ||
-    price < 1 ||
-    price > 99
-  ) {
+  const divisibility =
+    typeof intent.divisibility === 'number'
+      ? normalizeMarketDivisibility(intent.divisibility)
+      : normalizeMarketDivisibility(undefined)
+  if (typeof price !== 'number' || !validatePriceNumerator(price, divisibility)) {
     return {
       valid: false,
-      message: 'Order rejected: price must be an integer from 1 to 99.',
+      message: `Order rejected: price must be an integer from 1 to ${divisibility - 1}.`,
     }
   }
   const amountSats = intent.amountSats
   if (
     typeof amountSats !== 'number' ||
-    !Number.isInteger(amountSats) ||
-    amountSats <= 0 ||
-    amountSats % 100 !== 0
+    !validateWholeShareFaceAmount(amountSats, divisibility)
   ) {
     return {
       valid: false,
       message:
-        'Order rejected: amountSats must be a positive integer in 100 sat increments.',
+        `Order rejected: amountSats must be a positive integer in ${divisibility} sub-unit increments.`,
     }
   }
   if (

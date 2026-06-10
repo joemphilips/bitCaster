@@ -11,6 +11,7 @@ vi.mock('@/lib/cashu', () => ({
   sendProofs: vi.fn().mockResolvedValue({ keep: [], send: [{ secret: 's1', amount: 100 }] }),
   createMeltQuote: vi.fn(),
   meltProofs: vi.fn(),
+  spendRegularSatsAsToken: vi.fn().mockResolvedValue('cashuAtoken123'),
   waitForMintQuotePaid: vi.fn(),
 }))
 
@@ -293,6 +294,14 @@ describe('useDepositWithdrawState', () => {
       })
 
       expect(cashu.createMintQuote).toHaveBeenCalledTimes(1)
+      expect(cashu.createMintQuote).toHaveBeenCalledWith(1000, 'http://localhost:8085', 'sat')
+      expect(cashu.waitForMintQuotePaid).toHaveBeenCalledWith(
+        quote,
+        expect.any(Function),
+        expect.any(Object),
+        'http://localhost:8085',
+        'sat',
+      )
       expect(result.current.invoiceExpiresAtSec).toBe(quote.expiry)
     })
 
@@ -369,6 +378,7 @@ describe('useDepositWithdrawState', () => {
       expect(proofDb.addProofs).toHaveBeenCalledWith([
         expect.objectContaining({
           mintUrl: 'https://testnut.cashu.space',
+          baseAsset: 'sat',
           conditionId: 'condition-1',
           outcomeCollection: 'B',
           marketId: 'condition-1-B',
@@ -419,6 +429,57 @@ describe('useDepositWithdrawState', () => {
       expect(result.current.lightningInput).toBe('lnbc100n1pexample')
       expect(cashu.createMeltQuote).toHaveBeenCalledWith('lnbc100n1pexample', expect.any(String))
       expect(result.current.currentView).toBe('melt-confirm')
+    })
+  })
+
+  describe('sat-only withdraw paths', () => {
+    it('selects sat base proofs when sending ecash', async () => {
+      const cashu = await import('@/lib/cashu')
+      vi.mocked(cashu.spendRegularSatsAsToken).mockClear()
+
+      const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      act(() => result.current.onNumpadPress('5'))
+      act(() => result.current.onNumpadPress('0'))
+
+      await act(async () => { await result.current.onSendEcash() })
+
+      expect(cashu.spendRegularSatsAsToken).toHaveBeenCalledWith(
+        50,
+        'http://localhost:8085',
+      )
+    })
+
+    it('selects sat base proofs when paying lightning', async () => {
+      const proofDb = await import('@/stores/proof-db')
+      const cashu = await import('@/lib/cashu')
+      vi.mocked(proofDb.getBaseProofs).mockClear()
+      vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce({
+        quote: 'q1',
+        amount: 1000,
+        fee_reserve: 10,
+        state: 'UNPAID',
+        expiry: 0,
+        payment_preimage: null,
+      } as never)
+      vi.mocked(cashu.meltProofs).mockResolvedValueOnce({ paid: true, change: [] } as never)
+
+      const { result } = renderHook(() => useDepositWithdrawState('withdraw', onDismiss))
+      act(() => result.current.onSelectMethod('lightning'))
+      await act(async () => {
+        await result.current.onLightningInputChange('lnbc100n1pexample')
+      })
+      await act(async () => { await result.current.onConfirmMelt() })
+
+      expect(proofDb.getBaseProofs).toHaveBeenCalledWith(
+        'http://localhost:8085',
+        { baseAsset: 'sat' },
+      )
+      expect(cashu.meltProofs).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.any(Array),
+        'http://localhost:8085',
+      )
     })
   })
 })

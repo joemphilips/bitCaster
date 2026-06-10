@@ -49,6 +49,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onHiBoundChange,
     onPrecisionChange,
     onUnitChange,
+    onBaseAssetChange,
+    onDivisibilityChange,
     onLiquiditySatsChange,
     onDescriptionChange,
     onCreateMarket,
@@ -212,6 +214,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             hiBound={draft.stepOutcomes.hiBound}
             precision={draft.stepOutcomes.precision}
             unit={draft.stepOutcomes.unit}
+            baseAsset={draft.stepOutcomes.baseAsset}
+            divisibility={draft.stepOutcomes.divisibility}
             onAddOutcome={onAddOutcome}
             onRemoveOutcome={onRemoveOutcome}
             onOutcomeLabelChange={onOutcomeLabelChange}
@@ -221,6 +225,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             onHiBoundChange={onHiBoundChange}
             onPrecisionChange={onPrecisionChange}
             onUnitChange={onUnitChange}
+            onBaseAssetChange={onBaseAssetChange}
+            onDivisibilityChange={onDivisibilityChange}
             onNext={onNext}
           />
         )}

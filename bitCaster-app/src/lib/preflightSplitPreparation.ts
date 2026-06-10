@@ -23,6 +23,10 @@ import { useWalletStore } from "@/stores/wallet";
 import type { MarketDetail as MarketDetailType } from "@/types/market-detail";
 import { storedConditionalProofsFromMintMetadata } from "@/lib/conditionalKeysetMetadata";
 import { resolveGrossCtfInputPlanningKeyset } from "@/lib/ctfGrossInputPlanning";
+import {
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from "@bitcaster/client-sdk/marketUnits";
 
 export interface PreparedPreflightSplit {
   reservationId: string;
@@ -46,11 +50,15 @@ export async function preparePreflightSplitForLimitBuy(input: {
   amountSats: number;
   reservationId: string;
 }): Promise<PreparedPreflightSplit> {
-  if (input.amountSats % 100 !== 0) {
-    throw new Error("Pre-flight split requires 100 sat order increments.");
+  const divisibility = normalizeMarketDivisibility(input.market.divisibility);
+  if (input.amountSats % divisibility !== 0) {
+    throw new Error(
+      `Pre-flight split requires ${divisibility} sub-unit order increments.`,
+    );
   }
 
-  const available: Proof[] = await getBaseProofs(input.mintUrl);
+  const baseAsset = normalizeMarketBaseAsset(input.market.baseAsset);
+  const available: Proof[] = await getBaseProofs(input.mintUrl, { baseAsset });
   let resolvedKeepOutcomeSetId = input.selectedOutcomeSetId;
   let resolvedLockOutcomeSetId = input.complementOutcomeSetId;
 
@@ -59,6 +67,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
     const preflightOutputAmountSats =
       await resolveRootPreflightOutputAmountSats({
         mintUrl: input.mintUrl,
+        baseAsset,
         conditionId: input.market.id,
         amountSats: input.amountSats,
         keepOutcomeSetId: input.selectedOutcomeSetId,
@@ -68,6 +77,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
       mintUrl: input.mintUrl,
       available,
       faceAmountSats: preflightOutputAmountSats,
+      baseAsset,
       reservationId: input.reservationId,
       lotIndex,
     });
@@ -84,6 +94,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
     });
     const split = await splitRootCompleteSetForPreflightOrder({
       mintUrl: input.mintUrl,
+      baseAsset,
       conditionId: input.market.id,
       collateralProofs: collateral.inputs,
       amountSats: preflightOutputAmountSats,
@@ -102,6 +113,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
         conditionId: input.market.id,
         reservationId: input.reservationId,
         proofsByCollection: split.proofsByCollection,
+        baseAsset,
       }),
     );
   } catch (err) {
@@ -122,13 +134,17 @@ export async function prepareCollateralLotForCtfSplit(input: {
   mintUrl: string;
   available: Proof[];
   faceAmountSats: number;
+  baseAsset?: string | null;
   reservationId: string;
   lotIndex: number;
 }): Promise<PreparedCollateralLot> {
+  const baseAsset = normalizeMarketBaseAsset(input.baseAsset);
   const operationId = `${input.reservationId}:regular-split:${input.lotIndex}`;
   const existingRegularSplit = await getProofOperation(operationId);
   if (existingRegularSplit) {
-    const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
+    const wallet = await useWalletStore
+      .getState()
+      .getWallet(input.mintUrl, baseAsset);
     const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(wallet);
     const grossCtfInputSats = computeGrossCtfInputAmountSats({
       faceAmountSats: input.faceAmountSats,
@@ -136,6 +152,7 @@ export async function prepareCollateralLotForCtfSplit(input: {
     });
     const regularSplit = await splitRegularProofsWithOperation({
       mintUrl: input.mintUrl,
+      baseAsset,
       operationId,
       wallet,
       proofs: [],
@@ -146,6 +163,7 @@ export async function prepareCollateralLotForCtfSplit(input: {
       input.mintUrl,
       regularSplit.send,
       input.faceAmountSats,
+      baseAsset,
     );
     const regularSpentSecrets = regularSplit.spent.map((proof) => proof.secret);
     const storedInputStillPresent = input.available.some((proof) =>
@@ -156,10 +174,12 @@ export async function prepareCollateralLotForCtfSplit(input: {
         ...regularSplit.keep.map((proof) => ({
           ...proof,
           mintUrl: input.mintUrl,
+          baseAsset,
         })),
         ...exact.inputs.map((proof) => ({
           ...proof,
           mintUrl: input.mintUrl,
+          baseAsset,
           reservedBy: input.reservationId,
         })),
       ]);
@@ -181,6 +201,7 @@ export async function prepareCollateralLotForCtfSplit(input: {
       input.mintUrl,
       input.available,
       input.faceAmountSats,
+      baseAsset,
     );
     await diagnoseProofStates({
       label: "preflight:exact-collateral",
@@ -205,7 +226,9 @@ export async function prepareCollateralLotForCtfSplit(input: {
     // into a gross input that will net to the requested CTF face amount.
   }
 
-  const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
+  const wallet = await useWalletStore
+    .getState()
+    .getWallet(input.mintUrl, baseAsset);
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
     throw new Error(
       "Cashu wallet adapter does not support fee-aware proof selection.",
@@ -239,6 +262,7 @@ export async function prepareCollateralLotForCtfSplit(input: {
   });
   const regularSplit = await splitRegularProofsWithOperation({
     mintUrl: input.mintUrl,
+    baseAsset,
     operationId,
     wallet,
     proofs: selected.send,
@@ -249,6 +273,7 @@ export async function prepareCollateralLotForCtfSplit(input: {
     input.mintUrl,
     regularSplit.send,
     input.faceAmountSats,
+    baseAsset,
   );
   await replaceProofs(
     regularSplit.spent.map((proof) => proof.secret),
@@ -256,10 +281,12 @@ export async function prepareCollateralLotForCtfSplit(input: {
       ...regularSplit.keep.map((proof) => ({
         ...proof,
         mintUrl: input.mintUrl,
+        baseAsset,
       })),
       ...exact.inputs.map((proof) => ({
         ...proof,
         mintUrl: input.mintUrl,
+        baseAsset,
         reservedBy: input.reservationId,
       })),
     ],
@@ -276,12 +303,14 @@ async function ctfProofsToStore(input: {
   conditionId: string;
   reservationId: string;
   proofsByCollection: Record<string, Proof[]>;
+  baseAsset?: string | null;
 }): Promise<StoredProof[]> {
   return storedConditionalProofsFromMintMetadata({
     mintUrl: input.mintUrl,
     proofs: Object.values(input.proofsByCollection).flat(),
     expectedConditionId: input.conditionId,
     reservedBy: input.reservationId,
+    baseAsset: input.baseAsset,
   });
 }
 

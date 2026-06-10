@@ -36,6 +36,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       state.wallet.proofs.push(
         proofRecord('mint-a', 100, 'available', { kind: 'sats' }),
         proofRecord('mint-a', 50, 'reserved', { kind: 'sats' }),
+        proofRecord('mint-a', 999, 'available', { kind: 'sats', baseAsset: 'usd' }),
         proofRecord('mint-a', 25, 'locked', {
           kind: 'outcome',
           conditionId: 'cond',
@@ -335,12 +336,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         mintUrl: 'mint-a',
         amountSats: 7,
         proofCount: 1,
-        asset: { kind: 'sats' },
+        asset: { kind: 'sats', baseAsset: 'sat' },
       })
       const state = await readState()
       assert.equal(state?.wallet.proofs[0]?.proof.secret, 'fresh-secret')
       assert.equal(state?.wallet.proofs[0]?.state, 'available')
-      assert.deepEqual(state?.wallet.proofs[0]?.asset, { kind: 'sats' })
+      assert.deepEqual(state?.wallet.proofs[0]?.asset, { kind: 'sats', baseAsset: 'sat' })
     })
 
     await t.test('wallet.receive can classify imported proofs as outcome tokens', async () => {
@@ -400,6 +401,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           kind: 'outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
+          baseAsset: 'sat',
         },
       })
       const state = await readState()
@@ -407,6 +409,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         kind: 'outcome',
         conditionId: 'cond',
         outcomeSetId: 'YES',
+        baseAsset: 'sat',
       })
       assert.equal(state?.wallet.proofs[0]?.proof.secret, 'outcome-token-secret')
     })
@@ -971,6 +974,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       let capturedRequest: unknown = null
       let runtimeStartOrderIds: string[] = []
       const engine: EngineClientLike = {
+        ...scoreDisabledEngineMethods,
         async submitOrder(_marketId, request) {
           capturedRequest = request
           return {
@@ -1074,6 +1078,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       await writeState(emptyDaemonState())
       try {
         const engine: EngineClientLike = {
+          ...scoreDisabledEngineMethods,
           async submitOrder(_marketId, request) {
             return {
               orderId: 'order-complement',
@@ -1151,6 +1156,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const priorState = await readState()
       await writeState(emptyDaemonState())
       const engine: EngineClientLike = {
+        ...scoreDisabledEngineMethods,
         async submitOrder() {
           throw new EngineClientError(
             400,
@@ -1204,6 +1210,128 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
       assert.deepEqual((await readState())?.orders, {})
       if (priorState) await writeState(priorState)
+    })
+
+    await t.test('order.submit pays missing Participation Score from wallet sats before submitting', async () => {
+      const priorState = await readState()
+      const state = emptyDaemonState()
+      state.wallet.proofs.push(
+        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'score-proof'),
+      )
+      await writeState(state)
+
+      try {
+        const calls: string[] = []
+        let capturedPayment:
+          | { amountSats: number; token: string; paymentId?: string }
+          | null = null
+        const engine: EngineClientLike = {
+          async getParticipationScore() {
+            calls.push('score')
+            return scoreResponse({ balance: -1, matchDebitScore: 1 })
+          },
+          async payParticipationScoreEcash(amountSats, token, paymentId) {
+            calls.push('pay-score')
+            capturedPayment = { amountSats, token, paymentId }
+            return {
+              paymentId: paymentId ?? 'missing-payment-id',
+              status: 'credited',
+              amountSats,
+              creditedScore: amountSats,
+              creditedAt: '2026-06-09T00:00:00.000Z',
+            }
+          },
+          async submitOrder(_marketId, request) {
+            calls.push('submit')
+            return {
+              orderId: 'order-score',
+              status: 'resting',
+              remainingAmountSats: request.amountSats,
+              ephemeralPubkey: request.ephemeralPubkey,
+              fills: [],
+            }
+          },
+          async getOrderStatus() {
+            return null
+          },
+          async cancelOrder() {
+            throw new Error('cancelOrder unused')
+          },
+          async getOrderBook() {
+            throw new Error('getOrderBook unused')
+          },
+          async queryMarkets() {
+            return { markets: [], nextCursor: null }
+          },
+        }
+
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: {
+              marketId: 'cond-YES',
+              outcomeId: 'YES',
+              side: 'Buy',
+              price: 42,
+              amountSats: 100,
+              timeInForce: 'GTC',
+            },
+          },
+          {
+            createEngineClient() {
+              return engine
+            },
+            createCashuWallet() {
+              return resumableSendWallet({
+                onPrepare(amount, proofs) {
+                  assert.equal(amount, 2)
+                  assert.deepEqual(
+                    proofs.map((proof) => proof.secret),
+                    ['score-proof'],
+                  )
+                },
+                onComplete() {
+                  return {
+                    send: [cashuProof(2, 'score-token-proof')],
+                    keep: [cashuProof(6, 'score-change')],
+                  }
+                },
+              })
+            },
+            generateEphemeralKeypair: () => ({
+              privateKeyHex: '55'.repeat(32),
+              publicKeyHex: `02${'55'.repeat(32)}`,
+            }),
+          },
+        )
+
+        assert.equal(response.ok, true)
+        assert.deepEqual(calls, ['score', 'pay-score', 'submit'])
+        assert.equal(capturedPayment?.amountSats, 2)
+        assert.match(capturedPayment?.token ?? '', /^cashu/)
+        assert.match(capturedPayment?.paymentId ?? '', /^[0-9a-f-]{36}$/)
+        assert.match(
+          (response.result as { participationScore: { operationId: string } })
+            .participationScore.operationId,
+          /^engine-score:/,
+        )
+        assert.equal(
+          (response.result as { participationScore: { kind: string } })
+            .participationScore.kind,
+          'paid',
+        )
+        const updated = await readState()
+        assert.equal(
+          Object.values(updated?.proofOperations ?? {})[0]?.kind,
+          'wallet-send',
+        )
+        assert.deepEqual(
+          updated?.wallet.proofs.map((record) => record.proof.secret).sort(),
+          ['score-change'],
+        )
+      } finally {
+        if (priorState) await writeState(priorState)
+      }
     })
 
     await t.test('order.submit rejects malformed order intent before side effects', async () => {
@@ -1555,6 +1683,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test('order.submit remains successful when trade runtime start fails after persistence', async () => {
       await writeState(emptyDaemonState())
       const engine: EngineClientLike = {
+        ...scoreDisabledEngineMethods,
         async submitOrder(_marketId, request) {
           return {
             orderId: 'order-runtime-fail',
@@ -1636,6 +1765,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         {
           createEngineClient() {
             return {
+              ...scoreDisabledEngineMethods,
               async submitOrder(_marketId, request) {
                 capturedRequest = request
                 return {
@@ -1803,6 +1933,33 @@ function proofRecord(
     },
     createdAt: '2026-05-21T00:00:00.000Z',
     updatedAt: '2026-05-21T00:00:00.000Z',
+  }
+}
+
+const scoreDisabledEngineMethods = {
+  async getParticipationScore() {
+    return scoreResponse({ enabled: false })
+  },
+  async payParticipationScoreEcash() {
+    throw new Error('payParticipationScoreEcash unused')
+  },
+} satisfies Pick<
+  EngineClientLike,
+  'getParticipationScore' | 'payParticipationScoreEcash'
+>
+
+function scoreResponse(
+  overrides: Partial<Awaited<ReturnType<EngineClientLike['getParticipationScore']>>> = {},
+): Awaited<ReturnType<EngineClientLike['getParticipationScore']>> {
+  return {
+    pubkey: 'a'.repeat(64),
+    balance: 0,
+    purchasedTotal: 0,
+    consumedTotal: 0,
+    penaltyTotal: 0,
+    matchDebitScore: 1,
+    enabled: true,
+    ...overrides,
   }
 }
 

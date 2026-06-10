@@ -6,6 +6,10 @@ import {
   decideTradeStateChanged,
   isSettlementCompleteMessage,
 } from '@bitcaster-market/client-sdk/tradeFlow'
+import {
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type {
   PartialLockHeldRecord,
@@ -99,8 +103,8 @@ export interface StoredProofRecord {
 }
 
 export type StoredProofAsset =
-  | { kind: 'sats' }
-  | { kind: 'outcome'; conditionId: string; outcomeSetId: string }
+  | { kind: 'sats'; baseAsset?: string | null }
+  | { kind: 'outcome'; conditionId: string; outcomeSetId: string; baseAsset?: string | null }
 
 export interface LocalOrderRecord {
   orderId: string
@@ -109,6 +113,8 @@ export interface LocalOrderRecord {
   status: string
   ephemeralPubkey?: string
   preflightSplit?: LocalOrderPreflightSplit
+  baseAsset?: string | null
+  divisibility?: number
   tradeIds: string[]
   engineStatus?: unknown
   createdAt: string
@@ -145,6 +151,9 @@ export interface LocalSwapRecord {
   fillAmountSats?: number
   outcomeFaceAmountSats?: number
   quotePaymentSats?: number
+  baseAsset?: string | null
+  divisibility?: number
+  quotePaymentSubunits?: number
   settlementKind?: string | null
   sellerKeepOutcomeSetId?: string | null
   sellerLockOutcomeSetId?: string | null
@@ -185,6 +194,9 @@ export interface DaemonTradeCreatedPayload {
   fillAmountSats?: number
   outcomeFaceAmountSats?: number
   quotePaymentSats?: number
+  baseAsset?: string | null
+  divisibility?: number
+  quotePaymentSubunits?: number
   settlementKind?: string | null
   sellerKeepOutcomeSetId?: string | null
   sellerLockOutcomeSetId?: string | null
@@ -320,7 +332,7 @@ export async function addAvailableProofs(
         proof: normalizeCashuProofRecord(proof),
         mintUrl,
         state: 'available',
-        asset: structuredClone(asset),
+        asset: normalizeProofAsset(asset),
         createdAt: now,
         updatedAt: now,
       }
@@ -383,7 +395,8 @@ export async function reserveAvailableSatProofsForSend(input: {
         (record) =>
           record.mintUrl === input.mintUrl &&
           record.state === 'available' &&
-          record.asset.kind === 'sats',
+          record.asset.kind === 'sats' &&
+          normalizeProofAssetBaseAsset(record.asset) === 'sat',
       )
       .sort((a, b) => amountToNumber(b.proof.amount) - amountToNumber(a.proof.amount))
 
@@ -528,6 +541,8 @@ export function summarizeWalletBalance(state: DaemonState): WalletBalance {
   >()
 
   for (const proof of state.wallet.proofs) {
+    if (normalizeProofAssetBaseAsset(proof.asset) !== 'sat') continue
+
     const amount = amountToNumber(proof.proof.amount)
     const mint = getOrCreate(byMint, proof.mintUrl, () => ({
       mintUrl: proof.mintUrl,
@@ -670,6 +685,10 @@ function upsertOrderFromEngine(
   return updateState((state, now) => {
     const existing = state.orders[orderId]
     const status = readStringProperty(engineStatus, 'status') ?? existing?.status ?? 'unknown'
+    const baseAsset =
+      readStringProperty(engineStatus, 'baseAsset') ?? existing?.baseAsset ?? null
+    const divisibility =
+      readNumberProperty(engineStatus, 'divisibility') ?? existing?.divisibility
     const tradeIds = [
       ...new Set([
         ...(existing?.tradeIds ?? []),
@@ -683,6 +702,8 @@ function upsertOrderFromEngine(
       ...(nextTokenSide ? { tokenSide: nextTokenSide } : {}),
       status,
       ephemeralPubkey: ephemeralPubkey ?? existing?.ephemeralPubkey,
+      ...(baseAsset ? { baseAsset } : {}),
+      ...(divisibility ? { divisibility } : {}),
       ...(preflightSplit === null
         ? {}
         : preflightSplit || existing?.preflightSplit
@@ -707,6 +728,9 @@ function upsertOrderFromEngine(
         fillAmountSats: swap?.fillAmountSats,
         outcomeFaceAmountSats: swap?.outcomeFaceAmountSats,
         quotePaymentSats: swap?.quotePaymentSats,
+        baseAsset: swap?.baseAsset,
+        divisibility: swap?.divisibility,
+        quotePaymentSubunits: swap?.quotePaymentSubunits,
         settlementKind: swap?.settlementKind,
         sellerKeepOutcomeSetId: swap?.sellerKeepOutcomeSetId,
         sellerLockOutcomeSetId: swap?.sellerLockOutcomeSetId,
@@ -752,7 +776,9 @@ export async function recordTradeCreated(
       outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
       quotePaymentSats: payload.quotePaymentSats,
     })
+    const unitError = order ? tradeCreatedUnitMismatch(order, payload) : null
     const protocolError = decision.accepted ? null : decision.error
+    const accepted = decision.accepted && unitError === null
 
     const record: LocalSwapRecord = {
       tradeId: payload.tradeId,
@@ -766,6 +792,10 @@ export async function recordTradeCreated(
       outcomeFaceAmountSats:
         payload.outcomeFaceAmountSats ?? existing?.outcomeFaceAmountSats,
       quotePaymentSats: payload.quotePaymentSats ?? existing?.quotePaymentSats,
+      baseAsset: payload.baseAsset ?? order?.baseAsset ?? existing?.baseAsset ?? null,
+      divisibility: payload.divisibility ?? order?.divisibility ?? existing?.divisibility,
+      quotePaymentSubunits:
+        payload.quotePaymentSubunits ?? existing?.quotePaymentSubunits,
       settlementKind: payload.settlementKind ?? existing?.settlementKind ?? null,
       sellerKeepOutcomeSetId:
         payload.sellerKeepOutcomeSetId ?? existing?.sellerKeepOutcomeSetId ?? null,
@@ -778,8 +808,8 @@ export async function recordTradeCreated(
       buyerLockedProofs: existing?.buyerLockedProofs,
       sellerPreSigsHex: existing?.sellerPreSigsHex,
       engineState: existing?.engineState,
-      step: decision.accepted ? promoteTradeCreatedStep(existing?.step) : 'failed',
-      error: protocolError ?? existing?.error,
+      step: accepted ? promoteTradeCreatedStep(existing?.step) : 'failed',
+      error: unitError ?? protocolError ?? existing?.error,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
@@ -794,6 +824,25 @@ function promoteTradeCreatedStep(
   return existingStep === undefined || existingStep === 'awaiting-trade-created'
     ? 'opened'
     : existingStep
+}
+
+function tradeCreatedUnitMismatch(
+  order: LocalOrderRecord,
+  payload: DaemonTradeCreatedPayload,
+): string | null {
+  const expectedBaseAsset = normalizeMarketBaseAsset(order.baseAsset)
+  const actualBaseAsset = normalizeMarketBaseAsset(payload.baseAsset)
+  if (expectedBaseAsset !== actualBaseAsset) {
+    return `Trade unit mismatch: expected ${expectedBaseAsset}, received ${actualBaseAsset}.`
+  }
+
+  const expectedDivisibility = normalizeMarketDivisibility(order.divisibility)
+  const actualDivisibility = normalizeMarketDivisibility(payload.divisibility)
+  if (expectedDivisibility !== actualDivisibility) {
+    return `Trade divisibility mismatch: expected ${expectedDivisibility}, received ${actualDivisibility}.`
+  }
+
+  return null
 }
 
 export async function recordSwapMessage(
@@ -853,6 +902,7 @@ function normalizeState(value: unknown): DaemonState {
           proofs: (value.wallet.proofs as StoredProofRecord[]).map((record) => ({
             ...record,
             proof: normalizeCashuProofRecord(record.proof),
+            asset: normalizeProofAsset(record.asset),
           })),
           keysetCounters: isRecord(value.wallet.keysetCounters)
             ? normalizeCounterMap(value.wallet.keysetCounters)
@@ -869,6 +919,26 @@ function normalizeState(value: unknown): DaemonState {
       ? normalizeSwaps(value.swaps)
       : {},
   }
+}
+
+function normalizeProofAsset(asset: StoredProofAsset | undefined): StoredProofAsset {
+  if (asset?.kind === 'outcome') {
+    return {
+      kind: 'outcome',
+      conditionId: asset.conditionId,
+      outcomeSetId: asset.outcomeSetId,
+      baseAsset: normalizeProofAssetBaseAsset(asset),
+    }
+  }
+
+  return {
+    kind: 'sats',
+    baseAsset: normalizeProofAssetBaseAsset(asset),
+  }
+}
+
+function normalizeProofAssetBaseAsset(asset: StoredProofAsset | undefined): string {
+  return normalizeMarketBaseAsset(asset?.baseAsset)
 }
 
 function normalizeCounterMap(value: Record<string, unknown>): Record<string, number> {
@@ -1015,6 +1085,12 @@ function readStringProperty(value: unknown, key: string): string | null {
   if (!isRecord(value)) return null
   const field = value[key]
   return typeof field === 'string' ? field : null
+}
+
+function readNumberProperty(value: unknown, key: string): number | null {
+  if (!isRecord(value)) return null
+  const field = value[key]
+  return typeof field === 'number' && Number.isFinite(field) ? field : null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

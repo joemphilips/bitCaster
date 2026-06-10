@@ -1,6 +1,7 @@
 import Dexie, { type Table } from "dexie";
 import type { Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { normalizeUrl } from "../lib/url";
 
 export interface StoredProof extends Proof {
@@ -13,6 +14,8 @@ export interface StoredProof extends Proof {
   outcomeCollection?: string;
   /** Convenience mirror for the app's per-outcome market id. */
   marketId?: string;
+  /** Base asset for this proof's amount sub-units. Missing legacy rows are sats. */
+  baseAsset?: string;
   /** Timestamp (ms since epoch) when this proof was added to the wallet */
   receivedAt?: number;
 }
@@ -124,24 +127,35 @@ export async function getProofs(
     : normalized.filter((p) => !p.reservedBy);
 }
 
-export async function getBaseProofs(mintUrl?: string): Promise<StoredProof[]> {
-  const proofs = await getProofs(mintUrl);
-  return proofs.filter((p) => !isCtfProof(p));
+export async function getBaseProofs(
+  mintUrl?: string,
+  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
+): Promise<StoredProof[]> {
+  const proofs = await getProofs(mintUrl, {
+    includeReserved: options.includeReserved,
+  });
+  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
+  return proofs.filter(
+    (p) => !isCtfProof(p) && normalizeStoredProofBaseAsset(p) === baseAsset,
+  );
 }
 
 export async function getOutcomeProofs(
   mintUrl: string,
   conditionId: string,
   outcomeCollection: string,
-  options: { includeReserved?: boolean } = {},
+  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
 ): Promise<StoredProof[]> {
   const normalizedMintUrl = normalizeUrl(mintUrl);
+  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
   const indexed = await db.proofs
     .where("[mintUrl+conditionId+outcomeCollection]")
     .equals([normalizedMintUrl, conditionId, outcomeCollection])
     .toArray();
   if (indexed.length > 0) {
-    const normalized = indexed.map(normalizeStoredProof);
+    const normalized = indexed
+      .map(normalizeStoredProof)
+      .filter((proof) => normalizeStoredProofBaseAsset(proof) === baseAsset);
     return options.includeReserved
       ? normalized
       : normalized.filter((proof) => !proof.reservedBy);
@@ -158,6 +172,7 @@ export async function getOutcomeProofs(
       candidate.outcomeCollection ?? candidate.outcome_collection;
     return (
       proofConditionId === conditionId && proofOutcome === outcomeCollection
+      && normalizeStoredProofBaseAsset(p) === baseAsset
     );
   });
 }
@@ -177,14 +192,18 @@ export async function getOutcomeProofs(
 export async function getConditionCtfProofs(
   mintUrl: string,
   conditionId: string,
-  options: { includeReserved?: boolean } = {},
+  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
 ): Promise<StoredProof[]> {
   const proofs = await getProofs(mintUrl, options);
+  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
   return proofs.filter((p) => {
     if (!isCtfProof(p)) return false;
     const candidate = p as StoredProof & { condition_id?: string };
     const proofConditionId = candidate.conditionId ?? candidate.condition_id;
-    return proofConditionId === conditionId;
+    return (
+      proofConditionId === conditionId &&
+      normalizeStoredProofBaseAsset(p) === baseAsset
+    );
   });
 }
 
@@ -302,7 +321,12 @@ function normalizeStoredProof(proof: StoredProof): StoredProof {
     ...proof,
     amount: amountToNumber(proof.amount) as never,
     mintUrl: normalizeUrl(proof.mintUrl),
+    baseAsset: normalizeStoredProofBaseAsset(proof),
   };
+}
+
+function normalizeStoredProofBaseAsset(proof: StoredProof): string {
+  return normalizeMarketBaseAsset(proof.baseAsset);
 }
 
 export async function getProofOperation(

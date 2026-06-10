@@ -7,6 +7,11 @@ import { useActivityLogStore } from '@/stores/activity-log'
 import { safeHostname } from '@/lib/url'
 import type { MarketCatalogueEntry, MarketCatalogueResponse } from '@/lib/markets'
 import { outcomeSetDisplayLabel } from '@/lib/outcomeSets'
+import {
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+  type MarketBaseAsset,
+} from '@bitcaster/client-sdk/marketUnits'
 import type {
   WalletState,
   BaseCurrency,
@@ -48,7 +53,7 @@ const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
 function buildPLChartData(items: ActivityItem[]): PLChartData {
   // Sort oldest-first
   const sorted = [...items]
-    .filter((a) => a.status === 'completed')
+    .filter((a) => a.status === 'completed' && normalizeMarketBaseAsset(a.baseAsset) === 'sat')
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
   if (sorted.length === 0) {
@@ -107,7 +112,9 @@ function loadProfile(): UserProfile {
 }
 
 function computeStats(positions: Position[], fundsBalance: number): PortfolioStats {
-  const activePositions = positions.filter((p) => p.status === 'active')
+  const activePositions = positions.filter(
+    (p) => p.status === 'active' && normalizeMarketBaseAsset(p.baseAsset) === 'sat',
+  )
   const positionsValueSats = activePositions.reduce((sum, p) => sum + p.currentValueSats, 0)
   const biggestWinSats = positions.reduce(
     (max, p) => Math.max(max, p.profitLossSats),
@@ -184,6 +191,7 @@ export function usePortfolioState(): PortfolioState & {
       {
         conditionId: string
         outcomeCollection: string
+        baseAsset: MarketBaseAsset
         amount: number
         mintUrl: string
         firstReceivedAt: number
@@ -200,11 +208,13 @@ export function usePortfolioState(): PortfolioState & {
       const outcomeCollection =
         candidate.outcomeCollection ?? candidate.outcome_collection
       if (!conditionId || !outcomeCollection) continue
-      const key = `${conditionId}:${outcomeCollection}`
+      const baseAsset = normalizeMarketBaseAsset(proof.baseAsset)
+      const key = `${conditionId}:${outcomeCollection}:${baseAsset}`
       const current = byOutcome.get(key)
       byOutcome.set(key, {
         conditionId,
         outcomeCollection,
+        baseAsset,
         amount: (current?.amount ?? 0) + amountToNumber(proof.amount),
         mintUrl: current?.mintUrl ?? proof.mintUrl,
         firstReceivedAt: Math.min(
@@ -219,6 +229,8 @@ export function usePortfolioState(): PortfolioState & {
     ])
     return entries.map((entry): Position => {
       const market = catalogue.get(entry.conditionId)
+      const baseAsset = normalizeMarketBaseAsset(market?.baseAsset ?? entry.baseAsset)
+      const divisibility = normalizeMarketDivisibility(market?.divisibility)
       const outcomeLabel = outcomeSetDisplayLabel(
         market?.outcomes ?? [],
         entry.outcomeCollection,
@@ -266,9 +278,13 @@ export function usePortfolioState(): PortfolioState & {
         side: positionSide(entry.outcomeCollection),
         outcomeId: entry.outcomeCollection,
         outcomeLabel,
-        shares: entry.amount,
+        canClaimPayout: isWinner,
+        canDiscard: isLoser,
+        baseAsset,
+        divisibility,
+        shares: entry.amount / divisibility,
         avgBuyPrice: 0,
-        currentPrice: isClosed && isWinner ? 100 : 0,
+        currentPrice: isClosed && isWinner ? divisibility : 0,
         currentValueSats,
         // Pending (undecided) shows no realised P&L; only attested winners/losers do.
         profitLossSats: isClosed && !isPending ? currentValueSats : 0,
@@ -293,17 +309,23 @@ export function usePortfolioState(): PortfolioState & {
   const positions: Position[] = positionsFromDb ?? []
   const fundsFromDb = useLiveQuery(async () => {
     const proofs = await db.proofs.toArray()
-    const balanceByMint: Record<string, number> = {}
+    const balanceByMintAndUnit: Record<string, { mintUrl: string; baseAsset: MarketBaseAsset; amount: number }> = {}
     for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-      balanceByMint[p.mintUrl] =
-        (balanceByMint[p.mintUrl] ?? 0) + amountToNumber(p.amount)
+      const baseAsset = normalizeMarketBaseAsset(p.baseAsset)
+      const key = `${p.mintUrl}:${baseAsset}`
+      const current = balanceByMintAndUnit[key]
+      balanceByMintAndUnit[key] = {
+        mintUrl: p.mintUrl,
+        baseAsset,
+        amount: (current?.amount ?? 0) + amountToNumber(p.amount),
+      }
     }
-    return Object.entries(balanceByMint).map(([mintUrl, amount]) => {
+    return Object.values(balanceByMintAndUnit).map(({ mintUrl, baseAsset, amount }) => {
       const mintInfo = storeMints.find((m) => m.url === mintUrl)
       const name = (mintInfo?.info as Record<string, unknown>)?.name as string | undefined
       return {
-        id: mintUrl,
-        unit: 'sats' as const,
+        id: `${mintUrl}:${baseAsset}`,
+        unit: baseAsset === 'sat' ? 'sats' as const : baseAsset,
         amount,
         mintUrl,
         mintName: name ?? safeHostname(mintUrl),
@@ -311,7 +333,12 @@ export function usePortfolioState(): PortfolioState & {
     })
   }, [storeMints], [] as (Fund & { mintName: string })[])
   const funds: Fund[] = fundsFromDb
-  const fundsBalance = useMemo(() => fundsFromDb.reduce((sum, f) => sum + f.amount, 0), [fundsFromDb])
+  const fundsBalance = useMemo(
+    () => fundsFromDb
+      .filter((fund) => fund.unit === 'sats')
+      .reduce((sum, f) => sum + f.amount, 0),
+    [fundsFromDb],
+  )
 
   const stats = useMemo(() => computeStats(positions, fundsBalance), [positions, fundsBalance])
 

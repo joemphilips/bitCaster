@@ -14,7 +14,10 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import type { MarketDetail } from "@/types/market-detail";
-import { formatBtc } from "@/lib/format";
+import {
+  formatMarketSubunits,
+  normalizeMarketBaseAsset,
+} from "@bitcaster/client-sdk/marketUnits";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
 import { getMintIconUrl } from "@/lib/mints";
 import { assertNever } from "@/lib/enumDiscipline";
@@ -101,6 +104,7 @@ function isEngineMarketClosed(state: MarketDetail["state"]): boolean {
 export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
+  const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const activeMint = useWalletStore((s) =>
     s.mints.find((m) => m.url === activeMintUrl),
@@ -363,7 +367,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
             aria-label={t("market.volume")}
           >
             <TrendingUp className="w-3.5 h-3.5" />
-            <span>{formatBtc(market.volumeLifetimeSats)}</span>
+            <span>{formatMarketSubunits(market.volumeLifetimeSats, baseAsset)}</span>
           </div>
           <div
             className="flex items-center gap-1"
@@ -372,7 +376,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           >
             <Droplet className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
-              {formatBtc(market.liquiditySats)}
+              {formatMarketSubunits(market.liquiditySats, baseAsset)}
             </span>
           </div>
           <div

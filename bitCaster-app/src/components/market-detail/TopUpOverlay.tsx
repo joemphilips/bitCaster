@@ -12,6 +12,11 @@ import {
 import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
 import type { MintQuoteResponse } from '@cashu/cashu-ts'
+import {
+  formatMarketSubunits,
+  marketSubunitLabel,
+  normalizeMarketBaseAsset,
+} from '@bitcaster/client-sdk/marketUnits'
 
 type View = 'amount' | 'invoice'
 type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
@@ -21,8 +26,9 @@ function assertNeverWaitResult(r: never): never {
 }
 
 interface TopUpOverlayProps {
-  /** Minimum sats the user must top up — the trade deficit. */
+  /** Minimum base-asset subunits the user must top up — the trade deficit. */
   deficit: number
+  baseAsset?: string | null
   minimumDescription?: string
   minimumErrorDescription?: string
   /** Called after proofs have landed in the store. */
@@ -39,6 +45,7 @@ interface TopUpOverlayProps {
  */
 export function TopUpOverlay({
   deficit,
+  baseAsset: baseAssetInput,
   minimumDescription,
   minimumErrorDescription,
   onSuccess,
@@ -46,7 +53,10 @@ export function TopUpOverlay({
 }: TopUpOverlayProps) {
   const { t } = useTranslation()
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
-  const prefill = Math.max(deficit + FEE_BUFFER_SATS, 1)
+  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const subunitLabel = marketSubunitLabel(baseAsset)
+  const bufferSubunits = baseAsset === 'sat' ? FEE_BUFFER_SATS : 1
+  const prefill = Math.max(deficit + bufferSubunits, 1)
 
   const [view, setView] = useState<View>('amount')
   const [amount, setAmount] = useState(prefill)
@@ -91,8 +101,12 @@ export function TopUpOverlay({
 
   const handlePaidQuote = useCallback(async (quote: MintQuoteResponse, requested: number) => {
     try {
-      const proofs = await mintProofs(requested, quote, activeMintUrl)
-      const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl: activeMintUrl }))
+      const proofs = await mintProofs(requested, quote, activeMintUrl, baseAsset)
+      const stored: StoredProof[] = proofs.map((p) => ({
+        ...p,
+        mintUrl: activeMintUrl,
+        baseAsset,
+      }))
       await addProofs(stored)
       if (cancelledRef.current) return
       setStatus('paid')
@@ -104,7 +118,7 @@ export function TopUpOverlay({
         setError((e as Error).message)
       }
     }
-  }, [activeMintUrl])
+  }, [activeMintUrl, baseAsset])
 
   const handleWaitResult = useCallback((result: MintQuoteWaitResult, quote: MintQuoteResponse, requested: number) => {
     if (cancelledRef.current) return
@@ -130,7 +144,7 @@ export function TopUpOverlay({
     if (amount < deficit) {
       setError(
         minimumErrorDescription ??
-          `Amount must be at least ${deficit} sats to cover this trade.`,
+          `Amount must be at least ${formatMarketSubunits(deficit, baseAsset)} to cover this trade.`,
       )
       return
     }
@@ -145,7 +159,7 @@ export function TopUpOverlay({
       // Otherwise StrictMode (or a parent re-render) would issue a second quote
       // against the same mint state — LNBits then returns "Invoice already paid
       // or pending" verbatim, which the user sees as the P8 snackbar.
-      const quote = activeQuoteRef.current ?? await createMintQuote(requested, activeMintUrl)
+      const quote = activeQuoteRef.current ?? await createMintQuote(requested, activeMintUrl, baseAsset)
       activeQuoteRef.current = quote
       setBolt11(quote.request)
       setExpiresAtSec(quote.expiry ?? undefined)
@@ -156,6 +170,7 @@ export function TopUpOverlay({
         (r) => handleWaitResult(r, quote, requested),
         { onTransientError: (e) => { if (!cancelledRef.current) setError(e.message) } },
         activeMintUrl,
+        baseAsset,
       )
       if (cancelledRef.current) unsub()
       else unsubRef.current = unsub
@@ -168,7 +183,7 @@ export function TopUpOverlay({
     } finally {
       if (!cancelledRef.current) setLoading(false)
     }
-  }, [activeMintUrl, amount, deficit, handleWaitResult])
+  }, [activeMintUrl, amount, baseAsset, deficit, handleWaitResult, minimumErrorDescription])
 
   const regenerateInvoice = useCallback(() => {
     // Tear down the prior wait and clear the cached quote so the next
@@ -187,6 +202,7 @@ export function TopUpOverlay({
       <InvoiceDisplay
         bolt11={bolt11}
         amountSats={amount}
+        amountLabel={formatMarketSubunits(amount, baseAsset)}
         status={status}
         expiresAtSec={expiresAtSec}
         errorMessage={error}
@@ -215,11 +231,14 @@ export function TopUpOverlay({
         </div>
 
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          {minimumDescription ?? t('topUp.minimumDesc', { sats: deficit.toLocaleString() })}
+          {minimumDescription ??
+            t('topUp.minimumDesc', {
+              sats: formatMarketSubunits(deficit, baseAsset),
+            })}
         </p>
 
         <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">
-          {t('topUp.amountSats')}
+          {baseAsset === 'sat' ? t('topUp.amountSats') : `${t('topUp.amount')} (${subunitLabel})`}
         </label>
         <input
           data-testid="top-up-amount-input"

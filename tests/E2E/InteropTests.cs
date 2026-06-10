@@ -1086,6 +1086,7 @@ public class InteropTests : IAsyncLifetime
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
         });
+        await WaitForBitCasterNip17Listener(bitCasterPage);
 
         await CashuMePayPaymentRequest(cashuMePage, creq, payAmount, cashuMeConsole);
 

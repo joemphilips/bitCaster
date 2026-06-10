@@ -23,6 +23,8 @@ export interface SdkMarketForTrading {
   id: string
   type: SdkMarketType
   outcomes?: SdkMarketOutcome[]
+  baseAsset?: 'sat' | 'usd' | 'jpy'
+  divisibility?: number
 }
 
 export interface SdkTradeSelection {

@@ -52,15 +52,23 @@ public static class OrderEndpoints
                     return Results.BadRequest("Comment content must be at most 280 characters.");
             }
 
-            var result = bookManager.SubmitOrder(
-                resolvedRoute.InternalMarketId,
-                resolvedRoute.InternalOutcomeSetId,
-                req.Side,
-                req.Price,
-                req.AmountSats,
-                userId: takerUserId,
-                timeInForce: req.TimeInForce,
-                ephemeralPubkey: req.EphemeralPubkey);
+            SubmitResult result;
+            try
+            {
+                result = bookManager.SubmitOrder(
+                    resolvedRoute.InternalMarketId,
+                    resolvedRoute.InternalOutcomeSetId,
+                    req.Side,
+                    req.Price,
+                    req.AmountSats,
+                    userId: takerUserId,
+                    timeInForce: req.TimeInForce,
+                    ephemeralPubkey: req.EphemeralPubkey);
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ex.Message);
+            }
 
             await marketHub.Clients.Group(marketId)
                 .OrderBookUpdated(bookManager.GetSnapshot(marketId));
@@ -85,7 +93,10 @@ public static class OrderEndpoints
             await EmitTradeCreatedForFills(
                 tradeHub, trades, result.Fills, req.Side, req.EphemeralPubkey, marketId);
 
+            var unit = UnitForMarket(marketId);
             return Results.Ok(new SubmitOrderResponse(
+                baseAsset: unit.BaseAsset,
+                divisibility: unit.Divisibility,
                 ephemeralPubkey: req.EphemeralPubkey,
                 fills: result.Fills,
                 orderId: result.OrderId,
@@ -102,7 +113,10 @@ public static class OrderEndpoints
             if (status is null || !PublicRouteMatchesInternalMarket(marketId, status.MarketId))
                 return Results.NotFound();
 
+            var unit = UnitForMarket(marketId);
             return Results.Ok(new OrderStatusResponse(
+                baseAsset: unit.BaseAsset,
+                divisibility: unit.Divisibility,
                 filledAmountSats: status.FilledAmountSats,
                 fills: status.Fills,
                 marketId: marketId,
@@ -243,6 +257,9 @@ public static class OrderEndpoints
             var settlementKind = ReadString(fill, "settlementKind");
             var sellerKeepOutcomeSetId = ReadString(fill, "sellerKeepOutcomeSetId");
             var sellerLockOutcomeSetId = ReadString(fill, "sellerLockOutcomeSetId");
+            var baseAsset = ReadString(fill, "baseAsset");
+            var divisibility = ReadInt(fill, "divisibility");
+            var quotePaymentSubunits = ReadLong(fill, "quotePaymentSubunits");
             var record = trades.Register(
                 tradeId.Value,
                 sellerPubkey,
@@ -253,12 +270,16 @@ public static class OrderEndpoints
                 quotePaymentSats,
                 settlementKind,
                 sellerKeepOutcomeSetId,
-                sellerLockOutcomeSetId);
+                sellerLockOutcomeSetId,
+                baseAsset,
+                divisibility,
+                quotePaymentSubunits);
             await tradeHub.Clients.Group(TradeHub.GroupName(tradeId.Value))
                 .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
                     record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
                     record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
-                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId);
+                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId,
+                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits);
             await tradeHub.Clients.Groups([
                     TradeHub.OrderGroupName(fill.MakerOrderId),
                     TradeHub.OrderGroupName(fill.TakerOrderId)
@@ -266,7 +287,8 @@ public static class OrderEndpoints
                 .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
                     record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
                     record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
-                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId);
+                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId,
+                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits);
         }
     }
 
@@ -293,6 +315,26 @@ public static class OrderEndpoints
             JsonElement je when je.ValueKind == JsonValueKind.Number && je.TryGetInt64(out var value) => value,
             _ => null
         };
+    }
+
+    private static int? ReadInt(Fill fill, string key)
+    {
+        if (!fill.AdditionalProperties.TryGetValue(key, out var raw) || raw is null)
+            return null;
+        return raw switch
+        {
+            int value => value,
+            long value when value is >= int.MinValue and <= int.MaxValue => (int)value,
+            JsonElement je when je.ValueKind == JsonValueKind.Number && je.TryGetInt32(out var value) => value,
+            _ => null
+        };
+    }
+
+    private static (BaseAsset BaseAsset, int Divisibility) UnitForMarket(string marketId)
+    {
+        var conditionId = MarketParts.TryParse(marketId)?.ConditionId;
+        var market = conditionId is null ? null : MarketEndpoints.TryGetMarket(conditionId);
+        return (market?.BaseAsset ?? BaseAsset.Sat, market?.Divisibility is > 1 ? market.Divisibility : 100);
     }
 
     private static Guid? TryReadTradeId(Fill fill)

@@ -234,6 +234,28 @@ describe('useMarketCreationState – onCreateMarket', () => {
     )
   })
 
+  it('passes selected market unit to mintd registration and engine market creation', async () => {
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { result.current.onBaseAssetChange('usd') })
+    await act(async () => { result.current.onDivisibilityChange(1000) })
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          collateral: 'usd',
+        }),
+      }),
+    )
+    expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
+      baseAsset: 'usd',
+      divisibility: 1000,
+      liquiditySats: 0,
+    })
+    expect(result.current.createdMarketLiquiditySats).toBe(0)
+  })
+
   it('refreshes the active mint before rejecting missing CTF metadata', async () => {
     mockWalletState.activeMintUrl = 'http://localhost:8086'
     mockWalletState.mints = []

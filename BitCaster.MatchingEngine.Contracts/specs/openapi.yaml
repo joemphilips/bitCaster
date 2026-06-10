@@ -469,6 +469,59 @@ paths:
         '404':
           description: No deposit with this id for this condition
 
+  /api/v1/participation-score:
+    get:
+      operationId: getParticipationScore
+      summary: Read the authenticated user's participation Score
+      security:
+        - nip98: []
+      description: >
+        Returns the caller's non-withdrawable participation Score balance and
+        current match-debit policy. Score is a sat-denominated engine-use fee
+        balance, separate from market collateral units.
+      responses:
+        '200':
+          description: Participation Score state for the authenticated pubkey
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipationScoreResponse'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+
+  /api/v1/participation-score/ecash:
+    post:
+      operationId: payParticipationScoreEcash
+      summary: Pay ecash to top up participation Score
+      security:
+        - nip98: []
+      description: >
+        Pays a regular sat ecash token into the global Engine fee account.
+        The fee is non-refundable and credits participation Score for the
+        authenticated Nostr pubkey. The supplied token amount must exactly
+        match `amountSats`; this endpoint never credits a market account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayParticipationScoreEcashRequest'
+      responses:
+        '200':
+          description: Ecash accepted and Score credited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayParticipationScoreEcashResponse'
+        '400':
+          description: Validation error (e.g. malformed token or non-positive amount)
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '429':
+          description: Per-pubkey payment-request rate limit exceeded
+        '502':
+          description: Wallet-service payment error
+
   /api/v1/creators/{pubkey}/markets:
     get:
       operationId: listCreatorMarkets
@@ -685,8 +738,18 @@ components:
     Probability:
       type: integer
       minimum: 1
-      maximum: 99
-      description: A probability price representing a percentage chance [1, 99].
+      description: >
+        Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
+        `D` is the market's immutable `divisibility`. Legacy sat markets use
+        `D = 100`, so values still render as whole percentage points there.
+
+    BaseAsset:
+      type: string
+      enum: [sat, usd, jpy]
+      description: >
+        Market quote/collateral base asset. Current production creation accepts
+        `sat`; `usd` and `jpy` are structural values reserved until unit-aware
+        settlement and wallet flows are enabled end-to-end.
 
     OrderSide:
       type: string
@@ -733,8 +796,8 @@ components:
         CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same
         outcome (no split required); `Mint` pairs two Buys for complementary
         outcome sets and the maker supplies the complementary CTF side from
-        exact inventory, primitive complement legs, optional pre-flight
-        reservation, or an at-match collateral split. The
+        exact inventory, primitive complement legs, or an at-match collateral
+        split. The
         `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
 
     FillStatus:
@@ -742,10 +805,12 @@ components:
       enum:
         - Matched
         - Filled
+        - Failed
       description: >
         Lifecycle status of a fill-shaped order execution row. `Matched`
         means atomic-swap settlement is still pending; `Filled` means
-        settlement committed.
+        settlement committed; `Failed` means the atomic-swap session reached
+        a terminal failure and should no longer be retried.
 
     OracleNostrEvent:
       type: object
@@ -875,6 +940,8 @@ components:
         - path
         - filledAt
         - status
+        - baseAsset
+        - divisibility
       properties:
         id:
           type: string
@@ -892,15 +959,33 @@ components:
           allOf:
             - $ref: '#/components/schemas/Sats'
           description: >
-            Conditional-token face amount matched for settlement. DCB
-            mint-match reservations appear here before final fill commit so
-            clients can join the atomic-swap TradeHub session.
+            Conditional-token face amount matched for settlement. Provisional
+            mint matches appear here before final fill commit so clients can
+            join the atomic-swap TradeHub session.
         executionPrice:
           $ref: '#/components/schemas/Probability'
         path:
           $ref: '#/components/schemas/MatchPath'
         status:
           $ref: '#/components/schemas/FillStatus'
+        baseAsset:
+          allOf:
+            - $ref: '#/components/schemas/BaseAsset'
+          default: sat
+          description: Base asset for the fill amount and quote payment.
+        divisibility:
+          type: integer
+          format: int32
+          minimum: 2
+          default: 100
+          description: Market price denominator `D` for this fill.
+        quotePaymentSubunits:
+          type: integer
+          format: int64
+          nullable: true
+          description: >
+            Engine-computed quote payment in the market base-asset sub-unit.
+            Present for new trade-start fills; omitted for older replay data.
         filledAt:
           type: string
           format: date-time
@@ -909,10 +994,9 @@ components:
           type: string
           format: uuid
           description: >
-            Atomic-swap trade session identifier for this fill or DCB
-            reservation. Present when the client must join TradeHub to settle;
-            omitted only for legacy fills that do not have a corresponding
-            TradeHub session.
+            Atomic-swap trade session identifier for this fill. Present when
+            the client must join TradeHub to settle; omitted only for legacy
+            fills that do not have a corresponding TradeHub session.
         makerEphemeralPubkey:
           type: string
           pattern: '^[0-9a-fA-F]{66}$'
@@ -1025,6 +1109,8 @@ components:
         - filledAmountSats
         - fills
         - tokenSide
+        - baseAsset
+        - divisibility
       properties:
         orderId:
           type: string
@@ -1038,25 +1124,36 @@ components:
           description: >
             One of: "resting" (on book, unmatched), "matched" (reserved for
             atomic-swap settlement), "partially_filled", "filled",
-            "cancelled".
+            "cancelled", "failed".
         remainingAmountSats:
           $ref: '#/components/schemas/Sats'
         filledAmountSats:
           $ref: '#/components/schemas/Sats'
           description: >
-            Conditional-token face amount already consumed by fills or active
-            DCB mint-match reservations. A reservation is exposed here
-            before final settlement so clients can notify makers and start
-            the atomic-swap handshake.
+            Conditional-token face amount already consumed by committed fills
+            or currently matched atomic-swap sessions. A provisional mint match
+            is exposed here before final settlement so clients can notify
+            makers and start the atomic-swap handshake.
         fills:
           type: array
           items:
             $ref: '#/components/schemas/Fill'
           description: >
-            All fills and active DCB mint-match reservation handles
-            produced against this order so far.
+            All fills and active or terminal atomic-swap sessions produced
+            against this order so far.
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
+        baseAsset:
+          allOf:
+            - $ref: '#/components/schemas/BaseAsset'
+          default: sat
+          description: Base asset context for amount and price fields.
+        divisibility:
+          type: integer
+          format: int32
+          minimum: 2
+          default: 100
+          description: Market price denominator `D`.
 
     RestingOrderResponse:
       type: object
@@ -1071,6 +1168,8 @@ components:
         - timeInForce
         - placedAt
         - tokenSide
+        - baseAsset
+        - divisibility
       properties:
         orderId:
           type: string
@@ -1106,6 +1205,17 @@ components:
           nullable: true
           pattern: '^[0-9a-fA-F]{66}$'
           description: Order-level ephemeral pubkey supplied at submit time.
+        baseAsset:
+          allOf:
+            - $ref: '#/components/schemas/BaseAsset'
+          default: sat
+          description: Base asset context for amount and price fields.
+        divisibility:
+          type: integer
+          format: int32
+          minimum: 2
+          default: 100
+          description: Market price denominator `D`.
 
     ListRestingOrdersResponse:
       type: object
@@ -1125,6 +1235,8 @@ components:
         - remainingAmountSats
         - fills
         - ephemeralPubkey
+        - baseAsset
+        - divisibility
       properties:
         orderId:
           type: string
@@ -1134,7 +1246,8 @@ components:
           type: string
           description: >
             One of: "filled", "matched" (reserved for atomic-swap
-            settlement), "partially_filled", "resting", "cancelled".
+            settlement), "partially_filled", "resting", "cancelled",
+            "failed".
         remainingAmountSats:
           $ref: '#/components/schemas/Sats'
         fills:
@@ -1148,6 +1261,17 @@ components:
           description: >
             Echoes the ephemeralPubkey the client submitted. Lets clients
             confirm round-trip before they discard the corresponding privkey.
+        baseAsset:
+          allOf:
+            - $ref: '#/components/schemas/BaseAsset'
+          default: sat
+          description: Base asset context for amount and price fields.
+        divisibility:
+          type: integer
+          format: int32
+          minimum: 2
+          default: 100
+          description: Market price denominator `D`.
 
     LevelDto:
       type: object
@@ -1269,7 +1393,25 @@ components:
           format: int64
           minimum: 0
           default: 0
-          description: Initial liquidity budget in satoshis.
+          description: >
+            Initial AMM liquidity budget in satoshis. Must be `0` for non-sat
+            markets until unit-aware AMM liquidity is enabled.
+        baseAsset:
+          allOf:
+            - $ref: '#/components/schemas/BaseAsset'
+          default: sat
+          description: >
+            Immutable market base asset. Settlement-capable market creation
+            currently supports `sat` and `usd`; `jpy` is reserved.
+        divisibility:
+          type: integer
+          format: int32
+          minimum: 2
+          default: 100
+          description: >
+            Immutable price denominator `D`. Orders use price numerator `k`
+            where `1 <= k <= D - 1` and one whole share has face value `D`
+            base-asset sub-units.
         categoryTags:
           type: array
           items:
@@ -1614,6 +1756,101 @@ components:
         state:
           $ref: '#/components/schemas/DepositState'
 
+    ParticipationScoreResponse:
+      type: object
+      required:
+        - pubkey
+        - balance
+        - purchasedTotal
+        - consumedTotal
+        - penaltyTotal
+        - matchDebitScore
+        - enabled
+      properties:
+        pubkey:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Authenticated Nostr pubkey whose Score is returned.
+        balance:
+          type: integer
+          format: int64
+          description: Current participation Score balance. May be negative after soft match/penalty debits.
+        purchasedTotal:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total Score purchased by this pubkey.
+        consumedTotal:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total Score consumed by successful match debits.
+        penaltyTotal:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total Score consumed by settlement-negligence penalties.
+        matchDebitScore:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Configured Score debit charged to the taker when a match lands.
+        enabled:
+          type: boolean
+          description: Whether match-time Score debit is enabled by the engine.
+
+    PayParticipationScoreEcashRequest:
+      type: object
+      required:
+        - amountSats
+        - proofsToken
+      properties:
+        amountSats:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Exact sat amount carried by the supplied regular ecash token.
+        proofsToken:
+          type: string
+          description: Opaque Cashu token paid as a non-refundable Engine fee.
+        paymentId:
+          type: string
+          format: uuid
+          description: Optional caller-supplied idempotency id for retrying the same ecash payment.
+
+    PayParticipationScoreEcashResponse:
+      type: object
+      required:
+        - paymentId
+        - status
+        - amountSats
+        - creditedScore
+        - creditedAt
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+          description: Idempotency id assigned to this Score payment.
+        status:
+          type: string
+          enum:
+            - credited
+          description: Terminal success state for the synchronous ecash payment flow.
+        amountSats:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Ecash amount accepted as engine fee.
+        creditedScore:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Score credited for this payment.
+        creditedAt:
+          type: string
+          format: date-time
+          description: Time wallet-service accepted and credited the engine-fee payment.
+
     GetDepositResponseDto:
       type: object
       required:
@@ -1669,6 +1906,8 @@ components:
         - volumeLifetimeSats
         - categoryTags
         - lastSuccessfulRefreshAt
+        - baseAsset
+        - divisibility
       properties:
         conditionId:
           type: string
@@ -1780,6 +2019,15 @@ components:
           description: >
             Cumulative settled collateral face amount of all fills in the
             market's history.
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+        divisibility:
+          type: integer
+          format: int32
+          minimum: 2
+          description: >
+            Immutable market price denominator `D`. Legacy sat markets replay
+            as `100`.
         lastTradedPrice:
           type: number
           nullable: true

@@ -25,6 +25,7 @@ export type NotificationKind =
   | 'filled'
   | 'partially_filled'
   | 'cancelled'
+  | 'failed'
   | 'market_closed'
 
 export interface Notification {
@@ -33,7 +34,7 @@ export interface Notification {
    * notification twice (across reloads, retries, etc.) without creating
    * duplicate bell entries. Format:
    *
-   *   filled / cancelled → `{orderId}-{kind}` (terminal, one per order)
+   *   filled / cancelled / failed → `{orderId}-{kind}` (terminal, one per order)
    *   partially_filled   → `{orderId}-partially_filled-{fillCount}` (one per step)
    *   market_closed      → `{marketId}-market_closed` (one per liked market)
    */

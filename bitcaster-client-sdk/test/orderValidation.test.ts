@@ -39,11 +39,11 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
     [{ ...validOrder, price: 42.5 }, /price must be an integer from 1 to 99/],
     [
       { ...validOrder, amountSats: 0 },
-      /amountSats must be a positive integer in 100 sat increments/,
+      /amountSats must be a positive integer in 100 sub-unit increments/,
     ],
     [
       { ...validOrder, amountSats: 50 },
-      /amountSats must be a positive integer in 100 sat increments/,
+      /amountSats must be a positive integer in 100 sub-unit increments/,
     ],
     [
       { ...validOrder, timeInForce: 'IOC' },
@@ -54,4 +54,19 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
     assert.equal(result.valid, false)
     assert.match(result.valid ? '' : result.message, message)
   }
+})
+
+test('validateOrderIntent applies supplied market divisibility', () => {
+  assert.deepEqual(
+    validateOrderIntent({ ...validOrder, divisibility: 1_000, price: 999, amountSats: 2_000 }),
+    { valid: true },
+  )
+
+  const priceResult = validateOrderIntent({ ...validOrder, divisibility: 1_000, price: 1_000 })
+  assert.equal(priceResult.valid, false)
+  assert.match(priceResult.valid ? '' : priceResult.message, /from 1 to 999/)
+
+  const amountResult = validateOrderIntent({ ...validOrder, divisibility: 1_000, amountSats: 1_500 })
+  assert.equal(amountResult.valid, false)
+  assert.match(amountResult.valid ? '' : amountResult.message, /1000 sub-unit increments/)
 })

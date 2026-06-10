@@ -9,7 +9,12 @@ public static partial class MarketEndpoints
 {
     private const int MaxOutcomes = 8;
 
-    private sealed record MarketRecord(CreateMarketResponse Response, DateTimeOffset CreatedAt, IReadOnlyList<string> Outcomes);
+    internal sealed record MarketRecord(
+        CreateMarketResponse Response,
+        DateTimeOffset CreatedAt,
+        IReadOnlyList<string> Outcomes,
+        BaseAsset BaseAsset,
+        int Divisibility);
 
     private static readonly ConcurrentDictionary<string, MarketRecord> Markets = new();
 
@@ -70,6 +75,10 @@ public static partial class MarketEndpoints
             var probSum = metadata.Outcomes.Sum(o => o.Probability);
             if (probSum != 100)
                 return Results.BadRequest($"Outcome probabilities must sum to 100 (got {probSum})");
+            var baseAsset = metadata.BaseAsset ?? BaseAsset.Sat;
+            var divisibility = metadata.Divisibility ?? 100;
+            if (divisibility <= 1)
+                return Results.BadRequest("divisibility must be greater than 1");
 
             // Validate thumbnail before committing any state
             var thumbnailFile = form.Files.GetFile("thumbnail");
@@ -148,7 +157,9 @@ public static partial class MarketEndpoints
             var record = new MarketRecord(
                 response,
                 DateTimeOffset.UtcNow,
-                metadata.Outcomes.Select(o => o.Name).ToList());
+                metadata.Outcomes.Select(o => o.Name).ToList(),
+                baseAsset,
+                divisibility);
 
             // Atomically check-and-insert to avoid TOCTOU race
             if (!Markets.TryAdd(conditionId, record))
@@ -198,4 +209,7 @@ public static partial class MarketEndpoints
 
     internal static IReadOnlyList<string>? TryGetRegisteredOutcomes(string conditionId) =>
         Markets.TryGetValue(conditionId, out var record) ? record.Outcomes : null;
+
+    internal static MarketRecord? TryGetMarket(string conditionId) =>
+        Markets.TryGetValue(conditionId, out var record) ? record : null;
 }

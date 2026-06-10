@@ -119,6 +119,108 @@ test('BitcasterEngineClient.getMarketComments reads condition-keyed comments', a
   ])
 })
 
+test('BitcasterEngineClient.getParticipationScore reads authenticated Score state', async () => {
+  const requests: Array<{ url: string; auth?: string }> = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: async ({ url, method }) => {
+      assert.equal(method, 'GET')
+      assert.equal(url, 'https://engine.example/api/v1/participation-score')
+      return 'Nostr auth'
+    },
+    fetchImpl: async (input, init) => {
+      requests.push({
+        url: String(input),
+        auth: new Headers(init?.headers).get('authorization') ?? undefined,
+      })
+      return new Response(
+        JSON.stringify({
+          pubkey: 'a'.repeat(64),
+          balance: -1,
+          purchasedTotal: 3,
+          consumedTotal: 4,
+          penaltyTotal: 0,
+          matchDebitScore: 1,
+          enabled: true,
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      )
+    },
+  })
+
+  const score = await client.getParticipationScore()
+
+  assert.equal(score.balance, -1)
+  assert.equal(score.enabled, true)
+  assert.deepEqual(requests, [
+    {
+      url: 'https://engine.example/api/v1/participation-score',
+      auth: 'Nostr auth',
+    },
+  ])
+})
+
+test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee body', async () => {
+  const requests: Array<{ url: string; method?: string; body?: string; auth?: string }> = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: async ({ url, method, bodyText }) => {
+      assert.equal(url, 'https://engine.example/api/v1/participation-score/ecash')
+      assert.equal(method, 'POST')
+      assert.equal(bodyText, JSON.stringify({
+        amountSats: 2,
+        proofsToken: 'cashuB-token',
+        paymentId: 'client-payment-id',
+      }))
+      return 'Nostr auth'
+    },
+    fetchImpl: async (input, init) => {
+      requests.push({
+        url: String(input),
+        method: init?.method,
+        body: String(init?.body),
+        auth: new Headers(init?.headers).get('authorization') ?? undefined,
+      })
+      return new Response(
+        JSON.stringify({
+          paymentId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+          status: 'credited',
+          amountSats: 2,
+          creditedScore: 2,
+          creditedAt: '2026-06-09T00:00:00Z',
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      )
+    },
+  })
+
+  const result = await client.payParticipationScoreEcash(
+    2,
+    'cashuB-token',
+    'client-payment-id',
+  )
+
+  assert.equal(result.status, 'credited')
+  assert.deepEqual(requests, [
+    {
+      url: 'https://engine.example/api/v1/participation-score/ecash',
+      method: 'POST',
+      body: JSON.stringify({
+        amountSats: 2,
+        proofsToken: 'cashuB-token',
+        paymentId: 'client-payment-id',
+      }),
+      auth: 'Nostr auth',
+    },
+  ])
+})
+
 test('BitcasterEngineClient default fetch keeps the browser fetch receiver', async () => {
   const originalFetch = globalThis.fetch
   let observedThis: unknown

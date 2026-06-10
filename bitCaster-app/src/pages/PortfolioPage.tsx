@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { useNavigate } from "react-router";
+import { useTranslation } from "react-i18next";
 import { Portfolio } from "@/components/portfolio";
 import { DepositWithdrawOverlay } from "@/components/deposit-withdraw/DepositWithdrawOverlay";
 import { usePortfolioState } from "./usePortfolioState";
@@ -16,13 +17,21 @@ import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 
-export function toPortfolioMarketDetailId(marketId: string): string {
-  const separator = marketId.indexOf("-");
+export function toPortfolioMarketDetailId(
+  marketId: string,
+  outcomeId?: string | null,
+): string {
+  const suffix = outcomeId ? `-${outcomeId}` : "";
+  if (suffix && marketId.endsWith(suffix)) {
+    return marketId.slice(0, -suffix.length);
+  }
+  const separator = marketId.lastIndexOf("-");
   return separator > 0 ? marketId.slice(0, separator) : marketId;
 }
 
 export function PortfolioPage() {
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const state = usePortfolioState();
   const [overlayMode, setOverlayMode] = useState<DepositWithdrawMode | null>(
     null,
@@ -63,7 +72,9 @@ export function PortfolioPage() {
     (positionId: string) => {
       const position = state.positions.find((p) => p.id === positionId);
       if (position) {
-        navigate(`/markets/${toPortfolioMarketDetailId(position.marketId)}`);
+        navigate(
+          `/markets/${toPortfolioMarketDetailId(position.marketId, position.outcomeId)}`,
+        );
       }
     },
     [navigate, state.positions],
@@ -73,7 +84,9 @@ export function PortfolioPage() {
     (positionId: string) => {
       const position = state.positions.find((p) => p.id === positionId);
       if (position) {
-        navigate(`/markets/${toPortfolioMarketDetailId(position.marketId)}`);
+        navigate(
+          `/markets/${toPortfolioMarketDetailId(position.marketId, position.outcomeId)}`,
+        );
       }
     },
     [navigate, state.positions],
@@ -111,6 +124,7 @@ export function PortfolioPage() {
         const proofs = await getConditionCtfProofs(
           position.mintUrl,
           conditionId,
+          { baseAsset: position.baseAsset },
         );
         if (proofs.length === 0)
           throw new Error("Position has no redeemable proofs");
@@ -123,9 +137,11 @@ export function PortfolioPage() {
           proofs,
           mintUrl: position.mintUrl,
           outcomeCollection,
+          baseAsset: position.baseAsset,
         });
         addActivity({
           type: "payout_claimed",
+          baseAsset: position.baseAsset,
           amountSats: regularProofs.reduce(
             (sum, proof) => sum + amountToNumber(proof.amount),
             0,
@@ -146,7 +162,7 @@ export function PortfolioPage() {
     [addActivity, claimingPositionId, state.positions],
   );
 
-  const handleRemovePosition = useCallback(
+  const handleDiscardLostPosition = useCallback(
     async (positionId: string) => {
       const position = state.positions.find((p) => p.id === positionId);
       // Gate on the SAME single source-of-truth as the "Lost" badge and the
@@ -163,6 +179,7 @@ export function PortfolioPage() {
         position.isPending
       )
         return;
+      if (!window.confirm(t("portfolio.discardLostPositionConfirm"))) return;
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
@@ -174,7 +191,7 @@ export function PortfolioPage() {
               position.mintUrl,
               conditionId,
               outcomeCollection,
-              { includeReserved: true },
+              { includeReserved: true, baseAsset: position.baseAsset },
             )
           : [];
         // F2 defense-in-depth (P22 Link F): destroying a proof on a WINNING
@@ -198,9 +215,14 @@ export function PortfolioPage() {
         }
       } catch (error) {
         console.error("[portfolio] failed to remove lost position", error);
+        window.alert(
+          error instanceof Error
+            ? error.message
+            : "Failed to remove losing position",
+        );
       }
     },
-    [state.positions],
+    [state.positions, t],
   );
 
   const handlePositionsTabChange = useCallback(
@@ -248,7 +270,7 @@ export function PortfolioPage() {
         onViewPosition={handleViewPosition}
         onViewMarket={handleViewMarket}
         onClaimPayout={handleClaimPayout}
-        onRemovePosition={handleRemovePosition}
+        onDiscardLostPosition={handleDiscardLostPosition}
         onPositionsTabChange={handlePositionsTabChange}
         onOpenSettings={handleOpenSettings}
         showConnectNostrCta={showConnectNostrCta}

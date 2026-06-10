@@ -111,6 +111,10 @@ import {
   amountToNumber,
   takeProofsForLock,
 } from "@bitcaster/client-sdk/proofSelection";
+import {
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from "@bitcaster/client-sdk/marketUnits";
 import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
 import {
   resolveConditionalProofMetadata,
@@ -150,12 +154,16 @@ async function prepareRegularCollateralForCtfSplit(input: {
   mintUrl: string;
   available: Proof[];
   faceAmountSats: number;
+  baseAsset?: string | null;
   reservationId: string;
   operationId: string;
 }): Promise<Proof[]> {
+  const baseAsset = normalizeMarketBaseAsset(input.baseAsset);
   const existingRegularSplit = await getProofOperation(input.operationId);
   if (existingRegularSplit) {
-    const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
+    const wallet = await useWalletStore
+      .getState()
+      .getWallet(input.mintUrl, baseAsset);
     const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(wallet);
     const grossCtfInputSats = computeGrossCtfInputAmountSats({
       faceAmountSats: input.faceAmountSats,
@@ -163,6 +171,7 @@ async function prepareRegularCollateralForCtfSplit(input: {
     });
     const regularSplit = await splitRegularProofsWithOperation({
       mintUrl: input.mintUrl,
+      baseAsset,
       operationId: input.operationId,
       wallet,
       proofs: [],
@@ -173,16 +182,19 @@ async function prepareRegularCollateralForCtfSplit(input: {
       input.mintUrl,
       regularSplit.send,
       input.faceAmountSats,
+      baseAsset,
     );
     await removeProofs(regularSplit.spent.map((proof) => proof.secret));
     await addProofs([
       ...regularSplit.keep.map((proof) => ({
         ...proof,
         mintUrl: input.mintUrl,
+        baseAsset,
       })),
       ...exact.inputs.map((proof) => ({
         ...proof,
         mintUrl: input.mintUrl,
+        baseAsset,
         reservedBy: input.reservationId,
       })),
     ]);
@@ -195,13 +207,16 @@ async function prepareRegularCollateralForCtfSplit(input: {
         input.mintUrl,
         input.available,
         input.faceAmountSats,
+        baseAsset,
       )
     ).inputs;
   } catch {
     // Fall through to a regular sat split that creates an exact CTF input.
   }
 
-  const wallet = await useWalletStore.getState().getWallet(input.mintUrl);
+  const wallet = await useWalletStore
+    .getState()
+    .getWallet(input.mintUrl, baseAsset);
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
     throw new Error(
       "Cashu wallet adapter does not support fee-aware proof selection.",
@@ -225,6 +240,7 @@ async function prepareRegularCollateralForCtfSplit(input: {
   }
   const regularSplit = await splitRegularProofsWithOperation({
     mintUrl: input.mintUrl,
+    baseAsset,
     operationId: input.operationId,
     wallet,
     proofs: selected.send,
@@ -235,16 +251,19 @@ async function prepareRegularCollateralForCtfSplit(input: {
     input.mintUrl,
     regularSplit.send,
     input.faceAmountSats,
+    baseAsset,
   );
   await removeProofs(regularSplit.spent.map((proof) => proof.secret));
   await addProofs([
     ...regularSplit.keep.map((proof) => ({
       ...proof,
       mintUrl: input.mintUrl,
+      baseAsset,
     })),
     ...exact.inputs.map((proof) => ({
       ...proof,
       mintUrl: input.mintUrl,
+      baseAsset,
       reservedBy: input.reservationId,
     })),
   ]);
@@ -559,6 +578,14 @@ async function handleTradeCreatedOnce(
   }
   if (!swap) return;
 
+  const unitMismatch = tradeCreatedUnitMismatch(payload, swap);
+  if (unitMismatch) {
+    useActiveSwapsStore
+      .getState()
+      .setStep(payload.tradeId, "failed", unitMismatch);
+    return;
+  }
+
   if (promotedFromPending) {
     if (joinedTradeIds.has(payload.tradeId)) return;
     joinedTradeIds.add(payload.tradeId);
@@ -599,6 +626,9 @@ async function handleTradeCreatedOnce(
     {
       outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
       quotePaymentSats: payload.quotePaymentSats,
+      baseAsset: payload.baseAsset,
+      divisibility: payload.divisibility,
+      quotePaymentSubunits: payload.quotePaymentSubunits,
       settlementKind: payload.settlementKind,
       sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId,
       sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId,
@@ -623,6 +653,8 @@ function promotePendingTradeFromTradeCreated(
     marketId: pendingTrade.marketId,
     ephemeralPrivkeyHex: pendingTrade.ephemeralPrivkey,
     ephemeralPubkeyHex: pendingTrade.ephemeralPubkey,
+    baseAsset: pendingTrade.baseAsset,
+    divisibility: pendingTrade.divisibility,
   });
 
   return useActiveSwapsStore.getState().byTradeId[payload.tradeId] ?? null;
@@ -689,6 +721,25 @@ function tradeCreatedMatchesPendingOrderPath(
   return (
     pendingTrade.marketId === `${market.conditionId}-${expectedOutcomeSetId}`
   );
+}
+
+function tradeCreatedUnitMismatch(
+  payload: TradeCreatedPayload,
+  swap: ActiveSwap,
+): string | null {
+  const expectedBaseAsset = normalizeMarketBaseAsset(swap.baseAsset);
+  const actualBaseAsset = normalizeMarketBaseAsset(payload.baseAsset);
+  if (expectedBaseAsset !== actualBaseAsset) {
+    return `Trade unit mismatch: expected ${expectedBaseAsset}, received ${actualBaseAsset}.`;
+  }
+
+  const expectedDivisibility = normalizeMarketDivisibility(swap.divisibility);
+  const actualDivisibility = normalizeMarketDivisibility(payload.divisibility);
+  if (expectedDivisibility !== actualDivisibility) {
+    return `Trade divisibility mismatch: expected ${expectedDivisibility}, received ${actualDivisibility}.`;
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -773,6 +824,7 @@ async function prepareDirectSellerOpening(
           mintUrl,
           swap.outcomeFaceAmountSats ?? undefined,
           swap.marketId,
+          swap.baseAsset,
         );
   const amountSats =
     swap.outcomeFaceAmountSats ??
@@ -788,6 +840,7 @@ async function prepareDirectSellerOpening(
     changeProofs: locked.changeProofs,
     mintUrl,
     conditionId: outcome.conditionId,
+    baseAsset: swap.baseAsset,
   });
   return sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
 }
@@ -813,6 +866,7 @@ async function prepareMintSellerOpening(
     split.conditionId,
     split.lockOutcomeSetId,
     amountSats,
+    swap.baseAsset,
   );
   if (selectedOutcomeGroups) {
     const locked = await lockSelectedOutcomeProofGroups({
@@ -829,6 +883,7 @@ async function prepareMintSellerOpening(
       changeProofs: locked.changeProofs,
       mintUrl,
       conditionId: split.conditionId,
+      baseAsset: swap.baseAsset,
     });
     return sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
   }
@@ -885,6 +940,7 @@ async function prepareMintSellerOpening(
         mintUrl,
         conditionId: split.conditionId,
         reservedBy: preflight.reservationId,
+        baseAsset: swap.baseAsset,
       });
     }
 
@@ -917,6 +973,7 @@ async function prepareMintSellerOpening(
       mintUrl,
       conditionId: split.conditionId,
       reservedBy: preflight.reservationId,
+      baseAsset: swap.baseAsset,
     });
     await releaseMatchedPreflightProofs({
       mintUrl,
@@ -928,12 +985,14 @@ async function prepareMintSellerOpening(
         swap.tradeId,
         "seller-preflight-keep-exact-v2",
       ),
+      baseAsset: swap.baseAsset,
     });
     return out;
   }
 
   const splitOutputAmountSats = await resolveRootDirectLockOutputAmountSats({
     mintUrl,
+    baseAsset: swap.baseAsset,
     conditionId: split.conditionId,
     amountSats,
     lockOutcomeSetId: split.lockOutcomeSetId,
@@ -944,14 +1003,16 @@ async function prepareMintSellerOpening(
     ? existingOperation.inputs
     : await prepareRegularCollateralForCtfSplit({
         mintUrl,
-        available: await getBaseProofs(mintUrl),
+        available: await getBaseProofs(mintUrl, { baseAsset: swap.baseAsset }),
         faceAmountSats: splitOutputAmountSats,
+        baseAsset: swap.baseAsset,
         reservationId: `trade-collateral:${swap.tradeId}`,
         operationId: proofOperationId(swap.tradeId, "seller-regular-ctf-input"),
       });
 
   const splitResult = await splitRootCompleteSetForSwap({
     mintUrl,
+    baseAsset: swap.baseAsset,
     conditionId: split.conditionId,
     collateralProofs,
     amountSats: splitOutputAmountSats,
@@ -976,6 +1037,7 @@ async function prepareMintSellerOpening(
         (collection) => splitResult.proofsByCollection[collection] ?? [],
       ),
       expectedConditionId: split.conditionId,
+      baseAsset: swap.baseAsset,
     }),
   );
 
@@ -987,8 +1049,11 @@ async function selectOutcomeProofs(
   conditionId: string,
   outcomeSetId: string,
   amountSats: number,
+  baseAsset?: string | null,
 ): Promise<StoredProof[] | null> {
-  const available = await getOutcomeProofs(mintUrl, conditionId, outcomeSetId);
+  const available = await getOutcomeProofs(mintUrl, conditionId, outcomeSetId, {
+    baseAsset,
+  });
   return takeProofsForLock(
     available,
     amountSats,
@@ -1001,12 +1066,14 @@ async function selectOutcomeProofGroups(
   conditionId: string,
   outcomeSetId: string,
   amountSats: number,
+  baseAsset?: string | null,
 ): Promise<SelectedOutcomeProofGroup[] | null> {
   const exact = await selectOutcomeProofs(
     mintUrl,
     conditionId,
     outcomeSetId,
     amountSats,
+    baseAsset,
   );
   if (exact) return [{ outcomeSetId, proofs: exact }];
 
@@ -1020,6 +1087,7 @@ async function selectOutcomeProofGroups(
       conditionId,
       primitiveOutcomeSetId,
       amountSats,
+      baseAsset,
     );
     if (!proofs) return null;
     groups.push({ outcomeSetId: primitiveOutcomeSetId, proofs });
@@ -1245,6 +1313,7 @@ async function persistReservedPreflightExactProofs(input: {
   mintUrl: string;
   conditionId: string;
   reservedBy: string;
+  baseAsset?: string | null;
 }): Promise<void> {
   const spentSecrets = new Set(input.spentProofs.map((proof) => proof.secret));
   const isNoop =
@@ -1260,6 +1329,7 @@ async function persistReservedPreflightExactProofs(input: {
       proofs: [...input.exactProofs, ...input.changeProofs],
       expectedConditionId: input.conditionId,
       reservedBy: input.reservedBy,
+      baseAsset: input.baseAsset,
     }),
   );
 }
@@ -1271,6 +1341,7 @@ async function releaseMatchedPreflightProofs(input: {
   outcomeSetId: string;
   amountSats: number;
   operationId: string;
+  baseAsset?: string | null;
 }): Promise<void> {
   const selected = await prepareReservedPreflightExactProofs(input);
   if (!selected.wasSplit) {
@@ -1287,12 +1358,14 @@ async function releaseMatchedPreflightProofs(input: {
         mintUrl: input.mintUrl,
         proofs: selected.exactProofs,
         expectedConditionId: input.conditionId,
+        baseAsset: input.baseAsset,
       })),
       ...(await storedConditionalProofsFromMintMetadata({
         mintUrl: input.mintUrl,
         proofs: selected.changeProofs,
         expectedConditionId: input.conditionId,
         reservedBy: input.reservationId,
+        baseAsset: input.baseAsset,
       })),
     ],
   );
@@ -1390,7 +1463,7 @@ async function runBuyerRespond(
     if (swap.buyerState) {
       throw new Error("Buyer response already prepared but ciphertext is missing");
     }
-    const amountSats = swap.quotePaymentSats;
+    const amountSats = swap.quotePaymentSubunits ?? swap.quotePaymentSats;
     if (
       typeof amountSats !== "number" ||
       !Number.isSafeInteger(amountSats) ||
@@ -1405,7 +1478,7 @@ async function runBuyerRespond(
     const existingOperation = await getProofOperation(operationId);
     const proofs = existingOperation?.kind === "swap-lock"
       ? existingOperation.inputs
-      : await loadProofsForLock(mintUrl, amountSats);
+      : await loadProofsForLock(mintUrl, amountSats, undefined, swap.baseAsset);
     const out = await buyerPrepareSwap(
       ctx,
       swap.messages.adaptorPoint,
@@ -1494,7 +1567,12 @@ async function runSettlementClaim(
     if (swap.role === "buyer") {
       const market = splitMarketId(swap.marketId);
       if (!market) throw new Error(`Invalid market id ${swap.marketId}`);
-      await persistFreshConditionalProofs(fresh, mintUrl, market.conditionId);
+      await persistFreshConditionalProofs(
+        fresh,
+        mintUrl,
+        market.conditionId,
+        swap.baseAsset,
+      );
     } else {
       await persistFreshProofs(fresh, mintUrl);
     }
@@ -1564,6 +1642,7 @@ async function loadProofsForLock(
   mintUrl: string,
   targetSats?: number,
   sellerMarketId?: string,
+  baseAsset?: string | null,
 ): Promise<Proof[]> {
   const outcome = sellerMarketId
     ? outcomeMetadataForMarket(sellerMarketId)
@@ -1573,8 +1652,9 @@ async function loadProofsForLock(
         mintUrl,
         outcome.conditionId,
         outcome.outcomeCollection,
+        { baseAsset },
       )
-    : await getBaseProofs(mintUrl);
+    : await getBaseProofs(mintUrl, { baseAsset });
   if (proofs.length === 0) {
     throw new Error(
       outcome
@@ -1638,6 +1718,7 @@ async function persistConditionalLockChange(input: {
   mintUrl: string;
   conditionId: string;
   reservedBy?: string;
+  baseAsset?: string | null;
 }): Promise<void> {
   await replaceProofs(
     input.spentProofs.map((proof) => proof.secret),
@@ -1646,6 +1727,7 @@ async function persistConditionalLockChange(input: {
       proofs: input.changeProofs,
       expectedConditionId: input.conditionId,
       reservedBy: input.reservedBy,
+      baseAsset: input.baseAsset,
     }),
   );
 }
@@ -1654,6 +1736,7 @@ async function persistFreshConditionalProofs(
   proofs: Proof[],
   mintUrl: string,
   conditionId: string,
+  baseAsset?: string | null,
 ): Promise<void> {
   if (proofs.length === 0) return;
   await addProofs(
@@ -1661,6 +1744,7 @@ async function persistFreshConditionalProofs(
       mintUrl,
       proofs,
       expectedConditionId: conditionId,
+      baseAsset,
     }),
   );
 }
@@ -1682,11 +1766,13 @@ export async function persistPartialLockFromError(input: {
         proofs: partial.lockedProofs,
         expectedConditionId: input.conditionId,
         reservedBy: input.swap.tradeId,
+        baseAsset: input.swap.baseAsset,
       })),
       ...(await storedConditionalProofsFromMintMetadata({
         mintUrl: input.mintUrl,
         proofs: partial.changeProofs,
         expectedConditionId: input.conditionId,
+        baseAsset: input.swap.baseAsset,
       })),
     ],
   );
@@ -1733,11 +1819,13 @@ async function persistPartialLockParts(input: {
         proofs: input.lockedProofs,
         expectedConditionId: input.conditionId,
         reservedBy: input.swap.tradeId,
+        baseAsset: input.swap.baseAsset,
       })),
       ...(await storedConditionalProofsFromMintMetadata({
         mintUrl: input.mintUrl,
         proofs: input.changeProofs,
         expectedConditionId: input.conditionId,
+        baseAsset: input.swap.baseAsset,
       })),
     ],
   );

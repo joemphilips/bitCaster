@@ -11,8 +11,14 @@ import type {
   CategoricalMarketDetail,
   NumericMarketDetail,
 } from '@/types/market-detail'
-import { formatBtc } from '@/lib/format'
 import { useTranslation } from 'react-i18next'
+import {
+  formatMarketSubunits,
+  formatWholeShareFaceValue,
+  marketSubunitLabel,
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from '@bitcaster/client-sdk/marketUnits'
 
 interface TradingPanelProps {
   market: MarketDetail
@@ -430,38 +436,43 @@ function LimitPriceInput({
 function LimitOrderPreviewSection({
   preview,
   feePercent,
+  formatAmount,
 }: {
   preview: LimitOrderPreview
   feePercent: number
+  formatAmount: (amount: number) => string
 }) {
   const { t } = useTranslation()
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
-      {/* Limit Price + Shares-if-filled rows removed: the limit price is the
-          editable field above, and the share count is now the order input
-          itself — both would be duplicates. */}
       <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesTimesPrice')}</span>
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.limitPrice')}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
-          {formatBtc(preview.quoteSats)}
+          {formatAmount(preview.limitPrice)}
+        </span>
+      </div>
+      <div className="flex justify-between text-sm">
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesIfFilled')}</span>
+        <span className="font-medium text-slate-600 dark:text-slate-300">
+          {(preview.sharesIfFilled ?? preview.amount).toLocaleString()}
         </span>
       </div>
       <div className="flex justify-between text-sm">
         <span className="text-slate-500 dark:text-slate-400">{t('trade.creatorFee', { percent: feePercent })}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
-          {formatBtc(preview.creatorFee)}
+          {formatAmount(preview.creatorFee)}
         </span>
       </div>
       <div className="flex justify-between text-sm">
         <span className="text-slate-500 dark:text-slate-400">{t('trade.mintFee')}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
-          {formatBtc(preview.mintFee)}
+          {formatAmount(preview.mintFee)}
         </span>
       </div>
       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
         <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalCost')}</span>
         <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-total-cost">
-          {formatBtc(preview.totalCost)}
+          {formatAmount(preview.totalCost)}
         </span>
       </div>
       <p className="text-[10px] text-slate-400 dark:text-slate-500 pt-1">
@@ -500,7 +511,11 @@ export function TradingPanel({
   const [tradeComment, setTradeComment] = useState('')
   const isSell = tradeSide === 'sell'
   const isLimit = orderType === 'limit'
-  const baseUnit = market.baseUnit ?? 'sats'
+  const baseAsset = normalizeMarketBaseAsset(market.baseAsset)
+  const divisibility = normalizeMarketDivisibility(market.divisibility)
+  const subunitLabel = marketSubunitLabel(baseAsset)
+  const wholeShareLabel = formatWholeShareFaceValue({ baseAsset, divisibility })
+  const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
 
   const handleBuyAmountChange = (raw: number) => {
     if (!Number.isFinite(raw) || raw <= 0) {
@@ -522,12 +537,12 @@ export function TradingPanel({
     if (!walletReady) return t('wallet.createWallet')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
-    const sharesAmountLabel = `${tradeAmount.toLocaleString()} ${t('trade.sharesUnit')}`
+    const amountLabel = formatAmount(tradeAmount)
 
-    if (isSell && isLimit) return t('trade.confirmLimitSell', { amount: sharesAmountLabel })
-    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: sharesAmountLabel })
-    if (isLimit) return t('trade.confirmLimitBuy', { amount: sharesAmountLabel })
-    return t('trade.confirmBuy', { side: sideLabel, amount: sharesAmountLabel })
+    if (isSell && isLimit) return t('trade.confirmLimitSell', { amount: amountLabel })
+    if (isSell) return t('trade.confirmSell', { side: sideLabel, amount: amountLabel })
+    if (isLimit) return t('trade.confirmLimitBuy', { amount: amountLabel })
+    return t('trade.confirmBuy', { side: sideLabel, amount: amountLabel })
   }
 
   return (
@@ -573,7 +588,9 @@ export function TradingPanel({
         <div className="mt-5 pt-5 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between mb-1">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
-              {isSell ? t('trade.sharesToSell') : t('trade.shares')}
+              {isSell
+                ? t('trade.amountToSell', { unit: subunitLabel })
+                : t('trade.amountSubunits', { unit: subunitLabel })}
             </span>
             <button
               onClick={onTradeClear}
@@ -587,9 +604,12 @@ export function TradingPanel({
               balance is intentionally omitted from this panel. */}
           {isSell && userHoldings != null && (
             <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
-              {t('trade.balance', { count: userHoldings })}
+              {t('trade.balanceAmount', { amount: formatAmount(userHoldings) })}
             </p>
           )}
+          <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
+            {t('trade.wholeShareValue', { amount: wholeShareLabel })}
+          </p>
 
           {/* Shares Input — one displayed share maps to a 100-sat conditional
               token face lot at the protocol boundary. No ₿ prefix: this is a
@@ -608,11 +628,8 @@ export function TradingPanel({
               step={1}
               min={0}
               placeholder="0"
-              className="w-full pl-4 pr-16 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full pl-4 pr-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-mono text-xs uppercase tracking-wide">
-              {t('trade.sharesUnit')}
-            </span>
           </div>
 
           {/* Quick Amount / Percentage Buttons */}
@@ -651,7 +668,7 @@ export function TradingPanel({
           {isLimit && (
             <LimitPriceInput
               limitPrice={limitPrice}
-              baseUnit={baseUnit}
+              baseUnit={subunitLabel}
               onLimitPriceChange={onLimitPriceChange}
             />
           )}
@@ -686,14 +703,14 @@ export function TradingPanel({
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500 dark:text-slate-400">{t('trade.creatorFee', { percent: market.creator.feePercent })}</span>
                 <span className="font-medium text-slate-600 dark:text-slate-300">
-                  {formatBtc(tradePreview.creatorFee)}
+                  {formatAmount(tradePreview.creatorFee)}
                 </span>
               </div>
               {!isSell && (
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-500 dark:text-slate-400">{t('trade.totalCost')}</span>
                   <span className="font-medium text-slate-600 dark:text-slate-300">
-                    {formatBtc(tradePreview.totalCost)}
+                    {formatAmount(tradePreview.totalCost)}
                   </span>
                 </div>
               )}
@@ -702,7 +719,7 @@ export function TradingPanel({
                   {isSell ? t('trade.proceeds') : t('trade.potentialPayout')}
                 </span>
                 <span className="font-bold text-emerald-600 dark:text-emerald-400">
-                  {formatBtc(isSell ? tradePreview.totalCost : tradePreview.potentialPayout)}
+                  {formatAmount(isSell ? tradePreview.totalCost : tradePreview.potentialPayout)}
                 </span>
               </div>
             </div>
@@ -713,6 +730,7 @@ export function TradingPanel({
             <LimitOrderPreviewSection
               preview={limitOrderPreview}
               feePercent={market.creator.feePercent}
+              formatAmount={formatAmount}
             />
           )}
 

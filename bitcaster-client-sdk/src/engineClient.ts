@@ -1,3 +1,5 @@
+import type { MarketBaseAsset } from './marketUnits.ts'
+
 export type EngineFetch = typeof fetch
 
 export interface EngineClientOptions {
@@ -43,10 +45,13 @@ export interface Fill {
   amountSats: number
   executionPrice: number
   path: 'Complementary' | 'Mint'
-  status: 'Matched' | 'Filled' | 'Released'
+  status: 'Matched' | 'Filled' | 'Failed'
   filledAt: string
   tradeId?: string
   makerEphemeralPubkey?: string
+  baseAsset: MarketBaseAsset
+  divisibility: number
+  quotePaymentSubunits?: number | null
 }
 
 export interface SubmitOrderResponse {
@@ -55,6 +60,8 @@ export interface SubmitOrderResponse {
   remainingAmountSats: number
   fills: Fill[]
   ephemeralPubkey: string
+  baseAsset: MarketBaseAsset
+  divisibility: number
 }
 
 export interface EngineProblem {
@@ -70,6 +77,8 @@ export interface OrderStatusResponse {
   filledAmountSats: number
   fills: Fill[]
   tokenSide: 'Outcome' | 'Complement'
+  baseAsset: MarketBaseAsset
+  divisibility: number
 }
 
 export interface LevelDto {
@@ -129,6 +138,24 @@ export interface MarketComment {
 export interface MarketCommentsResponse {
   conditionId: string
   comments: MarketComment[]
+}
+
+export interface ParticipationScoreResponse {
+  pubkey: string
+  balance: number
+  purchasedTotal: number
+  consumedTotal: number
+  penaltyTotal: number
+  matchDebitScore: number
+  enabled: boolean
+}
+
+export interface PayParticipationScoreEcashResponse {
+  paymentId: string
+  status: 'credited'
+  amountSats: number
+  creditedScore: number
+  creditedAt: string
 }
 
 export class BitcasterEngineClient {
@@ -213,6 +240,33 @@ export class BitcasterEngineClient {
       `/api/v1/markets/${encodePathSegment(conditionId)}/comments`,
     )
     return (await response.json()) as MarketCommentsResponse
+  }
+
+  async getParticipationScore(): Promise<ParticipationScoreResponse> {
+    const response = await this.request('/api/v1/participation-score')
+    return (await response.json()) as ParticipationScoreResponse
+  }
+
+  async payParticipationScoreEcash(
+    amountSats: number,
+    proofsToken: string,
+    paymentId?: string,
+  ): Promise<PayParticipationScoreEcashResponse> {
+    const bodyText = JSON.stringify({
+      amountSats,
+      proofsToken,
+      ...(paymentId ? { paymentId } : {}),
+    })
+    const response = await this.request(
+      '/api/v1/participation-score/ecash',
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+      },
+      bodyText,
+    )
+    return (await response.json()) as PayParticipationScoreEcashResponse
   }
 
   async getMarket(conditionId: string): Promise<unknown | null> {

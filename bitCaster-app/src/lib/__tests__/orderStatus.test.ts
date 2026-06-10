@@ -94,7 +94,7 @@ describe('promoteNewFillsToActiveSwaps', () => {
 })
 
 describe('buildOrderStatusNotifications', () => {
-  it('notifies on a mint reservation-shaped match', () => {
+  it('notifies on a mint match-shaped settlement handle', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
       status: 'matched',
@@ -155,6 +155,31 @@ describe('buildOrderStatusNotifications', () => {
       id: 'order-1-cancelled',
       kind: 'cancelled',
       remainingAmountSats: 100,
+      occurredAt: 123,
+    })
+  })
+
+  it('notifies when an order settlement fails terminally', () => {
+    const status = {
+      ...orderStatusWithTradeFills('trade-a'),
+      status: 'failed',
+      remainingAmountSats: 0,
+      filledAmountSats: 0,
+    } as OrderStatusResponse
+
+    const notifications = buildOrderStatusNotifications(
+      status,
+      pendingTrade(),
+      1,
+      123,
+    )
+
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]).toMatchObject({
+      id: 'order-1-failed',
+      kind: 'failed',
+      filledAmountSats: 0,
+      remainingAmountSats: 0,
       occurredAt: 123,
     })
   })

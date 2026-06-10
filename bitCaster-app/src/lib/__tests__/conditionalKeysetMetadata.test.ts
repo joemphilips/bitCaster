@@ -27,6 +27,7 @@ describe("conditional keyset metadata", () => {
       proofs: [proof("keyset-A", "a"), proof("keyset-C", "c")],
       expectedConditionId: "condition-1",
       reservedBy: "reservation-1",
+      baseAsset: "usd",
     });
 
     expect(stored.map((row) => row.outcomeCollection)).toEqual(["A", "C"]);
@@ -37,6 +38,7 @@ describe("conditional keyset metadata", () => {
     expect(stored.every((row) => row.reservedBy === "reservation-1")).toBe(
       true,
     );
+    expect(stored.every((row) => row.baseAsset === "usd")).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://mint.example/v1/conditional_keysets",
     );

@@ -283,6 +283,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/participation-score": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the authenticated user's participation Score
+         * @description Returns the caller's non-withdrawable participation Score balance and current match-debit policy. Score is a sat-denominated engine-use fee balance, separate from market collateral units.
+         */
+        get: operations["getParticipationScore"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/participation-score/ecash": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pay ecash to top up participation Score
+         * @description Pays a regular sat ecash token into the global Engine fee account. The fee is non-refundable and credits participation Score for the authenticated Nostr pubkey. The supplied token amount must exactly match `amountSats`; this endpoint never credits a market account.
+         */
+        post: operations["payParticipationScoreEcash"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/creators/{pubkey}/markets": {
         parameters: {
             query?: never;
@@ -334,8 +374,13 @@ export interface components {
          * @description A non-negative amount of satoshis.
          */
         Sats: number;
-        /** @description A probability price representing a percentage chance [1, 99]. */
+        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Legacy sat markets use `D = 100`, so values still render as whole percentage points there. */
         Probability: number;
+        /**
+         * @description Market quote/collateral base asset. Current production creation accepts `sat`; `usd` and `jpy` are structural values reserved until unit-aware settlement and wallet flows are enabled end-to-end.
+         * @enum {string}
+         */
+        BaseAsset: "sat" | "usd" | "jpy";
         /**
          * @description Direction of an order relative to the outcome token.
          * @enum {string}
@@ -357,15 +402,15 @@ export interface components {
          */
         TimeInForce: "GTC" | "FOK" | "FAK";
         /**
-         * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, optional pre-flight reservation, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
+         * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
          * @enum {string}
          */
         MatchPath: "Complementary" | "Mint";
         /**
-         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means atomic-swap settlement is still pending; `Filled` means settlement committed.
+         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means atomic-swap settlement is still pending; `Filled` means settlement committed; `Failed` means the atomic-swap session reached a terminal failure and should no longer be retried.
          * @enum {string}
          */
-        FillStatus: "Matched" | "Filled";
+        FillStatus: "Matched" | "Filled" | "Failed";
         OracleNostrEvent: {
             /** @description NIP-01 event id of the kind-89 attestation. */
             id: string;
@@ -433,11 +478,27 @@ export interface components {
              * @description The resting order that was matched against.
              */
             makerOrderId: string;
-            /** @description Conditional-token face amount matched for settlement. DCB mint-match reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session. */
+            /** @description Conditional-token face amount matched for settlement. Provisional mint matches appear here before final fill commit so clients can join the atomic-swap TradeHub session. */
             amountSats: components["schemas"]["Sats"];
             executionPrice: components["schemas"]["Probability"];
             path: components["schemas"]["MatchPath"];
             status: components["schemas"]["FillStatus"];
+            /**
+             * @description Base asset for the fill amount and quote payment.
+             * @default sat
+             */
+            baseAsset: components["schemas"]["BaseAsset"];
+            /**
+             * Format: int32
+             * @description Market price denominator `D` for this fill.
+             * @default 100
+             */
+            divisibility: number;
+            /**
+             * Format: int64
+             * @description Engine-computed quote payment in the market base-asset sub-unit. Present for new trade-start fills; omitted for older replay data.
+             */
+            quotePaymentSubunits?: number | null;
             /**
              * Format: date-time
              * @description Timestamp when this fill was executed.
@@ -445,7 +506,7 @@ export interface components {
             filledAt: string;
             /**
              * Format: uuid
-             * @description Atomic-swap trade session identifier for this fill or DCB reservation. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
+             * @description Atomic-swap trade session identifier for this fill. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
              */
             tradeId?: string;
             /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on complementary-match fills (Buy vs Sell) so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on mint-match fills (Buy vs Buy splitter) and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders). */
@@ -488,14 +549,25 @@ export interface components {
             orderId: string;
             /** @description The market this order belongs to. */
             marketId: string;
-            /** @description One of: "resting" (on book, unmatched), "matched" (reserved for atomic-swap settlement), "partially_filled", "filled", "cancelled". */
+            /** @description One of: "resting" (on book, unmatched), "matched" (reserved for atomic-swap settlement), "partially_filled", "filled", "cancelled", "failed". */
             status: string;
             remainingAmountSats: components["schemas"]["Sats"];
-            /** @description Conditional-token face amount already consumed by fills or active DCB mint-match reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake. */
+            /** @description Conditional-token face amount already consumed by committed fills or currently matched atomic-swap sessions. A provisional mint match is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake. */
             filledAmountSats: components["schemas"]["Sats"];
-            /** @description All fills and active DCB mint-match reservation handles produced against this order so far. */
+            /** @description All fills and active or terminal atomic-swap sessions produced against this order so far. */
             fills: components["schemas"]["Fill"][];
             tokenSide: components["schemas"]["TokenSide"];
+            /**
+             * @description Base asset context for amount and price fields.
+             * @default sat
+             */
+            baseAsset: components["schemas"]["BaseAsset"];
+            /**
+             * Format: int32
+             * @description Market price denominator `D`.
+             * @default 100
+             */
+            divisibility: number;
         };
         RestingOrderResponse: {
             /**
@@ -519,6 +591,17 @@ export interface components {
             expiresAt?: string | null;
             /** @description Order-level ephemeral pubkey supplied at submit time. */
             ephemeralPubkey?: string | null;
+            /**
+             * @description Base asset context for amount and price fields.
+             * @default sat
+             */
+            baseAsset: components["schemas"]["BaseAsset"];
+            /**
+             * Format: int32
+             * @description Market price denominator `D`.
+             * @default 100
+             */
+            divisibility: number;
         };
         ListRestingOrdersResponse: {
             orders: components["schemas"]["RestingOrderResponse"][];
@@ -529,13 +612,24 @@ export interface components {
              * @description The unique identifier assigned to this order.
              */
             orderId: string;
-            /** @description One of: "filled", "matched" (reserved for atomic-swap settlement), "partially_filled", "resting", "cancelled". */
+            /** @description One of: "filled", "matched" (reserved for atomic-swap settlement), "partially_filled", "resting", "cancelled", "failed". */
             status: string;
             remainingAmountSats: components["schemas"]["Sats"];
             /** @description List of fills produced by this order. Empty if no matches. */
             fills: components["schemas"]["Fill"][];
             /** @description Echoes the ephemeralPubkey the client submitted. Lets clients confirm round-trip before they discard the corresponding privkey. */
             ephemeralPubkey: string;
+            /**
+             * @description Base asset context for amount and price fields.
+             * @default sat
+             */
+            baseAsset: components["schemas"]["BaseAsset"];
+            /**
+             * Format: int32
+             * @description Market price denominator `D`.
+             * @default 100
+             */
+            divisibility: number;
         };
         /** @description A single price level in the order book depth. */
         LevelDto: {
@@ -590,10 +684,21 @@ export interface components {
             outcomeType?: "yesno" | "categorical" | "numeric";
             /**
              * Format: int64
-             * @description Initial liquidity budget in satoshis.
+             * @description Initial AMM liquidity budget in satoshis. Must be `0` for non-sat markets until unit-aware AMM liquidity is enabled.
              * @default 0
              */
             liquiditySats: number;
+            /**
+             * @description Immutable market base asset. Settlement-capable market creation currently supports `sat` and `usd`; `jpy` is reserved.
+             * @default sat
+             */
+            baseAsset: components["schemas"]["BaseAsset"];
+            /**
+             * Format: int32
+             * @description Immutable price denominator `D`. Orders use price numerator `k` where `1 <= k <= D - 1` and one whole share has face value `D` base-asset sub-units.
+             * @default 100
+             */
+            divisibility: number;
             /** @description Optional category tags for the market. */
             categoryTags?: string[];
             /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */
@@ -761,6 +866,78 @@ export interface components {
             depositId: string;
             state: components["schemas"]["DepositState"];
         };
+        ParticipationScoreResponse: {
+            /** @description Authenticated Nostr pubkey whose Score is returned. */
+            pubkey: string;
+            /**
+             * Format: int64
+             * @description Current participation Score balance. May be negative after soft match/penalty debits.
+             */
+            balance: number;
+            /**
+             * Format: int64
+             * @description Total Score purchased by this pubkey.
+             */
+            purchasedTotal: number;
+            /**
+             * Format: int64
+             * @description Total Score consumed by successful match debits.
+             */
+            consumedTotal: number;
+            /**
+             * Format: int64
+             * @description Total Score consumed by settlement-negligence penalties.
+             */
+            penaltyTotal: number;
+            /**
+             * Format: int64
+             * @description Configured Score debit charged to the taker when a match lands.
+             */
+            matchDebitScore: number;
+            /** @description Whether match-time Score debit is enabled by the engine. */
+            enabled: boolean;
+        };
+        PayParticipationScoreEcashRequest: {
+            /**
+             * Format: int64
+             * @description Exact sat amount carried by the supplied regular ecash token.
+             */
+            amountSats: number;
+            /** @description Opaque Cashu token paid as a non-refundable Engine fee. */
+            proofsToken: string;
+            /**
+             * Format: uuid
+             * @description Optional caller-supplied idempotency id for retrying the same ecash payment.
+             */
+            paymentId?: string;
+        };
+        PayParticipationScoreEcashResponse: {
+            /**
+             * Format: uuid
+             * @description Idempotency id assigned to this Score payment.
+             */
+            paymentId: string;
+            /**
+             * @description Terminal success state for the synchronous ecash payment flow.
+             * @enum {string}
+             */
+            status: "credited";
+            /**
+             * Format: int64
+             * @description Ecash amount accepted as engine fee.
+             */
+            amountSats: number;
+            /**
+             * Format: int64
+             * @description Score credited for this payment.
+             */
+            creditedScore: number;
+            /**
+             * Format: date-time
+             * @description Time wallet-service accepted and credited the engine-fee payment.
+             */
+            creditedAt: string;
+        };
         GetDepositResponseDto: {
             /** Format: uuid */
             depositId: string;
@@ -845,6 +1022,12 @@ export interface components {
              * @description Cumulative settled collateral face amount of all fills in the market's history.
              */
             volumeLifetimeSats: number;
+            baseAsset: components["schemas"]["BaseAsset"];
+            /**
+             * Format: int32
+             * @description Immutable market price denominator `D`. Legacy sat markets replay as `100`.
+             */
+            divisibility: number;
             /** @description Most recent execution price (probability in `[1, 99]`), null if the market has never traded. */
             lastTradedPrice?: number | null;
             /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
@@ -1498,6 +1681,85 @@ export interface operations {
             };
             /** @description No deposit with this id for this condition */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getParticipationScore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Participation Score state for the authenticated pubkey */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParticipationScoreResponse"];
+                };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    payParticipationScoreEcash: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PayParticipationScoreEcashRequest"];
+            };
+        };
+        responses: {
+            /** @description Ecash accepted and Score credited */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayParticipationScoreEcashResponse"];
+                };
+            };
+            /** @description Validation error (e.g. malformed token or non-positive amount) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Per-pubkey payment-request rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wallet-service payment error */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

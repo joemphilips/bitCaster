@@ -16,6 +16,11 @@ import {
   BitcasterEngineClient,
   type SubmitOrderRequest as SdkSubmitOrderRequest,
 } from "@bitcaster/client-sdk/engineClient";
+import {
+  marketUnitLabel,
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from "@bitcaster/client-sdk/marketUnits";
 import { getNdk } from "@/lib/nostr";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "nostr-tools/utils";
@@ -193,6 +198,8 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const closingDate = entry.deadline ?? entry.createdAt;
   const title = entry.title ?? "Untitled Market";
   const imageUrl = entry.thumbnailUrl ?? "";
+  const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
+  const divisibility = normalizeMarketDivisibility(entry.divisibility);
 
   const base = {
     id: entry.conditionId,
@@ -210,7 +217,9 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     createdDate: entry.createdAt,
     activeSince: entry.createdAt,
     creatorFeePercent: 0,
-    baseMarket: "sats",
+    baseAsset,
+    divisibility,
+    baseMarket: marketUnitLabel(baseAsset),
   };
 
   if (isYesNo) {
@@ -323,6 +332,8 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const finalOutcome = entry.finalOutcome?.trim() || undefined;
   const resolutionDate = entry.closedAt ?? entry.deadline ?? createdAt;
   const isYesNo = isYesNoUniverse(outcomes);
+  const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
+  const divisibility = normalizeMarketDivisibility(entry.divisibility);
 
   const base = {
     id: entry.conditionId,
@@ -342,9 +353,11 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     closingDate: entry.deadline ?? null,
     createdDate: createdAt,
     activeSince: createdAt,
-    baseUnit: "sats",
+    baseAsset,
+    divisibility,
+    baseUnit: marketUnitLabel(baseAsset),
     mint: {
-      collateral: "sat",
+      collateral: baseAsset,
       keysetCount: 0,
     },
     creator: creatorPubkey
@@ -905,6 +918,10 @@ export type RequestEcashDepositRequest =
   components["schemas"]["RequestEcashDepositRequest"];
 export type RequestEcashDepositResponse =
   components["schemas"]["RequestEcashDepositResponse"];
+export type ParticipationScoreResponse =
+  components["schemas"]["ParticipationScoreResponse"];
+export type PayParticipationScoreEcashResponse =
+  components["schemas"]["PayParticipationScoreEcashResponse"];
 export type GetDepositResponseDto =
   components["schemas"]["GetDepositResponseDto"];
 export type DepositState = components["schemas"]["DepositState"];
@@ -1005,6 +1022,22 @@ export async function getDepositStatus(
   }
   const result = (await response.json()) as GetDepositResponseDto;
   return { ...result, state: normalizeDepositState(result.state) };
+}
+
+export async function getParticipationScore(): Promise<ParticipationScoreResponse> {
+  return createAuthenticatedBrowserEngineClient().getParticipationScore();
+}
+
+export async function payParticipationScoreEcash(
+  amountSats: number,
+  proofsToken: string,
+  paymentId?: string,
+): Promise<PayParticipationScoreEcashResponse> {
+  return createAuthenticatedBrowserEngineClient().payParticipationScoreEcash(
+    amountSats,
+    proofsToken,
+    paymentId,
+  );
 }
 
 /**

@@ -116,6 +116,7 @@ interface AtomicSwapModule {
 interface CtfSplitModule {
   splitRootCompleteSetForSwap(params: {
     mintUrl: string
+    baseAsset?: string | null
     conditionId: string
     collateralProofs: CashuProofRecord[]
     amountSats: number
@@ -240,6 +241,7 @@ export function createRealDaemonSwapOps(
       ])
       const split = await ctfSplit.splitRootCompleteSetForSwap({
         mintUrl: ctx.mintUrl,
+        baseAsset: ctx.baseAsset,
         conditionId: params.conditionId,
         collateralProofs,
         amountSats: params.amountSats,

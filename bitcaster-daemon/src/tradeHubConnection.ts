@@ -51,6 +51,9 @@ export function parseTradeCreatedPayload(
   settlementKind?: unknown,
   sellerKeepOutcomeSetId?: unknown,
   sellerLockOutcomeSetId?: unknown,
+  baseAsset?: unknown,
+  divisibility?: unknown,
+  quotePaymentSubunits?: unknown,
 ): DaemonTradeCreatedPayload {
   const tradeIdText = stringFromSignalR(tradeId)
   const sellerPubkeyText = stringFromSignalR(sellerPubkey)
@@ -89,6 +92,9 @@ export function parseTradeCreatedPayload(
       typeof sellerLockOutcomeSetId === 'string'
         ? sellerLockOutcomeSetId
         : null,
+    baseAsset: typeof baseAsset === 'string' ? baseAsset : null,
+    divisibility: numberOrUndefined(divisibility),
+    quotePaymentSubunits: numberOrUndefined(quotePaymentSubunits),
   }
 }
 
@@ -174,6 +180,9 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
         settlementKind?: unknown,
         sellerKeepOutcomeSetId?: unknown,
         sellerLockOutcomeSetId?: unknown,
+        baseAsset?: unknown,
+        divisibility?: unknown,
+        quotePaymentSubunits?: unknown,
       ) => {
         void this.invokeCallback(async () => {
           await this.callbacks.onTradeCreated?.(
@@ -190,6 +199,9 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
               settlementKind,
               sellerKeepOutcomeSetId,
               sellerLockOutcomeSetId,
+              baseAsset,
+              divisibility,
+              quotePaymentSubunits,
             ),
           )
         })

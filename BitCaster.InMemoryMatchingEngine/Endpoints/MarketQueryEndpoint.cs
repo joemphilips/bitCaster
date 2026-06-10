@@ -130,7 +130,9 @@ public static class MarketQueryEndpoint
     private static MarketCatalogueEntry ToCatalogueEntry(MintdConditionDto c, DateTimeOffset refreshedAt)
     {
         var open = string.Equals(c.AttestationStatus, "pending", StringComparison.OrdinalIgnoreCase);
+        var market = MarketEndpoints.TryGetMarket(c.ConditionId);
         return new MarketCatalogueEntry(
+            baseAsset: market?.BaseAsset ?? BaseAsset.Sat,
             categoryTags: c.CategoryTags,
             closedAt: null,
             conditionId: c.ConditionId,
@@ -141,6 +143,7 @@ public static class MarketQueryEndpoint
             creatorPubkey: null!,
             deadline: null,
             description: null!,
+            divisibility: market?.Divisibility ?? 100,
             finalOutcome: null!,
             lastSuccessfulRefreshAt: refreshedAt,
             lastTradedPrice: null,

@@ -17,6 +17,9 @@ test('parseTradeCreatedPayload accepts current TradeCreated contract shape', () 
       'Mint',
       'YES',
       'NO',
+      'sat',
+      100,
+      42,
     ),
     {
       tradeId: 'trade-1',
@@ -31,6 +34,9 @@ test('parseTradeCreatedPayload accepts current TradeCreated contract shape', () 
       settlementKind: 'Mint',
       sellerKeepOutcomeSetId: 'YES',
       sellerLockOutcomeSetId: 'NO',
+      baseAsset: 'sat',
+      divisibility: 100,
+      quotePaymentSubunits: 42,
     },
   )
 })

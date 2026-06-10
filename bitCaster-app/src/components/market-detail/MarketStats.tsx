@@ -2,7 +2,10 @@ import { TrendingUp, Droplets, Users, Calendar, Clock, CheckCircle } from 'lucid
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { MarketDetail } from '@/types/market-detail'
-import { formatBtc } from '@/lib/format'
+import {
+  formatMarketSubunits,
+  normalizeMarketBaseAsset,
+} from '@bitcaster/client-sdk/marketUnits'
 
 interface MarketStatsProps {
   market: MarketDetail
@@ -47,6 +50,7 @@ function getTimeRemaining(
 export function MarketStats({ market }: MarketStatsProps) {
   const { t, i18n } = useTranslation()
   const [now, setNow] = useState(() => new Date())
+  const baseAsset = normalizeMarketBaseAsset(market.baseAsset)
   const timeRemaining = market.closingDate
     ? getTimeRemaining(market.closingDate, now, t)
     : null
@@ -62,13 +66,13 @@ export function MarketStats({ market }: MarketStatsProps) {
     {
       icon: TrendingUp,
       label: t('market.volume'),
-      value: formatBtc(market.volumeLifetimeSats),
+      value: formatMarketSubunits(market.volumeLifetimeSats, baseAsset),
       color: 'text-blue-500',
     },
     {
       icon: Droplets,
       label: t('market.liquidity'),
-      value: formatBtc(market.liquiditySats),
+      value: formatMarketSubunits(market.liquiditySats, baseAsset),
       color: 'text-cyan-500',
     },
     {

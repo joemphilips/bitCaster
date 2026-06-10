@@ -116,6 +116,33 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
   assert.equal(complementaryTicket.request.timeInForce, 'FAK')
 })
 
+test('buildTradeTicket applies market divisibility to price and amount validation', () => {
+  const ticket = buildTradeTicket({
+    market: { ...yesNoMarket, divisibility: 1_000 },
+    selection: { side: 'yes' },
+    amountSats: 2_000,
+    side: 'buy',
+    orderType: 'market',
+    limitPrice: 50,
+    orderBook: liquidBook,
+  })
+  assert.equal(ticket.request.price, 999)
+
+  assert.throws(
+    () =>
+      buildTradeTicket({
+        market: { ...yesNoMarket, divisibility: 1_000 },
+        selection: { side: 'yes' },
+        amountSats: 1_500,
+        side: 'buy',
+        orderType: 'limit',
+        limitPrice: 50,
+        orderBook: liquidBook,
+      }),
+    /1000 sub-unit increments/,
+  )
+})
+
 test('buildTradeTicket rejects market orders with no liquidity instead of price zero', () => {
   assert.throws(
     () =>

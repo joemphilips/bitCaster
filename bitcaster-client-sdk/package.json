@@ -23,6 +23,10 @@
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"
     },
+    "./marketUnits": {
+      "types": "./dist/marketUnits.d.ts",
+      "import": "./dist/marketUnits.js"
+    },
     "./orderValidation": {
       "types": "./dist/orderValidation.d.ts",
       "import": "./dist/orderValidation.js"
@@ -34,6 +38,10 @@
     "./proofSelection": {
       "types": "./dist/proofSelection.d.ts",
       "import": "./dist/proofSelection.js"
+    },
+    "./participationScore": {
+      "types": "./dist/participationScore.d.ts",
+      "import": "./dist/participationScore.js"
     },
     "./settlementSupport": {
       "types": "./dist/settlementSupport.d.ts",

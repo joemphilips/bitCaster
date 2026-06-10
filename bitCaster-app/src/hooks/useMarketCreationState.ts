@@ -6,6 +6,7 @@ import type {
   WizardStepBasicInfo,
   OutcomeType,
   WizardOutcome,
+  MarketBaseAsset,
 } from '@/types/market-creation'
 import { useSettingsStore } from '@/stores/settings'
 import { useMarketDraftStore } from '@/stores/marketDraft'
@@ -29,6 +30,13 @@ import {
   registerConditionWithFee,
   registrationFeeForPolicy,
 } from '@/lib/marketRegistrationFee'
+import {
+  DEFAULT_MARKET_BASE_ASSET,
+  DEFAULT_MARKET_DIVISIBILITY,
+  normalizeMarketCreationLiquiditySats,
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from '@bitcaster/client-sdk/marketUnits'
 
 /**
  * Default creator fee applied to every market created via the wizard. The
@@ -183,6 +191,8 @@ export function useMarketCreationState() {
           updated.stepOutcomes = {
             outcomeType,
             outcomes: outcomeType === 'yesno' ? defaultYesNoOutcomes() : [],
+            baseAsset: DEFAULT_MARKET_BASE_ASSET,
+            divisibility: DEFAULT_MARKET_DIVISIBILITY,
           }
         }
       }
@@ -372,6 +382,26 @@ export function useMarketCreationState() {
     }))
   }, [])
 
+  const onBaseAssetChange = useCallback((value: MarketBaseAsset) => {
+    setDraft((prev) => ({
+      ...prev,
+      stepOutcomes: prev.stepOutcomes
+        ? { ...prev.stepOutcomes, baseAsset: normalizeMarketBaseAsset(value) }
+        : null,
+      lastModified: new Date().toISOString(),
+    }))
+  }, [])
+
+  const onDivisibilityChange = useCallback((value: number) => {
+    setDraft((prev) => ({
+      ...prev,
+      stepOutcomes: prev.stepOutcomes
+        ? { ...prev.stepOutcomes, divisibility: normalizeMarketDivisibility(value) }
+        : null,
+      lastModified: new Date().toISOString(),
+    }))
+  }, [])
+
   // --- Initial Liquidity (Step 5) ---
   const onLiquiditySatsChange = useCallback((sats: number) => {
     updateDraft({ stepInitialLiquidity: { liquiditySats: sats } })
@@ -419,6 +449,8 @@ export function useMarketCreationState() {
       if (outcomeType === 'numeric') {
         throw new Error('Numeric oracle events are not yet supported.')
       }
+      const baseAsset = normalizeMarketBaseAsset(draft.stepOutcomes?.baseAsset)
+      const divisibility = normalizeMarketDivisibility(draft.stepOutcomes?.divisibility)
       const closingDate = draft.stepBasicInfo?.closingDate
       if (!closingDate) {
         throw new Error('A closing date is required to publish an oracle announcement.')
@@ -480,8 +512,8 @@ export function useMarketCreationState() {
             type: 'self'
             eventId: string
             announcementEventId?: string
-            outcomes: string[]
             announcementHex?: string
+            outcomes: string[]
           }
         | undefined
 
@@ -524,12 +556,16 @@ export function useMarketCreationState() {
         request: {
           tags,
           announcementHex,
-          collateral: 'sat',
+          collateral: baseAsset,
           outcomeCollections,
         },
       })
 
       // 2. Create market on matching engine (includes thumbnail + CPMM pools)
+      const liquiditySats = normalizeMarketCreationLiquiditySats({
+        baseAsset,
+        liquiditySats: draft.stepInitialLiquidity?.liquiditySats,
+      })
       const createResponse = await createMarket(
         condition_id,
         {
@@ -540,7 +576,9 @@ export function useMarketCreationState() {
             probability: draft.stepOutcomes?.outcomes?.find((o) => o.label === name)?.probability ?? 50,
           })),
           outcomeType: draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? 'yesno',
-          liquiditySats: draft.stepInitialLiquidity?.liquiditySats ?? 0,
+          liquiditySats,
+          baseAsset,
+          divisibility,
           categoryTags,
           oracleAnnouncementHex: announcementHex,
         },
@@ -559,6 +597,8 @@ export function useMarketCreationState() {
           title,
           thumbnailUrl: createResponse.thumbnailUrl ?? null,
           createdAt: new Date().toISOString(),
+          baseAsset,
+          divisibility,
           creatorFeePercent: DEFAULT_CREATOR_FEE_PERCENT,
           oracle: creatorOracle,
         })
@@ -573,7 +613,7 @@ export function useMarketCreationState() {
       // as the default deposit amount — clearDraft wipes stepInitialLiquidity
       // and DepositStep's useState would otherwise initialize amountSats=0
       // (and disable the request button).
-      const snapshotLiquiditySats = draft.stepInitialLiquidity?.liquiditySats ?? 0
+      const snapshotLiquiditySats = liquiditySats
 
       clearDraft()
       // Hand off to the deposit step. The wizard renders DepositStep when
@@ -650,6 +690,8 @@ export function useMarketCreationState() {
     onHiBoundChange,
     onPrecisionChange,
     onUnitChange,
+    onBaseAssetChange,
+    onDivisibilityChange,
     onLiquiditySatsChange,
     onDescriptionChange,
     onCreateMarket,

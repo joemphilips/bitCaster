@@ -18,6 +18,7 @@ import {
 } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import { storedConditionalProofsFromMintMetadata } from "@/lib/conditionalKeysetMetadata";
+import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 
 export interface PreflightProofRecoveryResult {
   operationsChecked: number;
@@ -125,6 +126,7 @@ async function recoveredProofsForOperation(
     proofs: Object.values(operation.resultProofs ?? {}).flatMap(proofGroup),
     expectedConditionId: conditionId,
     reservedBy,
+    baseAsset: operationBaseAsset(operation),
   });
 }
 
@@ -140,9 +142,11 @@ async function resumePreparedPreflightOperation(
   mintUrl: string,
 ): Promise<ProofOperationRecord> {
   if (operation.kind === "regular-split") {
-    const wallet = await useWalletStore.getState().getWallet(mintUrl);
+    const baseAsset = operationBaseAsset(operation);
+    const wallet = await useWalletStore.getState().getWallet(mintUrl, baseAsset);
     const split = await splitRegularProofsWithOperation({
       mintUrl,
+      baseAsset,
       operationId: operation.operationId,
       wallet,
       proofs: [],
@@ -163,10 +167,12 @@ async function resumePreparedPreflightOperation(
     const metadata = operation.metadata as {
       conditionId?: string;
       amountSats?: number;
+      baseAsset?: string | null;
       outcomeCollectionKeysets?: Record<string, string>;
     };
     const resultProofs = await splitCompleteSetWithOperation({
       mintUrl,
+      baseAsset: metadata.baseAsset,
       operationId: operation.operationId,
       transport: new CashuMintCtfSplitTransport(mintUrl),
       conditionId: metadata.conditionId ?? "",
@@ -184,6 +190,14 @@ async function resumePreparedPreflightOperation(
   }
 
   return operation;
+}
+
+function operationBaseAsset(operation: ProofOperationRecord): string {
+  return normalizeMarketBaseAsset(
+    typeof operation.metadata.baseAsset === "string"
+      ? operation.metadata.baseAsset
+      : undefined,
+  );
 }
 
 function preparedAmountSats(operation: ProofOperationRecord): number {

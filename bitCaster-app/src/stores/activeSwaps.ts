@@ -92,6 +92,9 @@ export interface ActiveSwap {
   outcomeFaceAmountSats: number | null
   /** Regular sats the buyer locks. */
   quotePaymentSats: number | null
+  baseAsset: string | null
+  divisibility: number | null
+  quotePaymentSubunits: number | null
   settlementKind: string | null
   sellerKeepOutcomeSetId: string | null
   sellerLockOutcomeSetId: string | null
@@ -113,6 +116,8 @@ interface ActiveSwapsState {
     marketId: string
     ephemeralPrivkeyHex: string
     ephemeralPubkeyHex: string
+    baseAsset?: string | null
+    divisibility?: number | null
   }) => void
   setRoleAndCounterparty: (
     tradeId: string,
@@ -122,6 +127,9 @@ interface ActiveSwapsState {
     settlementAmounts?: {
       outcomeFaceAmountSats?: number
       quotePaymentSats?: number
+      baseAsset?: string | null
+      divisibility?: number | null
+      quotePaymentSubunits?: number | null
       settlementKind?: string | null
       sellerKeepOutcomeSetId?: string | null
       sellerLockOutcomeSetId?: string | null
@@ -158,6 +166,8 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
     marketId,
     ephemeralPrivkeyHex,
     ephemeralPubkeyHex,
+    baseAsset,
+    divisibility,
   }) => {
     set((s) => {
       if (s.byTradeId[tradeId]) return s
@@ -173,6 +183,9 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
         buyerLocktime: null,
         outcomeFaceAmountSats: null,
         quotePaymentSats: null,
+        baseAsset: baseAsset ?? null,
+        divisibility: divisibility ?? null,
+        quotePaymentSubunits: null,
         settlementKind: null,
         sellerKeepOutcomeSetId: null,
         sellerLockOutcomeSetId: null,
@@ -212,6 +225,13 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
               existing.outcomeFaceAmountSats,
             quotePaymentSats:
               settlementAmounts?.quotePaymentSats ?? existing.quotePaymentSats,
+            baseAsset:
+              settlementAmounts?.baseAsset ?? existing.baseAsset,
+            divisibility:
+              settlementAmounts?.divisibility ?? existing.divisibility,
+            quotePaymentSubunits:
+              settlementAmounts?.quotePaymentSubunits ??
+              existing.quotePaymentSubunits,
             settlementKind:
               settlementAmounts?.settlementKind ?? existing.settlementKind,
             sellerKeepOutcomeSetId:

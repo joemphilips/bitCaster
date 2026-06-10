@@ -612,6 +612,81 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
   }
 })
 
+test('DaemonSwapExecutor retries mint-pending seller open without another event', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-proof-pending-retry-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const state = emptyDaemonState()
+    state.orders['order-1'] = {
+      orderId: 'order-1',
+      marketId: 'cond-YES',
+      status: 'resting',
+      ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.wallet.proofs.push(
+      proofRecord(profile.mintUrl, 100, 'available', {
+        kind: 'outcome',
+        conditionId: 'cond',
+        outcomeSetId: 'YES',
+      }),
+    )
+    await writeState(state)
+
+    let lockAttempts = 0
+    const sent: string[] = []
+    const executor = newTestDaemonSwapExecutor({
+      connection: fakeConnection(sent),
+      retryDelayMs: 5,
+      maxRetryAttempts: 3,
+      ops: {
+        ...fakeOps(),
+        async sellerLockOutcomeProofs(ctx, proofs, amount, operationId) {
+          lockAttempts += 1
+          if (lockAttempts === 1) {
+            throw new Error('Proof operation trade-retry/seller-lock is still pending at the mint')
+          }
+          return fakeOps().sellerLockOutcomeProofs(ctx, proofs, amount, operationId)
+        },
+      },
+    })
+
+    await executor.onTradeCreated(
+      await recordTradeCreated({
+        tradeId: 'trade-retry',
+        sellerPubkey: orderKey(secrets).publicKeyHex,
+        buyerPubkey: `03${'90'.repeat(32)}`,
+        sellerLocktime: '2026-05-21T00:02:00.000Z',
+        buyerLocktime: '2026-05-21T00:01:00.000Z',
+        marketId: 'cond-YES',
+        outcomeFaceAmountSats: 100,
+        quotePaymentSats: 42,
+        settlementKind: 'DirectSwap',
+      }),
+    )
+
+    const persisted = await waitForSwapStep('trade-retry', 'seller-opened')
+    assert.equal(lockAttempts, 2)
+    assert.equal(persisted?.swaps['trade-retry'].sellerAdaptorSecretHex, 'aa')
+    assert.deepEqual(sent, [
+      'trade-retry:adaptor-point:cipher-adaptor',
+      'trade-retry:locked-proofs-seller:cipher-seller',
+    ])
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('DaemonSwapExecutor drives buyer response and claim with durable wallet state', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-swap-buyer-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
@@ -864,6 +939,7 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
         async resolveRootDirectLockOutputAmountSats(params) {
           assert.deepEqual(params, {
             mintUrl: profile.mintUrl,
+            baseAsset: 'sat',
             conditionId: 'cond',
             amountSats: 100,
             keepOutcomeSetId: 'YES',
@@ -1460,6 +1536,19 @@ function orderKey(secrets: DaemonSecrets): DaemonSecrets['orderEphemeralKeys'][s
     publicKeyHex: `02${'11'.repeat(32)}`,
     createdAt: secrets.createdAt,
   }
+}
+
+async function waitForSwapStep(
+  tradeId: string,
+  step: string,
+): Promise<DaemonState | null> {
+  const deadline = Date.now() + 500
+  while (Date.now() < deadline) {
+    const state = await readState()
+    if (state?.swaps[tradeId]?.step === step) return state
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  return readState()
 }
 
 function fakeConnection(sent: string[]): TradeRuntimeConnection {

@@ -61,6 +61,8 @@ interface BaseMarket {
   closingDate: string
   createdDate: string
   activeSince: string
+  baseAsset?: 'sat' | 'usd' | 'jpy'
+  divisibility?: number
   creatorFeePercent: number
   baseMarket: string              // Default: "sats", or market ID for 2D markets
   secondaryMarkets?: string[]     // IDs of markets using this as base

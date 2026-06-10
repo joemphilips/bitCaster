@@ -147,6 +147,8 @@ const createMarketParams = {
     { name: 'No', probability: 50 },
   ],
   liquiditySats: 10000,
+  baseAsset: 'sat' as const,
+  divisibility: 100,
   categoryTags: ['crypto'],
 }
 

@@ -1,6 +1,6 @@
 import type { Fund } from '@/types/portfolio'
 import { Coins, DollarSign } from 'lucide-react'
-import { formatBtc } from '@/lib/format'
+import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 
 interface FundRowProps {
   fund: Fund
@@ -9,6 +9,9 @@ interface FundRowProps {
 
 export function FundRow({ fund, onView }: FundRowProps) {
   const mintHostname = new URL(fund.mintUrl).hostname
+  const baseAsset = fund.unit === 'sats' ? 'sat' : fund.unit
+  const unitLabel =
+    fund.unit === 'sats' ? 'Sats' : fund.unit.toUpperCase()
 
   return (
     <button
@@ -27,7 +30,7 @@ export function FundRow({ fund, onView }: FundRowProps) {
       {/* Info */}
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-slate-900 dark:text-white">
-          {fund.unit === 'sats' ? 'Sats' : 'USD'}
+          {unitLabel}
         </p>
         <p className="text-xs font-mono text-slate-400 dark:text-slate-500 truncate">
           {mintHostname}
@@ -37,7 +40,7 @@ export function FundRow({ fund, onView }: FundRowProps) {
       {/* Amount */}
       <div className="text-right shrink-0">
         <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-          {fund.unit === 'sats' ? formatBtc(fund.amount) : `$${(fund.amount / 100).toFixed(2)}`}
+          {formatMarketSubunits(fund.amount, baseAsset)}
         </div>
       </div>
     </button>

@@ -3,6 +3,10 @@ import {
   fetchCreatorMarkets,
   type CreatorMarketEntry,
 } from '@/lib/markets'
+import {
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from '@bitcaster/client-sdk/marketUnits'
 import { resolveCreatorPubkey } from '@/lib/identityOps'
 import {
   useCreatorMarketsStore,
@@ -63,6 +67,8 @@ function buildCreatedMarket(
     imageUrl: stored.thumbnailUrl ?? '',
     status: toCreatedMarketStatus(backend?.state),
     createdDate: stored.createdAt,
+    baseAsset: normalizeMarketBaseAsset(stored.baseAsset),
+    divisibility: normalizeMarketDivisibility(stored.divisibility),
     volume: backend?.totalVolumeSats ?? 0,
     creatorFeesEarned: 0,
     creatorFeePercent: stored.creatorFeePercent,

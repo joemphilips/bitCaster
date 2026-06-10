@@ -6,6 +6,7 @@ import { useInvoiceCountdown, formatRemaining } from '@/lib/invoiceCountdown'
 interface InvoiceDisplayProps {
   bolt11: string
   amountSats: number
+  amountLabel?: string
   status: 'pending' | 'paid' | 'expired' | 'error'
   /** Bolt11 expiry (unix seconds). Drives the live "expires in Xm Ys" line. */
   expiresAtSec?: number
@@ -20,6 +21,7 @@ interface InvoiceDisplayProps {
 export function InvoiceDisplay({
   bolt11,
   amountSats,
+  amountLabel,
   status,
   expiresAtSec,
   errorMessage,
@@ -105,7 +107,7 @@ export function InvoiceDisplay({
 
         {/* Amount */}
         <div className="mt-6 text-2xl font-bold text-white font-mono">
-          ₿{amountSats.toLocaleString()}
+          {amountLabel ?? `₿${amountSats.toLocaleString()}`}
         </div>
 
         {/* Invoice text + copy */}

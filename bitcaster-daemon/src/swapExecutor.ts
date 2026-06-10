@@ -11,6 +11,7 @@ import type {
 } from '@bitcaster-market/client-sdk/swapFailure'
 import { redactSwapFailureForTelemetry } from '@bitcaster-market/client-sdk/swapFailure'
 import { TRADE_MESSAGE_TYPES } from '@bitcaster-market/client-sdk/tradeSession'
+import { normalizeMarketBaseAsset } from '@bitcaster-market/client-sdk/marketUnits'
 import type { DaemonProfile } from './profile.ts'
 import { readProfile } from './profile.ts'
 import type { DaemonSecrets } from './secrets.ts'
@@ -36,6 +37,8 @@ import {
 
 type OutcomeAsset = Extract<StoredProofRecord['asset'], { kind: 'outcome' }>
 const PARTIAL_LOCK_REFUND_MARGIN_SECS = 60
+const RETRYABLE_SWAP_STEP_RETRY_DELAY_MS = 1_000
+const RETRYABLE_SWAP_STEP_MAX_ATTEMPTS = 90
 
 interface MintSellerSplit {
   conditionId: string
@@ -51,6 +54,7 @@ export interface DaemonSwapContext {
   sellerLocktime: number
   buyerLocktime: number
   mintUrl: string
+  baseAsset?: string | null
 }
 
 export interface SellerOpenResult {
@@ -179,6 +183,8 @@ export interface DaemonSwapExecutorOptions {
   connection: TradeRuntimeConnection
   ops?: DaemonSwapOps
   walletOpsDeps?: WalletOpsDependencies
+  retryDelayMs?: number
+  maxRetryAttempts?: number
 }
 
 export class DaemonSwapExecutor {
@@ -186,11 +192,17 @@ export class DaemonSwapExecutor {
   private readonly ops: DaemonSwapOps
   private readonly walletOpsDeps: WalletOpsDependencies
   private readonly inFlight = new Set<string>()
+  private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly retryAttempts = new Map<string, number>()
+  private readonly retryDelayMs: number
+  private readonly maxRetryAttempts: number
 
   constructor(options: DaemonSwapExecutorOptions) {
     this.connection = options.connection
     this.ops = options.ops ?? unsupportedSwapOps()
     this.walletOpsDeps = options.walletOpsDeps ?? {}
+    this.retryDelayMs = options.retryDelayMs ?? RETRYABLE_SWAP_STEP_RETRY_DELAY_MS
+    this.maxRetryAttempts = options.maxRetryAttempts ?? RETRYABLE_SWAP_STEP_MAX_ATTEMPTS
   }
 
   async onTradeCreated(swap: LocalSwapRecord | null): Promise<void> {
@@ -428,6 +440,7 @@ export class DaemonSwapExecutor {
         asset.outcomeSetId,
         amount,
         this.walletOpsDeps,
+        swap.baseAsset,
       )
       if (!selected) {
         throw new Error(`insufficient outcome proofs for seller open (${amount} sats)`)
@@ -629,6 +642,7 @@ export class DaemonSwapExecutor {
       split.lockOutcomeSetId,
       amount,
       this.walletOpsDeps,
+      swap.baseAsset,
     )
     if (availableOutcome) {
       const locked = await this.lockOutcomeProofRowGroups({
@@ -722,8 +736,10 @@ export class DaemonSwapExecutor {
     const resolveSplitAmount =
       this.walletOpsDeps.resolveRootDirectLockOutputAmountSats ??
       resolveRootDirectLockOutputAmountSats
+    const baseAsset = normalizeMarketBaseAsset(swap.baseAsset)
     const splitAmount = await resolveSplitAmount({
       mintUrl,
+      baseAsset,
       conditionId: split.conditionId,
       amountSats: amount,
       keepOutcomeSetId: split.keepOutcomeSetId,
@@ -735,6 +751,7 @@ export class DaemonSwapExecutor {
       `${tradeId}:seller-regular-ctf-input`,
       secrets,
       this.walletOpsDeps,
+      baseAsset,
     )
     const result = await this.ops.sellerOpenMint(
       ctx,
@@ -753,7 +770,7 @@ export class DaemonSwapExecutor {
         ...collateral.spent,
         ...result.spentSatProofs,
       ])
-      addProofs(state, mintUrl, collateral.keep, 'available', { kind: 'sats' }, now)
+      addProofs(state, mintUrl, collateral.keep, 'available', { kind: 'sats', baseAsset }, now)
       addOutcomeProofsByCollection(
         state,
         mintUrl,
@@ -1048,16 +1065,19 @@ export class DaemonSwapExecutor {
     }
 
     try {
-      const amount = requiredAmount(swap.quotePaymentSats ?? swap.fillAmountSats)
+      const amount = requiredAmount(swap.quotePaymentSubunits ?? swap.quotePaymentSats ?? swap.fillAmountSats)
+      const baseAsset = normalizeMarketBaseAsset(swap.baseAsset)
       const selected = await selectProofs(
         await readState(),
         profile.mintUrl,
-        (proof) => proof.asset.kind === 'sats',
+        (proof) =>
+          proof.asset.kind === 'sats' &&
+          normalizeMarketBaseAsset(proof.asset.baseAsset) === baseAsset,
         amount,
         this.walletOpsDeps,
       )
       if (!selected) {
-        throw new Error(`insufficient sat proofs for buyer response (${amount} sats)`)
+        throw new Error(`insufficient ${baseAsset} proofs for buyer response (${amount} sub-units)`)
       }
       const result = await this.ops.buyerRespond(
         ctx,
@@ -1232,6 +1252,7 @@ export class DaemonSwapExecutor {
         sellerLocktime: swap.sellerLocktime,
         buyerLocktime: swap.buyerLocktime,
         mintUrl: profile.mintUrl,
+        baseAsset: normalizeMarketBaseAsset(swap.baseAsset),
       },
     }
   }
@@ -1295,6 +1316,37 @@ export class DaemonSwapExecutor {
       swap.error = error
       swap.updatedAt = now
     })
+    this.scheduleRetry(tradeId)
+  }
+
+  private scheduleRetry(tradeId: string): void {
+    if (this.retryTimers.has(tradeId)) return
+    const attempts = this.retryAttempts.get(tradeId) ?? 0
+    if (attempts >= this.maxRetryAttempts) return
+    this.retryAttempts.set(tradeId, attempts + 1)
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(tradeId)
+      void this.retryActiveSwap(tradeId).catch(() => undefined)
+    }, this.retryDelayMs)
+    timer.unref?.()
+    this.retryTimers.set(tradeId, timer)
+  }
+
+  private async retryActiveSwap(tradeId: string): Promise<void> {
+    const state = await readState()
+    const swap = state?.swaps[tradeId]
+    if (!swap || isTerminal(swap)) {
+      this.clearRetryState(tradeId)
+      return
+    }
+    await this.resumeActiveSwaps(state)
+  }
+
+  private clearRetryState(tradeId: string): void {
+    const timer = this.retryTimers.get(tradeId)
+    if (timer) clearTimeout(timer)
+    this.retryTimers.delete(tradeId)
+    this.retryAttempts.delete(tradeId)
   }
 
   private async handleSwapStepError(
@@ -1377,14 +1429,17 @@ async function selectOutcomeProofsForOutcomeSet(
   outcomeSetId: string,
   amount: number,
   deps: WalletOpsDependencies = {},
+  baseAssetInput?: string | null,
 ): Promise<StoredProofRecord[] | null> {
+  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
   const exact = await selectProofs(
     state,
     mintUrl,
     (proof) =>
       proof.asset.kind === 'outcome' &&
       proof.asset.conditionId === conditionId &&
-      proof.asset.outcomeSetId === outcomeSetId,
+      proof.asset.outcomeSetId === outcomeSetId &&
+      normalizeMarketBaseAsset(proof.asset.baseAsset) === baseAsset,
     amount,
     deps,
   )
@@ -1398,7 +1453,8 @@ async function selectOutcomeProofsForOutcomeSet(
       (proof) =>
         proof.asset.kind === 'outcome' &&
         proof.asset.conditionId === conditionId &&
-        proof.asset.outcomeSetId === outcomeCollection,
+        proof.asset.outcomeSetId === outcomeCollection &&
+        normalizeMarketBaseAsset(proof.asset.baseAsset) === baseAsset,
       amount,
       deps,
     )

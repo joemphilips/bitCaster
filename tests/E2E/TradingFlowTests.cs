@@ -45,9 +45,9 @@ public class TradingFlowTests : IAsyncLifetime
     /// Seed the wallet store and point it at the real mint port so balance
     /// queries resolve against proofs we inject below.
     /// </summary>
-    private static async Task SetupWalletAsync(IPage page)
+    private static async Task SetupWalletAsync(IPage page, string? mintUrl = null)
     {
-        await TestHelpers.SetupComplete(page, TestPorts.Vite, $"{TestPorts.MintUrl}");
+        await TestHelpers.SetupComplete(page, TestPorts.Vite, mintUrl ?? $"{TestPorts.MintUrl}");
         await SeedNostrSignerAsync(page);
     }
 
@@ -230,10 +230,9 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await yesSide.ClickAsync();
 
-        // Balance hint should reflect the seeded amount (live via useBalance).
-        // i18next plain `{{count}}` does not add thousands separators, so the
-        // literal rendered string is "You have 10000 sats".
-        var balanceHint = page.GetByText("You have 10000 sats").Filter(new() { Visible = true }).First;
+        // Balance hint should reflect the seeded amount (live via useBalance)
+        // using the same locale-aware market-unit formatter as the UI.
+        var balanceHint = page.GetByText("You have 10,000 sats").Filter(new() { Visible = true }).First;
         await Assertions.Expect(balanceHint).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
         // Quick-pick buttons top out at 5000 sats (QUICK_AMOUNTS in
@@ -263,7 +262,7 @@ public class TradingFlowTests : IAsyncLifetime
 
         // The modal's "You have {{count}} sats" line must now report the
         // seeded balance, not 0 (pre-fix regression).
-        var modalBalance = page.GetByText("10000 sats").Filter(new() { Visible = true }).First;
+        var modalBalance = page.GetByText("10,000 sats").Filter(new() { Visible = true }).First;
         await Assertions.Expect(modalBalance).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
@@ -366,6 +365,190 @@ public class TradingFlowTests : IAsyncLifetime
         var pubkey = doc.RootElement.GetProperty("ephemeralPubkey").GetString();
         Assert.NotNull(pubkey);
         Assert.Matches(@"^(02|03)[0-9a-f]{64}$", pubkey!);
+    }
+
+    [Fact]
+    public async Task ScoreTopUp_MintsRegularSats_PaysEngineFee_ThenPostsOrder()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+        await SetupWalletAsync(page, TestPorts.FrontendUrl);
+
+        string? capturedOrderBody = null;
+        string? capturedScorePaymentBody = null;
+
+        await page.RouteAsync("**/api/v1/participation-score", async route =>
+        {
+            if (route.Request.Method != "GET")
+            {
+                await route.ContinueAsync();
+                return;
+            }
+
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    pubkey = "e2e-score-pubkey",
+                    balance = 0,
+                    purchasedTotal = 0,
+                    consumedTotal = 0,
+                    penaltyTotal = 0,
+                    matchDebitScore = 500,
+                    enabled = true,
+                }),
+            });
+        });
+
+        await page.RouteAsync("**/api/v1/participation-score/ecash", async route =>
+        {
+            capturedScorePaymentBody = route.Request.PostData;
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    paymentId = Guid.NewGuid().ToString(),
+                    status = "credited",
+                    amountSats = 500,
+                    creditedScore = 500,
+                    creditedAt = DateTimeOffset.UtcNow,
+                }),
+            });
+        });
+
+        await page.RouteAsync("**/api/v1/*/orders", async route =>
+        {
+            if (route.Request.Method == "POST")
+            {
+                capturedOrderBody = route.Request.PostData;
+                await route.FulfillAsync(new RouteFulfillOptions
+                {
+                    Status = 200,
+                    ContentType = "application/json",
+                    Body = JsonSerializer.Serialize(new
+                    {
+                        orderId = Guid.NewGuid().ToString(),
+                        status = "resting",
+                        remainingAmountSats = 100,
+                        fills = Array.Empty<object>(),
+                        ephemeralPubkey = ExtractEphemeralPubkey(route.Request.PostData),
+                        baseAsset = "sat",
+                        divisibility = 100,
+                    }),
+                });
+            }
+            else
+            {
+                await route.ContinueAsync();
+            }
+        });
+
+        await GoToFirstMarketDetailAsync(page);
+
+        var yesSide = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Yes\\s", RegexOptions.IgnoreCase) })
+            .Filter(new() { Visible = true }).First;
+        await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await yesSide.ClickAsync();
+
+        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "100" })
+            .Filter(new() { Visible = true }).First;
+        await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await quickAmount.ClickAsync();
+
+        var limitOrder = page.GetByRole(AriaRole.Button, new() { Name = "Limit" })
+            .Filter(new() { Visible = true }).First;
+        await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await limitOrder.ClickAsync();
+
+        var preflightSplit = page.GetByRole(AriaRole.Checkbox, new() { Name = "Pre-flight split" })
+            .Filter(new() { Visible = true }).First;
+        await Assertions.Expect(preflightSplit).ToBeCheckedAsync(new() { Timeout = 5_000 });
+        await preflightSplit.ClickAsync();
+        await Assertions.Expect(preflightSplit).Not.ToBeCheckedAsync(new() { Timeout = 5_000 });
+
+        var confirm = VisibleTradeConfirm(page);
+        await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
+        await confirm.ClickAsync();
+
+        await ClickTopUpAndContinueAsync(page, consoleMessages, "collateral top-up");
+        try
+        {
+            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Top Up Engine Score" }))
+                .ToBeVisibleAsync(new() { Timeout = 30_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                "Score modal did not appear after collateral top-up.");
+        }
+
+        await ClickTopUpAndContinueAsync(page, consoleMessages, "Score top-up");
+
+        var deadline = DateTime.UtcNow.AddSeconds(45);
+        while ((capturedScorePaymentBody is null || capturedOrderBody is null) && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(250);
+        }
+
+        if (capturedScorePaymentBody is null)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                "Score ecash payment endpoint was not called after Score top-up.");
+        }
+
+        using (var scoreDoc = JsonDocument.Parse(capturedScorePaymentBody))
+        {
+            Assert.Equal(500, scoreDoc.RootElement.GetProperty("amountSats").GetInt32());
+            Assert.StartsWith("cashu", scoreDoc.RootElement.GetProperty("proofsToken").GetString());
+            Assert.True(scoreDoc.RootElement.TryGetProperty("paymentId", out _));
+        }
+
+        if (capturedOrderBody is null)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                "Order was not posted after Score ecash payment.");
+        }
+
+        using var orderDoc = JsonDocument.Parse(capturedOrderBody);
+        Assert.Equal(100, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
+        Assert.Equal("Outcome", orderDoc.RootElement.GetProperty("tokenSide").GetString());
+        Assert.Matches(
+            @"^(02|03)[0-9a-f]{64}$",
+            orderDoc.RootElement.GetProperty("ephemeralPubkey").GetString()!);
+    }
+
+    private static async Task ClickTopUpAndContinueAsync(
+        IPage page,
+        IReadOnlyList<string> consoleMessages,
+        string context)
+    {
+        var topUpButton = page.GetByTestId("insufficient-balance-top-up");
+        try
+        {
+            await Assertions.Expect(topUpButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
+            await topUpButton.ClickAsync();
+            var continueButton = page.GetByTestId("top-up-continue");
+            await Assertions.Expect(continueButton).ToBeEnabledAsync(new() { Timeout = 10_000 });
+            await continueButton.ClickAsync();
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Could not start {context}.");
+        }
     }
 
     private static string ExtractEphemeralPubkey(string? body)

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router";
+import { useTranslation } from "react-i18next";
 import { MarketDetail } from "@/components/market-detail";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
 import { NostrAuthRequiredModal } from "@/components/shared/NostrAuthRequiredModal";
@@ -20,9 +21,7 @@ import {
 import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import {
-  computeLimitOrderPreview,
   computeTradeCost,
-  displaySharesToFaceSats,
 } from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
@@ -35,6 +34,7 @@ import {
   preparePreflightSplitForLimitBuy,
   type PreparedPreflightSplit,
 } from "@/lib/preflightSplitPreparation";
+import { ensureParticipationScoreForNextMatch } from "@/lib/participationScorePayment";
 import {
   outcomeLabels,
   outcomeSetIdsForMarketBooks,
@@ -55,6 +55,11 @@ import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import {
+  formatMarketSubunits,
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from "@bitcaster/client-sdk/marketUnits";
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -66,6 +71,9 @@ import type {
 } from "@/types/market-detail";
 
 type TopUpStage = "closed" | "modal" | "overlay";
+type TopUpReason =
+  | { kind: "collateral"; required: number; baseAsset: string }
+  | { kind: "score"; required: number };
 
 function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
   if (state == null) return false;
@@ -181,6 +189,7 @@ async function getSellSideBalance(
     activeMintUrl,
     market.id,
     outcomeSets.selectedOutcomeSetId,
+    { baseAsset: market.baseAsset },
   );
   return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
 }
@@ -188,6 +197,7 @@ async function getSellSideBalance(
 export function MarketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const setupComplete = useWalletStore((s) => s.setupComplete);
   const walletBackupState = useWalletStore((s) => s.walletBackupState);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
@@ -204,6 +214,7 @@ export function MarketDetailPage() {
   const [market, setMarket] = useState<MarketDetailType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const marketBaseAsset = normalizeMarketBaseAsset(market?.baseAsset);
 
   // UI state
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>("7d");
@@ -227,10 +238,8 @@ export function MarketDetailPage() {
   // tripped, so the modal / overlay keep showing the user's real deficit even
   // if the wallet balance changes live while they decide.
   const [topUpStage, setTopUpStage] = useState<TopUpStage>("closed");
+  const [topUpReason, setTopUpReason] = useState<TopUpReason | null>(null);
   const [balanceAtCheck, setBalanceAtCheck] = useState(0);
-  // Required spend snapshot taken when the gate tripped, so the modal/overlay
-  // show the same derived cost the gate compared against (P22 C LOW).
-  const [requiredAtCheck, setRequiredAtCheck] = useState(0);
   const [showNostrAuthModal, setShowNostrAuthModal] = useState(false);
   const [showNostrChooser, setShowNostrChooser] = useState(false);
   const [lazySetupError, setLazySetupError] = useState<string | null>(null);
@@ -366,21 +375,24 @@ export function MarketDetailPage() {
   }, [market?.id]);
 
   // Worst-case effective price for a MARKET order, mirroring the wire price
-  // `buildTradeTicket`/`marketPriceFor` resolves (buy crosses up to 99, sell
-  // down to 1). The market preview's cost basis derives from this price so the
-  // creator fee + Total cost are computed on the QUOTE, not the face amount.
-  const marketEffectivePrice = tradeSide === "sell" ? 1 : 99;
+  // `buildTradeTicket`/`marketPriceFor` resolves (buy crosses up to
+  // divisibility - 1, sell down to 1). The market preview's cost basis derives
+  // from this price so creator fee + total cost are computed on the quote, not
+  // the face amount.
+  const marketDivisibility = normalizeMarketDivisibility(market?.divisibility);
+  const marketEffectivePrice =
+    tradeSide === "sell" ? 1 : marketDivisibility - 1;
 
-  // Computed trade preview (market orders). `tradeAmount` is user-facing
-  // display shares; boundary calls convert it to protocol face sats via
-  // `displaySharesToFaceSats`.
+  // Computed trade preview (market orders). `tradeAmount` is the wire face
+  // amount in market subunits. The fee helper still works in whole-share units:
+  // quote = (face / divisibility) * price.
   const tradePreview = useMemo<TradePreview | null>(() => {
     if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
       return null;
     if (orderType === "limit") return null;
 
     const cost = computeTradeCost({
-      displayShares: tradeAmount,
+      displayShares: tradeAmount / marketDivisibility,
       price: marketEffectivePrice,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
@@ -389,7 +401,7 @@ export function MarketDetailPage() {
       amount: tradeAmount,
       predictedOdds: 50, // Placeholder — real computation needs order book depth
       priceImpact: 0,
-      potentialPayout: displaySharesToFaceSats(tradeAmount),
+      potentialPayout: tradeAmount,
       creatorFee: cost.creatorFee,
       platformFee: 0,
       totalCost: cost.totalCost,
@@ -401,23 +413,33 @@ export function MarketDetailPage() {
     orderType,
     marketEffectivePrice,
     activeMintInputFeePpk,
+    marketDivisibility,
   ]);
 
   // Computed limit order preview.
   //
-  // `tradeAmount` is user-facing display shares. One display share maps to 100
-  // protocol face sats, so the displayed quote is simply shares × limit price.
+  // `tradeAmount` is the wire face amount in market subunits. The displayed
+  // quote is whole shares × limit price.
   const limitOrderPreview = useMemo<LimitOrderPreview | null>(() => {
     if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
       return null;
     if (orderType !== "limit") return null;
 
-    return computeLimitOrderPreview({
-      displayShares: tradeAmount,
-      limitPrice,
+    const cost = computeTradeCost({
+      displayShares: tradeAmount / marketDivisibility,
+      price: limitPrice,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
     });
+    return {
+      limitPrice,
+      amount: tradeAmount,
+      sharesIfFilled: tradeAmount / marketDivisibility,
+      quoteSats: cost.quoteSats,
+      creatorFee: cost.creatorFee,
+      mintFee: cost.mintFee,
+      totalCost: cost.totalCost,
+    };
   }, [
     tradeSelection,
     tradeAmount,
@@ -425,16 +447,16 @@ export function MarketDetailPage() {
     orderType,
     limitPrice,
     activeMintInputFeePpk,
+    marketDivisibility,
   ]);
 
   // Derived spend a BUY must cover, used by the pre-submit balance gate and the
-  // top-up modal/overlay. Sells are gated on the protocol face sats represented
-  // by the display share count.
+  // top-up modal/overlay. Sells are gated on the position face amount.
   const requiredBuyCost = useMemo(() => {
     if (!market || !tradeAmount || tradeAmount <= 0) return 0;
     const price = orderType === "limit" ? limitPrice : marketEffectivePrice;
     return computeTradeCost({
-      displayShares: tradeAmount,
+      displayShares: tradeAmount / marketDivisibility,
       price,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
@@ -446,210 +468,228 @@ export function MarketDetailPage() {
     limitPrice,
     marketEffectivePrice,
     activeMintInputFeePpk,
+    marketDivisibility,
   ]);
 
   // Submit the order. Assumes wallet is set up and balance has been checked —
   // callers that can't promise that must route through `handleTradeConfirm`.
-  const placeOrder = useCallback(async (comment?: string) => {
-    if (!market || !tradeSelection || !tradeAmount) return;
-    const faceAmountSats = displaySharesToFaceSats(tradeAmount);
-    if (tradeSubmitInFlightRef.current) return;
-    tradeSubmitInFlightRef.current = true;
-    setIsTradeSubmitting(true);
-    setTradeSubmitStatus(null);
-    let latestMarket: MarketDetailType;
-    try {
-      latestMarket = await fetchMarketDetailWithBooks(market.id);
-      setMarket(latestMarket);
-    } catch {
-      setTradeSubmitStatus({
-        kind: "error",
-        message: "Could not refresh market status before submitting the order.",
-      });
-      tradeSubmitInFlightRef.current = false;
-      setIsTradeSubmitting(false);
-      return;
-    }
-    if (isClosedForTrading(latestMarket)) {
-      setTradeSubmitStatus({
-        kind: "error",
-        message: "This market is closed and no longer accepts orders.",
-      });
-      tradeSubmitInFlightRef.current = false;
-      setIsTradeSubmitting(false);
-      return;
-    }
-    if (!marketShapeMatches(market, latestMarket)) {
-      setTradeSubmitStatus({
-        kind: "error",
-        message:
-          "Market metadata changed before submission. Review the market and try again.",
-      });
-      tradeSubmitInFlightRef.current = false;
-      setIsTradeSubmitting(false);
-      return;
-    }
+  const placeOrder = useCallback(
+    async (comment?: string) => {
+      if (!market || !tradeSelection || !tradeAmount) return;
+      if (tradeSubmitInFlightRef.current) return;
+      tradeSubmitInFlightRef.current = true;
+      setIsTradeSubmitting(true);
+      setTradeSubmitStatus(null);
 
-    let ticket: ReturnType<typeof buildTradeTicket>;
-    let outcomeSets: NonNullable<ReturnType<typeof resolveOutcomeSets>>;
-    try {
-      const resolvedOutcomeSets = resolveOutcomeSets(latestMarket, tradeSelection);
-      if (!resolvedOutcomeSets) {
-        throw new TradeTicketError(
-          "missing-selection",
-          "Choose an outcome before placing an order.",
-        );
-      }
-      outcomeSets = resolvedOutcomeSets;
-      ticket = buildTradeTicket({
-        market: latestMarket,
-        selection: tradeSelection,
-        amountSats: faceAmountSats,
-        side: tradeSide,
-        orderType,
-        limitPrice,
-        orderBook:
-          latestMarket.outcomeOrderBooks?.[
-            outcomeSets.publicOutcomeSetId
-          ] ?? null,
-        complementaryOrderBook:
-          latestMarket.outcomeOrderBooks?.[
-            outcomeSets.complementOutcomeSetId
-          ] ?? null,
-      });
-    } catch (e) {
-      const message =
-        e instanceof TradeTicketError
-          ? e.message
-          : "This order cannot be submitted yet.";
-      setTradeSubmitStatus({ kind: "info", message });
-      tradeSubmitInFlightRef.current = false;
-      setIsTradeSubmitting(false);
-      return;
-    }
-
-    const ephemeral = generateEphemeralKeyPair();
-    let preparedPreflightSplit: PreparedPreflightSplit | undefined;
-    let submitAttempted = false;
-    try {
-      const selectedBook =
-        latestMarket.outcomeOrderBooks?.[outcomeSets.publicOutcomeSetId] ??
-        null;
-      const complementBook =
-        latestMarket.outcomeOrderBooks?.[outcomeSets.complementOutcomeSetId] ??
-        null;
-      const directCross =
-        selectedBook?.asks[0] != null &&
-        selectedBook.asks[0].price <= ticket.request.price;
-      const complementaryCross =
-        complementBook?.bids[0] != null &&
-        complementBook.bids[0].price + ticket.request.price >= 100;
-      const shouldPreflightSplit =
-        preflightSplit &&
-        tradeSide === "buy" &&
-        orderType === "limit" &&
-        !directCross &&
-        !complementaryCross;
-      if (shouldPreflightSplit) {
-        if (!activeMintUrl) {
-          throw new Error("Select an active mint before using pre-flight split.");
-        }
-        preparedPreflightSplit = await runPreflightMintSingleFlight(
-          activeMintUrl,
-          async () => {
-            await reconcileCompletedPreflightProofOperations({
-              mintUrl: activeMintUrl,
-              activeReservationIds: Object.values(
-                usePendingTradesStore.getState().byOrderId,
-              )
-                .map((trade) => trade.preflightSplit?.reservationId)
-                .filter((reservationId): reservationId is string =>
-                  Boolean(reservationId),
-                ),
-            });
-            return preparePreflightSplitForLimitBuy({
-              mintUrl: activeMintUrl,
-              market: latestMarket,
-              selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
-              complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
-              amountSats: faceAmountSats,
-              reservationId: `order-preflight:${ephemeral.pubkey}`,
-            });
-          },
-        );
-      }
-      const signedComment = comment?.trim()
-        ? await signTradeComment(latestMarket.id, comment.trim())
-        : undefined;
-      submitAttempted = true;
-      const response = await submitOrder(ticket.marketId, {
-        ...ticket.request,
-        ephemeralPubkey: ephemeral.pubkey,
-        ...(signedComment ? { comment: signedComment } : {}),
-      });
-      // Only persist the privkey once the engine has accepted the order.
-      // Otherwise we accumulate orphaned keys on every failed submission.
-      addPendingTrade({
-        orderId: response.orderId,
-        marketId: ticket.marketId,
-        ephemeralPubkey: ephemeral.pubkey,
-        ephemeralPrivkey: ephemeral.privkey,
-        submittedAt: Date.now(),
-        preflightSplit: preparedPreflightSplit,
-      });
-      promoteFillsToActiveSwaps(response.fills ?? [], {
-        orderId: response.orderId,
-        marketId: ticket.marketId,
-        ephemeralPubkey: ephemeral.pubkey,
-        ephemeralPrivkey: ephemeral.privkey,
-      });
-      addOrderSubmitNotifications({
-        add: useNotificationsStore.getState().add,
-        orderId: response.orderId,
-        marketId: ticket.marketId,
-        requestedAmountSats: ticket.request.amountSats,
-        remainingAmountSats: response.remainingAmountSats,
-        fillCount: response.fills?.length ?? 0,
-        status: response.status,
-      });
-      setTradeSelection(null);
-      setTradeAmount(0);
-      setTradeSubmitStatus({
-        kind: "success",
-        message:
-          response.status === "resting"
-            ? "Order posted to the book."
-            : `Order ${response.status.replace("_", " ")}.`,
-      });
-      if (
-        useWalletStore.getState().walletBackupState === "needs_backup" ||
-        useSettingsStore.getState().signerBackupState === "needs_backup"
-      ) {
-        setShowBackupReminder(true);
-      }
-      loadMarket({ showLoading: false });
-    } catch (e) {
-      if (preparedPreflightSplit && !submitAttempted) {
-        await releaseProofReservation(preparedPreflightSplit.reservationId);
-      }
-      if (
-        e instanceof Error &&
-        e.message.includes("No Nostr signer configured")
-      ) {
-        setShowNostrAuthModal(true);
+      let latestMarket: MarketDetailType;
+      try {
+        latestMarket = await fetchMarketDetailWithBooks(market.id);
+        setMarket(latestMarket);
+      } catch {
+        setTradeSubmitStatus({
+          kind: "error",
+          message:
+            "Could not refresh market status before submitting the order.",
+        });
         tradeSubmitInFlightRef.current = false;
         setIsTradeSubmitting(false);
         return;
       }
-      setTradeSubmitStatus({
-        kind: "error",
-        message: e instanceof Error ? e.message : "Failed to submit order.",
-      });
-    } finally {
-      tradeSubmitInFlightRef.current = false;
-      setIsTradeSubmitting(false);
-    }
-  },
+      if (isClosedForTrading(latestMarket)) {
+        setTradeSubmitStatus({
+          kind: "error",
+          message: "This market is closed and no longer accepts orders.",
+        });
+        tradeSubmitInFlightRef.current = false;
+        setIsTradeSubmitting(false);
+        return;
+      }
+      if (!marketShapeMatches(market, latestMarket)) {
+        setTradeSubmitStatus({
+          kind: "error",
+          message:
+            "Market metadata changed before submission. Review the market and try again.",
+        });
+        tradeSubmitInFlightRef.current = false;
+        setIsTradeSubmitting(false);
+        return;
+      }
+
+      let ticket: ReturnType<typeof buildTradeTicket>;
+      let outcomeSets: NonNullable<ReturnType<typeof resolveOutcomeSets>>;
+      try {
+        const resolvedOutcomeSets = resolveOutcomeSets(
+          latestMarket,
+          tradeSelection,
+        );
+        if (!resolvedOutcomeSets) {
+          throw new TradeTicketError(
+            "missing-selection",
+            "Choose an outcome before placing an order.",
+          );
+        }
+        outcomeSets = resolvedOutcomeSets;
+        ticket = buildTradeTicket({
+          market: latestMarket,
+          selection: tradeSelection,
+          amountSats: tradeAmount,
+          side: tradeSide,
+          orderType,
+          limitPrice,
+          orderBook:
+            latestMarket.outcomeOrderBooks?.[
+              outcomeSets.publicOutcomeSetId
+            ] ?? null,
+          complementaryOrderBook:
+            latestMarket.outcomeOrderBooks?.[
+              outcomeSets.complementOutcomeSetId
+            ] ?? null,
+        });
+      } catch (e) {
+        const message =
+          e instanceof TradeTicketError
+            ? e.message
+            : "This order cannot be submitted yet.";
+        setTradeSubmitStatus({ kind: "info", message });
+        tradeSubmitInFlightRef.current = false;
+        setIsTradeSubmitting(false);
+        return;
+      }
+
+      const ephemeral = generateEphemeralKeyPair();
+      let preparedPreflightSplit: PreparedPreflightSplit | undefined;
+      let submitAttempted = false;
+      try {
+        const selectedBook =
+          latestMarket.outcomeOrderBooks?.[outcomeSets.publicOutcomeSetId] ??
+          null;
+        const complementBook =
+          latestMarket.outcomeOrderBooks?.[
+            outcomeSets.complementOutcomeSetId
+          ] ?? null;
+        const directCross =
+          selectedBook?.asks[0] != null &&
+          selectedBook.asks[0].price <= ticket.request.price;
+        const complementaryCross =
+          complementBook?.bids[0] != null &&
+          complementBook.bids[0].price + ticket.request.price >=
+            normalizeMarketDivisibility(latestMarket.divisibility);
+        const shouldPreflightSplit =
+          preflightSplit &&
+          tradeSide === "buy" &&
+          orderType === "limit" &&
+          !directCross &&
+          !complementaryCross;
+        if (shouldPreflightSplit) {
+          if (!activeMintUrl) {
+            throw new Error(
+              "Select an active mint before using pre-flight split.",
+            );
+          }
+          preparedPreflightSplit = await runPreflightMintSingleFlight(
+            activeMintUrl,
+            async () => {
+              await reconcileCompletedPreflightProofOperations({
+                mintUrl: activeMintUrl,
+                activeReservationIds: Object.values(
+                  usePendingTradesStore.getState().byOrderId,
+                )
+                  .map((trade) => trade.preflightSplit?.reservationId)
+                  .filter((reservationId): reservationId is string =>
+                    Boolean(reservationId),
+                  ),
+              });
+              return preparePreflightSplitForLimitBuy({
+                mintUrl: activeMintUrl,
+                market: latestMarket,
+                selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
+                complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
+                amountSats: tradeAmount,
+                reservationId: `order-preflight:${ephemeral.pubkey}`,
+              });
+            },
+          );
+        }
+        const signedComment = comment?.trim()
+          ? await signTradeComment(latestMarket.id, comment.trim())
+          : undefined;
+        submitAttempted = true;
+        const response = await submitOrder(ticket.marketId, {
+          ...ticket.request,
+          ephemeralPubkey: ephemeral.pubkey,
+          ...(signedComment ? { comment: signedComment } : {}),
+        });
+        const acceptedBaseAsset = normalizeMarketBaseAsset(
+          response.baseAsset ?? latestMarket.baseAsset,
+        );
+        const acceptedDivisibility = normalizeMarketDivisibility(
+          response.divisibility ?? latestMarket.divisibility,
+        );
+        // Only persist the privkey once the engine has accepted the order.
+        // Otherwise we accumulate orphaned keys on every failed submission.
+        addPendingTrade({
+          orderId: response.orderId,
+          marketId: ticket.marketId,
+          ephemeralPubkey: ephemeral.pubkey,
+          ephemeralPrivkey: ephemeral.privkey,
+          baseAsset: acceptedBaseAsset,
+          divisibility: acceptedDivisibility,
+          submittedAt: Date.now(),
+          preflightSplit: preparedPreflightSplit,
+        });
+        promoteFillsToActiveSwaps(response.fills ?? [], {
+          orderId: response.orderId,
+          marketId: ticket.marketId,
+          ephemeralPubkey: ephemeral.pubkey,
+          ephemeralPrivkey: ephemeral.privkey,
+          baseAsset: acceptedBaseAsset,
+          divisibility: acceptedDivisibility,
+        });
+        addOrderSubmitNotifications({
+          add: useNotificationsStore.getState().add,
+          orderId: response.orderId,
+          marketId: ticket.marketId,
+          requestedAmountSats: ticket.request.amountSats,
+          remainingAmountSats: response.remainingAmountSats,
+          fillCount: response.fills?.length ?? 0,
+          status: response.status,
+        });
+        setTradeSelection(null);
+        setTradeAmount(0);
+        setTradeSubmitStatus({
+          kind: "success",
+          message:
+            response.status === "resting"
+              ? "Order posted to the book."
+              : `Order ${response.status.replace("_", " ")}.`,
+        });
+        if (
+          useWalletStore.getState().walletBackupState === "needs_backup" ||
+          useSettingsStore.getState().signerBackupState === "needs_backup"
+        ) {
+          setShowBackupReminder(true);
+        }
+        loadMarket({ showLoading: false });
+      } catch (e) {
+        if (preparedPreflightSplit && !submitAttempted) {
+          await releaseProofReservation(preparedPreflightSplit.reservationId);
+        }
+        if (
+          e instanceof Error &&
+          e.message.includes("No Nostr signer configured")
+        ) {
+          setShowNostrAuthModal(true);
+          return;
+        }
+        setTradeSubmitStatus({
+          kind: "error",
+          message: e instanceof Error ? e.message : "Failed to submit order.",
+        });
+      } finally {
+        tradeSubmitInFlightRef.current = false;
+        setIsTradeSubmitting(false);
+      }
+    },
     [
       market,
       tradeSelection,
@@ -667,48 +707,76 @@ export function MarketDetailPage() {
   // Gate the order submission on sufficient balance. Reads the balance at
   // click-time (not via `useBalance`) so we don't race a stale live-query
   // subscription after a top-up.
-  const handleTradeConfirm = useCallback(async (comment?: string) => {
-    if (!market || !tradeSelection || !tradeAmount) return;
-    if (tradeSubmitInFlightRef.current) return;
-    tradeSubmitInFlightRef.current = true;
-    const faceAmountSats = displaySharesToFaceSats(tradeAmount);
-    const requiredSats = tradeSide === "sell" ? faceAmountSats : requiredBuyCost;
-    setIsTradeSubmitting(true);
-    try {
-      const current =
-        tradeSide === "sell"
-          ? await getSellSideBalance(activeMintUrl, market, tradeSelection)
-          : await getBalance(activeMintUrl);
-      if (current < requiredSats) {
-        setRequiredAtCheck(requiredSats);
-        setBalanceAtCheck(current);
-        setPendingTopUpComment(comment?.trim() || undefined);
-        setTopUpStage("modal");
+  const handleTradeConfirm = useCallback(
+    async (comment?: string) => {
+      if (!market || !tradeSelection || !tradeAmount) return;
+      if (tradeSubmitInFlightRef.current) return;
+      tradeSubmitInFlightRef.current = true;
+      const requiredSubunits =
+        tradeSide === "sell" ? tradeAmount : requiredBuyCost;
+      setIsTradeSubmitting(true);
+      try {
+        const current =
+          tradeSide === "sell"
+            ? await getSellSideBalance(activeMintUrl, market, tradeSelection)
+            : await getBalance(activeMintUrl, { baseAsset: marketBaseAsset });
+        if (current < requiredSubunits) {
+          setBalanceAtCheck(current);
+          setPendingTopUpComment(comment?.trim() || undefined);
+          setTopUpReason({
+            kind: "collateral",
+            required: requiredSubunits,
+            baseAsset: marketBaseAsset,
+          });
+          setTopUpStage("modal");
+          return;
+        }
+        const score = await ensureParticipationScoreForNextMatch({
+          mintUrl: activeMintUrl,
+        });
+        if (score.kind === "needs-regular-top-up") {
+          setBalanceAtCheck(score.balanceSats);
+          setPendingTopUpComment(comment?.trim() || undefined);
+          setTopUpReason({
+            kind: "score",
+            required: score.requiredSats,
+          });
+          setTopUpStage("modal");
+          return;
+        }
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes("No Nostr signer configured")
+        ) {
+          setShowNostrAuthModal(true);
+          return;
+        }
+        setTradeSubmitStatus({
+          kind: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not check wallet balance before submitting the order.",
+        });
         return;
+      } finally {
+        tradeSubmitInFlightRef.current = false;
+        setIsTradeSubmitting(false);
       }
-    } catch (error) {
-      setTradeSubmitStatus({
-        kind: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Could not check wallet balance before submitting the order.",
-      });
-      return;
-    } finally {
-      tradeSubmitInFlightRef.current = false;
-      setIsTradeSubmitting(false);
-    }
-    await placeOrder(comment);
-  }, [
-    market,
-    tradeSelection,
-    tradeAmount,
-    tradeSide,
-    requiredBuyCost,
-    activeMintUrl,
-    placeOrder,
-  ]);
+      await placeOrder(comment);
+    },
+    [
+      market,
+      marketBaseAsset,
+      tradeSelection,
+      tradeAmount,
+      tradeSide,
+      requiredBuyCost,
+      activeMintUrl,
+      placeOrder,
+    ],
+  );
 
   const handleWalletRequired = useCallback(async (comment?: string) => {
     setLazySetupError(null);
@@ -749,10 +817,11 @@ export function MarketDetailPage() {
   // get here — no re-read needed.
   const handleTopUpSuccess = useCallback(async () => {
     setTopUpStage("closed");
+    setTopUpReason(null);
     const comment = pendingTopUpComment;
     setPendingTopUpComment(undefined);
-    await placeOrder(comment);
-  }, [pendingTopUpComment, placeOrder]);
+    await handleTradeConfirm(comment);
+  }, [handleTradeConfirm, pendingTopUpComment]);
 
   const handleRelatedMarketClick = useCallback(
     (marketId: string) => {
@@ -834,16 +903,50 @@ export function MarketDetailPage() {
       {topUpStage === "modal" && (
         <InsufficientBalanceModal
           balance={balanceAtCheck}
-          required={requiredAtCheck}
-          onCancel={() => setTopUpStage("closed")}
+          required={topUpReason?.required ?? tradeAmount}
+          title={
+            topUpReason?.kind === "score"
+              ? t("insufficientBalance.scoreTitle")
+              : undefined
+          }
+          requiredDescription={
+            topUpReason?.kind === "score"
+              ? t("insufficientBalance.scoreNeeds")
+              : undefined
+          }
+          formatAmount={(amount) =>
+            topUpReason?.kind === "score"
+              ? t("insufficientBalance.sats", { count: amount })
+              : formatMarketSubunits(amount, marketBaseAsset)
+          }
+          onCancel={() => {
+            setTopUpStage("closed");
+            setTopUpReason(null);
+          }}
           onTopUp={() => setTopUpStage("overlay")}
         />
       )}
       {topUpStage === "overlay" && (
         <TopUpOverlay
-          deficit={Math.max(requiredAtCheck - balanceAtCheck, 0)}
+          deficit={Math.max(
+            (topUpReason?.required ?? tradeAmount) - balanceAtCheck,
+            0,
+          )}
+          baseAsset={topUpReason?.kind === "score" ? "sat" : marketBaseAsset}
+          minimumDescription={
+            topUpReason?.kind === "score"
+              ? t("topUp.scoreMinimumDesc", {
+                  sats: t("insufficientBalance.sats", {
+                    count: Math.max(topUpReason.required - balanceAtCheck, 0),
+                  }),
+                })
+              : undefined
+          }
           onSuccess={handleTopUpSuccess}
-          onCancel={() => setTopUpStage("closed")}
+          onCancel={() => {
+            setTopUpStage("closed");
+            setTopUpReason(null);
+          }}
         />
       )}
       {showNostrAuthModal && (

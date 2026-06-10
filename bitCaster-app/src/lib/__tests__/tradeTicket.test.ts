@@ -111,7 +111,7 @@ describe("buildTradeTicket", () => {
         limitPrice: 50,
         orderBook: market.orderBook,
       }),
-    ).toThrow("Enter an amount in 100 sat increments.");
+    ).toThrow("Enter an amount in 100 sub-unit increments.");
   });
 
   it("builds sell orders after same-outcome CTF swaps are supported", () => {
