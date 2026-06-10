@@ -13,6 +13,8 @@ Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell 
 
 Public trading books are primitive outcome books. A categorical market with outcomes `A`, `B`, and `C` exposes `A / Not A`, `B / Not B`, and `C / Not C` books; clients submit to `condition-A`, `condition-B`, or `condition-C` and choose the selected token or its one-vs-rest complement in the order body. Compound ids such as `B|C` remain internal settlement and mint keyset identifiers, not public market routes.
 
+The market-detail trade ticket is share-based. Users enter a whole number of shares, while the client converts that to the protocol face amount before submitting the order. If a market has divisibility `D`, one share has face value `D` base units and a price numerator `k` means `k / D` probability. Buying `n` shares at price `k` costs `n × k` base units before fees and pays `n × D` base units if the outcome wins. For example, in a `D=100` sats market, 50 shares at price 30 cost 1,500 sats before fee rows and pay 5,000 sats if they win.
+
 ## Online Requirement
 
 A resting limit order is an online commitment. The maker must keep a browser tab or bot process connected until the order is filled, cancelled, or expired. When a taker matches the order, the maker must be able to answer the TradeHub messages and lock proofs before the swap timeout.

@@ -40,9 +40,9 @@ Any user can run their own Cashu mint to issue prediction market tokens. The min
 
 ## How it works
 
-Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. For example, a token trading at 70 sats means the market thinks there's roughly a 70% chance of that outcome.
+Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. The trade ticket asks for shares, not sats: if a market's share value is `D` base units, buying `n` shares at price `k` costs `n × k` base units before the listed fee rows and pays `n × D` base units if that outcome wins. For example, in a market where one share is 100 sats, 50 shares at price 30 cost 1,500 sats before fees and pay 5,000 sats if they win.
 
-When the event resolves, winning tokens are redeemable for their full value (100 sats each), and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
+When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
 
 ## Your assets, your responsibility[^1]
 

@@ -225,13 +225,14 @@ export type OrderType = 'market' | 'limit'
 
 export interface LimitOrderPreview {
   limitPrice: number        // price numerator 1..divisibility-1
-  amount: number            // face amount in market subunits
+  amount: number            // display shares
   sharesIfFilled?: number
   quoteSats: number         // whole shares × price, the pre-fee quote
   creatorFee: number
   mintFee: number           // read from the CTF keyset input_fee_ppk (0 in the first release)
+  potentialPayout: number   // display shares × market divisibility
   // Display-only spend estimate used for the balance check. NEVER sent as the
-  // wire amountSats (which is `amount * 100`). Reactive:
+  // wire amountSats (which is `amount * divisibility`). Reactive:
   //   limitPrice * amount + creatorFee + mintFee
   totalCost: number
 }
@@ -253,6 +254,8 @@ export interface TradePreview {
   amount: number
   predictedOdds: number // Odds after trade
   priceImpact: number // Change in odds
+  quoteSats: number
+  mintFee: number
   potentialPayout: number
   creatorFee: number
   platformFee: number
@@ -273,7 +276,7 @@ export interface MarketDetailProps {
   /** Currently selected trade (null if none) */
   tradeSelection: TradeSelection | null
 
-  /** Trade amount entered by user, in display shares (1 share = 100 face sats) */
+  /** Trade amount entered by user, in display shares (1 share = market divisibility face units) */
   tradeAmount: number
 
   /** Preview of trade outcome (null if no valid selection) */

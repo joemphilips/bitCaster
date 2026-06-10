@@ -22,6 +22,7 @@ import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import {
   computeTradeCost,
+  displaySharesToFaceSats,
 } from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
@@ -383,16 +384,21 @@ export function MarketDetailPage() {
   const marketEffectivePrice =
     tradeSide === "sell" ? 1 : marketDivisibility - 1;
 
-  // Computed trade preview (market orders). `tradeAmount` is the wire face
-  // amount in market subunits. The fee helper still works in whole-share units:
-  // quote = (face / divisibility) * price.
+  const tradeFaceAmount = displaySharesToFaceSats(
+    tradeAmount,
+    marketDivisibility,
+  );
+
+  // Computed trade preview (market orders). `tradeAmount` is the user-entered
+  // whole-share count; the wire face amount is derived only at protocol
+  // boundaries.
   const tradePreview = useMemo<TradePreview | null>(() => {
     if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
       return null;
     if (orderType === "limit") return null;
 
     const cost = computeTradeCost({
-      displayShares: tradeAmount / marketDivisibility,
+      displayShares: tradeAmount,
       price: marketEffectivePrice,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
@@ -401,7 +407,9 @@ export function MarketDetailPage() {
       amount: tradeAmount,
       predictedOdds: 50, // Placeholder — real computation needs order book depth
       priceImpact: 0,
-      potentialPayout: tradeAmount,
+      quoteSats: cost.quoteSats,
+      mintFee: cost.mintFee,
+      potentialPayout: tradeFaceAmount,
       creatorFee: cost.creatorFee,
       platformFee: 0,
       totalCost: cost.totalCost,
@@ -414,19 +422,19 @@ export function MarketDetailPage() {
     marketEffectivePrice,
     activeMintInputFeePpk,
     marketDivisibility,
+    tradeFaceAmount,
   ]);
 
   // Computed limit order preview.
   //
-  // `tradeAmount` is the wire face amount in market subunits. The displayed
-  // quote is whole shares × limit price.
+  // The displayed quote is whole shares × limit price.
   const limitOrderPreview = useMemo<LimitOrderPreview | null>(() => {
     if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market)
       return null;
     if (orderType !== "limit") return null;
 
     const cost = computeTradeCost({
-      displayShares: tradeAmount / marketDivisibility,
+      displayShares: tradeAmount,
       price: limitPrice,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
@@ -434,10 +442,11 @@ export function MarketDetailPage() {
     return {
       limitPrice,
       amount: tradeAmount,
-      sharesIfFilled: tradeAmount / marketDivisibility,
+      sharesIfFilled: tradeAmount,
       quoteSats: cost.quoteSats,
       creatorFee: cost.creatorFee,
       mintFee: cost.mintFee,
+      potentialPayout: tradeFaceAmount,
       totalCost: cost.totalCost,
     };
   }, [
@@ -448,6 +457,7 @@ export function MarketDetailPage() {
     limitPrice,
     activeMintInputFeePpk,
     marketDivisibility,
+    tradeFaceAmount,
   ]);
 
   // Derived spend a BUY must cover, used by the pre-submit balance gate and the
@@ -456,7 +466,7 @@ export function MarketDetailPage() {
     if (!market || !tradeAmount || tradeAmount <= 0) return 0;
     const price = orderType === "limit" ? limitPrice : marketEffectivePrice;
     return computeTradeCost({
-      displayShares: tradeAmount / marketDivisibility,
+      displayShares: tradeAmount,
       price,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
@@ -532,7 +542,10 @@ export function MarketDetailPage() {
         ticket = buildTradeTicket({
           market: latestMarket,
           selection: tradeSelection,
-          amountSats: tradeAmount,
+          amountSats: displaySharesToFaceSats(
+            tradeAmount,
+            normalizeMarketDivisibility(latestMarket.divisibility),
+          ),
           side: tradeSide,
           orderType,
           limitPrice,
@@ -604,7 +617,7 @@ export function MarketDetailPage() {
                 market: latestMarket,
                 selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
                 complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
-                amountSats: tradeAmount,
+                amountSats: ticket.request.amountSats,
                 reservationId: `order-preflight:${ephemeral.pubkey}`,
               });
             },
@@ -713,7 +726,7 @@ export function MarketDetailPage() {
       if (tradeSubmitInFlightRef.current) return;
       tradeSubmitInFlightRef.current = true;
       const requiredSubunits =
-        tradeSide === "sell" ? tradeAmount : requiredBuyCost;
+        tradeSide === "sell" ? tradeFaceAmount : requiredBuyCost;
       setIsTradeSubmitting(true);
       try {
         const current =
@@ -771,6 +784,7 @@ export function MarketDetailPage() {
       marketBaseAsset,
       tradeSelection,
       tradeAmount,
+      tradeFaceAmount,
       tradeSide,
       requiredBuyCost,
       activeMintUrl,

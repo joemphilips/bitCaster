@@ -2,19 +2,25 @@ import type { LimitOrderPreview } from '@/types/market-detail'
 
 export const FACE_SATS_PER_DISPLAY_SHARE = 100
 
-export function displaySharesToFaceSats(displayShares: number): number {
-  return displayShares * FACE_SATS_PER_DISPLAY_SHARE
+export function displaySharesToFaceSats(
+  displayShares: number,
+  divisibility = FACE_SATS_PER_DISPLAY_SHARE,
+): number {
+  return displayShares * divisibility
 }
 
-export function faceSatsToDisplayShares(faceSats: number): number {
-  return Math.floor(faceSats / FACE_SATS_PER_DISPLAY_SHARE)
+export function faceSatsToDisplayShares(
+  faceSats: number,
+  divisibility = FACE_SATS_PER_DISPLAY_SHARE,
+): number {
+  return Math.floor(faceSats / divisibility)
 }
 
 /**
  * Derived cost breakdown for a buy of display shares at a given `price`.
  *
  * The trade input is user-facing display shares. One display share is a
- * 100-sat conditional-token face lot; boundary code converts to wire
+ * market-divisibility-sized conditional-token face lot; boundary code converts to wire
  * `amountSats` via {@link displaySharesToFaceSats}. The figures here are NEVER
  * sent on the wire; they exist only to (a) populate the trade preview panels
  * and (b) drive the pre-submit balance check.
@@ -22,8 +28,8 @@ export function faceSatsToDisplayShares(faceSats: number): number {
  * Quote sats = display shares * price. This is equivalent to the engine's
  * exact settlement formula because:
  *
- *   faceSats   = displayShares * 100
- *   quoteSats  = faceSats * price / 100
+ *   faceSats   = displayShares * divisibility
+ *   quoteSats  = faceSats * price / divisibility
  *              = displayShares * price
  *
  * On top of the quote the user pays the creator fee (a percentage of the
@@ -73,8 +79,15 @@ export function computeLimitOrderPreview(params: {
   limitPrice: number
   feePercent: number
   mintInputFeePpk: number
+  divisibility?: number
 }): LimitOrderPreview {
-  const { displayShares, limitPrice, feePercent, mintInputFeePpk } = params
+  const {
+    displayShares,
+    limitPrice,
+    feePercent,
+    mintInputFeePpk,
+    divisibility = FACE_SATS_PER_DISPLAY_SHARE,
+  } = params
   const cost = computeTradeCost({
     displayShares,
     price: limitPrice,
@@ -84,9 +97,11 @@ export function computeLimitOrderPreview(params: {
   return {
     limitPrice,
     amount: displayShares,
+    sharesIfFilled: displayShares,
     quoteSats: cost.quoteSats,
     creatorFee: cost.creatorFee,
     mintFee: cost.mintFee,
+    potentialPayout: displayShares * divisibility,
     totalCost: cost.totalCost,
   }
 }

@@ -266,7 +266,7 @@ describe("buildTradeTicket", () => {
 
   it("sends protocol face amountSats, not the derived display cost", () => {
     const displayShares = 10;
-    const faceAmountSats = displaySharesToFaceSats(displayShares);
+    const faceAmountSats = displaySharesToFaceSats(displayShares, 100);
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -289,8 +289,25 @@ describe("buildTradeTicket", () => {
     // thing we must NOT put on the wire.
     expect(preview.totalCost).not.toBe(ticket.request.amountSats);
     expect(preview.amount).toBe(displayShares);
-    // amountSats stays a multiple of 100.
+    // amountSats stays a multiple of the market divisibility.
     expect(ticket.request.amountSats % 100).toBe(0);
+  });
+
+  it("converts share input to face amount in the order payload", () => {
+    const displayShares = 50;
+    const divisibility = 100;
+    const ticket = buildTradeTicket({
+      market: { ...market, divisibility },
+      selection: { side: "yes" },
+      amountSats: displaySharesToFaceSats(displayShares, divisibility),
+      side: "buy",
+      orderType: "limit",
+      limitPrice: 30,
+      orderBook: market.orderBook,
+    });
+
+    expect(ticket.request.amountSats).toBe(5_000);
+    expect(ticket.request.price).toBe(30);
   });
 
   it("uses an aggressive worst-price limit for market buys while keeping face amountSats", () => {
