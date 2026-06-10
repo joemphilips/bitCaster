@@ -27,6 +27,28 @@ updates:
       minor-patch:
         update-types: ["minor", "patch"]
 
+  - package-ecosystem: "npm"
+    directory: "/bitCaster-doc"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/bitCaster-design"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-patch:
+        update-types: ["minor", "patch"]
+
+  # NOTE: cargo entries for cdk/ and dlcdevkit/ are intentionally absent —
+  # they are separate fork repositories that dependabot cannot reach from
+  # this monorepo's dependabot config. Dependency updates for those must be
+  # handled by bumping their submodule pointers manually.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

@@ -1,6 +1,6 @@
 services:
   mintd:
-    image: joemphilips/cdk-mintd
+    image: joemphilips/bitcaster-mintd
     environment:
       CDK_MINTD_CTF_DEFAULT_KEYSET_CREATION: "one-vs-rest"
     healthcheck:

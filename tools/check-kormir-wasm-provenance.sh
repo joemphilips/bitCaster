@@ -18,6 +18,14 @@ DDK_DIR="$REPO_ROOT/dlcdevkit"
 OUT_DIR="$REPO_ROOT/bitCaster-app/src/lib/kormir-wasm-pkg"
 FINGERPRINT_FILE="$OUT_DIR/.source-fingerprint"
 
+# Fail loudly if dlcdevkit kormir sources are dirty: a dirty-tree build would
+# record a clean fingerprint that cannot be trusted. The check script mirrors
+# the same guard so both operations reject ambiguous provenance.
+if ! git -C "$DDK_DIR" diff --quiet HEAD -- kormir kormir-wasm; then
+    echo "ERROR: dlcdevkit kormir{,-wasm} working tree is dirty — commit before building/verifying so the provenance fingerprint matches the built sources" >&2
+    exit 1
+fi
+
 if [ ! -f "$FINGERPRINT_FILE" ]; then
     echo "error: kormir-wasm-pkg is stale: rebuild with tools/build-kormir-wasm.sh" >&2
     echo "       (fingerprint file missing: $FINGERPRINT_FILE)" >&2
