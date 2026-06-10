@@ -806,20 +806,6 @@ function groupProofsByKeyset(proofs: Proof[]): Map<string, Proof[]> {
 const ORACLE_NOT_ATTESTED_OUTCOME_CODE = 13015;
 
 /**
- * Legacy fallback only: substring markers for the same terminal rejection,
- * used when the transport dropped the structured `MintOperationError.code`
- * (e.g. a proxy collapsed the JSON error body to a bare string). The numeric
- * code above is the authoritative discriminator; this exists so a code-less
- * terminal rejection is still recognised rather than mis-treated as transient.
- */
-const LOSING_LEG_ERROR_MARKERS = [
-  "oraclenotattestedoutcome",
-  "oracle has not attested to this outcome",
-  "not the attested outcome",
-  "not attested outcome",
-];
-
-/**
  * Has the mint AUTHORITATIVELY rejected this leg as a non-winner?
  *
  * `true` ONLY when the mint adjudicated the leg and returned the terminal
@@ -839,13 +825,7 @@ function isLosingLegError(error: unknown): boolean {
       return true;
     }
   }
-  // No structured code present — fall back to the message heuristic.
-  const message = (error instanceof Error ? error.message : String(error))
-    .toLowerCase()
-    .replace(/[\s_-]/g, "");
-  return LOSING_LEG_ERROR_MARKERS.some((marker) =>
-    message.includes(marker.replace(/[\s_-]/g, "")),
-  );
+  return false;
 }
 
 interface RedeemKeysetLegInput {
@@ -923,8 +903,8 @@ async function redeemKeysetLeg(
       // Composite-label storage hid this losing leg behind a winning-looking
       // label. The mint resolved it terminally — discard locally, no retry,
       // no user-facing error.
-      await markProofOperationFailed(operationId, error);
       await removeProofs(proofs.map((proof) => proof.secret));
+      await markProofOperationFailed(operationId, error);
       return [];
     }
     // Transient failure on a winning leg — leave the op-id `prepared` (do NOT
@@ -1110,9 +1090,8 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
     return structuredClone(entry.resultProofs?.regular ?? []);
   }
   if (entry.state === "failed") {
-    throw new Error(
-      `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
-    );
+    await removeProofs(entry.inputs.map((proof) => proof.secret));
+    return [];
   }
 
   const metadata = entry.metadata as {
@@ -1158,12 +1137,22 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
     }
     const outputData = deserializeOutputDataArray(entry.outputs.regular ?? []);
     const witness = await fetchConditionOracleWitness(metadata.conditionId);
-    const settled = await redeemOutcomeProofsAtMint(
-      entry.mintUrl,
-      withOracleWitness(entry.inputs, witness),
-      outputData,
-      baseAsset,
-    );
+    let settled: Proof[];
+    try {
+      settled = await redeemOutcomeProofsAtMint(
+        entry.mintUrl,
+        withOracleWitness(entry.inputs, witness),
+        outputData,
+        baseAsset,
+      );
+    } catch (error) {
+      if (isLosingLegError(error)) {
+        await removeProofs(entry.inputs.map((proof) => proof.secret));
+        await markProofOperationFailed(entry.operationId, error);
+        return [];
+      }
+      throw error;
+    }
     await completeCtfRedeem(
       entry.operationId,
       entry.mintUrl,
