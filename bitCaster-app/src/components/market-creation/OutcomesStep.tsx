@@ -6,6 +6,7 @@ import {
   DEFAULT_MARKET_DIVISIBILITY,
   SUPPORTED_MARKET_DIVISIBILITIES,
   marketUnitLabel,
+  formatWholeShareFaceValue,
 } from '@bitcaster/client-sdk/marketUnits'
 import {
   MAX_MARKET_OUTCOMES,
@@ -77,6 +78,16 @@ function ProbabilityBar({ outcomes, sumOk, rangeOk }: { outcomes: WizardOutcome[
   )
 }
 
+/**
+ * Format the price step as a percentage string for a given divisibility.
+ * D=100 → "1%", D=1000 → "0.1%", D=10000 → "0.01%".
+ */
+function formatPriceStep(d: number): string {
+  const step = 100 / d
+  // Use up to 4 significant fractional digits, strip trailing zeros.
+  return `${parseFloat(step.toPrecision(4))}%`
+}
+
 function MarketUnitControls({
   baseAsset,
   divisibility,
@@ -91,45 +102,57 @@ function MarketUnitControls({
   const { t } = useTranslation()
   const selectedBaseAsset = baseAsset ?? DEFAULT_MARKET_BASE_ASSET
   const selectedDivisibility = divisibility ?? DEFAULT_MARKET_DIVISIBILITY
+
+  const stake = formatWholeShareFaceValue({ baseAsset: selectedBaseAsset, divisibility: selectedDivisibility })
+  const step = formatPriceStep(selectedDivisibility)
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-      <div>
-        <label className="block text-sm font-medium text-slate-300 mb-2">
-          {t('marketCreation.baseAsset')}
-        </label>
-        <div className="grid grid-cols-2 gap-2">
-          {(['sat', 'usd'] as const).map((asset) => (
-            <button
-              key={asset}
-              type="button"
-              onClick={() => onBaseAssetChange?.(asset)}
-              className={`px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
-                selectedBaseAsset === asset
-                  ? 'border-blue-500 bg-blue-500/15 text-white'
-                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'
-              }`}
-            >
-              {marketUnitLabel(asset)}
-            </button>
-          ))}
+    <div className="mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
+        <div>
+          <label className="block text-sm font-medium text-slate-300 mb-2">
+            {t('marketCreation.baseAsset')}
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            {(['sat', 'usd'] as const).map((asset) => (
+              <button
+                key={asset}
+                type="button"
+                onClick={() => onBaseAssetChange?.(asset)}
+                className={`px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                  selectedBaseAsset === asset
+                    ? 'border-blue-500 bg-blue-500/15 text-white'
+                    : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'
+                }`}
+              >
+                {marketUnitLabel(asset)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-300 mb-2">
+            {t('marketCreation.divisibility')}
+          </label>
+          <select
+            value={selectedDivisibility}
+            onChange={(event) => onDivisibilityChange?.(Number(event.target.value))}
+            className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
+          >
+            {SUPPORTED_MARKET_DIVISIBILITIES.map((value) => (
+              <option key={value} value={value}>
+                {value.toLocaleString()}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
-      <div>
-        <label className="block text-sm font-medium text-slate-300 mb-2">
-          {t('marketCreation.divisibility')}
-        </label>
-        <select
-          value={selectedDivisibility}
-          onChange={(event) => onDivisibilityChange?.(Number(event.target.value))}
-          className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
-        >
-          {SUPPORTED_MARKET_DIVISIBILITIES.map((value) => (
-            <option key={value} value={value}>
-              {value.toLocaleString()}
-            </option>
-          ))}
-        </select>
-      </div>
+      <p className="text-xs text-slate-400">
+        {t('marketCreation.divisibilityExample', { stake, step })}
+      </p>
+      <p className="text-xs text-slate-500 mt-1">
+        {t('marketCreation.divisibilityHelp')}
+      </p>
     </div>
   )
 }
