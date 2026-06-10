@@ -101,6 +101,53 @@ export function normalizeProbabilities(outcomes: WizardOutcome[]): WizardOutcome
   return outcomes.map((o, i) => ({ ...o, probability: floors[i] }))
 }
 
+/**
+ * Rebalance outcome probabilities to sum to exactly 100, holding one outcome's
+ * value fixed. The fixed outcome's value is clamped to [0, 100]. The remainder
+ * (100 − fixed) is distributed proportionally across the other outcomes using
+ * largest-remainder rounding. If the other outcomes all have zero weight,
+ * the remainder is spread equally.
+ */
+export function rebalanceAfterEdit(
+  outcomes: WizardOutcome[],
+  fixedId: string,
+): WizardOutcome[] {
+  const fixedOutcome = outcomes.find((o) => o.id === fixedId)
+  if (!fixedOutcome) return normalizeProbabilities(outcomes)
+
+  const fixedValue = Math.max(0, Math.min(100, fixedOutcome.probability ?? 0))
+  const others = outcomes.filter((o) => o.id !== fixedId)
+  const remainder = 100 - fixedValue
+
+  if (others.length === 0) {
+    return outcomes.map((o) => ({ ...o, probability: fixedValue }))
+  }
+
+  const othersTotal = others.reduce((sum, o) => sum + (o.probability ?? 0), 0)
+
+  let otherValues: number[]
+  if (othersTotal === 0 || remainder === 0) {
+    // Spread evenly
+    const base = Math.floor(remainder / others.length)
+    otherValues = others.map(() => base)
+    let r = remainder - base * others.length
+    for (let i = 0; i < r; i++) otherValues[i] += 1
+  } else {
+    const raw = others.map((o) => ((o.probability ?? 0) / othersTotal) * remainder)
+    const floors = raw.map(Math.floor)
+    let r = remainder - floors.reduce((a, b) => a + b, 0)
+    const fracs = raw.map((v, i) => ({ i, f: v - floors[i] })).sort((a, b) => b.f - a.f)
+    for (let j = 0; j < r; j++) floors[fracs[j].i] += 1
+    otherValues = floors
+  }
+
+  let otherIdx = 0
+  return outcomes.map((o) => {
+    if (o.id === fixedId) return { ...o, probability: fixedValue }
+    return { ...o, probability: otherValues[otherIdx++] }
+  })
+}
+
 function defaultYesNoOutcomes(): WizardOutcome[] {
   return [
     { id: 'yes', label: 'Yes', description: '', probability: 50 },
@@ -276,11 +323,20 @@ export function useMarketCreationState() {
         description: '',
         probability: 0,
       }
+      const withNew = [...prev.stepOutcomes.outcomes, newOutcome]
+      // Auto-normalize: give every outcome an equal fair share of 100.
+      const n = withNew.length
+      const base = Math.floor(100 / n)
+      let r = 100 - base * n
+      const normalized = withNew.map((o, i) => ({
+        ...o,
+        probability: base + (i < r ? 1 : 0),
+      }))
       return {
         ...prev,
         stepOutcomes: {
           ...prev.stepOutcomes,
-          outcomes: [...prev.stepOutcomes.outcomes, newOutcome],
+          outcomes: normalized,
         },
         lastModified: new Date().toISOString(),
       }
@@ -290,11 +346,14 @@ export function useMarketCreationState() {
   const onRemoveOutcome = useCallback((outcomeId: string) => {
     setDraft((prev) => {
       if (!prev.stepOutcomes?.outcomes) return prev
+      const filtered = prev.stepOutcomes.outcomes.filter((o) => o.id !== outcomeId)
+      // Auto-normalize so the remaining outcomes still sum to 100.
+      const normalized = normalizeProbabilities(filtered)
       return {
         ...prev,
         stepOutcomes: {
           ...prev.stepOutcomes,
-          outcomes: prev.stepOutcomes.outcomes.filter((o) => o.id !== outcomeId),
+          outcomes: normalized,
         },
         lastModified: new Date().toISOString(),
       }
@@ -320,13 +379,16 @@ export function useMarketCreationState() {
   const onOutcomeProbabilityChange = useCallback((outcomeId: string, probability: number) => {
     setDraft((prev) => {
       if (!prev.stepOutcomes?.outcomes) return prev
+      // Apply the edited value first, then rebalance holding it fixed.
+      const withEdit = prev.stepOutcomes.outcomes.map((o) =>
+        o.id === outcomeId ? { ...o, probability } : o,
+      )
+      const rebalanced = rebalanceAfterEdit(withEdit, outcomeId)
       return {
         ...prev,
         stepOutcomes: {
           ...prev.stepOutcomes,
-          outcomes: prev.stepOutcomes.outcomes.map((o) =>
-            o.id === outcomeId ? { ...o, probability } : o
-          ),
+          outcomes: rebalanced,
         },
         lastModified: new Date().toISOString(),
       }

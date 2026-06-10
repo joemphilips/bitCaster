@@ -147,7 +147,8 @@ export function OutcomesStep({
   onRemoveOutcome,
   onOutcomeLabelChange,
   onOutcomeProbabilityChange,
-  onNormalizeProbabilities,
+  // onNormalizeProbabilities kept in props interface for callers; not rendered
+  // because probabilities are now auto-normalized on every edit.
   onLoBoundChange,
   onHiBoundChange,
   onPrecisionChange,
@@ -287,15 +288,6 @@ export function OutcomesStep({
           ))}
         </div>
 
-        <div className="flex justify-end mb-4">
-          <button
-            onClick={() => onNormalizeProbabilities?.()}
-            className="text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors"
-          >
-            {t('marketCreation.normalizeTo100')}
-          </button>
-        </div>
-
         <div className="mb-8">
           <ProbabilityBar outcomes={outcomes} sumOk={sumOk} rangeOk={rangeOk} />
         </div>
@@ -398,14 +390,6 @@ export function OutcomesStep({
 
       {outcomes && outcomes.length > 0 && (
         <>
-          <div className="flex justify-end mb-4">
-            <button
-              onClick={() => onNormalizeProbabilities?.()}
-              className="text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors"
-            >
-              {t('marketCreation.normalizeTo100')}
-            </button>
-          </div>
           <div className="mb-8">
             <ProbabilityBar outcomes={outcomes} sumOk={catSumOk} rangeOk={catRangeOk} />
             {!labelsAvoidOutcomeSetSeparator && (
