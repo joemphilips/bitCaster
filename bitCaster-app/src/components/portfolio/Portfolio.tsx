@@ -137,7 +137,7 @@ export function Portfolio(props: PortfolioProps) {
               onPositionsTabChange={props.onPositionsTabChange}
               onSellPosition={props.onSellPosition}
               onClaimPayout={props.onClaimPayout}
-              onRemovePosition={props.onRemovePosition}
+              onDiscardLostPosition={props.onDiscardLostPosition}
               onViewPosition={props.onViewPosition}
             />
           )}

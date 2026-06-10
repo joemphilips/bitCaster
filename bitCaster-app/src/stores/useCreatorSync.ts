@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { deriveNostrKeyPair } from '@/lib/nip17'
 import {
   fetchNip78CreatorMarkets,
   publishNip78CreatorMarkets,
 } from '@/lib/nip78CreatorMarkets'
+import { resolveNsecIdentity } from '@/lib/identityOps'
 import {
   creatorMarketsEqual,
   useCreatorMarketsStore,
   type StoredCreatorMarket,
 } from './creatorMarkets'
-import { useWalletStore } from './wallet'
+import { useSettingsStore } from './settings'
 
 const PUBLISH_DEBOUNCE_MS = 800
 
@@ -36,8 +36,8 @@ function mergeCreatorMarkets(
 
 /**
  * Keep the local creator-markets store in sync with the user's NIP-78
- * `creator-markets` event on Nostr relays. Only active while a mnemonic is
- * configured.
+ * `creator-markets` event on Nostr relays. Only active while an nsec-backed
+ * Nostr identity is configured.
  *
  *  - On mount: fetch the remote set and merge it with the local set (most
  *    recent `createdAt` wins for duplicates). Publish back if the local set
@@ -48,25 +48,25 @@ function mergeCreatorMarkets(
  * Mount this once at the application root, alongside `useBookmarkSync`.
  */
 export function useCreatorSync(): void {
-  const mnemonic = useWalletStore((s) => s.mnemonic)
+  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode)
+  const nsecSecret = useSettingsStore((s) => s.nsecSecret)
   const markets = useCreatorMarketsStore((s) => s.markets)
   const replace = useCreatorMarketsStore((s) => s.replace)
   const [initialSyncDone, setInitialSyncDone] = useState(false)
   const lastPublished = useRef<StoredCreatorMarket[] | null>(null)
-  // deriveNostrKeyPair runs BIP-39 PBKDF2, so derive once per mnemonic and
-  // reuse the cached keys for every subsequent publish.
   const keysRef = useRef<{ privateKeyHex: string; publicKey: string } | null>(
     null,
   )
 
-  // Initial fetch + merge whenever the mnemonic changes.
+  // Initial fetch + merge whenever the active nsec identity changes.
   useEffect(() => {
     setInitialSyncDone(false)
     lastPublished.current = null
     keysRef.current = null
-    if (!mnemonic) return
+    if (nostrSignerMode !== 'nsec') return
 
-    const keys = deriveNostrKeyPair(mnemonic)
+    const keys = resolveNsecIdentity(nsecSecret)
+    if (!keys) return
     keysRef.current = keys
 
     let cancelled = false
@@ -100,11 +100,11 @@ export function useCreatorSync(): void {
     return () => {
       cancelled = true
     }
-  }, [mnemonic, replace])
+  }, [nostrSignerMode, nsecSecret, replace])
 
   // Publish to relays whenever the local set changes after the initial sync.
   useEffect(() => {
-    if (!mnemonic || !initialSyncDone) return
+    if (nostrSignerMode !== 'nsec' || !initialSyncDone) return
     const keys = keysRef.current
     if (!keys) return
     if (
@@ -119,5 +119,5 @@ export function useCreatorSync(): void {
       publishNip78CreatorMarkets(keys.privateKeyHex, snapshot).catch(() => {})
     }, PUBLISH_DEBOUNCE_MS)
     return () => clearTimeout(handle)
-  }, [mnemonic, markets, initialSyncDone])
+  }, [nostrSignerMode, markets, initialSyncDone])
 }

@@ -15,20 +15,20 @@
 #
 # The generated pkg/ directory is committed to the repository so CI and
 # other developers do not need to install a Rust toolchain just to build
-# the frontend. Rerun this script whenever the kormir/ submodule is
+# the frontend. Rerun this script whenever the dlcdevkit/ submodule is
 # updated.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
-KORMIR_DIR="$REPO_ROOT/kormir"
+DDK_DIR="$REPO_ROOT/dlcdevkit"
 OUT_DIR="$REPO_ROOT/bitCaster-app/src/lib/kormir-wasm-pkg"
 
 MODE="${1:---release}"
 
-if [ ! -d "$KORMIR_DIR/kormir-wasm" ]; then
-    echo "error: kormir submodule is not initialized at $KORMIR_DIR" >&2
+if [ ! -d "$DDK_DIR/kormir-wasm" ]; then
+    echo "error: dlcdevkit submodule is not initialized at $DDK_DIR" >&2
     echo "       run: git submodule update --init --recursive" >&2
     exit 1
 fi
@@ -61,7 +61,7 @@ if [ -z "${CFLAGS_wasm32_unknown_unknown:-}" ] && command -v clang >/dev/null 2>
 fi
 
 echo "Building kormir-wasm ($MODE) -> $OUT_DIR"
-cd "$KORMIR_DIR"
+cd "$DDK_DIR"
 wasm-pack build ./kormir-wasm \
     "$MODE" \
     --target web \

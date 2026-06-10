@@ -90,6 +90,21 @@ beforeEach(() => {
 describe('nip17-listener', () => {
   it('normalizes payload mint URL and stores proofs under the canonical value', async () => {
     mocks.walletState.mints = [{ url: 'http://mint.example' }]
+    mocks.ingressReceiveCashuToken.mockResolvedValueOnce({
+      added: false,
+      mintUrl: 'http://mint.example',
+      source: 'nip17',
+      amountSats: 42,
+      proofs: [{
+        secret: 'rotated-1',
+        amount: 42,
+        id: 'kid-B',
+        C: 'C',
+        conditionId: 'condition-1',
+        outcomeCollection: 'B',
+        marketId: 'condition-1-B',
+      } as never],
+    })
 
     const payload = {
       id: 'req-1',
@@ -105,8 +120,16 @@ describe('nip17-listener', () => {
       { mintUrl: 'http://mint.example' },
     )
     expect(mocks.addProofsSpy).toHaveBeenCalledTimes(1)
-    const stored = mocks.addProofsSpy.mock.calls[0][0] as { mintUrl: string }[]
+    const stored = mocks.addProofsSpy.mock.calls[0][0] as {
+      mintUrl: string
+      conditionId?: string
+      outcomeCollection?: string
+      marketId?: string
+    }[]
     expect(stored[0].mintUrl).toBe('http://mint.example')
+    expect(stored[0].conditionId).toBe('condition-1')
+    expect(stored[0].outcomeCollection).toBe('B')
+    expect(stored[0].marketId).toBe('condition-1-B')
     expect(mocks.markReceivedSpy).toHaveBeenCalledWith('req-1', 42)
   })
 

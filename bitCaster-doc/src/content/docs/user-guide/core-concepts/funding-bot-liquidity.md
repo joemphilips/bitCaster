@@ -17,7 +17,7 @@ The deposit is **non-refundable**. Once you fund the bot, those sats are committ
 
 ## How the wizard's last step works
 
-After you complete the description step, the wizard registers your condition with the mint, registers the partition, and asks the matching engine to record the market. As soon as the engine acknowledges, the wizard advances to the **Deposit funds** step. You see your new market's identifier and a choice of two payment methods: a Lightning invoice or a Cashu ecash token. Pick whichever you have available — either path funds the same bot.
+After you complete the description step, the wizard registers your condition and CTF keysets with the mint, then asks the matching engine to record the market. As soon as the engine acknowledges, the wizard advances to the **Deposit funds** step. You see your new market's identifier and a choice of two payment methods: a Lightning invoice or a Cashu ecash token. Pick whichever you have available — either path funds the same bot.
 
 If you choose Lightning, the wizard requests a `bolt11` invoice from the matching engine. The invoice is shown once in the wizard so you can copy it into your Lightning wallet; for security the invoice is **not** echoed by the polling endpoint, so capture it before you navigate away. Pay the invoice from any Lightning wallet, including a wallet other than the one you're using bitCaster from. After the payment is detected, the deposit moves through `Requested → Paid → Credited` while the matching CTF tokens are minted and credited to the bot's account.
 

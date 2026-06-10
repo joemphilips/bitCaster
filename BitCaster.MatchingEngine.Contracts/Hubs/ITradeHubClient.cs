@@ -26,5 +26,8 @@ public interface ITradeHubClient
         long? quotePaymentSats = null,
         string? settlementKind = null,
         string? sellerKeepOutcomeSetId = null,
-        string? sellerLockOutcomeSetId = null);
+        string? sellerLockOutcomeSetId = null,
+        string? baseAsset = null,
+        int? divisibility = null,
+        long? quotePaymentSubunits = null);
 }

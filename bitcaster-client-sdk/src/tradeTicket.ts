@@ -6,6 +6,11 @@ import type {
   SdkTradeSelection,
   SdkTradeSide,
 } from './types.ts'
+import {
+  normalizeMarketDivisibility,
+  validatePriceNumerator,
+  validateWholeShareFaceAmount,
+} from './marketUnits.ts'
 import { resolveOutcomeSets } from './outcomeSets.ts'
 import { checkOrderSettlementSupport } from './settlementSupport.ts'
 
@@ -31,24 +36,25 @@ export class TradeTicketError extends Error {
   }
 }
 
-function canonicalOutcomeName(
+function resolveTradeOutcome(
   market: SdkMarketForTrading,
   selection: SdkTradeSelection,
-): string | null {
-  return resolveOutcomeSets(market, selection)?.selectedOutcomeSetId ?? null
+): ReturnType<typeof resolveOutcomeSets> {
+  return resolveOutcomeSets(market, selection)
 }
 
 function marketPriceFor(
   side: SdkTradeSide,
+  divisibility: number,
   orderBook: SdkOrderBook | null | undefined,
   complementaryOrderBook: SdkOrderBook | null | undefined,
 ): number {
   const direct = side === 'buy' ? orderBook?.asks[0] : orderBook?.bids[0]
-  if (direct) return side === 'buy' ? 99 : 1
+  if (direct) return side === 'buy' ? divisibility - 1 : 1
 
   if (side === 'buy') {
     const complementaryBid = complementaryOrderBook?.bids[0]
-    if (complementaryBid) return 99
+    if (complementaryBid) return divisibility - 1
   }
 
   if (!orderBook && !complementaryOrderBook) {
@@ -97,15 +103,16 @@ export function buildTradeTicket(params: {
       'Enter an amount greater than zero.',
     )
   }
-  if (!Number.isInteger(amountSats) || amountSats % 100 !== 0) {
+  const divisibility = normalizeMarketDivisibility(market.divisibility)
+  if (!validateWholeShareFaceAmount(amountSats, divisibility)) {
     throw new TradeTicketError(
       'invalid-amount',
-      'Enter an amount in 100 sat increments.',
+      `Enter an amount in ${divisibility} sub-unit increments.`,
     )
   }
 
-  const outcomeName = canonicalOutcomeName(market, selection)
-  if (!outcomeName) {
+  const resolvedOutcome = resolveTradeOutcome(market, selection)
+  if (!resolvedOutcome) {
     throw new TradeTicketError(
       'missing-selection',
       'Choose an outcome before placing an order.',
@@ -121,11 +128,18 @@ export function buildTradeTicket(params: {
 
   const price =
     orderType === 'limit'
-      ? Math.min(Math.max(Math.round(limitPrice), 1), 99)
-      : marketPriceFor(side, orderBook, complementaryOrderBook)
+      ? Math.min(Math.max(Math.round(limitPrice), 1), divisibility - 1)
+      : marketPriceFor(side, divisibility, orderBook, complementaryOrderBook)
+  if (!validatePriceNumerator(price, divisibility)) {
+    throw new TradeTicketError(
+      'invalid-amount',
+      `Enter a price from 1 to ${divisibility - 1}.`,
+    )
+  }
 
   const request: SdkSubmitOrderRequest = {
-    outcomeId: outcomeName,
+    outcomeId: resolvedOutcome.publicOutcomeSetId,
+    tokenSide: resolvedOutcome.tokenSide,
     side: requestSide,
     price,
     amountSats,
@@ -133,7 +147,7 @@ export function buildTradeTicket(params: {
   }
 
   return {
-    marketId: `${market.id}-${outcomeName}`,
+    marketId: `${market.id}-${resolvedOutcome.publicOutcomeSetId}`,
     request,
   }
 }

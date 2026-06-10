@@ -130,7 +130,9 @@ public static class MarketQueryEndpoint
     private static MarketCatalogueEntry ToCatalogueEntry(MintdConditionDto c, DateTimeOffset refreshedAt)
     {
         var open = string.Equals(c.AttestationStatus, "pending", StringComparison.OrdinalIgnoreCase);
+        var market = MarketEndpoints.TryGetMarket(c.ConditionId);
         return new MarketCatalogueEntry(
+            baseAsset: market?.BaseAsset ?? BaseAsset.Sat,
             categoryTags: c.CategoryTags,
             closedAt: null,
             conditionId: c.ConditionId,
@@ -141,6 +143,7 @@ public static class MarketQueryEndpoint
             creatorPubkey: null!,
             deadline: null,
             description: null!,
+            divisibility: market?.Divisibility ?? 100,
             finalOutcome: null!,
             lastSuccessfulRefreshAt: refreshedAt,
             lastTradedPrice: null,
@@ -201,7 +204,7 @@ public static class MarketQueryEndpoint
         List<string> CategoryTags,
         string AttestationStatus)
     {
-        private static readonly HashSet<string> KnownTagKeys = new(StringComparer.Ordinal) { "description", "n" };
+        private static readonly HashSet<string> KnownTagKeys = new(StringComparer.Ordinal) { "description", "title", "n" };
 
         public static MintdConditionDto FromJson(JsonElement c)
         {
@@ -210,7 +213,10 @@ public static class MarketQueryEndpoint
                 ? s.GetString() ?? "pending"
                 : "pending";
             var (title, categoryTags) = ParseTags(c);
-            var outcomes = ParseFirstPartition(c);
+            var registeredOutcomes = MarketEndpoints.TryGetRegisteredOutcomes(conditionId)?.ToList();
+            var outcomes = registeredOutcomes is { Count: > 0 }
+                ? registeredOutcomes
+                : ParseSingletonPartitionMembers(c);
             return new MintdConditionDto(conditionId, title, outcomes, categoryTags, attestationStatus);
         }
 
@@ -228,7 +234,8 @@ public static class MarketQueryEndpoint
                     var key = pair[0].GetString();
                     var value = pair[1].GetString();
                     if (key is null || value is null) continue;
-                    if (key == "description") title ??= value;
+                    if (key == "title") title ??= value;
+                    else if (key == "description") title ??= value;
                     else if (!KnownTagKeys.Contains(key)) category.Add(value);
                 }
             }
@@ -237,20 +244,35 @@ public static class MarketQueryEndpoint
             return (title ?? "Untitled Market", category);
         }
 
-        private static List<string> ParseFirstPartition(JsonElement c)
+        private static List<string> ParseSingletonPartitionMembers(JsonElement c)
         {
-            if (!c.TryGetProperty("partitions", out var partitions) || partitions.ValueKind != JsonValueKind.Array)
+            if (!c.TryGetProperty("keysets", out var keysets) || keysets.ValueKind != JsonValueKind.Object)
                 return new();
-            var first = partitions.EnumerateArray().FirstOrDefault();
-            if (first.ValueKind != JsonValueKind.Object) return new();
-            if (!first.TryGetProperty("partition", out var partition) || partition.ValueKind != JsonValueKind.Array)
-                return new();
+
             var outcomes = new List<string>();
-            foreach (var item in partition.EnumerateArray())
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var keyset in keysets.EnumerateObject())
             {
-                var name = item.GetString();
-                if (name is not null) outcomes.Add(name);
+                foreach (var member in keyset.Name.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    if (string.IsNullOrWhiteSpace(member))
+                        continue;
+                    if (seen.Add(member))
+                        outcomes.Add(member);
+                }
             }
+            return OrderAtomicOutcomes(outcomes);
+        }
+
+        private static List<string> OrderAtomicOutcomes(List<string> outcomes)
+        {
+            if (outcomes.Count == 2
+                && outcomes.Any(outcome => string.Equals(outcome, "Yes", StringComparison.OrdinalIgnoreCase))
+                && outcomes.Any(outcome => string.Equals(outcome, "No", StringComparison.OrdinalIgnoreCase)))
+            {
+                return ["Yes", "No"];
+            }
+
             return outcomes;
         }
     }

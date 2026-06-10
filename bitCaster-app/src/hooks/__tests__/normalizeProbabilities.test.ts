@@ -2,10 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import type { WizardOutcome } from '@/types/market-creation'
 
 // Mock transitive dependencies that useMarketCreationState imports
-vi.mock('@/lib/oracle', () => ({ fetchOracleAnnouncements: vi.fn().mockResolvedValue([]) }))
 vi.mock('@/lib/markets', () => ({
   registerCondition: vi.fn(),
-  registerPartition: vi.fn(),
+  requiredMarketCreationOutcomeCollections: vi.fn(),
   uploadThumbnail: vi.fn(),
   registerLiquidity: vi.fn(),
 }))

@@ -212,6 +212,20 @@ describe('proof-db normalization', () => {
     expect(rows.map((r) => r.secret)).toEqual(['base'])
   })
 
+  it('getBaseProofs filters by base asset and defaults legacy rows to sat', async () => {
+    await addProofs([
+      { secret: 'legacy-sat', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m' },
+      { secret: 'usd', amount: Amount.from(100), id: 'id2', C: 'C2', mintUrl: 'http://m', baseAsset: 'usd' },
+    ])
+
+    expect((await getBaseProofs('http://m')).map((r) => r.secret)).toEqual([
+      'legacy-sat',
+    ])
+    expect((await getBaseProofs('http://m', { baseAsset: 'usd' })).map((r) => r.secret)).toEqual([
+      'usd',
+    ])
+  })
+
   it('getOutcomeProofs returns only the requested condition outcome', async () => {
     await addProofs([
       {
@@ -292,6 +306,37 @@ describe('proof-db normalization', () => {
     expect(new Set(rows.map((r) => r.id))).toEqual(
       new Set(['keyset-A', 'keyset-B', 'keyset-C']),
     )
+  })
+
+  it('getOutcomeProofs filters by base asset and defaults legacy rows to sat', async () => {
+    await addProofs([
+      {
+        secret: 'legacy-sat-yes',
+        amount: Amount.from(100),
+        id: 'id1',
+        C: 'C1',
+        mintUrl: 'http://m',
+        conditionId: 'cond',
+        outcomeCollection: 'YES',
+      },
+      {
+        secret: 'usd-yes',
+        amount: Amount.from(100),
+        id: 'id2',
+        C: 'C2',
+        mintUrl: 'http://m',
+        conditionId: 'cond',
+        outcomeCollection: 'YES',
+        baseAsset: 'usd',
+      },
+    ])
+
+    expect((await getOutcomeProofs('http://m', 'cond', 'YES')).map((r) => r.secret)).toEqual([
+      'legacy-sat-yes',
+    ])
+    expect((await getOutcomeProofs('http://m', 'cond', 'YES', { baseAsset: 'usd' })).map((r) => r.secret)).toEqual([
+      'usd-yes',
+    ])
   })
 
   it('hides reserved proofs from spendable base and outcome queries', async () => {

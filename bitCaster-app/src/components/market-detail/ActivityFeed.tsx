@@ -2,14 +2,30 @@ import { useRef, useState, useEffect } from 'react'
 import { ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { Trade } from '@/types/market-detail'
-import { formatBtc, formatTimeAgo } from '@/lib/format'
+import { formatTimeAgo } from '@/lib/format'
+import {
+  formatMarketSubunits,
+  formatPricePercent,
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from '@bitcaster/client-sdk/marketUnits'
 
 interface ActivityFeedProps {
   trades: Trade[]
+  baseAsset?: string | null
+  divisibility?: number | null
   onLoadMoreTrades?: () => void
 }
 
-function TradeRow({ trade }: { trade: Trade }) {
+function TradeRow({
+  trade,
+  baseAsset,
+  divisibility,
+}: {
+  trade: Trade
+  baseAsset: ReturnType<typeof normalizeMarketBaseAsset>
+  divisibility: number
+}) {
   const isYes = trade.side === 'yes'
 
   return (
@@ -43,7 +59,7 @@ function TradeRow({ trade }: { trade: Trade }) {
           )}
         </div>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          {formatBtc(trade.amount)} @ {trade.price.toFixed(1)}%
+          {formatMarketSubunits(trade.amount, baseAsset)} @ {formatPricePercent(trade.price, divisibility)}
         </p>
       </div>
 
@@ -57,9 +73,13 @@ function TradeRow({ trade }: { trade: Trade }) {
 
 export function ActivityFeed({
   trades,
+  baseAsset: baseAssetInput,
+  divisibility: divisibilityInput,
   onLoadMoreTrades,
 }: ActivityFeedProps) {
   const { t } = useTranslation()
+  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const divisibility = normalizeMarketDivisibility(divisibilityInput)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [canScrollUp, setCanScrollUp] = useState(false)
   const [canScrollDown, setCanScrollDown] = useState(false)
@@ -125,9 +145,14 @@ export function ActivityFeed({
             </p>
           ) : (
             <>
-              {trades.map((trade) => (
-                <TradeRow key={trade.id} trade={trade} />
-              ))}
+          {trades.map((trade) => (
+            <TradeRow
+              key={trade.id}
+              trade={trade}
+              baseAsset={baseAsset}
+              divisibility={divisibility}
+            />
+          ))}
               {trades.length >= 5 && (
                 <button
                   onClick={onLoadMoreTrades}

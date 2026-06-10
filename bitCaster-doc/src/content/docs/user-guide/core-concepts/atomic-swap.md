@@ -19,12 +19,16 @@ swap protocol.
 
 Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell, **Mint** = Buy vs Buy (maker splits a complete set), **Merge** = Sell vs Sell (combine into a complete set; not yet supported in bitCaster).
 
+For categorical markets, the public trading UI presents primitive books such as `A / Not A`; compound outcome collections such as `B|C` are wallet and settlement details used after a match is made.
+
 ## Mint vs complementary matches
 
 - **Mint match** — a YES buyer is matched with a NO buyer, or in a categorical market a buyer of one outcome set is matched with a buyer of the exact complementary set. The maker creates or selects the complete outcome-token set, keeps the side they wanted, and atomically swaps the other side to the taker for sats.
 - **Complementary match** — for example, someone selling YES tokens they already hold to another participant who wants to buy them with sats. The seller already has the outcome tokens, so no pre-trade split is needed, but the exchange still uses the same atomic-swap safety rule.
 
 For limit buys that may rest on the book, bitCaster enables **Pre-flight split** by default. The wallet asks the mint to split the needed regular sats into the complete outcome set before the order becomes live, then reserves those proofs locally for that order. If the split cannot finish quickly, the order should not remain live. Advanced CLI users can opt out with `--no-preflight-split`, but then settlement depends on regular collateral still being available when a later match arrives.
+
+Matching is final for the order book: once a match is accepted, the matched quantity no longer rests on the book. A later swap failure returns or unlocks wallet proofs according to the atomic-swap rules, but it does not put that order quantity back into the public book automatically.
 
 ## Why atomic swaps matter
 

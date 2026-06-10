@@ -53,12 +53,7 @@ public class ClosedMarketUiTests : IAsyncLifetime
             ""tags"": [[""description"", ""{title}""]],
             ""threshold"": 1,
             ""announcements"": [""ann""],
-            ""partitions"": [{{
-                ""partition"": [""YES"", ""NO""],
-                ""collateral"": ""sat"",
-                ""parent_collection_id"": ""0000000000000000000000000000000000000000000000000000000000000000"",
-                ""keysets"": {{}}
-            }}],
+            ""keysets"": {{ ""YES"": ""ks-yes"", ""NO"": ""ks-no"" }},
             ""attestation"": {{
                 ""status"": ""{attestationStatus}"",
                 ""winning_outcome"": {winning},
@@ -159,7 +154,7 @@ public class ClosedMarketUiTests : IAsyncLifetime
                         info: {{
                             name: 'Default Mint',
                             version: 'Nutshell/0.16.0',
-                            nuts: {{ '4': {{ methods: [] }}, '5': {{ methods: [] }}, 'CTF': {{ supported: true }} }}
+                            nuts: {TestHelpers.CtfNutsJson}
                         }},
                         keysets: [{{ id: '00abc123', unit: 'sat', active: true }}]
                     }}],

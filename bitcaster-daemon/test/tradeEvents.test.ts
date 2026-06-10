@@ -47,12 +47,18 @@ test('TradeHub event records are durable swap state', async () => {
       marketId: 'cond-YES',
       outcomeFaceAmountSats: 100,
       quotePaymentSats: 42,
+      baseAsset: 'sat',
+      divisibility: 100,
+      quotePaymentSubunits: 42,
       settlementKind: 'DirectSwap',
     })
 
     assert.equal(created?.role, 'seller')
     assert.equal(created?.counterpartyPubkey, `03${'22'.repeat(32)}`)
     assert.equal(created?.step, 'opened')
+    assert.equal(created?.baseAsset, 'sat')
+    assert.equal(created?.divisibility, 100)
+    assert.equal(created?.quotePaymentSubunits, 42)
 
     await recordSwapMessage('trade-1', 'adaptor-point', 'cipher-a')
     await recordSwapMessage('trade-1', 'locked-proofs-seller', 'cipher-b')
@@ -66,6 +72,9 @@ test('TradeHub event records are durable swap state', async () => {
     })
     assert.equal(persisted?.swaps['trade-1'].engineState, 'Settling')
     assert.equal(persisted?.swaps['trade-1'].step, 'settling')
+    assert.equal(persisted?.swaps['trade-1'].baseAsset, 'sat')
+    assert.equal(persisted?.swaps['trade-1'].divisibility, 100)
+    assert.equal(persisted?.swaps['trade-1'].quotePaymentSubunits, 42)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -106,6 +115,52 @@ test('TradeCreated direct match must use the same local order market path', asyn
     const persisted = await readState()
     assert.equal(persisted?.orders['order-1'].tradeIds.length, 0)
     assert.equal(persisted?.swaps['trade-wrong-market'], undefined)
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('TradeCreated rejects unit metadata that does not match the local order', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-unit-mismatch-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const state = emptyDaemonState()
+    state.orders['order-usd'] = {
+      orderId: 'order-usd',
+      marketId: 'cond-YES',
+      status: 'resting',
+      ephemeralPubkey: `02${'11'.repeat(32)}`,
+      baseAsset: 'usd',
+      divisibility: 100,
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeState(state)
+
+    const created = await recordTradeCreated({
+      tradeId: 'trade-unit-mismatch',
+      sellerPubkey: `02${'11'.repeat(32)}`,
+      buyerPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: '2026-05-21T00:02:00.000Z',
+      buyerLocktime: '2026-05-21T00:01:00.000Z',
+      marketId: 'cond-YES',
+      outcomeFaceAmountSats: 100,
+      quotePaymentSats: 42,
+      baseAsset: 'sat',
+      divisibility: 100,
+      quotePaymentSubunits: 42,
+      settlementKind: 'DirectSwap',
+    })
+
+    assert.equal(created?.step, 'failed')
+    assert.match(created?.error ?? '', /Trade unit mismatch/)
+    const persisted = await readState()
+    assert.equal(persisted?.swaps['trade-unit-mismatch'].step, 'failed')
+    assert.match(persisted?.swaps['trade-unit-mismatch'].error ?? '', /Trade unit mismatch/)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -170,6 +225,101 @@ test('TradeCreated mint seller matches keep path and buyer matches lock path', a
     assert.equal(sellerCreated?.role, 'seller')
     assert.equal(buyerCreated?.orderId, 'buyer-order')
     assert.equal(buyerCreated?.role, 'buyer')
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('TradeCreated binds known public complement order by submitted trade id', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-public-complement-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const state = emptyDaemonState()
+    state.orders['buyer-order'] = {
+      orderId: 'buyer-order',
+      marketId: 'cond-A',
+      status: 'matched',
+      ephemeralPubkey: `03${'22'.repeat(32)}`,
+      tradeIds: ['trade-known-complement'],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.swaps['trade-known-complement'] = {
+      tradeId: 'trade-known-complement',
+      marketId: 'cond-A',
+      orderId: 'buyer-order',
+      messages: {},
+      step: 'awaiting-trade-created',
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeState(state)
+
+    const created = await recordTradeCreated({
+      tradeId: 'trade-known-complement',
+      sellerPubkey: `02${'33'.repeat(32)}`,
+      buyerPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: '2026-05-21T00:02:00.000Z',
+      buyerLocktime: '2026-05-21T00:01:00.000Z',
+      marketId: 'cond-B|C',
+      outcomeFaceAmountSats: 100,
+      quotePaymentSats: 99,
+      settlementKind: 'Mint',
+      sellerKeepOutcomeSetId: 'A',
+      sellerLockOutcomeSetId: 'B|C',
+    })
+
+    assert.equal(created?.orderId, 'buyer-order')
+    assert.equal(created?.marketId, 'cond-A')
+    assert.equal(created?.role, 'buyer')
+    assert.equal(created?.step, 'opened')
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('TradeCreated binds buyer complement order by settlement metadata', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-buyer-complement-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const state = emptyDaemonState()
+    state.orders['buyer-order'] = {
+      orderId: 'buyer-order',
+      marketId: 'cond-YES',
+      tokenSide: 'Complement',
+      status: 'matched',
+      ephemeralPubkey: `03${'22'.repeat(32)}`,
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeState(state)
+
+    const created = await recordTradeCreated({
+      tradeId: 'trade-buyer-complement',
+      sellerPubkey: `02${'33'.repeat(32)}`,
+      buyerPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: '2026-05-21T00:02:00.000Z',
+      buyerLocktime: '2026-05-21T00:01:00.000Z',
+      marketId: 'cond-NO',
+      outcomeFaceAmountSats: 100,
+      quotePaymentSats: 99,
+      settlementKind: 'Mint',
+      sellerKeepOutcomeSetId: 'YES',
+      sellerLockOutcomeSetId: 'NO',
+    })
+
+    assert.equal(created?.orderId, 'buyer-order')
+    assert.equal(created?.marketId, 'cond-YES')
+    assert.equal(created?.role, 'buyer')
+    assert.equal(created?.sellerKeepOutcomeSetId, 'YES')
+    assert.equal(created?.sellerLockOutcomeSetId, 'NO')
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome

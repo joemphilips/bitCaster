@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { registerCondition, registerPartition, createMarket, MintError } from '../markets'
+import { registerCondition, requiredMarketCreationOutcomeCollections, createMarket, MintError } from '../markets'
 
 const originalFetch = globalThis.fetch
 
@@ -33,7 +33,7 @@ const conditionParams = { tags: [['description', 'test']], announcementHex: 'abc
 
 describe('registerCondition', () => {
   it('returns condition_id on success', async () => {
-    mockFetchSuccess({ condition_id: 'cond-123' })
+    mockFetchSuccess({ condition_id: 'cond-123', keysets: {} })
     const result = await registerCondition(conditionParams)
     expect(result.condition_id).toBe('cond-123')
   })
@@ -91,64 +91,51 @@ describe('registerCondition', () => {
     vi.mocked(globalThis.fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'))
     await expect(registerCondition(conditionParams)).rejects.toThrow('Failed to fetch')
   })
-})
-
-describe('registerPartition', () => {
-  it('returns keysets on success', async () => {
-    mockFetchSuccess({ keysets: { Yes: 'ks1', No: 'ks2' } })
-    const result = await registerPartition('cond-123', ['Yes', 'No'])
-    expect(result.keysets).toEqual({ Yes: 'ks1', No: 'ks2' })
-  })
-
-  it('sends collateral and parent_collection_id in request body', async () => {
-    mockFetchSuccess({ keysets: { Yes: 'ks1', No: 'ks2' } })
-    await registerPartition('cond-123', ['Yes', 'No'])
+  it('sends collateral and requested outcome collections when provided', async () => {
+    mockFetchSuccess({ condition_id: 'cond-123', keysets: { Yes: 'ks1', No: 'ks2' }, change: [] })
+    const stringifyingAmount = {
+      toNumber: () => 2,
+      toJSON: () => '2',
+    }
+    const fee = [{ amount: stringifyingAmount, secret: 'fee-secret', C: 'fee-C' }] as any
+    const outputs = [{ amount: stringifyingAmount, id: 'regular-keyset', B_: 'B_' }] as any
+    await registerCondition({
+      ...conditionParams,
+      collateral: 'sat',
+      outcomeCollections: ['Yes', 'No'],
+      fee,
+      outputs,
+    })
 
     const call = vi.mocked(globalThis.fetch).mock.calls[0]
     const body = JSON.parse(call[1]?.body as string)
     expect(body).toEqual({
+      tags: conditionParams.tags,
+      announcements: [conditionParams.announcementHex],
       collateral: 'sat',
-      partition: ['Yes', 'No'],
-      parent_collection_id: '0000000000000000000000000000000000000000000000000000000000000000',
+      outcome_collections: ['Yes', 'No'],
+      fee: [{ amount: 2, secret: 'fee-secret', C: 'fee-C' }],
+      outputs: [{ amount: 2, id: 'regular-keyset', B_: 'B_' }],
     })
+    expect(typeof body.fee[0].amount).toBe('number')
+    expect(typeof body.outputs[0].amount).toBe('number')
+  })
+})
+
+describe('requiredMarketCreationOutcomeCollections', () => {
+  it('requests singleton and complement collections for n-outcome markets', () => {
+    expect(requiredMarketCreationOutcomeCollections(['Alice', 'Bob', 'Carol'])).toEqual([
+      'Alice',
+      'Bob|Carol',
+      'Bob',
+      'Alice|Carol',
+      'Carol',
+      'Alice|Bob',
+    ])
   })
 
-  it('throws MintError with CDK error code on condition not found', async () => {
-    mockFetchError(404, { code: 13021, detail: 'Condition not found' })
-    await expect(registerPartition('nonexistent', ['Yes', 'No'])).rejects.toSatisfy((e: MintError) => {
-      expect(e).toBeInstanceOf(MintError)
-      expect(e.code).toBe(13021)
-      expect(e.detail).toBe('Condition not found')
-      return true
-    })
-  })
-
-  it('throws MintError with CDK error code on overlapping outcome collections', async () => {
-    mockFetchError(400, { code: 13037, detail: 'Overlapping outcome collections' })
-    await expect(registerPartition('cond-123', ['A|B', 'B|C'])).rejects.toSatisfy((e: MintError) => {
-      expect(e).toBeInstanceOf(MintError)
-      expect(e.code).toBe(13037)
-      return true
-    })
-  })
-
-  it('throws MintError with CDK error code on incomplete partition', async () => {
-    mockFetchError(400, { code: 13038, detail: 'Incomplete partition' })
-    await expect(registerPartition('cond-123', ['Yes'])).rejects.toSatisfy((e: MintError) => {
-      expect(e).toBeInstanceOf(MintError)
-      expect(e.code).toBe(13038)
-      return true
-    })
-  })
-
-  it('throws MintError with code 0 and fallback message when body is not JSON', async () => {
-    mockFetchErrorNoBody(500)
-    await expect(registerPartition('cond-123', ['Yes', 'No'])).rejects.toSatisfy((e: MintError) => {
-      expect(e).toBeInstanceOf(MintError)
-      expect(e.code).toBe(0)
-      expect(e.detail).toBe('not json')
-      return true
-    })
+  it('deduplicates binary market collections', () => {
+    expect(requiredMarketCreationOutcomeCollections(['Yes', 'No'])).toEqual(['Yes', 'No'])
   })
 })
 
@@ -160,6 +147,8 @@ const createMarketParams = {
     { name: 'No', probability: 50 },
   ],
   liquiditySats: 10000,
+  baseAsset: 'sat' as const,
+  divisibility: 100,
   categoryTags: ['crypto'],
 }
 

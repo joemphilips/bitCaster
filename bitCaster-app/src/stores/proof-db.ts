@@ -1,6 +1,7 @@
 import Dexie, { type Table } from "dexie";
 import type { Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { normalizeUrl } from "../lib/url";
 
 export interface StoredProof extends Proof {
@@ -13,6 +14,8 @@ export interface StoredProof extends Proof {
   outcomeCollection?: string;
   /** Convenience mirror for the app's per-outcome market id. */
   marketId?: string;
+  /** Base asset for this proof's amount sub-units. Missing legacy rows are sats. */
+  baseAsset?: string;
   /** Timestamp (ms since epoch) when this proof was added to the wallet */
   receivedAt?: number;
 }
@@ -34,6 +37,7 @@ export type ProofOperationKind =
   | "swap-refund"
   | "ctf-split"
   | "ctf-redeem"
+  | "ctf-condition-registration"
   | "regular-split"
   | "proof-split";
 export type ProofOperationState = "prepared" | "completed" | "failed";
@@ -107,7 +111,10 @@ export async function getProofs(
   options: { includeReserved?: boolean } = {},
 ): Promise<StoredProof[]> {
   if (mintUrl) {
-    const rows = await db.proofs.where("mintUrl").equals(normalizeUrl(mintUrl)).toArray();
+    const rows = await db.proofs
+      .where("mintUrl")
+      .equals(normalizeUrl(mintUrl))
+      .toArray();
     const normalized = rows.map(normalizeStoredProof);
     return options.includeReserved
       ? normalized
@@ -120,24 +127,35 @@ export async function getProofs(
     : normalized.filter((p) => !p.reservedBy);
 }
 
-export async function getBaseProofs(mintUrl?: string): Promise<StoredProof[]> {
-  const proofs = await getProofs(mintUrl);
-  return proofs.filter((p) => !isCtfProof(p));
+export async function getBaseProofs(
+  mintUrl?: string,
+  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
+): Promise<StoredProof[]> {
+  const proofs = await getProofs(mintUrl, {
+    includeReserved: options.includeReserved,
+  });
+  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
+  return proofs.filter(
+    (p) => !isCtfProof(p) && normalizeStoredProofBaseAsset(p) === baseAsset,
+  );
 }
 
 export async function getOutcomeProofs(
   mintUrl: string,
   conditionId: string,
   outcomeCollection: string,
-  options: { includeReserved?: boolean } = {},
+  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
 ): Promise<StoredProof[]> {
   const normalizedMintUrl = normalizeUrl(mintUrl);
+  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
   const indexed = await db.proofs
     .where("[mintUrl+conditionId+outcomeCollection]")
     .equals([normalizedMintUrl, conditionId, outcomeCollection])
     .toArray();
   if (indexed.length > 0) {
-    const normalized = indexed.map(normalizeStoredProof);
+    const normalized = indexed
+      .map(normalizeStoredProof)
+      .filter((proof) => normalizeStoredProofBaseAsset(proof) === baseAsset);
     return options.includeReserved
       ? normalized
       : normalized.filter((proof) => !proof.reservedBy);
@@ -154,6 +172,7 @@ export async function getOutcomeProofs(
       candidate.outcomeCollection ?? candidate.outcome_collection;
     return (
       proofConditionId === conditionId && proofOutcome === outcomeCollection
+      && normalizeStoredProofBaseAsset(p) === baseAsset
     );
   });
 }
@@ -173,14 +192,18 @@ export async function getOutcomeProofs(
 export async function getConditionCtfProofs(
   mintUrl: string,
   conditionId: string,
-  options: { includeReserved?: boolean } = {},
+  options: { includeReserved?: boolean; baseAsset?: string | null } = {},
 ): Promise<StoredProof[]> {
   const proofs = await getProofs(mintUrl, options);
+  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
   return proofs.filter((p) => {
     if (!isCtfProof(p)) return false;
     const candidate = p as StoredProof & { condition_id?: string };
     const proofConditionId = candidate.conditionId ?? candidate.condition_id;
-    return proofConditionId === conditionId;
+    return (
+      proofConditionId === conditionId &&
+      normalizeStoredProofBaseAsset(p) === baseAsset
+    );
   });
 }
 
@@ -191,15 +214,39 @@ export async function getConditionCtfProofs(
 // trailing-slash / protocol-case drift.
 export async function addProofs(proofs: StoredProof[]): Promise<void> {
   const now = Date.now();
-  const stamped = proofs.map((p) => normalizeStoredProof({
-    ...p,
-    receivedAt: p.receivedAt ?? now,
-  }));
+  const stamped = proofs.map((p) =>
+    normalizeStoredProof({
+      ...p,
+      receivedAt: p.receivedAt ?? now,
+    }),
+  );
   await db.proofs.bulkPut(stamped);
 }
 
 export async function removeProofs(secrets: string[]): Promise<void> {
   await db.proofs.bulkDelete(secrets);
+}
+
+export async function replaceProofs(
+  spentSecrets: string[],
+  freshProofs: StoredProof[],
+): Promise<void> {
+  const uniqueSpentSecrets = [...new Set(spentSecrets)];
+  const now = Date.now();
+  const stamped = freshProofs.map((p) =>
+    normalizeStoredProof({
+      ...p,
+      receivedAt: p.receivedAt ?? now,
+    }),
+  );
+  await db.transaction("rw", db.proofs, async () => {
+    if (uniqueSpentSecrets.length > 0) {
+      await db.proofs.bulkDelete(uniqueSpentSecrets);
+    }
+    if (stamped.length > 0) {
+      await db.proofs.bulkPut(stamped);
+    }
+  });
 }
 
 export async function reserveProofs(
@@ -217,13 +264,17 @@ export async function reserveProofs(
   });
 }
 
-export async function releaseProofReservation(reservedBy: string): Promise<void> {
+export async function releaseProofReservation(
+  reservedBy: string,
+): Promise<void> {
   const rows = await db.proofs
     .filter((proof) => proof.reservedBy === reservedBy)
     .toArray();
   if (rows.length === 0) return;
   await db.proofs.bulkPut(
-    rows.map(({ reservedBy: _reservedBy, ...row }) => normalizeStoredProof(row)),
+    rows.map(({ reservedBy: _reservedBy, ...row }) =>
+      normalizeStoredProof(row),
+    ),
   );
 }
 
@@ -241,7 +292,9 @@ export async function releaseProofReservationsBySecret(
 export async function getReservedProofs(
   reservedBy: string,
 ): Promise<StoredProof[]> {
-  const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
+  const rows = await db.proofs
+    .filter((proof) => proof.reservedBy === reservedBy)
+    .toArray();
   return rows.map(normalizeStoredProof);
 }
 
@@ -268,13 +321,50 @@ function normalizeStoredProof(proof: StoredProof): StoredProof {
     ...proof,
     amount: amountToNumber(proof.amount) as never,
     mintUrl: normalizeUrl(proof.mintUrl),
+    baseAsset: normalizeStoredProofBaseAsset(proof),
   };
+}
+
+function normalizeStoredProofBaseAsset(proof: StoredProof): string {
+  return normalizeMarketBaseAsset(proof.baseAsset);
 }
 
 export async function getProofOperation(
   operationId: string,
 ): Promise<ProofOperationRecord | null> {
   return (await db.proofOperations.get(operationId)) ?? null;
+}
+
+export async function getProofOperations(
+  input: {
+    mintUrl?: string;
+    states?: ProofOperationState[];
+    kinds?: ProofOperationKind[];
+    operationIdPrefix?: string;
+  } = {},
+): Promise<ProofOperationRecord[]> {
+  const mintUrl = input.mintUrl ? normalizeUrl(input.mintUrl) : undefined;
+  const stateSet = input.states ? new Set(input.states) : null;
+  const kindSet = input.kinds ? new Set(input.kinds) : null;
+  return (
+    await db.proofOperations
+      .filter((operation) => {
+        if (mintUrl && operation.mintUrl !== mintUrl) return false;
+        if (stateSet && !stateSet.has(operation.state)) return false;
+        if (kindSet && !kindSet.has(operation.kind)) return false;
+        if (
+          input.operationIdPrefix &&
+          !operation.operationId.startsWith(input.operationIdPrefix)
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .toArray()
+  ).map((operation) => ({
+    ...operation,
+    mintUrl: normalizeUrl(operation.mintUrl),
+  }));
 }
 
 export async function prepareProofOperation(

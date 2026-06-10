@@ -3,7 +3,7 @@ import {
   Wallet as CashuWallet,
   getEncodedToken,
 } from '@cashu/cashu-ts'
-import { createP2PKWitness } from '@bitcaster/swap-protocol/p2pk'
+import { createP2PKWitness } from '@bitcaster-market/swap-protocol/p2pk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import {
   getProofOperation,
@@ -84,6 +84,7 @@ interface AtomicSwapModule {
     adaptorPointCipher: string,
     lockedProofsSellerCipher: string,
     proofs: CashuProofRecord[],
+    amountSats: number,
     options?: ProofOperationOptions,
   ): Promise<{
     lockedProofsCipher: string
@@ -115,6 +116,7 @@ interface AtomicSwapModule {
 interface CtfSplitModule {
   splitRootCompleteSetForSwap(params: {
     mintUrl: string
+    baseAsset?: string | null
     conditionId: string
     collateralProofs: CashuProofRecord[]
     amountSats: number
@@ -239,6 +241,7 @@ export function createRealDaemonSwapOps(
       ])
       const split = await ctfSplit.splitRootCompleteSetForSwap({
         mintUrl: ctx.mintUrl,
+        baseAsset: ctx.baseAsset,
         conditionId: params.conditionId,
         collateralProofs,
         amountSats: params.amountSats,
@@ -275,13 +278,14 @@ export function createRealDaemonSwapOps(
       } satisfies SellerMintOpenResult
     },
 
-    async buyerRespond(ctx, messages, proofs) {
+    async buyerRespond(ctx, messages, proofs, amountSats) {
       const atomicSwap = await loadAtomicSwapModule()
       const out = await atomicSwap.buyerPrepareSwap(
         toAtomicCtx(ctx),
         messages.adaptorPoint,
         messages.lockedProofsSeller,
         proofs,
+        amountSats,
         proofOperationOptions(ctx.tradeId, 'buyer-lock'),
       )
       return {
@@ -382,12 +386,12 @@ const DAEMON_PROOF_OPERATION_STORE: ProofOperationStore = {
 }
 
 async function defaultAtomicSwapModuleLoader(): Promise<AtomicSwapModule> {
-  const specifier = '@bitcaster/swap-protocol/atomicSwap'
+  const specifier = '@bitcaster-market/swap-protocol/atomicSwap'
   return (await import(specifier)) as AtomicSwapModule
 }
 
 async function defaultCtfSplitModuleLoader(): Promise<CtfSplitModule> {
-  const specifier = '@bitcaster/client-sdk/ctfSplit'
+  const specifier = '@bitcaster-market/client-sdk/ctfSplit'
   return (await import(specifier)) as CtfSplitModule
 }
 

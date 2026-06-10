@@ -32,6 +32,9 @@ public class InMemoryTradeRegistry
         string? SettlementKind,
         string? SellerKeepOutcomeSetId,
         string? SellerLockOutcomeSetId,
+        string? BaseAsset,
+        int? Divisibility,
+        long? QuotePaymentSubunits,
         HashSet<string> ConfirmedBy,
         bool Confirmed);
 
@@ -60,7 +63,10 @@ public class InMemoryTradeRegistry
         long? quotePaymentSats = null,
         string? settlementKind = null,
         string? sellerKeepOutcomeSetId = null,
-        string? sellerLockOutcomeSetId = null)
+        string? sellerLockOutcomeSetId = null,
+        string? baseAsset = null,
+        int? divisibility = null,
+        long? quotePaymentSubunits = null)
     {
         var now = DateTimeOffset.UtcNow;
         var record = new TradeRecord(
@@ -74,6 +80,9 @@ public class InMemoryTradeRegistry
             SettlementKind: settlementKind,
             SellerKeepOutcomeSetId: sellerKeepOutcomeSetId,
             SellerLockOutcomeSetId: sellerLockOutcomeSetId,
+            BaseAsset: baseAsset,
+            Divisibility: divisibility,
+            QuotePaymentSubunits: quotePaymentSubunits,
             ConfirmedBy: [],
             Confirmed: false);
         return _trades.GetOrAdd(tradeId, record);

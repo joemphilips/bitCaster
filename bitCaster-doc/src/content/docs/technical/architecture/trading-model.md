@@ -11,9 +11,13 @@ bitCaster uses a central limit order book (CLOB). Limit orders rest on the book,
 
 Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell for the same outcome set, **Mint** = Buy vs Buy for exactly complementary outcome sets (maker mints a complete CTF set as the splitter), **Merge** = Sell vs Sell that combines into a complete set (not yet supported in bitCaster).
 
+Public trading books are primitive outcome books. A categorical market with outcomes `A`, `B`, and `C` exposes `A / Not A`, `B / Not B`, and `C / Not C` books; clients submit to `condition-A`, `condition-B`, or `condition-C` and choose the selected token or its one-vs-rest complement in the order body. Compound ids such as `B|C` remain internal settlement and mint keyset identifiers, not public market routes.
+
 ## Online Requirement
 
 A resting limit order is an online commitment. The maker must keep a browser tab or bot process connected until the order is filled, cancelled, or expired. When a taker matches the order, the maker must be able to answer the TradeHub messages and lock proofs before the swap timeout.
+
+Once the matching engine commits a match, the matched quantity is removed from the book. If the later wallet-level atomic swap times out or fails, that quantity is not automatically re-rested; makers should treat live orders as committed liquidity and cancel stale orders before they become unavailable.
 
 Professional market makers should run a bot rather than rely on an occasional browser session. `bitcaster-cli` uses `bitcaster-daemon` as its long-running wallet and swap process so non-browser makers can participate without changing the wire protocol.
 
@@ -31,23 +35,23 @@ The seller's token locktime must be longer than the buyer's sat locktime by the 
 
 Mint matching pairs buy orders for exact complementary outcome sets. In a binary market, `YES` and `NO` are complementary. In a categorical market with outcomes `A`, `B`, `C`, the singleton `A` pairs with `B|C`; `B` pairs with `A|C`; and `A|B` pairs with `C`.
 
-The maker acts as the splitter:
+The maker first tries to settle from local outcome inventory:
 
-1. The maker selects regular sats collateral.
-2. The maker asks the mint to split that collateral into the complete CTF outcome set.
-3. The maker keeps their desired outcome set.
-4. The maker locks the taker's outcome set into the normal seller atomic-swap branch.
+1. If the exact complementary collection is available locally, for example `B|C`, the maker locks that collection into the normal seller atomic-swap branch.
+2. If the exact collection is not available but all primitive complement legs are available, for example `B` plus `C`, the maker locks each primitive leg. The trade uses one seller opening containing all locked proof groups; it does not first convert `B` and `C` into `B|C`.
+3. If local inventory is insufficient and the order has an opted-in pre-flight split reservation, the maker uses the reserved lock side and releases the matched keep side.
+4. Otherwise, the maker selects regular sats collateral, asks the mint to split it into the needed complementary CTF collections, keeps their desired outcome set, and locks the taker's outcome set.
 5. The taker pays sats through the normal buyer branch.
 
-This is why mint settlement does not require the maker to already own the taker's outcome token. The maker only needs enough regular collateral to create the complete set, including mint input fees.
+This is why mint settlement does not require the maker to already own the exact complementary token. The maker can settle from exact inventory, primitive complement inventory, a prepared reservation, or enough regular collateral to split at match time, including mint input fees.
 
 ## Pre-Flight Split and Local Reservation
 
-For resting limit buys that can become mint maker orders, bitCaster defaults to a pre-flight split. Before the order rests, the client splits regular sats into the complete CTF outcome set, stores the resulting outcome proofs locally, and reserves the keep and lock sides for that order.
+For resting limit buys that can become mint maker orders, bitCaster may offer a pre-flight split. Before the order rests, the client splits regular sats into the needed CTF outcome collections, stores the resulting outcome proofs locally, and reserves the keep and lock sides for that order.
 
 This keeps the live order honest: if the mint is unavailable or the wallet cannot select enough regular collateral, the client should fail the submission or cancel the order path instead of leaving a maker quote that cannot settle. When a mint taker later matches the order, the maker locks only the matched amount of the reserved side and releases only the matched amount of the kept side as an active position. Remaining reserved proofs stay attached to the unfilled order quantity.
 
-The browser exposes this as a default-on **Pre-flight split** checkbox for limit buys. The CLI uses the same default; `bitcaster-cli order submit ... --no-preflight-split` opts out for operators who intentionally want the split to happen at match time. Opting out increases settlement-failure risk if collateral is spent, reserved elsewhere, or the mint is slow when the match arrives.
+The browser exposes this as a **Pre-flight split** checkbox for limit buys. The CLI has the same order-level option. Pre-flight is a maker choice, not a protocol requirement: at match time local exact inventory and local primitive complement inventory are preferred before reserved pre-flight proofs. Opting out increases settlement-failure risk if no suitable local inventory exists and collateral is spent, reserved elsewhere, or the mint is slow when the match arrives.
 
 ## Fees and Maker Surplus
 
@@ -78,7 +82,7 @@ The advantages that follow are concrete. The protocol is simpler — no batch-co
 
 In Polymarket V2 Mint, the exchange contract takes USDC from both buyers and calls `ConditionalTokens.splitPosition` atomically with the trade. Gas for the split is socialized through the transaction.
 
-In bitCaster Mint, the maker is the splitter. The maker selects regular sats from their own wallet, asks the mint to split them into the complete CTF outcome set, keeps the desired complement, and locks the taker's side into a normal atomic-swap branch. Two consequences follow. First, the maker briefly holds both sides of the complete set; if the taker fails to complete, the maker is stuck with the unwanted complement until they find another counterparty or pay another mint fee to merge back. Polymarket's atomic on-chain trade has no equivalent stuck-inventory failure mode. Second, the mint input fee falls on the maker — Polymarket's `splitPosition` gas is socialized through the on-chain transaction, but bitCaster's per-proof fee is paid by whoever submits the split. This is a real economic asymmetry: bitCaster makers carry the cost of supplying complete-set inventory.
+In bitCaster Mint, the maker supplies the complementary CTF side. They may already hold the exact complement, hold all primitive complement legs, use an order-local pre-flight reservation, or split regular sats from their own wallet at match time. Two consequences follow. First, if the maker has to split and the taker fails to complete, the maker can be stuck with unwanted complement inventory until they find another counterparty or pay another mint fee to merge back. Polymarket's atomic on-chain trade has no equivalent stuck-inventory failure mode. Second, the mint input fee falls on the maker — Polymarket's `splitPosition` gas is socialized through the on-chain transaction, but bitCaster's per-proof fee is paid by whoever submits the split. This is a real economic asymmetry: bitCaster makers carry the cost of supplying complete-set inventory.
 
 The pre-flight split policy partially mitigates this by letting makers split before the order rests, holding both sides of the complete set as reserved inventory. This trades held capital for settlement certainty: no mint-unavailable race at fill time, but the maker is committing collateral to a quote that may not fill.
 

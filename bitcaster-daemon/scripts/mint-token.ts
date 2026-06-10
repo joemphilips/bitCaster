@@ -5,17 +5,25 @@ import {
   Wallet as CashuWallet,
   getEncodedToken,
   type MintQuoteResponse,
+  type MintKeys,
   type PartialMintQuoteResponse,
   type Proof,
 } from '@cashu/cashu-ts'
 import {
   CashuMintCtfSplitTransport,
+  computeGrossCtfInputAmountSats,
   splitRootCompleteSet,
+  type CtfConditionInfo,
+  type CtfRootPartitionSelection,
 } from '../../bitcaster-client-sdk/src/ctfSplit.ts'
+import {
+  canonicalizeOutcomeSet,
+  complementOutcomeSetId,
+  parseOutcomeSetId,
+} from '../../bitcaster-client-sdk/src/outcomeSets.ts'
 
 const [, , mode, mintUrl, rawAmount, conditionId, outcomeSetId] = process.argv
 const jsonOutput = process.argv.includes('--json')
-
 if (!mode || !mintUrl || !rawAmount) {
   usage()
 }
@@ -25,18 +33,24 @@ if (!Number.isInteger(amountSats) || amountSats <= 0) {
   throw new Error(`amount must be a positive integer: ${rawAmount}`)
 }
 
-const sats = await mintRegularProofs(mintUrl, amountSats)
 if (mode === 'sats') {
+  const sats = await mintRegularProofs(mintUrl, amountSats)
   printToken(mintUrl, sats)
 } else if (mode === 'outcome') {
   if (!conditionId || !outcomeSetId) usage()
+  const sats = await mintRegularProofsForCtfSplit(mintUrl, amountSats)
+  const condition = await getCtfCondition(mintUrl, conditionId)
+  const selection = selectMintRootPartitionForOutcome(condition, outcomeSetId)
   const split = await splitRootCompleteSet(
     new CashuMintCtfSplitTransport(mintUrl),
     conditionId,
     sats,
     amountSats,
+    {},
+    selection,
   )
-  const selected = split[outcomeSetId]
+  const selectedKey = resolveSplitOutcomeSetKey(split, outcomeSetId)
+  const selected = selectedKey ? split[selectedKey] : undefined
   if (!selected?.length) {
     throw new Error(`CTF split did not return outcome set ${outcomeSetId}`)
   }
@@ -47,13 +61,113 @@ if (mode === 'sats') {
 
 async function mintRegularProofs(
   mintUrl: string,
-  amountSats: number,
+  faceAmountSats: number,
 ): Promise<Proof[]> {
-  const wallet = new CashuWallet(new CashuMint(mintUrl), { unit: 'sat' })
+  const mint = new CashuMint(mintUrl)
+  const keyset = await getActiveSatCollateralKeyset(mint)
+  const wallet = new CashuWallet(mint, { unit: 'sat' })
   await wallet.loadMint()
-  const quote = await wallet.createMintQuote(amountSats)
+  const grossAmountSats = computeGrossCtfInputAmountSats({
+    faceAmountSats,
+    keyset: {
+      id: keyset.id,
+      keys: keyset.keys,
+      input_fee_ppk: keyset.input_fee_ppk ?? 0,
+    },
+  })
+  const quote = await wallet.createMintQuote(grossAmountSats)
   await waitForPaidQuote(wallet, quote)
-  return wallet.mintProofs(amountSats, quote.quote)
+  return wallet.mintProofs(grossAmountSats, quote.quote)
+}
+
+async function mintRegularProofsForCtfSplit(
+  mintUrl: string,
+  faceAmountSats: number,
+): Promise<Proof[]> {
+  const mint = new CashuMint(mintUrl)
+  const keyset = await getActiveSatCollateralKeyset(mint)
+  const wallet = new CashuWallet(mint, { unit: 'sat' })
+  await wallet.loadMint()
+  const grossAmountSats = computeGrossCtfInputAmountSats({
+    faceAmountSats,
+    keyset: {
+      id: keyset.id,
+      keys: keyset.keys,
+      input_fee_ppk: keyset.input_fee_ppk ?? 0,
+    },
+  })
+  const quote = await wallet.createMintQuote(grossAmountSats)
+  await waitForPaidQuote(wallet, quote)
+  return wallet.mintProofs(grossAmountSats, quote.quote)
+}
+
+async function getActiveSatCollateralKeyset(mint: CashuMint): Promise<MintKeys> {
+  const active = (await mint.getKeySets()).keysets.find(
+    (keyset) => keyset.active && keyset.unit === 'sat',
+  )
+  if (!active) {
+    throw new Error('mint did not return an active sat collateral keyset')
+  }
+  const response = await mint.getKeys(active.id)
+  const keyset = response.keysets.find((candidate) => candidate.id === active.id)
+  if (!keyset) {
+    throw new Error(`mint did not return keys for keyset ${active.id}`)
+  }
+  return keyset
+}
+
+async function getCtfCondition(
+  mintUrl: string,
+  conditionId: string,
+): Promise<CtfConditionInfo> {
+  const mint = new CashuMint(mintUrl) as CashuMint & {
+    getCtfCondition(conditionId: string): Promise<CtfConditionInfo>
+  }
+  return mint.getCtfCondition(conditionId)
+}
+
+function selectMintRootPartitionForOutcome(
+  condition: CtfConditionInfo,
+  outcomeSetId: string,
+): CtfRootPartitionSelection {
+  const target = canonicalizeOutcomeSet(parseOutcomeSetId(outcomeSetId))
+  const keysetCollections = Object.keys(condition.keysets)
+  const matches = keysetCollections.filter(
+    (collection) =>
+      canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
+  )
+
+  if (matches.length !== 1) {
+    throw new Error(
+      `Expected exactly one root sat CTF keyset for condition ${condition.condition_id} containing outcome set ${outcomeSetId}, found ${matches.length}`,
+    )
+  }
+
+  const universe = keysetCollections.flatMap(parseOutcomeSetId)
+  const complement = complementOutcomeSetId(universe, outcomeSetId)
+  if (!target || !complement) {
+    throw new Error(
+      `Could not derive complementary root outcome set for condition ${condition.condition_id} and outcome set ${outcomeSetId}`,
+    )
+  }
+
+  return {
+    keepOutcomeSetId: outcomeSetId,
+    lockOutcomeSetId: complement,
+  }
+}
+
+function resolveSplitOutcomeSetKey(
+  split: Record<string, Proof[]>,
+  outcomeSetId: string,
+): string | null {
+  const target = canonicalizeOutcomeSet(parseOutcomeSetId(outcomeSetId))
+  return (
+    Object.keys(split).find(
+      (collection) =>
+        canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
+    ) ?? null
+  )
 }
 
 async function waitForPaidQuote(

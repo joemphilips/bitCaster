@@ -1,5 +1,5 @@
 import type { PLChartData, PLTimeSelector } from '@/types/portfolio'
-import { formatBtc } from '@/lib/format'
+import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 
 const TIME_RANGES: PLTimeSelector[] = ['1D', '1W', '1M', 'ALL']
 
@@ -45,16 +45,16 @@ export function PLChart({ chartData, selectedTimeRange, totalValueSats, onTimeRa
       <div className="mb-3">
         {totalValueSats != null && totalValueSats > 0 ? (
           <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
-            {formatBtc(totalValueSats)}
+            {formatMarketSubunits(totalValueSats, 'sat')}
           </div>
         ) : (
           <div className={`text-2xl font-bold font-mono ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-            {isPositive ? '+' : ''}{formatBtc(currentPL)}
+            {isPositive ? '+' : ''}{formatMarketSubunits(currentPL, 'sat')}
           </div>
         )}
         {data.length > 0 && (
           <div className={`text-sm font-mono ${periodPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-            {periodPositive ? '+' : ''}{formatBtc(periodChange)} this period
+            {periodPositive ? '+' : ''}{formatMarketSubunits(periodChange, 'sat')} this period
           </div>
         )}
       </div>

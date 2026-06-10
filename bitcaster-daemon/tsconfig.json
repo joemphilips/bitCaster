@@ -15,8 +15,10 @@
     "noEmit": true,
     "types": ["node"],
     "paths": {
-      "@bitcaster/client-sdk": ["../bitcaster-client-sdk/src/index.ts"],
-      "@bitcaster/client-sdk/*": ["../bitcaster-client-sdk/src/*"]
+      "@cashu/cashu-ts": ["../cashu-ts/lib/types/index.d.ts"],
+      "@bitcaster-market/client-sdk": ["../bitcaster-client-sdk/src/index.ts"],
+      "@bitcaster-market/client-sdk/*": ["../bitcaster-client-sdk/src/*"],
+      "@bitcaster-market/swap-protocol/*": ["../bitCaster-swap-protocol/src/*"]
     }
   },
   "include": ["src"]

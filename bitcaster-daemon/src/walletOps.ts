@@ -8,6 +8,8 @@ import {
   getEncodedToken,
   type CounterRange,
   type CounterSource,
+  type CtfConvertRequest,
+  type CtfConvertResponse,
   type MintKeys,
   type OutputDataLike,
   type Proof,
@@ -16,14 +18,25 @@ import {
   type SerializedBlindedSignature,
   type SwapPreview,
 } from '@cashu/cashu-ts'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
+  computeGrossCtfInputAmountSats,
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
+  type CtfGrossInputPlanningKeyset,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
-} from '../../bitcaster-client-sdk/src/ctfSplit.ts'
-import { amountToNumber } from '../../bitcaster-client-sdk/src/proofSelection.ts'
+} from '@bitcaster-market/client-sdk/ctfSplit'
+import {
+  COLLATERAL_COLLECTION,
+  type CtfConsolidationPlan,
+  type CtfConsolidationStrategy,
+} from '@bitcaster-market/client-sdk/ctfConsolidation'
+import {
+  amountToNumber,
+  computeInputFeeSatsForProofs,
+} from '@bitcaster-market/client-sdk/proofSelection'
+import { normalizeMarketBaseAsset } from '@bitcaster-market/client-sdk/marketUnits'
 import {
   addAvailableProofs,
   completeReservedSatSend,
@@ -39,6 +52,10 @@ import {
   type StoredProofAsset,
 } from './state.ts'
 import type { DaemonProfile } from './profile.ts'
+import type {
+  WalletConsolidationProofSummary,
+  WalletConsolidationResult,
+} from './protocol.ts'
 
 export interface CashuWalletLike {
   loadMint(): Promise<void>
@@ -61,10 +78,32 @@ export interface CashuWalletLike {
     exactMatch?: boolean,
   ): { keep: Proof[]; send: Proof[] }
   getFeesForProofs?(proofs: Proof[]): unknown
+  getKeyset?(keysetId?: string): {
+    id: string
+    keys: Record<string, string> | Record<number, string>
+  }
+  keysetId?: string
 }
 
 export interface WalletOpsDependencies {
-  createCashuWallet?: (mintUrl: string) => CashuWalletLike
+  createCashuWallet?: (mintUrl: string, baseAsset?: string | null) => CashuWalletLike
+  ctfConvert?: (
+    mintUrl: string,
+    request: CtfConvertRequest,
+    outputsByCollection: Record<string, OutputData[]>,
+  ) => Promise<Record<string, Proof[]>>
+  resolveInputFeePpkByKeyset?: (
+    mintUrl: string,
+    keysetIds: string[],
+  ) => Promise<Record<string, number>>
+  resolveOutputKeysetByCollection?: (
+    mintUrl: string,
+    conditionId: string,
+  ) => Promise<Record<string, string>>
+  resolveMintKeysByKeyset?: (
+    mintUrl: string,
+    keysetIds: string[],
+  ) => Promise<Record<string, MintKeys>>
   restoreOutputGroups?: (
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
@@ -74,6 +113,22 @@ export interface WalletOpsDependencies {
     mintUrl: string,
     conditionId: string,
   ) => Promise<string[]>
+  resolveRootPreflightOutputAmountSats?: (params: {
+    mintUrl: string
+    baseAsset?: string | null
+    conditionId: string
+    amountSats: number
+    lockOutcomeSetId: string
+    keepOutcomeSetId: string
+  }) => Promise<number>
+  resolveRootDirectLockOutputAmountSats?: (params: {
+    mintUrl: string
+    baseAsset?: string | null
+    conditionId: string
+    amountSats: number
+    lockOutcomeSetId: string
+    keepOutcomeSetId: string
+  }) => Promise<number>
 }
 
 export interface WalletOpsSecrets {
@@ -104,6 +159,16 @@ export interface PreparedCtfCollateralResult {
   inputs: Proof[]
   spent: Proof[]
   keep: Proof[]
+}
+
+export interface ExecuteCtfConsolidationPlanInput {
+  marketId: string
+  conditionId: string
+  type: CtfConsolidationStrategy
+  mintUrl: string
+  plan: CtfConsolidationPlan
+  outputsByCollection: Record<string, OutputData[]>
+  secrets: WalletOpsSecrets
 }
 
 const DAEMON_CTF_PROOF_OPERATION_STORE: CtfProofOperationStore = {
@@ -200,20 +265,37 @@ export async function splitAvailableSatProofsForCtfCollateral(
   operationId: string,
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
+  baseAssetInput?: string | null,
 ): Promise<PreparedCtfCollateralResult> {
-  const wallet = createWallet(mintUrl, secrets, deps)
+  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
   await wallet.loadMint()
   const existing = await getProofOperation(operationId)
   if (existing) {
+    const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(
+      mintUrl,
+      wallet,
+      deps,
+    )
+    const grossCtfInputSats = computeGrossCtfInputAmountSats({
+      faceAmountSats: amountSats,
+      keyset: grossPlanningKeyset,
+    })
     const split = await splitRegularProofsWithOperation({
       mintUrl,
+      baseAsset,
       operationId,
       wallet,
       proofs: [],
-      amountSats,
+      amountSats: grossCtfInputSats,
       proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
     })
-    const exact = await selectCollateralForCtfSplit(mintUrl, split.send, amountSats)
+    const exact = await validateExactCtfCollateralFromProofs(
+      mintUrl,
+      split.send,
+      amountSats,
+      deps,
+    )
     return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
   }
 
@@ -222,12 +304,25 @@ export async function splitAvailableSatProofsForCtfCollateral(
       (record) =>
         record.mintUrl === mintUrl &&
         record.state === 'available' &&
-        record.asset.kind === 'sats',
+        record.asset.kind === 'sats' &&
+        normalizeMarketBaseAsset(record.asset.baseAsset) === baseAsset,
     )
     .map((record) => record.proof as Proof)
 
   try {
-    const exact = await selectCollateralForCtfSplit(mintUrl, available, amountSats)
+    const exact = await validateExactCtfCollateralFromProofs(
+      mintUrl,
+      available,
+      amountSats,
+      deps,
+    )
+    return { inputs: exact.inputs, spent: [], keep: [] }
+  } catch {
+    // Fall through to wallet-backed selection, then to a regular split if needed.
+  }
+
+  try {
+    const exact = await selectCollateralForCtfSplit(mintUrl, available, amountSats, baseAsset)
     return { inputs: exact.inputs, spent: [], keep: [] }
   } catch {
     // Fall through to a regular split that creates a gross CTF input.
@@ -236,21 +331,365 @@ export async function splitAvailableSatProofsForCtfCollateral(
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
     throw new Error('cashu wallet does not support fee-aware proof selection')
   }
-  const selected = wallet.selectProofsToSend(available, amountSats, true, false)
+  const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(
+    mintUrl,
+    wallet,
+    deps,
+  )
+  const grossCtfInputSats = computeGrossCtfInputAmountSats({
+    faceAmountSats: amountSats,
+    keyset: grossPlanningKeyset,
+  })
+  const selected = wallet.selectProofsToSend(available, grossCtfInputSats, true, false)
   if (selected.send.length === 0) {
     throw new Error(`insufficient available sats in mint ${mintUrl}`)
   }
-  const grossCtfInputSats = amountSats + amountToNumber(wallet.getFeesForProofs([selected.send[0]]))
   const split = await splitRegularProofsWithOperation({
     mintUrl,
+    baseAsset,
     operationId,
     wallet,
     proofs: selected.send,
     amountSats: grossCtfInputSats,
     proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
   })
-  const exact = await selectCollateralForCtfSplit(mintUrl, split.send, amountSats)
+  const exact = await validateExactCtfCollateralFromProofs(
+    mintUrl,
+    split.send,
+    amountSats,
+    deps,
+  )
   return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
+}
+
+async function resolveGrossCtfInputPlanningKeyset(
+  mintUrl: string,
+  wallet: CashuWalletLike,
+  deps: WalletOpsDependencies,
+): Promise<CtfGrossInputPlanningKeyset> {
+  const keysetId = wallet.keysetId ?? wallet.getKeyset?.()?.id
+  if (!keysetId) {
+    throw new Error('cashu wallet did not expose an active keyset id')
+  }
+  const keysets = await resolveMintKeysByKeyset(mintUrl, [keysetId], deps)
+  const keyset = keysets[keysetId]
+  if (!keyset) {
+    throw new Error(`mint did not return keys for keyset ${keysetId}`)
+  }
+  return {
+    id: keyset.id,
+    keys: keyset.keys,
+    input_fee_ppk: keyset.input_fee_ppk ?? 0,
+  }
+}
+
+async function validateExactCtfCollateralFromProofs(
+  mintUrl: string,
+  proofs: Proof[],
+  faceAmountSats: number,
+  deps: WalletOpsDependencies,
+): Promise<{
+  inputs: Proof[]
+  keep: Proof[]
+  inputFeeSats: number
+  grossInputSats: number
+}> {
+  const inputs = proofs.map(normalizeProof)
+  const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
+    mintUrl,
+    inputs.map((proof) => proof.id),
+    deps,
+  )
+  const inputFeeSats = computeInputFeeSatsForProofs(
+    inputs,
+    inputFeePpkByKeyset,
+  )
+  const grossInputSats = inputs.reduce(
+    (acc, proof) => acc + amountToNumber(proof.amount),
+    0,
+  )
+  const netInputSats = grossInputSats - inputFeeSats
+  if (netInputSats !== faceAmountSats) {
+    throw new Error(
+      `CTF split inputs net ${netInputSats} sats after ${inputFeeSats} sats input fee, expected ${faceAmountSats}`,
+    )
+  }
+  return { inputs, keep: [], inputFeeSats, grossInputSats }
+}
+
+export async function executeCtfConsolidationPlan(
+  input: ExecuteCtfConsolidationPlanInput,
+  deps: WalletOpsDependencies = {},
+): Promise<WalletConsolidationResult> {
+  const selectedInputs = flattenProofGroups(input.plan.request.inputs)
+  if (selectedInputs.length === 0) {
+    throw new Error('CTF consolidation plan did not include input proofs')
+  }
+
+  const operationId = ctfConsolidationOperationId(
+    input.conditionId,
+    input.type,
+    selectedInputs,
+  )
+  await prepareProofOperation({
+    operationId,
+    kind: 'ctf-consolidation',
+    mintUrl: input.mintUrl,
+    inputs: selectedInputs,
+    outputs: Object.fromEntries(
+      Object.entries(input.outputsByCollection).map(([collection, outputs]) => [
+        collection,
+        serializeOutputDataArray(outputs),
+      ]),
+    ),
+    metadata: {
+      marketId: input.marketId,
+      conditionId: input.conditionId,
+      type: input.type,
+      parentCollectionId: input.plan.request.parent_collection_id ?? null,
+      inputCollections: Object.entries(input.plan.request.inputs).flatMap(
+        ([collection, proofs]) => proofs.map(() => collection),
+      ),
+      feeSats: input.plan.feeSats,
+      collateralOutputSats: input.plan.collateralOutputSats,
+    },
+  })
+
+  const resultProofs = deps.ctfConvert
+    ? await deps.ctfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
+    : await executeMintCtfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
+
+  await markProofOperationCompleted(operationId, resultProofs)
+  await replaceConsolidatedProofs({
+    mintUrl: input.mintUrl,
+    conditionId: input.conditionId,
+    inputsByCollection: input.plan.request.inputs,
+    resultProofs,
+  })
+
+  return {
+    marketId: input.marketId,
+    conditionId: input.conditionId,
+    type: input.type,
+    status: 'consolidated',
+    convertFeeSats: input.plan.feeSats,
+    collateralReturnedSats: input.plan.collateralOutputSats,
+    spentInputs: summarizeProofGroups(input.plan.request.inputs),
+    outputs: summarizeProofGroups(resultProofs),
+  }
+}
+
+export async function resolveCtfConsolidationInputFees(
+  mintUrl: string,
+  keysetIds: string[],
+  deps: WalletOpsDependencies = {},
+): Promise<Record<string, number>> {
+  const unique = [...new Set(keysetIds.filter(Boolean))]
+  if (deps.resolveInputFeePpkByKeyset) {
+    return deps.resolveInputFeePpkByKeyset(mintUrl, unique)
+  }
+  const keysetRows = await listMintAndConditionalKeysets(mintUrl)
+  const feeByKeyset = new Map(
+    keysetRows.map((keyset) => [keyset.id, keyset.input_fee_ppk ?? 0]),
+  )
+  return Object.fromEntries(
+    unique.map((keysetId) => {
+      if (!feeByKeyset.has(keysetId)) {
+        throw new Error(`mint did not return input_fee_ppk for keyset ${keysetId}`)
+      }
+      return [keysetId, feeByKeyset.get(keysetId) ?? 0]
+    }),
+  )
+}
+
+export async function resolveCtfConsolidationOutputKeysets(
+  mintUrl: string,
+  conditionId: string,
+  deps: WalletOpsDependencies = {},
+): Promise<Record<string, string>> {
+  if (deps.resolveOutputKeysetByCollection) {
+    return deps.resolveOutputKeysetByCollection(mintUrl, conditionId)
+  }
+  const keysets = await listMintAndConditionalKeysets(mintUrl)
+  const activeCollateral = keysets.find(
+    (keyset) =>
+      keyset.active &&
+      keyset.unit === 'sat' &&
+      keyset.condition_id === undefined,
+  )
+  if (!activeCollateral) {
+    throw new Error('mint did not return an active sat collateral keyset')
+  }
+  const entries: Array<[string, string]> = [[COLLATERAL_COLLECTION, activeCollateral.id]]
+  for (const keyset of keysets) {
+    if (!keyset.active || keyset.condition_id !== conditionId) continue
+    for (const collection of [
+      keyset.outcome_collection,
+      keyset.outcome_collection_id,
+    ]) {
+      if (collection) entries.push([collection, keyset.id])
+    }
+  }
+  return Object.fromEntries(entries)
+}
+
+export async function resolveMintKeysByKeyset(
+  mintUrl: string,
+  keysetIds: string[],
+  deps: WalletOpsDependencies = {},
+): Promise<Record<string, MintKeys>> {
+  if (deps.resolveMintKeysByKeyset) {
+    return deps.resolveMintKeysByKeyset(mintUrl, keysetIds)
+  }
+  const mint = new CashuMint(mintUrl)
+  const result: Record<string, MintKeys> = {}
+  for (const keysetId of [...new Set(keysetIds.filter(Boolean))]) {
+    const response = await mint.getKeys(keysetId)
+    const keyset = response.keysets.find((candidate) => candidate.id === keysetId)
+    if (!keyset) throw new Error(`mint did not return keys for keyset ${keysetId}`)
+    result[keysetId] = keyset
+  }
+  return result
+}
+
+async function executeMintCtfConvert(
+  mintUrl: string,
+  request: CtfConvertRequest,
+  outputsByCollection: Record<string, OutputData[]>,
+): Promise<Record<string, Proof[]>> {
+  const mint = new CashuMint(mintUrl) as CashuMint & {
+    ctfConvert(request: CtfConvertRequest): Promise<CtfConvertResponse>
+  }
+  const response = await mint.ctfConvert(request)
+  const keysets = await resolveMintKeysByKeyset(
+    mintUrl,
+    Object.values(request.outputs).flatMap((outputs) =>
+      outputs.map((output) => output.id),
+    ),
+  )
+  const result: Record<string, Proof[]> = {}
+  for (const [collection, outputs] of Object.entries(outputsByCollection)) {
+    const signatures = response.signatures[collection]
+    if (!signatures) {
+      throw new Error(`mint did not return CTF convert signatures for ${collection}`)
+    }
+    if (signatures.length !== outputs.length) {
+      throw new Error(
+        `mint returned ${signatures.length} CTF convert signatures for ${collection}, expected ${outputs.length}`,
+      )
+    }
+    result[collection] = outputs.map((output, index) => {
+      const signature = signatures[index]
+      const message = output.blindedMessage
+      if (signature.id !== message.id) {
+        throw new Error(`mint returned CTF convert signature for unexpected keyset ${signature.id}`)
+      }
+      if (amountToNumber(signature.amount) !== amountToNumber(message.amount)) {
+        throw new Error('mint returned CTF convert signature with unexpected amount')
+      }
+      const keyset = keysets[message.id]
+      if (!keyset) throw new Error(`missing mint keys for keyset ${message.id}`)
+      return normalizeProof(
+        output.toProof({ ...signature, amount: message.amount }, keyset),
+      )
+    })
+  }
+  return result
+}
+
+async function replaceConsolidatedProofs(input: {
+  mintUrl: string
+  conditionId: string
+  inputsByCollection: Record<string, Proof[]>
+  resultProofs: Record<string, Proof[]>
+}): Promise<void> {
+  const spentSecrets = new Set(
+    flattenProofGroups(input.inputsByCollection).map((proof) => proof.secret),
+  )
+  await updateState((state, now) => {
+    state.wallet.proofs = state.wallet.proofs.filter(
+      (record) =>
+        record.mintUrl !== input.mintUrl || !spentSecrets.has(record.proof.secret),
+    )
+    const existingSecrets = new Set(
+      state.wallet.proofs
+        .filter((record) => record.mintUrl === input.mintUrl)
+        .map((record) => record.proof.secret),
+    )
+    for (const [collection, proofs] of Object.entries(input.resultProofs)) {
+      const asset: StoredProofAsset =
+        collection === COLLATERAL_COLLECTION
+          ? { kind: 'sats' }
+          : { kind: 'outcome', conditionId: input.conditionId, outcomeSetId: collection }
+      for (const proof of proofs) {
+        if (existingSecrets.has(proof.secret)) continue
+        existingSecrets.add(proof.secret)
+        state.wallet.proofs.push({
+          proof: normalizeProof(proof),
+          mintUrl: input.mintUrl,
+          state: 'available',
+          asset,
+          createdAt: now,
+          updatedAt: now,
+        })
+      }
+    }
+  })
+}
+
+function summarizeProofGroups(
+  groups: Record<string, Proof[]>,
+): WalletConsolidationProofSummary[] {
+  return Object.entries(groups).flatMap(([label, proofs]) =>
+    proofs.map((proof) => ({
+      id: proof.id,
+      amount: amountToNumber(proof.amount),
+      label,
+      keysetId: proof.id,
+    })),
+  )
+}
+
+function flattenProofGroups(groups: Record<string, Proof[]>): Proof[] {
+  return Object.values(groups).flatMap((proofs) => proofs.map(normalizeProof))
+}
+
+function normalizeProof(proof: Proof): Proof {
+  return { ...proof, amount: amountToNumber(proof.amount) as never }
+}
+
+async function listMintAndConditionalKeysets(mintUrl: string): Promise<
+  Array<{
+    id: string
+    unit: string
+    active?: boolean
+    input_fee_ppk?: number
+    condition_id?: string
+    outcome_collection?: string
+    outcome_collection_id?: string
+  }>
+> {
+  const mint = new CashuMint(mintUrl) as CashuMint & {
+    getConditionalKeysets(query?: { active?: boolean }): Promise<{
+      keysets: Array<{
+        id: string
+        unit: string
+        active?: boolean
+        input_fee_ppk?: number
+        condition_id?: string
+        outcome_collection?: string
+        outcome_collection_id?: string
+      }>
+    }>
+  }
+  const regular = (await mint.getKeySets()).keysets
+  let conditional: Awaited<ReturnType<typeof mint.getConditionalKeysets>>['keysets'] = []
+  try {
+    conditional = (await mint.getConditionalKeysets({ active: true })).keysets
+  } catch {
+    conditional = []
+  }
+  return [...regular, ...conditional]
 }
 
 async function sendWalletTokenWithOperation(
@@ -329,15 +768,24 @@ export async function recoverPreparedWalletSends(
   deps: WalletOpsDependencies = {},
 ): Promise<WalletSendRecoveryResult> {
   const state = await ensureState()
-  const prepared = Object.values(state.proofOperations).filter(
-    (entry) => entry.kind === 'wallet-send' && entry.state === 'prepared',
+  const recoverable = Object.values(state.proofOperations).filter(
+    (entry) =>
+      (entry.kind === 'wallet-send' && entry.state === 'prepared') ||
+      (entry.kind === 'ctf-consolidation' &&
+        (entry.state === 'prepared' ||
+          (entry.state === 'completed' &&
+            !isCtfConsolidationFinalized(entry, state.wallet.proofs)))),
   )
   const result: WalletSendRecoveryResult = { recovered: [], pending: [] }
-  for (const entry of prepared) {
+  for (const entry of recoverable) {
     try {
-      const wallet = createWallet(entry.mintUrl, secrets, deps)
-      await wallet.loadMint()
-      await resumeWalletSendOperation(wallet, entry, entry.mintUrl, deps)
+      if (entry.kind === 'ctf-consolidation') {
+        await resumeCtfConsolidationOperation(entry, deps)
+      } else {
+        const wallet = createWallet(entry.mintUrl, secrets, deps)
+        await wallet.loadMint()
+        await resumeWalletSendOperation(wallet, entry, entry.mintUrl, deps)
+      }
       result.recovered.push(entry.operationId)
     } catch (err) {
       result.pending.push({
@@ -347,6 +795,58 @@ export async function recoverPreparedWalletSends(
     }
   }
   return result
+}
+
+async function resumeCtfConsolidationOperation(
+  entry: ProofOperationRecord,
+  deps: WalletOpsDependencies,
+): Promise<Record<string, Proof[]>> {
+  assertCtfConsolidationOperation(entry)
+  const conditionId = readStringMetadata(entry, 'conditionId')
+  if (entry.state === 'completed') {
+    const resultProofs = normalizeProofGroups(entry.resultProofs ?? {})
+    await replaceConsolidatedProofs({
+      mintUrl: entry.mintUrl,
+      conditionId,
+      inputsByCollection: { [COLLATERAL_COLLECTION]: entry.inputs as Proof[] },
+      resultProofs,
+    })
+    return resultProofs
+  }
+  if (entry.state === 'failed') {
+    throw new Error(
+      `Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
+    )
+  }
+
+  const inputsByCollection = await ctfConsolidationInputGroups(entry)
+  const outputsByCollection = deserializeOutputGroups(entry.outputs)
+  const request: CtfConvertRequest = {
+    condition_id: conditionId,
+    inputs: inputsByCollection,
+    outputs: Object.fromEntries(
+      Object.entries(entry.outputs).map(([collection, outputs]) => [
+        collection,
+        outputs.map((output) => ({
+          ...output.blindedMessage,
+          amount: Amount.from(output.blindedMessage.amount),
+        })),
+      ]),
+    ),
+  }
+
+  const resultProofs = deps.ctfConvert
+    ? await deps.ctfConvert(entry.mintUrl, request, outputsByCollection)
+    : await executeMintCtfConvert(entry.mintUrl, request, outputsByCollection)
+
+  await markProofOperationCompleted(entry.operationId, resultProofs)
+  await replaceConsolidatedProofs({
+    mintUrl: entry.mintUrl,
+    conditionId,
+    inputsByCollection,
+    resultProofs,
+  })
+  return resultProofs
 }
 
 async function resumeWalletSendOperation(
@@ -429,10 +929,12 @@ function createWallet(
   mintUrl: string,
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies,
+  baseAsset?: string | null,
 ): CashuWalletLike {
-  if (deps.createCashuWallet) return deps.createCashuWallet(mintUrl)
+  const unit = normalizeMarketBaseAsset(baseAsset)
+  if (deps.createCashuWallet) return deps.createCashuWallet(mintUrl, unit)
   return new CashuWallet(new CashuMint(mintUrl), {
-    unit: 'sat',
+    unit,
     bip39seed: Buffer.from(secrets.walletSeedHex, 'hex'),
     counterSource: new DaemonCounterSource(),
   }) as CashuWalletLike
@@ -491,6 +993,118 @@ function assertWalletSendOperation(
       `Proof operation ${entry.operationId} does not match this wallet send`,
     )
   }
+}
+
+function assertCtfConsolidationOperation(entry: ProofOperationRecord): void {
+  if (entry.kind !== 'ctf-consolidation') {
+    throw new Error(
+      `Proof operation ${entry.operationId} does not match CTF consolidation`,
+    )
+  }
+}
+
+function isCtfConsolidationFinalized(
+  entry: ProofOperationRecord,
+  walletProofs: Array<{ mintUrl: string; proof: { secret: string } }>,
+): boolean {
+  const inputSecrets = new Set(entry.inputs.map((proof) => proof.secret))
+  if (
+    walletProofs.some(
+      (record) =>
+        record.mintUrl === entry.mintUrl && inputSecrets.has(record.proof.secret),
+    )
+  ) {
+    return false
+  }
+
+  const resultSecrets = Object.values(entry.resultProofs ?? {})
+    .flat()
+    .map((proof) => proof.secret)
+  return (
+    resultSecrets.length > 0 &&
+    resultSecrets.every((secret) =>
+      walletProofs.some(
+        (record) => record.mintUrl === entry.mintUrl && record.proof.secret === secret,
+      ),
+    )
+  )
+}
+
+function ctfConsolidationOperationId(
+  conditionId: string,
+  type: CtfConsolidationStrategy,
+  inputs: Proof[],
+): string {
+  const inputProofIds = inputs
+    .map((proof) => `${proof.id ?? ''}:${proof.C}`)
+    .sort()
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ conditionId, type, inputProofIds }), 'utf8')
+    .digest('hex')
+    .slice(0, 32)
+  return `ctf-consolidation:${conditionId}:${type}:${digest}`
+}
+
+async function ctfConsolidationInputGroups(
+  entry: ProofOperationRecord,
+): Promise<Record<string, Proof[]>> {
+  const inputCollections = entry.metadata.inputCollections
+  if (
+    Array.isArray(inputCollections) &&
+    inputCollections.length === entry.inputs.length &&
+    inputCollections.every((collection) => typeof collection === 'string')
+  ) {
+    return groupInputsByCollection(
+      entry.inputs as Proof[],
+      inputCollections as string[],
+    )
+  }
+
+  const state = await ensureState()
+  const collectionBySecret = new Map<string, string>()
+  for (const record of state.wallet.proofs) {
+    if (record.mintUrl !== entry.mintUrl) continue
+    collectionBySecret.set(record.proof.secret, proofCollection(record.asset))
+  }
+  const recoveredCollections = entry.inputs.map((proof) =>
+    collectionBySecret.get(proof.secret),
+  )
+  if (recoveredCollections.some((collection) => !collection)) {
+    throw new Error(
+      `Proof operation ${entry.operationId} is missing CTF consolidation input collection metadata`,
+    )
+  }
+  return groupInputsByCollection(
+    entry.inputs as Proof[],
+    recoveredCollections as string[],
+  )
+}
+
+function groupInputsByCollection(
+  inputs: Proof[],
+  collections: string[],
+): Record<string, Proof[]> {
+  const grouped: Record<string, Proof[]> = {}
+  inputs.forEach((proof, index) => {
+    const collection = collections[index]
+    grouped[collection] = [...(grouped[collection] ?? []), normalizeProof(proof)]
+  })
+  return grouped
+}
+
+function normalizeProofGroups(
+  groups: ProofOperationRecord['resultProofs'] | undefined,
+): Record<string, Proof[]> {
+  return Object.fromEntries(
+    Object.entries(groups ?? {}).map(([collection, proofs]) => [
+      collection,
+      proofs.map((proof) => normalizeProof(proof as Proof)),
+    ]),
+  )
+}
+
+function proofCollection(asset: StoredProofAsset): string {
+  return asset.kind === 'sats' ? COLLATERAL_COLLECTION : asset.outcomeSetId
 }
 
 function serializeOutputDataArray(
@@ -651,7 +1265,7 @@ async function receiveOutcomeToken(
   deps: WalletOpsDependencies,
 ): Promise<WalletReceiveResult> {
   if (!proofs.length) throw new Error('cashu token did not include proofs')
-  const wallet = createWallet(mintUrl, secrets, deps)
+  const wallet = createWallet(mintUrl, secrets, deps, asset.baseAsset)
   await wallet.loadMint()
   if (!wallet.checkProofsStates) {
     throw new Error('cashu wallet does not support proof-state checks')
@@ -679,11 +1293,12 @@ async function receiveOutcomeToken(
 function resolveReceiveAsset(metadata: WalletReceiveMetadata): StoredProofAsset {
   const conditionId = metadata.conditionId?.trim()
   const outcomeSetId = metadata.outcomeSetId?.trim()
-  if (!conditionId && !outcomeSetId) return { kind: 'sats' }
+  const baseAsset = normalizeMarketBaseAsset(undefined)
+  if (!conditionId && !outcomeSetId) return { kind: 'sats', baseAsset }
   if (!conditionId || !outcomeSetId) {
     throw new Error('conditionId and outcomeSetId must be supplied together')
   }
-  return { kind: 'outcome', conditionId, outcomeSetId }
+  return { kind: 'outcome', conditionId, outcomeSetId, baseAsset }
 }
 
 async function getConditionKeysetIds(
@@ -699,13 +1314,10 @@ async function getConditionKeysetIds(
     throw new Error(`condition keyset lookup failed with HTTP ${response.status}`)
   }
   const body = (await response.json()) as {
-    condition?: { partitions?: Array<{ keysets?: Record<string, string> }> }
-    partitions?: Array<{ keysets?: Record<string, string> }>
+    condition?: { keysets?: Record<string, string> }
+    keysets?: Record<string, string>
   }
-  const partitions = body.condition?.partitions ?? body.partitions ?? []
-  const keysets = partitions.flatMap((partition) =>
-    Object.values(partition.keysets ?? {}),
-  )
+  const keysets = Object.values(body.condition?.keysets ?? body.keysets ?? {})
   if (!keysets.length) {
     throw new Error(`condition ${conditionId} did not include CTF keysets`)
   }

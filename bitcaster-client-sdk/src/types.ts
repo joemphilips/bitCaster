@@ -23,6 +23,8 @@ export interface SdkMarketForTrading {
   id: string
   type: SdkMarketType
   outcomes?: SdkMarketOutcome[]
+  baseAsset?: 'sat' | 'usd' | 'jpy'
+  divisibility?: number
 }
 
 export interface SdkTradeSelection {
@@ -32,6 +34,7 @@ export interface SdkTradeSelection {
 
 export interface SdkSubmitOrderRequest {
   outcomeId: string
+  tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
   amountSats: number

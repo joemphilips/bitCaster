@@ -3,11 +3,11 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { createP2PKWitness } from '@bitcaster/swap-protocol/p2pk'
 import { hexToBytes } from '@bitcaster/swap-protocol/ecdh'
 import {
-  addProofs,
   getReservedProofs,
   markProofOperationCompleted,
   prepareProofOperation,
   removeProofs,
+  replaceProofs,
 } from '@/stores/proof-db'
 import { usePartialLockFailuresStore } from '@/stores/partialLockFailures'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
@@ -82,19 +82,20 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
         proofs: witnessed as Proof[],
       }),
     )
-    await addProofs(
+    await replaceProofs(
+      locked.map((proof) => proof.secret),
       fresh.map((proof) => ({
         ...proof,
         mintUrl,
         ...metadataForRefundedProof(proof, record),
       })),
     )
-    await removeProofs(locked.map((proof) => proof.secret))
     await markProofOperationCompleted(operationId, { refund: fresh })
     usePartialLockFailuresStore.getState().remove(tradeId)
   } catch (error) {
     if (!isAlreadySpentError(error)) throw error
     await removeProofs(locked.map((proof) => proof.secret))
+    await markProofOperationCompleted(operationId, { alreadySpent: [] })
     usePartialLockFailuresStore.getState().remove(tradeId)
   }
 }

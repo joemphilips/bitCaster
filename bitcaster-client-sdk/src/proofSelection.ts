@@ -14,15 +14,20 @@ export function sumProofs(proofs: readonly AmountProofLike[]): number {
 export function takeProofsForLock<T extends AmountProofLike>(
   source: readonly T[],
   target: number,
+  inputFeePpkByKeyset?: Record<string, number>,
 ): T[] | null {
   if (!Number.isFinite(target)) {
     return source.length > 0 ? [...source] : null
   }
 
-  const sameKeyset = takeProofsForLockFromSingleKeyset(source, target)
+  const sameKeyset = takeProofsForLockFromSingleKeyset(
+    source,
+    target,
+    inputFeePpkByKeyset,
+  )
   if (sameKeyset) return sameKeyset
 
-  return takeGreedyProofs(source, target)
+  return takeGreedyProofs(source, target, inputFeePpkByKeyset)
 }
 
 export function subtractProofs<T extends AmountProofLike>(
@@ -53,9 +58,33 @@ export function keysetToOutcomeCollection<T>(
   return result
 }
 
+export function computeInputFeeSatsFromPpk(inputFeePpk: number): number {
+  if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
+    throw new Error('input_fee_ppk total must be a non-negative safe integer')
+  }
+  return Math.ceil(inputFeePpk / 1_000)
+}
+
+export function computeInputFeeSatsForProofs(
+  proofs: readonly AmountProofLike[],
+  inputFeePpkByKeyset: Record<string, number>,
+): number {
+  let feePpk = 0
+  for (const proof of proofs) {
+    if (!proof.id) throw new Error('Input proof is missing keyset id')
+    const inputFeePpk = inputFeePpkByKeyset[proof.id]
+    if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
+      throw new Error(`Missing input_fee_ppk for keyset ${proof.id}`)
+    }
+    feePpk += inputFeePpk
+  }
+  return computeInputFeeSatsFromPpk(feePpk)
+}
+
 function takeProofsForLockFromSingleKeyset<T extends AmountProofLike>(
   source: readonly T[],
   target: number,
+  inputFeePpkByKeyset?: Record<string, number>,
 ): T[] | null {
   const byKeyset = new Map<string, T[]>()
   for (const proof of source) {
@@ -68,11 +97,12 @@ function takeProofsForLockFromSingleKeyset<T extends AmountProofLike>(
   return (
     [...byKeyset.values()]
       .map((group) => {
-        const taken = takeGreedyProofs(group, target)
+        const taken = takeGreedyProofs(group, target, inputFeePpkByKeyset)
         return taken
           ? {
               taken,
-              overpay: sumProofs(taken) - target,
+              overpay:
+                spendableProofAmount(taken, inputFeePpkByKeyset) - target,
               proofCount: taken.length,
             }
           : null
@@ -91,16 +121,26 @@ function takeProofsForLockFromSingleKeyset<T extends AmountProofLike>(
 function takeGreedyProofs<T extends AmountProofLike>(
   source: readonly T[],
   target: number,
+  inputFeePpkByKeyset?: Record<string, number>,
 ): T[] | null {
   const sorted = [...source].sort((a, b) => amountToNumber(b.amount) - amountToNumber(a.amount))
   const taken: T[] = []
-  let acc = 0
+  let spendable = 0
   for (const p of sorted) {
-    if (acc >= target) break
+    if (spendable >= target) break
     taken.push(p)
-    acc += amountToNumber(p.amount)
+    spendable = spendableProofAmount(taken, inputFeePpkByKeyset)
   }
-  return acc >= target ? taken : null
+  return spendable >= target ? taken : null
+}
+
+function spendableProofAmount(
+  proofs: readonly AmountProofLike[],
+  inputFeePpkByKeyset?: Record<string, number>,
+): number {
+  const face = sumProofs(proofs)
+  if (!inputFeePpkByKeyset) return face
+  return face - computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset)
 }
 
 function proofKey(p: AmountProofLike): string {

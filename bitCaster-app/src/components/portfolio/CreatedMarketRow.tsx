@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { CreatedMarket, CreatedMarketStatus } from "@/types/portfolio";
-import { formatBtc } from "@/lib/format";
+import {
+  formatMarketSubunits,
+  normalizeMarketBaseAsset,
+} from "@bitcaster/client-sdk/marketUnits";
 import { CheckCircle2, Eye } from "lucide-react";
 
 const STATUS_STYLES: Record<CreatedMarketStatus, string> = {
@@ -28,6 +31,7 @@ export function CreatedMarketRow({
   isPublishingOracleAttestation = false,
 }: CreatedMarketRowProps) {
   const { t } = useTranslation();
+  const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
   const canClaimFees =
     market.status === "resolved" && market.creatorFeesEarned > 0;
   const canPublishOracleAttestation =
@@ -75,7 +79,9 @@ export function CreatedMarketRow({
             </span>
             {market.volume > 0 && (
               <span className="text-xs text-slate-400 dark:text-slate-500">
-                {t("portfolio.volLabel", { value: formatBtc(market.volume) })}
+                {t("portfolio.volLabel", {
+                  value: formatMarketSubunits(market.volume, baseAsset),
+                })}
               </span>
             )}
             {market.oracle?.attestedOutcome && (
@@ -96,7 +102,7 @@ export function CreatedMarketRow({
         <div className="shrink-0 text-right">
           {market.creatorFeesEarned > 0 && (
             <div className="font-mono text-sm text-amber-600 dark:text-amber-400">
-              {formatBtc(market.creatorFeesEarned)}
+              {formatMarketSubunits(market.creatorFeesEarned, baseAsset)}
             </div>
           )}
           {market.creatorFeePercent > 0 && (

@@ -11,6 +11,7 @@ interface ActivityLogState {
   addActivity: (entry: {
     type: ActivityType;
     amountSats: number;
+    baseAsset?: ActivityItem["baseAsset"];
     status: ActivityStatus;
     txId?: string | null;
     lightningInvoice?: string | null;
@@ -26,6 +27,7 @@ function activityItemEqual(a: ActivityItem, b: ActivityItem): boolean {
     a.id === b.id &&
     a.type === b.type &&
     a.amountSats === b.amountSats &&
+    a.baseAsset === b.baseAsset &&
     a.date === b.date &&
     a.status === b.status &&
     a.txId === b.txId &&
@@ -67,6 +69,7 @@ export const useActivityLogStore = create<ActivityLogState>()(
           id: crypto.randomUUID(),
           type: entry.type,
           amountSats: entry.amountSats,
+          baseAsset: entry.baseAsset,
           date: new Date().toISOString(),
           status: entry.status,
           txId: entry.txId ?? null,

@@ -26,6 +26,7 @@ const {
   mockPrepareProofOperation,
   mockReleaseProofReservationsBySecret,
   mockRemoveProofs,
+  mockReplaceProofs,
   mockReserveProofs,
 } = vi.hoisted(() => ({
   mockAddProofs: vi.fn(),
@@ -37,19 +38,21 @@ const {
   mockPrepareProofOperation: vi.fn(),
   mockReleaseProofReservationsBySecret: vi.fn(),
   mockRemoveProofs: vi.fn(),
+  mockReplaceProofs: vi.fn(),
   mockReserveProofs: vi.fn(),
 }));
 
 const {
+  mockBuyerPrepareSwap,
   mockSellerLockOutcomeProofs,
   mockSellerPreparePrelockedSwap,
   mockSplitProofsForExactSend,
-} =
-  vi.hoisted(() => ({
-    mockSellerLockOutcomeProofs: vi.fn(),
-    mockSellerPreparePrelockedSwap: vi.fn(),
-    mockSplitProofsForExactSend: vi.fn(),
-  }));
+} = vi.hoisted(() => ({
+  mockBuyerPrepareSwap: vi.fn(),
+  mockSellerLockOutcomeProofs: vi.fn(),
+  mockSellerPreparePrelockedSwap: vi.fn(),
+  mockSplitProofsForExactSend: vi.fn(),
+}));
 
 vi.mock("@/hooks/useTradeHub", () => ({
   useTradeHub: mockUseTradeHub,
@@ -65,6 +68,7 @@ vi.mock("@/stores/proof-db", () => ({
   prepareProofOperation: mockPrepareProofOperation,
   releaseProofReservationsBySecret: mockReleaseProofReservationsBySecret,
   removeProofs: mockRemoveProofs,
+  replaceProofs: mockReplaceProofs,
   reserveProofs: mockReserveProofs,
 }));
 
@@ -78,9 +82,12 @@ vi.mock("@/lib/orderStatus", async (importOriginal) => {
 
 vi.mock("@bitcaster/swap-protocol/atomicSwap", async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import("@bitcaster/swap-protocol/atomicSwap")>();
+    await importOriginal<
+      typeof import("@bitcaster/swap-protocol/atomicSwap")
+    >();
   return {
     ...actual,
+    buyerPrepareSwap: mockBuyerPrepareSwap,
     sellerLockOutcomeProofs: mockSellerLockOutcomeProofs,
     sellerPreparePrelockedSwap: mockSellerPreparePrelockedSwap,
     splitProofsForExactSend: mockSplitProofsForExactSend,
@@ -92,9 +99,8 @@ vi.mock("@/stores/wallet", () => ({
     selector({ activeMintUrl: "https://mint.example" }),
 }));
 
-const { useTradeSettlement, persistPartialLockFromError } = await import(
-  "../useTradeSettlement"
-);
+const { useTradeSettlement, persistPartialLockFromError } =
+  await import("../useTradeSettlement");
 
 beforeEach(() => {
   vi.useRealTimers();
@@ -114,7 +120,35 @@ beforeEach(() => {
   mockPrepareProofOperation.mockResolvedValue({});
   mockReleaseProofReservationsBySecret.mockResolvedValue(undefined);
   mockRemoveProofs.mockResolvedValue(undefined);
+  mockReplaceProofs.mockResolvedValue(undefined);
   mockReserveProofs.mockResolvedValue(undefined);
+  mockBuyerPrepareSwap.mockResolvedValue({
+    lockedProofsCipher: "cipher-buyer",
+    lockedProofs: [proof(50, "buyer-locked-50", "base-keyset")],
+    changeProofs: [proof(36, "buyer-change-36", "base-keyset")],
+    preSigsHex: ["pre-buyer"],
+    sellerPreSigsHex: ["pre-seller"],
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation(async () => {
+      const body = {
+        keysets: [
+          keyset("keyset-YES", "cond", "YES"),
+          keyset("keyset-NO", "cond", "NO"),
+          keyset("keyset-B", "condition-1", "B"),
+          keyset("keyset-C", "condition-1", "C"),
+        ],
+      };
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      };
+    }),
+  );
   mockSellerPreparePrelockedSwap.mockResolvedValue({
     adaptorPointCipher: "cipher-adaptor",
     lockedProofsCipher: "cipher-seller",
@@ -122,20 +156,33 @@ beforeEach(() => {
     lockedProofs: [],
     changeProofs: [],
   });
-  mockSellerLockOutcomeProofs.mockImplementation(async (_ctx, proofs) => ({
-    lockedProofs: [proof(100, `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-locked-100`)],
-    changeProofs: [
-      {
-        ...proof(36, `${proofs[0].secret.includes("lock") ? "lock" : "inventory"}-change-36`),
-        id: proofs[0].id,
-      },
-    ],
-  }));
+  mockSellerLockOutcomeProofs.mockImplementation(
+    async (_ctx, proofs, amountSats) => {
+      const total = proofs.reduce(
+        (sum: number, candidate: { amount: unknown }) =>
+          sum + Number(candidate.amount),
+        0,
+      );
+      const prefix = proofs[0].secret.includes("lock") ? "lock" : "inventory";
+      return {
+        lockedProofs: [proof(amountSats, `${prefix}-locked-100`, proofs[0].id)],
+        changeProofs:
+          total > amountSats
+            ? [
+                {
+                  ...proof(total - amountSats, `${prefix}-change-36`),
+                  id: proofs[0].id,
+                },
+              ]
+            : [],
+      };
+    },
+  );
   mockSplitProofsForExactSend.mockImplementation(async (params) => {
     const source = params.sourceProofs[0];
     const prefix = source.secret.includes("lock") ? "lock" : "keep";
     return {
-      sendProofs: [proof(100, `${prefix}-exact-100`)],
+      sendProofs: [proof(100, `${prefix}-exact-100`, source.id)],
       changeProofs: [{ ...proof(36, `${prefix}-change-36`), id: source.id }],
       spentProofs: params.sourceProofs,
     };
@@ -182,6 +229,38 @@ describe("useTradeSettlement", () => {
     expect(mockJoinTrade).toHaveBeenCalledWith("trade-1");
   });
 
+  it("retries active swap trade joins while the trade state is not ready", async () => {
+    vi.useFakeTimers();
+    mockJoinTrade
+      .mockRejectedValueOnce(new Error("Not authorised to join this trade"))
+      .mockResolvedValue(undefined);
+
+    useActiveSwapsStore.getState().promote({
+      tradeId: "trade-retry-active",
+      orderId: "order-1",
+      marketId: "market-1",
+      ephemeralPrivkeyHex: "11".repeat(32),
+      ephemeralPubkeyHex: "22".repeat(32),
+    });
+    renderHook(() => useTradeSettlement(true));
+    await act(async () => {});
+
+    expect(mockJoinTrade).toHaveBeenCalledTimes(1);
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-retry-active"].step,
+    ).toBe("awaiting-trade-created");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(mockJoinTrade).toHaveBeenCalledTimes(2);
+    expect(mockJoinTrade).toHaveBeenLastCalledWith("trade-retry-active");
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-retry-active"].step,
+    ).toBe("awaiting-trade-created");
+  });
+
   it("joins pending order groups so resting makers can receive TradeCreated", async () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
@@ -196,6 +275,73 @@ describe("useTradeSettlement", () => {
     await waitFor(() =>
       expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending"),
     );
+  });
+
+  it("replays pending order joins during status recovery", async () => {
+    vi.useFakeTimers();
+    usePendingTradesStore.getState().add({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    await act(async () => {});
+    expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending");
+    expect(mockJoinOrder).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(mockJoinOrder).toHaveBeenCalledTimes(2);
+    expect(mockJoinOrder).toHaveBeenLastCalledWith("cond-YES", "order-pending");
+  });
+
+  it("retries order-status recovered trade joins after transient hub authorization lag", async () => {
+    vi.useFakeTimers();
+    mockFetchOrderStatus.mockResolvedValue({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      status: "matched",
+      remainingAmountSats: 0,
+      filledAmountSats: 100,
+      fills: [{ tradeId: "trade-status-retry" }],
+    });
+    mockJoinTrade
+      .mockRejectedValueOnce(new Error("Not authorised to join this trade"))
+      .mockResolvedValue(undefined);
+    usePendingTradesStore.getState().add({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    await act(async () => {});
+    expect(mockJoinOrder).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(mockJoinTrade).toHaveBeenCalled();
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-status-retry"].step,
+    ).toBe("awaiting-trade-created");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(mockJoinTrade.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(mockJoinTrade).toHaveBeenLastCalledWith("trade-status-retry");
   });
 
   it("retries pending order group joins after a transient hub failure", async () => {
@@ -225,16 +371,14 @@ describe("useTradeSettlement", () => {
 
   it("waits for order status before joining pending order groups", async () => {
     vi.useFakeTimers();
-    mockFetchOrderStatus
-      .mockResolvedValueOnce(null)
-      .mockResolvedValue({
-        orderId: "order-pending",
-        marketId: "cond-YES",
-        status: "resting",
-        remainingAmountSats: 100,
-        filledAmountSats: 0,
-        fills: [],
-      });
+    mockFetchOrderStatus.mockResolvedValueOnce(null).mockResolvedValue({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      status: "resting",
+      remainingAmountSats: 100,
+      filledAmountSats: 0,
+      fills: [],
+    });
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
@@ -279,6 +423,9 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId?: string;
         outcomeFaceAmountSats?: number;
         quotePaymentSats?: number;
+        baseAsset?: string;
+        divisibility?: number;
+        quotePaymentSubunits?: number;
       }) => void;
     };
 
@@ -295,6 +442,9 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId: "NO",
         outcomeFaceAmountSats: 100,
         quotePaymentSats: 50,
+        baseAsset: "sat",
+        divisibility: 100,
+        quotePaymentSubunits: 50,
       });
     });
 
@@ -307,6 +457,73 @@ describe("useTradeSettlement", () => {
     expect(swap.role).toBe("buyer");
     expect(swap.outcomeFaceAmountSats).toBe(100);
     expect(swap.quotePaymentSats).toBe(50);
+    expect(swap.baseAsset).toBe("sat");
+    expect(swap.divisibility).toBe(100);
+    expect(swap.quotePaymentSubunits).toBe(50);
+  });
+
+  it("fails before locking proofs when TradeCreated unit metadata mismatches the local order", async () => {
+    usePendingTradesStore.getState().add({
+      orderId: "order-usd",
+      marketId: "cond-NO",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      baseAsset: "usd",
+      divisibility: 100,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        settlementKind?: string;
+        sellerKeepOutcomeSetId?: string;
+        sellerLockOutcomeSetId?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+        baseAsset?: string;
+        divisibility?: number;
+        quotePaymentSubunits?: number;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-unit-mismatch",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-NO",
+        settlementKind: "Mint",
+        sellerKeepOutcomeSetId: "YES",
+        sellerLockOutcomeSetId: "NO",
+        outcomeFaceAmountSats: 100,
+        quotePaymentSats: 50,
+        baseAsset: "sat",
+        divisibility: 100,
+        quotePaymentSubunits: 50,
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.step,
+      ).toBe("failed"),
+    );
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.error,
+    ).toContain("Trade unit mismatch");
+    expect(mockSendSwapMessage).not.toHaveBeenCalled();
+    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
   });
 
   it("keeps the maker market when promoting a mint seller TradeCreated event", async () => {
@@ -364,11 +581,114 @@ describe("useTradeSettlement", () => {
     expect(swap.sellerLockOutcomeSetId).toBe("NO");
   });
 
+  it("recovers a buyer response from an existing proof operation without selecting depleted wallet proofs", async () => {
+    const originalInputs = [proof(64, "buyer-original-64", "base-keyset")];
+    mockGetProofOperation.mockImplementation(async (operationId: string) =>
+      operationId === "trade-buyer-recover/browser/buyer-lock"
+        ? {
+            operationId,
+            kind: "swap-lock",
+            state: "completed",
+            mintUrl: "https://mint.example",
+            inputs: originalInputs,
+            outputs: {},
+            metadata: {},
+            resultProofs: {
+              send: [proof(50, "buyer-locked-50", "base-keyset")],
+              keep: [proof(14, "buyer-change-14", "base-keyset")],
+            },
+            lastError: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }
+        : null,
+    );
+    mockGetBaseProofs.mockResolvedValue([
+      proof(32, "depleted-change-32", "base-keyset"),
+      proof(4, "depleted-change-4", "base-keyset"),
+    ]);
+    usePendingTradesStore.getState().add({
+      orderId: "order-buyer-recover",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+      }) => void;
+      onSwapMessageReceived: (msg: {
+        tradeId: string;
+        messageType: string;
+        ciphertext: string;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-buyer-recover",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-YES",
+        outcomeFaceAmountSats: 100,
+        quotePaymentSats: 50,
+      });
+    });
+    await act(async () => {
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-recover",
+        messageType: "adaptor-point",
+        ciphertext: "cipher-adaptor",
+      });
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-recover",
+        messageType: "locked-proofs-seller",
+        ciphertext: "cipher-seller",
+      });
+    });
+
+    await waitFor(() =>
+      expect(mockSendSwapMessage).toHaveBeenCalledWith(
+        "trade-buyer-recover",
+        "locked-proofs-buyer",
+        "cipher-buyer",
+      ),
+    );
+    expect(mockGetBaseProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).toHaveBeenCalledWith(
+      expect.objectContaining({ tradeId: "trade-buyer-recover" }),
+      "cipher-adaptor",
+      "cipher-seller",
+      originalInputs,
+      50,
+      expect.objectContaining({
+        operationId: "trade-buyer-recover/browser/buyer-lock",
+      }),
+    );
+    const swap =
+      useActiveSwapsStore.getState().byTradeId["trade-buyer-recover"];
+    expect(swap.messages.lockedProofsBuyer).toBe("cipher-buyer");
+    expect(swap.buyerState?.lockedProofsCipher).toBe("cipher-buyer");
+  });
+
   it("splits oversized reserved pre-flight proofs before sending a mint seller opening", async () => {
     const reservationId = `order-preflight:${"02" + "22".repeat(32)}`;
     mockGetReservedProofs.mockResolvedValue([
       {
-        ...proof(136, "reserved-lock-no-136"),
+        ...proof(136, "reserved-lock-no-136", "keyset-NO"),
         mintUrl: "https://mint.example",
         reservedBy: reservationId,
         conditionId: "cond",
@@ -376,7 +696,7 @@ describe("useTradeSettlement", () => {
         marketId: "cond-NO",
       },
       {
-        ...proof(136, "reserved-keep-yes-136"),
+        ...proof(136, "reserved-keep-yes-136", "keyset-YES"),
         mintUrl: "https://mint.example",
         reservedBy: reservationId,
         conditionId: "cond",
@@ -432,8 +752,20 @@ describe("useTradeSettlement", () => {
         quotePaymentSats: 50,
       });
     });
-
-    await waitFor(() => expect(mockSellerLockOutcomeProofs).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(1),
+    );
+    expect(mockSplitProofsForExactSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountSats: 100,
+        operationId:
+          "trade-preflight-overpay/browser/seller-preflight-keep-exact-v2",
+        preserveSourceKeyset: true,
+        sourceProofs: [
+          expect.objectContaining({ secret: "reserved-keep-yes-136" }),
+        ],
+      }),
+    );
     expect(mockSellerLockOutcomeProofs).toHaveBeenCalledWith(
       expect.objectContaining({ tradeId: "trade-preflight-overpay" }),
       [expect.objectContaining({ secret: "reserved-lock-no-136" })],
@@ -442,29 +774,43 @@ describe("useTradeSettlement", () => {
         operationId: "trade-preflight-overpay/browser/seller-preflight-lock",
       }),
     );
-    await waitFor(() => expect(mockSplitProofsForExactSend).toHaveBeenCalledTimes(1));
-    expect(mockSplitProofsForExactSend).toHaveBeenCalledWith(
-      expect.objectContaining({
-        amountSats: 100,
-        operationId:
-          "trade-preflight-overpay/browser/seller-preflight-keep-exact-v2/YES",
-        preserveSourceKeyset: true,
-        sourceProofs: [expect.objectContaining({ secret: "reserved-keep-yes-136" })],
-      }),
-    );
     expect(mockSellerPreparePrelockedSwap).toHaveBeenCalledWith(
       expect.objectContaining({ tradeId: "trade-preflight-overpay" }),
       [expect.objectContaining({ secret: "lock-locked-100" })],
     );
-    expect(mockRemoveProofs).toHaveBeenCalledWith(["reserved-lock-no-136"]);
-    expect(mockRemoveProofs).toHaveBeenCalledWith(["reserved-keep-yes-136"]);
-    expect(mockReserveProofs).toHaveBeenCalledWith(
-      ["lock-change-36"],
-      reservationId,
+    expect(mockReplaceProofs).toHaveBeenCalledWith(
+      ["reserved-lock-no-136"],
+      [
+        expect.objectContaining({
+          secret: "lock-change-36",
+          id: "keyset-NO",
+          conditionId: "cond",
+          outcomeCollection: "NO",
+          marketId: "cond-NO",
+          reservedBy: reservationId,
+        }),
+      ],
     );
-    expect(mockReserveProofs).toHaveBeenCalledWith(
-      ["keep-change-36"],
-      reservationId,
+    expect(mockReplaceProofs).toHaveBeenCalledWith(
+      ["reserved-keep-yes-136"],
+      [
+        expect.objectContaining({
+          secret: "keep-exact-100",
+          id: "keyset-YES",
+          conditionId: "cond",
+          outcomeCollection: "YES",
+          marketId: "cond-YES",
+          reservedBy: undefined,
+        }),
+        expect.objectContaining({
+          secret: "keep-change-36",
+          id: "keyset-YES",
+          conditionId: "cond",
+          outcomeCollection: "YES",
+          marketId: "cond-YES",
+          reservedBy: reservationId,
+        }),
+      ],
     );
     await waitFor(() =>
       expect(mockSendSwapMessage).toHaveBeenCalledWith(
@@ -522,6 +868,25 @@ describe("useTradeSettlement", () => {
       "locked-B",
       "locked-C",
     ]);
+    expect(mockReplaceProofs).toHaveBeenCalledWith(
+      ["spent-B", "spent-C"],
+      [
+        expect.objectContaining({
+          secret: "locked-B",
+          conditionId: "condition-1",
+          outcomeCollection: "B",
+          marketId: "condition-1-B",
+          reservedBy: "trade-partial-multi",
+        }),
+        expect.objectContaining({
+          secret: "locked-C",
+          conditionId: "condition-1",
+          outcomeCollection: "C",
+          marketId: "condition-1-C",
+          reservedBy: "trade-partial-multi",
+        }),
+      ],
+    );
   });
 
   it("ignores duplicate TradeCreated events after role assignment", async () => {
@@ -636,11 +1001,24 @@ describe("useTradeSettlement", () => {
   });
 });
 
-function proof(amount: number, secret: string) {
+function proof(amount: number, secret: string, id = `keyset-${amount}`) {
   return {
-    id: `keyset-${amount}`,
+    id,
     amount,
     secret,
     C: `c-${secret}`,
+  };
+}
+
+function keyset(id: string, conditionId: string, outcomeCollection: string) {
+  return {
+    id,
+    unit: "sat",
+    active: true,
+    input_fee_ppk: 0,
+    keys: { "1": "02" + "11".repeat(32) },
+    condition_id: conditionId,
+    outcome_collection: outcomeCollection,
+    outcome_collection_id: outcomeCollection,
   };
 }

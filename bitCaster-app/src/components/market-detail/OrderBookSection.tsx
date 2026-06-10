@@ -1,13 +1,18 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { OrderBook } from '@/types/market-detail'
-import { formatBtc } from '@/lib/format'
 import { mapSnapshotToOrderBook } from '@/lib/markets'
 import {
   joinMarket,
   leaveMarket,
   onOrderBookUpdated,
 } from '@/lib/marketHub'
+import {
+  formatMarketSubunits,
+  formatPricePercent,
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from '@bitcaster/client-sdk/marketUnits'
 
 interface OrderBookSectionProps {
   orderBook: OrderBook
@@ -15,6 +20,8 @@ interface OrderBookSectionProps {
   outcomeOrderBooks?: Record<string, OrderBook>
   onOutcomeChange?: (outcomeId: string) => void
   outcomes?: Array<{ id: string; label: string }>
+  baseAsset?: string | null
+  divisibility?: number | null
   /**
    * Fully-qualified per-outcome market ID (`{conditionId}-{outcomeName}`).
    * When present, the component subscribes to live `OrderBookUpdated`
@@ -33,9 +40,13 @@ export function OrderBookSection({
   outcomeOrderBooks,
   onOutcomeChange,
   outcomes,
+  baseAsset: baseAssetInput,
+  divisibility: divisibilityInput,
   liveMarketId,
 }: OrderBookSectionProps) {
   const { t } = useTranslation()
+  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const divisibility = normalizeMarketDivisibility(divisibilityInput)
 
   // Local mirror of the prop — updated in place when a MarketHub push lands.
   // Falls back to the initial `orderBook` prop until the first push arrives,
@@ -108,7 +119,7 @@ export function OrderBookSection({
       <div className="flex items-center justify-center gap-2 py-2 mb-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
         <span className="text-xs text-slate-500 dark:text-slate-400">{t('orderBook.spread')}</span>
         <span className="text-sm font-mono font-medium text-slate-700 dark:text-slate-300">
-          {activeOrderBook.spread.toFixed(1)}%
+          {formatPricePercent(activeOrderBook.spread, divisibility)}
         </span>
       </div>
 
@@ -174,10 +185,10 @@ export function OrderBookSection({
                   className="flex items-center justify-between text-xs"
                 >
                   <span className="font-mono text-emerald-600 dark:text-emerald-400">
-                    {bid.price}%
+                    {formatPricePercent(bid.price, divisibility)}
                   </span>
                   <span className="text-slate-500 dark:text-slate-400 font-mono">
-                    {formatBtc(bid.amount)}
+                    {formatMarketSubunits(bid.amount, baseAsset)}
                   </span>
                 </div>
               ))
@@ -203,10 +214,10 @@ export function OrderBookSection({
                   className="flex items-center justify-between text-xs"
                 >
                   <span className="font-mono text-red-600 dark:text-red-400">
-                    {ask.price}%
+                    {formatPricePercent(ask.price, divisibility)}
                   </span>
                   <span className="text-slate-500 dark:text-slate-400 font-mono">
-                    {formatBtc(ask.amount)}
+                    {formatMarketSubunits(ask.amount, baseAsset)}
                   </span>
                 </div>
               ))

@@ -3,12 +3,16 @@ import {
   fetchCreatorMarkets,
   type CreatorMarketEntry,
 } from '@/lib/markets'
-import { deriveNostrKeyPair } from '@/lib/nip17'
+import {
+  normalizeMarketBaseAsset,
+  normalizeMarketDivisibility,
+} from '@bitcaster/client-sdk/marketUnits'
+import { resolveCreatorPubkey } from '@/lib/identityOps'
 import {
   useCreatorMarketsStore,
   type StoredCreatorMarket,
 } from '@/stores/creatorMarkets'
-import { useWalletStore } from '@/stores/wallet'
+import { useSettingsStore } from '@/stores/settings'
 import { assertNever } from '@/lib/enumDiscipline'
 import type { CreatedMarket, CreatedMarketStatus } from '@/types/portfolio'
 import type { DashboardStats } from '@/types/market-management'
@@ -63,6 +67,8 @@ function buildCreatedMarket(
     imageUrl: stored.thumbnailUrl ?? '',
     status: toCreatedMarketStatus(backend?.state),
     createdDate: stored.createdAt,
+    baseAsset: normalizeMarketBaseAsset(stored.baseAsset),
+    divisibility: normalizeMarketDivisibility(stored.divisibility),
     volume: backend?.totalVolumeSats ?? 0,
     creatorFeesEarned: 0,
     creatorFeePercent: stored.creatorFeePercent,
@@ -89,17 +95,20 @@ function emptyStats(): DashboardStats {
  * empty state instead of throwing.
  */
 export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
-  const mnemonic = useWalletStore((s) => s.mnemonic)
+  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode)
+  const nsecSecret = useSettingsStore((s) => s.nsecSecret)
+  const nostrProfilePubkey = useSettingsStore((s) => s.nostrProfile?.pubkey ?? null)
   const storedMarkets = useCreatorMarketsStore((s) => s.markets)
 
-  const pubkey = useMemo(() => {
-    if (!mnemonic) return null
-    try {
-      return deriveNostrKeyPair(mnemonic).publicKey
-    } catch {
-      return null
-    }
-  }, [mnemonic])
+  const pubkey = useMemo(
+    () =>
+      resolveCreatorPubkey({
+        nostrSignerMode,
+        nsecSecret,
+        nostrProfilePubkey,
+      }),
+    [nostrSignerMode, nsecSecret, nostrProfilePubkey],
+  )
 
   const [backendMarkets, setBackendMarkets] = useState<CreatorMarketEntry[]>([])
   // Initial state is `false` unconditionally. The effect below flips this to

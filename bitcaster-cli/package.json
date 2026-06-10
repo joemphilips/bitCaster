@@ -1,20 +1,33 @@
 {
-  "name": "bitcaster-cli",
-  "private": true,
+  "name": "@bitcaster-market/cli",
   "version": "0.1.0",
   "type": "module",
+  "description": "Command-line client for bitCaster markets",
   "engines": {
     "node": ">=22"
   },
   "bin": {
-    "bitcaster-cli": "./src/main.ts"
+    "bitcaster": "dist/main.js",
+    "bitcaster-cli": "dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
+    "prebuild": "npm run build --workspace @bitcaster-market/daemon",
+    "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node ../scripts/rewrite-dts-imports.mjs dist",
+    "prepack": "npm run build",
+    "pretest": "npm run build --workspace @bitcaster-market/daemon",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "bitcaster-daemon": "file:../bitcaster-daemon"
+    "@bitcaster-market/daemon": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

@@ -1,12 +1,20 @@
+import {
+  normalizeMarketDivisibility,
+  validatePriceNumerator,
+  validateWholeShareFaceAmount,
+} from './marketUnits.ts'
+
 export type SupportedOrderSide = 'Buy' | 'Sell'
 export type SupportedTimeInForce = 'FAK' | 'FOK' | 'GTC'
 
 export interface OrderIntentForValidation {
   marketId?: unknown
   outcomeId?: unknown
+  tokenSide?: unknown
   side?: unknown
   price?: unknown
   amountSats?: unknown
+  divisibility?: unknown
   timeInForce?: unknown
 }
 
@@ -28,6 +36,35 @@ export function validateOrderIntent(
   if (!isNonEmptyString(intent.outcomeId)) {
     return { valid: false, message: 'Order rejected: outcome id is required.' }
   }
+  if (intent.marketId.includes('|')) {
+    return {
+      valid: false,
+      message: 'Order rejected: market id must be a primitive outcome book.',
+    }
+  }
+  if (intent.outcomeId.includes('|')) {
+    return {
+      valid: false,
+      message: 'Order rejected: outcome id must be a primitive outcome name.',
+    }
+  }
+  const marketOutcomeSegment = primitiveOutcomeSegment(intent.marketId)
+  if (
+    !marketOutcomeSegment ||
+    marketOutcomeSegment !== intent.outcomeId
+  ) {
+    return {
+      valid: false,
+      message:
+        'Order rejected: outcome id must match the primitive outcome segment of market id.',
+    }
+  }
+  if (intent.tokenSide !== 'Outcome' && intent.tokenSide !== 'Complement') {
+    return {
+      valid: false,
+      message: 'Order rejected: tokenSide must be Outcome or Complement.',
+    }
+  }
   if (intent.side !== 'Buy' && intent.side !== 'Sell') {
     return {
       valid: false,
@@ -35,28 +72,25 @@ export function validateOrderIntent(
     }
   }
   const price = intent.price
-  if (
-    typeof price !== 'number' ||
-    !Number.isInteger(price) ||
-    price < 1 ||
-    price > 99
-  ) {
+  const divisibility =
+    typeof intent.divisibility === 'number'
+      ? normalizeMarketDivisibility(intent.divisibility)
+      : normalizeMarketDivisibility(undefined)
+  if (typeof price !== 'number' || !validatePriceNumerator(price, divisibility)) {
     return {
       valid: false,
-      message: 'Order rejected: price must be an integer from 1 to 99.',
+      message: `Order rejected: price must be an integer from 1 to ${divisibility - 1}.`,
     }
   }
   const amountSats = intent.amountSats
   if (
     typeof amountSats !== 'number' ||
-    !Number.isInteger(amountSats) ||
-    amountSats <= 0 ||
-    amountSats % 100 !== 0
+    !validateWholeShareFaceAmount(amountSats, divisibility)
   ) {
     return {
       valid: false,
       message:
-        'Order rejected: amountSats must be a positive integer in 100 sat increments.',
+        `Order rejected: amountSats must be a positive integer in ${divisibility} sub-unit increments.`,
     }
   }
   if (
@@ -79,4 +113,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function primitiveOutcomeSegment(marketId: string): string | null {
+  const index = marketId.lastIndexOf('-')
+  if (index <= 0 || index >= marketId.length - 1) return null
+  return marketId.slice(index + 1)
 }

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using BitCaster.InMemoryMatchingEngine.Endpoints;
 using BitCaster.MatchingEngine.Contracts;
 
 namespace BitCaster.InMemoryMatchingEngine;
@@ -34,6 +35,7 @@ public class InMemoryOrderBookManager
     private readonly ConcurrentDictionary<string, OrderBook> _books = new();
     private readonly ConcurrentDictionary<Guid, string> _orderMarketIndex = new();
     private readonly object _matchingGate = new();
+    private sealed record MarketUnit(BaseAsset BaseAsset, int Divisibility);
 
     public SubmitResult SubmitOrder(
         string marketId,
@@ -46,7 +48,13 @@ public class InMemoryOrderBookManager
         string? ephemeralPubkey)
     {
         var tif = timeInForce ?? TimeInForce.GTC;
-        var book = _books.GetOrAdd(marketId, _ => new OrderBook(marketId));
+        var unit = UnitForMarket(marketId);
+        if (priceValue < 1 || priceValue >= unit.Divisibility)
+            throw new ArgumentOutOfRangeException(nameof(priceValue), $"Price must be between 1 and {unit.Divisibility - 1}.");
+        if (amountSats <= 0 || amountSats % unit.Divisibility != 0)
+            throw new ArgumentException($"AmountSats must be a positive whole-share amount divisible by {unit.Divisibility}.", nameof(amountSats));
+
+        var book = _books.GetOrAdd(marketId, _ => new OrderBook(marketId, unit.Divisibility));
 
         var orderId = Guid.NewGuid();
         var incoming = new RestingOrder(
@@ -131,14 +139,66 @@ public class InMemoryOrderBookManager
 
     public OrderBookSnapshot GetSnapshot(string marketId)
     {
+        var outcomeId = MarketParts.TryParse(marketId)?.OutcomeSetId ?? marketId;
+        var directSnapshot = SnapshotForInternalBook(marketId, outcomeId);
+        var complementAsks = ComplementAskLevels(marketId);
+        if (complementAsks.Count == 0)
+            return directSnapshot;
+
+        var asks = MergeLevels(directSnapshot.Asks.Concat(complementAsks), descending: false);
+        int? spread = directSnapshot.Bids.Count > 0 && asks.Count > 0
+            ? asks[0].Price - directSnapshot.Bids[0].Price
+            : null;
+        return new OrderBookSnapshot(asks, directSnapshot.Bids, marketId, spread);
+    }
+
+    private OrderBookSnapshot SnapshotForInternalBook(string marketId, string outcomeId)
+    {
         if (!_books.TryGetValue(marketId, out var book))
             return new OrderBookSnapshot([], [], marketId, null);
 
-        var parts = marketId.Split('-', 2);
-        var outcomeId = parts.Length > 1 ? parts[1] : marketId;
-
         lock (book)
             return book.SnapshotForOutcome(marketId, outcomeId);
+    }
+
+    private List<LevelDto> ComplementAskLevels(string publicMarketId)
+    {
+        var publicParts = MarketParts.TryParse(publicMarketId);
+        if (publicParts is null) return [];
+
+        var complementBook = _books
+            .Where(entry =>
+            {
+                var parts = MarketParts.TryParse(entry.Key);
+                return parts is not null
+                       && parts.ConditionId == publicParts.ConditionId
+                       && !string.Equals(parts.OutcomeSetId, publicParts.OutcomeSetId, StringComparison.Ordinal)
+                       && OutcomeSetComplement.AreComplements(parts.OutcomeSetId, publicParts.OutcomeSetId);
+            })
+            .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+            .Select(entry => (entry.Key, entry.Value))
+            .FirstOrDefault();
+
+        if (complementBook.Value is null) return [];
+
+        var complementOutcomeId = MarketParts.TryParse(complementBook.Key)?.OutcomeSetId;
+        if (string.IsNullOrWhiteSpace(complementOutcomeId)) return [];
+
+        lock (complementBook.Value)
+        {
+            return complementBook.Value.BuyDepthForOutcome(complementOutcomeId)
+                .Select(level => new LevelDto(level.Amount, complementBook.Value.PriceDenominator - level.Price))
+                .ToList();
+        }
+    }
+
+    private static List<LevelDto> MergeLevels(IEnumerable<LevelDto> levels, bool descending)
+    {
+        var grouped = levels
+            .GroupBy(level => level.Price)
+            .Select(group => new LevelDto(group.Sum(level => level.Amount), group.Key));
+        return (descending ? grouped.OrderByDescending(level => level.Price) : grouped.OrderBy(level => level.Price))
+            .ToList();
     }
 
     /// <summary>
@@ -160,7 +220,7 @@ public class InMemoryOrderBookManager
 
             incoming.RemainingSats -= fillAmount;
             maker.RemainingSats -= fillAmount;
-            var fill = BuildFill(incoming, maker, fillAmount);
+            var fill = BuildFill(book.MarketId, incoming, maker, fillAmount);
             fills.Add(fill);
             book.RecordFill(incoming.Id, maker.Id, fill);
         }
@@ -227,6 +287,7 @@ public class InMemoryOrderBookManager
                         maker,
                         fillAmount,
                         marketId,
+                        UnitForMarket(marketId),
                         sellerKeepOutcomeSetId: candidate.OutcomeSetId,
                         sellerLockOutcomeSetId: parsed.OutcomeSetId);
                     fills.Add(fill);
@@ -252,20 +313,33 @@ public class InMemoryOrderBookManager
             .Select(entry => (entry.Parts!.OutcomeSetId, entry.Value));
     }
 
-    private static Fill BuildFill(RestingOrder taker, RestingOrder maker, long amount)
+    private static Fill BuildFill(string marketId, RestingOrder taker, RestingOrder maker, long amount)
     {
         var tradeId = Guid.NewGuid();
-        return new Fill(
+        var unit = UnitForMarket(marketId);
+        var quotePaymentSubunits = QuotePaymentSubunits(amount, maker.Price, unit.Divisibility);
+        var fill = new Fill(
             amountSats: amount,
+            baseAsset: unit.BaseAsset,
+            divisibility: unit.Divisibility,
             executionPrice: maker.Price,
             filledAt: DateTimeOffset.UtcNow,
             id: Guid.NewGuid(),
             makerEphemeralPubkey: maker.EphemeralPubkey!,
             makerOrderId: maker.Id,
             path: MatchPath.Complementary,
+            quotePaymentSubunits: quotePaymentSubunits,
             status: FillStatus.Filled,
             takerOrderId: taker.Id,
             tradeId: tradeId);
+        fill.AdditionalProperties["settlementMarketId"] = marketId;
+        fill.AdditionalProperties["settlementKind"] = "DirectSwap";
+        fill.AdditionalProperties["outcomeFaceAmountSats"] = amount;
+        fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSubunits;
+        fill.AdditionalProperties["baseAsset"] = BaseAssetWireValue(unit.BaseAsset);
+        fill.AdditionalProperties["divisibility"] = unit.Divisibility;
+        fill.AdditionalProperties["quotePaymentSubunits"] = quotePaymentSubunits;
+        return fill;
     }
 
     private static Fill BuildMintFill(
@@ -273,30 +347,61 @@ public class InMemoryOrderBookManager
         RestingOrder maker,
         long amount,
         string settlementMarketId,
+        MarketUnit unit,
         string sellerKeepOutcomeSetId,
         string sellerLockOutcomeSetId)
     {
         var tradeId = Guid.NewGuid();
-        var quotePaymentSats = amount * taker.Price / 100;
+        var quotePaymentSubunits = QuotePaymentSubunits(amount, taker.Price, unit.Divisibility);
         var fill = new Fill(
             amountSats: amount,
+            baseAsset: unit.BaseAsset,
+            divisibility: unit.Divisibility,
             executionPrice: taker.Price,
             filledAt: DateTimeOffset.UtcNow,
             id: Guid.NewGuid(),
             makerEphemeralPubkey: maker.EphemeralPubkey!,
             makerOrderId: maker.Id,
             path: MatchPath.Mint,
+            quotePaymentSubunits: quotePaymentSubunits,
             status: FillStatus.Filled,
             takerOrderId: taker.Id,
             tradeId: tradeId);
         fill.AdditionalProperties["settlementMarketId"] = settlementMarketId;
         fill.AdditionalProperties["settlementKind"] = "Mint";
         fill.AdditionalProperties["outcomeFaceAmountSats"] = amount;
-        fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSats;
+        fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSubunits;
+        fill.AdditionalProperties["baseAsset"] = BaseAssetWireValue(unit.BaseAsset);
+        fill.AdditionalProperties["divisibility"] = unit.Divisibility;
+        fill.AdditionalProperties["quotePaymentSubunits"] = quotePaymentSubunits;
         fill.AdditionalProperties["sellerKeepOutcomeSetId"] = sellerKeepOutcomeSetId;
         fill.AdditionalProperties["sellerLockOutcomeSetId"] = sellerLockOutcomeSetId;
         return fill;
     }
+
+    private static MarketUnit UnitForMarket(string marketId)
+    {
+        var conditionId = MarketParts.TryParse(marketId)?.ConditionId;
+        var market = conditionId is null ? null : MarketEndpoints.TryGetMarket(conditionId);
+        return new MarketUnit(market?.BaseAsset ?? BaseAsset.Sat, market?.Divisibility is > 1 ? market.Divisibility : 100);
+    }
+
+    private static long QuotePaymentSubunits(long faceAmountSubunits, int priceNumerator, int divisibility)
+    {
+        checked
+        {
+            return (faceAmountSubunits / divisibility) * priceNumerator;
+        }
+    }
+
+    private static string BaseAssetWireValue(BaseAsset baseAsset) =>
+        baseAsset switch
+        {
+            BaseAsset.Sat => "sat",
+            BaseAsset.Usd => "usd",
+            BaseAsset.Jpy => "jpy",
+            _ => "sat"
+        };
 
     private static string DeriveStatus(long requested, long remaining, TimeInForce tif, bool anyFills)
     {
@@ -315,9 +420,14 @@ internal sealed class OrderBook
 {
     private const int RetainedOrderIndexLimit = 1000;
 
-    public OrderBook(string marketId) => MarketId = marketId;
+    public OrderBook(string marketId, int priceDenominator = 100)
+    {
+        MarketId = marketId;
+        PriceDenominator = priceDenominator;
+    }
 
     public string MarketId { get; }
+    public int PriceDenominator { get; }
 
     private readonly List<RestingOrder> _resting = [];
     private readonly Dictionary<Guid, CompletedOrder> _completed = [];
@@ -380,7 +490,7 @@ internal sealed class OrderBook
                 o.Side == OrderSide.Buy &&
                 o.OutcomeId == outcomeSetId &&
                 o.RemainingSats > 0 &&
-                o.Price + incoming.Price >= 100)
+                o.Price + incoming.Price >= PriceDenominator)
             .OrderByDescending(o => o.Price)
             .ThenBy(o => o.PlacedAt);
     }
@@ -443,6 +553,11 @@ internal sealed class OrderBook
         int? spread = bids.Count > 0 && asks.Count > 0 ? asks[0].Price - bids[0].Price : null;
         return new OrderBookSnapshot(asks, bids, marketId, spread);
     }
+
+    public List<LevelDto> BuyDepthForOutcome(string outcomeId) =>
+        AggregateLevels(
+            _resting.Where(o => o.OutcomeId == outcomeId && o.Side == OrderSide.Buy),
+            descending: true);
 
     private static List<LevelDto> AggregateLevels(IEnumerable<RestingOrder> orders, bool descending)
     {
@@ -519,7 +634,7 @@ internal sealed record MarketParts(string ConditionId, string OutcomeSetId)
 {
     public static MarketParts? TryParse(string marketId)
     {
-        var index = marketId.IndexOf('-');
+        var index = marketId.LastIndexOf('-');
         if (index <= 0 || index == marketId.Length - 1) return null;
         return new MarketParts(marketId[..index], marketId[(index + 1)..]);
     }

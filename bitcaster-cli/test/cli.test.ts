@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
-import { ensureRpcToken } from 'bitcaster-daemon/rpcAuth'
+import { ensureRpcToken } from '@bitcaster-market/daemon/rpcAuth'
 
 const execFileAsync = promisify(execFile)
 
@@ -124,6 +124,12 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'recover',
     ])
     await runCli(daemonUrl, [
+      'consolidate',
+      'cond-YES',
+      '--type',
+      't2',
+    ])
+    await runCli(daemonUrl, [
       'order',
       'submit',
       'cond-YES',
@@ -143,6 +149,18 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       '200',
       'GTC',
       '--no-preflight-split',
+    ])
+    await runCli(daemonUrl, [
+      'order',
+      'submit',
+      'cond-A',
+      'A',
+      'Buy',
+      '60',
+      '100',
+      'FAK',
+      '--token-side',
+      'Complement',
     ])
     await runCli(daemonUrl, ['order', 'status', 'cond-YES', 'order-1'])
     await runCli(daemonUrl, [
@@ -209,10 +227,15 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       },
       { method: 'wallet.recover' },
       {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: 'cond-YES', type: 't2' },
+      },
+      {
         method: 'order.submit',
         params: {
           marketId: 'cond-YES',
           outcomeId: 'YES',
+          tokenSide: 'Outcome',
           side: 'Buy',
           price: 42,
           amountSats: 100,
@@ -225,11 +248,25 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
         params: {
           marketId: 'cond-NO',
           outcomeId: 'NO',
+          tokenSide: 'Outcome',
           side: 'Buy',
           price: 55,
           amountSats: 200,
           timeInForce: 'GTC',
           preflightSplit: false,
+        },
+      },
+      {
+        method: 'order.submit',
+        params: {
+          marketId: 'cond-A',
+          outcomeId: 'A',
+          tokenSide: 'Complement',
+          side: 'Buy',
+          price: 60,
+          amountSats: 100,
+          timeInForce: 'FAK',
+          preflightSplit: true,
         },
       },
       {
@@ -299,6 +336,157 @@ test('bitcaster-cli exits non-zero when daemon returns ok false', async () => {
     )
   } finally {
     server.close()
+  }
+})
+
+test('bitcaster-cli consolidate treats no-gain as a warning exit', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-consolidate-nogain-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const server = createServer(async (_req, res) => {
+    writeJson(res, 200, {
+      ok: false,
+      code: 'ctf-consolidation-no-gain',
+      error: 'market cond consolidation has no net collateral gain',
+    })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    const result = await runCliWithOutput(`http://127.0.0.1:${address.port}`, [
+      'consolidate',
+      'cond-A',
+      '--type',
+      't2',
+    ])
+    assert.equal(result.stdout, '')
+    assert.match(result.stderr, /Warning: skipped cond-A: market cond consolidation has no net collateral gain/)
+    assert.doesNotMatch(result.stderr, /secret|witness|mnemonic|nwc/i)
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli consolidate exits non-zero for a non-pending market', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-consolidate-closed-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const server = createServer(async (_req, res) => {
+    writeJson(res, 200, {
+      ok: false,
+      code: 'market-not-pending',
+      error: 'market closed is not pending',
+    })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await assert.rejects(
+      () => runCliWithOutput(`http://127.0.0.1:${address.port}`, [
+        'consolidate',
+        'closed-A',
+      ]),
+      (err: unknown) => {
+        assert.equal((err as { code?: unknown }).code, 1)
+        assert.match((err as { stderr?: string }).stderr ?? '', /market closed is not pending/)
+        assert.doesNotMatch((err as { stderr?: string }).stderr ?? '', /secret|witness|mnemonic|nwc/i)
+        return true
+      },
+    )
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli consolidate --all sweeps wallet markets and warns on non-pending', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-consolidate-all-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const server = createServer(async (req, res) => {
+    const command = JSON.parse(await readBody(req)) as {
+      method: string
+      params?: { marketId?: string }
+    }
+    received.push(command)
+    if (command.method === 'wallet.balance') {
+      writeJson(res, 200, {
+        ok: true,
+        result: {
+          outcomePositions: [
+            { conditionId: 'cond1', outcomeSetId: 'A' },
+            { conditionId: 'cond2', outcomeSetId: 'B' },
+            { conditionId: 'closed', outcomeSetId: 'C' },
+          ],
+        },
+      })
+      return
+    }
+    if (command.params?.marketId === 'closed-C') {
+      writeJson(res, 200, {
+        ok: false,
+        code: 'market-not-pending',
+        error: 'market closed is not pending',
+      })
+      return
+    }
+    writeJson(res, 200, {
+      ok: true,
+      result: {
+        marketId: command.params?.marketId,
+        status: 'consolidated',
+        convertFeeSats: 1,
+        collateralReturnedSats: 2,
+        spentInputs: [],
+        outputs: [],
+      },
+    })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    const result = await runCliWithOutput(`http://127.0.0.1:${address.port}`, [
+      'consolidate',
+      '--all',
+      '--type',
+      't3',
+    ])
+    assert.match(result.stdout, /cond1-A/)
+    assert.match(result.stdout, /cond2-B/)
+    assert.match(result.stderr, /Warning: skipped closed-C: market closed is not pending/)
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /secret|witness|mnemonic|nwc/i)
+    assert.deepEqual(received, [
+      { method: 'wallet.balance' },
+      { method: 'wallet.consolidateMarket', params: { marketId: 'closed-C', type: 't3' } },
+      { method: 'wallet.consolidateMarket', params: { marketId: 'cond1-A', type: 't3' } },
+      { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-B', type: 't3' } },
+    ])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
   }
 })
 

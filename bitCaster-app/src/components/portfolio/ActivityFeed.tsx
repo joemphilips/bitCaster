@@ -1,6 +1,9 @@
 import { useTranslation } from 'react-i18next'
 import type { ActivityItem, ActivityType } from '@/types/portfolio'
-import { formatBtc } from '@/lib/format'
+import {
+  formatMarketSubunits,
+  normalizeMarketBaseAsset,
+} from '@bitcaster/client-sdk/marketUnits'
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -92,7 +95,7 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
             <div className="text-right shrink-0">
               <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
                 {item.type === 'deposit' || item.type === 'payout_claimed' || item.type === 'creator_fee_claimed'
-                  ? '+' : '-'}{formatBtc(item.amountSats)}
+                  ? '+' : '-'}{formatMarketSubunits(item.amountSats, normalizeMarketBaseAsset(item.baseAsset))}
               </div>
               <div className="flex items-center justify-end gap-1 mt-0.5">
                 <span className="text-xs text-slate-400 dark:text-slate-500">{date}</span>

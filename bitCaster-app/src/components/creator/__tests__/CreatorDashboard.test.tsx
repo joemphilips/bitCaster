@@ -8,14 +8,16 @@ import type { DashboardStats } from '@/types/market-management'
 const {
   mockUseCreatorDashboardState,
   mockNavigate,
-  mockSignEnumAttestation,
   mockBuildOracleAttestationEvent,
+  mockSignEnumAttestation,
+  mockGetOracleAnnouncementEventId,
   mockSubmitOracleAttestation,
 } = vi.hoisted(() => ({
   mockUseCreatorDashboardState: vi.fn(),
   mockNavigate: vi.fn(),
-  mockSignEnumAttestation: vi.fn(),
   mockBuildOracleAttestationEvent: vi.fn(),
+  mockSignEnumAttestation: vi.fn(),
+  mockGetOracleAnnouncementEventId: vi.fn(),
   mockSubmitOracleAttestation: vi.fn(),
 }))
 
@@ -33,6 +35,8 @@ vi.mock('react-router', async () => {
 // hex in a NIP-01 envelope.
 vi.mock('@/lib/kormir', () => ({
   signEnumAttestation: (...args: unknown[]) => mockSignEnumAttestation(...args),
+  getOracleAnnouncementEventId: (...args: unknown[]) =>
+    mockGetOracleAnnouncementEventId(...args),
 }))
 
 vi.mock('@/lib/oracleAttestation', () => ({
@@ -75,18 +79,19 @@ function renderDashboard() {
 beforeEach(() => {
   mockNavigate.mockReset()
   mockUseCreatorDashboardState.mockReset()
-  mockSignEnumAttestation.mockReset()
-  // kormir returns the rust-dlc oracle_attestation as a hex string.
-  mockSignEnumAttestation.mockResolvedValue('deadbeef')
   mockBuildOracleAttestationEvent.mockReset()
   mockBuildOracleAttestationEvent.mockReturnValue({
     id: 'event-id',
     pubkey: 'a'.repeat(64),
     createdAt: 1,
     kind: 89,
-    content: 'YXR0ZXN0YXRpb24=',
+    content: 'attestation-base64',
     sig: 'b'.repeat(128),
   })
+  mockSignEnumAttestation.mockReset()
+  mockSignEnumAttestation.mockResolvedValue('attestation-hex')
+  mockGetOracleAnnouncementEventId.mockReset()
+  mockGetOracleAnnouncementEventId.mockResolvedValue('c'.repeat(64))
   mockSubmitOracleAttestation.mockReset()
   mockSubmitOracleAttestation.mockResolvedValue({ result: 'Closed' })
   vi.stubGlobal('confirm', vi.fn(() => true))
@@ -232,6 +237,7 @@ describe('CreatorDashboard', () => {
         oracle: {
           type: 'self',
           eventId: 'will_btc_hit_150k_abcd',
+          announcementEventId: 'c'.repeat(64),
           outcomes: ['Yes', 'No'],
           announcementHex: 'aabbccdd',
         },
@@ -252,6 +258,7 @@ describe('CreatorDashboard', () => {
         oracle: {
           type: 'self',
           eventId: 'will_btc_hit_150k_abcd',
+          announcementEventId: 'c'.repeat(64),
           outcomes: ['Yes', 'No'],
         },
       }],
@@ -285,18 +292,19 @@ describe('CreatorDashboard', () => {
     // the creator's nsec.
     expect(mockBuildOracleAttestationEvent).toHaveBeenCalledWith(
       'nsec1test',
-      'deadbeef',
+      'attestation-hex',
+      'c'.repeat(64),
     )
     expect(mockSubmitOracleAttestation).toHaveBeenCalledWith('a'.repeat(64), {
       id: 'event-id',
       pubkey: 'a'.repeat(64),
       createdAt: 1,
       kind: 89,
-      content: 'YXR0ZXN0YXRpb24=',
+      content: 'attestation-base64',
       sig: 'b'.repeat(128),
     })
     expect(useCreatorMarketsStore.getState().markets[0].oracle).toMatchObject({
-      attestationHex: 'YXR0ZXN0YXRpb24=',
+      attestationHex: 'attestation-hex',
       attestedOutcome: 'Yes',
     })
     expect(screen.getByText(/published oracle attestation/i)).toBeInTheDocument()

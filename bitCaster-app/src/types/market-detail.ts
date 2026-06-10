@@ -138,6 +138,8 @@ interface BaseMarketDetail {
   closingDate: string | null
   createdDate: string
   activeSince: string
+  baseAsset?: 'sat' | 'usd' | 'jpy'
+  divisibility?: number
   baseUnit: string // e.g. "sats", "USD"
   mint?: MarketMintInfo
   creator: MarketCreator
@@ -222,11 +224,12 @@ export type TradeSide = 'buy' | 'sell'
 export type OrderType = 'market' | 'limit'
 
 export interface LimitOrderPreview {
-  limitPrice: number        // probability price 1..99; also sats per display share
-  amount: number            // user-facing display shares (1 share = 100 face sats)
-  quoteSats: number         // display shares × price, the pre-fee quote
-  creatorFee: number        // sats
-  mintFee: number           // sats — read from the CTF keyset input_fee_ppk (0 in the first release)
+  limitPrice: number        // price numerator 1..divisibility-1
+  amount: number            // face amount in market subunits
+  sharesIfFilled?: number
+  quoteSats: number         // whole shares × price, the pre-fee quote
+  creatorFee: number
+  mintFee: number           // read from the CTF keyset input_fee_ppk (0 in the first release)
   // Display-only spend estimate used for the balance check. NEVER sent as the
   // wire amountSats (which is `amount * 100`). Reactive:
   //   limitPrice * amount + creatorFee + mintFee

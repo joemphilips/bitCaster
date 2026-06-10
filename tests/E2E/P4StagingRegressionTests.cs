@@ -54,7 +54,7 @@ public class P4StagingRegressionTests : IAsyncLifetime
     {
         var mnemonic = TestMnemonics.Get();
         var nutsJson = withCtfNuts
-            ? "{ '4': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, '5': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, 'CTF': { supported: true } }"
+            ? TestHelpers.CtfNutsJson
             : "{ '4': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, '5': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] } }";
 
         await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
@@ -117,12 +117,13 @@ public class P4StagingRegressionTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        // The wizard renders a "Get Started" header / step indicator. If the
-        // page is blank, none of these elements will appear.
+        // The creator route renders either the Nostr-key gate or the wizard
+        // itself, depending on persisted signer settings. If the page is
+        // blank, none of these valid first-screen elements will appear.
         var wizardContent = page.GetByRole(AriaRole.Heading, new()
         {
             NameRegex = new System.Text.RegularExpressions.Regex(
-                "Get Started|Oracle Announcement|Basic Information",
+                "You must register a nostr key to become an oracle|Get Started|Basic Information",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase),
         });
         try

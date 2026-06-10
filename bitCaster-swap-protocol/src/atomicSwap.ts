@@ -38,6 +38,7 @@ import {
   OutputData,
   Wallet as CashuWallet,
   hashToCurve,
+  splitAmount,
 } from "@cashu/cashu-ts";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import {
@@ -99,25 +100,6 @@ interface LockedProofResult {
   lockedProofs: Proof[];
   changeProofs: Proof[];
 }
-
-export interface PartialLockHeldFailure {
-  kind: "PartialLockHeld";
-  refundLocktime: number;
-  affectedKeysets: string[];
-  detail: string;
-}
-
-export interface PartialLockHeldDetails {
-  failure: PartialLockHeldFailure;
-  spentProofs: Proof[];
-  lockedProofs: Proof[];
-  changeProofs: Proof[];
-}
-
-export type PartialLockHeldError = Error & {
-  failure: PartialLockHeldFailure;
-  partialLock: PartialLockHeldDetails;
-};
 
 export interface StoredOutputData {
   blindedMessage: {
@@ -329,6 +311,7 @@ export async function sellerPrepareSwap(
     ctx,
     proofs,
     ctx.sellerLocktime,
+    undefined,
     options.operationId,
     options.proofOperationStore,
   );
@@ -421,7 +404,10 @@ export async function splitProofsForExactSend(params: {
     params.sourceProofs.some(hasLocalCtfProofMetadata);
   if (preserveSourceKeyset) {
     const mint = new CashuMint(params.mintUrl);
-    const keyset = await fetchMintKeys(mint, singleProofKeysetId(params.sourceProofs));
+    const keyset = await fetchMintKeys(
+      mint,
+      singleProofKeysetId(params.sourceProofs),
+    );
     const netInput =
       sumProofs(params.sourceProofs) -
       conditionalInputFee(params.sourceProofs.length, keyset);
@@ -565,11 +551,7 @@ export async function conditionalKeysetSwap(
         mintUrl,
         sourceProofs,
       );
-      return resumeConditionalKeysetSwap(
-        wallet,
-        existing,
-        proofOperationStore,
-      );
+      return resumeConditionalKeysetSwap(wallet, existing, proofOperationStore);
     }
     const preview = await prepare();
     await proofOperationStore.prepareProofOperation({
@@ -580,10 +562,7 @@ export async function conditionalKeysetSwap(
       outputs: serializeOutputDataArrayByLabel(preview.outputDataByLabel),
       metadata: { keysetId: preview.keysetId },
     });
-    const result = await completeConditionalKeysetSwapPreview(
-      wallet,
-      preview,
-    );
+    const result = await completeConditionalKeysetSwapPreview(wallet, preview);
     await proofOperationStore.markProofOperationCompleted(
       options.operationId,
       result,
@@ -598,10 +577,27 @@ async function completeConditionalKeysetSwapPreview(
   wallet: CashuWallet,
   preview: ConditionalSwapPreview,
 ): Promise<Record<string, Proof[]>> {
+  assertConditionalSwapOutputsPinned(preview);
   try {
     return normalizeProofGroups(await wallet.completeConditionalSwap(preview));
   } catch (error) {
     throw enrichConditionalSwapError(error, preview);
+  }
+}
+
+export function assertConditionalSwapOutputsPinned(
+  preview: ConditionalSwapPreview,
+): void {
+  for (const [label, outputs] of Object.entries(preview.outputDataByLabel)) {
+    const mismatched = outputs.find(
+      (output) => output.blindedMessage.id !== preview.keysetId,
+    );
+    if (mismatched) {
+      throw new Error(
+        `conditionalKeysetSwap output ${label} uses keyset ` +
+          `${mismatched.blindedMessage.id}; expected ${preview.keysetId}`,
+      );
+    }
   }
 }
 
@@ -644,7 +640,9 @@ export async function sellerLockOutcomeProofs(
   options: ProofOperationOptions = {},
 ): Promise<LockedProofResult> {
   if (!Number.isSafeInteger(amount) || amount <= 0) {
-    throw new Error("sellerLockOutcomeProofs: amount must be a positive integer");
+    throw new Error(
+      "sellerLockOutcomeProofs: amount must be a positive integer",
+    );
   }
   if (outcomeProofs.length === 0) {
     throw new Error("sellerLockOutcomeProofs requires outcome proofs to lock");
@@ -658,89 +656,57 @@ export async function sellerLockOutcomeProofs(
     sigFlag: "SIG_INPUTS",
   };
 
-  const lockedProofs: Proof[] = [];
-  const changeProofs: Proof[] = [];
-  const spentProofs: Proof[] = [];
-  const affectedKeysets: string[] = [];
-  const proofGroups = groupProofsByKeyset(outcomeProofs);
-  requireDurableOperationForMultiKeyset(
-    proofGroups.size,
-    options,
-    "sellerLockOutcomeProofs",
-  );
-  for (const [keysetId, proofs] of proofGroups) {
-    try {
-      const keyset = await fetchMintKeys(mint, keysetId);
-      const feeSats = conditionalInputFee(proofs.length, keyset);
-      const netInput = sumProofs(proofs) - feeSats;
-      if (netInput < amount) {
-        throw new Error(
-          `sellerLockOutcomeProofs: outcome proofs for keyset ${keysetId} net ${netInput} sats, need ${amount} to lock`,
-        );
-      }
-
-      const groups: ConditionalSwapOutputGroup[] = [
-        { label: "lock", kind: "p2pk", amount, p2pk },
-      ];
-      const changeAmount = netInput - amount;
-      if (changeAmount > 0) {
-        groups.push({ label: "change", kind: "random", amount: changeAmount });
-      }
-
-      const swapped = await conditionalKeysetSwap(
-        ctx.mintUrl,
-        proofs,
-        groups,
-        proofOperationOptionsForKeyset(options, keysetId, proofGroups.size),
-      );
-      lockedProofs.push(...(swapped.lock ?? []));
-      changeProofs.push(...(swapped.change ?? []));
-      spentProofs.push(...proofs);
-      affectedKeysets.push(keysetId);
-    } catch (error) {
-      if (lockedProofs.length === 0) throw error;
-      throw partialLockHeldError(error, {
-        refundLocktime: ctx.sellerLocktime,
-        affectedKeysets,
-        spentProofs,
-        lockedProofs,
-        changeProofs,
-      });
-    }
+  const keysetId = singleProofKeysetId(outcomeProofs);
+  const keyset = await fetchMintKeys(mint, keysetId);
+  const feeSats = conditionalInputFee(outcomeProofs.length, keyset);
+  const netInput = sumProofs(outcomeProofs) - feeSats;
+  const lockAmount = grossConditionalAmountForNetClaim(amount, keyset);
+  if (netInput < lockAmount) {
+    throw new Error(
+      `sellerLockOutcomeProofs: outcome proofs for keyset ${keysetId} net ${netInput} sats, need ${lockAmount} to lock`,
+    );
   }
-  return {
-    lockedProofs,
-    changeProofs,
-  };
-}
 
-function partialLockHeldError(
-  error: unknown,
-  partial: Omit<PartialLockHeldDetails, "failure"> & {
-    refundLocktime: number;
-    affectedKeysets: string[];
-  },
-): PartialLockHeldError {
-  const detail = error instanceof Error ? error.message : String(error);
-  const failure: PartialLockHeldFailure = {
-    kind: "PartialLockHeld",
-    refundLocktime: partial.refundLocktime,
-    affectedKeysets: partial.affectedKeysets,
-    detail,
+  const groups: ConditionalSwapOutputGroup[] = [
+    { label: "lock", kind: "p2pk", amount: lockAmount, p2pk },
+  ];
+  const changeAmount = netInput - lockAmount;
+  if (changeAmount > 0) {
+    groups.push({ label: "change", kind: "random", amount: changeAmount });
+  }
+
+  const swapped = await conditionalKeysetSwap(
+    ctx.mintUrl,
+    outcomeProofs,
+    groups,
+    options,
+  );
+  return {
+    lockedProofs: swapped.lock ?? [],
+    changeProofs: swapped.change ?? [],
   };
-  const out = new Error(
-    `sellerLockOutcomeProofs partially locked ${partial.affectedKeysets.length} keyset leg(s): ${detail}`,
-  ) as PartialLockHeldError;
-  if (error instanceof Error && error.stack) out.stack = error.stack;
-  out.failure = failure;
-  out.partialLock = { ...partial, failure };
-  return out;
 }
 
 /** Input fee in sats for a swap whose inputs all share one keyset. */
 function conditionalInputFee(proofCount: number, keyset: MintKeys): number {
   const feePpk = keyset.input_fee_ppk ?? 0;
   return Math.ceil((proofCount * feePpk) / 1000);
+}
+
+function grossConditionalAmountForNetClaim(
+  netAmount: number,
+  keyset: MintKeys,
+): number {
+  let grossAmount = netAmount;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const proofCount = splitAmount(Amount.from(grossAmount), keyset.keys).length;
+    const nextGrossAmount = netAmount + conditionalInputFee(proofCount, keyset);
+    if (nextGrossAmount === grossAmount) return grossAmount;
+    grossAmount = nextGrossAmount;
+  }
+  throw new Error(
+    `Unable to gross conditional claim amount ${netAmount} for keyset ${keyset.id}`,
+  );
 }
 
 interface P2PKLock {
@@ -818,10 +784,7 @@ export function assertProofsAtomicSwapLocked(
       );
     }
     const got = new Set(lock.pubkeys.map((k) => k.toLowerCase()));
-    if (
-      got.size !== expected.size ||
-      [...expected].some((k) => !got.has(k))
-    ) {
+    if (got.size !== expected.size || [...expected].some((k) => !got.has(k))) {
       throw new Error(
         "sellerPreparePrelockedSwap: proof is P2PK-locked to the wrong pubkey " +
           "set — expected the swap's ephemeral and counterparty keys",
@@ -905,6 +868,7 @@ export async function buyerPrepareSwap(
   aliceAdaptorPointCipher: string,
   aliceLockedProofsCipher: string,
   satProofs: Proof[],
+  amountSats: number,
   options: ProofOperationOptions = {},
 ): Promise<{
   lockedProofsCipher: string;
@@ -914,6 +878,10 @@ export async function buyerPrepareSwap(
   preSigsHex: string[];
   sellerPreSigsHex: string[];
 }> {
+  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
+    throw new Error("buyerPrepareSwap: amountSats must be a positive integer");
+  }
+
   // Decrypt Alice's messages
   const aptPlain = await decryptMsg(ctx, aliceAdaptorPointCipher);
   const lockedPlain = await decryptMsg(ctx, aliceLockedProofsCipher);
@@ -942,6 +910,7 @@ export async function buyerPrepareSwap(
     ctx,
     satProofs,
     ctx.buyerLocktime,
+    amountSats,
     options.operationId,
     options.proofOperationStore,
   );
@@ -1079,6 +1048,7 @@ async function lockProofsForSwap(
   ctx: SwapContext,
   sourceProofs: Proof[],
   locktime: number,
+  lockAmountSats: number | undefined,
   operationId?: string,
   proofOperationStore?: ProofOperationStore,
 ): Promise<LockedProofResult> {
@@ -1088,9 +1058,18 @@ async function lockProofsForSwap(
     sourceProofs,
   );
 
-  const amount = sumProofs(sourceProofs) - inputFeeSats;
-  if (amount <= 0)
+  const netInputSats = sumProofs(sourceProofs) - inputFeeSats;
+  if (netInputSats <= 0)
     throw new Error("Not enough proofs to cover Cashu swap fees");
+  const amount = lockAmountSats ?? netInputSats;
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    throw new Error("Atomic swap lock amount must be a positive integer");
+  }
+  if (amount > netInputSats) {
+    throw new Error(
+      `Atomic swap proofs net ${netInputSats} sats after input fees, need ${amount} to lock`,
+    );
+  }
 
   const outputConfig: OutputConfig = {
     send: {
@@ -1133,16 +1112,13 @@ async function claimConditionalProofsAtMint(
   options: ProofOperationOptions,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl);
-  const claimedProofs: Proof[] = [];
-  const proofGroups = groupProofsByKeyset(inputProofs);
-  requireDurableOperationForMultiKeyset(
-    proofGroups.size,
-    options,
-    "buyerClaimSwap",
-  );
-  for (const [keysetId, proofs] of proofGroups) {
+  const proofGroups = proofGroupsByKeyset(inputProofs);
+  const claimed: Proof[] = [];
+
+  for (const [index, [keysetId, proofs]] of proofGroups.entries()) {
     const keyset = await fetchMintKeys(mint, keysetId);
-    const netAmount = sumProofs(proofs) - conditionalInputFee(proofs.length, keyset);
+    const netAmount =
+      sumProofs(proofs) - conditionalInputFee(proofs.length, keyset);
     if (netAmount <= 0) {
       throw new Error(
         `buyerClaimSwap: conditional claim proofs for keyset ${keysetId} are exhausted by input fees`,
@@ -1152,11 +1128,19 @@ async function claimConditionalProofsAtMint(
       mintUrl,
       proofs,
       [{ label: "keep", kind: "random", amount: netAmount }],
-      proofOperationOptionsForKeyset(options, keysetId, proofGroups.size),
+      proofGroups.length === 1
+        ? options
+        : {
+            ...options,
+            operationId: options.operationId
+              ? `${options.operationId}:${index}:${keysetId}`
+              : undefined,
+          },
     );
-    claimedProofs.push(...(result.keep ?? []));
+    claimed.push(...(result.keep ?? []));
   }
-  return claimedProofs;
+
+  return claimed;
 }
 
 async function receiveProofsAtMint(
@@ -1350,10 +1334,11 @@ async function resumeProofOperation(
   }
   if (allStates(states, CheckStateEnum.UNSPENT)) {
     const result = await wallet.completeSwap(entryToSwapPreview(entry));
-    const final: Record<string, Proof[]> =
-      operationReturnsSendProofs(entry.kind)
-        ? { send: result.send, keep: result.keep }
-        : { keep: result.keep };
+    const final: Record<string, Proof[]> = operationReturnsSendProofs(
+      entry.kind,
+    )
+      ? { send: result.send, keep: result.keep }
+      : { keep: result.keep };
     const normalized = normalizeProofGroups(final);
     await proofOperationStore.markProofOperationCompleted(
       entry.operationId,
@@ -1404,14 +1389,11 @@ async function resumeConditionalKeysetSwap(
       typeof entry.metadata.keysetId === "string"
         ? entry.metadata.keysetId
         : singleProofKeysetId(entry.inputs);
-    const result = await completeConditionalKeysetSwapPreview(
-      wallet,
-      {
-        keysetId,
-        inputs: entry.inputs,
-        outputDataByLabel: deserializeOutputGroups(entry.outputs, OutputData),
-      },
-    );
+    const result = await completeConditionalKeysetSwapPreview(wallet, {
+      keysetId,
+      inputs: entry.inputs,
+      outputDataByLabel: deserializeOutputGroups(entry.outputs, OutputData),
+    });
     const final = normalizeProofGroups(result);
     await proofOperationStore.markProofOperationCompleted(
       entry.operationId,
@@ -1493,7 +1475,9 @@ function serializeOutputDataArray(
   }));
 }
 
-function toWireBlindedMessage(output: SerializedBlindedMessage): SerializedBlindedMessage {
+function toWireBlindedMessage(
+  output: SerializedBlindedMessage,
+): SerializedBlindedMessage {
   return {
     ...output,
     amount: amountToNumber(output.amount) as never,
@@ -1641,41 +1625,18 @@ function singleProofKeysetId(proofs: Proof[]): string {
   return [...ids][0];
 }
 
-function groupProofsByKeyset(proofs: Proof[]): Map<string, Proof[]> {
+function proofGroupsByKeyset(proofs: Proof[]): Array<[string, Proof[]]> {
   const groups = new Map<string, Proof[]>();
   for (const proof of proofs) {
     if (!proof.id) {
-      throw new Error("Atomic swap proof is missing its keyset id");
+      throw new Error("Atomic swap proof set contains proof without keyset");
     }
-    const group = groups.get(proof.id);
-    if (group) group.push(proof);
-    else groups.set(proof.id, [proof]);
+    groups.set(proof.id, [...(groups.get(proof.id) ?? []), proof]);
   }
-  return groups;
-}
-
-function proofOperationOptionsForKeyset(
-  options: ProofOperationOptions,
-  keysetId: string,
-  groupCount: number,
-): ProofOperationOptions {
-  if (!options.operationId || groupCount === 1) return options;
-  return {
-    ...options,
-    operationId: `${options.operationId}/keyset/${encodeURIComponent(keysetId)}`,
-  };
-}
-
-function requireDurableOperationForMultiKeyset(
-  groupCount: number,
-  options: ProofOperationOptions,
-  operationName: string,
-): void {
-  if (groupCount <= 1) return;
-  if (options.operationId && options.proofOperationStore) return;
-  throw new Error(
-    `${operationName}: multi-keyset conditional swaps require a proof operation store`,
-  );
+  if (groups.size === 0) {
+    throw new Error("Atomic swap proof set is empty");
+  }
+  return [...groups.entries()];
 }
 
 function stripLocalProofMetadata(proof: Proof): Proof {
@@ -1773,7 +1734,10 @@ function blindedMessageKey(output: SerializedBlindedMessage): string {
 }
 
 function sumProofs(proofs: Proof[]): number {
-  return proofs.reduce((total, proof) => total + amountToNumber(proof.amount), 0);
+  return proofs.reduce(
+    (total, proof) => total + amountToNumber(proof.amount),
+    0,
+  );
 }
 
 function amountToNumber(amount: unknown): number {
@@ -1816,7 +1780,9 @@ function normalizeProofArray(proofs: Proof[]): Proof[] {
   return proofs.map(normalizeProof);
 }
 
-function normalizeProofGroups(groups: Record<string, Proof[]>): Record<string, Proof[]> {
+function normalizeProofGroups(
+  groups: Record<string, Proof[]>,
+): Record<string, Proof[]> {
   return Object.fromEntries(
     Object.entries(groups).map(([label, proofs]) => [
       label,

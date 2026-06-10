@@ -38,6 +38,7 @@ describe('walletOps facade', () => {
   let setActiveMint: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }))
     addMint = vi.fn().mockResolvedValue(undefined)
     addMintWithoutActivating = vi.fn().mockResolvedValue(undefined)
     removeMint = vi.fn()
@@ -112,6 +113,45 @@ describe('walletOps facade', () => {
       mintUrl: 'https://unknown.mint',
       source: 'scan',
     })
+  })
+
+  it('stamps received conditional proofs from the mint keyset registry', async () => {
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: 'https://conditional.mint/',
+      proofs: [],
+    } as never)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          keysets: [{
+            id: 'kid',
+            condition_id: 'condition-1',
+            outcome_collection: 'B',
+            outcome_collection_id: 'B',
+          }],
+        }),
+      }),
+    )
+
+    const result = await ingressReceiveCashuToken('cashuB-conditional-token', 'paste')
+
+    expect(fetch).toHaveBeenCalledWith('https://conditional.mint/v1/conditional_keysets')
+    expect(result.proofs).toEqual([
+      expect.objectContaining({
+        secret: 's1',
+        conditionId: 'condition-1',
+        outcomeCollection: 'B',
+        marketId: 'condition-1-B',
+      }),
+      expect.objectContaining({
+        secret: 's2',
+        conditionId: 'condition-1',
+        outcomeCollection: 'B',
+        marketId: 'condition-1-B',
+      }),
+    ])
   })
 
   it('does not re-register known ingress mints', async () => {

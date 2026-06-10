@@ -29,6 +29,23 @@ describe("CreatedMarketRow", () => {
     expect(screen.getByText(/1\.5% fee/i)).toBeInTheDocument();
   });
 
+  it("formats created-market volume and fees with the market unit", () => {
+    render(
+      <CreatedMarketRow
+        market={fixture({
+          baseAsset: "usd",
+          volume: 2500,
+          creatorFeesEarned: 125,
+          status: "resolved",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Vol: $25.00")).toBeInTheDocument();
+    expect(screen.getByText("$1.25")).toBeInTheDocument();
+    expect(screen.queryByText(/sats/)).not.toBeInTheDocument();
+  });
+
   it("shows a working close-market control inline before the view button", async () => {
     const onPublishOracleAttestation = vi.fn();
     render(

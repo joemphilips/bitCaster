@@ -169,6 +169,7 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
     ...actual,
     CheckStateEnum: { SPENT: 'SPENT', UNSPENT: 'UNSPENT' },
     OutputData: MockOutputData,
+    splitAmount: vi.fn(() => [1]),
     Mint: vi.fn(function MockMint() {
       return {
         getInfo: vi.fn().mockResolvedValue({
@@ -733,6 +734,7 @@ describe('buyerPrepareSwap', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
 
     const sharedKey = await deriveEncryptionKey(
@@ -759,6 +761,7 @@ describe('buyerPrepareSwap', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
 
     const sharedKey = await deriveEncryptionKey(
@@ -938,6 +941,7 @@ describe('buyerClaimSwap', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
     const operationId = 'trade-browser-conditional-claim/browser/buyer-claim'
 
@@ -974,6 +978,7 @@ describe('buyerClaimSwap', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
     cashuMockState.conditionalSwapError = new Error(
       'Inputs must use the same conditional keyset',
@@ -991,6 +996,39 @@ describe('buyerClaimSwap', () => {
         },
       ),
     ).rejects.toThrow('Inputs must use the same conditional keyset')
+  })
+
+  it('claims primitive multi-keyset conditional proofs one keyset at a time', async () => {
+    const { sellerCtx, buyerCtx } = swapContexts('trade-browser-multi-claim')
+    const sellerOut = await sellerPreparePrelockedSwap(sellerCtx, [
+      p2pkLockedProof('alice-B', 7, sellerCtx, 'keyset-B'),
+      p2pkLockedProof('alice-C', 7, sellerCtx, 'keyset-C'),
+    ])
+    const buyerOut = await buyerPrepareSwap(
+      buyerCtx,
+      sellerOut.adaptorPointCipher,
+      sellerOut.lockedProofsCipher,
+      [proof('bob-1', 14)],
+      14,
+    )
+    const operationId = 'trade-browser-multi-claim/browser/buyer-claim'
+
+    const claimed = await buyerClaimSwap(
+      buyerCtx,
+      sellerOut.adaptorPoint.secret,
+      sellerOut.lockedProofsCipher,
+      buyerOut.sellerPreSigsHex,
+      { operationId, proofOperationStore },
+    )
+
+    expect(claimed.map((proof) => proof.id).sort()).toEqual(['keyset-B', 'keyset-C'])
+    expect(cashuMockState.mintSwapCalls).toBe(2)
+    expect(
+      proofDbMockState.operations.get(`${operationId}:0:keyset-B`),
+    ).toEqual(expect.objectContaining({ kind: 'conditional-keyset-swap' }))
+    expect(
+      proofDbMockState.operations.get(`${operationId}:1:keyset-C`),
+    ).toEqual(expect.objectContaining({ kind: 'conditional-keyset-swap' }))
   })
 })
 
@@ -1105,6 +1143,7 @@ describe('browser proof operation recovery', () => {
       sellerOut.adaptorPointCipher,
       sellerOut.lockedProofsCipher,
       [proof('bob-1', 7)],
+      7,
     )
     const operationId = 'trade-browser-claim/browser/seller-claim'
 

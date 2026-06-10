@@ -2,10 +2,13 @@ import { Zap } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 interface InsufficientBalanceModalProps {
-  /** How many sats the user has in the active mint. */
+  /** How many base-asset subunits the user has in the active mint. */
   balance: number
-  /** What the pending trade will cost in sats, all-in. */
+  /** What the pending trade will cost in base-asset subunits, all-in. */
   required: number
+  title?: string
+  requiredDescription?: string
+  formatAmount?: (amount: number) => string
   onCancel: () => void
   onTopUp: () => void
 }
@@ -19,11 +22,15 @@ interface InsufficientBalanceModalProps {
 export function InsufficientBalanceModal({
   balance,
   required,
+  title,
+  requiredDescription,
+  formatAmount,
   onCancel,
   onTopUp,
 }: InsufficientBalanceModalProps) {
   const { t } = useTranslation()
   const deficit = Math.max(required - balance, 0)
+  const renderAmount = formatAmount ?? ((amount) => t('insufficientBalance.sats', { count: amount }))
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center">
@@ -35,26 +42,26 @@ export function InsufficientBalanceModal({
         </div>
 
         <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
-          {t('insufficientBalance.title')}
+          {title ?? t('insufficientBalance.title')}
         </h2>
 
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
-          {t('insufficientBalance.tradeNeeds')}{' '}
+          {requiredDescription ?? t('insufficientBalance.tradeNeeds')}{' '}
           <span className="font-mono text-slate-700 dark:text-slate-200">
-            {t('insufficientBalance.sats', { count: required })}
+            {renderAmount(required)}
           </span>
           .
         </p>
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
           {t('insufficientBalance.youHave')}{' '}
           <span className="font-mono text-slate-700 dark:text-slate-200">
-            {t('insufficientBalance.sats', { count: balance })}
+            {renderAmount(balance)}
           </span>
           {deficit > 0 && (
             <>
               {' '}— {t('insufficientBalance.shortBy')}{' '}
               <span className="font-mono text-slate-700 dark:text-slate-200">
-                {t('insufficientBalance.sats', { count: deficit })}
+                {renderAmount(deficit)}
               </span>
             </>
           )}

@@ -60,6 +60,12 @@ public static class TestMnemonics
 /// </summary>
 public static class TestHelpers
 {
+    public const string CtfSettingsJson =
+        "{ default_keyset_creation: 'one-vs-rest', registration_fee_base: 0, registration_fee_per_keyset: 0 }";
+
+    public const string CtfNutsJson =
+        "{ '4': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, '5': { methods: [{ method: 'bolt11', unit: 'sat', min_amount: 1, max_amount: 1000000 }] }, CTF: { default_keyset_creation: 'one-vs-rest', registration_fee_base: 0, registration_fee_per_keyset: 0 } }";
+
     /// <summary>
     /// Convenience overload for callers that only customise navigation options.
     /// </summary>
@@ -156,7 +162,9 @@ public static class TestHelpers
     {
         var mnemonic = TestMnemonics.Get();
         var activeMint = mintUrl ?? "http://localhost:3338";
-        var mintsJson = mintUrl is null ? "[]" : $"[{{ url: '{mintUrl}' }}]";
+        var mintsJson = mintUrl is null
+            ? "[]"
+            : $"[{{ url: '{mintUrl}', info: {{ name: 'Test Mint', nuts: {CtfNutsJson} }} }}]";
         await page.GotoAsync($"{TestPorts.FrontendUrl}/setup", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,

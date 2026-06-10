@@ -93,10 +93,11 @@ public class MarketDiscoveryTests : IAsyncLifetime
             Timeout = 30_000,
         });
 
-        // Wait for cards to load, then click Buy YES on the first card
-        var buyYesButton = page.GetByRole(AriaRole.Button, new() { Name = "Buy YES" }).First;
-        await Assertions.Expect(buyYesButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
-        await buyYesButton.ClickAsync();
+        // Navigate by the seeded market title instead of assuming catalogue
+        // order; other E2E-created markets may appear ahead of it.
+        var btcMarket = page.GetByText("Will Bitcoin reach $100K").First;
+        await Assertions.Expect(btcMarket).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await btcMarket.ClickAsync();
 
         // Should navigate to market detail page
         await Assertions.Expect(page).ToHaveURLAsync(new System.Text.RegularExpressions.Regex(@"/markets/[a-f0-9]+"), new() { Timeout = 5_000 });
@@ -147,7 +148,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         var modalHeading = page.GetByText("Wallet Required");
         await Assertions.Expect(modalHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
 
-        var createButton = page.GetByRole(AriaRole.Button, new() { Name = "Create Wallet" });
+        var createButton = page.GetByTestId("wallet-required-create");
         await Assertions.Expect(createButton).ToBeVisibleAsync();
     }
 
@@ -168,7 +169,7 @@ public class MarketDiscoveryTests : IAsyncLifetime
         await buyYesButton.ClickAsync();
 
         // Click "Create Wallet" in the modal
-        var createButton = page.GetByRole(AriaRole.Button, new() { Name = "Create Wallet" });
+        var createButton = page.GetByTestId("wallet-required-create");
         await Assertions.Expect(createButton).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await createButton.ClickAsync();
 

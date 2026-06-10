@@ -18,6 +18,10 @@ export interface StoredCreatorMarket {
   thumbnailUrl: string | null;
   /** ISO-8601 timestamp recorded when the wizard reported a successful submission. */
   createdAt: string;
+  /** Market quote asset selected at creation. Missing legacy records replay as sat. */
+  baseAsset?: "sat" | "usd" | "jpy";
+  /** Immutable market price denominator selected at creation. */
+  divisibility?: number;
   /**
    * Percentage fee (0.0-1.0 scale matching `CreatedMarket.creatorFeePercent`)
    * the user chose at wizard step 5. Kept client-side because fee accrual is
@@ -32,6 +36,8 @@ export interface StoredCreatorOracleMetadata {
   type: "self";
   /** DLC oracle event_id passed to kormir when the announcement was created. */
   eventId: string;
+  /** Nostr kind-88 event id for the announcement, used by NIP-88 kind-89 e-tags. */
+  announcementEventId?: string;
   /** Enum outcomes the oracle can attest. Numeric self-oracle markets are not supported yet. */
   outcomes: string[];
   /**
@@ -90,6 +96,8 @@ function creatorOracleEqual(
     a.type === b.type &&
     a.eventId === b.eventId &&
     a.announcementHex === b.announcementHex &&
+    a.announcementEventId === b.announcementEventId &&
+    a.announcementHex === b.announcementHex &&
     a.attestationHex === b.attestationHex &&
     a.attestedOutcome === b.attestedOutcome &&
     a.attestedAt === b.attestedAt &&
@@ -112,6 +120,8 @@ export function creatorMarketsEqual(
       other.title !== m.title ||
       other.thumbnailUrl !== m.thumbnailUrl ||
       other.createdAt !== m.createdAt ||
+      other.baseAsset !== m.baseAsset ||
+      other.divisibility !== m.divisibility ||
       other.creatorFeePercent !== m.creatorFeePercent ||
       !creatorOracleEqual(other.oracle, m.oracle)
     ) {
@@ -123,8 +133,9 @@ export function creatorMarketsEqual(
 
 /**
  * Local store of markets the user has created. Persists to localStorage under
- * `bitcaster-creator-markets`. When a mnemonic is available, `useCreatorSync`
- * mirrors the set to a NIP-78 replaceable event so it survives a device swap.
+ * `bitcaster-creator-markets`. When an nsec-backed Nostr identity is
+ * available, `useCreatorSync` mirrors the set to a NIP-78 replaceable event
+ * so it survives a device swap.
  *
  * This module intentionally has no Nostr or Cashu imports so it is cheap to
  * pull into component tests.

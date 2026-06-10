@@ -108,6 +108,11 @@ vi.mock('@/lib/cashu', () => ({
 
 vi.mock('@/lib/nip17-listener', () => ({
   startNip17Listener: mocks.startNip17Listener,
+  getNip17ListenerDiagnostics: vi.fn(() => ({
+    running: false,
+    relays: [],
+    subscribedPubkey: null,
+  })),
 }))
 
 vi.mock('@/lib/walletOps', () => ({

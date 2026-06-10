@@ -86,42 +86,36 @@ message also carries the quote payment separately. For example, a 1,000-face-sat
 YES fill at price 37 means Alice locks 1,000 face sats of YES and Bob locks 370
 regular sats. Implementations must not use one amount for both swap legs.
 
-For mint matches, the order book first creates a reservation, not a
-final fill. The public order status exposes that row as `status: matched` with a
-`tradeId`; once both parties complete the atomic swap the reservation commits
-and becomes `status: filled`. If the settlement timeout expires first, the
-engine fails the trade and releases the reservation as `status: released`.
-Release is time-in-force aware: GTC/GTD quantity may return to the book under
-the same order-level ephemeral key because reuse across partial fills of the
-same order is allowed, while FAK/FOK orders are cancelled instead of resting
-again. The timeout must be scheduled after the seller-side locktime plus a
-grace window; timing out at the buyer-side locktime can abort a swap that is
-still valid on the protocol timeline.
+For mint matches, the order book journals the trade start and then consumes the
+matched quantity. The public order status exposes the matched row with a
+`tradeId`; once both parties complete the atomic swap the trade becomes
+confirmed. If the settlement timeout expires first, the engine fails the trade,
+but the matched quantity is not returned to the book. This avoids restoring
+liquidity under an order-level ephemeral key after a counterparty has already
+seen swap material. The timeout must be scheduled after the seller-side locktime
+plus a grace window; timing out at the buyer-side locktime can abort a swap that
+is still valid on the protocol timeline.
 
-For a resting buy that can become the mint maker, clients SHOULD
-pre-flight split before order submission. The maker selects regular sats,
-submits a CTF split to the mint for the complete outcome set, stores the
-resulting outcome proofs in local wallet state, and reserves both the keep side
-and the lock side under the order. If the mint is unavailable or
-the client cannot reserve enough collateral within the user-visible submission
-window, the client SHOULD fail submission or cancel/release the order path
-rather than publish a maker order that cannot settle. Implementations may expose
-an explicit opt-out, such as `--no-preflight-split`, but then they must reserve
-regular collateral and fail closed if it is unavailable when the match arrives.
+For a resting buy that can become the mint maker, clients MAY offer an
+order-local pre-flight split before submission. The maker selects regular sats,
+submits a CTF split to the mint for the needed one-vs-rest collections, and
+stores the resulting outcome proofs in local wallet state. This is a reliability
+option, not a different wire protocol.
 
-For categorical outcome sets, the engine-level set id may contain multiple
-primitive outcomes (for example `B|C`). The mint still issues one conditional
-keyset per primitive root outcome, so wallet implementations decompose a
-logical lock or keep side into primitive keyset legs. Each primitive lock leg
-must prepare successfully before the seller publishes the atomic-swap opening
-messages.
+Public categorical books are always primitive: a market route is
+`{conditionId}-{outcomeName}`, and the order request selects either
+`tokenSide: "Outcome"` or `tokenSide: "Complement"`. For example, users trade
+`A` and `Not A` on `condition-A`; public clients do not navigate, subscribe, or
+submit orders to compound complement routes. Internally, settlement may still
+use a canonical one-vs-rest collection id for `Not A` when constructing
+mint-compatible payloads, but that id is not a public market id. If local
+inventory is insufficient, the maker may split regular collateral at match time.
+Every lock leg must prepare successfully before the seller publishes the
+atomic-swap opening messages.
 
-Pre-flight split is a wallet-local safety mechanism, not a different wire
-protocol. When a mint match arrives, the maker still acts as Alice in
-the seller branch below: the reserved outcome proofs are locked to
-the taker, while the maker's kept outcome proofs become visible only for the
-matched quantity. For partial fills, remaining pre-split proofs must stay
-reserved for the unfilled order quantity.
+When a mint match arrives, the maker still acts as Alice in the seller branch
+below. If pre-flight proofs are used, the maker locks the taker's outcome proofs
+and keeps the complementary side locally for the matched quantity.
 
 ### Step 3: ECDH Shared Secret
 
@@ -314,10 +308,11 @@ redeemed through the mint, not through the matching engine.
    witness and returns regular ecash proofs. Losing outcome proofs redeem to
    zero and remain closed.
 
-For categorical markets, a held outcome collection wins when it contains the
-attested outcome. For example, if the outcomes are `A`, `B`, `C` and the oracle
-attests `B`, then `B` and `B|C` are winning collections while `A` and `A|C` are
-losing collections.
+For categorical markets, a primitive outcome token wins when it equals the
+attested outcome. A one-vs-rest complement wins when the attested outcome is not
+the selected primitive. For example, if the outcomes are `A`, `B`, `C` and the
+oracle attests `B`, then `B`, `Not A`, and `Not C` are winning positions while
+`A`, `C`, and `Not B` are losing positions.
 
 The engine's cached witness is not a payout authority. A buggy or malicious
 engine response cannot make losing tokens redeemable because the mint verifies
@@ -410,8 +405,8 @@ The matching engine sees order flow and could trade ahead of users. Mitigation: 
 An attacker can place orders, get matched, and never complete — locking the counterparty's tokens until the locktime expires. Mitigations:
 
 - Short locktimes and engine-owned settlement timeout reminders. A timed-out
-  reservation is released and the consumed orders are cancelled rather than
-  silently returned to the book with reused ephemeral keys.
+  trade is failed, and matched quantity stays consumed rather than silently
+  returning to the book with reused ephemeral keys.
 - Reputation tracking by the matching engine
 - Small anti-spam deposits (e.g., Lightning invoice payment to the engine)
 

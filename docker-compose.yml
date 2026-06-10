@@ -10,6 +10,8 @@ services:
       CDK_MINTD_LISTEN_PORT: "8085"
       CDK_MINTD_DATABASE: sqlite
       CDK_MINTD_CACHE_BACKEND: memory
+      CDK_MINTD_INPUT_FEE_PPK: "1"
+      CDK_MINTD_CTF_DEFAULT_KEYSET_CREATION: "one-vs-rest"
       CDK_MINTD_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8085/v1/info"]
@@ -47,7 +49,12 @@ services:
     depends_on:
       lnbits:
         condition: service_healthy
-    entrypoint: ["sh", "-c", "curl -sf -X PUT http://lnbits:5000/api/v1/auth/first_install -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"adminpass\",\"password_repeat\":\"adminpass\"}'"]
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        "body=$$(mktemp); code=$$(curl -sS -o \"$$body\" -w '%{http_code}' -X PUT http://lnbits:5000/api/v1/auth/first_install -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"adminpass\",\"password_repeat\":\"adminpass\"}'); if [ \"$$code\" -ge 200 ] && [ \"$$code\" -lt 300 ]; then exit 0; fi; if [ \"$$code\" = 401 ] && grep -q 'not your first install' \"$$body\"; then exit 0; fi; cat \"$$body\"; exit 22",
+      ]
 
   server:
     build:

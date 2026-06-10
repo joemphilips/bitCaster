@@ -80,7 +80,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     /// </summary>
     private static async Task SeedWizardEnvironmentAsync(IPage page)
     {
-        await TestHelpers.SetupComplete(page, TestPorts.Vite);
+        await TestHelpers.SetupComplete(page, TestPorts.Vite, TestPorts.MintUrl);
         await page.EvaluateAsync($@"
             localStorage.setItem('bitcaster-settings', JSON.stringify({{
                 state: {{
@@ -115,18 +115,10 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         return (page, console);
     }
 
-    private static async Task AdvanceStep1ToStep2_BecomeOracleAsync(IPage page)
+    private static async Task AssertWizardStartsAtGetStartedAsync(IPage page)
     {
-        var becomeOracle = page.GetByText("No / I want to be an oracle");
-        await Assertions.Expect(becomeOracle).ToBeVisibleAsync(new() { Timeout = 10_000 });
-        await becomeOracle.ClickAsync();
-
-        var continueBtn = page.GetByRole(AriaRole.Button, new() { Name = "Continue as Oracle" });
-        await Assertions.Expect(continueBtn).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await continueBtn.ClickAsync();
-
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Get Started" });
-        await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 10_000 });
     }
 
     private static async Task AdvanceStep2ToStep3_YesNoAsync(IPage page)
@@ -223,7 +215,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         {
             throw await TestHelpers.BuildDiagnosticExceptionAsync(
                 page, console,
-                "DepositStep never rendered after clicking Create Market — the kormir publish + mint registerCondition/registerPartition + engine createMarket chain failed somewhere.");
+                "DepositStep never rendered after clicking Create Market — the kormir publish + mint registerCondition + engine createMarket chain failed somewhere.");
         }
 
         var text = await conditionIdEl.InnerTextAsync();
@@ -243,7 +235,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         string description)
     {
         var (page, console) = await OpenWizardAsync(context);
-        await AdvanceStep1ToStep2_BecomeOracleAsync(page);
+        await AssertWizardStartsAtGetStartedAsync(page);
         await AdvanceStep2ToStep3_YesNoAsync(page);
         await AdvanceStep3ToStep4_FillBasicsAsync(page, title);
         await AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(page);

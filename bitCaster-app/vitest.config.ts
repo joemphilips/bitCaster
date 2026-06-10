@@ -1,5 +1,8 @@
 import { defineConfig } from "vitest/config";
 import path from "path";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 export default defineConfig({
   test: {
@@ -23,11 +26,17 @@ export default defineConfig({
       },
       {
         find: /^@bitcaster\/client-sdk$/,
-        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/index.ts"),
+        replacement: path.resolve(
+          __dirname,
+          "../bitcaster-client-sdk/src/index.ts",
+        ),
       },
       {
         find: /^@bitcaster\/swap-protocol\/(.+)$/,
-        replacement: path.resolve(__dirname, "../bitCaster-swap-protocol/src/$1"),
+        replacement: path.resolve(
+          __dirname,
+          "../bitCaster-swap-protocol/src/$1",
+        ),
       },
       // @cashu/cashu-ts v3 renamed CashuMint → Mint, CashuWallet → Wallet.
       // ndk-wallet still imports the old names. Route through a shim that
@@ -37,11 +46,11 @@ export default defineConfig({
       { find: "@cashu/cashu-ts", replacement: "/src/test/cashu-ts-shim.ts" },
       {
         find: /^@noble\/curves\/secp256k1\.js$/,
-        replacement: path.resolve(__dirname, "node_modules/@noble/curves/secp256k1.js"),
+        replacement: require.resolve("@noble/curves/secp256k1.js"),
       },
       {
         find: /^@noble\/hashes\/sha2\.js$/,
-        replacement: path.resolve(__dirname, "node_modules/@noble/hashes/sha2.js"),
+        replacement: require.resolve("@noble/hashes/sha2.js"),
       },
     ],
   },

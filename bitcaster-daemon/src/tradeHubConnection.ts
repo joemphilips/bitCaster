@@ -51,6 +51,9 @@ export function parseTradeCreatedPayload(
   settlementKind?: unknown,
   sellerKeepOutcomeSetId?: unknown,
   sellerLockOutcomeSetId?: unknown,
+  baseAsset?: unknown,
+  divisibility?: unknown,
+  quotePaymentSubunits?: unknown,
 ): DaemonTradeCreatedPayload {
   const tradeIdText = stringFromSignalR(tradeId)
   const sellerPubkeyText = stringFromSignalR(sellerPubkey)
@@ -89,6 +92,9 @@ export function parseTradeCreatedPayload(
       typeof sellerLockOutcomeSetId === 'string'
         ? sellerLockOutcomeSetId
         : null,
+    baseAsset: typeof baseAsset === 'string' ? baseAsset : null,
+    divisibility: numberOrUndefined(divisibility),
+    quotePaymentSubunits: numberOrUndefined(quotePaymentSubunits),
   }
 }
 
@@ -97,6 +103,7 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
   private readonly nostrSecretKeyHex: string
   private readonly callbacks: SignalRTradeHubConnectionOptions
   private connection: HubConnectionLike | null = null
+  private callbackChain: Promise<void> = Promise.resolve()
 
   constructor(options: SignalRTradeHubConnectionOptions) {
     this.hubUrl = `${options.engineBaseUrl.replace(/\/+$/, '')}/hubs/trade`
@@ -173,6 +180,9 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
         settlementKind?: unknown,
         sellerKeepOutcomeSetId?: unknown,
         sellerLockOutcomeSetId?: unknown,
+        baseAsset?: unknown,
+        divisibility?: unknown,
+        quotePaymentSubunits?: unknown,
       ) => {
         void this.invokeCallback(async () => {
           await this.callbacks.onTradeCreated?.(
@@ -189,6 +199,9 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
               settlementKind,
               sellerKeepOutcomeSetId,
               sellerLockOutcomeSetId,
+              baseAsset,
+              divisibility,
+              quotePaymentSubunits,
             ),
           )
         })
@@ -227,12 +240,16 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
     })
   }
 
-  private async invokeCallback(callback: () => Promise<void>): Promise<void> {
-    try {
-      await callback()
-    } catch (err) {
-      this.callbacks.onError?.(err instanceof Error ? err : new Error(String(err)))
-    }
+  private invokeCallback(callback: () => Promise<void>): Promise<void> {
+    const run = this.callbackChain.then(async () => {
+      try {
+        await callback()
+      } catch (err) {
+        this.callbacks.onError?.(err instanceof Error ? err : new Error(String(err)))
+      }
+    })
+    this.callbackChain = run.catch(() => {})
+    return run
   }
 }
 

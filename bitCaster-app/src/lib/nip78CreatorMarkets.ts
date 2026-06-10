@@ -32,6 +32,10 @@ function isStoredCreatorOracle(
   return (
     oracle.type === "self" &&
     typeof oracle.eventId === "string" &&
+    (oracle.announcementEventId === undefined ||
+      typeof oracle.announcementEventId === "string") &&
+    (oracle.announcementHex === undefined ||
+      typeof oracle.announcementHex === "string") &&
     Array.isArray(oracle.outcomes) &&
     oracle.outcomes.every((outcome) => typeof outcome === "string") &&
     (oracle.announcementHex === undefined ||
@@ -52,6 +56,12 @@ function isStoredCreatorMarket(value: unknown): value is StoredCreatorMarket {
     typeof m.title === "string" &&
     (m.thumbnailUrl === null || typeof m.thumbnailUrl === "string") &&
     typeof m.createdAt === "string" &&
+    (m.baseAsset === undefined ||
+      m.baseAsset === "sat" ||
+      m.baseAsset === "usd" ||
+      m.baseAsset === "jpy") &&
+    (m.divisibility === undefined ||
+      (typeof m.divisibility === "number" && Number.isSafeInteger(m.divisibility))) &&
     typeof m.creatorFeePercent === "number" &&
     (m.oracle === undefined || isStoredCreatorOracle(m.oracle))
   );

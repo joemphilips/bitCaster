@@ -1,6 +1,8 @@
 import type { SdkMarketForTrading, SdkTradeSelection } from './types.ts'
 
 export interface ResolvedOutcomeSets {
+  publicOutcomeSetId: string
+  tokenSide: 'Outcome' | 'Complement'
   selectedOutcomeSetId: string
   complementOutcomeSetId: string
 }
@@ -41,14 +43,27 @@ export function outcomeSetMarketId(
 
 export function outcomeSetIdsForMarketBooks(market: SdkMarketForTrading): string[] {
   const universe = outcomeLabels(market)
-  const ids = new Set<string>()
-  for (const outcome of universe) {
-    const selected = canonicalizeOutcomeSet([outcome])
-    if (selected) ids.add(selected)
-    const complement = complementOutcomeSetId(universe, selected)
-    if (complement) ids.add(complement)
+  return universe
+    .map((outcome) => canonicalizeOutcomeSet([outcome]))
+    .filter(Boolean)
+}
+
+export function outcomeSetDisplayLabel(
+  universe: readonly string[],
+  outcomeSetId: string,
+): string {
+  const members = parseOutcomeSetId(outcomeSetId)
+  if (members.length === 0) return outcomeSetId
+  if (members.length === 1) return members[0]
+
+  const uniqueUniverse = [...new Set(universe.map((outcome) => outcome.trim()).filter(Boolean))]
+  if (uniqueUniverse.length > 2 && members.length === uniqueUniverse.length - 1) {
+    const memberSet = new Set(members)
+    const missing = uniqueUniverse.filter((outcome) => !memberSet.has(outcome))
+    if (missing.length === 1) return `NOT ${missing[0]}`
   }
-  return [...ids]
+
+  return 'Complement'
 }
 
 export function resolveOutcomeSets(
@@ -62,8 +77,14 @@ export function resolveOutcomeSets(
   if (!primitive) return null
 
   const primitiveSetId = canonicalizeOutcomeSet([primitive])
-  const selectedOutcomeSetId =
+  const tokenSide =
     market.type === 'categorical' && selection.side === 'no'
+      ? 'Complement'
+      : selection.side === 'lo'
+        ? 'Complement'
+        : 'Outcome'
+  const selectedOutcomeSetId =
+    tokenSide === 'Complement'
       ? complementOutcomeSetId(universe, primitiveSetId)
       : primitiveSetId
   if (!selectedOutcomeSetId) return null
@@ -75,6 +96,8 @@ export function resolveOutcomeSets(
   if (!complementOutcomeSetIdValue) return null
 
   return {
+    publicOutcomeSetId: primitiveSetId,
+    tokenSide,
     selectedOutcomeSetId,
     complementOutcomeSetId: complementOutcomeSetIdValue,
   }
@@ -86,14 +109,28 @@ function selectedPrimitiveOutcome(
   universe: string[],
 ): string | null {
   if (market.type === 'categorical') {
+    const selectedOutcomeId = selection.outcomeId
+    if (!selectedOutcomeId) return null
     return (
-      (market.outcomes ?? []).find((outcome) => outcome.id === selection.outcomeId)
-        ?.label ?? null
+      (market.outcomes ?? []).find(
+        (outcome) =>
+          outcome.id === selectedOutcomeId ||
+          outcome.label === selectedOutcomeId,
+      )?.label ?? null
     )
   }
 
-  if (selection.side === 'yes' || selection.side === 'no') {
-    return findOutcomeByName(universe, selection.side)
+  if (selection.side === 'yes') {
+    return findOutcomeByName(universe, 'yes')
+  }
+
+  if (selection.side === 'no') {
+    return (
+      findOutcomeByName(universe, 'no') ??
+      universe.find((outcome) => outcome.toLowerCase() !== 'yes') ??
+      universe[0] ??
+      null
+    )
   }
 
   if (selection.side === 'hi' || selection.side === 'lo') {

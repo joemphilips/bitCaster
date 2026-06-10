@@ -27,6 +27,25 @@ namespace BitCaster.MatchingEngine.Contracts
     
 
     /// <summary>
+    /// Market quote/collateral base asset. Current production creation accepts `sat`; `usd` and `jpy` are structural values reserved until unit-aware settlement and wallet flows are enabled end-to-end.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum BaseAsset
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
+        Sat = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"usd")]
+        Usd = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"jpy")]
+        Jpy = 2,
+
+    }
+
+    /// <summary>
     /// Direction of an order relative to the outcome token.
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -38,6 +57,22 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"Sell")]
         Sell = 1,
+
+    }
+
+    /// <summary>
+    /// Which token on the primitive outcome book is being traded. `Outcome` means the selected primitive outcome named by outcomeId; `Complement` means the one-vs-rest complement of that outcome.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum TokenSide
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Outcome")]
+        Outcome = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Complement")]
+        Complement = 1,
 
     }
 
@@ -76,7 +111,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker mints a complete CTF set to settle. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
+    /// How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -92,7 +127,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Lifecycle status of a fill-shaped order execution row. `Matched` means a DCB reservation exists and atomic-swap settlement is still pending; `Filled` means settlement committed; `Released` means a reservation failed or timed out and no longer consumes order depth.
+    /// Lifecycle status of a fill-shaped order execution row. `Matched` means atomic-swap settlement is still pending; `Filled` means settlement committed; `Failed` means the atomic-swap session reached a terminal failure and should no longer be retried.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -105,8 +140,8 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Runtime.Serialization.EnumMember(Value = @"Filled")]
         Filled = 1,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"Released")]
-        Released = 2,
+        [System.Runtime.Serialization.EnumMember(Value = @"Failed")]
+        Failed = 2,
 
     }
 
@@ -114,12 +149,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OracleNostrEvent
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OracleNostrEvent(string @content, long @createdAt, string @id, OracleNostrEventKind @kind, string @pubkey, string @sig)
+        public OracleNostrEvent(string @content, long @createdAt, string @id, OracleNostrEventKind @kind, string @pubkey, string @sig, System.Collections.Generic.List<System.Collections.Generic.List<string>> @tags)
         {
             this.Id = @id;
             this.Pubkey = @pubkey;
             this.CreatedAt = @createdAt;
             this.Kind = @kind;
+            this.Tags = @tags;
             this.Content = @content;
             this.Sig = @sig;
         }
@@ -149,7 +185,13 @@ namespace BitCaster.MatchingEngine.Contracts
         public OracleNostrEventKind Kind { get; }
 
         /// <summary>
-        /// Base64-encoded kormir/rust-dlc oracle_attestation payload.
+        /// NIP-01 tags committed into the event id. NIP-88 attestations include an e-tag pointing to the kind-88 announcement event id.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("tags")]
+        public System.Collections.Generic.List<System.Collections.Generic.List<string>> Tags { get; }
+
+        /// <summary>
+        /// Base64-encoded DLC oracle_attestation payload.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("content")]
         public string Content { get; }
@@ -326,7 +368,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSats, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, MatchPath @path, FillStatus @status, System.Guid @takerOrderId, System.Guid? @tradeId)
+        public Fill(long @amountSats, BaseAsset @baseAsset, int @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, System.Guid? @tradeId)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
@@ -335,6 +377,9 @@ namespace BitCaster.MatchingEngine.Contracts
             this.ExecutionPrice = @executionPrice;
             this.Path = @path;
             this.Status = @status;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
+            this.QuotePaymentSubunits = @quotePaymentSubunits;
             this.FilledAt = @filledAt;
             this.TradeId = @tradeId;
             this.MakerEphemeralPubkey = @makerEphemeralPubkey;
@@ -359,7 +404,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid MakerOrderId { get; }
 
         /// <summary>
-        /// Conditional-token face amount matched for settlement. DCB mint-match reservations appear here before final fill commit so clients can join the atomic-swap TradeHub session.
+        /// Conditional-token face amount matched for settlement. Provisional mint matches appear here before final fill commit so clients can join the atomic-swap TradeHub session.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
@@ -377,13 +422,33 @@ namespace BitCaster.MatchingEngine.Contracts
         public FillStatus Status { get; }
 
         /// <summary>
+        /// Base asset for the fill amount and quote payment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        /// <summary>
+        /// Market price denominator `D` for this fill.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int Divisibility { get; }
+
+        /// <summary>
+        /// Engine-computed quote payment in the market base-asset sub-unit. Present for new trade-start fills; omitted for older replay data.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("quotePaymentSubunits")]
+        public long? QuotePaymentSubunits { get; }
+
+        /// <summary>
         /// Timestamp when this fill was executed.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("filledAt")]
         public System.DateTimeOffset FilledAt { get; }
 
         /// <summary>
-        /// Atomic-swap trade session identifier for this fill or DCB reservation. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
+        /// Atomic-swap trade session identifier for this fill. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
@@ -411,9 +476,10 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(long @amountSats, NostrKind1Event @comment, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce)
+        public SubmitOrderRequest(long @amountSats, NostrKind1Event @comment, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce, TokenSide @tokenSide)
         {
             this.OutcomeId = @outcomeId;
+            this.TokenSide = @tokenSide;
             this.Side = @side;
             this.Price = @price;
             this.AmountSats = @amountSats;
@@ -423,11 +489,15 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// The outcome or finite outcome set to trade (e.g. "Alice", "YES", or "B|C"). Must match the outcome-set segment of marketId.
+        /// The primitive outcome to trade (e.g. "Alice" or "YES"). Must match the outcomeName segment of marketId and must not contain "|".
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
         public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
         [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
@@ -526,7 +596,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(long @filledAmountSats, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSats, string @status)
+        public OrderStatusResponse(BaseAsset @baseAsset, int @divisibility, long @filledAmountSats, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSats, string @status, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -534,6 +604,9 @@ namespace BitCaster.MatchingEngine.Contracts
             this.RemainingAmountSats = @remainingAmountSats;
             this.FilledAmountSats = @filledAmountSats;
             this.Fills = @fills;
+            this.TokenSide = @tokenSide;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
         }
 
         /// <summary>
@@ -549,7 +622,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string MarketId { get; }
 
         /// <summary>
-        /// One of: "resting" (on book, unmatched), "matched" (reserved for atomic-swap settlement), "partially_filled", "filled", "cancelled".
+        /// One of: "resting" (on book, unmatched), "matched" (reserved for atomic-swap settlement), "partially_filled", "filled", "cancelled", "failed".
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("status")]
@@ -559,18 +632,35 @@ namespace BitCaster.MatchingEngine.Contracts
         public long RemainingAmountSats { get; }
 
         /// <summary>
-        /// Conditional-token face amount already consumed by fills or active DCB mint-match reservations. A reservation is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake.
+        /// Conditional-token face amount already consumed by committed fills or currently matched atomic-swap sessions. A provisional mint match is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("filledAmountSats")]
         public long FilledAmountSats { get; }
 
         /// <summary>
-        /// All fills and active DCB mint-match reservation handles produced against this order so far.
+        /// All fills and active or terminal atomic-swap sessions produced against this order so far.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("fills")]
         public System.Collections.Generic.List<Fill> Fills { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
+
+        /// <summary>
+        /// Base asset context for amount and price fields.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        /// <summary>
+        /// Market price denominator `D`.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int Divisibility { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -587,11 +677,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RestingOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RestingOrderResponse(long @amountSats, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSats, OrderSide @side, TimeInForce @timeInForce)
+        public RestingOrderResponse(long @amountSats, BaseAsset @baseAsset, int @divisibility, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSats, OrderSide @side, TimeInForce @timeInForce, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
             this.OutcomeId = @outcomeId;
+            this.TokenSide = @tokenSide;
             this.Side = @side;
             this.Price = @price;
             this.RemainingAmountSats = @remainingAmountSats;
@@ -600,6 +691,8 @@ namespace BitCaster.MatchingEngine.Contracts
             this.PlacedAt = @placedAt;
             this.ExpiresAt = @expiresAt;
             this.EphemeralPubkey = @ephemeralPubkey;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
         }
 
         /// <summary>
@@ -615,10 +708,14 @@ namespace BitCaster.MatchingEngine.Contracts
         public string MarketId { get; }
 
         /// <summary>
-        /// The outcome this order trades.
+        /// The primitive route outcome this order trades against.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
         public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
         [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
@@ -648,6 +745,19 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("ephemeralPubkey")]
         public string EphemeralPubkey { get; }
+
+        /// <summary>
+        /// Base asset context for amount and price fields.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        /// <summary>
+        /// Market price denominator `D`.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int Divisibility { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -687,13 +797,15 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderResponse(string @ephemeralPubkey, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSats, string @status)
+        public SubmitOrderResponse(BaseAsset @baseAsset, int @divisibility, string @ephemeralPubkey, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSats, string @status)
         {
             this.OrderId = @orderId;
             this.Status = @status;
             this.RemainingAmountSats = @remainingAmountSats;
             this.Fills = @fills;
             this.EphemeralPubkey = @ephemeralPubkey;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
         }
 
         /// <summary>
@@ -703,7 +815,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid OrderId { get; }
 
         /// <summary>
-        /// One of: "filled", "matched" (reserved for atomic-swap settlement), "partially_filled", "resting", "cancelled".
+        /// One of: "filled", "matched" (reserved for atomic-swap settlement), "partially_filled", "resting", "cancelled", "failed".
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("status")]
@@ -724,6 +836,19 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("ephemeralPubkey")]
         public string EphemeralPubkey { get; }
+
+        /// <summary>
+        /// Base asset context for amount and price fields.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        /// <summary>
+        /// Market price denominator `D`.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int Divisibility { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -910,13 +1035,15 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
+        public CreateMarketRequest(BaseAsset? @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, int? @divisibility, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
             this.Outcomes = @outcomes;
             this.OutcomeType = @outcomeType;
             this.LiquiditySats = @liquiditySats;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
             this.CategoryTags = @categoryTags;
             this.OracleAnnouncementHex = @oracleAnnouncementHex;
         }
@@ -948,10 +1075,26 @@ namespace BitCaster.MatchingEngine.Contracts
         public CreateMarketRequestOutcomeType? OutcomeType { get; }
 
         /// <summary>
-        /// Initial liquidity budget in satoshis.
+        /// Initial AMM liquidity budget in satoshis. Must be `0` for non-sat markets until unit-aware AMM liquidity is enabled.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
         public long? LiquiditySats { get; }
+
+        /// <summary>
+        /// Immutable market base asset. Settlement-capable market creation currently supports `sat` and `usd`; `jpy` is reserved.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset? BaseAsset { get; }
+
+        /// <summary>
+        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int? Divisibility { get; }
 
         /// <summary>
         /// Optional category tags for the market.
@@ -1599,6 +1742,169 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ParticipationScoreResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ParticipationScoreResponse(long @balance, long @consumedTotal, bool @enabled, long @matchDebitScore, long @penaltyTotal, string @pubkey, long @purchasedTotal)
+        {
+            this.Pubkey = @pubkey;
+            this.Balance = @balance;
+            this.PurchasedTotal = @purchasedTotal;
+            this.ConsumedTotal = @consumedTotal;
+            this.PenaltyTotal = @penaltyTotal;
+            this.MatchDebitScore = @matchDebitScore;
+            this.Enabled = @enabled;
+        }
+
+        /// <summary>
+        /// Authenticated Nostr pubkey whose Score is returned.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("pubkey")]
+        public string Pubkey { get; }
+
+        /// <summary>
+        /// Current participation Score balance. May be negative after soft match/penalty debits.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("balance")]
+        public long Balance { get; }
+
+        /// <summary>
+        /// Total Score purchased by this pubkey.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("purchasedTotal")]
+        public long PurchasedTotal { get; }
+
+        /// <summary>
+        /// Total Score consumed by successful match debits.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("consumedTotal")]
+        public long ConsumedTotal { get; }
+
+        /// <summary>
+        /// Total Score consumed by settlement-negligence penalties.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("penaltyTotal")]
+        public long PenaltyTotal { get; }
+
+        /// <summary>
+        /// Configured Score debit charged to the taker when a match lands.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("matchDebitScore")]
+        public long MatchDebitScore { get; }
+
+        /// <summary>
+        /// Whether match-time Score debit is enabled by the engine.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("enabled")]
+        public bool Enabled { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class PayParticipationScoreEcashRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public PayParticipationScoreEcashRequest(long @amountSats, System.Guid? @paymentId, string @proofsToken)
+        {
+            this.AmountSats = @amountSats;
+            this.ProofsToken = @proofsToken;
+            this.PaymentId = @paymentId;
+        }
+
+        /// <summary>
+        /// Exact sat amount carried by the supplied regular ecash token.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        /// <summary>
+        /// Opaque Cashu token paid as a non-refundable Engine fee.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("proofsToken")]
+        public string ProofsToken { get; }
+
+        /// <summary>
+        /// Optional caller-supplied idempotency id for retrying the same ecash payment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("paymentId")]
+        public System.Guid? PaymentId { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class PayParticipationScoreEcashResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public PayParticipationScoreEcashResponse(long @amountSats, System.DateTimeOffset @creditedAt, long @creditedScore, System.Guid @paymentId, PayParticipationScoreEcashResponseStatus @status)
+        {
+            this.PaymentId = @paymentId;
+            this.Status = @status;
+            this.AmountSats = @amountSats;
+            this.CreditedScore = @creditedScore;
+            this.CreditedAt = @creditedAt;
+        }
+
+        /// <summary>
+        /// Idempotency id assigned to this Score payment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("paymentId")]
+        public System.Guid PaymentId { get; }
+
+        /// <summary>
+        /// Terminal success state for the synchronous ecash payment flow.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<PayParticipationScoreEcashResponseStatus>))]
+        public PayParticipationScoreEcashResponseStatus Status { get; }
+
+        /// <summary>
+        /// Ecash amount accepted as engine fee.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        /// <summary>
+        /// Score credited for this payment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("creditedScore")]
+        public long CreditedScore { get; }
+
+        /// <summary>
+        /// Time wallet-service accepted and credited the engine-fee payment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("creditedAt")]
+        public System.DateTimeOffset CreditedAt { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class GetDepositResponseDto
     {
         [System.Text.Json.Serialization.JsonConstructor]
@@ -1671,7 +1977,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySats, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, int @traderCount, long @volume24hSats, long @volume30dSats, long @volumeLifetimeSats)
+        public MarketCatalogueEntry(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySats, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, int @traderCount, long @volume24hSats, long @volume30dSats, long @volumeLifetimeSats)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -1689,6 +1995,8 @@ namespace BitCaster.MatchingEngine.Contracts
             this.LiquiditySats = @liquiditySats;
             this.TraderCount = @traderCount;
             this.VolumeLifetimeSats = @volumeLifetimeSats;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
             this.LastTradedPrice = @lastTradedPrice;
             this.CategoryTags = @categoryTags;
             this.LastSuccessfulRefreshAt = @lastSuccessfulRefreshAt;
@@ -1702,7 +2010,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ConditionId { get; }
 
         /// <summary>
-        /// Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`. Finite categorical outcome-set books use multiple outcome names separated by "|", for example `"{conditionId}-B|C"`.
+        /// Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`; the one-vs-rest complement is selected on order submission with `tokenSide = "Complement"` rather than a compound public market ID.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
@@ -1806,6 +2114,17 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volumeLifetimeSats")]
         public long VolumeLifetimeSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        /// <summary>
+        /// Immutable market price denominator `D`. Legacy sat markets replay as `100`.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int Divisibility { get; }
 
         /// <summary>
         /// Most recent execution price (probability in `[1, 99]`), null if the market has never traded.
@@ -2106,6 +2425,15 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"closed")]
         Closed = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum PayParticipationScoreEcashResponseStatus
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"credited")]
+        Credited = 0,
 
     }
 

@@ -1,21 +1,47 @@
 {
-  "name": "@bitcaster/swap-protocol",
-  "private": true,
+  "name": "@bitcaster-market/swap-protocol",
   "version": "0.1.0",
   "type": "module",
+  "description": "Atomic swap protocol primitives for bitCaster markets",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node ../scripts/rewrite-dts-imports.mjs dist",
+    "prepack": "npm run build",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    "./atomicSwap": "./src/atomicSwap.ts",
-    "./ecdh": "./src/ecdh.ts",
-    "./adaptor": "./src/adaptor.ts",
-    "./p2pk": "./src/p2pk.ts",
-    "./url": "./src/url.ts"
+    "./atomicSwap": {
+      "types": "./dist/atomicSwap.d.ts",
+      "import": "./dist/atomicSwap.js"
+    },
+    "./ecdh": {
+      "types": "./dist/ecdh.d.ts",
+      "import": "./dist/ecdh.js"
+    },
+    "./adaptor": {
+      "types": "./dist/adaptor.d.ts",
+      "import": "./dist/adaptor.js"
+    },
+    "./p2pk": {
+      "types": "./dist/p2pk.d.ts",
+      "import": "./dist/p2pk.js"
+    },
+    "./url": {
+      "types": "./dist/url.d.ts",
+      "import": "./dist/url.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
     "@cashu/cashu-ts": "file:../cashu-ts",

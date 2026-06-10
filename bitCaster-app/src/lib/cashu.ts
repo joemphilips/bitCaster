@@ -31,6 +31,7 @@ import { normalizeUrl } from "@/lib/url";
 import { hexToBytes } from "@/lib/ecdh";
 import {
   addProofs,
+  getBaseProofs,
   getProofOperation,
   markProofOperationCompleted,
   markProofOperationFailed,
@@ -41,6 +42,10 @@ import {
   type StoredProof,
 } from "@/stores/proof-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import {
+  normalizeMarketBaseAsset,
+  type MarketBaseAsset,
+} from "@bitcaster/client-sdk/marketUnits";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -64,22 +69,28 @@ export const FEE_BUFFER_SATS = 10;
 
 let _wallet: CashuWallet | null = null;
 let _mintUrl: string = DEFAULT_MINT_URL;
+let _walletUnit: MarketBaseAsset = "sat";
 
 /** Return the shared CashuWallet, initialising it lazily. */
-export async function getWallet(mintUrl?: string): Promise<CashuWallet> {
+export async function getWallet(
+  mintUrl?: string,
+  baseAsset?: MarketBaseAsset | string | null,
+): Promise<CashuWallet> {
   // If the wallet store has a mnemonic, delegate to it for deterministic secrets
   const store = useWalletStore.getState();
+  const unit = normalizeMarketBaseAsset(baseAsset);
   if (store.mnemonic) {
-    return store.getWallet(mintUrl);
+    return store.getWallet(mintUrl, unit);
   }
 
   // Fallback for pre-setup usage
   const url = mintUrl ?? _mintUrl;
 
-  if (!_wallet || mintUrl !== _mintUrl) {
+  if (!_wallet || url !== _mintUrl || unit !== _walletUnit) {
     _mintUrl = url;
+    _walletUnit = unit;
     const mint = new CashuMint(url);
-    _wallet = new CashuWallet(mint, { unit: "sat" });
+    _wallet = new CashuWallet(mint, { unit });
     await _wallet.loadMint();
   }
 
@@ -94,8 +105,9 @@ export async function getWallet(mintUrl?: string): Promise<CashuWallet> {
 export async function createMintQuote(
   amountSats: number,
   mintUrl?: string,
+  baseAsset?: MarketBaseAsset | string | null,
 ): Promise<MintQuoteResponse> {
-  const wallet = await getWallet(mintUrl);
+  const wallet = await getWallet(mintUrl, baseAsset);
   return wallet.createMintQuote(amountSats);
 }
 
@@ -122,8 +134,9 @@ export async function mintProofs(
   amountSats: number,
   quote: MintQuoteResponse,
   mintUrl?: string,
+  baseAsset?: MarketBaseAsset | string | null,
 ): Promise<Proof[]> {
-  const wallet = await getWallet(mintUrl);
+  const wallet = await getWallet(mintUrl, baseAsset);
   try {
     return await wallet.mintProofs(amountSats, quote.quote);
   } catch (err) {
@@ -135,7 +148,7 @@ export async function mintProofs(
     const url = normalizeUrl(
       mintUrl ?? useWalletStore.getState().activeMintUrl,
     );
-    const result = await recoverKeysetCountersForMint(url, { force: true });
+    const result = await recoverKeysetCountersForMint(url, { force: true, baseAsset });
     if (!result.scannedKeysets.length) {
       // Recovery couldn't scan ANY keyset (network down, mint unreachable,
       // store had no keysets). A retry would just re-throw the same error.
@@ -205,12 +218,12 @@ export interface KeysetRecoveryResult {
  */
 export async function recoverKeysetCountersForMint(
   mintUrl: string,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; baseAsset?: MarketBaseAsset | string | null } = {},
 ): Promise<KeysetRecoveryResult> {
   const url = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
   if (!store.mnemonic) return { scannedKeysets: [] };
-  const wallet = await getWallet(url);
+  const wallet = await getWallet(url, opts.baseAsset);
   // Use the wallet's freshly-loaded keysets via the underlying mint, not the
   // possibly-stale `store.mints[].keysets`. After mint key rotation the
   // store can be days behind; the duplicate-error path needs to scan
@@ -420,6 +433,29 @@ export async function sendProofs(
   return wallet.send(amountSats, proofs);
 }
 
+/** Spend regular sat proofs into a Cashu token and persist local change. */
+export async function spendRegularSatsAsToken(
+  amountSats: number,
+  mintUrl: string,
+): Promise<string> {
+  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
+    throw new Error("Amount must be a positive integer number of sats.");
+  }
+  const proofs = await getBaseProofs(mintUrl, { baseAsset: "sat" });
+  const { keep, send } = await sendProofs(amountSats, proofs, mintUrl);
+  await removeProofs(proofs.map((proof) => proof.secret));
+  if (keep.length > 0) {
+    await addProofs(
+      keep.map((proof) => ({
+        ...proof,
+        mintUrl,
+        baseAsset: "sat",
+      })),
+    );
+  }
+  return encodeToken(send, mintUrl);
+}
+
 /** Create a melt quote for a Lightning invoice. */
 export async function createMeltQuote(
   invoice: string,
@@ -502,8 +538,9 @@ export async function waitForMintQuotePaid(
   onResult: (result: MintQuoteWaitResult) => void,
   options: WaitForMintQuoteOptions = {},
   mintUrl?: string,
+  baseAsset?: MarketBaseAsset | string | null,
 ): Promise<() => void> {
-  const wallet = await getWallet(mintUrl);
+  const wallet = await getWallet(mintUrl, baseAsset);
   const expiresAtSec = options.expiresAtSec ?? quote.expiry ?? undefined;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 
@@ -670,6 +707,7 @@ export interface MarketPosition {
   amountSats: number;
   mintUrl?: string;
   outcomeCollection?: string;
+  baseAsset?: MarketBaseAsset | string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -715,6 +753,7 @@ export async function settleCtfPosition(
   const mintUrl = normalizeUrl(
     position.mintUrl ?? useWalletStore.getState().activeMintUrl,
   );
+  const baseAsset = normalizeMarketBaseAsset(position.baseAsset);
 
   // A composite ("A|B") position spans MULTIPLE primitive keysets, but the
   // mint enforces a single-keyset rule per redeem (redeem_outcome.rs §1). So
@@ -740,6 +779,7 @@ export async function settleCtfPosition(
       proofs: legProofs,
       mintUrl,
       witnessJson,
+      baseAsset,
     });
     redeemed.push(...legResult);
   }
@@ -814,6 +854,7 @@ interface RedeemKeysetLegInput {
   proofs: Proof[];
   mintUrl: string;
   witnessJson: string;
+  baseAsset: MarketBaseAsset;
 }
 
 /**
@@ -836,7 +877,8 @@ interface RedeemKeysetLegInput {
 async function redeemKeysetLeg(
   input: RedeemKeysetLegInput,
 ): Promise<Proof[]> {
-  const { conditionId, keysetId, proofs, mintUrl, witnessJson } = input;
+  const { conditionId, keysetId, proofs, mintUrl, witnessJson, baseAsset } =
+    input;
 
   const legAmount = proofs.reduce(
     (sum, proof) => sum + amountToNumber(proof.amount),
@@ -848,7 +890,11 @@ async function redeemKeysetLeg(
     return resumeCtfRedeem(existing);
   }
 
-  const outputData = await prepareRegularRedeemOutputs(mintUrl, legAmount);
+  const outputData = await prepareRegularRedeemOutputs(
+    mintUrl,
+    legAmount,
+    baseAsset,
+  );
   await prepareProofOperation({
     operationId,
     kind: "ctf-redeem",
@@ -859,6 +905,7 @@ async function redeemKeysetLeg(
       conditionId,
       keysetId,
       amountSats: legAmount,
+      baseAsset,
     },
   });
 
@@ -867,8 +914,9 @@ async function redeemKeysetLeg(
       mintUrl,
       withOracleWitness(proofs, witnessJson),
       outputData,
+      baseAsset,
     );
-    await completeCtfRedeem(operationId, mintUrl, proofs, settled);
+    await completeCtfRedeem(operationId, mintUrl, proofs, settled, baseAsset);
     return settled;
   } catch (error) {
     if (isLosingLegError(error)) {
@@ -884,6 +932,12 @@ async function redeemKeysetLeg(
     // re-run resumes from it; rethrow so the caller can surface/retry.
     throw error;
   }
+}
+
+export async function discardCtfPosition(position: MarketPosition): Promise<number> {
+  validateRedeemPosition(position);
+  await removeProofs(position.proofs.map((proof) => proof.secret));
+  return position.amountSats;
 }
 
 interface ConditionAttestationResponse {
@@ -939,19 +993,23 @@ function buildKeysetRedeemOperationId(
 async function prepareRegularRedeemOutputs(
   mintUrl: string,
   amountSats: number,
+  baseAsset: MarketBaseAsset,
 ): Promise<RedeemOutputData[]> {
-  const wallet = await getWallet(mintUrl);
-  const keyset = await getActiveRegularKeyset(wallet);
+  const wallet = await getWallet(mintUrl, baseAsset);
+  const keyset = await getActiveRegularKeyset(wallet, baseAsset);
   return OutputData.createRandomData(Amount.from(amountSats), keyset);
 }
 
-async function getActiveRegularKeyset(wallet: CashuWallet): Promise<MintKeys> {
+async function getActiveRegularKeyset(
+  wallet: CashuWallet,
+  baseAsset: MarketBaseAsset,
+): Promise<MintKeys> {
   const response = await wallet.mint.getKeys();
   const keyset =
     response.keysets.find(
-      (candidate) => candidate.unit === "sat" && candidate.active !== false,
+      (candidate) => candidate.unit === baseAsset && candidate.active !== false,
     ) ??
-    response.keysets.find((candidate) => candidate.unit === "sat") ??
+    response.keysets.find((candidate) => candidate.unit === baseAsset) ??
     response.keysets[0];
   if (!keyset) throw new Error("Mint did not return a regular keyset");
   return keyset;
@@ -1005,8 +1063,9 @@ async function redeemOutcomeProofsAtMint(
   mintUrl: string,
   inputs: Proof[],
   outputs: RedeemOutputData[],
+  baseAsset: MarketBaseAsset,
 ): Promise<Proof[]> {
-  const wallet = await getWallet(mintUrl);
+  const wallet = await getWallet(mintUrl, baseAsset);
   return wallet.redeemOutcomeProofs({ inputs, outputs });
 }
 
@@ -1056,7 +1115,13 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
     );
   }
 
-  const wallet = await getWallet(entry.mintUrl);
+  const metadata = entry.metadata as {
+    conditionId?: string;
+    amountSats?: number;
+    baseAsset?: string | null;
+  };
+  const baseAsset = normalizeMarketBaseAsset(metadata.baseAsset);
+  const wallet = await getWallet(entry.mintUrl, baseAsset);
   if (!wallet.checkProofsStates) {
     throw new Error(
       "Cashu wallet adapter does not support proof-state recovery checks",
@@ -1078,6 +1143,7 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
       entry.mintUrl,
       entry.inputs,
       restored,
+      baseAsset,
     );
     return restored;
   }
@@ -1085,10 +1151,6 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
     states.length > 0 &&
     states.every((state) => state.state === CheckStateEnum.UNSPENT)
   ) {
-    const metadata = entry.metadata as {
-      conditionId?: string;
-      amountSats?: number;
-    };
     if (!metadata.conditionId || !metadata.amountSats) {
       throw new Error(
         `proof operation ${entry.operationId} is missing CTF redeem metadata`,
@@ -1100,12 +1162,14 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
       entry.mintUrl,
       withOracleWitness(entry.inputs, witness),
       outputData,
+      baseAsset,
     );
     await completeCtfRedeem(
       entry.operationId,
       entry.mintUrl,
       entry.inputs,
       settled,
+      baseAsset,
     );
     return settled;
   }
@@ -1155,8 +1219,9 @@ async function completeCtfRedeem(
   mintUrl: string,
   inputs: Proof[],
   regularProofs: Proof[],
+  baseAsset: MarketBaseAsset,
 ): Promise<void> {
-  await addProofs(regularProofs.map((proof) => ({ ...proof, mintUrl })));
+  await addProofs(regularProofs.map((proof) => ({ ...proof, mintUrl, baseAsset })));
   await removeProofs(inputs.map((proof) => proof.secret));
   await markProofOperationCompleted(operationId, { regular: regularProofs });
 }

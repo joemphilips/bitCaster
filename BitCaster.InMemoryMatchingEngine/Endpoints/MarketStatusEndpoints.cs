@@ -21,14 +21,13 @@ public static class MarketStatusEndpoints
             DevMarketStatusRequest request,
             IHubContext<MarketHub, IMarketHubClient> hubContext) =>
         {
-            var state = string.Equals(request.State, "open", StringComparison.OrdinalIgnoreCase)
-                ? MarketStatusChangedState.Open
-                : MarketStatusChangedState.Closed;
-            var status = new MarketStatusChanged(
-                @closedAt: request.ClosedAt,
-                @conditionId: conditionId,
-                @finalOutcome: request.FinalOutcome,
-                @state: state);
+            var status = new BitCaster.MatchingEngine.Contracts.Hubs.MarketStatusChanged(
+                conditionId,
+                string.Equals(request.State, "open", StringComparison.OrdinalIgnoreCase)
+                    ? "open"
+                    : "closed",
+                request.ClosedAt,
+                request.FinalOutcome);
 
             var outcomes = request.Outcomes is { Count: > 0 }
                 ? request.Outcomes

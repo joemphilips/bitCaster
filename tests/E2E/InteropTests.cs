@@ -64,7 +64,7 @@ public class InteropTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
+                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {TestHelpers.CtfNutsJson} }} }}],
                     activeMintUrl: '{TestPorts.MintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
@@ -184,6 +184,33 @@ public class InteropTests : IAsyncLifetime
 
         // Close any open dialog (it may have already auto-closed on fast machines).
         await page.Keyboard.PressAsync("Escape");
+
+        var finalBalance = await ReadCashuMeBalanceAsync(page);
+        if (finalBalance < amountSats)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                $"cashu.me Lightning invoice ({amountSats} sats) completed transiently, " +
+                $"but persisted balance is only {finalBalance} sats.");
+        }
+    }
+
+    private async Task EnsureCashuMeFunded(
+        IPage page,
+        int amountSats,
+        List<string> consoleMessages)
+    {
+        var balance = await ReadCashuMeBalanceAsync(page);
+        if (balance >= amountSats) return;
+
+        await CashuMeDepositViaLightning(page, amountSats - Math.Max(balance, 0), consoleMessages);
+
+        balance = await ReadCashuMeBalanceAsync(page);
+        if (balance < amountSats)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(page, consoleMessages,
+                $"cashu.me funding setup did not persist enough balance: {balance} sats, " +
+                $"expected at least {amountSats} sats.");
+        }
     }
 
     /// <summary>
@@ -241,10 +268,11 @@ public class InteropTests : IAsyncLifetime
     /// flips on status change, but <c>proofsStore.addProofs()</c> runs afterwards.
     /// </summary>
     private static Task WaitForCashuMeBalance(IPage page, int expectedSats, int timeoutMs)
-        => page.WaitForFunctionAsync(
-            $"async (target) => ((await ({CashuMeReadBalanceJs})()) >= target)",
-            arg: expectedSats,
-            new PageWaitForFunctionOptions { Timeout = timeoutMs, PollingInterval = 200 });
+        => WaitForNumericConditionAsync(
+            () => ReadCashuMeBalanceAsync(page),
+            value => value >= expectedSats,
+            timeoutMs,
+            pollingMs: 200);
 
     /// <summary>
     /// One-shot read of the total balance from cashu.me's Dexie <c>db</c>
@@ -254,6 +282,30 @@ public class InteropTests : IAsyncLifetime
     /// </summary>
     private static Task<int> ReadCashuMeBalanceAsync(IPage page)
         => page.EvaluateAsync<int>(CashuMeReadBalanceJs);
+
+    private static async Task WaitForNumericConditionAsync(
+        Func<Task<int>> readValue,
+        Func<int, bool> predicate,
+        int timeoutMs,
+        int pollingMs)
+    {
+        using var cts = new CancellationTokenSource(timeoutMs);
+        while (!cts.IsCancellationRequested)
+        {
+            var value = await readValue();
+            if (predicate(value)) return;
+            try
+            {
+                await Task.Delay(pollingMs, cts.Token);
+            }
+            catch (TaskCanceledException)
+            {
+                break;
+            }
+        }
+
+        throw new TimeoutException($"Condition was not satisfied within {timeoutMs}ms.");
+    }
 
     /// <summary>
     /// Generate an ecash token in cashu.me via the Send flow.
@@ -424,8 +476,8 @@ public class InteropTests : IAsyncLifetime
             return JSON.stringify({ dbs: dbNames, proofCount, balance, error });
         }");
         var consoleLog = string.Join("\n", bitCasterConsole.TakeLast(20));
-        Assert.True(dbInfo.Contains("\"balance\":100"),
-            $"Expected balance 100 in IndexedDB. DB info: {dbInfo}\nConsole:\n{consoleLog}");
+        Assert.True(dbInfo.Contains("\"balance\":99"),
+            $"Expected spendable balance 99 in IndexedDB after mint input fee. DB info: {dbInfo}\nConsole:\n{consoleLog}");
     }
 
     /// <summary>
@@ -625,8 +677,8 @@ public class InteropTests : IAsyncLifetime
 
         await CashuMeReceiveEcashToken(cashuMePage, bitCasterToken, cashuMeConsole);
 
-        // Verify cashu.me balance shows 100 sats
-        var balanceText = cashuMePage.Locator("text=/100/");
+        // Verify cashu.me shows the spendable balance after mint input fee.
+        var balanceText = cashuMePage.Locator("text=/99/");
         try
         {
             await Assertions.Expect(balanceText.First).ToBeVisibleAsync(new() { Timeout = 10_000 });
@@ -634,7 +686,7 @@ public class InteropTests : IAsyncLifetime
         catch
         {
             throw await TestHelpers.BuildDiagnosticExceptionAsync(cashuMePage, cashuMeConsole,
-                "cashu.me did not show expected balance of 100 sats after receiving bitCaster token.");
+                "cashu.me did not show expected spendable balance of 99 sats after receiving bitCaster token.");
         }
     }
 
@@ -671,7 +723,7 @@ public class InteropTests : IAsyncLifetime
                 state: {{
                     mnemonic: '{mnemonic}',
                     setupComplete: true,
-                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {{ CTF: {{ supported: true }} }} }} }}],
+                    mints: [{{ url: '{TestPorts.MintUrl}', info: {{ name: 'Test Mint', nuts: {TestHelpers.CtfNutsJson} }} }}],
                     activeMintUrl: '{TestPorts.MintUrl}',
                     keysetCounters: {{}},
                     mintConnectionStatuses: {{}}
@@ -763,6 +815,19 @@ public class InteropTests : IAsyncLifetime
         }
         return creq;
     }
+
+    private static Task WaitForBitCasterNip17Listener(IPage page)
+        => page.WaitForFunctionAsync(
+            @"(expectedRelay) => {
+                const diagnostics = window.__BITCASTER_E2E__?.getNip17ListenerDiagnostics?.();
+                return diagnostics?.active === true && diagnostics.relayKey === expectedRelay;
+            }",
+            arg: LocalNostrRelayUrl,
+            new PageWaitForFunctionOptions { Timeout = 15_000, PollingInterval = 250 });
+
+    private static Task<string> BitCasterNip17ListenerDiagnostics(IPage page)
+        => page.EvaluateAsync<string>(
+            @"() => JSON.stringify(window.__BITCASTER_E2E__?.getNip17ListenerDiagnostics?.() ?? null)");
 
     /// <summary>
     /// Pay a bitCaster-issued PaymentRequest from cashu.me. Flow:
@@ -912,10 +977,11 @@ public class InteropTests : IAsyncLifetime
     }";
 
     private static Task WaitForBitCasterBalance(IPage page, int expectedSats, int timeoutMs)
-        => page.WaitForFunctionAsync(
-            $"async (target) => ((await ({BitCasterReadBalanceJs})()) >= target)",
-            arg: expectedSats,
-            new PageWaitForFunctionOptions { Timeout = timeoutMs, PollingInterval = 250 });
+        => WaitForNumericConditionAsync(
+            () => page.EvaluateAsync<int>(BitCasterReadBalanceJs),
+            value => value >= expectedSats,
+            timeoutMs,
+            pollingMs: 250);
 
     /// <summary>
     /// bitCaster issues a PaymentRequest, cashu.me pays it via NIP-17, and
@@ -927,6 +993,7 @@ public class InteropTests : IAsyncLifetime
     {
         var (cashuMeMnemonic, bitCasterMnemonic) = TestMnemonics.GetPair();
         const int payAmount = 100;
+        const int minimumReceivedAfterInputFee = payAmount - 1;
 
         // cashu.me: fund via Lightning so it has ecash to pay the request.
         await using var cashuMeCtx = await NewIsolatedContextAsync();
@@ -938,6 +1005,7 @@ public class InteropTests : IAsyncLifetime
         // minting flow in Chromium; fund first, then point outgoing payment
         // requests at the test relay.
         await ConfigureCashuMeLocalRelay(cashuMePage);
+        await EnsureCashuMeFunded(cashuMePage, payAmount, cashuMeConsole);
 
         // bitCaster: create the PaymentRequest.
         await using var bitCasterCtx = await NewIsolatedContextAsync();
@@ -945,6 +1013,7 @@ public class InteropTests : IAsyncLifetime
         var bitCasterConsole = TestHelpers.AttachConsoleCapture(bitCasterPage);
         await SetupBitCasterWithLocalRelay(bitCasterPage, bitCasterMnemonic);
         var creq = await BitCasterCreatePaymentRequest(bitCasterPage, bitCasterConsole);
+        await WaitForBitCasterNip17Listener(bitCasterPage);
 
         // cashu.me: pay the request — this publishes a NIP-17 gift wrap to
         // the local relay embedded in bitCaster's nprofile.
@@ -960,20 +1029,21 @@ public class InteropTests : IAsyncLifetime
         }
         catch
         {
+            var listenerDiagnostics = await BitCasterNip17ListenerDiagnostics(bitCasterPage);
             throw await TestHelpers.BuildDiagnosticExceptionAsync(bitCasterPage, bitCasterConsole,
                 "bitCaster PaymentRequestDisplay never flipped to 'Payment received!' — " +
-                "NIP-17 DM not routed end-to-end.");
+                $"NIP-17 DM not routed end-to-end. Listener: {listenerDiagnostics}");
         }
 
         try
         {
-            await WaitForBitCasterBalance(bitCasterPage, payAmount, timeoutMs: 15_000);
+            await WaitForBitCasterBalance(bitCasterPage, minimumReceivedAfterInputFee, timeoutMs: 15_000);
         }
         catch
         {
             var balance = await bitCasterPage.EvaluateAsync<int>(BitCasterReadBalanceJs);
             throw await TestHelpers.BuildDiagnosticExceptionAsync(bitCasterPage, bitCasterConsole,
-                $"bitCaster banner flipped but Dexie balance never reached {payAmount}: {balance}.");
+                $"bitCaster banner flipped but Dexie balance never reached {minimumReceivedAfterInputFee}: {balance}.");
         }
     }
 
@@ -988,6 +1058,7 @@ public class InteropTests : IAsyncLifetime
     {
         var (cashuMeMnemonic, bitCasterMnemonic) = TestMnemonics.GetPair();
         const int payAmount = 100;
+        const int minimumReceivedAfterInputFee = payAmount - 1;
 
         await using var cashuMeCtx = await NewIsolatedContextAsync();
         var cashuMePage = await cashuMeCtx.NewPageAsync();
@@ -998,12 +1069,14 @@ public class InteropTests : IAsyncLifetime
         // minting flow in Chromium; fund first, then point outgoing payment
         // requests at the test relay.
         await ConfigureCashuMeLocalRelay(cashuMePage);
+        await EnsureCashuMeFunded(cashuMePage, payAmount, cashuMeConsole);
 
         await using var bitCasterCtx = await NewIsolatedContextAsync();
         var bitCasterPage = await bitCasterCtx.NewPageAsync();
         var bitCasterConsole = TestHelpers.AttachConsoleCapture(bitCasterPage);
         await SetupBitCasterWithLocalRelay(bitCasterPage, bitCasterMnemonic);
         var creq = await BitCasterCreatePaymentRequest(bitCasterPage, bitCasterConsole);
+        await WaitForBitCasterNip17Listener(bitCasterPage);
 
         // The PaymentRequest lives in the creq string (Nostr transport +
         // pubkey + relays). Losing React state after reload must not prevent
@@ -1013,19 +1086,20 @@ public class InteropTests : IAsyncLifetime
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
         });
+        await WaitForBitCasterNip17Listener(bitCasterPage);
 
         await CashuMePayPaymentRequest(cashuMePage, creq, payAmount, cashuMeConsole);
 
         try
         {
-            await WaitForBitCasterBalance(bitCasterPage, payAmount, timeoutMs: 45_000);
+            await WaitForBitCasterBalance(bitCasterPage, minimumReceivedAfterInputFee, timeoutMs: 45_000);
         }
         catch
         {
             var balance = await bitCasterPage.EvaluateAsync<int>(BitCasterReadBalanceJs);
             throw await TestHelpers.BuildDiagnosticExceptionAsync(bitCasterPage, bitCasterConsole,
                 $"After bitCaster reload, NIP-17 payment not redeemed. Balance: {balance} " +
-                "(expected >= {payAmount}). Continuous listener may not be rehydrating on boot.");
+                $"(expected >= {minimumReceivedAfterInputFee}). Continuous listener may not be rehydrating on boot.");
         }
     }
 

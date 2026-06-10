@@ -12,6 +12,7 @@ import { generateNip98Header } from '@/lib/markets'
 import { BitcasterEngineClient } from '@bitcaster/client-sdk/engineClient'
 
 export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
+export type FillStatus = components['schemas']['FillStatus']
 
 /**
  * Mirrors `OrderStatusResponse.status` from `openapi.yaml`.
@@ -22,12 +23,31 @@ export type OrderStatus =
   | 'partially_filled'
   | 'filled'
   | 'cancelled'
+  | 'failed'
+
+export function isTerminalFillStatus(status: FillStatus): boolean {
+  switch (status) {
+    case 'Matched':
+      return false
+    case 'Filled':
+    case 'Failed':
+      return true
+    default:
+      return assertNever(status)
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled FillStatus: ${value}`)
+}
 
 type PendingTradeForPromotion = {
   orderId: string
   marketId: string
   ephemeralPubkey: string
   ephemeralPrivkey: string
+  baseAsset?: string | null
+  divisibility?: number | null
 }
 
 type FillLike = {
@@ -37,6 +57,7 @@ type FillLike = {
 const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set([
   'filled',
   'cancelled',
+  'failed',
 ])
 
 export async function fetchOrderStatus(
@@ -52,14 +73,14 @@ export async function fetchOrderStatus(
 const POLL_INTERVAL_MS = 5_000
 
 /**
- * Promote any fill/reservation carrying a `tradeId` to the in-progress swap
+ * Promote any fill carrying a `tradeId` to the in-progress swap
  * store. Complementary matches (Buy vs Sell) surface the `tradeId` on produced
- * fills once the engine creates the Trade aggregate; mint reservations (Buy vs
- * Buy splitter) surface a fill-shaped settlement handle before final fill
- * commit so clients can join TradeHub even if they missed the one-shot
- * `TradeCreated` push. Legacy CPMM bootstrap fills with no `tradeId` are
- * ignored here. Idempotent — `promote()` is a no-op for tradeIds already
- * present in `activeSwaps`.
+ * fills once the engine creates the Trade aggregate; mint matches (Buy vs Buy
+ * splitter) surface a fill-shaped settlement handle before final fill commit
+ * so clients can join TradeHub even if they missed the one-shot `TradeCreated`
+ * push. Legacy CPMM bootstrap fills with no `tradeId` are ignored here.
+ * Idempotent — `promote()` is a no-op for tradeIds already present in
+ * `activeSwaps`.
  *
  * Captures the ephemeral keypair from `pendingTrades` at promote-time so the
  * swap-driver keeps working after the pending-trade entry is evicted on a
@@ -91,6 +112,8 @@ export function promoteFillsToActiveSwaps(
       marketId: trade.marketId,
       ephemeralPrivkeyHex: trade.ephemeralPrivkey,
       ephemeralPubkeyHex: trade.ephemeralPubkey,
+      baseAsset: trade.baseAsset,
+      divisibility: trade.divisibility,
     })
     promoted += 1
   }
@@ -226,7 +249,7 @@ export function usePendingTradesPoller(): void {
               lastFillCountRef.current.get(trade.orderId) ?? 0
 
             // Hand any fresh complementary-match fills (Buy vs Sell) or
-            // mint-match reservations (Buy vs Buy splitter) to
+            // mint-match settlement handles (Buy vs Buy splitter) to
             // useTradeSettlement so the atomic-swap driver can pick them up.
             // Legacy CPMM bootstrap fills without a tradeId are skipped here.
             const hasNewFills = fillCount > lastFillCount
@@ -300,15 +323,14 @@ export function usePendingTradesPoller(): void {
 
 /**
  * Split a marketId of the form `{conditionId}-{outcomeName}` back into its
- * parts. `conditionId` is a lowercase hex string (32 bytes → 64 chars), so
- * splitting on the first hyphen is safe even if outcome names later grow
- * hyphens of their own. Returns `null` for malformed IDs so callers can fall
- * back to the raw string.
+ * parts. Public market ids use primitive outcome names, while condition ids
+ * may come from external systems with their own separator conventions.
+ * Returns `null` for malformed IDs so callers can fall back to the raw string.
  */
 export function splitMarketId(
   marketId: string,
 ): { conditionId: string; outcomeName: string } | null {
-  const idx = marketId.indexOf('-')
+  const idx = marketId.lastIndexOf('-')
   if (idx <= 0 || idx >= marketId.length - 1) return null
   return {
     conditionId: marketId.slice(0, idx),

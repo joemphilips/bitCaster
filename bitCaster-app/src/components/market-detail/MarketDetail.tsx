@@ -2,6 +2,10 @@ import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type { MarketDetailProps } from "@/types/market-detail";
 import { useMarketState } from "@/hooks/useMarketState";
+import {
+  formatMarketSubunits,
+  normalizeMarketBaseAsset,
+} from "@bitcaster/client-sdk/marketUnits";
 import { MarketHeader } from "./MarketHeader";
 import { TradingPanel } from "./TradingPanel";
 import { PriceChart } from "./PriceChart";
@@ -77,6 +81,7 @@ export function MarketDetail({
   onWalletRequired,
 }: MarketDetailProps) {
   const { t } = useTranslation();
+  const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
   // Get outcomes for categorical markets
   const outcomes = market.type === "categorical" ? market.outcomes : undefined;
 
@@ -183,6 +188,8 @@ export function MarketDetail({
                 )}
                 <OrderBookSection
                   orderBook={market.orderBook}
+                  baseAsset={market.baseAsset}
+                  divisibility={market.divisibility}
                   liveMarketId={
                     isTradingEnabled ? `${market.id}-YES` : undefined
                   }
@@ -251,12 +258,12 @@ export function MarketDetail({
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   {tradeSelection.side.toUpperCase()}
                   {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
-                </p>
-                <p className="text-sm font-medium text-slate-900 dark:text-white">
-                  {tradeAmount > 0
-                    ? `${tradeAmount.toLocaleString()} ${t("trade.sharesUnit")}`
-                    : t("trade.enterAmount")}
-                </p>
+                 </p>
+                 <p className="text-sm font-medium text-slate-900 dark:text-white">
+                   {tradeAmount > 0
+                    ? formatMarketSubunits(tradeAmount, baseAsset)
+                     : t("trade.enterAmount")}
+                 </p>
               </div>
               <button
                 onClick={onTradeClear}

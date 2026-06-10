@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { deriveNostrKeyPair } from "@/lib/nip17";
+import { resolveNsecIdentity } from "@/lib/identityOps";
 import {
   fetchNip78ActivityLog,
   publishNip78ActivityLog,
 } from "@/lib/nip78ActivityLog";
 import { activityLogsEqual, useActivityLogStore } from "./activity-log";
-import { useWalletStore } from "./wallet";
+import { useSettingsStore } from "./settings";
 import type { ActivityItem } from "@/types/portfolio";
 
 const PUBLISH_DEBOUNCE_MS = 800;
@@ -29,7 +29,8 @@ function mergeActivityLogs(
  * path when localStorage is empty.
  */
 export function useActivityLogSync(): void {
-  const mnemonic = useWalletStore((s) => s.mnemonic);
+  const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
+  const nsecSecret = useSettingsStore((s) => s.nsecSecret);
   const items = useActivityLogStore((s) => s.items);
   const replace = useActivityLogStore((s) => s.replace);
   const [initialSyncDone, setInitialSyncDone] = useState(false);
@@ -42,9 +43,10 @@ export function useActivityLogSync(): void {
     setInitialSyncDone(false);
     lastPublished.current = null;
     keysRef.current = null;
-    if (!mnemonic) return;
+    if (nostrSignerMode !== "nsec") return;
 
-    const keys = deriveNostrKeyPair(mnemonic);
+    const keys = resolveNsecIdentity(nsecSecret);
+    if (!keys) return;
     keysRef.current = keys;
 
     let cancelled = false;
@@ -71,10 +73,10 @@ export function useActivityLogSync(): void {
     return () => {
       cancelled = true;
     };
-  }, [mnemonic, replace]);
+  }, [nostrSignerMode, nsecSecret, replace]);
 
   useEffect(() => {
-    if (!mnemonic || !initialSyncDone) return;
+    if (nostrSignerMode !== "nsec" || !initialSyncDone) return;
     const keys = keysRef.current;
     if (!keys) return;
     if (
@@ -90,5 +92,5 @@ export function useActivityLogSync(): void {
       publishNip78ActivityLog(keys.privateKeyHex, snapshot).catch(() => {});
     }, PUBLISH_DEBOUNCE_MS);
     return () => clearTimeout(handle);
-  }, [mnemonic, items, initialSyncDone]);
+  }, [nostrSignerMode, items, initialSyncDone]);
 }

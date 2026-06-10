@@ -2,15 +2,15 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivityItem } from "@/types/portfolio";
 
-const { mockDeriveNostrKeyPair, mockFetchActivityLog, mockPublishActivityLog } =
+const { mockResolveNsecIdentity, mockFetchActivityLog, mockPublishActivityLog } =
   vi.hoisted(() => ({
-    mockDeriveNostrKeyPair: vi.fn(),
+    mockResolveNsecIdentity: vi.fn(),
     mockFetchActivityLog: vi.fn(),
     mockPublishActivityLog: vi.fn(),
   }));
 
-vi.mock("@/lib/nip17", () => ({
-  deriveNostrKeyPair: (...args: unknown[]) => mockDeriveNostrKeyPair(...args),
+vi.mock("@/lib/identityOps", () => ({
+  resolveNsecIdentity: (...args: unknown[]) => mockResolveNsecIdentity(...args),
 }));
 
 vi.mock("@/lib/nip78ActivityLog", () => ({
@@ -21,7 +21,7 @@ vi.mock("@/lib/nip78ActivityLog", () => ({
 
 import { useActivityLogStore } from "../activity-log";
 import { useActivityLogSync } from "../useActivityLogSync";
-import { useWalletStore } from "../wallet";
+import { useSettingsStore } from "../settings";
 
 function activity(overrides: Partial<ActivityItem> = {}): ActivityItem {
   return {
@@ -37,23 +37,23 @@ function activity(overrides: Partial<ActivityItem> = {}): ActivityItem {
 }
 
 beforeEach(() => {
-  mockDeriveNostrKeyPair.mockReset();
+  mockResolveNsecIdentity.mockReset();
   mockFetchActivityLog.mockReset();
   mockPublishActivityLog.mockReset();
-  mockDeriveNostrKeyPair.mockReturnValue({
+  mockResolveNsecIdentity.mockReturnValue({
     privateKeyHex: "private-key",
     publicKey: "public-key",
   });
   mockPublishActivityLog.mockResolvedValue(undefined);
-  useWalletStore.setState({ mnemonic: "", setupComplete: false });
+  useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
   useActivityLogStore.setState({ items: [] });
 });
 
 describe("useActivityLogSync", () => {
-  it("does nothing until a wallet mnemonic is available", () => {
+  it("does nothing until an nsec-backed Nostr identity is available", () => {
     renderHook(() => useActivityLogSync());
 
-    expect(mockDeriveNostrKeyPair).not.toHaveBeenCalled();
+    expect(mockResolveNsecIdentity).not.toHaveBeenCalled();
     expect(mockFetchActivityLog).not.toHaveBeenCalled();
   });
 
@@ -66,7 +66,7 @@ describe("useActivityLogSync", () => {
       id: "remote",
       date: "2026-05-09T01:00:00.000Z",
     });
-    useWalletStore.setState({ mnemonic: "abandon ".repeat(11) + "about" });
+    useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "nsec1test" });
     useActivityLogStore.setState({ items: [local] });
     mockFetchActivityLog.mockResolvedValue([remote]);
 
@@ -90,7 +90,7 @@ describe("useActivityLogSync", () => {
   });
 
   it("publishes local activity changes after the initial restore finishes", async () => {
-    useWalletStore.setState({ mnemonic: "abandon ".repeat(11) + "about" });
+    useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "nsec1test" });
     mockFetchActivityLog.mockResolvedValue([]);
 
     renderHook(() => useActivityLogSync());

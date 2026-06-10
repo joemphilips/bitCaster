@@ -13,10 +13,9 @@ import { db } from '@/stores/proof-db'
 import {
   createMintQuote,
   mintProofs,
-  encodeToken,
-  sendProofs,
   createMeltQuote,
   meltProofs,
+  spendRegularSatsAsToken,
   waitForMintQuotePaid,
   type MintQuoteWaitResult,
 } from '@/lib/cashu'
@@ -36,6 +35,8 @@ import {
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
+import { normalizeMarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
+import { diagnoseProofStates } from '@/lib/proofDiagnostics'
 
 export type ExtendedView =
   | DepositWithdrawView
@@ -128,6 +129,7 @@ export function useDepositWithdrawState(
     const proofs = await db.proofs.toArray()
     const map: Record<string, number> = {}
     for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
+      if (normalizeMarketBaseAsset(p.baseAsset) !== 'sat') continue
       map[p.mintUrl] = (map[p.mintUrl] ?? 0) + amountToNumber(p.amount)
     }
     return map
@@ -258,12 +260,19 @@ export function useDepositWithdrawState(
   const handlePaidInvoice = useCallback(
     async (quote: MintQuoteResponse, mintUrl: string, requested: number) => {
       try {
-        const proofs = await mintProofs(requested, quote, mintUrl)
-        const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl }))
+        const proofs = await mintProofs(requested, quote, mintUrl, 'sat')
+        await diagnoseProofStates({
+          label: 'top-up:minted-proofs',
+          mintUrl,
+          proofs,
+          extra: { requestedSats: requested },
+        })
+        const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl, baseAsset: 'sat' }))
         await addProofs(stored)
         setInvoiceStatus('paid')
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
+          baseAsset: 'sat',
           amountSats: requested,
           status: 'completed',
           lightningInvoice: quote.request,
@@ -312,7 +321,7 @@ export function useDepositWithdrawState(
       await useWalletStore.getState().ensureImplicitWallet()
       // Re-mount idempotency: reuse the active quote if one exists, otherwise
       // request a fresh one. Prevents the duplicate-quote LNBits snackbar.
-      const quote = mintQuoteRef.current ?? await createMintQuote(requested, mintUrl)
+      const quote = mintQuoteRef.current ?? await createMintQuote(requested, mintUrl, 'sat')
       mintQuoteRef.current = quote
       setBolt11(quote.request)
       setInvoiceExpiresAtSec(quote.expiry ?? undefined)
@@ -323,6 +332,7 @@ export function useDepositWithdrawState(
         (r) => handleInvoiceWaitResult(r, quote, mintUrl, requested),
         { onTransientError: (e) => setError(e.message) },
         mintUrl,
+        'sat',
       )
       unsubRef.current = unsub
     } catch (e) {
@@ -360,10 +370,12 @@ export function useDepositWithdrawState(
         const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
           mintUrl: received.mintUrl,
+          baseAsset: 'sat',
         }))
         await addProofs(stored)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
+          baseAsset: 'sat',
           amountSats: received.amountSats,
           status: 'completed',
         })
@@ -392,18 +404,7 @@ export function useDepositWithdrawState(
     setIsLoading(true)
     setError(null)
     try {
-      const proofs = await getBaseProofs(selectedMintId)
-      const { keep, send } = await sendProofs(amountSats, proofs, selectedMintId)
-
-      // Remove original proofs, add back the kept ones
-      await removeProofs(proofs.map((p) => p.secret))
-      const keptStored: StoredProof[] = keep.map((p) => ({
-        ...p,
-        mintUrl: selectedMintId,
-      }))
-      await addProofs(keptStored)
-
-      const token = encodeToken(send, selectedMintId)
+      const token = await spendRegularSatsAsToken(amountSats, selectedMintId)
       setEcashToken(token)
       setCurrentView('token-display')
     } catch (e) {
@@ -437,7 +438,7 @@ export function useDepositWithdrawState(
     setMeltIsPaying(true)
     setError(null)
     try {
-      const proofs = await getBaseProofs(selectedMintId)
+      const proofs = await getBaseProofs(selectedMintId, { baseAsset: 'sat' })
       const { paid, change } = await meltProofs(meltQuote, proofs, selectedMintId)
 
       if (!paid) {
@@ -451,12 +452,14 @@ export function useDepositWithdrawState(
         const changeStored: StoredProof[] = change.map((p) => ({
           ...p,
           mintUrl: selectedMintId,
+          baseAsset: 'sat',
         }))
         await addProofs(changeStored)
       }
 
       useActivityLogStore.getState().addActivity({
         type: 'withdrawal',
+        baseAsset: 'sat',
         amountSats: amountToNumber(meltQuote.amount),
         status: 'completed',
         lightningInvoice: lightningInput,
@@ -488,10 +491,12 @@ export function useDepositWithdrawState(
         const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
           mintUrl: received.mintUrl,
+          baseAsset: 'sat',
         }))
         await addProofs(stored)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
+          baseAsset: 'sat',
           amountSats: received.amountSats,
           status: 'completed',
         })

@@ -19,7 +19,7 @@ For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https:/
 
 Browse existing markets or place limit orders at any price. Markets can be binary (Yes/No), categorical (multiple outcomes), or even two-dimensional. You trade using Bitcoin via Lightning.
 
-Categorical market limit orders can settle complementary multi-outcome legs, such as buying `A` from a seller who locks `B|C`. The first release supports markets with up to 8 outcomes.
+Categorical markets show primitive outcome books such as `A / Not A`, `B / Not B`, and `C / Not C`. Under the hood, settlement can still lock complementary multi-outcome legs such as `B|C`, but users trade through the primitive book labels. The first release supports markets with up to 8 outcomes.
 
 ### Create your own market
 

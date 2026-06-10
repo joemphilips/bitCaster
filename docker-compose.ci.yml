@@ -1,6 +1,8 @@
 services:
   mintd:
     image: joemphilips/cdk-mintd
+    environment:
+      CDK_MINTD_CTF_DEFAULT_KEYSET_CREATION: "one-vs-rest"
     healthcheck:
       test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/8085"]
       interval: 5s

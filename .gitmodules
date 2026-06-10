@@ -12,12 +12,13 @@
 [submodule "cashu.me"]
 	path = cashu.me
 	url = https://github.com/cashubtc/cashu.me
-[submodule "kormir"]
-	path = kormir
-	url = git@github.com:joemphilips/kormir.git
 [submodule "nips-protocol"]
 	path = nips-protocol
 	url = https://github.com/nostr-protocol/nips.git
 [submodule "cashu-ts"]
 	path = cashu-ts
 	url = https://github.com/joemphilips/cashu-ts
+	branch = ctf-convert
+[submodule "dlcdevkit"]
+	path = dlcdevkit
+	url = git@github.com:joemphilips/dlcdevkit.git

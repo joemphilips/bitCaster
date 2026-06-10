@@ -12,7 +12,10 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "allowImportingTsExtensions": true,
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "@cashu/cashu-ts": ["../cashu-ts/lib/types/index.d.ts"]
+    }
   },
   "include": ["src"]
 }

@@ -21,6 +21,8 @@ public static class OrderEndpoints
             IHubContext<MarketHub, IMarketHubClient> marketHub,
             IHubContext<TradeHub, ITradeHubClient> tradeHub) =>
         {
+            if (marketId.Contains('|', StringComparison.Ordinal))
+                return Results.BadRequest("Invalid market ID format. Expected: {conditionId}-{outcomeName}");
             if (req.AmountSats <= 0)
                 return Results.BadRequest("AmountSats must be positive.");
 
@@ -29,6 +31,12 @@ public static class OrderEndpoints
 
             if (string.IsNullOrWhiteSpace(req.OutcomeId))
                 return Results.BadRequest("OutcomeId is required.");
+            if (req.OutcomeId.Contains('|', StringComparison.Ordinal))
+                return Results.BadRequest("OutcomeId must be a primitive outcome name.");
+
+            var resolvedRoute = ResolveOrderRoute(marketId, req);
+            if (resolvedRoute is null)
+                return Results.BadRequest("OutcomeId must match the primitive outcome segment of marketId.");
 
             // Identify the taker. The mock parses NIP-98 without verifying the
             // signature — sufficient for dev/E2E, unsafe in prod (enforced by
@@ -44,15 +52,23 @@ public static class OrderEndpoints
                     return Results.BadRequest("Comment content must be at most 280 characters.");
             }
 
-            var result = bookManager.SubmitOrder(
-                marketId,
-                req.OutcomeId,
-                req.Side,
-                req.Price,
-                req.AmountSats,
-                userId: takerUserId,
-                timeInForce: req.TimeInForce,
-                ephemeralPubkey: req.EphemeralPubkey);
+            SubmitResult result;
+            try
+            {
+                result = bookManager.SubmitOrder(
+                    resolvedRoute.InternalMarketId,
+                    resolvedRoute.InternalOutcomeSetId,
+                    req.Side,
+                    req.Price,
+                    req.AmountSats,
+                    userId: takerUserId,
+                    timeInForce: req.TimeInForce,
+                    ephemeralPubkey: req.EphemeralPubkey);
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ex.Message);
+            }
 
             await marketHub.Clients.Group(marketId)
                 .OrderBookUpdated(bookManager.GetSnapshot(marketId));
@@ -77,7 +93,10 @@ public static class OrderEndpoints
             await EmitTradeCreatedForFills(
                 tradeHub, trades, result.Fills, req.Side, req.EphemeralPubkey, marketId);
 
+            var unit = UnitForMarket(marketId);
             return Results.Ok(new SubmitOrderResponse(
+                baseAsset: unit.BaseAsset,
+                divisibility: unit.Divisibility,
                 ephemeralPubkey: req.EphemeralPubkey,
                 fills: result.Fills,
                 orderId: result.OrderId,
@@ -91,16 +110,20 @@ public static class OrderEndpoints
             InMemoryOrderBookManager bookManager) =>
         {
             var status = bookManager.GetOrderStatus(orderId);
-            if (status is null || status.MarketId != marketId)
+            if (status is null || !PublicRouteMatchesInternalMarket(marketId, status.MarketId))
                 return Results.NotFound();
 
+            var unit = UnitForMarket(marketId);
             return Results.Ok(new OrderStatusResponse(
+                baseAsset: unit.BaseAsset,
+                divisibility: unit.Divisibility,
                 filledAmountSats: status.FilledAmountSats,
                 fills: status.Fills,
-                marketId: status.MarketId,
+                marketId: marketId,
                 orderId: status.OrderId,
                 remainingAmountSats: status.RemainingAmountSats,
-                status: status.Status));
+                status: status.Status,
+                tokenSide: PublicTokenSideForInternalMarket(marketId, status.MarketId)));
         });
 
         app.MapDelete("/api/v1/{marketId}/orders/{orderId:guid}", async (
@@ -111,7 +134,7 @@ public static class OrderEndpoints
         {
             if (!bookManager.CancelOrder(orderId, out var storedMarketId) ||
                 storedMarketId is null ||
-                storedMarketId != marketId)
+                !PublicRouteMatchesInternalMarket(marketId, storedMarketId))
             {
                 return Results.NotFound();
             }
@@ -121,6 +144,78 @@ public static class OrderEndpoints
 
             return Results.Ok();
         });
+    }
+
+    private sealed record ResolvedOrderRoute(string InternalMarketId, string InternalOutcomeSetId);
+
+    private static ResolvedOrderRoute? ResolveOrderRoute(string publicMarketId, SubmitOrderRequest req)
+    {
+        var parts = MarketParts.TryParse(publicMarketId);
+        if (parts is null || !string.Equals(req.OutcomeId, parts.OutcomeSetId, StringComparison.Ordinal))
+            return null;
+
+        var internalOutcomeSetId = req.TokenSide == TokenSide.Complement
+            ? ResolveComplement(parts.ConditionId, parts.OutcomeSetId)
+            : parts.OutcomeSetId;
+        if (string.IsNullOrWhiteSpace(internalOutcomeSetId))
+            return null;
+
+        return new ResolvedOrderRoute(
+            $"{parts.ConditionId}-{internalOutcomeSetId}",
+            internalOutcomeSetId);
+    }
+
+    private static bool PublicRouteMatchesInternalMarket(string publicMarketId, string internalMarketId)
+    {
+        if (string.Equals(publicMarketId, internalMarketId, StringComparison.Ordinal))
+            return true;
+
+        var publicParts = MarketParts.TryParse(publicMarketId);
+        var internalParts = MarketParts.TryParse(internalMarketId);
+        if (publicParts is null || internalParts is null ||
+            !string.Equals(publicParts.ConditionId, internalParts.ConditionId, StringComparison.Ordinal))
+            return false;
+
+        return string.Equals(
+            ResolveComplement(publicParts.ConditionId, publicParts.OutcomeSetId),
+            internalParts.OutcomeSetId,
+            StringComparison.Ordinal);
+    }
+
+    private static TokenSide PublicTokenSideForInternalMarket(string publicMarketId, string internalMarketId)
+    {
+        if (string.Equals(publicMarketId, internalMarketId, StringComparison.Ordinal))
+            return TokenSide.Outcome;
+
+        var publicParts = MarketParts.TryParse(publicMarketId);
+        var internalParts = MarketParts.TryParse(internalMarketId);
+        if (publicParts is null || internalParts is null ||
+            !string.Equals(publicParts.ConditionId, internalParts.ConditionId, StringComparison.Ordinal))
+            return TokenSide.Outcome;
+
+        return string.Equals(
+            ResolveComplement(publicParts.ConditionId, publicParts.OutcomeSetId),
+            internalParts.OutcomeSetId,
+            StringComparison.Ordinal)
+            ? TokenSide.Complement
+            : TokenSide.Outcome;
+    }
+
+    private static string? ResolveComplement(string conditionId, string primitiveOutcome)
+    {
+        var outcomes = MarketEndpoints.TryGetRegisteredOutcomes(conditionId);
+        if (outcomes is null || outcomes.Count == 0)
+        {
+            return primitiveOutcome.Equals("YES", StringComparison.OrdinalIgnoreCase) ? "NO" :
+                primitiveOutcome.Equals("NO", StringComparison.OrdinalIgnoreCase) ? "YES" :
+                null;
+        }
+
+        var complement = outcomes
+            .Where(outcome => !string.Equals(outcome, primitiveOutcome, StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        return complement.Length == 0 ? null : string.Join('|', complement);
     }
 
     /// <summary>
@@ -162,6 +257,9 @@ public static class OrderEndpoints
             var settlementKind = ReadString(fill, "settlementKind");
             var sellerKeepOutcomeSetId = ReadString(fill, "sellerKeepOutcomeSetId");
             var sellerLockOutcomeSetId = ReadString(fill, "sellerLockOutcomeSetId");
+            var baseAsset = ReadString(fill, "baseAsset");
+            var divisibility = ReadInt(fill, "divisibility");
+            var quotePaymentSubunits = ReadLong(fill, "quotePaymentSubunits");
             var record = trades.Register(
                 tradeId.Value,
                 sellerPubkey,
@@ -172,12 +270,16 @@ public static class OrderEndpoints
                 quotePaymentSats,
                 settlementKind,
                 sellerKeepOutcomeSetId,
-                sellerLockOutcomeSetId);
+                sellerLockOutcomeSetId,
+                baseAsset,
+                divisibility,
+                quotePaymentSubunits);
             await tradeHub.Clients.Group(TradeHub.GroupName(tradeId.Value))
                 .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
                     record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
                     record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
-                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId);
+                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId,
+                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits);
             await tradeHub.Clients.Groups([
                     TradeHub.OrderGroupName(fill.MakerOrderId),
                     TradeHub.OrderGroupName(fill.TakerOrderId)
@@ -185,7 +287,8 @@ public static class OrderEndpoints
                 .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
                     record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
                     record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
-                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId);
+                    record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId,
+                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits);
         }
     }
 
@@ -212,6 +315,26 @@ public static class OrderEndpoints
             JsonElement je when je.ValueKind == JsonValueKind.Number && je.TryGetInt64(out var value) => value,
             _ => null
         };
+    }
+
+    private static int? ReadInt(Fill fill, string key)
+    {
+        if (!fill.AdditionalProperties.TryGetValue(key, out var raw) || raw is null)
+            return null;
+        return raw switch
+        {
+            int value => value,
+            long value when value is >= int.MinValue and <= int.MaxValue => (int)value,
+            JsonElement je when je.ValueKind == JsonValueKind.Number && je.TryGetInt32(out var value) => value,
+            _ => null
+        };
+    }
+
+    private static (BaseAsset BaseAsset, int Divisibility) UnitForMarket(string marketId)
+    {
+        var conditionId = MarketParts.TryParse(marketId)?.ConditionId;
+        var market = conditionId is null ? null : MarketEndpoints.TryGetMarket(conditionId);
+        return (market?.BaseAsset ?? BaseAsset.Sat, market?.Divisibility is > 1 ? market.Divisibility : 100);
     }
 
     private static Guid? TryReadTradeId(Fill fill)
