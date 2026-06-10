@@ -60,10 +60,13 @@ if [ -z "${CFLAGS_wasm32_unknown_unknown:-}" ] && command -v clang >/dev/null 2>
     fi
 fi
 
-# Fail loudly if dlcdevkit kormir sources are dirty: wasm-pack builds the
-# working tree, so a dirty-tree build would record a clean fingerprint and the
-# provenance check would falsely report "OK" against stale or unreviewed code.
-if ! git -C "$DDK_DIR" diff --quiet HEAD -- kormir kormir-wasm; then
+# Fail loudly if dlcdevkit kormir sources are dirty (index OR worktree):
+# wasm-pack builds the working tree, so a dirty-tree build would record a
+# clean fingerprint and the provenance check would falsely report "OK" against
+# stale or unreviewed code.  update-index --refresh first so stat-only
+# differences (mtime/ctime) don't produce false positives.
+git -C "$DDK_DIR" update-index -q --refresh
+if ! git -C "$DDK_DIR" diff-index --quiet HEAD -- kormir kormir-wasm; then
     echo "ERROR: dlcdevkit kormir{,-wasm} working tree is dirty — commit before building/verifying so the provenance fingerprint matches the built sources" >&2
     exit 1
 fi
