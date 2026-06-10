@@ -21,6 +21,17 @@ In practice, though, most interesting markets are about novel events that no exi
 
 Prediction markets always involve trusting an oracle. The fundamental choice of whom to trust remains with each trader.
 
+## Price Denominator
+
+Every market has a **price denominator** (D). It controls two things at once:
+
+- **Minimum stake per share.** Buying one whole share costs exactly D base units (for example, D=100 means 1 share costs 100 sats; D=1000 means 1 share costs 1,000 sats).
+- **Price granularity.** Prices are quoted as integers from 1 to D−1, so the smallest price move is 1/D. D=100 gives 1%-steps; D=1,000 gives 0.1%-steps; D=10,000 gives 0.01%-steps.
+
+Choose a lower D when you want low barriers to participation and are comfortable with coarser price resolution. Choose a higher D when fine-grained prices matter and participants can meet the larger minimum stake. The tradeoff cannot be changed after a market is registered.
+
+Supported values: 100, 1,000, 10,000.
+
 ## Initial Liquidity
 
 A market with no orders is a market no one can trade. To solve this cold-start problem, the creator deposits an initial amount of sats as liquidity. These sats are split into outcome tokens (e.g., YES and NO) and handed to a **Constant Product Market Maker (CPMM)** — an automated algorithm that places limit orders across a range of prices on the order book.

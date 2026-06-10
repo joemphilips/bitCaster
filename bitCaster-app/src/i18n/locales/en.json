@@ -458,6 +458,8 @@
     "unitPlaceholder": "e.g. USD, BTC, %",
     "baseAsset": "Base asset",
     "divisibility": "Price denominator",
+  "divisibilityExample": "1 share = {{stake}} · price moves in {{step}} steps",
+  "divisibilityHelp": "Lower value = cheaper to participate but coarser prices. Higher value = finer prices but a bigger minimum stake per share.",
     "precision": "Precision (decimal places)",
     "precisionHint": "Number of decimal places for the outcome value",
     "marketOutcomes": "Market Outcomes",

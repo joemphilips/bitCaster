@@ -70,6 +70,37 @@ describe('OutcomesStep auto-normalize — add/remove', () => {
   })
 })
 
+// ── Divisibility example line ───────────────────────────────────────────────
+
+describe('OutcomesStep divisibility UX copy', () => {
+  it('renders the example line for D=100 (sat)', () => {
+    render(
+      <OutcomesStep
+        outcomeType="categorical"
+        outcomes={makeOutcomes([50, 50])}
+        baseAsset="sat"
+        divisibility={100}
+      />,
+    )
+    // Should render text like "1 share = 100 sats · price moves in 1% steps"
+    expect(screen.getByText(/1 share = 100 sats/i)).toBeInTheDocument()
+    expect(screen.getByText(/1% steps/i)).toBeInTheDocument()
+  })
+
+  it('renders the example line for D=1000 (sat)', () => {
+    render(
+      <OutcomesStep
+        outcomeType="categorical"
+        outcomes={makeOutcomes([50, 50])}
+        baseAsset="sat"
+        divisibility={1000}
+      />,
+    )
+    expect(screen.getByText(/1 share = 1,?000 sats/i)).toBeInTheDocument()
+    expect(screen.getByText(/0\.1% steps/i)).toBeInTheDocument()
+  })
+})
+
 // ── Auto-normalize: probability edit ───────────────────────────────────────
 
 describe('OutcomesStep auto-normalize — probability edit', () => {
