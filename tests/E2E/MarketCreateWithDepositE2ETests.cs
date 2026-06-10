@@ -16,6 +16,7 @@ namespace BitCaster.E2ETest;
 /// → Paid → Credited) is mock-driven by <c>DepositEndpoints</c> on a 2-second
 /// cadence per step, so the polling UI converges in roughly 4–5 seconds.
 /// </summary>
+[Collection(E2ECollections.LiveServiceMutation)] // Registers markets through mint/engine and publishes to the local relay.
 public class MarketCreateWithDepositE2ETests : IAsyncLifetime
 {
     private IPlaywright? _playwright;

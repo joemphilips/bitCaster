@@ -10,6 +10,7 @@ namespace BitCaster.E2ETest;
 /// Cheap guard that the server round-trips <c>ephemeralPubkey</c> and
 /// rejects malformed ones, so the UI can trust the wire.
 /// </summary>
+[Collection(E2ECollections.LiveServiceMutation)] // Posts orders into fixed shared-engine markets.
 public class OrderContractTests : IAsyncLifetime
 {
     private HttpClient? _http;

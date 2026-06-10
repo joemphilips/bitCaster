@@ -4,6 +4,7 @@ using Microsoft.Playwright;
 
 namespace BitCaster.E2ETest;
 
+[Collection(E2ECollections.LiveServiceMutation)] // Creates markets in the shared matching engine and local relay.
 public class MarketCreationTests : IAsyncLifetime
 {
     private const string TestNsec =
