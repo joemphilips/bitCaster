@@ -9,6 +9,7 @@ namespace BitCaster.E2ETest;
 ///
 /// Requires: mintd (8085), frontend (5273), cashu.me (3000).
 /// </summary>
+[Collection(E2ECollections.LiveServiceMutation)] // Moves real tokens between bitCaster, cashu.me, and the shared mint.
 public class InteropTests : IAsyncLifetime
 {
     private IPlaywright? _playwright;
@@ -647,8 +648,9 @@ public class InteropTests : IAsyncLifetime
         }
 
         // Close any open dialog
+        var dialog = page.Locator(".q-dialog");
         await page.Keyboard.PressAsync("Escape");
-        await page.WaitForTimeoutAsync(1000);
+        await Assertions.Expect(dialog).ToBeHiddenAsync(new() { Timeout = 5_000 });
     }
 
     [Fact]

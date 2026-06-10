@@ -47,6 +47,7 @@ namespace BitCaster.E2ETest;
 /// actually live.
 /// </para>
 /// </summary>
+[Collection(E2ECollections.LiveServiceMutation)] // Creates real orders/trades and observes shared SignalR state.
 public class TabCloseRecoveryTests : IAsyncLifetime
 {
     private const string TestNsec =

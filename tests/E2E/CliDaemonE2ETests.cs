@@ -19,6 +19,7 @@ namespace BitCaster.E2ETest;
 /// bitcaster-cli, and points it at the same public mock engine used by browser
 /// E2E.
 /// </summary>
+[Collection(E2ECollections.LiveServiceMutation)] // Starts daemon processes and mutates shared engine/mint state.
 public sealed class CliDaemonE2ETests : IAsyncLifetime
 {
     private const int MintInputFeePpk = 1;

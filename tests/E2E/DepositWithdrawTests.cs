@@ -2,6 +2,7 @@ using Microsoft.Playwright;
 
 namespace BitCaster.E2ETest;
 
+[Collection(E2ECollections.LiveServiceMutation)] // Creates real mint quotes/tokens against the shared mint.
 public class DepositWithdrawTests : IAsyncLifetime
 {
     private IPlaywright? _playwright;
