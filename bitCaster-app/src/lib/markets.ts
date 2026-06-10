@@ -211,7 +211,6 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     volume: entry.volumeLifetimeSats ?? 0,
     liquidity: entry.liquiditySats ?? 0,
     liquiditySats: entry.liquiditySats ?? 0,
-    traderCount: entry.traderCount ?? 0,
     volumeLifetimeSats: entry.volumeLifetimeSats ?? 0,
     closingDate,
     createdDate: entry.createdAt,
@@ -348,7 +347,6 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     volume: entry.volumeLifetimeSats ?? 0,
     liquidity: entry.liquiditySats ?? 0,
     liquiditySats: entry.liquiditySats ?? 0,
-    traderCount: entry.traderCount ?? 0,
     volumeLifetimeSats: entry.volumeLifetimeSats ?? 0,
     closingDate: entry.deadline ?? null,
     createdDate: createdAt,
@@ -407,7 +405,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
 /**
  * Resolve the engine catalogue entry for a single `conditionId`. Used by the
  * detail page to read engine-authoritative fields (`outcomes`, `state`,
- * `thumbnailUrl`, `volumeLifetimeSats`, `liquiditySats`, `traderCount`).
+ * `thumbnailUrl`, `volumeLifetimeSats`, `liquiditySats`).
  * Creator-defined outcome order comes from engine registration metadata, not
  * mintd's one-vs-rest keysets.
  * Returns `null` when the engine has no record of the market or the request

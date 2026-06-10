@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   TrendingUp,
   Droplet,
-  Users,
   Landmark,
   Copy,
 } from "lucide-react";
@@ -377,16 +376,6 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
             <Droplet className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
               {formatMarketSubunits(market.liquiditySats, baseAsset)}
-            </span>
-          </div>
-          <div
-            className="flex items-center gap-1"
-            title={t("market.traders")}
-            aria-label={t("market.traders")}
-          >
-            <Users className="w-3.5 h-3.5" />
-            <span className="font-mono font-medium">
-              {market.traderCount.toLocaleString()}
             </span>
           </div>
           <button

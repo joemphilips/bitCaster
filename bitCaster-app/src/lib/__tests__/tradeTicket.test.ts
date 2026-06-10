@@ -15,7 +15,6 @@ const market: MarketDetail = {
   volume: 0,
   liquidity: 0,
   liquiditySats: 0,
-  traderCount: 0,
   volumeLifetimeSats: 0,
   closingDate: "2026-12-31T00:00:00Z",
   createdDate: "2026-01-01T00:00:00Z",

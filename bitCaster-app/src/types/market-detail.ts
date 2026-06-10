@@ -133,7 +133,6 @@ interface BaseMarketDetail {
   volume: number
   liquidity: number
   liquiditySats: number
-  traderCount: number
   volumeLifetimeSats: number
   closingDate: string | null
   createdDate: string

@@ -785,8 +785,6 @@ export interface components {
             totalVolumeSats: number;
             /** @description Total number of fills (trades) executed. */
             totalTrades: number;
-            /** @description Number of unique user IDs that have submitted orders. */
-            uniqueTraderCount: number;
             /**
              * Format: int64
              * @description Total liquidity deposited in satoshis.
@@ -1012,11 +1010,6 @@ export interface components {
              * @description Total face amount in sats of currently-resting orders across the market's order books.
              */
             liquiditySats: number;
-            /**
-             * Format: int32
-             * @description Number of distinct traders that have settled a trade in this market.
-             */
-            traderCount: number;
             /**
              * Format: int64
              * @description Cumulative settled collateral face amount of all fills in the market's history.

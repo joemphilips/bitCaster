@@ -12,7 +12,6 @@ public static class MetadataEndpoints
                 marketId: marketId,
                 totalVolumeSats: 0,
                 totalTrades: 0,
-                uniqueTraderCount: 0,
                 totalLiquiditySats: 0));
         });
     }

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Users, Droplet, TrendingUp, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
+import { Droplet, TrendingUp, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { formatBtc } from '@/lib/format'
 import { getMarketThumbnail } from '@/lib/markets'
@@ -591,14 +591,6 @@ export function MarketCard({
           >
             <Droplet className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">{formatBtc(market.liquiditySats)}</span>
-          </div>
-          <div
-            className="flex items-center gap-1"
-            title={t('market.traders')}
-            aria-label={t('market.traders')}
-          >
-            <Users className="w-3.5 h-3.5" />
-            <span className="font-mono font-medium">{market.traderCount.toLocaleString()}</span>
           </div>
           <button
             onClick={handleBookmark}
