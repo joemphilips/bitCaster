@@ -214,6 +214,7 @@
     "mintFeeTooltip": "Charged by the Cashu mint for processing the transaction",
     "engineScoreFee": "Engine Score fee",
     "engineScoreFeeTooltip": "Charged by the matching engine for order execution",
+    "engineScoreFeeShownAtConfirmation": "Shown at confirmation",
     "totalCost": "Total cost",
     "orderFillHint": "Order will fill when market price reaches your specified level",
     "priceImpact": "Price impact",

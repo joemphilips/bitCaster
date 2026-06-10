@@ -214,6 +214,7 @@
     "mintFeeTooltip": "取引処理のために Cashu ミントが請求します",
     "engineScoreFee": "Engine Score 手数料",
     "engineScoreFeeTooltip": "注文実行のためにマッチングエンジンが請求します",
+    "engineScoreFeeShownAtConfirmation": "確認時に表示",
     "totalCost": "合計金額",
     "orderFillHint": "市場価格が指定した水準に達したときに注文が約定します",
     "priceImpact": "価格インパクト",

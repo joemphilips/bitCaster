@@ -54,7 +54,6 @@ interface TradingPanelProps {
 // before submit.
 const QUICK_SHARE_PRESETS = [1, 5, 10, 50]
 const QUICK_SELL_PERCENTAGES = [25, 50, 75, 100]
-const ENGINE_SCORE_FEE_SUBUNITS = 0
 
 // Custom scrollable container with chevron buttons
 function ScrollableContainer({
@@ -457,6 +456,14 @@ function formatPriceWithProbability(price: number, divisibility: number): string
   return `${price.toLocaleString()} (${formatProbabilityPercent(price, divisibility)}%)`
 }
 
+function formatEngineScoreFee(
+  amountSats: number | null,
+  shownAtConfirmation: string,
+): string {
+  if (amountSats == null) return shownAtConfirmation
+  return `${Math.trunc(amountSats).toLocaleString()} sats`
+}
+
 function FeeRow({
   label,
   tooltip,
@@ -488,6 +495,11 @@ function LimitOrderPreviewSection({
   formatAmount: (amount: number) => string
 }) {
   const { t } = useTranslation()
+  const formatScoreFee = () =>
+    formatEngineScoreFee(
+      preview.engineScoreFeeSats,
+      t('trade.engineScoreFeeShownAtConfirmation'),
+    )
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
       <div className="flex justify-between text-sm">
@@ -521,7 +533,7 @@ function LimitOrderPreviewSection({
       <FeeRow
         label={t('trade.engineScoreFee')}
         tooltip={t('trade.engineScoreFeeTooltip')}
-        value={formatAmount(ENGINE_SCORE_FEE_SUBUNITS)}
+        value={formatScoreFee()}
       />
       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
         <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalCost')}</span>
@@ -576,6 +588,8 @@ export function TradingPanel({
   const subunitLabel = marketSubunitLabel(baseAsset)
   const wholeShareLabel = formatWholeShareFaceValue({ baseAsset, divisibility })
   const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
+  const formatScoreFee = (amountSats: number | null) =>
+    formatEngineScoreFee(amountSats, t('trade.engineScoreFeeShownAtConfirmation'))
   const shareCountLabel = (shares: number) =>
     t('trade.shareCount', { count: shares.toLocaleString() })
   const userHoldingShares =
@@ -780,7 +794,7 @@ export function TradingPanel({
               <FeeRow
                 label={t('trade.engineScoreFee')}
                 tooltip={t('trade.engineScoreFeeTooltip')}
-                value={formatAmount(tradePreview.platformFee)}
+                value={formatScoreFee(tradePreview.engineScoreFeeSats)}
               />
               {!isSell && (
                 <div className="flex justify-between text-sm">
