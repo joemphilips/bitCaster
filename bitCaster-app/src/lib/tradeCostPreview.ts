@@ -79,6 +79,7 @@ export function computeLimitOrderPreview(params: {
   limitPrice: number
   feePercent: number
   mintInputFeePpk: number
+  engineScoreFeeSats?: number | null
   divisibility?: number
 }): LimitOrderPreview {
   const {
@@ -86,6 +87,7 @@ export function computeLimitOrderPreview(params: {
     limitPrice,
     feePercent,
     mintInputFeePpk,
+    engineScoreFeeSats = null,
     divisibility = FACE_SATS_PER_DISPLAY_SHARE,
   } = params
   const cost = computeTradeCost({
@@ -101,6 +103,7 @@ export function computeLimitOrderPreview(params: {
     quoteSats: cost.quoteSats,
     creatorFee: cost.creatorFee,
     mintFee: cost.mintFee,
+    engineScoreFeeSats,
     potentialPayout: displayShares * divisibility,
     totalCost: cost.totalCost,
   }

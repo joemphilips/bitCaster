@@ -131,7 +131,9 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         await SetupComplete(page);
 
-        // Intercept metadata API calls with known values
+        // Intercept the removed metadata endpoint in case a regression
+        // reintroduces the call; the detail page should render current
+        // catalogue metrics instead.
         await page.RouteAsync("**/api/v1/*/metadata", async route =>
         {
             await route.FulfillAsync(new RouteFulfillOptions
@@ -142,7 +144,6 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
                     marketId = "test",
                     totalVolumeSats = 75000,
                     totalTrades = 25,
-                    uniqueTraderCount = 100,
                     totalLiquiditySats = 200000,
                 }),
             });
@@ -168,9 +169,12 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Will Bitcoin reach" });
         await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 10_000 });
 
-        // Verify trader count is displayed on detail page
-        var traderCount = page.GetByText("100");
-        await Assertions.Expect(traderCount.First).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        // Verify the detail header renders current catalogue metrics. The old
+        // unique-trader metric was removed from the contract and UI surfaces.
+        await Assertions.Expect(page.GetByLabel("Volume").First)
+            .ToContainTextAsync("sats", new() { Timeout = 5_000 });
+        await Assertions.Expect(page.GetByLabel("Liquidity").First)
+            .ToContainTextAsync("sats", new() { Timeout = 5_000 });
     }
 
     [Fact]

@@ -15,6 +15,7 @@ import {
   fetchMarketComments,
   fetchMarketPriceHistory,
   fetchOrderBook,
+  getParticipationScore,
   signTradeComment,
   submitOrder,
 } from "@/lib/markets";
@@ -246,12 +247,16 @@ export function MarketDetailPage() {
   const [lazySetupError, setLazySetupError] = useState<string | null>(null);
   const [lazySetupCreating, setLazySetupCreating] = useState(false);
   const [showBackupReminder, setShowBackupReminder] = useState(false);
+  const [engineScoreFeeSats, setEngineScoreFeeSats] = useState<number | null>(
+    null,
+  );
   const [pendingTopUpComment, setPendingTopUpComment] = useState<
     string | undefined
   >();
   const [lazySetupComment, setLazySetupComment] = useState<
     string | undefined
   >();
+  const walletReady = setupComplete && nostrSignerMode !== "none";
 
   // Load market data
   const loadMarket = useCallback((options: { showLoading?: boolean } = {}) => {
@@ -375,6 +380,28 @@ export function MarketDetailPage() {
     };
   }, [market?.id]);
 
+  useEffect(() => {
+    if (!walletReady) {
+      setEngineScoreFeeSats(null);
+      return;
+    }
+
+    let cancelled = false;
+    getParticipationScore()
+      .then((score) => {
+        if (!cancelled) {
+          setEngineScoreFeeSats(score.enabled ? score.matchDebitScore : 0);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setEngineScoreFeeSats(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [walletReady]);
+
   // Worst-case effective price for a MARKET order, mirroring the wire price
   // `buildTradeTicket`/`marketPriceFor` resolves (buy crosses up to
   // divisibility - 1, sell down to 1). The market preview's cost basis derives
@@ -411,7 +438,7 @@ export function MarketDetailPage() {
       mintFee: cost.mintFee,
       potentialPayout: tradeFaceAmount,
       creatorFee: cost.creatorFee,
-      platformFee: 0,
+      engineScoreFeeSats,
       totalCost: cost.totalCost,
     };
   }, [
@@ -423,6 +450,7 @@ export function MarketDetailPage() {
     activeMintInputFeePpk,
     marketDivisibility,
     tradeFaceAmount,
+    engineScoreFeeSats,
   ]);
 
   // Computed limit order preview.
@@ -446,6 +474,7 @@ export function MarketDetailPage() {
       quoteSats: cost.quoteSats,
       creatorFee: cost.creatorFee,
       mintFee: cost.mintFee,
+      engineScoreFeeSats,
       potentialPayout: tradeFaceAmount,
       totalCost: cost.totalCost,
     };
@@ -458,6 +487,7 @@ export function MarketDetailPage() {
     activeMintInputFeePpk,
     marketDivisibility,
     tradeFaceAmount,
+    engineScoreFeeSats,
   ]);
 
   // Derived spend a BUY must cover, used by the pre-submit balance gate and the
@@ -911,7 +941,7 @@ export function MarketDetailPage() {
         onPreflightSplitChange={setPreflightSplit}
         onLimitPriceChange={setLimitPrice}
         onRelatedMarketClick={handleRelatedMarketClick}
-        walletReady={setupComplete && nostrSignerMode !== "none"}
+        walletReady={walletReady}
         onWalletRequired={handleWalletRequired}
       />
       {topUpStage === "modal" && (

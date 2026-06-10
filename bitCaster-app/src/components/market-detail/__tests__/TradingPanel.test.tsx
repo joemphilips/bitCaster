@@ -53,7 +53,7 @@ describe('TradingPanel', () => {
       mintFee: 0,
       potentialPayout: 5_000,
       creatorFee: 1,
-      platformFee: 0,
+      engineScoreFeeSats: 0,
       totalCost: 1_501,
     }
 
@@ -74,7 +74,7 @@ describe('TradingPanel', () => {
     expect(
       screen.getByRole('button', { name: 'Buy YES for 50 shares' }),
     ).toBeInTheDocument()
-    expect(screen.queryByText(/sats/)).not.toBeInTheDocument()
+    expect(screen.getByText('0 sats')).toBeInTheDocument()
   })
 
   it('pins 50 shares at price 30 for D=100 as 1,500 sats cost and 5,000 sats payout', () => {
@@ -85,6 +85,7 @@ describe('TradingPanel', () => {
       quoteSats: 1_500,
       creatorFee: 0,
       mintFee: 0,
+      engineScoreFeeSats: 0,
       potentialPayout: 5_000,
       totalCost: 1_500,
     }
@@ -106,6 +107,7 @@ describe('TradingPanel', () => {
     expect(screen.getByText('30 (30%)')).toBeInTheDocument()
     expect(screen.getByText('Shares you receive if order fills')).toBeInTheDocument()
     expect(screen.getByText('Market Creator fee (1%)')).toBeInTheDocument()
+    expect(screen.getAllByText('0 sats')).toHaveLength(3)
     expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1,500 sats')
     expect(screen.getByTestId('limit-payout-if-win')).toHaveTextContent('5,000 sats')
   })
@@ -118,6 +120,7 @@ describe('TradingPanel', () => {
       quoteSats: 1_500,
       creatorFee: 15,
       mintFee: 2,
+      engineScoreFeeSats: 0,
       potentialPayout: 5_000,
       totalCost: 1_517,
     }
@@ -178,6 +181,7 @@ describe('TradingPanel', () => {
       quoteSats: 301,
       creatorFee: 0,
       mintFee: 0,
+      engineScoreFeeSats: 0,
       potentialPayout: 1_000,
       totalCost: 301,
     }
