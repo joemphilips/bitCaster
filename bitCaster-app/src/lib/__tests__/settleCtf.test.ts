@@ -10,6 +10,7 @@ const proofDbState = vi.hoisted(() => ({
   operations: new Map<string, any>(),
   addedProofs: [] as any[],
   removedSecrets: [] as string[],
+  failNextMarkFailed: false,
 }))
 
 const cashuState = vi.hoisted(() => ({
@@ -67,6 +68,10 @@ vi.mock('@/stores/proof-db', () => {
     ),
     markProofOperationFailed: vi.fn(
       async (operationId: string, error: unknown) => {
+        if (proofDbState.failNextMarkFailed) {
+          proofDbState.failNextMarkFailed = false
+          throw new Error('simulated crash before terminal operation state')
+        }
         const existing = proofDbState.operations.get(operationId)
         const updated = {
           ...existing,
@@ -151,6 +156,11 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
       this.mint = mint
     }
     async loadMint() {}
+    async checkProofsStates(
+      inputs: Array<{ id: string; secret: string }>,
+    ): Promise<Array<{ state: string }>> {
+      return inputs.map(() => ({ state: 'UNSPENT' }))
+    }
     async redeemOutcomeProofs({
       inputs,
       outputs,
@@ -243,6 +253,7 @@ describe('settleCtfPosition — per-keyset redeem', () => {
     proofDbState.operations.clear()
     proofDbState.addedProofs.length = 0
     proofDbState.removedSecrets.length = 0
+    proofDbState.failNextMarkFailed = false
     cashuState.winningKeysets.clear()
     cashuState.transientFailKeysets.clear()
     cashuState.redeemCalls.length = 0
@@ -316,10 +327,7 @@ describe('settleCtfPosition — per-keyset redeem', () => {
     expect(op.state).toBe('completed')
   })
 
-  it('B2 LOW: a code-less terminal rejection (transport dropped the code) still classifies as a losing leg via the message fallback', async () => {
-    // Some proxies collapse the JSON error body to a bare string, so the
-    // structured `code` is gone. The message-substring fallback must still
-    // recognise the terminal rejection rather than treat it as transient.
+  it('does not classify a code-less rejection as a losing leg', async () => {
     cashuState.winningKeysets.add('keyset-A')
     cashuState.losingLegMessageOnly = true
     mockAttestation('A')
@@ -329,6 +337,49 @@ describe('settleCtfPosition — per-keyset redeem', () => {
       makeProof('sA', 100, 'keyset-A', 'A|B'),
       makeProof('sB', 100, 'keyset-B', 'A|B'),
     ]
+    await expect(
+      settleCtfPosition({
+        conditionId: CONDITION_ID,
+        amountSats: 200,
+        proofs,
+        mintUrl: 'http://mint.test',
+      }),
+    ).rejects.toThrow(/Oracle has not attested/)
+
+    expect(cashuState.redeemCalls).toHaveLength(2)
+    expect(proofDbState.removedSecrets).toEqual(['sA'])
+    const losingOp = Array.from(proofDbState.operations.values()).find(
+      (op) => op.metadata?.keysetId === 'keyset-B',
+    )
+    expect(losingOp?.state).toBe('prepared')
+  })
+
+  it('resumes when a crash happens after discarding a losing leg but before marking it failed', async () => {
+    cashuState.winningKeysets.add('keyset-A')
+    mockAttestation('A')
+    const { settleCtfPosition } = await import('@/lib/cashu')
+
+    const proofs = [
+      makeProof('sA', 100, 'keyset-A', 'A|B'),
+      makeProof('sB', 100, 'keyset-B', 'A|B'),
+    ]
+    proofDbState.failNextMarkFailed = true
+
+    await expect(
+      settleCtfPosition({
+        conditionId: CONDITION_ID,
+        amountSats: 200,
+        proofs,
+        mintUrl: 'http://mint.test',
+      }),
+    ).rejects.toThrow(/simulated crash/)
+
+    const losingOpAfterCrash = Array.from(proofDbState.operations.values()).find(
+      (op) => op.metadata?.keysetId === 'keyset-B',
+    )
+    expect(losingOpAfterCrash?.state).toBe('prepared')
+    expect(proofDbState.removedSecrets.sort()).toEqual(['sA', 'sB'])
+
     const regular = await settleCtfPosition({
       conditionId: CONDITION_ID,
       amountSats: 200,
@@ -337,12 +388,11 @@ describe('settleCtfPosition — per-keyset redeem', () => {
     })
 
     expect(regular.reduce((s, p) => s + Number(p.amount), 0)).toBe(100)
-    expect(cashuState.redeemCalls).toHaveLength(2)
-    expect(proofDbState.removedSecrets.sort()).toEqual(['sA', 'sB'])
-    const losingOp = Array.from(proofDbState.operations.values()).find(
+    const losingOpAfterResume = Array.from(proofDbState.operations.values()).find(
       (op) => op.metadata?.keysetId === 'keyset-B',
     )
-    expect(losingOp?.state).toBe('failed')
+    expect(losingOpAfterResume?.state).toBe('failed')
+    expect(proofDbState.removedSecrets.filter((secret) => secret === 'sB')).toHaveLength(2)
   })
 
   it('composite "A|B" stored under composite label: B leg attempted then removed terminally, no error', async () => {
