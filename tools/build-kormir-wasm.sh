@@ -74,3 +74,8 @@ rm -f "$OUT_DIR/package.json" "$OUT_DIR/.gitignore" "$OUT_DIR/README.md" "$OUT_D
 
 echo "Done. Generated files:"
 ls -la "$OUT_DIR"
+
+# Record source fingerprint so tools/check-kormir-wasm-provenance.sh can verify
+# that the bundle matches the current dlcdevkit sources.
+git -C "$DDK_DIR" rev-parse HEAD:kormir HEAD:kormir-wasm > "$OUT_DIR/.source-fingerprint"
+echo "Source fingerprint written to $OUT_DIR/.source-fingerprint"

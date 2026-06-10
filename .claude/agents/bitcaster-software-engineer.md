@@ -92,7 +92,7 @@ When the diff touches a value that crosses the C# (engine / mock) ↔ TypeScript
 2. One canonical wire form (`camelCase`); foreign values normalize once at ingress.
 3. Total mappings via exhaustive switches + `assertNever`; negative comparisons (`!== 'pending'`) are banned.
 
-This rule is mandatory whenever you modify `BitCaster.MatchingEngine.Contracts/specs/openapi.yaml`, `bitCaster-app/src/generated/`, or any `switch`/comparison over a value typed from those generated unions. Past regression caught by this rule: the P7 `isMarketClosed(s) => s.status !== 'pending'` bug that flipped `Closed` for newly-created markets with no attestation yet.
+This rule is mandatory whenever you modify `BitCaster.MatchingEngine.Contracts/specs/openapi.yaml`, `bitCaster-app/src/generated/`, or any `switch`/comparison over a value typed from those generated unions. A past regression of exactly this shape: `isMarketClosed(s) => s.status !== 'pending'` flipped `Closed` for newly-created markets with no attestation yet — a negative comparison that silently broke when a third status value was added.
 
 ## Skills are gates, not destinations
 
