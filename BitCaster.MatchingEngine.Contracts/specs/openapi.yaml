@@ -1604,7 +1604,6 @@ components:
         - marketId
         - totalVolumeSats
         - totalTrades
-        - uniqueTraderCount
         - totalLiquiditySats
       properties:
         marketId:
@@ -1617,9 +1616,6 @@ components:
         totalTrades:
           type: integer
           description: Total number of fills (trades) executed.
-        uniqueTraderCount:
-          type: integer
-          description: Number of unique user IDs that have submitted orders.
         totalLiquiditySats:
           type: integer
           format: int64
@@ -1902,7 +1898,6 @@ components:
         - volume24hSats
         - volume30dSats
         - liquiditySats
-        - traderCount
         - volumeLifetimeSats
         - categoryTags
         - lastSuccessfulRefreshAt
@@ -2005,13 +2000,6 @@ components:
           description: >
             Total face amount in sats of currently-resting orders across the
             market's order books.
-        traderCount:
-          type: integer
-          format: int32
-          minimum: 0
-          description: >
-            Number of distinct traders that have settled a trade in this
-            market.
         volumeLifetimeSats:
           type: integer
           format: int64

@@ -46,7 +46,6 @@ interface BaseCreatorMarket {
   status: MarketStatus
   volume: number
   liquidity: number
-  traderCount: number
   createdDate: string
   closingDate: string
   creatorFeePercent: number

@@ -152,7 +152,6 @@ public static class MarketQueryEndpoint
             state: open ? MarketCatalogueEntryState.Open : MarketCatalogueEntryState.Closed,
             thumbnailUrl: null!,
             title: c.Title,
-            traderCount: StubTraderCount(c),
             volume24hSats: 0,
             volume30dSats: 0,
             volumeLifetimeSats: StubVolumeLifetimeSats(c));
@@ -160,9 +159,6 @@ public static class MarketQueryEndpoint
 
     private static long StubLiquiditySats(MintdConditionDto c) =>
         25_000L + (StableBucket(c.ConditionId, modulo: 12) * 5_000L);
-
-    private static int StubTraderCount(MintdConditionDto c) =>
-        2 + StableBucket(c.ConditionId, modulo: 8);
 
     private static long StubVolumeLifetimeSats(MintdConditionDto c) =>
         StubLiquiditySats(c) * (2 + StableBucket(c.ConditionId, modulo: 4));

@@ -1438,12 +1438,11 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketMetadataSnapshot
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketMetadataSnapshot(string @marketId, long @totalLiquiditySats, int @totalTrades, long @totalVolumeSats, int @uniqueTraderCount)
+        public MarketMetadataSnapshot(string @marketId, long @totalLiquiditySats, int @totalTrades, long @totalVolumeSats)
         {
             this.MarketId = @marketId;
             this.TotalVolumeSats = @totalVolumeSats;
             this.TotalTrades = @totalTrades;
-            this.UniqueTraderCount = @uniqueTraderCount;
             this.TotalLiquiditySats = @totalLiquiditySats;
         }
 
@@ -1464,12 +1463,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("totalTrades")]
         public int TotalTrades { get; }
-
-        /// <summary>
-        /// Number of unique user IDs that have submitted orders.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("uniqueTraderCount")]
-        public int UniqueTraderCount { get; }
 
         /// <summary>
         /// Total liquidity deposited in satoshis.
@@ -1977,7 +1970,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySats, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, int @traderCount, long @volume24hSats, long @volume30dSats, long @volumeLifetimeSats)
+        public MarketCatalogueEntry(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySats, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSats, long @volume30dSats, long @volumeLifetimeSats)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -1993,7 +1986,6 @@ namespace BitCaster.MatchingEngine.Contracts
             this.Volume24hSats = @volume24hSats;
             this.Volume30dSats = @volume30dSats;
             this.LiquiditySats = @liquiditySats;
-            this.TraderCount = @traderCount;
             this.VolumeLifetimeSats = @volumeLifetimeSats;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
@@ -2100,13 +2092,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
         public long LiquiditySats { get; }
-
-        /// <summary>
-        /// Number of distinct traders that have settled a trade in this market.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("traderCount")]
-        public int TraderCount { get; }
 
         /// <summary>
         /// Cumulative settled collateral face amount of all fills in the market's history.

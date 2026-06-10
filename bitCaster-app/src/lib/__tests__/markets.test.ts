@@ -63,7 +63,6 @@ const yesNoEntry: MarketCatalogueEntry = {
   volume24hSats: 12_000,
   volume30dSats: 340_000,
   liquiditySats: 88_000,
-  traderCount: 42,
   volumeLifetimeSats: 980_000,
   baseAsset: "sat",
   divisibility: 100,
@@ -84,7 +83,6 @@ const categoricalEntry: MarketCatalogueEntry = {
   volume24hSats: 0,
   volume30dSats: 0,
   liquiditySats: 12_000,
-  traderCount: 7,
   volumeLifetimeSats: 45_000,
   baseAsset: "sat",
   divisibility: 100,
@@ -128,7 +126,6 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.volumeLifetimeSats).toBe(980_000);
     expect(market.liquidity).toBe(88_000);
     expect(market.liquiditySats).toBe(88_000);
-    expect(market.traderCount).toBe(42);
   });
 
   it('falls back to "Untitled Market" when title is null', () => {
@@ -315,7 +312,6 @@ describe("getMarkets (engine catalogue proxy wiring)", () => {
     expect(result.markets[0].volumeLifetimeSats).toBe(980_000);
     expect(result.markets[0].volume).toBe(980_000);
     expect(result.markets[0].liquiditySats).toBe(88_000);
-    expect(result.markets[0].traderCount).toBe(42);
     expect(result.nextCursor).toBeNull();
     expect(result.lastSuccessfulRefreshAt).toBe(
       yesNoEntry.lastSuccessfulRefreshAt,
@@ -530,7 +526,6 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             volume24hSats: 5000,
             volume30dSats: 50000,
             liquiditySats: 75000,
-            traderCount: 12,
             volumeLifetimeSats: 250000,
             lastTradedPrice: null,
             categoryTags: ["crypto"],
@@ -661,7 +656,6 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             marketId: "abc123",
             totalVolumeSats: 0,
             totalTrades: 0,
-            uniqueTraderCount: 0,
             totalLiquiditySats: 0,
           }),
           { status: 200 },
@@ -676,7 +670,6 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(detail.volume).toBe(250_000);
     expect(detail.liquiditySats).toBe(75_000);
     expect(detail.liquidity).toBe(75_000);
-    expect(detail.traderCount).toBe(12);
   });
 
   it("renders engine detail when mintd has a stale row for the same condition id", async () => {
