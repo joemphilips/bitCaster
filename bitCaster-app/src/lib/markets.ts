@@ -410,33 +410,26 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
  * mintd's one-vs-rest keysets.
  * Returns `null` when the engine has no record of the market or the request
  * fails.
+ *
+ * Single-shot: no retry delay. Callers that need retry-on-not-found (e.g.
+ * newly registered markets that haven't been indexed yet) must implement the
+ * retry loop in their own post-paint enrichment path so the blocking first
+ * render is never delayed.
  */
-const MARKET_DETAIL_CATALOGUE_RETRY_ATTEMPTS = 31
-const MARKET_DETAIL_CATALOGUE_RETRY_DELAY_MS = 1_000
-
 async function fetchEngineCatalogueEntry(
   conditionId: string,
-  attempts = MARKET_DETAIL_CATALOGUE_RETRY_ATTEMPTS,
-  retryDelayMs = MARKET_DETAIL_CATALOGUE_RETRY_DELAY_MS,
 ): Promise<MarketCatalogueEntry | null> {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`;
-      const response = await fetch(url, {
-        headers: { Accept: "application/json" },
-      });
-      if (!response.ok) return null;
-      const body: MarketCatalogueResponse = await response.json();
-      const entry = body.markets.find((m) => m.conditionId === conditionId);
-      if (entry) return entry;
-    } catch {
-      return null;
-    }
-    if (attempt < attempts - 1) {
-      await new Promise((resolve) => globalThis.setTimeout(resolve, retryDelayMs));
-    }
+  try {
+    const url = `/api/v1/markets/query?ids=${encodeURIComponent(conditionId)}&state=All`;
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    const body: MarketCatalogueResponse = await response.json();
+    return body.markets.find((m) => m.conditionId === conditionId) ?? null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 /**
@@ -463,6 +456,15 @@ function normalizeEngineMarketState(
   return null;
 }
 
+/**
+ * Fetch the minimal engine entry for first-paint. Makes exactly one backend
+ * request so the route shell renders immediately without any retry delay.
+ *
+ * Newly registered markets that have not yet been indexed by the engine will
+ * cause this to throw "Market not found". The page's post-paint
+ * `needsEngineDetailRefresh` polling loop (activated whenever `closingDate` or
+ * `state` is missing) handles the catch-up without blocking initial render.
+ */
 export async function fetchMarketDetail(
   conditionId: string,
 ): Promise<MarketDetail> {
@@ -470,7 +472,7 @@ export async function fetchMarketDetail(
   // should not wait on mintd, comments, or price history. Public market
   // outcome order is creator metadata recorded by the engine; mintd keysets
   // are one-vs-rest implementation details and are not an ordered display
-  // contract.
+  // contract. No retry loop here — one request, no delay.
   const engineEntry = await fetchEngineCatalogueEntry(conditionId);
   if (!engineEntry) {
     throw new Error(`Market not found: ${conditionId}`);

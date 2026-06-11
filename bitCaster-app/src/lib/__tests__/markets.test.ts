@@ -593,41 +593,45 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(labels).not.toContain("B|C");
   });
 
-  it("waits for a newly registered market to appear in the engine catalogue", async () => {
-    vi.useFakeTimers();
+  it("issues exactly one engine request and fails fast when the market is not yet indexed", async () => {
+    // fetchMarketDetail is a single-shot: no retry loop, no delay. A newly
+    // registered market that the engine has not indexed yet surfaces as "not
+    // found" so the page renders without any timer blocking. The page's
+    // post-paint needsEngineDetailRefresh polling loop handles the catch-up.
     fetchMock.mockImplementation(async (url: string) => {
-      if (url.includes("/v1/conditions"))
-        return mintdConditionsResponse(categoricalCompositeKeysets);
       if (url.includes("/api/v1/markets/query")) {
-        const queryCalls = fetchMock.mock.calls.filter((call) =>
-          String(call[0]).includes("/api/v1/markets/query"),
-        ).length;
-        if (queryCalls < 3) {
-          return new Response(
-            JSON.stringify({
-              markets: [],
-              nextCursor: null,
-              lastSuccessfulRefreshAt: "2026-05-04T00:00:00Z",
-            }),
-            { status: 200 },
-          );
-        }
-        return engineQueryResponse("open", null, null, ["A", "B", "C"]);
+        return new Response(
+          JSON.stringify({
+            markets: [],
+            nextCursor: null,
+            lastSuccessfulRefreshAt: "2026-05-04T00:00:00Z",
+          }),
+          { status: 200 },
+        );
       }
       return emptyMetadataResponse();
     });
 
-    const detailPromise = fetchMarketDetail("abc123");
-    await vi.advanceTimersByTimeAsync(2_000);
-    const detail = await detailPromise;
-
-    expect(detail.type).toBe("categorical");
-    expect(detail.outcomes?.map((outcome) => outcome.label)).toEqual([
-      "A",
-      "B",
-      "C",
-    ]);
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow(
+      "Market not found: abc123",
+    );
+    // Only one engine query — no retry loop.
+    const engineCalls = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).includes("/api/v1/markets/query"),
+    );
+    expect(engineCalls).toHaveLength(1);
     expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
+  });
+
+  it("regression: fetchMarketDetail blocking path issues exactly one backend request", async () => {
+    // Perf contract: first paint blocks on AT MOST ONE backend request.
+    // Any retry / fan-out must happen in the post-paint enrichment path.
+    const detail = await fetchMarketDetail("abc123");
+    const engineCalls = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).includes("/api/v1/markets/query"),
+    );
+    expect(engineCalls).toHaveLength(1);
+    expect(detail.id).toBe("abc123");
   });
 
   it("fails closed when the engine entry lacks creator outcome metadata", async () => {
