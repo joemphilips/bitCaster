@@ -925,6 +925,11 @@ export type GetDepositResponseDto =
 export type DepositState = components["schemas"]["DepositState"];
 export type DepositMethod = components["schemas"]["DepositMethod"];
 
+export interface MarketFundingDepositOptions {
+  creatorPubkey?: string | null;
+  fundAmm?: boolean;
+}
+
 function normalizeDepositState(state: unknown): DepositState {
   switch (state) {
     case "Requested":
@@ -953,9 +958,13 @@ function normalizeDepositState(state: unknown): DepositState {
 export async function requestLnInvoiceDeposit(
   conditionId: string,
   amountSats: number,
+  options: MarketFundingDepositOptions = {},
 ): Promise<RequestLnInvoiceDepositResponse> {
   const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ln-invoice`;
-  const bodyText = JSON.stringify({ amountSats });
+  const body: RequestLnInvoiceDepositRequest = { amountSats };
+  if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
+  if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
+  const bodyText = JSON.stringify(body);
   const bodyBytes = new TextEncoder().encode(bodyText);
   const payloadHash = await sha256Hex(bodyBytes);
   const authHeader = await generateNip98Header(url, "POST", payloadHash);
@@ -982,9 +991,13 @@ export async function requestEcashDeposit(
   conditionId: string,
   amountSats: number,
   proofsToken: string,
+  options: MarketFundingDepositOptions = {},
 ): Promise<RequestEcashDepositResponse> {
   const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`;
-  const bodyText = JSON.stringify({ amountSats, proofsToken });
+  const body: RequestEcashDepositRequest = { amountSats, proofsToken };
+  if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
+  if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
+  const bodyText = JSON.stringify(body);
   const bodyBytes = new TextEncoder().encode(bodyText);
   const payloadHash = await sha256Hex(bodyBytes);
   const authHeader = await generateNip98Header(url, "POST", payloadHash);
