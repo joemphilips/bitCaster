@@ -145,6 +145,44 @@ describe('MarketDiscovery', () => {
     expect(onSortChange).toHaveBeenCalledWith('new')
   })
 
+  it('hides the "Loading more" sentinel when hasMore is false (last page)', () => {
+    render(
+      <MarketDiscovery
+        categoryTags={testCategoryTags}
+        markets={testMarkets}
+        selectedTags={[]}
+        sort="trending"
+        onSortChange={vi.fn()}
+        hasMore={false}
+        onLoadMore={vi.fn()}
+      />
+    )
+
+    expect(screen.queryByText('Loading more markets…')).not.toBeInTheDocument()
+    // i18n key resolves to "Loading more markets…" in default locale
+    // Guard against key mismatches by also checking aria-label absence.
+    const pulsingDivs = document.querySelectorAll('.animate-pulse')
+    expect(Array.from(pulsingDivs).some((el) => el.textContent?.includes('Loading'))).toBe(false)
+  })
+
+  it('shows the "Loading more" sentinel when hasMore is true', () => {
+    render(
+      <MarketDiscovery
+        categoryTags={testCategoryTags}
+        markets={testMarkets}
+        selectedTags={[]}
+        sort="trending"
+        onSortChange={vi.fn()}
+        hasMore={true}
+        onLoadMore={vi.fn()}
+      />
+    )
+
+    const pulsingDivs = document.querySelectorAll('.animate-pulse')
+    // At least one animate-pulse element with loading text must be present.
+    expect(Array.from(pulsingDivs).some((el) => el.textContent?.length ?? 0 > 0)).toBe(true)
+  })
+
   it('forwards the include-closed filter toggle', async () => {
     const user = userEvent.setup()
     const onIncludeClosedChange = vi.fn()

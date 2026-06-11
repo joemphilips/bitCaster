@@ -186,6 +186,13 @@ export interface MarketDiscoveryProps {
   /** Called when user navigates to market detail page */
   onViewMarket?: (marketId: string) => void
 
+  /**
+   * Whether more pages are available. When `false` (or omitted) the
+   * "Loading more" sentinel at the bottom of the list is hidden so it doesn't
+   * stay visible forever on the last page.
+   */
+  hasMore?: boolean
+
   /** Called when user scrolls to bottom and more markets should be loaded */
   onLoadMore?: () => void
 
