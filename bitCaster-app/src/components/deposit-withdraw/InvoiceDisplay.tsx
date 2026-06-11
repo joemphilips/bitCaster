@@ -1,7 +1,9 @@
 import { X, Copy, Check, Loader2, RotateCcw } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useInvoiceCountdown, formatRemaining } from '@/lib/invoiceCountdown'
+import type { MintQuoteRateInfo } from '@/lib/mintQuoteRate'
 
 interface InvoiceDisplayProps {
   bolt11: string
@@ -12,6 +14,7 @@ interface InvoiceDisplayProps {
   expiresAtSec?: number
   /** Last poll/mint error to surface under the status pill. */
   errorMessage?: string | null
+  rateInfo?: MintQuoteRateInfo | null
   onClose?: () => void
   /** Shown as a "Try again" button when status is 'expired' or 'error'. */
   onRegenerate?: () => void
@@ -25,9 +28,11 @@ export function InvoiceDisplay({
   status,
   expiresAtSec,
   errorMessage,
+  rateInfo,
   onClose,
   onRegenerate,
 }: InvoiceDisplayProps) {
+  const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
   const remainingMs = useInvoiceCountdown(expiresAtSec)
 
@@ -47,7 +52,7 @@ export function InvoiceDisplay({
         >
           <X className="w-5 h-5" />
         </button>
-        <h2 className="text-lg font-semibold text-white">Lightning Invoice</h2>
+        <h2 className="text-lg font-semibold text-white">{t('deposit.lightningInvoice')}</h2>
         <div className="w-8" />
       </div>
 
@@ -61,22 +66,22 @@ export function InvoiceDisplay({
                 <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
                 <span className="text-sm text-amber-400">
                   {expiresAtSec
-                    ? `Awaiting payment (expires in ${formatRemaining(remainingMs)})`
-                    : 'Waiting for payment...'}
+                    ? t('deposit.awaitingPaymentExpires', { remaining: formatRemaining(remainingMs) })
+                    : t('deposit.waitingForPayment')}
                 </span>
               </>
             )}
             {status === 'paid' && (
               <>
                 <Check className="w-5 h-5 text-green-400" />
-                <span className="text-sm text-green-400">Payment received!</span>
+                <span className="text-sm text-green-400">{t('deposit.paymentReceived')}</span>
               </>
             )}
             {status === 'expired' && (
-              <span className="text-sm text-red-400">Invoice expired — try again</span>
+              <span className="text-sm text-red-400">{t('deposit.invoiceExpired')}</span>
             )}
             {status === 'error' && (
-              <span className="text-sm text-red-400">Payment failed</span>
+              <span className="text-sm text-red-400">{t('deposit.paymentFailed')}</span>
             )}
           </div>
           {errorMessage && (status === 'expired' || status === 'error') && (
@@ -91,7 +96,7 @@ export function InvoiceDisplay({
               className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#f7931a] hover:bg-[#e8850f] text-white text-xs font-semibold transition-colors"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              Try again
+              {t('deposit.requote')}
             </button>
           )}
         </div>
@@ -109,6 +114,12 @@ export function InvoiceDisplay({
         <div className="mt-6 text-2xl font-bold text-white font-mono">
           {amountLabel ?? `₿${amountSats.toLocaleString()}`}
         </div>
+        {rateInfo && (
+          <div className="mt-2 text-sm text-slate-300">
+            {t('deposit.quoteRate', { rate: rateInfo.label })}
+            {rateInfo.source === 'implied' && <> {t('deposit.impliedRateSource')}</>}
+          </div>
+        )}
 
         {/* Invoice text + copy */}
         <div className="mt-4 w-full">

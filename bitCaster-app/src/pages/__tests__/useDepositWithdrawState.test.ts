@@ -305,7 +305,55 @@ describe('useDepositWithdrawState', () => {
       expect(result.current.invoiceExpiresAtSec).toBe(quote.expiry)
     })
 
-    it('regenerate clears the cached quote so the next create issues a fresh one', async () => {
+    it('uses the selected advertised unit for Lightning deposit quotes', async () => {
+      const cashu = await import('@/lib/cashu')
+      vi.mocked(cashu.createMintQuote).mockClear()
+      vi.mocked(cashu.waitForMintQuotePaid).mockClear()
+      useWalletStore.setState({
+        mints: [{
+          url: 'http://localhost:8085',
+          info: { name: 'Test Mint' },
+          keysets: [
+            { id: 'sat-keyset', unit: 'sat', active: true },
+            { id: 'usd-keyset', unit: 'usd', active: true },
+          ] as never,
+        }],
+      })
+      const quote = {
+        quote: 'q-usd',
+        request: 'lnbc10u1pjexample',
+        unit: 'usd',
+        amount: 100,
+        state: 'UNPAID',
+        expiry: Math.floor(Date.now() / 1000) + 90,
+      }
+      vi.mocked(cashu.createMintQuote).mockResolvedValue(quote as never)
+      vi.mocked(cashu.waitForMintQuotePaid).mockResolvedValue(() => {})
+
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', vi.fn()))
+      act(() => result.current.onUnitChange('usd'))
+      act(() => result.current.onNumpadPress('1'))
+      act(() => result.current.onNumpadPress('0'))
+      act(() => result.current.onNumpadPress('0'))
+
+      await act(async () => { await result.current.onCreateInvoice() })
+
+      expect(cashu.createMintQuote).toHaveBeenCalledWith(100, 'http://localhost:8085', 'usd')
+      expect(cashu.waitForMintQuotePaid).toHaveBeenCalledWith(
+        quote,
+        expect.any(Function),
+        expect.any(Object),
+        'http://localhost:8085',
+        'usd',
+      )
+      expect(result.current.amountLabel).toBe('$1.00')
+      expect(result.current.invoiceRateInfo).toEqual({
+        label: '10 sat/cent',
+        source: 'implied',
+      })
+    })
+
+    it('regenerate discards the cached quote and one-click requests a fresh one', async () => {
       const cashu = await import('@/lib/cashu')
       vi.mocked(cashu.createMintQuote).mockClear()
       vi.mocked(cashu.waitForMintQuotePaid).mockClear()
@@ -329,10 +377,11 @@ describe('useDepositWithdrawState', () => {
       await act(async () => { await result.current.onCreateInvoice() })
       expect(cashu.createMintQuote).toHaveBeenCalledTimes(1)
 
-      act(() => result.current.onRegenerateInvoice())
-      // currentView is back at the lightning entry; quote ref cleared.
-      await act(async () => { await result.current.onCreateInvoice() })
+      // One-click re-quote: regenerate discards the cached quote and
+      // immediately requests a fresh one — no extra Create Invoice click.
+      await act(async () => { result.current.onRegenerateInvoice() })
       expect(cashu.createMintQuote).toHaveBeenCalledTimes(2)
+      expect(result.current.currentView).toBe('invoice-display')
     })
   })
 

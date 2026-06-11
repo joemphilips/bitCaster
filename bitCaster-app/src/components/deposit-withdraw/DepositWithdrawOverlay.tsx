@@ -8,6 +8,7 @@ import { QrScannerView } from './QrScanner'
 import { PaymentRequestDisplay } from './PaymentRequestDisplay'
 import { SuccessView } from './SuccessView'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
+import { formatAmount } from '@/lib/formatAmount'
 
 interface DepositWithdrawOverlayProps {
   mode: DepositWithdrawMode
@@ -25,7 +26,13 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
   ) : null
 
   if (state.currentView === 'success') {
-    return <SuccessView amountSats={state.successAmount} onClose={state.onClose} />
+    return (
+      <SuccessView
+        amountSats={state.successAmount}
+        amountLabel={formatAmount(state.successAmount, state.successUnit)}
+        onClose={state.onClose}
+      />
+    )
   }
 
   if (state.currentView === 'scanner') {
@@ -61,8 +68,10 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         <InvoiceDisplay
           bolt11={state.bolt11}
           amountSats={state.amountSats}
+          amountLabel={state.amountLabel}
           status={state.invoiceStatus}
           expiresAtSec={state.invoiceExpiresAtSec}
+          rateInfo={state.invoiceRateInfo}
           errorMessage={state.error}
           onClose={state.onClose}
           onRegenerate={state.onRegenerateInvoice}
@@ -109,6 +118,9 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         mints={state.mints}
         selectedMintId={state.selectedMintId}
         amountSats={state.amountSats}
+        amountLabel={state.amountLabel}
+        selectedUnit={state.selectedUnit}
+        unitOptions={state.unitOptions}
         amountFiat={state.amountFiat}
         fiatSymbol={state.fiatSymbol}
         showFiatPrimary={state.showFiatPrimary}
@@ -116,6 +128,7 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         onSelectMethod={state.onSelectMethod}
         onNumpadPress={state.onNumpadPress}
         onMintChange={state.onMintChange}
+        onUnitChange={state.onUnitChange}
         onToggleCurrency={state.onToggleCurrency}
         onCreateInvoice={state.onCreateInvoice}
         onSendEcash={state.onSendEcash}

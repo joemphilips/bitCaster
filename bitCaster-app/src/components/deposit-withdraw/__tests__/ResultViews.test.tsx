@@ -53,7 +53,7 @@ describe('InvoiceDisplay', () => {
         onRegenerate={onRegenerate}
       />,
     )
-    const regen = screen.getByRole('button', { name: /try again/i })
+    const regen = screen.getByRole('button', { name: /re-quote/i })
     await userEvent.click(regen)
     expect(onRegenerate).toHaveBeenCalledOnce()
   })
@@ -70,6 +70,19 @@ describe('InvoiceDisplay', () => {
     expect(
       screen.getByText('The Lightning invoice expired before payment arrived.'),
     ).toBeInTheDocument()
+  })
+
+  it('shows USD quote rate details', () => {
+    render(
+      <InvoiceDisplay
+        bolt11={bolt11}
+        amountSats={100}
+        amountLabel="$1.00"
+        status="pending"
+        rateInfo={{ label: '10 sat/cent', source: 'implied' }}
+      />,
+    )
+    expect(screen.getByText(/quote rate/i)).toHaveTextContent('(implied)')
   })
 
   it('displays the amount', () => {

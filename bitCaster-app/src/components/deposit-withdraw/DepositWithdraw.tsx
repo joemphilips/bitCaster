@@ -39,10 +39,14 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           mints={props.mints}
           selectedMintId={props.selectedMintId}
           amountSats={props.amountSats}
+          amountLabel={props.amountLabel}
+          selectedUnit={props.selectedUnit}
+          unitOptions={props.unitOptions}
           amountFiat={props.amountFiat}
           fiatSymbol={props.fiatSymbol}
           showFiatPrimary={props.showFiatPrimary}
           onMintChange={props.onMintChange}
+          onUnitChange={props.onUnitChange}
           onNumpadPress={props.onNumpadPress}
           onToggleCurrency={props.onToggleCurrency}
           onCreateInvoice={props.onCreateInvoice}
