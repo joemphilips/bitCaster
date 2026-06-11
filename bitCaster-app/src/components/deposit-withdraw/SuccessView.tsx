@@ -8,10 +8,11 @@ const PROGRESS_TICK_MS = 50
 
 interface SuccessViewProps {
   amountSats: number
+  amountLabel?: string
   onClose: () => void
 }
 
-export function SuccessView({ amountSats, onClose }: SuccessViewProps) {
+export function SuccessView({ amountSats, amountLabel, onClose }: SuccessViewProps) {
   const { t } = useTranslation()
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
@@ -44,7 +45,7 @@ export function SuccessView({ amountSats, onClose }: SuccessViewProps) {
       </h2>
       {amountSats > 0 && (
         <p className="text-lg font-mono text-emerald-400">
-          {formatBtc(amountSats)}
+          {amountLabel ?? formatBtc(amountSats)}
         </p>
       )}
       <p className="text-sm text-slate-400 mt-4">

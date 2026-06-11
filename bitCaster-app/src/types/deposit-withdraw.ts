@@ -30,6 +30,8 @@ export interface MintInfo {
   name: string
   url: string
   balanceSats: number
+  balancesByUnit?: Partial<Record<'sat' | 'usd' | 'jpy', number>>
+  units?: Array<'sat' | 'usd' | 'jpy'>
 }
 
 // =============================================================================
@@ -51,6 +53,9 @@ export interface DepositWithdrawProps {
 
   /** Current amount entered (in sats) */
   amountSats: number
+  amountLabel?: string
+  selectedUnit?: 'sat' | 'usd' | 'jpy'
+  unitOptions?: Array<'sat' | 'usd' | 'jpy'>
 
   /** Fiat equivalent of the entered amount */
   amountFiat: string
@@ -72,6 +77,9 @@ export interface DepositWithdrawProps {
 
   /** Called when user changes the selected mint */
   onMintChange?: (mintId: string) => void
+
+  /** Called when user changes the funding unit for the selected mint */
+  onUnitChange?: (unit: 'sat' | 'usd' | 'jpy') => void
 
   /** Called when user toggles between fiat and sats display */
   onToggleCurrency?: () => void

@@ -35,8 +35,10 @@ import {
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
-import { normalizeMarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
+import { normalizeMarketBaseAsset, type MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
 import { diagnoseProofStates } from '@/lib/proofDiagnostics'
+import { formatAmount } from '@/lib/formatAmount'
+import { getMintQuoteRateInfo, type MintQuoteRateInfo } from '@/lib/mintQuoteRate'
 
 export type ExtendedView =
   | DepositWithdrawView
@@ -59,6 +61,9 @@ export interface DepositWithdrawState {
   mints: MintInfo[]
   selectedMintId: string
   amountSats: number
+  amountLabel: string
+  selectedUnit: MarketBaseAsset
+  unitOptions: MarketBaseAsset[]
   amountFiat: string
   fiatSymbol: string
   showFiatPrimary: boolean
@@ -71,6 +76,7 @@ export interface DepositWithdrawState {
   invoiceStatus: InvoiceStatus
   /** Bolt11 expiry as unix-seconds. Drives the live countdown in the UI. */
   invoiceExpiresAtSec: number | undefined
+  invoiceRateInfo: MintQuoteRateInfo | null
   ecashToken: string | null
   meltQuote: MeltQuoteResponse | null
   meltIsPaying: boolean
@@ -81,15 +87,20 @@ export interface DepositWithdrawState {
 
   // Success state
   successAmount: number
+  /** Unit of `successAmount` — NOT necessarily `selectedUnit`: ecash receive,
+   *  melt, and payment-request flows are sat-denominated regardless of the
+   *  deposit unit selector. */
+  successUnit: MarketBaseAsset
 
   // Handlers
   onSelectMethod: (method: MethodType) => void
   onNumpadPress: (key: string) => void
   onMintChange: (mintId: string) => void
   onToggleCurrency: () => void
+  onUnitChange: (unit: MarketBaseAsset) => void
   onCreateInvoice: () => void
-  /** Discard the active mint quote and return to the amount entry view so the
-   *  user can request a fresh invoice after expiry / failure. */
+  /** Discard the active mint quote and immediately request a fresh one for the
+   *  same amount/mint/unit (one-click re-quote after expiry / failure). */
   onRegenerateInvoice: () => void
   onSendEcash: () => void
   onPaste: () => void
@@ -127,24 +138,39 @@ export function useDepositWithdrawState(
   const mintUrls = storeMints.map((m) => m.url)
   const balancesByMint = useLiveQuery(async () => {
     const proofs = await db.proofs.toArray()
-    const map: Record<string, number> = {}
+    const map: Record<string, Partial<Record<MarketBaseAsset, number>>> = {}
     for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-      if (normalizeMarketBaseAsset(p.baseAsset) !== 'sat') continue
-      map[p.mintUrl] = (map[p.mintUrl] ?? 0) + amountToNumber(p.amount)
+      const baseAsset = normalizeMarketBaseAsset(p.baseAsset)
+      const mintBalances = map[p.mintUrl] ?? {}
+      mintBalances[baseAsset] = (mintBalances[baseAsset] ?? 0) + amountToNumber(p.amount)
+      map[p.mintUrl] = mintBalances
     }
     return map
-  }, [mintUrls.join(',')], {} as Record<string, number>)
+  }, [mintUrls.join(',')], {} as Record<string, Partial<Record<MarketBaseAsset, number>>>)
+
+  const unitsForMint = useCallback((mintUrl: string): MarketBaseAsset[] => {
+    const mint = storeMints.find((m) => m.url === mintUrl)
+    const units = new Set<MarketBaseAsset>()
+    for (const keyset of mint?.keysets ?? []) {
+      if (keyset.active === false) continue
+      units.add(normalizeMarketBaseAsset(keyset.unit))
+    }
+    return units.size > 0 ? Array.from(units) : ['sat']
+  }, [storeMints])
 
   // Build MintInfo[] from store mints with live balances
   const mintsWithBalance: MintInfo[] = storeMints.map((m) => ({
     id: m.url,
     name: (m.info as Record<string, unknown>)?.name as string ?? safeHostname(m.url),
     url: m.url,
-    balanceSats: balancesByMint[m.url] ?? 0,
+    balanceSats: balancesByMint[m.url]?.sat ?? 0,
+    balancesByUnit: balancesByMint[m.url] ?? {},
+    units: unitsForMint(m.url),
   }))
 
   const [currentView, setCurrentView] = useState<ExtendedView>('chooser')
   const [selectedMintId, setSelectedMintId] = useState(activeMintUrl)
+  const [selectedUnit, setSelectedUnit] = useState<MarketBaseAsset>('sat')
   const [amountString, setAmountString] = useState('')
   const [showFiatPrimary, setShowFiatPrimary] = useState(false)
   const [lightningInput, setLightningInput] = useState('')
@@ -155,6 +181,7 @@ export function useDepositWithdrawState(
   const [bolt11, setBolt11] = useState<string | null>(null)
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceStatus>('pending')
   const [invoiceExpiresAtSec, setInvoiceExpiresAtSec] = useState<number | undefined>()
+  const [invoiceRateInfo, setInvoiceRateInfo] = useState<MintQuoteRateInfo | null>(null)
   const [ecashToken, setEcashToken] = useState<string | null>(null)
   const [meltQuote, setMeltQuote] = useState<MeltQuoteResponse | null>(null)
   const [meltIsPaying, setMeltIsPaying] = useState(false)
@@ -165,6 +192,7 @@ export function useDepositWithdrawState(
 
   // Success state
   const [successAmount, setSuccessAmount] = useState(0)
+  const [successUnit, setSuccessUnit] = useState<MarketBaseAsset>('sat')
 
   // Track which view opened the scanner so we can process results correctly
   const scanReturnViewRef = useRef<ExtendedView>('deposit-ecash')
@@ -211,11 +239,19 @@ export function useDepositWithdrawState(
     }
   }, [activeMintUrl, selectedMintId, storeMints])
 
+  useEffect(() => {
+    const units = unitsForMint(selectedMintId)
+    if (!units.includes(selectedUnit)) {
+      setSelectedUnit(units[0] ?? 'sat')
+    }
+  }, [selectedMintId, selectedUnit, unitsForMint])
+
   // React to the global inbox flipping our pending request to "received".
   useEffect(() => {
     if (!pendingRequestId || !inboxEntry) return
     setPaymentRequestStatus('received')
     setSuccessAmount(inboxEntry.amountSats)
+    setSuccessUnit('sat')
     const handle = setTimeout(() => {
       usePaymentRequestInbox.getState().clear(pendingRequestId)
       setPendingRequestId(null)
@@ -225,6 +261,8 @@ export function useDepositWithdrawState(
   }, [pendingRequestId, inboxEntry, onDismiss])
 
   const amountSats = parseInt(amountString || '0', 10)
+  const amountLabel = formatAmount(amountSats, selectedUnit)
+  const unitOptions = unitsForMint(selectedMintId)
 
   const onSelectMethod = useCallback(
     (method: MethodType) => {
@@ -251,6 +289,20 @@ export function useDepositWithdrawState(
   const onMintChange = useCallback((mintId: string) => {
     userSelectedMintRef.current = true
     setSelectedMintId(mintId)
+    setSelectedUnit(unitsForMint(mintId)[0] ?? 'sat')
+  }, [unitsForMint])
+
+  const onUnitChange = useCallback((unit: MarketBaseAsset) => {
+    setSelectedUnit(normalizeMarketBaseAsset(unit))
+    mintQuoteRef.current = null
+    unsubRef.current?.()
+    unsubRef.current = null
+    inflightRef.current = false
+    setBolt11(null)
+    setInvoiceExpiresAtSec(undefined)
+    setInvoiceRateInfo(null)
+    setInvoiceStatus('pending')
+    setError(null)
   }, [])
 
   const onToggleCurrency = useCallback(() => {
@@ -258,26 +310,32 @@ export function useDepositWithdrawState(
   }, [])
 
   const handlePaidInvoice = useCallback(
-    async (quote: MintQuoteResponse, mintUrl: string, requested: number) => {
+    async (
+      quote: MintQuoteResponse,
+      mintUrl: string,
+      requested: number,
+      baseAsset: MarketBaseAsset,
+    ) => {
       try {
-        const proofs = await mintProofs(requested, quote, mintUrl, 'sat')
+        const proofs = await mintProofs(requested, quote, mintUrl, baseAsset)
         await diagnoseProofStates({
           label: 'top-up:minted-proofs',
           mintUrl,
           proofs,
-          extra: { requestedSats: requested },
+          extra: { requested, baseAsset },
         })
-        const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl, baseAsset: 'sat' }))
+        const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl, baseAsset }))
         await addProofs(stored)
         setInvoiceStatus('paid')
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
-          baseAsset: 'sat',
+          baseAsset,
           amountSats: requested,
           status: 'completed',
           lightningInvoice: quote.request,
         })
         setSuccessAmount(requested)
+        setSuccessUnit(baseAsset)
         setCurrentView('success')
       } catch (e) {
         setInvoiceStatus('error')
@@ -288,10 +346,16 @@ export function useDepositWithdrawState(
   )
 
   const handleInvoiceWaitResult = useCallback(
-    (r: MintQuoteWaitResult, quote: MintQuoteResponse, mintUrl: string, requested: number) => {
+    (
+      r: MintQuoteWaitResult,
+      quote: MintQuoteResponse,
+      mintUrl: string,
+      requested: number,
+      baseAsset: MarketBaseAsset,
+    ) => {
       switch (r.status) {
         case 'PAID':
-          handlePaidInvoice(quote, mintUrl, requested)
+          handlePaidInvoice(quote, mintUrl, requested, baseAsset)
           return
         case 'EXPIRED':
           setInvoiceStatus('expired')
@@ -317,22 +381,24 @@ export function useDepositWithdrawState(
     setInvoiceStatus('pending')
     const requested = amountSats
     const mintUrl = selectedMintId
+    const baseAsset = selectedUnit
     try {
       await useWalletStore.getState().ensureImplicitWallet()
       // Re-mount idempotency: reuse the active quote if one exists, otherwise
       // request a fresh one. Prevents the duplicate-quote LNBits snackbar.
-      const quote = mintQuoteRef.current ?? await createMintQuote(requested, mintUrl, 'sat')
+      const quote = mintQuoteRef.current ?? await createMintQuote(requested, mintUrl, baseAsset)
       mintQuoteRef.current = quote
       setBolt11(quote.request)
       setInvoiceExpiresAtSec(quote.expiry ?? undefined)
+      setInvoiceRateInfo(baseAsset === 'usd' ? getMintQuoteRateInfo(quote, requested) : null)
       setCurrentView('invoice-display')
 
       const unsub = await waitForMintQuotePaid(
         quote,
-        (r) => handleInvoiceWaitResult(r, quote, mintUrl, requested),
+        (r) => handleInvoiceWaitResult(r, quote, mintUrl, requested, baseAsset),
         { onTransientError: (e) => setError(e.message) },
         mintUrl,
-        'sat',
+        baseAsset,
       )
       unsubRef.current = unsub
     } catch (e) {
@@ -342,7 +408,7 @@ export function useDepositWithdrawState(
     } finally {
       setIsLoading(false)
     }
-  }, [amountSats, selectedMintId, handleInvoiceWaitResult])
+  }, [amountSats, selectedMintId, selectedUnit, handleInvoiceWaitResult])
 
   const onRegenerateInvoice = useCallback(() => {
     unsubRef.current?.()
@@ -351,10 +417,14 @@ export function useDepositWithdrawState(
     inflightRef.current = false
     setBolt11(null)
     setInvoiceExpiresAtSec(undefined)
+    setInvoiceRateInfo(null)
     setInvoiceStatus('pending')
     setError(null)
-    setCurrentView('deposit-lightning')
-  }, [])
+    // One-click re-quote: the amount and mint are unchanged, so request a
+    // fresh quote immediately instead of bouncing through the entry view.
+    // Matters most for short-lived USD quotes (~90s) where the rate moved.
+    void onCreateInvoice()
+  }, [onCreateInvoice])
 
   const onPaste = useCallback(async () => {
     setError(null)
@@ -381,6 +451,7 @@ export function useDepositWithdrawState(
         })
         setIsLoading(false)
         setSuccessAmount(received.amountSats)
+        setSuccessUnit('sat')
         setCurrentView('success')
       } else if (currentView === 'pay-lightning') {
         setLightningInput(text)
@@ -465,6 +536,7 @@ export function useDepositWithdrawState(
         lightningInvoice: lightningInput,
       })
       setSuccessAmount(amountToNumber(meltQuote.amount))
+      setSuccessUnit('sat')
       setCurrentView('success')
     } catch (e) {
       setError((e as Error).message)
@@ -501,6 +573,7 @@ export function useDepositWithdrawState(
           status: 'completed',
         })
         setSuccessAmount(received.amountSats)
+        setSuccessUnit('sat')
         setCurrentView('success')
       } catch (e) {
         setError((e as Error).message)
@@ -583,6 +656,9 @@ export function useDepositWithdrawState(
     mints: mintsWithBalance,
     selectedMintId,
     amountSats,
+    amountLabel,
+    selectedUnit,
+    unitOptions,
     amountFiat: '$0.00', // Fiat conversion not yet implemented
     fiatSymbol: '$',
     showFiatPrimary,
@@ -592,15 +668,18 @@ export function useDepositWithdrawState(
     bolt11,
     invoiceStatus,
     invoiceExpiresAtSec,
+    invoiceRateInfo,
     ecashToken,
     meltQuote,
     meltIsPaying,
     paymentRequestEncoded,
     paymentRequestStatus,
     successAmount,
+    successUnit,
     onSelectMethod,
     onNumpadPress,
     onMintChange,
+    onUnitChange,
     onToggleCurrency,
     onCreateInvoice,
     onRegenerateInvoice,
