@@ -61,6 +61,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onRegistrationFeeTopUpSuccess,
     createdMarketConditionId,
     createdMarketLiquiditySats,
+    createdMarketOutcomeCount,
   } = props
 
   const { currentStep } = draft
@@ -144,6 +145,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           <DepositStep
             conditionId={createdMarketConditionId}
             defaultAmountSats={createdMarketLiquiditySats ?? 0}
+            outcomeCount={createdMarketOutcomeCount ?? 2}
           />
         </div>
         {feeOverlays}

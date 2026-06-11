@@ -114,6 +114,9 @@ export interface MarketCreationWizardProps {
    */
   createdMarketLiquiditySats: number | null
 
+  /** Number of outcomes in the created market, used to scale AMM funding tiers. */
+  createdMarketOutcomeCount: number | null
+
   /** True when the wizard is being re-entered with a previously-saved draft. */
   hasSavedDraft: boolean
 

@@ -194,6 +194,7 @@ export function useMarketCreationState() {
   // `clearDraft()` (called on the same tick as `setCreatedMarketConditionId`)
   // wipes `stepInitialLiquidity` before DepositStep mounts.
   const [createdMarketLiquiditySats, setCreatedMarketLiquiditySats] = useState<number | null>(null)
+  const [createdMarketOutcomeCount, setCreatedMarketOutcomeCount] = useState<number | null>(null)
   // Track the last blob URL created for the thumbnail preview so we can revoke
   // it when the user picks a new file or when the component unmounts. Without
   // this, every upload leaks a live Blob reference for the page's lifetime.
@@ -676,6 +677,7 @@ export function useMarketCreationState() {
       // and DepositStep's useState would otherwise initialize amountSats=0
       // (and disable the request button).
       const snapshotLiquiditySats = liquiditySats
+      const snapshotOutcomeCount = outcomes.length
 
       clearDraft()
       // Hand off to the deposit step. The wizard renders DepositStep when
@@ -683,6 +685,7 @@ export function useMarketCreationState() {
       // /markets/{conditionId} from there once the deposit reaches
       // `Credited`.
       setCreatedMarketLiquiditySats(snapshotLiquiditySats)
+      setCreatedMarketOutcomeCount(snapshotOutcomeCount)
       setCreatedMarketConditionId(condition_id)
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to create market')
@@ -734,6 +737,7 @@ export function useMarketCreationState() {
     registrationFeeTopUpStage,
     createdMarketConditionId,
     createdMarketLiquiditySats,
+    createdMarketOutcomeCount,
     onClose,
     clearDraft,
     onNext,

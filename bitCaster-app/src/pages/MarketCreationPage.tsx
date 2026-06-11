@@ -42,6 +42,7 @@ export function MarketCreationPage() {
       onRegistrationFeeTopUpSuccess={state.onRegistrationFeeTopUpSuccess}
       createdMarketConditionId={state.createdMarketConditionId}
       createdMarketLiquiditySats={state.createdMarketLiquiditySats}
+      createdMarketOutcomeCount={state.createdMarketOutcomeCount}
     />
   )
 }
