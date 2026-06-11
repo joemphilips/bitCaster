@@ -7,7 +7,7 @@ sidebar:
 
 # Creating Markets
 
-On most prediction market platforms, only the operator decides which markets exist. bitCaster works differently — anyone can create a market on any topic, at any time. All you need is an oracle who will attest to the event's outcome and enough sats to seed initial liquidity.
+On most prediction market platforms, only the operator decides which markets exist. bitCaster works differently — anyone can create a market on any topic, at any time. All you need is an oracle who will attest to the event's outcome and capital to seed initial liquidity.
 
 Creating a market means defining what the event is, who will attest to its outcome (the oracle), and putting up the capital that lets traders start trading immediately.
 
@@ -21,11 +21,20 @@ In practice, though, most interesting markets are about novel events that no exi
 
 Prediction markets always involve trusting an oracle. The fundamental choice of whom to trust remains with each trader.
 
+## Base Asset
+
+Every market is denominated in a **base asset** that controls how collateral, stakes, and quote payments are measured. Two values are currently supported:
+
+- **sat** — amounts in satoshis; deposits are regular ecash over Lightning.
+- **usd** — amounts in US cents (BTC-backed); deposits are priced as BTC Lightning invoices at quote time and credited as USD cents. The BTC/USD exchange rate is locked at quote time.
+
+JPY and other units are not yet available.
+
 ## Price Denominator
 
 Every market has a **price denominator** (D). It controls two things at once:
 
-- **Minimum stake per share.** Buying one whole share costs exactly D base units (for example, D=100 means 1 share costs 100 sats; D=1000 means 1 share costs 1,000 sats).
+- **Minimum stake per share.** Buying one whole share costs exactly D base-asset sub-units (for example, in a sat market D=100 means 1 share costs 100 sats; in a USD market D=100 means 1 share costs $1.00).
 - **Price granularity.** Prices are quoted as integers from 1 to D−1, so the smallest price move is 1/D. D=100 gives 1%-steps; D=1,000 gives 0.1%-steps; D=10,000 gives 0.01%-steps.
 
 Choose a lower D when you want low barriers to participation and are comfortable with coarser price resolution. Choose a higher D when fine-grained prices matter and participants can meet the larger minimum stake. The tradeoff cannot be changed after a market is registered.
