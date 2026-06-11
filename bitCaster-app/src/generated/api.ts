@@ -832,6 +832,13 @@ export interface components {
              * @description Amount of sats the funder intends to deposit.
              */
             amountSats: number;
+            /** @description Nostr public key (hex) of the market creator */
+            creatorPubkey?: string;
+            /**
+             * @description Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
+             * @default false
+             */
+            fundAmm?: boolean;
         };
         RequestLnInvoiceDepositResponse: {
             /**
@@ -855,6 +862,13 @@ export interface components {
             amountSats: number;
             /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
             proofsToken: string;
+            /** @description Nostr public key (hex) of the market creator */
+            creatorPubkey?: string;
+            /**
+             * @description Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
+             * @default false
+             */
+            fundAmm?: boolean;
         };
         RequestEcashDepositResponse: {
             /**

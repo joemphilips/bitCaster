@@ -1606,9 +1606,11 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RequestLnInvoiceDepositRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RequestLnInvoiceDepositRequest(long @amountSats)
+        public RequestLnInvoiceDepositRequest(long @amountSats, string @creatorPubkey, bool? @fundAmm)
         {
             this.AmountSats = @amountSats;
+            this.CreatorPubkey = @creatorPubkey;
+            this.FundAmm = @fundAmm;
         }
 
         /// <summary>
@@ -1616,6 +1618,18 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
+
+        /// <summary>
+        /// Nostr public key (hex) of the market creator
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
+        public string CreatorPubkey { get; }
+
+        /// <summary>
+        /// Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("fundAmm")]
+        public bool? FundAmm { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1673,10 +1687,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RequestEcashDepositRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RequestEcashDepositRequest(long @amountSats, string @proofsToken)
+        public RequestEcashDepositRequest(long @amountSats, string @creatorPubkey, bool? @fundAmm, string @proofsToken)
         {
             this.AmountSats = @amountSats;
             this.ProofsToken = @proofsToken;
+            this.CreatorPubkey = @creatorPubkey;
+            this.FundAmm = @fundAmm;
         }
 
         /// <summary>
@@ -1691,6 +1707,18 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("proofsToken")]
         public string ProofsToken { get; }
+
+        /// <summary>
+        /// Nostr public key (hex) of the market creator
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
+        public string CreatorPubkey { get; }
+
+        /// <summary>
+        /// Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("fundAmm")]
+        public bool? FundAmm { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
