@@ -27,7 +27,7 @@ namespace BitCaster.MatchingEngine.Contracts
     
 
     /// <summary>
-    /// Market quote/collateral base asset. Current production creation accepts `sat`; `usd` and `jpy` are structural values reserved until unit-aware settlement and wallet flows are enabled end-to-end.
+    /// Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time; collateral and prices are denominated in cents. `jpy` is reserved.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -1082,7 +1082,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long? LiquiditySats { get; }
 
         /// <summary>
-        /// Immutable market base asset. Settlement-capable market creation currently supports `sat` and `usd`; `jpy` is reserved.
+        /// Immutable market base asset. Accepted values: `sat` and `usd`. `jpy` is reserved.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]

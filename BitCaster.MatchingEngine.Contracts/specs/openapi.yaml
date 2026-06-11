@@ -747,9 +747,10 @@ components:
       type: string
       enum: [sat, usd, jpy]
       description: >
-        Market quote/collateral base asset. Current production creation accepts
-        `sat`; `usd` and `jpy` are structural values reserved until unit-aware
-        settlement and wallet flows are enabled end-to-end.
+        Market quote/collateral base asset. `sat` and `usd` are accepted for
+        market registration. `usd`: BTC-backed; deposits are priced as BTC
+        Lightning invoices at quote time; collateral and prices are denominated
+        in cents. `jpy` is reserved.
 
     OrderSide:
       type: string
@@ -1401,8 +1402,8 @@ components:
             - $ref: '#/components/schemas/BaseAsset'
           default: sat
           description: >
-            Immutable market base asset. Settlement-capable market creation
-            currently supports `sat` and `usd`; `jpy` is reserved.
+            Immutable market base asset. Accepted values: `sat` and `usd`.
+            `jpy` is reserved.
         divisibility:
           type: integer
           format: int32

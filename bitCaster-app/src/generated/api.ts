@@ -377,7 +377,7 @@ export interface components {
         /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Legacy sat markets use `D = 100`, so values still render as whole percentage points there. */
         Probability: number;
         /**
-         * @description Market quote/collateral base asset. Current production creation accepts `sat`; `usd` and `jpy` are structural values reserved until unit-aware settlement and wallet flows are enabled end-to-end.
+         * @description Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time; collateral and prices are denominated in cents. `jpy` is reserved.
          * @enum {string}
          */
         BaseAsset: "sat" | "usd" | "jpy";
@@ -689,7 +689,7 @@ export interface components {
              */
             liquiditySats: number;
             /**
-             * @description Immutable market base asset. Settlement-capable market creation currently supports `sat` and `usd`; `jpy` is reserved.
+             * @description Immutable market base asset. Accepted values: `sat` and `usd`. `jpy` is reserved.
              * @default sat
              */
             baseAsset: components["schemas"]["BaseAsset"];
@@ -838,7 +838,7 @@ export interface components {
              * @description Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
              * @default false
              */
-            fundAmm?: boolean;
+            fundAmm: boolean;
         };
         RequestLnInvoiceDepositResponse: {
             /**
@@ -868,7 +868,7 @@ export interface components {
              * @description Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
              * @default false
              */
-            fundAmm?: boolean;
+            fundAmm: boolean;
         };
         RequestEcashDepositResponse: {
             /**
