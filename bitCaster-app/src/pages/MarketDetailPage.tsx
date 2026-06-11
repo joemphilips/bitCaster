@@ -43,6 +43,7 @@ import {
   outcomeSetMarketId,
   resolveOutcomeSets,
 } from "@/lib/outcomeSets";
+import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
 import {
   getOutcomeProofs,
   releaseProofReservation,
@@ -283,6 +284,16 @@ export function MarketDetailPage() {
         if (showLoading) setLoading(false);
       });
   }, [id]);
+
+  // Secondary live close-detection: subscribe to MarketStatusChanged pushes
+  // while this detail page is mounted. Best-effort — fires only when the client
+  // is joined to the market hub (via OrderBookSection). Feeds the same
+  // notification + reconcile-state path as the primary boot reconcile.
+  const handleLiveStatus = useCallback(
+    () => loadMarket({ showLoading: false }),
+    [loadMarket],
+  );
+  useMarketStatusLive(market?.id ?? null, handleLiveStatus);
 
   useEffect(() => {
     loadMarket();
