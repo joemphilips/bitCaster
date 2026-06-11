@@ -1,5 +1,6 @@
 // Production server for Azure App Service.
 // Mirrors Vite dev proxy (vite.config.ts) so frontend code uses relative URLs everywhere.
+import compression from 'compression';
 import express from 'express';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +15,7 @@ const MINT_URL = process.env.MINT_URL;
 const BACKEND_URL = process.env.BACKEND_URL;
 
 app.disable('x-powered-by');
+app.use(compression());
 
 // Security headers
 app.use((_req, res, next) => {
@@ -71,9 +73,12 @@ if (BACKEND_URL) {
   // (browser origin); without X-Forwarded-Host the engine reconstructs the URL
   // from its own Host header (which changeOrigin:true rewrites to the backend
   // hostname) and rejects every body-bearing request as "Invalid NIP-98 event".
+  // setBrowserForwardedHeaders is applied here (HTTP /api) for the same reason
+  // it is applied to the WebSocket proxy: NIP-98 host-binding must reflect the
+  // origin the browser actually opened, not the backend-rewritten host.
   app.use(createProxyMiddleware({
     target: BACKEND_URL, changeOrigin: true, xfwd: true, pathFilter: '/api/**',
-    on: { error: proxyErrorHandler },
+    on: { proxyReq: setBrowserForwardedHeaders, error: proxyErrorHandler },
   }));
   // Wallet-service callbacks use the same frontend-to-backend private path as
   // browser API calls. The backend still authenticates /internal/** with the
