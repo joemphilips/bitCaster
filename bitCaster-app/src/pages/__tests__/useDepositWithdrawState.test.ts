@@ -20,6 +20,7 @@ vi.mock('@/lib/walletOps', () => ({
     added: false,
     mintUrl: 'http://localhost:8085',
     source: 'paste',
+    unit: 'sat',
     amountSats: 0,
     proofs: [],
   }),
@@ -394,6 +395,7 @@ describe('useDepositWithdrawState', () => {
         added: true,
         mintUrl: 'https://testnut.cashu.space',
         source: 'paste',
+        unit: 'sat',
         amountSats: 50,
         proofs: [{
           secret: 's-new',
@@ -433,6 +435,35 @@ describe('useDepositWithdrawState', () => {
           marketId: 'condition-1-B',
         }),
       ])
+    })
+
+    it('stores a USD token under the usd asset silo and records activity as usd', async () => {
+      const walletOps = await import('@/lib/walletOps')
+      const proofDb = await import('@/stores/proof-db')
+      vi.mocked(proofDb.addProofs).mockClear()
+      vi.mocked(walletOps.ingressReceiveCashuToken).mockResolvedValueOnce({
+        added: false,
+        mintUrl: 'https://usd.mint',
+        source: 'paste',
+        unit: 'usd',
+        amountSats: 23,
+        proofs: [{ secret: 's-usd', amount: 23, id: 'usd-kid', C: 'C' } as never],
+      })
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { readText: vi.fn().mockResolvedValue('cashuB-usd-token') },
+      })
+
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', onDismiss))
+      act(() => result.current.onSelectMethod('ecash'))
+      await act(async () => { await result.current.onPaste() })
+
+      // The proof must land in the usd silo, not sat
+      expect(proofDb.addProofs).toHaveBeenCalledWith([
+        expect.objectContaining({ baseAsset: 'usd' }),
+      ])
+      // Success state must reflect the token's unit
+      expect(result.current.successUnit).toBe('usd')
     })
 
     it('surfaces walletOps receive errors to the red banner without swallowing', async () => {

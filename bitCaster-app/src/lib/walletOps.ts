@@ -6,6 +6,7 @@ import { normalizeUrl } from '@/lib/url'
 import { useSettingsStore } from '@/stores/settings'
 import { useWalletStore, type StoredMint } from '@/stores/wallet'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
+import { normalizeMarketBaseAsset, type MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
 
 export type WalletIngressSource = 'paste' | 'scan' | 'nip17'
 
@@ -17,6 +18,7 @@ export interface IngressMintRegistrationResult {
 
 export interface IngressReceiveCashuTokenResult extends IngressMintRegistrationResult {
   amountSats: number
+  unit: MarketBaseAsset
   proofs: Proof[]
 }
 
@@ -111,11 +113,17 @@ export async function ingressReceiveCashuToken(
   source: WalletIngressSource,
   options?: { mintUrl?: string },
 ): Promise<IngressReceiveCashuTokenResult> {
+  // Always decode to read the token's unit field (NUT-00). The caller may
+  // supply an explicit mintUrl override (e.g. from a payment-request context);
+  // in that case the decoded mint URL is ignored but the unit is still used.
+  // Fall back to 'sat' for tokens that pre-date NUT-00 unit tagging.
+  const decoded = await decodeToken(token)
   const mintUrl = options?.mintUrl
     ? normalizeUrl(options.mintUrl)
-    : normalizeUrl((await decodeToken(token)).mint)
+    : normalizeUrl(decoded.mint)
+  const unit = normalizeMarketBaseAsset(decoded.unit ?? null)
   const registration = await ingressRegisterMint(mintUrl, source)
-  const receivedProofs = await receiveToken(token, mintUrl)
+  const receivedProofs = await receiveToken(token, mintUrl, unit)
   const proofs = await proofsWithOptionalConditionalMetadata({
     mintUrl,
     proofs: receivedProofs,
@@ -123,6 +131,7 @@ export async function ingressReceiveCashuToken(
   return {
     ...registration,
     proofs,
+    unit,
     amountSats: proofs.reduce((sum, p) => sum + amountToNumber(p.amount), 0),
   }
 }
