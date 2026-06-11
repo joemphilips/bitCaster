@@ -32,15 +32,17 @@ Choose a lower D when you want low barriers to participation and are comfortable
 
 Supported values: 100, 1,000, 10,000.
 
-## Initial Liquidity
+## Fund your market
 
-A market with no orders is a market no one can trade. To solve this cold-start problem, the creator deposits an initial amount of sats as liquidity. These sats are split into outcome tokens (e.g., YES and NO) and handed to a **Constant Product Market Maker (CPMM)** — an automated algorithm that places limit orders across a range of prices on the order book.
+After market creation succeeds, bitCaster shows an optional **Fund the market maker** step. Funding requests a deposit for the market's automated market-maker. The deposit is sent with the market creator's Nostr public key and a `fundAmm` flag so the service can treat it as bot quoting budget instead of a withdrawable user balance.
 
-The result is that from the moment a market goes live, there are orders to trade against. A trader who thinks YES is underpriced can buy immediately; one who thinks NO is underpriced can do the same. The CPMM adjusts its prices as trades fill, moving them in the direction the market is leaning.
+The funding step offers Minimal, Standard, Deep, and Custom budgets. Binary markets show 10,000 sats, 100,000 sats, and 1,000,000 sats. Categorical markets multiply those displayed tiers by `log2(outcome count)`. The app also shows a depth preview, such as how many sats move the displayed price by about one cent and the estimated cost to move 50% to 60%.
 
-The CPMM is simple and battle-tested — Gnosis and early Polymarket both used the same approach — but it is not particularly capital-efficient. It spreads liquidity uniformly across all price levels, which means much of the capital sits at prices no one realistically trades at. This is fine for bootstrapping, but for a mature market you want tighter spreads and deeper liquidity at the prices that matter.
+Minimal funding and custom budgets below 10,000 sats show a **WARNING** badge: **Very thin liquidity**. You can also choose **Skip funding (no bot liquidity)** as the first option in the step. Skipping leaves the market available without bot-provided quotes, so human makers must provide liquidity.
 
-That's where manual market makers come in. As a market attracts attention, professional or experienced traders can place their own limit orders with better pricing than the CPMM provides. They can concentrate liquidity around the prices where trading actually happens, offering traders better deals. As this happens, the creator can withdraw some or all of their CPMM liquidity — the market now sustains itself through organic participation.
+Disclosure shown before confirming funding:
+
+> This deposit is non-refundable. If the market resolves, the budget is expected to be spent paying traders who informed the price. Any residual at close becomes operator income.
 
 ## Market Lifecycle
 
