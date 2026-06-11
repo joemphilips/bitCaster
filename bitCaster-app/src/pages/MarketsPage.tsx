@@ -191,6 +191,7 @@ export function MarketsPage() {
       onClosingDateChange={handleClosingDateChange}
       onIncludeClosedChange={handleIncludeClosedChange}
       onViewMarket={handleViewMarket}
+      hasMore={nextCursor !== null}
       onLoadMore={handleLoadMore}
       onViewSecondaryMarket={handleViewSecondaryMarket}
     />

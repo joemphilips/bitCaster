@@ -22,6 +22,7 @@ export function MarketDiscovery({
   onClosingDateChange,
   onIncludeClosedChange,
   onViewMarket,
+  hasMore = false,
   onLoadMore,
   onViewSecondaryMarket,
 }: MarketDiscoveryProps) {
@@ -163,13 +164,17 @@ export function MarketDiscovery({
           </div>
         )}
 
-        <div ref={observerTarget} className="h-20 flex items-center justify-center">
-          {markets.length > 0 && (
+        {/* Sentinel: only mount/show when there are more pages to load so it
+            never stays visible after the last page is reached. The
+            IntersectionObserver fires onLoadMore when it enters the viewport;
+            hiding it also prevents spurious load-more calls on the last page. */}
+        {hasMore && (
+          <div ref={observerTarget} className="h-20 flex items-center justify-center">
             <div className="text-sm text-slate-500 dark:text-slate-400 animate-pulse">
               {t('market.loadingMore')}
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   )
