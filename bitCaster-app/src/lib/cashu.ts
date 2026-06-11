@@ -415,8 +415,9 @@ function skipValue(b: Uint8Array, i: number): number {
 export async function receiveToken(
   tokenStr: string,
   mintUrl?: string,
+  baseAsset?: MarketBaseAsset | string | null,
 ): Promise<Proof[]> {
-  const wallet = await getWallet(mintUrl);
+  const wallet = await getWallet(mintUrl, baseAsset);
   return wallet.receive(tokenStr);
 }
 

@@ -105,19 +105,37 @@ describe('walletOps facade', () => {
 
     const result = await ingressReceiveCashuToken('cashuB-token', 'scan')
 
-    expect(cashu.receiveToken).toHaveBeenCalledWith('cashuB-token', 'https://unknown.mint')
+    expect(cashu.receiveToken).toHaveBeenCalledWith('cashuB-token', 'https://unknown.mint', 'sat')
     expect(addMintWithoutActivating).toHaveBeenCalledWith('https://unknown.mint')
     expect(result).toMatchObject({
       added: true,
       amountSats: 55,
+      unit: 'sat',
       mintUrl: 'https://unknown.mint',
       source: 'scan',
+    })
+  })
+
+  it('preserves the token unit for non-sat tokens', async () => {
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: 'https://usd.mint/',
+      unit: 'usd',
+      proofs: [],
+    } as never)
+
+    const result = await ingressReceiveCashuToken('cashuB-usd-token', 'paste')
+
+    expect(cashu.receiveToken).toHaveBeenCalledWith('cashuB-usd-token', 'https://usd.mint', 'usd')
+    expect(result).toMatchObject({
+      unit: 'usd',
+      mintUrl: 'https://usd.mint',
     })
   })
 
   it('stamps received conditional proofs from the mint keyset registry', async () => {
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
       mint: 'https://conditional.mint/',
+      unit: 'sat',
       proofs: [],
     } as never)
     vi.stubGlobal(
@@ -155,14 +173,20 @@ describe('walletOps facade', () => {
   })
 
   it('does not re-register known ingress mints', async () => {
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: 'https://active.mint/',
+      proofs: [],
+    } as never)
+
     const result = await ingressReceiveCashuToken('token', 'nip17', {
       mintUrl: 'https://active.mint/',
     })
 
     expect(result.added).toBe(false)
     expect(addMintWithoutActivating).not.toHaveBeenCalled()
-    expect(cashu.decodeToken).not.toHaveBeenCalled()
-    expect(cashu.receiveToken).toHaveBeenCalledWith('token', 'https://active.mint')
+    // decodeToken is always called to read the token's unit (NUT-00)
+    expect(cashu.decodeToken).toHaveBeenCalledWith('token')
+    expect(cashu.receiveToken).toHaveBeenCalledWith('token', 'https://active.mint', 'sat')
   })
 
   it('keeps read-only mint snapshots detached from store mutation', () => {

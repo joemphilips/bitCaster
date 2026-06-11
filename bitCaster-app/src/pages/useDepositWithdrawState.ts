@@ -440,18 +440,18 @@ export function useDepositWithdrawState(
         const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
           mintUrl: received.mintUrl,
-          baseAsset: 'sat',
+          baseAsset: received.unit,
         }))
         await addProofs(stored)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
-          baseAsset: 'sat',
+          baseAsset: received.unit,
           amountSats: received.amountSats,
           status: 'completed',
         })
         setIsLoading(false)
         setSuccessAmount(received.amountSats)
-        setSuccessUnit('sat')
+        setSuccessUnit(received.unit)
         setCurrentView('success')
       } else if (currentView === 'pay-lightning') {
         setLightningInput(text)
@@ -563,17 +563,17 @@ export function useDepositWithdrawState(
         const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
           mintUrl: received.mintUrl,
-          baseAsset: 'sat',
+          baseAsset: received.unit,
         }))
         await addProofs(stored)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
-          baseAsset: 'sat',
+          baseAsset: received.unit,
           amountSats: received.amountSats,
           status: 'completed',
         })
         setSuccessAmount(received.amountSats)
-        setSuccessUnit('sat')
+        setSuccessUnit(received.unit)
         setCurrentView('success')
       } catch (e) {
         setError((e as Error).message)
