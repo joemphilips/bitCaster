@@ -35,12 +35,6 @@ export function DepositStep({ conditionId, outcomeCount = 2 }: DepositStepProps)
   const [isRequesting, setIsRequesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const settings = useSettingsStore((s) => ({
-    nostrSignerMode: s.nostrSignerMode,
-    nsecSecret: s.nsecSecret,
-    nostrProfilePubkey: s.nostrProfile?.pubkey,
-  }))
-
   const tiers = useMemo(
     () =>
       BINARY_AMM_FUNDING_TIERS.map((tier) => ({
@@ -66,7 +60,12 @@ export function DepositStep({ conditionId, outcomeCount = 2 }: DepositStepProps)
     setIsRequesting(true)
     setError(null)
     try {
-      const creatorPubkey = resolveCreatorPubkey(settings)
+      const settings = useSettingsStore.getState()
+      const creatorPubkey = resolveCreatorPubkey({
+        nostrSignerMode: settings.nostrSignerMode,
+        nsecSecret: settings.nsecSecret,
+        nostrProfilePubkey: settings.nostrProfile?.pubkey,
+      })
       const result = await requestLnInvoiceDeposit(conditionId, budgetSats, {
         creatorPubkey,
         fundAmm: true,
