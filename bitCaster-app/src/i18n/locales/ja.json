@@ -652,9 +652,9 @@
   "notification": {
     "empty": "通知はまだありません。",
     "accepted": "{{market}} の注文が受理されました",
-    "matched": "注文がマッチしました: {{market}} で {{sats}} sats 予約済み",
-    "filled": "注文が約定しました: {{market}} で {{sats}} sats",
-    "partiallyFilled": "一部約定: {{market}} で {{sats}} sats 約定、残り {{remaining}}",
+    "matched": "注文がマッチしました: {{market}} で {{amount}} 予約済み",
+    "filled": "注文が約定しました: {{market}} で {{amount}}",
+    "partiallyFilled": "一部約定: {{market}} で {{amount}} 約定、残り {{remaining}}",
     "cancelled": "{{market}} の注文がキャンセルされました",
     "marketClosed": "マーケットがクローズしました: {{market}}",
     "marketClosedTitle": "フォロー中のマーケットがクローズしました"

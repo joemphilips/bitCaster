@@ -183,6 +183,46 @@ describe('buildOrderStatusNotifications', () => {
       occurredAt: 123,
     })
   })
+
+  it('carries the trade baseAsset onto the notification unit', () => {
+    const status = {
+      ...orderStatusWithTradeFills('trade-a'),
+      status: 'filled',
+      filledAmountSats: 50,
+      remainingAmountSats: 0,
+    } as OrderStatusResponse
+
+    const notifications = buildOrderStatusNotifications(
+      status,
+      { ...pendingTrade(), baseAsset: 'usd' },
+      0,
+      123,
+    )
+
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]).toMatchObject({
+      kind: 'filled',
+      unit: 'usd',
+    })
+  })
+
+  it('defaults unit to sat when trade baseAsset is absent', () => {
+    const status = {
+      ...orderStatusWithTradeFills('trade-a'),
+      status: 'filled',
+      filledAmountSats: 1000,
+      remainingAmountSats: 0,
+    } as OrderStatusResponse
+
+    const notifications = buildOrderStatusNotifications(
+      status,
+      pendingTrade(),
+      0,
+      123,
+    )
+
+    expect(notifications[0]).toMatchObject({ unit: 'sat' })
+  })
 })
 
 function pendingTrade() {

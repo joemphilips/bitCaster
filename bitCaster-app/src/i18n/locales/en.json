@@ -652,9 +652,9 @@
   "notification": {
     "empty": "No notifications yet.",
     "accepted": "Order accepted on {{market}}",
-    "matched": "Order matched: {{sats}} sats reserved on {{market}}",
-    "filled": "Order filled: {{sats}} sats on {{market}}",
-    "partiallyFilled": "Partial fill: {{sats}} sats filled on {{market}}, {{remaining}} remaining",
+    "matched": "Order matched: {{amount}} reserved on {{market}}",
+    "filled": "Order filled: {{amount}} on {{market}}",
+    "partiallyFilled": "Partial fill: {{amount}} filled on {{market}}, {{remaining}} remaining",
     "cancelled": "Order cancelled on {{market}}",
     "marketClosed": "Market closed: {{market}}",
     "marketClosedTitle": "A market you follow has closed"
