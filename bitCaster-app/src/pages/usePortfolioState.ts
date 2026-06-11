@@ -12,6 +12,7 @@ import {
   normalizeMarketDivisibility,
   type MarketBaseAsset,
 } from '@bitcaster/client-sdk/marketUnits'
+import { groupAmountsByUnit } from '@/lib/formatAmount'
 import type {
   WalletState,
   BaseCurrency,
@@ -111,18 +112,37 @@ function loadProfile(): UserProfile {
   return DEFAULT_PROFILE
 }
 
-function computeStats(positions: Position[], fundsBalance: number): PortfolioStats {
-  const activePositions = positions.filter(
-    (p) => p.status === 'active' && normalizeMarketBaseAsset(p.baseAsset) === 'sat',
+export function computeStats(positions: Position[], funds: Fund[]): PortfolioStats {
+  const activePositions = positions.filter((p) => p.status === 'active')
+  const positionsValueByUnit = groupAmountsByUnit(
+    activePositions,
+    (p) => p.baseAsset,
+    (p) => p.currentValueSats,
   )
-  const positionsValueSats = activePositions.reduce((sum, p) => sum + p.currentValueSats, 0)
+  const fundValueByUnit = groupAmountsByUnit(
+    funds,
+    (f) => f.unit === 'sats' ? 'sat' : f.unit,
+    (f) => f.amount,
+  )
+  const totalValueByUnit = groupAmountsByUnit(
+    [
+      ...positionsValueByUnit,
+      ...fundValueByUnit,
+    ],
+    (entry) => entry.unit,
+    (entry) => entry.amount,
+  )
+  const positionsValueSats = positionsValueByUnit.find((entry) => entry.unit === 'sat')?.amount ?? 0
+  const totalValueSats = totalValueByUnit.find((entry) => entry.unit === 'sat')?.amount ?? 0
   const biggestWinSats = positions.reduce(
     (max, p) => Math.max(max, p.profitLossSats),
     0
   )
   return {
     positionsValueSats,
-    totalValueSats: positionsValueSats + fundsBalance,
+    totalValueSats,
+    positionsValueByUnit,
+    totalValueByUnit,
     biggestWinSats,
     predictionsCount: positions.length,
   }
@@ -333,14 +353,7 @@ export function usePortfolioState(): PortfolioState & {
     })
   }, [storeMints], [] as (Fund & { mintName: string })[])
   const funds: Fund[] = fundsFromDb
-  const fundsBalance = useMemo(
-    () => fundsFromDb
-      .filter((fund) => fund.unit === 'sats')
-      .reduce((sum, f) => sum + f.amount, 0),
-    [fundsFromDb],
-  )
-
-  const stats = useMemo(() => computeStats(positions, fundsBalance), [positions, fundsBalance])
+  const stats = useMemo(() => computeStats(positions, funds), [positions, funds])
 
   const saveProfile = useCallback((updated: UserProfile) => {
     setLocalProfile(updated)

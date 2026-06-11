@@ -41,6 +41,8 @@ export interface UserProfile {
 export interface PortfolioStats {
   positionsValueSats: number
   totalValueSats: number
+  positionsValueByUnit?: Array<{ unit: 'sat' | 'usd' | 'jpy'; amount: number }>
+  totalValueByUnit?: Array<{ unit: 'sat' | 'usd' | 'jpy'; amount: number }>
   biggestWinSats: number
   predictionsCount: number
 }
