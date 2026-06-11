@@ -10,6 +10,7 @@ import { useActiveSwapsStore } from '@/stores/activeSwaps'
 import { useToastStore } from '@/stores/toast'
 import { generateNip98Header } from '@/lib/markets'
 import { BitcasterEngineClient } from '@bitcaster/client-sdk/engineClient'
+import { normalizeMarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
 
 export type OrderStatusResponse = components['schemas']['OrderStatusResponse']
 export type FillStatus = components['schemas']['FillStatus']
@@ -131,6 +132,8 @@ export function buildOrderStatusNotifications(
   const fillCount = status.fills.length
   const hasNewFills = fillCount > lastFillCount
 
+  const unit = normalizeMarketBaseAsset(trade.baseAsset)
+
   if (
     !isTerminal &&
     (current === 'matched' || current === 'partially_filled') &&
@@ -146,6 +149,7 @@ export function buildOrderStatusNotifications(
         marketId: trade.marketId,
         filledAmountSats: status.filledAmountSats,
         remainingAmountSats: status.remainingAmountSats,
+        unit,
         occurredAt: now,
         read: false,
       },
@@ -162,6 +166,7 @@ export function buildOrderStatusNotifications(
         marketId: trade.marketId,
         filledAmountSats: status.filledAmountSats,
         remainingAmountSats: status.remainingAmountSats,
+        unit,
         occurredAt: now,
         read: false,
       },

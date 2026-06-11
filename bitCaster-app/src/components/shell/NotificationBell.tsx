@@ -8,6 +8,7 @@ import {
 } from '@/stores/notifications'
 import { splitMarketId } from '@/lib/orderStatus'
 import { formatTimeAgo } from '@/lib/format'
+import { formatAmount } from '@/lib/formatAmount'
 
 interface NotificationBellProps {
   /** Called when the user picks a notification — parent handles routing. */
@@ -180,13 +181,17 @@ function formatNotification(n: Notification, t: (key: string, opts?: Record<stri
     return t('notification.accepted', { market: marketLabel })
   }
   if (n.kind === 'filled') {
-    return t('notification.filled', { sats: n.filledAmountSats, market: marketLabel })
+    return t('notification.filled', { amount: formatAmount(n.filledAmountSats, n.unit), market: marketLabel })
   }
   if (n.kind === 'partially_filled') {
-    return t('notification.partiallyFilled', { sats: n.filledAmountSats, remaining: n.remainingAmountSats, market: marketLabel })
+    return t('notification.partiallyFilled', {
+      amount: formatAmount(n.filledAmountSats, n.unit),
+      remaining: formatAmount(n.remainingAmountSats, n.unit),
+      market: marketLabel,
+    })
   }
   if (n.kind === 'matched') {
-    return t('notification.matched', { sats: n.filledAmountSats, market: marketLabel })
+    return t('notification.matched', { amount: formatAmount(n.filledAmountSats, n.unit), market: marketLabel })
   }
   if (n.kind === 'market_closed') {
     return t('notification.marketClosed', { market: n.finalOutcome ?? marketLabel })

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import type { MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
 
 /**
  * Cap on how many notifications we keep in memory / localStorage. Once the
@@ -50,6 +51,12 @@ export interface Notification {
   filledAmountSats: number
   /** Sats remaining on the order at the moment this notification was generated. */
   remainingAmountSats: number
+  /**
+   * Base asset of the order (e.g. 'sat', 'usd'). Used by the notification
+   * bell to format amounts correctly. Absent on old persisted notifications;
+   * defaults to 'sat' at render time.
+   */
+  unit?: MarketBaseAsset
   /** Unix ms. */
   occurredAt: number
   read: boolean
