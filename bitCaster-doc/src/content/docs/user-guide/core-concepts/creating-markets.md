@@ -45,6 +45,8 @@ Supported values: 100, 1,000, 10,000.
 
 After market creation succeeds, bitCaster shows an optional **Fund the market maker** step. Funding requests a deposit for the market's automated market-maker. The deposit is sent with the market creator's Nostr public key and a `fundAmm` flag so the service can treat it as bot quoting budget instead of a withdrawable user balance.
 
+Market-maker funding is currently available for **sat-denominated markets only**. USD and other currency markets are created without bot liquidity; human makers must provide it directly.
+
 The funding step offers Minimal, Standard, Deep, and Custom budgets. Binary markets show 10,000 sats, 100,000 sats, and 1,000,000 sats. Categorical markets multiply those displayed tiers by `log2(outcome count)`. The app also shows a depth preview, such as how many sats move the displayed price by about one cent and the estimated cost to move 50% to 60%.
 
 Minimal funding and custom budgets below 10,000 sats show a **WARNING** badge: **Very thin liquidity**. You can also choose **Skip funding (no bot liquidity)** as the first option in the step. Skipping leaves the market available without bot-provided quotes, so human makers must provide liquidity.
