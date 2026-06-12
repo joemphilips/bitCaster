@@ -30,6 +30,8 @@ Every market is denominated in a **base asset** that controls how collateral, st
 
 JPY and other units are not yet available.
 
+For non-sat markets, bitCaster verifies with the mint that the underlying condition's collateral matches the chosen base asset. If the mint cannot yet confirm the unit, market registration returns a retryable error; try again once the mint has registered the condition.
+
 ## Price Denominator
 
 Every market has a **price denominator** (D). It controls two things at once:
@@ -43,7 +45,7 @@ Supported values: 100, 1,000, 10,000.
 
 ## Fund your market
 
-After market creation succeeds, bitCaster shows an optional **Fund the market maker** step. Funding requests a deposit for the market's automated market-maker. The deposit is sent with the market creator's Nostr public key and a `fundAmm` flag so the service can treat it as bot quoting budget instead of a withdrawable user balance.
+After market creation succeeds, bitCaster shows an optional **Fund the market maker** step. Funding requests a deposit for the market's automated market-maker. The deposit is sent with the market creator's Nostr public key and a `fundAmm` flag so the service can treat it as bot quoting budget instead of a withdrawable user balance. The creator key on a funding deposit must match the Nostr identity that signs the request itself — a deposit naming a different creator key is rejected, so funding attribution always belongs to the signed-in key.
 
 Market-maker funding is currently available for **sat-denominated markets only**. USD and other currency markets are created without bot liquidity; human makers must provide it directly.
 
