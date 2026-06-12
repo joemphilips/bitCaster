@@ -963,7 +963,7 @@ export async function requestLnInvoiceDeposit(
   options: MarketFundingDepositOptions = {},
 ): Promise<RequestLnInvoiceDepositResponse> {
   const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ln-invoice`;
-  const body: RequestLnInvoiceDepositRequest = { amountSats };
+  const body: RequestLnInvoiceDepositRequest = { amountSats, fundAmm: false };
   if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
   if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
   const bodyText = JSON.stringify(body);
@@ -996,7 +996,7 @@ export async function requestEcashDeposit(
   options: MarketFundingDepositOptions = {},
 ): Promise<RequestEcashDepositResponse> {
   const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`;
-  const body: RequestEcashDepositRequest = { amountSats, proofsToken };
+  const body: RequestEcashDepositRequest = { amountSats, proofsToken, fundAmm: false };
   if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
   if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
   const bodyText = JSON.stringify(body);
