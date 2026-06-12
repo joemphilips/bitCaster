@@ -12,6 +12,7 @@ import {
 } from '@/lib/likedMarketClose'
 import { showWebNotification } from '@/lib/webNotifications'
 import type { Market } from '@/types/market'
+import { assertNever } from '../lib/enumDiscipline'
 
 /**
  * P22 Link G2 — best-effort live `MarketStatusChanged` push while the market
@@ -59,7 +60,14 @@ export function useMarketStatusLive(
       // Always ask the parent to refresh so the UI reflects the new state.
       onRefresh()
 
-      if (status.state !== 'closed') return
+      switch (status.state) {
+        case 'open':
+          return
+        case 'closed':
+          break
+        default:
+          return assertNever(status.state)
+      }
 
       // Mirror the reconcile path: build a minimal Market shape, run it through
       // the pure reconcile logic so we re-use the same notification construction
