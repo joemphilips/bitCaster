@@ -337,8 +337,12 @@ public class MarketCreationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task WizardStep4_NormalizeButton_UpdatesProbabilities()
+    public async Task WizardStep4_AutoNormalize_KeyprobabilitiesSumTo100()
     {
+        // The explicit "Normalize to 100%" button was removed; probabilities
+        // now auto-normalize on every edit via rebalanceAfterEdit in
+        // useMarketCreationState. When the user changes one probability the
+        // complement(s) are adjusted automatically so the sum stays at 100.
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await NavigateToStep(page, 4);
@@ -347,23 +351,22 @@ public class MarketCreationTests : IAsyncLifetime
         var probInputs = page.Locator("input[type='number']");
         await Assertions.Expect(probInputs).ToHaveCountAsync(2);
 
-        // Clear and set custom probabilities: Yes=10, No=10
+        // Assert the explicit Normalize button is gone.
+        var normalizeBtn = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("normalize", RegexOptions.IgnoreCase) });
+        await Assertions.Expect(normalizeBtn).ToHaveCountAsync(0);
+
+        // Set Yes = 30; auto-normalize should set No = 70 so the sum stays 100.
         await probInputs.Nth(0).ClearAsync();
-        await probInputs.Nth(0).FillAsync("10");
-        await probInputs.Nth(1).ClearAsync();
-        await probInputs.Nth(1).FillAsync("10");
+        await probInputs.Nth(0).FillAsync("30");
+        // Tab-out / blur triggers the rebalance in the UI.
+        await probInputs.Nth(0).PressAsync("Tab");
 
-        // Click "Normalize to 100%"
-        var normalizeBtn = page.GetByText("Normalize to 100%");
-        await normalizeBtn.ClickAsync();
+        await Assertions.Expect(probInputs.Nth(0)).ToHaveValueAsync("30", new() { Timeout = 5_000 });
+        await Assertions.Expect(probInputs.Nth(1)).ToHaveValueAsync("70", new() { Timeout = 5_000 });
 
-        // After normalization, both should be 50
-        await Assertions.Expect(probInputs.Nth(0)).ToHaveValueAsync("50");
-        await Assertions.Expect(probInputs.Nth(1)).ToHaveValueAsync("50");
-
-        // The probability summary should show 100%
+        // The probability summary should still show 100%.
         var summaryText = page.GetByText("100%").Last;
-        await Assertions.Expect(summaryText).ToBeVisibleAsync();
+        await Assertions.Expect(summaryText).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
     [Fact]
