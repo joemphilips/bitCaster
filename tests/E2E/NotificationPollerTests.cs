@@ -215,7 +215,7 @@ public class NotificationPollerTests : IAsyncLifetime
         await Assertions.Expect(badge).ToHaveTextAsync("1", new() { Timeout = 15_000 });
 
         await bell.ClickAsync();
-        var fillEntry = page.GetByText(new Regex("Partial fill.*100 sats filled.*Yes.*100 remaining"));
+        var fillEntry = page.GetByText(new Regex("Partial fill.*100 sats filled.*Yes.*100 sats remaining"));
         await Assertions.Expect(fillEntry).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 

@@ -168,7 +168,9 @@ public class TradingFlowTests : IAsyncLifetime
         await yesSide.ClickAsync();
 
         // Choose a quick-amount so tradeAmount > 0 and walletReady is true.
-        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "100" }).First;
+        // QUICK_SHARE_PRESETS are [1, 5, 10, 50] shares (share-denominated since the
+        // trade ticket moved to display-share denomination).
+        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "10" }).First;
         await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await quickAmount.ClickAsync();
 
@@ -195,14 +197,15 @@ public class TradingFlowTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task BuySide_ShowsWalletBalanceHint_AfterSeed()
+    public async Task BuySide_NoBalanceHint_InsufficientBalanceModal_StillAppears()
     {
-        // Regression for P5 item 6 — the buy-side trade panel used to show
-        // no balance hint, and the InsufficientBalanceModal reported
-        // "You have 0 sats" because the proof-row mintUrl never matched the
-        // normalized active mint URL. The fix is in `stores/proof-db.ts`
-        // (normalizes on write + a one-shot migration in `App.tsx`) and a
-        // live-balance wire-through to `<TradingPanel>`.
+        // The buy-side TradingPanel intentionally omits a wallet balance hint
+        // (see TradingPanel.tsx: "Buy-side wallet balance is intentionally
+        // omitted from this panel"). This test verifies:
+        //   1. No "You have N sats" text is visible on the buy side.
+        //   2. The InsufficientBalanceModal still opens when the order amount
+        //      exceeds the seeded balance — confirming the balance is wired
+        //      through to the modal even though the panel hides the hint.
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         var consoleMessages = TestHelpers.AttachConsoleCapture(page);
@@ -230,23 +233,25 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await yesSide.ClickAsync();
 
-        // Balance hint should reflect the seeded amount (live via useBalance)
-        // using the same locale-aware market-unit formatter as the UI.
-        var balanceHint = page.GetByText("You have 10,000 sats").Filter(new() { Visible = true }).First;
-        await Assertions.Expect(balanceHint).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        // Verify that the buy-side panel does NOT show a wallet balance hint —
+        // this is intentional UX (only the sell-side shows a share balance).
+        var buyBalanceHint = page.GetByText(new Regex("You have.*sats", RegexOptions.IgnoreCase))
+            .Filter(new() { Visible = true });
+        await Assertions.Expect(buyBalanceHint).ToHaveCountAsync(0);
 
-        // Quick-pick buttons top out at 5000 sats (QUICK_AMOUNTS in
-        // TradingPanel.tsx); type a larger value directly to exceed the 10k
-        // seeded balance. The amount input is a <input type="number">
-        // sibling to the quick buttons.
+        // Type an amount in shares that exceeds the seeded balance (10,000 sats
+        // = 100 shares at divisibility 100). 500 shares would cost 50,000 sats,
+        // well past the funded 10,000 sats.
         var amountInput = VisibleTradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await amountInput.FillAsync("50000");
+        await amountInput.FillAsync("500");
 
         var confirm = VisibleTradeConfirm(page);
         await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
         await confirm.ClickAsync();
 
+        // InsufficientBalanceModal must still open even though the panel
+        // omits the inline balance hint.
         var modalHeader = page.GetByText("Insufficient Balance");
         try
         {
@@ -260,8 +265,7 @@ public class TradingFlowTests : IAsyncLifetime
                 "Over-balance trade confirm did not open Insufficient Balance modal.");
         }
 
-        // The modal's "You have {{count}} sats" line must now report the
-        // seeded balance, not 0 (pre-fix regression).
+        // The modal's balance line must now report the seeded amount, not 0.
         var modalBalance = page.GetByText("10,000 sats").Filter(new() { Visible = true }).First;
         await Assertions.Expect(modalBalance).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
@@ -276,7 +280,7 @@ public class TradingFlowTests : IAsyncLifetime
         await GoToFirstMarketDetailAsync(page);
         await SeedBalanceAsync(page, 10_000);
         // Reload so the seeded proof is in IDB before useLiveQuery subscribes
-        // — see BuySide_ShowsWalletBalanceHint_AfterSeed for the same pattern.
+        // — see BuySide_NoBalanceHint_InsufficientBalanceModal_StillAppears for the same pattern.
         await page.ReloadAsync(new PageReloadOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
@@ -321,7 +325,9 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await yesSide.ClickAsync();
 
-        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "100" })
+        // QUICK_SHARE_PRESETS are [1, 5, 10, 50] shares (share-denominated since the
+        // trade ticket moved to display-share denomination).
+        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "10" })
             .Filter(new() { Visible = true }).First;
         await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await quickAmount.ClickAsync();
@@ -455,7 +461,9 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await yesSide.ClickAsync();
 
-        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "100" })
+        // QUICK_SHARE_PRESETS are [1, 5, 10, 50] shares (share-denominated since the
+        // trade ticket moved to display-share denomination).
+        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "10" })
             .Filter(new() { Visible = true }).First;
         await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await quickAmount.ClickAsync();
