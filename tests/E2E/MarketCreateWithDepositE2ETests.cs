@@ -260,12 +260,16 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         var (page, conditionId) = await NavigateThroughWizardToDepositStepAsync(
             context, title, "E2E AMM disabled continue path");
 
-        await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "AMM liquidity is TBD" }))
+        await Assertions.Expect(page.GetByTestId("amm-funding-tier-minimal"))
             .ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("No liquidity payment required"))
+        await Assertions.Expect(page.GetByTestId("amm-funding-tier-standard"))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("amm-funding-tier-deep"))
             .ToBeVisibleAsync();
 
-        await page.GetByTestId("continue-to-market").ClickAsync();
+        var skipFunding = page.GetByTestId("skip-amm-funding");
+        await Assertions.Expect(skipFunding).ToBeEnabledAsync();
+        await skipFunding.ClickAsync();
         await Assertions.Expect(page).ToHaveURLAsync(
             new Regex($"/markets/{Regex.Escape(conditionId)}$"));
     }
@@ -281,7 +285,8 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         await Assertions.Expect(page.GetByTestId("tab-ln")).Not.ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("tab-ecash")).Not.ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("request-ln-invoice")).Not.ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByTestId("continue-to-market")).ToBeEnabledAsync();
+        await Assertions.Expect(page.GetByTestId("confirm-amm-funding")).ToBeEnabledAsync();
+        await Assertions.Expect(page.GetByTestId("skip-amm-funding")).ToBeEnabledAsync();
     }
 
     [Fact]
@@ -293,7 +298,8 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
             context, title, "E2E disabled amount-input test");
 
         await Assertions.Expect(page.GetByTestId("amount-input")).Not.ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByTestId("continue-to-market")).ToBeEnabledAsync();
+        await Assertions.Expect(page.GetByTestId("amm-funding-custom-budget")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("skip-amm-funding")).ToBeEnabledAsync();
     }
 
     [Fact]

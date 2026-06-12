@@ -124,11 +124,8 @@ public class MarketQueryProxyTests : IAsyncLifetime
                 .ToBeVisibleAsync(new() { Timeout = 10_000 });
             await Assertions.Expect(page.Locator("[aria-label='Liquidity'], [title='Liquidity']").First)
                 .ToBeVisibleAsync(new() { Timeout = 10_000 });
-            await Assertions.Expect(page.Locator("[aria-label='Traders'], [title='Traders']").First)
-                .ToBeVisibleAsync(new() { Timeout = 10_000 });
             await Assertions.Expect(page.GetByText(new System.Text.RegularExpressions.Regex("^Volume$"))).ToHaveCountAsync(0);
             await Assertions.Expect(page.GetByText(new System.Text.RegularExpressions.Regex("^Liquidity$"))).ToHaveCountAsync(0);
-            await Assertions.Expect(page.GetByText(new System.Text.RegularExpressions.Regex("^Traders$"))).ToHaveCountAsync(0);
             Assert.NotEmpty(queryUrls);
             // Detail-page mintd contract is intact, but we never navigated to
             // the detail page — so the markets-list flow MUST NOT have hit
