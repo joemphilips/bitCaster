@@ -88,6 +88,7 @@ export function DepositStep({ conditionId, outcomeCount = 2 }: DepositStepProps)
       </p>
 
       <button
+        data-testid="skip-amm-funding"
         type="button"
         onClick={onSkip}
         className="mb-5 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-left text-sm font-semibold text-slate-100 transition-colors hover:border-slate-500 hover:bg-slate-800"
@@ -106,6 +107,7 @@ export function DepositStep({ conditionId, outcomeCount = 2 }: DepositStepProps)
         {tiers.map((tier) => (
           <button
             key={tier.id}
+            data-testid={`amm-funding-tier-${tier.id}`}
             type="button"
             onClick={() => setSelectedTier(tier.id)}
             className={`rounded-lg border p-4 text-left transition-colors ${
@@ -136,6 +138,7 @@ export function DepositStep({ conditionId, outcomeCount = 2 }: DepositStepProps)
           {t('marketCreation.ammFundingTier.custom')}
         </span>
         <input
+          data-testid="amm-funding-custom-budget"
           type="number"
           min={0}
           inputMode="numeric"

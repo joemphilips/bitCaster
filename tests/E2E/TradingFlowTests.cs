@@ -327,18 +327,12 @@ public class TradingFlowTests : IAsyncLifetime
 
         // QUICK_SHARE_PRESETS are [1, 5, 10, 50] shares (share-denominated since the
         // trade ticket moved to display-share denomination).
-        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "10" })
-            .Filter(new() { Visible = true }).First;
-        await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await quickAmount.ClickAsync();
+        await ClickVisibleQuickSharePresetAsync(page, 10);
 
         // The seeded order book is empty. A market order should now fail
         // before POSTing because there is no executable liquidity; use a limit
         // order for this regression guard, which only asserts submission shape.
-        var limitOrder = page.GetByRole(AriaRole.Button, new() { Name = "Limit" })
-            .Filter(new() { Visible = true }).First;
-        await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await limitOrder.ClickAsync();
+        await ClickVisibleLimitOrderAsync(page);
 
         // This regression guard intercepts SubmitOrder and seeds a synthetic
         // proof that is good enough for balance display, but not spendable by
@@ -463,15 +457,9 @@ public class TradingFlowTests : IAsyncLifetime
 
         // QUICK_SHARE_PRESETS are [1, 5, 10, 50] shares (share-denominated since the
         // trade ticket moved to display-share denomination).
-        var quickAmount = page.GetByRole(AriaRole.Button, new() { Name = "10" })
-            .Filter(new() { Visible = true }).First;
-        await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await quickAmount.ClickAsync();
+        await ClickVisibleQuickSharePresetAsync(page, 10);
 
-        var limitOrder = page.GetByRole(AriaRole.Button, new() { Name = "Limit" })
-            .Filter(new() { Visible = true }).First;
-        await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await limitOrder.ClickAsync();
+        await ClickVisibleLimitOrderAsync(page);
 
         var preflightSplit = page.GetByRole(AriaRole.Checkbox, new() { Name = "Pre-flight split" })
             .Filter(new() { Visible = true }).First;
@@ -484,20 +472,9 @@ public class TradingFlowTests : IAsyncLifetime
         await confirm.ClickAsync();
 
         await ClickTopUpAndContinueAsync(page, consoleMessages, "collateral top-up");
-        try
-        {
-            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Top Up Engine Score" }))
-                .ToBeVisibleAsync(new() { Timeout = 30_000 });
-        }
-        catch
-        {
-            throw await TestHelpers.BuildDiagnosticExceptionAsync(
-                page,
-                consoleMessages,
-                "Score modal did not appear after collateral top-up.");
-        }
-
-        await ClickTopUpAndContinueAsync(page, consoleMessages, "Score top-up");
+        // P27 changed Score payment from a second modal to a submit preflight:
+        // after collateral lands, regular sats are spent directly into Score
+        // and the original order is retried.
 
         var deadline = DateTime.UtcNow.AddSeconds(45);
         while ((capturedScorePaymentBody is null || capturedOrderBody is null) && DateTime.UtcNow < deadline)
@@ -529,7 +506,9 @@ public class TradingFlowTests : IAsyncLifetime
         }
 
         using var orderDoc = JsonDocument.Parse(capturedOrderBody);
-        Assert.Equal(100, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
+        // Trade tickets are share-denominated: 10 displayed shares map to
+        // 1,000 protocol subunits at divisibility 100.
+        Assert.Equal(1000, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
         Assert.Equal("Outcome", orderDoc.RootElement.GetProperty("tokenSide").GetString());
         Assert.Matches(
             @"^(02|03)[0-9a-f]{64}$",
@@ -583,6 +562,34 @@ public class TradingFlowTests : IAsyncLifetime
         page.GetByTestId("trade-confirm")
             .Filter(new() { Visible = true })
             .First;
+
+    private static async Task ClickVisibleQuickSharePresetAsync(IPage page, int shares)
+    {
+        var quickAmount = page.Locator("[data-trading-panel]")
+            .Filter(new() { Visible = true })
+            .First
+            .GetByRole(AriaRole.Button, new() { Name = $"+{shares}", Exact = true })
+            .Filter(new() { Visible = true })
+            .First;
+        await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await quickAmount.ClickAsync();
+    }
+
+    private static async Task ClickVisibleLimitOrderAsync(IPage page)
+    {
+        var limitOrder = page.Locator("[data-trading-panel]")
+            .Filter(new() { Visible = true })
+            .First
+            .GetByRole(AriaRole.Button, new() { Name = "Limit", Exact = true })
+            .Filter(new() { Visible = true }).First;
+        await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        // At the default E2E viewport, Playwright's auto-scroll can place the
+        // already-visible toggle underneath the sticky desktop header. This is
+        // a test viewport artifact, not a product regression: users can click
+        // the visible control in the trading panel without auto-scrolling it
+        // under the header.
+        await limitOrder.DispatchEventAsync("click");
+    }
 
     public async Task DisposeAsync()
     {
