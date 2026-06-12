@@ -2259,7 +2259,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await FillNumberInputAsync(amountInput, amountSats);
+        await FillNumberInputAsync(amountInput, ToDisplayShares(amountSats));
 
         var priceInput = page.Locator("input[type='number']")
             .Filter(new() { Visible = true })
@@ -2355,7 +2355,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await FillNumberInputAsync(amountInput, amountSats);
+        await FillNumberInputAsync(amountInput, ToDisplayShares(amountSats));
 
         var priceInput = page.Locator("input[type='number']")
             .Filter(new() { Visible = true })
@@ -2534,7 +2534,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await FillNumberInputAsync(amountInput, amountSats);
+        await FillNumberInputAsync(amountInput, ToDisplayShares(amountSats));
 
         var priceInput = page.Locator("input[type='number']")
             .Filter(new() { Visible = true })
@@ -2642,7 +2642,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         var amountInput = TradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await FillNumberInputAsync(amountInput, amountSats);
+        await FillNumberInputAsync(amountInput, ToDisplayShares(amountSats));
 
         var priceInput = page.Locator("input[type='number']")
             .Filter(new() { Visible = true })
@@ -3034,6 +3034,20 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         VisibleTradingPanel(page).GetByTestId("trade-confirm")
             .Filter(new() { Visible = true })
             .First;
+
+    // The frontend trade ticket is share-denominated: the amount input takes
+    // display shares and the wire amountSats is shares × market divisibility
+    // (100 for every market this suite registers). Convert the wire face
+    // amount the assertions expect into the share count the UI wants.
+    private static int ToDisplayShares(int faceAmountSats)
+    {
+        const int faceSatsPerDisplayShare = 100; // MarketUnitPolicy.DefaultDivisibility
+        Assert.True(
+            faceAmountSats > 0 && faceAmountSats % faceSatsPerDisplayShare == 0,
+            $"faceAmountSats={faceAmountSats} is not a positive multiple of {faceSatsPerDisplayShare}; " +
+            "the browser trade ticket can only express whole display shares.");
+        return faceAmountSats / faceSatsPerDisplayShare;
+    }
 
     private static async Task FillNumberInputAsync(ILocator input, int value)
     {
