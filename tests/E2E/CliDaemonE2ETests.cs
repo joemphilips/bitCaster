@@ -580,6 +580,105 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BrowserMaker_PreflightSplitBoundaryBand_ShowsTopUpModalBeforeProofSelection()
+    {
+        using var fixtureHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            fixtureHttpClient,
+            titlePrefix: "P28 boundary under face");
+        var outcomeSetId = condition.PrimitiveOutcomeSetIds[0];
+        var marketId = $"{condition.ConditionId}-{outcomeSetId}";
+        const int faceAmountSats = 100;
+        const int limitPrice = 40;
+        const int makerFundingSats = 50;
+
+        var playwright = await Playwright.CreateAsync();
+        IBrowser? browser = null;
+        try
+        {
+            browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            {
+                Headless = true,
+            });
+            await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                ServiceWorkers = ServiceWorkerPolicy.Block,
+            });
+            await AddSignalRDebugAsync(context);
+            var page = await context.NewPageAsync();
+            var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+
+            await SetupBrowserWalletAndSignerAsync(page, "cc".PadRight(64, 'c'));
+            await DepositBrowserSatsAsync(page, makerFundingSats, consoleMessages);
+
+            await SubmitBrowserLimitBuyExpectTopUpModalAsync(
+                page,
+                condition.ConditionId,
+                outcomeSetId,
+                limitPrice,
+                faceAmountSats,
+                consoleMessages);
+            AssertNoForbiddenBrowserConsole(consoleMessages);
+        }
+        finally
+        {
+            if (browser is not null) await browser.CloseAsync();
+            playwright.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task BrowserMaker_PreflightSplitBoundaryBand_PostsWhenFundedAboveFace()
+    {
+        using var fixtureHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            fixtureHttpClient,
+            titlePrefix: "P28 boundary funded");
+        var outcomeSetId = condition.PrimitiveOutcomeSetIds[0];
+        var marketId = $"{condition.ConditionId}-{outcomeSetId}";
+        const int faceAmountSats = 100;
+        const int limitPrice = 40;
+        const int makerFundingSats = 210;
+
+        var playwright = await Playwright.CreateAsync();
+        IBrowser? browser = null;
+        try
+        {
+            browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            {
+                Headless = true,
+            });
+            await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                ServiceWorkers = ServiceWorkerPolicy.Block,
+            });
+            await AddSignalRDebugAsync(context);
+            var page = await context.NewPageAsync();
+            var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+
+            await SetupBrowserWalletAndSignerAsync(page, "dd".PadRight(64, 'd'));
+            await DepositBrowserSatsAsync(page, makerFundingSats, consoleMessages);
+
+            await SubmitBrowserLimitBuyRestingAsync(
+                page,
+                condition.ConditionId,
+                outcomeSetId,
+                marketId,
+                limitPrice,
+                faceAmountSats,
+                preflight: true,
+                consoleMessages);
+            await WaitForEngineBidAsync(marketId, faceAmountSats);
+            AssertNoForbiddenBrowserConsole(consoleMessages);
+        }
+        finally
+        {
+            if (browser is not null) await browser.CloseAsync();
+            playwright.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task EightOutcomeMarket_PreRegistration_Produces16Keysets()
     {
         var outcomes = new[] { "A", "B", "C", "D", "E", "F", "G", "H" };
@@ -2715,6 +2814,69 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
 
         await TryWaitForSignalRInvocationAsync(consoleMessages, "JoinOrder", orderId!);
         return orderId!;
+    }
+
+    private static async Task SubmitBrowserLimitBuyExpectTopUpModalAsync(
+        IPage page,
+        string conditionId,
+        string outcomeSetId,
+        int limitPrice,
+        int amountSats,
+        IReadOnlyList<string> consoleMessages)
+    {
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{conditionId}", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+        await EnsureMarketDetailOpenAsync(page, conditionId, consoleMessages);
+
+        var limitOrder = VisibleTradingPanel(page)
+            .GetByRole(AriaRole.Button, new() { Name = "Limit", Exact = true })
+            .Filter(new() { Visible = true })
+            .First;
+        await Assertions.Expect(limitOrder).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await limitOrder.ClickAsync();
+
+        var outcomeButton = TradeOutcomeButton(page, outcomeSetId);
+        await Assertions.Expect(outcomeButton).ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await outcomeButton.ClickAsync();
+
+        var amountInput = TradeAmountInput(page);
+        await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await FillNumberInputAsync(amountInput, ToDisplayShares(amountSats));
+
+        var priceInput = page.Locator("input[type='number']")
+            .Filter(new() { Visible = true })
+            .Nth(1);
+        await Assertions.Expect(priceInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await priceInput.FillAsync(limitPrice.ToString(CultureInfo.InvariantCulture));
+
+        var preflightSplit = page.GetByRole(AriaRole.Checkbox, new() { Name = "Pre-flight split" })
+            .Filter(new() { Visible = true })
+            .First;
+        await Assertions.Expect(preflightSplit).ToBeCheckedAsync(new() { Timeout = 5_000 });
+
+        var confirm = TradeConfirmButton(page);
+        await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
+        await confirm.ClickAsync();
+
+        try
+        {
+            await Assertions.Expect(page.GetByTestId("insufficient-balance-top-up"))
+                .ToBeVisibleAsync(new() { Timeout = 10_000 });
+            await Assertions.Expect(page.GetByText("No regular collateral proofs are available for CTF split."))
+                .Not.ToBeVisibleAsync(new() { Timeout = 1_000 });
+            await Assertions.Expect(page.GetByText("Insufficient balance for CTF split"))
+                .Not.ToBeVisibleAsync(new() { Timeout = 1_000 });
+        }
+        catch
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page,
+                consoleMessages,
+                $"Expected preflight split buy for {conditionId}-{outcomeSetId} to open the top-up modal.");
+        }
     }
 
     private static async Task<bool> TryWaitForSignalRInvocationAsync(
