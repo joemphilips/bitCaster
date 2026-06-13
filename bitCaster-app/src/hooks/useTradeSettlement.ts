@@ -234,9 +234,16 @@ async function prepareRegularCollateralForCtfSplit(input: {
     false,
   );
   if (selected.send.length === 0) {
-    throw new Error(
-      "No regular collateral proofs are available for CTF split.",
+    const availableSats = input.available.reduce(
+      (sum, proof) => sum + amountToNumber(proof.amount),
+      0,
     );
+    if (availableSats > 0) {
+      throw new Error(
+        `Insufficient balance for CTF split: need ${grossCtfInputSats} sats face collateral, have ${availableSats}.`,
+      );
+    }
+    throw new Error("No regular collateral proofs are available for CTF split.");
   }
   const regularSplit = await splitRegularProofsWithOperation({
     mintUrl: input.mintUrl,

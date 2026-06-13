@@ -221,6 +221,52 @@ describe("preflight split preparation", () => {
       "order-preflight:test",
     );
   });
+
+  it("reports insufficient balance when proof selection cannot cover the gross split amount", async () => {
+    mocks.getWallet.mockResolvedValue({
+      ...planningWallet("regular-keyset"),
+      selectProofsToSend: vi.fn(() => ({ send: [], keep: [] })),
+      getFeesForProofs: vi.fn(() => 1),
+    });
+    mocks.selectCollateralForCtfSplit.mockRejectedValue(
+      new Error("fragmented collateral"),
+    );
+
+    await expect(
+      prepareCollateralLotForCtfSplit({
+        mintUrl: "https://mint.example",
+        available: [proof("regular-1", 50)],
+        faceAmountSats: 100,
+        reservationId: "order-preflight:test",
+        lotIndex: 0,
+      }),
+    ).rejects.toThrow(
+      "Insufficient balance for CTF split: need 101 sats face collateral, have 50.",
+    );
+  });
+
+  it("reports empty collateral separately from an underfunded proof set", async () => {
+    mocks.getWallet.mockResolvedValue({
+      ...planningWallet("regular-keyset"),
+      selectProofsToSend: vi.fn(() => ({ send: [], keep: [] })),
+      getFeesForProofs: vi.fn(() => 1),
+    });
+    mocks.selectCollateralForCtfSplit.mockRejectedValue(
+      new Error("fragmented collateral"),
+    );
+
+    await expect(
+      prepareCollateralLotForCtfSplit({
+        mintUrl: "https://mint.example",
+        available: [],
+        faceAmountSats: 100,
+        reservationId: "order-preflight:test",
+        lotIndex: 0,
+      }),
+    ).rejects.toThrow(
+      "No regular collateral proofs are available for CTF split.",
+    );
+  });
 });
 
 function keyset(id: string, conditionId: string, outcomeCollection: string) {
