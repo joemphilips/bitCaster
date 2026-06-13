@@ -1,0 +1,129 @@
+name: E2E Daily
+
+# Run at midnight JST (15:00 UTC) every day
+# Japan is UTC+9, so midnight JST = 15:00 UTC previous day
+# cron: 0 15 * * * = 00:00 JST next day
+on:
+  schedule:
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+    # Allow manual trigger anytime
+
+concurrency:
+  group: e2e-daily-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: 10.0.x
+
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Always rebuild docker images for scheduled runs (no caching assumption)
+      - name: Build mintd image
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build mintd
+
+      - name: Build cashu-me image
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml build cashu-me
+
+      # Start dependency services via Docker.
+      # Server and frontend run natively to match the local dev workflow.
+      - name: Start mint and interop services
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mintd seed cashu-me nostr-relay lnbits-init
+
+      - name: Wait for mint
+        run: |
+          echo "Waiting for mint..."
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8085/v1/info && exit 0
+            sleep 5
+          done
+          echo "Mint not ready"
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
+          exit 1
+
+      - name: Wait for cashu.me
+        run: |
+          echo "Waiting for cashu.me..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000 && exit 0
+            sleep 2
+          done
+          echo "cashu.me not ready"
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs cashu-me
+          exit 1
+
+      - name: Wait for nostr-relay
+        run: |
+          echo "Waiting for nostr-relay..."
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:7777 && exit 0
+            sleep 2
+          done
+          echo "nostr-relay not ready"
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs nostr-relay
+          exit 1
+
+      - name: Wait for lnbits
+        run: |
+          echo "Waiting for lnbits (post first_install)..."
+          for i in $(seq 1 30); do
+            curl -sf -L http://localhost:5102/ >/dev/null && exit 0
+            sleep 2
+          done
+          echo "lnbits not ready"
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs lnbits lnbits-init
+          exit 1
+
+      - name: Build and start server
+        run: |
+          dotnet tool restore
+          dotnet run --project BitCaster.InMemoryMatchingEngine/ &
+          echo "Waiting for server..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5000/health && exit 0
+            sleep 2
+          done
+          echo "Server not ready"
+          exit 1
+
+      - name: Build and start frontend
+        run: |
+          cd bitCaster-app && npx vite --host &
+          echo "Waiting for frontend..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5273 && exit 0
+            sleep 2
+          done
+          echo "Frontend not ready"
+          exit 1
+
+      - name: Build E2E tests and install Playwright
+        run: |
+          dotnet build tests/E2E/
+          pwsh tests/E2E/bin/Debug/*/playwright.ps1 install chromium
+
+      - name: Run E2E tests
+        run: dotnet test tests/E2E/ --no-build -- RunConfiguration.MaxCpuCount=$(($(nproc) - 1))
+
+      - name: Dump docker compose logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs mintd cashu-me nostr-relay lnbits lnbits-init
