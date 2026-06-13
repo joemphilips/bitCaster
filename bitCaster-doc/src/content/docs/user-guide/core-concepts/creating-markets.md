@@ -47,11 +47,11 @@ Supported values: 100, 1,000, 10,000.
 
 After market creation succeeds, bitCaster shows an optional **Fund the market maker** step. Funding requests a deposit for the market's automated market-maker. The deposit is sent with the market creator's Nostr public key and a `fundAmm` flag so the service can treat it as bot quoting budget instead of a withdrawable user balance. The creator key on a funding deposit must match the Nostr identity that signs the request itself — a deposit naming a different creator key is rejected, so funding attribution always belongs to the signed-in key.
 
-Market-maker funding is currently available for **sat-denominated markets only**. USD and other currency markets are created without bot liquidity; human makers must provide it directly.
+Market-maker funding follows the market's base asset. Sat markets fund the bot in sats; USD markets fund it in US cents backed by the mint's BTC-collateralized USD ecash. JPY and other units are not available yet.
 
-The funding step offers Minimal, Standard, Deep, and Custom budgets. Binary markets show 10,000 sats, 100,000 sats, and 1,000,000 sats. Categorical markets multiply those displayed tiers by `log2(outcome count)`. The app also shows a depth preview, such as how many sats move the displayed price by about one cent and the estimated cost to move 50% to 60%.
+The funding step offers No liquidity, Minimal, Standard, Deep, and Custom budgets. Binary markets show 0, 10,000, 100,000, and 1,000,000 base sub-units for the preset tiers. Categorical markets multiply the paid tiers by `log2(outcome count)`.
 
-Minimal funding and custom budgets below 10,000 sats show a **WARNING** badge: **Very thin liquidity**. You can also choose **Skip funding (no bot liquidity)** as the first option in the step. Skipping leaves the market available without bot-provided quotes, so human makers must provide liquidity.
+No liquidity, Minimal funding, and custom budgets below 10,000 base sub-units show a **WARNING** badge: **Very thin liquidity**. Choosing **No liquidity** leaves the market available without bot-provided quotes, so human makers must provide liquidity.
 
 Disclosure shown before confirming funding:
 
@@ -65,6 +65,6 @@ After a market closes, no new orders or deposits are accepted. From that point o
 
 ## Further reading
 
-- [Market Making & Initial Liquidity](/technical/architecture/market-making/) — the technical details of CPMM mechanics, reserve formulas, and known limitations
+- [Market Making & Creator Funding](/technical/architecture/market-making/) — the technical details of LMSR bot funding, pricing state, and close-out
 - [Resolution](/user-guide/core-concepts/resolution/) — how oracles attest to outcomes and how winning tokens are redeemed
 - [Conditional Token Framework](/user-guide/core-concepts/conditional-tokens/) — bitCaster's three-layer asset model and how conditional tokens are minted

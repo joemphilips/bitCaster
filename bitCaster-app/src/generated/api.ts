@@ -684,7 +684,7 @@ export interface components {
             outcomeType?: "yesno" | "categorical" | "numeric";
             /**
              * Format: int64
-             * @description Initial AMM liquidity budget in satoshis. Must be `0` for non-sat markets until unit-aware AMM liquidity is enabled.
+             * @description Deprecated pre-create liquidity field. Market-maker funding is collected after creation through the funding flow; create requests should send `0`.
              * @default 0
              */
             liquiditySats: number;
@@ -829,7 +829,7 @@ export interface components {
         RequestLnInvoiceDepositRequest: {
             /**
              * Format: int64
-             * @description Amount of sats the funder intends to deposit.
+             * @description Legacy field name. Amount of market-collateral base subunits the funder intends to deposit. The engine derives the unit from the registered market: sats for sat markets, cents for USD markets.
              */
             amountSats: number;
             /** @description Nostr public key (hex) of the market creator */
@@ -857,7 +857,7 @@ export interface components {
         RequestEcashDepositRequest: {
             /**
              * Format: int64
-             * @description Asserted sat value of the supplied ecash proofs.
+             * @description Legacy field name. Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market.
              */
             amountSats: number;
             /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
@@ -1011,17 +1011,17 @@ export interface components {
             createdAt: string;
             /**
              * Format: int64
-             * @description Trading volume over the last 24 hours in satoshis. Drives the `Trending` sort dimension.
+             * @description Trading volume over the last 24 hours in the market collateral's base subunits: sats for sat markets, cents for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Trending` sort dimension.
              */
             volume24hSats: number;
             /**
              * Format: int64
-             * @description Trading volume over the last 30 days in satoshis. Drives the `Popular` sort dimension.
+             * @description Trading volume over the last 30 days in the market collateral's base subunits: sats for sat markets, cents for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Popular` sort dimension.
              */
             volume30dSats: number;
             /**
              * Format: int64
-             * @description Total face amount in sats of currently-resting orders across the market's order books.
+             * @description Total face amount of currently-resting orders across the market's order books, denominated in the market collateral's base subunits: sats for sat markets, cents for USD markets. The `Sats` suffix is retained for wire compatibility.
              */
             liquiditySats: number;
             /**

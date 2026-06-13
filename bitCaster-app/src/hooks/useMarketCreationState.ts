@@ -180,21 +180,17 @@ export function useMarketCreationState() {
     useState<RegistrationFeeTopUpStage>('closed')
   const [registrationFeeTopUp, setRegistrationFeeTopUp] =
     useState<RegistrationFeePrompt | null>(null)
-  // Set after `createMarket` succeeds — the wizard then renders the deposit
-  // step (the user must fund the market's CPMM bot before it goes live).
+  // Set after `createMarket` succeeds — the wizard then renders the
+  // post-create funding step where the user can fund the LMSR bot or choose
+  // no liquidity.
   // Holding this in component state, not the localStorage draft, because:
   //   - The market is already registered on the engine; restarting the
   //     wizard with a stale draft would attempt re-registration and 409.
   //   - Refresh / close on this step is acceptable: the market exists in
   //     `Unfunded` state and the user can return via the dashboard.
   const [createdMarketConditionId, setCreatedMarketConditionId] = useState<string | null>(null)
-  // Snapshot of `draft.stepInitialLiquidity.liquiditySats` taken at success
-  // time so the deposit step's `defaultAmountSats` reads the value the user
-  // actually picked in step 5. Read separately from the draft because
-  // `clearDraft()` (called on the same tick as `setCreatedMarketConditionId`)
-  // wipes `stepInitialLiquidity` before DepositStep mounts.
-  const [createdMarketLiquiditySats, setCreatedMarketLiquiditySats] = useState<number | null>(null)
   const [createdMarketOutcomeCount, setCreatedMarketOutcomeCount] = useState<number | null>(null)
+  const [createdMarketBaseAsset, setCreatedMarketBaseAsset] = useState<MarketBaseAsset | null>(null)
   // Track the last blob URL created for the thumbnail preview so we can revoke
   // it when the user picks a new file or when the component unmounts. Without
   // this, every upload leaks a live Blob reference for the page's lifetime.
@@ -224,7 +220,7 @@ export function useMarketCreationState() {
   // --- Navigation ---
   const onNext = useCallback(() => {
     setDraft((prev) => {
-      const next = Math.min(prev.currentStep + 1, 5) as WizardStep
+      const next = Math.min(prev.currentStep + 1, 4) as WizardStep
       const updated: WizardDraft = { ...prev, currentStep: next, lastModified: new Date().toISOString() }
 
       // Initialize step data on entry
@@ -244,10 +240,7 @@ export function useMarketCreationState() {
           }
         }
       }
-      if (next === 4 && !updated.stepInitialLiquidity) {
-        updated.stepInitialLiquidity = { liquiditySats: 0 }
-      }
-      if (next === 5 && !updated.stepReviewAndCreate) {
+      if (next === 4 && !updated.stepReviewAndCreate) {
         updated.stepReviewAndCreate = { description: '' }
       }
       return updated
@@ -257,7 +250,7 @@ export function useMarketCreationState() {
   const onBack = useCallback(() => {
     setDraft((prev) => ({
       ...prev,
-      currentStep: Math.max(prev.currentStep - 1, 1) as WizardStep,
+      currentStep: Math.max(Math.min(prev.currentStep, 4) - 1, 1) as WizardStep,
       lastModified: new Date().toISOString(),
     }))
   }, [])
@@ -465,12 +458,7 @@ export function useMarketCreationState() {
     }))
   }, [])
 
-  // --- Initial Liquidity (Step 5) ---
-  const onLiquiditySatsChange = useCallback((sats: number) => {
-    updateDraft({ stepInitialLiquidity: { liquiditySats: sats } })
-  }, [updateDraft])
-
-  // --- Review & Create (Step 5) ---
+  // --- Review & Create (Step 4) ---
   const onDescriptionChange = useCallback((description: string) => {
     updateDraft({ stepReviewAndCreate: { description } })
   }, [updateDraft])
@@ -624,10 +612,11 @@ export function useMarketCreationState() {
         },
       })
 
-      // 2. Create market on matching engine (includes thumbnail + CPMM pools)
+      // 2. Create market on matching engine. Creator AMM funding is handled
+      // after creation, so the pre-create liquidity field is always zero.
       const liquiditySats = normalizeMarketCreationLiquiditySats({
         baseAsset,
-        liquiditySats: draft.stepInitialLiquidity?.liquiditySats,
+        liquiditySats: 0,
       })
       const createResponse = await createMarket(
         condition_id,
@@ -672,20 +661,16 @@ export function useMarketCreationState() {
         )
       }
 
-      // Snapshot liquiditySats BEFORE clearDraft so DepositStep can use it
-      // as the default deposit amount — clearDraft wipes stepInitialLiquidity
-      // and DepositStep's useState would otherwise initialize amountSats=0
-      // (and disable the request button).
-      const snapshotLiquiditySats = liquiditySats
       const snapshotOutcomeCount = outcomes.length
+      const snapshotBaseAsset = baseAsset
 
       clearDraft()
       // Hand off to the deposit step. The wizard renders DepositStep when
       // `createdMarketConditionId` is set; the user navigates to
       // /markets/{conditionId} from there once the deposit reaches
       // `Credited`.
-      setCreatedMarketLiquiditySats(snapshotLiquiditySats)
       setCreatedMarketOutcomeCount(snapshotOutcomeCount)
+      setCreatedMarketBaseAsset(snapshotBaseAsset)
       setCreatedMarketConditionId(condition_id)
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to create market')
@@ -736,8 +721,8 @@ export function useMarketCreationState() {
     registrationFeeTopUp,
     registrationFeeTopUpStage,
     createdMarketConditionId,
-    createdMarketLiquiditySats,
     createdMarketOutcomeCount,
+    createdMarketBaseAsset,
     onClose,
     clearDraft,
     onNext,
@@ -758,7 +743,6 @@ export function useMarketCreationState() {
     onUnitChange,
     onBaseAssetChange,
     onDivisibilityChange,
-    onLiquiditySatsChange,
     onDescriptionChange,
     onCreateMarket,
     onConfirmRegistrationFee,

@@ -1,4 +1,5 @@
 import { Plus, Trash2 } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { WizardOutcome, OutcomeType, MarketBaseAsset } from '@/types/market-creation'
 import {
@@ -181,6 +182,20 @@ export function OutcomesStep({
   onNext,
 }: OutcomesStepProps) {
   const { t } = useTranslation()
+  const previousOutcomeCount = useRef(outcomes?.length ?? 0)
+
+  useEffect(() => {
+    const currentCount = outcomes?.length ?? 0
+    const previousCount = previousOutcomeCount.current
+    previousOutcomeCount.current = currentCount
+    if (outcomeType !== 'categorical' || !outcomes || currentCount <= previousCount) return
+    const newest = outcomes[currentCount - 1]
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLInputElement>(`[data-outcome-label-input="${newest.id}"]`)
+        ?.focus()
+    })
+  }, [outcomeType, outcomes])
 
   // Numeric market
   if (outcomeType === 'numeric') {
@@ -364,6 +379,7 @@ export function OutcomesStep({
             <div className="flex items-start gap-3">
               <div className="flex-1 min-w-0">
                 <input
+                  data-outcome-label-input={outcome.id}
                   type="text"
                   value={outcome.label}
                   onChange={(e) => onOutcomeLabelChange?.(outcome.id, e.target.value)}
@@ -376,8 +392,8 @@ export function OutcomesStep({
                 <div className="relative">
                   <input
                     type="number"
-                    min={0}
-                    max={100}
+                    min={1}
+                    max={99}
                     value={outcome.probability ?? ''}
                     onChange={(e) => onOutcomeProbabilityChange?.(outcome.id, Number(e.target.value))}
                     placeholder="0"
@@ -401,10 +417,10 @@ export function OutcomesStep({
       <button
         onClick={() => onAddOutcome?.()}
         disabled={!canAddOutcome}
-        className={`flex items-center gap-1.5 text-sm transition-colors mb-4 ${
+        className={`mb-4 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
           canAddOutcome
-            ? 'text-blue-400 hover:text-blue-300'
-            : 'text-slate-600 cursor-not-allowed'
+            ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500'
+            : 'bg-slate-800 text-slate-500 cursor-not-allowed'
         }`}
       >
         <Plus className="w-4 h-4" strokeWidth={1.5} />

@@ -9,7 +9,6 @@ export function defaultDraft(): WizardDraft {
     stepGetStarted: null,
     stepBasicInfo: null,
     stepOutcomes: null,
-    stepInitialLiquidity: null,
     stepReviewAndCreate: null,
   }
 }
@@ -43,6 +42,10 @@ export const useMarketDraftStore = create<MarketDraftState>()(
       // the page that created them. Drop any stale reference on rehydrate so
       // the resumed wizard doesn't render a broken image.
       onRehydrateStorage: () => (state) => {
+        const currentStep = Number(state?.draft.currentStep)
+        if (state && currentStep > 4) {
+          state.draft.currentStep = 4
+        }
         const img = state?.draft.stepBasicInfo?.imageFile
         if (img && img.startsWith('blob:') && state?.draft.stepBasicInfo) {
           state.draft.stepBasicInfo.imageFile = null

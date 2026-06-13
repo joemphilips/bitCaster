@@ -4,14 +4,12 @@ import { useTranslation } from 'react-i18next'
 import type {
   WizardStepBasicInfo,
   WizardStepOutcomes,
-  WizardStepInitialLiquidity,
 } from '@/types/market-creation'
 
 interface ReviewAndCreateProps {
   description: string
   basicInfo: WizardStepBasicInfo | null
   outcomes: WizardStepOutcomes | null
-  liquidity: WizardStepInitialLiquidity | null
   isSubmitting: boolean
   submitError: string | null
   onDescriptionChange?: (description: string) => void

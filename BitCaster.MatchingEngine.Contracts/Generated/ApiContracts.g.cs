@@ -1075,7 +1075,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public CreateMarketRequestOutcomeType? OutcomeType { get; }
 
         /// <summary>
-        /// Initial AMM liquidity budget in satoshis. Must be `0` for non-sat markets until unit-aware AMM liquidity is enabled.
+        /// Deprecated pre-create liquidity field. Market-maker funding is collected after creation through the funding flow; create requests should send `0`.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
@@ -1614,7 +1614,8 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Amount of sats the funder intends to deposit.
+        /// Legacy field name. Amount of market-collateral base subunits the funder intends to deposit. The engine derives the unit from the registered market: sats for sat markets, cents for USD markets.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
@@ -1696,7 +1697,8 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Asserted sat value of the supplied ecash proofs.
+        /// Legacy field name. Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
         public long AmountSats { get; }
@@ -2101,21 +2103,21 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset CreatedAt { get; }
 
         /// <summary>
-        /// Trading volume over the last 24 hours in satoshis. Drives the `Trending` sort dimension.
+        /// Trading volume over the last 24 hours in the market collateral's base subunits: sats for sat markets, cents for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Trending` sort dimension.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volume24hSats")]
         public long Volume24hSats { get; }
 
         /// <summary>
-        /// Trading volume over the last 30 days in satoshis. Drives the `Popular` sort dimension.
+        /// Trading volume over the last 30 days in the market collateral's base subunits: sats for sat markets, cents for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Popular` sort dimension.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volume30dSats")]
         public long Volume30dSats { get; }
 
         /// <summary>
-        /// Total face amount in sats of currently-resting orders across the market's order books.
+        /// Total face amount of currently-resting orders across the market's order books, denominated in the market collateral's base subunits: sats for sat markets, cents for USD markets. The `Sats` suffix is retained for wire compatibility.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]

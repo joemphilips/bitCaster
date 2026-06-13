@@ -9,7 +9,6 @@ import { StepIndicator } from './StepIndicator'
 import { GetStarted } from './GetStarted'
 import { BasicInfo } from './BasicInfo'
 import { OutcomesStep } from './OutcomesStep'
-import { InitialLiquidity } from './InitialLiquidity'
 import { ReviewAndCreate } from './ReviewAndCreate'
 import { ResumeBanner } from './ResumeBanner'
 import { DepositStep } from './DepositStep'
@@ -51,7 +50,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onUnitChange,
     onBaseAssetChange,
     onDivisibilityChange,
-    onLiquiditySatsChange,
     onDescriptionChange,
     onCreateMarket,
     onConfirmRegistrationFee,
@@ -60,8 +58,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onCancelRegistrationFeeTopUp,
     onRegistrationFeeTopUpSuccess,
     createdMarketConditionId,
-    createdMarketLiquiditySats,
     createdMarketOutcomeCount,
+    createdMarketBaseAsset,
   } = props
 
   const { currentStep } = draft
@@ -144,8 +142,9 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
         <div className="flex-1 flex items-start justify-center px-4 py-8">
           <DepositStep
             conditionId={createdMarketConditionId}
-            defaultAmountSats={createdMarketLiquiditySats ?? 0}
+            defaultAmountSats={0}
             outcomeCount={createdMarketOutcomeCount ?? 2}
+            baseAsset={createdMarketBaseAsset ?? 'sat'}
           />
         </div>
         {feeOverlays}
@@ -233,22 +232,11 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           />
         )}
 
-        {currentStep === 4 && draft.stepInitialLiquidity && (
-          <InitialLiquidity
-            liquiditySats={draft.stepInitialLiquidity.liquiditySats}
-            onNext={() => {
-              onLiquiditySatsChange?.(0)
-              onNext?.()
-            }}
-          />
-        )}
-
-        {currentStep === 5 && !createdMarketConditionId && (
+        {currentStep === 4 && !createdMarketConditionId && (
           <ReviewAndCreate
             description={draft.stepReviewAndCreate?.description ?? ''}
             basicInfo={draft.stepBasicInfo}
             outcomes={draft.stepOutcomes}
-            liquidity={draft.stepInitialLiquidity}
             isSubmitting={isSubmitting}
             submitError={submitError}
             onDescriptionChange={onDescriptionChange}

@@ -907,7 +907,7 @@ export function getMarketThumbnail(market: {
 }
 
 // =============================================================================
-// CPMM Bot Deposit API (matching engine MarketFunding aggregate)
+// AMM Bot Deposit API (matching engine MarketFunding aggregate)
 // =============================================================================
 
 export type RequestLnInvoiceDepositRequest =
@@ -952,7 +952,7 @@ function normalizeDepositState(state: unknown): DepositState {
 }
 
 /**
- * Request a Lightning invoice for a market's CPMM bot deposit. The returned
+ * Request a Lightning invoice for a market's AMM bot deposit. The returned
  * `bolt11` is bearer material — it appears only in this immediate response,
  * never in the polling endpoint, so capture and display it before navigating
  * away.
@@ -984,7 +984,7 @@ export async function requestLnInvoiceDeposit(
 }
 
 /**
- * Submit ecash proofs as a market's CPMM bot deposit. Phase 1 of the engine
+ * Submit ecash proofs as a market's AMM bot deposit. Phase 1 of the engine
  * records the request and defers proof verification to the wallet-service;
  * the deposit walks `Requested → Paid → Credited` as the wallet-service
  * confirms.

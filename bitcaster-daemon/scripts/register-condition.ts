@@ -32,15 +32,19 @@ if (!mintUrl || !title || !description || !collateral || !announcementsJson || !
 const announcements = parseStringArray(announcementsJson, 'announcements-json')
 const outcomes = parseStringArray(outcomesJson, 'outcomes-json')
 const info = await fetchMintInfo(mintUrl)
-const requiredFeeSats = registrationFeeForPolicy(outcomes, info)
+const requiredFeeSubunits = registrationFeeForPolicy(outcomes, info)
 const feeProofs =
-  requiredFeeSats > 0
-    ? await mintRegularProofs(mintUrl, requiredFeeSats)
+  requiredFeeSubunits > 0
+    ? await mintRegularProofs(mintUrl, collateral, requiredFeeSubunits)
     : []
-const selectedTotalSats = sumProofs(feeProofs)
+const selectedTotalSubunits = sumProofs(feeProofs)
 const changeOutputs =
-  selectedTotalSats > requiredFeeSats
-    ? await prepareRegularBlankOutputs(mintUrl, selectedTotalSats - requiredFeeSats)
+  selectedTotalSubunits > requiredFeeSubunits
+    ? await prepareRegularBlankOutputs(
+      mintUrl,
+      collateral,
+      selectedTotalSubunits - requiredFeeSubunits,
+    )
     : []
 
 const response = await fetch(new URL('/v1/conditions', mintUrl), {
@@ -69,33 +73,35 @@ process.stdout.write(`${body}\n`)
 
 async function mintRegularProofs(
   mintUrl: string,
-  feeAmountSats: number,
+  unit: string,
+  feeAmountSubunits: number,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl)
-  const keyset = await getActiveSatCollateralKeyset(mint)
-  const wallet = new CashuWallet(mint, { unit: 'sat' })
+  const keyset = await getActiveCollateralKeyset(mint, unit)
+  const wallet = new CashuWallet(mint, { unit })
   await wallet.loadMint()
-  const grossAmountSats = computeGrossCtfInputAmountSats({
-    faceAmountSats: feeAmountSats,
+  const grossAmountSubunits = computeGrossCtfInputAmountSats({
+    faceAmountSats: feeAmountSubunits,
     keyset: {
       id: keyset.id,
       keys: keyset.keys,
       input_fee_ppk: keyset.input_fee_ppk ?? 0,
     },
   })
-  const quote = await wallet.createMintQuote(grossAmountSats)
+  const quote = await wallet.createMintQuote(grossAmountSubunits)
   await waitForPaidQuote(wallet, quote.quote)
-  return wallet.mintProofs(grossAmountSats, quote.quote)
+  return wallet.mintProofs(grossAmountSubunits, quote.quote)
 }
 
 async function prepareRegularBlankOutputs(
   mintUrl: string,
-  changeAmountSats: number,
+  unit: string,
+  changeAmountSubunits: number,
 ): Promise<RegistrationOutputData[]> {
   const mint = new CashuMint(mintUrl)
-  const keyset = await getActiveSatCollateralKeyset(mint)
+  const keyset = await getActiveCollateralKeyset(mint, unit)
   const outputs = OutputData.createRandomData(
-    Amount.from(changeAmountSats),
+    Amount.from(changeAmountSubunits),
     keyset,
   ) as RegistrationOutputData[]
   return outputs.map(
@@ -111,12 +117,15 @@ async function prepareRegularBlankOutputs(
   )
 }
 
-async function getActiveSatCollateralKeyset(mint: CashuMint): Promise<MintKeys> {
+async function getActiveCollateralKeyset(
+  mint: CashuMint,
+  unit: string,
+): Promise<MintKeys> {
   const active = (await mint.getKeySets()).keysets.find(
-    (keyset) => keyset.active && keyset.unit === 'sat',
+    (keyset) => keyset.active && keyset.unit === unit,
   )
   if (!active) {
-    throw new Error('mint did not return an active sat collateral keyset')
+    throw new Error(`mint did not return an active ${unit} collateral keyset`)
   }
   const response = await mint.getKeys(active.id)
   const keyset = response.keysets.find((candidate) => candidate.id === active.id)

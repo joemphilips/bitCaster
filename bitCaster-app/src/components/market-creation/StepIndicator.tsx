@@ -10,8 +10,7 @@ const steps: { step: WizardStep; labelKey: string; display: number }[] = [
   { step: 1, labelKey: 'marketCreation.getStarted', display: 1 },
   { step: 2, labelKey: 'marketCreation.stepBasicInfo', display: 2 },
   { step: 3, labelKey: 'marketCreation.stepOutcomes', display: 3 },
-  { step: 4, labelKey: 'marketCreation.stepLiquidity', display: 4 },
-  { step: 5, labelKey: 'marketCreation.stepReview', display: 5 },
+  { step: 4, labelKey: 'marketCreation.stepReview', display: 4 },
 ]
 
 export function StepIndicator({ currentStep }: StepIndicatorProps) {

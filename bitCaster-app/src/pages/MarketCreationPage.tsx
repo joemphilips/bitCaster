@@ -32,7 +32,6 @@ export function MarketCreationPage() {
       onHiBoundChange={state.onHiBoundChange}
       onPrecisionChange={state.onPrecisionChange}
       onUnitChange={state.onUnitChange}
-      onLiquiditySatsChange={state.onLiquiditySatsChange}
       onDescriptionChange={state.onDescriptionChange}
       onCreateMarket={state.onCreateMarket}
       onConfirmRegistrationFee={state.onConfirmRegistrationFee}
@@ -41,8 +40,8 @@ export function MarketCreationPage() {
       onCancelRegistrationFeeTopUp={state.onCancelRegistrationFeeTopUp}
       onRegistrationFeeTopUpSuccess={state.onRegistrationFeeTopUpSuccess}
       createdMarketConditionId={state.createdMarketConditionId}
-      createdMarketLiquiditySats={state.createdMarketLiquiditySats}
       createdMarketOutcomeCount={state.createdMarketOutcomeCount}
+      createdMarketBaseAsset={state.createdMarketBaseAsset}
     />
   )
 }

@@ -173,10 +173,7 @@ async function setupDraftForSubmission() {
   await act(async () => { result.current.onNext() })
   // Step 3: outcomes (default 50/50)
   await act(async () => { result.current.onNext() })
-  // Step 4: liquidity
-  await act(async () => { result.current.onLiquiditySatsChange(10000) })
-  await act(async () => { result.current.onNext() })
-  // Step 5: description
+  // Step 4: description
   await act(async () => { result.current.onDescriptionChange('Test description') })
 
   return result
@@ -253,7 +250,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
       divisibility: 1000,
       liquiditySats: 0,
     })
-    expect(result.current.createdMarketLiquiditySats).toBe(0)
+    expect(result.current.createdMarketBaseAsset).toBe('usd')
   })
 
   it('refreshes the active mint before rejecting missing CTF metadata', async () => {
@@ -489,8 +486,6 @@ describe('useMarketCreationState – onCreateMarket', () => {
       result.current.onClosingDateChange(future)
     })
     await act(async () => { result.current.onNext() })
-    await act(async () => { result.current.onNext() })
-    await act(async () => { result.current.onLiquiditySatsChange(10000) })
     await act(async () => { result.current.onNext() })
     await act(async () => { result.current.onDescriptionChange('Test description') })
 

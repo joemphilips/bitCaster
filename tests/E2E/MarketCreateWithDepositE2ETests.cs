@@ -6,7 +6,7 @@ namespace BitCaster.E2ETest;
 
 /// <summary>
 /// End-to-end coverage of the deposit step that lands on the wizard after
-/// "Create Market" succeeds (CPMM Phase 5). Drives the full pipeline —
+/// "Create Market" succeeds. Drives the full pipeline —
 /// kormir-wasm DLC announcement → mint condition + partition → engine market
 /// → DepositStep — and exercises both Lightning and ecash funding paths
 /// against the in-memory mock's auto-credit timer.
@@ -144,13 +144,6 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     private static async Task AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(IPage page)
     {
         await page.GetByRole(AriaRole.Button, new() { Name = "Next" }).ClickAsync();
-        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "AMM liquidity is TBD" });
-        await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
-    }
-
-    private static async Task AdvanceStep5ToStep6_ContinueWithoutLiquidityAsync(IPage page)
-    {
-        await page.GetByRole(AriaRole.Button, new() { Name = "Next" }).ClickAsync();
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Review & Create" });
         await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
@@ -187,7 +180,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Step 6 → DepositStep: fill description, click Create Market, wait for
+    /// Review → DepositStep: fill description, click Create Market, wait for
     /// the kormir + mint + engine chain to land, return the new conditionId.
     /// The chain runs asynchronously — kormir publish, two mint POSTs, one
     /// engine POST — so the timeout is generous. On failure, the page state
@@ -196,6 +189,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     /// </summary>
     private static async Task<string> CreateMarketAndReadConditionIdAsync(
         IPage page,
+        string title,
         string description,
         IReadOnlyList<string> console)
     {
@@ -206,10 +200,10 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         await Assertions.Expect(createBtn).ToBeEnabledAsync(new() { Timeout = 5_000 });
         await createBtn.ClickAsync();
 
-        var conditionIdEl = page.GetByTestId("condition-id");
+        var createdHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Market created!" });
         try
         {
-            await Assertions.Expect(conditionIdEl)
+            await Assertions.Expect(createdHeading)
                 .ToBeVisibleAsync(new() { Timeout = 60_000 });
         }
         catch
@@ -219,15 +213,43 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
                 "DepositStep never rendered after clicking Create Market — the kormir publish + mint registerCondition + engine createMarket chain failed somewhere.");
         }
 
-        var text = await conditionIdEl.InnerTextAsync();
-        // The component renders "Market created\n<conditionId>". The id is the
-        // last non-empty line.
-        var conditionId = text.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim())
-            .Last(s => s.Length > 0 && s != "Market created");
+        var conditionId = await QueryConditionIdByTitleAsync(title);
         Assert.False(string.IsNullOrWhiteSpace(conditionId),
-            "DepositStep rendered with an empty condition id");
+            "Created market did not appear in the catalogue query with a condition id");
+
+        await page.GetByRole(AriaRole.Button, new() { Name = "Attract Traders" }).ClickAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Fund the market maker" }))
+            .ToBeVisibleAsync(new() { Timeout = 5_000 });
         return conditionId;
+    }
+
+    private static async Task<string> QueryConditionIdByTitleAsync(string title)
+    {
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var url =
+                $"{TestPorts.ServerUrl}/api/v1/markets/query?state=All&search={Uri.EscapeDataString(title)}";
+            using var response = await httpClient.GetAsync(url);
+            if (response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                using var doc = System.Text.Json.JsonDocument.Parse(body);
+                foreach (var market in doc.RootElement.GetProperty("markets").EnumerateArray())
+                {
+                    if (
+                        market.TryGetProperty("title", out var titleProp) &&
+                        string.Equals(titleProp.GetString(), title, StringComparison.Ordinal) &&
+                        market.TryGetProperty("conditionId", out var conditionIdProp))
+                    {
+                        return conditionIdProp.GetString() ?? string.Empty;
+                    }
+                }
+            }
+            await Task.Delay(250);
+        }
+        return string.Empty;
     }
 
     private static async Task<(IPage Page, string ConditionId)> NavigateThroughWizardToDepositStepAsync(
@@ -240,8 +262,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         await AdvanceStep2ToStep3_YesNoAsync(page);
         await AdvanceStep3ToStep4_FillBasicsAsync(page, title);
         await AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(page);
-        await AdvanceStep5ToStep6_ContinueWithoutLiquidityAsync(page);
-        var conditionId = await CreateMarketAndReadConditionIdAsync(page, description, console);
+        var conditionId = await CreateMarketAndReadConditionIdAsync(page, title, description, console);
         return (page, conditionId);
     }
 
@@ -267,9 +288,10 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         await Assertions.Expect(page.GetByTestId("amm-funding-tier-deep"))
             .ToBeVisibleAsync();
 
-        var skipFunding = page.GetByTestId("skip-amm-funding");
-        await Assertions.Expect(skipFunding).ToBeEnabledAsync();
-        await skipFunding.ClickAsync();
+        await page.GetByTestId("amm-funding-tier-none").ClickAsync();
+        var continueButton = page.GetByRole(AriaRole.Button, new() { Name = "Continue to your market" });
+        await Assertions.Expect(continueButton).ToBeEnabledAsync();
+        await continueButton.ClickAsync();
         await Assertions.Expect(page).ToHaveURLAsync(
             new Regex($"/markets/{Regex.Escape(conditionId)}$"));
     }
@@ -286,7 +308,27 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         await Assertions.Expect(page.GetByTestId("tab-ecash")).Not.ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("request-ln-invoice")).Not.ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("confirm-amm-funding")).ToBeEnabledAsync();
-        await Assertions.Expect(page.GetByTestId("skip-amm-funding")).ToBeEnabledAsync();
+        await Assertions.Expect(page.GetByTestId("amm-funding-tier-none")).ToBeVisibleAsync();
+    }
+
+    [Fact]
+    public async Task DepositStep_AmmFunding_ShowsLightningInvoice()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var title = UniqueTitle("E2E AMM Invoice");
+        var (page, _) = await NavigateThroughWizardToDepositStepAsync(
+            context, title, "E2E AMM invoice modal path");
+
+        await page.GetByTestId("amm-funding-tier-minimal").ClickAsync();
+        await page.GetByTestId("confirm-amm-funding").ClickAsync();
+
+        await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Lightning Invoice" }))
+            .ToBeVisibleAsync(new() { Timeout = 15_000 });
+        var bolt11Display = page.GetByTestId("bolt11-display");
+        await Assertions.Expect(bolt11Display)
+            .ToBeVisibleAsync(new() { Timeout = 15_000 });
+        await Assertions.Expect(bolt11Display)
+            .ToContainTextAsync(new Regex("^lnbcrt\\d+n1", RegexOptions.IgnoreCase));
     }
 
     [Fact]
@@ -299,7 +341,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
 
         await Assertions.Expect(page.GetByTestId("amount-input")).Not.ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("amm-funding-custom-budget")).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByTestId("skip-amm-funding")).ToBeEnabledAsync();
+        await Assertions.Expect(page.GetByTestId("amm-funding-tier-none")).ToBeVisibleAsync();
     }
 
     [Fact]
