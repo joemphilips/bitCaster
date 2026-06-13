@@ -36,6 +36,7 @@ import {
   preparePreflightSplitForLimitBuy,
   type PreparedPreflightSplit,
 } from "@/lib/preflightSplitPreparation";
+import { resolveRootPreflightOutputAmountSats } from "@/lib/ctfSplit";
 import { ensureParticipationScoreForNextMatch } from "@/lib/participationScorePayment";
 import {
   outcomeLabels,
@@ -93,6 +94,75 @@ function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
 
 function isClosedForTrading(market: MarketDetailType): boolean {
   return isEngineMarketClosed(market.state);
+}
+
+export async function resolvePreflightSplitBuyCollateralRequirement(input: {
+  activeMintUrl?: string | null;
+  preflightSplit: boolean;
+  market: MarketDetailType;
+  tradeSelection: TradeSelection;
+  tradeAmount: number;
+  tradeSide: TradeSide;
+  orderType: OrderType;
+  limitPrice: number;
+}): Promise<number | null> {
+  if (
+    !input.preflightSplit ||
+    input.tradeSide !== "buy" ||
+    input.orderType !== "limit" ||
+    input.tradeAmount <= 0
+  ) {
+    return null;
+  }
+
+  const outcomeSets = resolveOutcomeSets(input.market, input.tradeSelection);
+  if (!outcomeSets) return null;
+
+  const divisibility = normalizeMarketDivisibility(input.market.divisibility);
+  const selectedBook =
+    input.market.outcomeOrderBooks?.[outcomeSets.publicOutcomeSetId] ?? null;
+  const complementBook =
+    input.market.outcomeOrderBooks?.[outcomeSets.complementOutcomeSetId] ??
+    null;
+  const directCross =
+    selectedBook?.asks[0] != null &&
+    selectedBook.asks[0].price <= input.limitPrice;
+  const complementaryCross =
+    complementBook?.bids[0] != null &&
+    complementBook.bids[0].price + input.limitPrice >= divisibility;
+  if (directCross || complementaryCross) return null;
+
+  if (!input.activeMintUrl) {
+    throw new Error("Select an active mint before using pre-flight split.");
+  }
+
+  return resolveRootPreflightOutputAmountSats({
+    mintUrl: input.activeMintUrl,
+    baseAsset: normalizeMarketBaseAsset(input.market.baseAsset),
+    conditionId: input.market.id,
+    amountSats: displaySharesToFaceSats(input.tradeAmount, divisibility),
+    keepOutcomeSetId: outcomeSets.selectedOutcomeSetId,
+    lockOutcomeSetId: outcomeSets.complementOutcomeSetId,
+  });
+}
+
+export function decideTradeCollateralGate(input: {
+  balance: number;
+  tradeSide: TradeSide;
+  tradeFaceAmount: number;
+  requiredBuyCost: number;
+  preflightSplitRequirement?: number | null;
+}):
+  | { kind: "top-up"; balance: number; required: number }
+  | { kind: "proceed"; balance: number; required: number } {
+  const required =
+    input.tradeSide === "sell"
+      ? input.tradeFaceAmount
+      : input.preflightSplitRequirement ?? input.requiredBuyCost;
+  if (input.balance < required) {
+    return { kind: "top-up", balance: input.balance, required };
+  }
+  return { kind: "proceed", balance: input.balance, required };
 }
 
 function needsEngineDetailRefresh(market: MarketDetailType): boolean {
@@ -766,20 +836,38 @@ export function MarketDetailPage() {
       if (!market || !tradeSelection || !tradeAmount) return;
       if (tradeSubmitInFlightRef.current) return;
       tradeSubmitInFlightRef.current = true;
-      const requiredSubunits =
-        tradeSide === "sell" ? tradeFaceAmount : requiredBuyCost;
       setIsTradeSubmitting(true);
       try {
+        const preflightSplitRequirement =
+          tradeSide === "buy"
+            ? await resolvePreflightSplitBuyCollateralRequirement({
+                activeMintUrl,
+                preflightSplit,
+                market,
+                tradeSelection,
+                tradeAmount,
+                tradeSide,
+                orderType,
+                limitPrice,
+              })
+            : null;
         const current =
           tradeSide === "sell"
             ? await getSellSideBalance(activeMintUrl, market, tradeSelection)
             : await getBalance(activeMintUrl, { baseAsset: marketBaseAsset });
-        if (current < requiredSubunits) {
-          setBalanceAtCheck(current);
+        const collateralGate = decideTradeCollateralGate({
+          balance: current,
+          tradeSide,
+          tradeFaceAmount,
+          requiredBuyCost,
+          preflightSplitRequirement,
+        });
+        if (collateralGate.kind === "top-up") {
+          setBalanceAtCheck(collateralGate.balance);
           setPendingTopUpComment(comment?.trim() || undefined);
           setTopUpReason({
             kind: "collateral",
-            required: requiredSubunits,
+            required: collateralGate.required,
             baseAsset: marketBaseAsset,
           });
           setTopUpStage("modal");
@@ -829,6 +917,9 @@ export function MarketDetailPage() {
       tradeSide,
       requiredBuyCost,
       activeMintUrl,
+      preflightSplit,
+      orderType,
+      limitPrice,
       placeOrder,
     ],
   );
