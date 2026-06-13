@@ -396,7 +396,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     [InlineData(TradingClientKind.Cli, TradingClientKind.Gui, false)]
     [InlineData(TradingClientKind.Gui, TradingClientKind.Gui, true)]
     [InlineData(TradingClientKind.Gui, TradingClientKind.Gui, false)]
-    public async Task ComplementaryBuySettlement_Matrix_PersistsLocalOutcomeProofs(
+    public async Task ComplementaryBuySettlement_Matrix(
         TradingClientKind makerKind,
         TradingClientKind takerKind,
         bool makerPreflightSplit)

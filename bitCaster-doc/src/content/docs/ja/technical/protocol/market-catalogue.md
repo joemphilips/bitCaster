@@ -11,11 +11,11 @@ sidebar:
 
 | フィールド | 型 | 意味 |
 | --- | --- | --- |
-| `liquiditySats` | `int64` | そのマーケットの注文板に現在残っている注文の額面合計（sats）。 |
+| `liquiditySats` | `int64` | 互換性のための旧フィールド名。そのマーケットの注文板に現在残っている注文の額面合計。単位はマーケット担保の基本サブユニットで、sat マーケットでは sats、USD マーケットでは cents。 |
 | `traderCount` | `int32` | そのマーケットで約定済み取引を決済した重複なしのトレーダー数。 |
 | `volumeLifetimeSats` | `int64` | そのマーケットの履歴全体における全約定の決済済み担保額面の累計。 |
 
-レスポンスには、ローリング出来高やソート用の `volume24hSats` と `volume30dSats` も含まれます。クライアントがマーケットの Volume、Liquidity、Traders 指標を表示する場合は、`volumeLifetimeSats`、`liquiditySats`、`traderCount` を使ってください。
+レスポンスには、ローリング出来高やソート用の `volume24hSats` と `volume30dSats` も含まれます。`*Sats` サフィックスはワイヤ互換性のために残っています。非 sat マーケットでは、これらのフィールドはマーケット担保の基本サブユニットを使います。クライアントがマーケットの Volume、Liquidity、Traders 指標を表示する場合は、`volumeLifetimeSats`、`liquiditySats`、`traderCount` を使ってください。
 
 ## ライフサイクルのリアルタイム更新
 

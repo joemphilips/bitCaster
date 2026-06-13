@@ -156,24 +156,14 @@ public class MarketCreationTests : IAsyncLifetime
         await Assertions.Expect(outcomesHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
         if (targetStep <= 4) return;
 
-        // Step 4 → 5: Accept default outcomes
+        // Step 4 → review: Accept default outcomes
         nextBtn = page.GetByRole(AriaRole.Button, new() { Name = "Next" });
         await nextBtn.ClickAsync();
 
-        // Wait for step 5. AMM liquidity provisioning is currently disabled,
-        // so the wizard shows a static informational step and lets creators
-        // continue without choosing an amount.
-        var liquidityHeading = page.GetByRole(AriaRole.Heading, new() { Name = "AMM liquidity is TBD" });
-        await Assertions.Expect(liquidityHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        if (targetStep <= 5) return;
-
-        // Step 5 → 6: Continue without AMM liquidity.
-        nextBtn = page.GetByRole(AriaRole.Button, new() { Name = "Next" });
-        await nextBtn.ClickAsync();
-
-        // Wait for step 6
+        // Wait for review step.
         var reviewHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Review & Create" });
         await Assertions.Expect(reviewHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
+        if (targetStep <= 5) return;
     }
 
     [Fact]
@@ -370,31 +360,11 @@ public class MarketCreationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task WizardStep5_CanContinueWithoutLiquidityWhileAmmIsDisabled()
+    public async Task WizardReviewStep_CreateButtonDisabledWithoutDescription()
     {
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await NavigateToStep(page, 5);
-
-        await Assertions.Expect(page.GetByText("No liquidity payment required"))
-            .ToBeVisibleAsync();
-
-        // AMM liquidity is currently disabled, so creators can continue
-        // without selecting a funding amount.
-        var nextBtn = page.GetByRole(AriaRole.Button, new() { Name = "Next" });
-        await Assertions.Expect(nextBtn).ToBeEnabledAsync();
-
-        await nextBtn.ClickAsync();
-        var reviewHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Review & Create" });
-        await Assertions.Expect(reviewHeading).ToBeVisibleAsync(new() { Timeout = 5_000 });
-    }
-
-    [Fact]
-    public async Task WizardStep6_CreateButtonDisabledWithoutDescription()
-    {
-        await using var context = await NewIsolatedContextAsync();
-        var page = await context.NewPageAsync();
-        await NavigateToStep(page, 6);
 
         // Create Market button should be disabled without description
         var createBtn = page.GetByRole(AriaRole.Button, new() { Name = "Create Market" });

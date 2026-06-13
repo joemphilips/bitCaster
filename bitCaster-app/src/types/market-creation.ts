@@ -44,15 +44,7 @@ export interface WizardStepOutcomes {
 }
 
 // =============================================================================
-// Initial Liquidity Types (Step 4)
-// =============================================================================
-
-export interface WizardStepInitialLiquidity {
-  liquiditySats: number
-}
-
-// =============================================================================
-// Review & Create Types (Step 5)
+// Review & Create Types (Step 4)
 // =============================================================================
 
 export interface WizardStepReviewAndCreate {
@@ -63,7 +55,7 @@ export interface WizardStepReviewAndCreate {
 // Top-level Wizard Draft
 // =============================================================================
 
-export type WizardStep = 1 | 2 | 3 | 4 | 5
+export type WizardStep = 1 | 2 | 3 | 4
 
 export interface WizardDraft {
   currentStep: WizardStep
@@ -71,7 +63,6 @@ export interface WizardDraft {
   stepGetStarted: WizardStepGetStarted | null
   stepBasicInfo: WizardStepBasicInfo | null
   stepOutcomes: WizardStepOutcomes | null
-  stepInitialLiquidity: WizardStepInitialLiquidity | null
   stepReviewAndCreate: WizardStepReviewAndCreate | null
 }
 
@@ -98,24 +89,18 @@ export interface MarketCreationWizardProps {
 
   /**
    * Set after `createMarket` succeeds — the wizard renders the DepositStep
-   * when this is non-null. The user funds the market's CPMM bot then
-   * navigates to the market detail page from there. Held in component
+   * when this is non-null. The user can fund the market's LMSR bot or choose
+   * no liquidity, then navigate to the market detail page. Held in component
    * state (not the localStorage draft) so reload doesn't replay
    * registration against a market that already exists.
    */
   createdMarketConditionId: string | null
 
-  /**
-   * Snapshot of `draft.stepInitialLiquidity.liquiditySats` at the moment
-   * `createMarket` succeeded. Read by the deposit step as the default
-   * `amountSats` so the user does not have to retype the value they picked
-   * in step 5. Held separately because `clearDraft` (called on the same
-   * tick) wipes the draft before DepositStep mounts.
-   */
-  createdMarketLiquiditySats: number | null
-
   /** Number of outcomes in the created market, used to scale AMM funding tiers. */
   createdMarketOutcomeCount: number | null
+
+  /** Base collateral unit of the created market, used by post-create funding. */
+  createdMarketBaseAsset: MarketBaseAsset | null
 
   /** True when the wizard is being re-entered with a previously-saved draft. */
   hasSavedDraft: boolean
@@ -193,14 +178,7 @@ export interface MarketCreationWizardProps {
   onDivisibilityChange?: (value: number) => void
 
   // -------------------------------------------------------------------------
-  // Initial Liquidity Callbacks (Step 5)
-  // -------------------------------------------------------------------------
-
-  /** Called when user updates liquidity amount */
-  onLiquiditySatsChange?: (sats: number) => void
-
-  // -------------------------------------------------------------------------
-  // Review Callbacks (Step 5)
+  // Review Callbacks (Step 4)
   // -------------------------------------------------------------------------
 
   /** Called when user updates the description */
