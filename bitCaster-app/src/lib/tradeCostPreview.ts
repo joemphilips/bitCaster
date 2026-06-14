@@ -1,4 +1,4 @@
-import type { LimitOrderPreview } from '@/types/market-detail'
+import type { LimitOrderPreview, OrderBook, TradeSide } from '@/types/market-detail'
 
 export const FACE_SATS_PER_DISPLAY_SHARE = 100
 
@@ -106,5 +106,66 @@ export function computeLimitOrderPreview(params: {
     engineScoreFeeSats,
     potentialPayout: displayShares * divisibility,
     totalCost: cost.totalCost,
+  }
+}
+
+export interface MarketOrderQuotePreview {
+  executableDisplayShares: number
+  averageExecutionPrice: number
+  quoteSats: number
+  filledFaceSats: number
+}
+
+export function computeMarketOrderQuotePreview(params: {
+  displayShares: number
+  tradeSide: TradeSide
+  orderBook: OrderBook | null | undefined
+  complementaryOrderBook?: OrderBook | null | undefined
+  divisibility?: number
+}): MarketOrderQuotePreview | null {
+  const {
+    displayShares,
+    tradeSide,
+    orderBook,
+    complementaryOrderBook,
+    divisibility = FACE_SATS_PER_DISPLAY_SHARE,
+  } = params
+  if ((!orderBook && !complementaryOrderBook) || displayShares <= 0 || divisibility <= 0) return null
+
+  const remainingFaceTarget = displaySharesToFaceSats(displayShares, divisibility)
+  let remainingFace = remainingFaceTarget
+  let quoteSats = 0
+  let filledFaceSats = 0
+
+  const consume = (
+    levels: OrderBook['bids'],
+    priceForLevel: (price: number) => number,
+  ) => {
+    for (const level of levels) {
+      if (remainingFace <= 0) break
+      const fillFace = Math.min(remainingFace, level.amount)
+      if (fillFace <= 0) continue
+      quoteSats += (fillFace * priceForLevel(level.price)) / divisibility
+      filledFaceSats += fillFace
+      remainingFace -= fillFace
+    }
+  }
+
+  consume(
+    tradeSide === 'sell' ? (orderBook?.bids ?? []) : (orderBook?.asks ?? []),
+    (price) => price,
+  )
+  if (tradeSide === 'buy') {
+    consume(complementaryOrderBook?.bids ?? [], (price) => divisibility - price)
+  }
+
+  if (filledFaceSats <= 0) return null
+
+  const executableDisplayShares = filledFaceSats / divisibility
+  return {
+    executableDisplayShares,
+    averageExecutionPrice: quoteSats / executableDisplayShares,
+    quoteSats,
+    filledFaceSats,
   }
 }

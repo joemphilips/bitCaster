@@ -79,7 +79,7 @@ const POLL_INTERVAL_MS = 5_000
  * fills once the engine creates the Trade aggregate; mint matches (Buy vs Buy
  * splitter) surface a fill-shaped settlement handle before final fill commit
  * so clients can join TradeHub even if they missed the one-shot `TradeCreated`
- * push. Legacy CPMM bootstrap fills with no `tradeId` are ignored here.
+ * push. Legacy bootstrap fills with no `tradeId` are ignored here.
  * Idempotent — `promote()` is a no-op for tradeIds already present in
  * `activeSwaps`.
  *
@@ -256,7 +256,7 @@ export function usePendingTradesPoller(): void {
             // Hand any fresh complementary-match fills (Buy vs Sell) or
             // mint-match settlement handles (Buy vs Buy splitter) to
             // useTradeSettlement so the atomic-swap driver can pick them up.
-            // Legacy CPMM bootstrap fills without a tradeId are skipped here.
+            // Legacy bootstrap fills without a tradeId are skipped here.
             const hasNewFills = fillCount > lastFillCount
             promoteNewFillsToActiveSwaps(status, trade, lastFillCount)
 

@@ -21,3 +21,16 @@ When adding or reviewing E2E coverage:
 - Avoid preserving obsolete strategy assumptions in E2E gates. If a product
   behavior changes, update or retire the scenario instead of patching stale
   expectations until they pass.
+
+## Running and cleaning up local diagnostics
+
+Keep xUnit `showLiveOutput` enabled for local E2E runs. It streams progress to
+stdout and does not create growing log files by itself.
+
+Run local E2E with `--blame-hang` and a bounded `--blame-hang-timeout` so a
+stalled test names the active test and terminates instead of hanging forever.
+When blame-hang actually fires, VSTest may leave sequence files, dumps, or
+other diagnostics under `TestResults/`. Inspect those artifacts immediately,
+then delete the run-specific `TestResults/` contents once the failure has been
+captured in an issue, review note, or commit message. Do not let old hang
+artifacts accumulate across repeated local E2E runs.

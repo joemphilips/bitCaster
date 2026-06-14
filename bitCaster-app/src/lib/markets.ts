@@ -564,6 +564,37 @@ export function windowPriceHistory(history: PriceHistory): PriceHistory {
   return { ...history, data: sorted.slice(firstInWindow - 1) };
 }
 
+export function priceNumeratorToPercent(price: number, divisibility: number): number {
+  if (!Number.isFinite(price)) return 0;
+  const normalizedDivisibility = normalizeMarketDivisibility(divisibility);
+  return Math.max(0, Math.min(100, (price / normalizedDivisibility) * 100));
+}
+
+function normalizePricePoint(
+  point: MarketPriceHistoryResponse["outcomes"][number]["data"][number],
+  divisibility: number,
+) {
+  return {
+    timestamp: point.timestamp,
+    price: priceNumeratorToPercent(point.price, divisibility),
+    volume: point.volumeSats,
+  };
+}
+
+export function appendLivePricePoint(
+  history: PriceHistory,
+  point: { timestamp: string; price: number; volume?: number },
+): PriceHistory {
+  const byTimestamp = new Map(history.data.map((p) => [p.timestamp, p]));
+  byTimestamp.set(point.timestamp, point);
+  return windowPriceHistory({
+    ...history,
+    data: [...byTimestamp.values()].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+    ),
+  });
+}
+
 export function applyMarketPriceHistory(
   market: MarketDetail,
   response: MarketPriceHistoryResponse,
@@ -578,11 +609,7 @@ export function applyMarketPriceHistory(
   ): PriceHistory =>
     windowPriceHistory({
       timeframe: response.timeframe as PriceHistory["timeframe"],
-      data: data.map((point) => ({
-        timestamp: point.timestamp,
-        price: point.price,
-        volume: point.volumeSats,
-      })),
+      data: data.map((point) => normalizePricePoint(point, market.divisibility ?? 100)),
     });
   const histories = Object.fromEntries(
     response.outcomes.map((outcome) => {

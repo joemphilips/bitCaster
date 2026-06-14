@@ -171,7 +171,10 @@ public class MarketDiscoveryTests : IAsyncLifetime
         // Click "Create Wallet" in the modal
         var createButton = page.GetByTestId("wallet-required-create");
         await Assertions.Expect(createButton).ToBeVisibleAsync(new() { Timeout = 5_000 });
-        await createButton.ClickAsync();
+        // Playwright's auto-scroll can place the visible modal action under
+        // the sticky desktop header in this viewport. Dispatch the click on
+        // the already-visible button so the test stays focused on navigation.
+        await createButton.DispatchEventAsync("click");
 
         // Should navigate to /setup
         await Assertions.Expect(page).ToHaveURLAsync(new System.Text.RegularExpressions.Regex(@"/setup"), new() { Timeout = 5_000 });

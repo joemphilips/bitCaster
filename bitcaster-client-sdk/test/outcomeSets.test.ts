@@ -82,14 +82,15 @@ test('outcomeSetIdsForMarketBooks enumerates primitive public books only', () =>
 test('outcomeSetDisplayLabel hides internal one-vs-rest complement ids', () => {
   assert.equal(
     outcomeSetDisplayLabel(['A', 'B', 'C'], 'B|C'),
-    'NOT A',
+    'Not A',
   )
   assert.equal(
     outcomeSetDisplayLabel(['Alice', 'Bob', 'Carol'], 'Bob|Carol'),
-    'NOT Alice',
+    'Not Alice',
   )
   assert.equal(outcomeSetDisplayLabel(['Yes', 'No'], 'No'), 'No')
-  assert.equal(outcomeSetDisplayLabel([], 'B|C'), 'Complement')
+  assert.equal(outcomeSetDisplayLabel([], 'B|C'), 'B or C')
+  assert.equal(outcomeSetDisplayLabel(['A', 'B', 'C', 'D'], 'B|C'), 'B or C')
 })
 
 test('resolveOutcomeSets fails closed for missing or unmatched selections', () => {

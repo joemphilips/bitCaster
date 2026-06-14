@@ -15,6 +15,20 @@ interface PositionRowProps {
   onView?: (positionId: string) => void;
 }
 
+function fallbackPositionLabel(position: Position, sideLabel: string): string {
+  const explicit = position.outcomeLabel?.trim();
+  if (explicit) return explicit;
+  const outcomeId = position.outcomeId?.trim();
+  if (outcomeId) {
+    return outcomeId
+      .split("|")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(" or ");
+  }
+  return position.side === "outcome" ? "Position" : sideLabel;
+}
+
 export function PositionRow({
   position,
   onSell,
@@ -37,9 +51,8 @@ export function PositionRow({
     position.canDiscard ??
     (position.status === "closed" && isLoser && !isWinner && !isPending);
   const sideLabel = position.side.toUpperCase();
-  const showOutcomeLabel =
-    position.outcomeLabel &&
-    position.outcomeLabel.toLocaleUpperCase() !== sideLabel;
+  const positionLabel = fallbackPositionLabel(position, sideLabel);
+  const hasOutcomeLabel = Boolean(position.outcomeLabel?.trim());
   const handleView = () => onView?.(position.id);
   const handleViewKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -100,18 +113,14 @@ export function PositionRow({
             </span>
           ) : (
             <span
-              className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
-                position.side === "yes" || position.side === "outcome"
-                  ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400"
-                  : "bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400"
-              }`}
+              className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300"
             >
-              {position.side.toUpperCase()}
+              {positionLabel}
             </span>
           )}
-          {showOutcomeLabel && (
-            <span className="text-xs text-slate-500 dark:text-slate-400 truncate">
-              {position.outcomeLabel}
+          {(hasOutcomeLabel && (isWinner || isLoser || isPending)) && (
+            <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+              {positionLabel}
             </span>
           )}
           <span className="text-xs text-slate-400 dark:text-slate-500">

@@ -419,13 +419,15 @@ function LimitPriceInput({
       </label>
       <div className="relative">
         <input
+          data-testid="limit-price-input"
           type="number"
           value={limitPrice}
           onChange={(e) => {
-            const val = Math.max(1, Number(e.target.value))
+            const val = Math.min(divisibility - 1, Math.max(1, Number(e.target.value)))
             onLimitPriceChange?.(val)
           }}
           min={1}
+          max={divisibility - 1}
           className="w-full pr-14 pl-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-mono text-sm">
@@ -594,6 +596,11 @@ export function TradingPanel({
     t('trade.shareCount', { count: shares.toLocaleString() })
   const userHoldingShares =
     userHoldings == null ? null : Math.floor(userHoldings / divisibility)
+  const marketOrderHasNoLiquidity =
+    !isLimit &&
+    !!tradeSelection &&
+    tradeAmount > 0 &&
+    tradePreview?.hasExecutableLiquidity === false
 
   const handleShareAmountChange = (raw: number) => {
     if (!Number.isFinite(raw) || raw <= 0) {
@@ -614,6 +621,7 @@ export function TradingPanel({
     if (isTradeSubmitting) return t('trade.submittingOrder')
     if (!walletReady) return t('wallet.createWallet')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
+    if (marketOrderHasNoLiquidity) return t('trade.noExecutableLiquidity')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
     const amountLabel = shareCountLabel(tradeAmount)
 
@@ -763,55 +771,75 @@ export function TradingPanel({
           {/* Market Order Preview */}
           {!isLimit && tradePreview && tradeAmount > 0 && (
             <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500 dark:text-slate-400">{t('trade.priceImpact')}</span>
-                <span className={`font-medium ${tradePreview.priceImpact > 0 ? 'text-amber-500' : 'text-slate-600 dark:text-slate-300'}`}>
-                  {tradePreview.priceImpact > 0 ? '+' : ''}{tradePreview.priceImpact.toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500 dark:text-slate-400">{t('trade.predictedOdds')}</span>
-                <span className="font-medium text-slate-600 dark:text-slate-300">
-                  {tradePreview.predictedOdds.toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesTimesPrice')}</span>
-                <span className="font-medium text-slate-600 dark:text-slate-300">
-                  {formatAmount(tradePreview.quoteSats)}
-                </span>
-              </div>
-              <FeeRow
-                label={t('trade.creatorFee', { percent: market.creator.feePercent })}
-                tooltip={t('trade.creatorFeeTooltip')}
-                value={formatAmount(tradePreview.creatorFee)}
-              />
-              <FeeRow
-                label={t('trade.mintFee')}
-                tooltip={t('trade.mintFeeTooltip')}
-                value={formatAmount(tradePreview.mintFee)}
-              />
-              <FeeRow
-                label={t('trade.engineScoreFee')}
-                tooltip={t('trade.engineScoreFeeTooltip')}
-                value={formatScoreFee(tradePreview.engineScoreFeeSats)}
-              />
-              {!isSell && (
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-500 dark:text-slate-400">{t('trade.totalCost')}</span>
-                  <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="trade-total-cost">
-                    {formatAmount(tradePreview.totalCost)}
-                  </span>
+              {tradePreview.hasExecutableLiquidity === false ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                  {t('trade.noExecutableLiquidityDescription')}
                 </div>
+              ) : (
+                <>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500 dark:text-slate-400">{t('trade.averageExecutionPrice')}</span>
+                    <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="trade-average-execution-price">
+                      {formatPriceWithProbability(tradePreview.averageExecutionPrice ?? 0, divisibility)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500 dark:text-slate-400">{t('trade.estimatedPostFillOdds')}</span>
+                    <span className="font-medium text-slate-600 dark:text-slate-300">
+                      {tradePreview.predictedOdds.toFixed(1)}%
+                    </span>
+                  </div>
+                  {tradePreview.executableShares !== tradeAmount && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-500 dark:text-slate-400">{t('trade.executableShares')}</span>
+                      <span className="font-medium text-slate-600 dark:text-slate-300">
+                        {shareCountLabel(tradePreview.executableShares ?? 0)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesTimesPrice')}</span>
+                    <span className="font-medium text-slate-600 dark:text-slate-300">
+                      {formatAmount(tradePreview.quoteSats)}
+                    </span>
+                  </div>
+                </>
               )}
-              <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
-                <span className="text-slate-700 dark:text-slate-300 font-medium">
-                  {isSell ? t('trade.proceeds') : t('trade.payoutIfWin')}
-                </span>
-                <span className="font-bold text-emerald-600 dark:text-emerald-400" data-testid="trade-payout-if-win">
-                  {formatAmount(isSell ? tradePreview.totalCost : tradePreview.potentialPayout)}
-                </span>
-              </div>
+              {tradePreview.hasExecutableLiquidity !== false && (
+                <>
+                  <FeeRow
+                    label={t('trade.creatorFee', { percent: market.creator.feePercent })}
+                    tooltip={t('trade.creatorFeeTooltip')}
+                    value={formatAmount(tradePreview.creatorFee)}
+                  />
+                  <FeeRow
+                    label={t('trade.mintFee')}
+                    tooltip={t('trade.mintFeeTooltip')}
+                    value={formatAmount(tradePreview.mintFee)}
+                  />
+                  <FeeRow
+                    label={t('trade.engineScoreFee')}
+                    tooltip={t('trade.engineScoreFeeTooltip')}
+                    value={formatScoreFee(tradePreview.engineScoreFeeSats)}
+                  />
+                  {!isSell && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-500 dark:text-slate-400">{t('trade.totalCost')}</span>
+                      <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="trade-total-cost">
+                        {formatAmount(tradePreview.totalCost)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
+                    <span className="text-slate-700 dark:text-slate-300 font-medium">
+                      {isSell ? t('trade.proceeds') : t('trade.payoutIfWin')}
+                    </span>
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400" data-testid="trade-payout-if-win">
+                      {formatAmount(isSell ? tradePreview.totalCost : tradePreview.potentialPayout)}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -874,7 +902,9 @@ export function TradingPanel({
               }
             }}
             disabled={
-              isTradeSubmitting || (walletReady && (!tradeAmount || tradeAmount <= 0))
+              isTradeSubmitting ||
+              marketOrderHasNoLiquidity ||
+              (walletReady && (!tradeAmount || tradeAmount <= 0))
             }
             className={`w-full py-3 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
               !walletReady

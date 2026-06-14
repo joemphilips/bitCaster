@@ -99,6 +99,24 @@ describe('OutcomesStep divisibility UX copy', () => {
     expect(screen.getByText(/1 share = 1,?000 sats/i)).toBeInTheDocument()
     expect(screen.getByText(/0\.1% steps/i)).toBeInTheDocument()
   })
+
+  it('moves denominator guidance into the info tooltip', () => {
+    render(
+      <OutcomesStep
+        outcomeType="categorical"
+        outcomes={makeOutcomes([50, 50])}
+        baseAsset="sat"
+        divisibility={1000}
+      />,
+    )
+
+    const guidance =
+      'Lower value = cheaper to participate but coarser prices. Higher value = finer prices but a bigger minimum stake per share.'
+    const help = screen.getByRole('button', { name: guidance })
+    expect(help).toBeInTheDocument()
+    expect(help).toHaveTextContent(/what is this/i)
+    expect(screen.queryByText(guidance)).not.toBeInTheDocument()
+  })
 })
 
 // ── Auto-normalize: probability edit ───────────────────────────────────────
@@ -145,4 +163,3 @@ describe('OutcomesStep auto-normalize — probability edit', () => {
     expect(screen.queryByRole('button', { name: /normalize/i })).not.toBeInTheDocument()
   })
 })
-

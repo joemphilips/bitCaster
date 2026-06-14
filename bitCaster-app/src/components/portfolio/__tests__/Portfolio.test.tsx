@@ -252,6 +252,27 @@ describe('Portfolio', () => {
       renderPortfolio({
         positions: [
           {
+            id: 'cond-abc-A',
+            marketId: 'cond-abc-A',
+            marketTitle: 'Which team wins?',
+            marketImageUrl: '',
+            mintUrl: 'https://mint.bitcaster.io',
+            side: 'outcome',
+            outcomeId: 'A',
+            outcomeLabel: 'A',
+            shares: 10,
+            avgBuyPrice: 0,
+            currentPrice: 0,
+            currentValueSats: 10,
+            profitLossSats: 0,
+            profitLossPercent: 0,
+            status: 'active',
+            isWinner: false,
+            isLoser: false,
+            isPending: false,
+            acquiredDate: '2026-01-01T00:00:00Z',
+          },
+          {
             id: 'cond-abc-B|C',
             marketId: 'cond-abc-B|C',
             marketTitle: 'Which team wins?',
@@ -259,7 +280,7 @@ describe('Portfolio', () => {
             mintUrl: 'https://mint.bitcaster.io',
             side: 'outcome',
             outcomeId: 'B|C',
-            outcomeLabel: 'NOT A',
+            outcomeLabel: 'Not A',
             shares: 25,
             avgBuyPrice: 0,
             currentPrice: 0,
@@ -275,8 +296,97 @@ describe('Portfolio', () => {
         ],
       })
 
-      expect(screen.getByText('NOT A')).toBeInTheDocument()
+      expect(screen.getByText('A')).toBeInTheDocument()
+      expect(screen.getByText('Not A')).toBeInTheDocument()
       expect(screen.queryByText('B|C')).not.toBeInTheDocument()
+      expect(screen.queryByText('OUTCOME')).not.toBeInTheDocument()
+      expect(screen.queryByText('Complement')).not.toBeInTheDocument()
+    })
+
+    it('renders closed outcome labels without protocol side words', () => {
+      renderPortfolio({
+        positionsTab: 'closed',
+        positions: [
+          {
+            id: 'cond-abc-B|C',
+            marketId: 'cond-abc-B|C',
+            marketTitle: 'Which team wins?',
+            marketImageUrl: '',
+            mintUrl: 'https://mint.bitcaster.io',
+            side: 'outcome',
+            outcomeId: 'B|C',
+            outcomeLabel: 'Not A',
+            shares: 10,
+            avgBuyPrice: 0,
+            currentPrice: 0,
+            currentValueSats: 10,
+            profitLossSats: 0,
+            profitLossPercent: 0,
+            status: 'closed',
+            isWinner: false,
+            isLoser: false,
+            isPending: false,
+            acquiredDate: '2026-01-01T00:00:00Z',
+          },
+        ],
+      })
+
+      expect(screen.getByText('Not A')).toBeInTheDocument()
+      expect(screen.queryByText('OUTCOME')).not.toBeInTheDocument()
+      expect(screen.queryByText('Complement')).not.toBeInTheDocument()
+      expect(screen.queryByText('B|C')).not.toBeInTheDocument()
+    })
+
+    it('uses readable fallback labels when catalogue outcome labels are missing', () => {
+      renderPortfolio({
+        positions: [
+          {
+            id: 'cond-abc-B|C',
+            marketId: 'cond-abc-B|C',
+            marketTitle: 'Which team wins?',
+            marketImageUrl: '',
+            mintUrl: 'https://mint.bitcaster.io',
+            side: 'outcome',
+            outcomeId: 'B|C',
+            shares: 10,
+            avgBuyPrice: 0,
+            currentPrice: 0,
+            currentValueSats: 10,
+            profitLossSats: 0,
+            profitLossPercent: 0,
+            status: 'active',
+            isWinner: false,
+            isLoser: false,
+            isPending: false,
+            acquiredDate: '2026-01-01T00:00:00Z',
+          },
+          {
+            id: 'cond-abc-unknown',
+            marketId: 'cond-abc-unknown',
+            marketTitle: 'Unknown position',
+            marketImageUrl: '',
+            mintUrl: 'https://mint.bitcaster.io',
+            side: 'outcome',
+            shares: 1,
+            avgBuyPrice: 0,
+            currentPrice: 0,
+            currentValueSats: 1,
+            profitLossSats: 0,
+            profitLossPercent: 0,
+            status: 'active',
+            isWinner: false,
+            isLoser: false,
+            isPending: false,
+            acquiredDate: '2026-01-01T00:00:00Z',
+          },
+        ],
+      })
+
+      expect(screen.getByText('B or C')).toBeInTheDocument()
+      expect(screen.getByText('Position')).toBeInTheDocument()
+      expect(screen.queryByText('B|C')).not.toBeInTheDocument()
+      expect(screen.queryByText('OUTCOME')).not.toBeInTheDocument()
+      expect(screen.queryByText('Complement')).not.toBeInTheDocument()
     })
 
     it('switches to closed positions tab', async () => {

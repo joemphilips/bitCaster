@@ -13,6 +13,7 @@ namespace BitCaster.E2ETest;
 /// </summary>
 public class TradingFlowTests : IAsyncLifetime
 {
+    private const string P30ConditionId = "b30ca000000000000000000000000000000000000000000000000000000000000";
     private const string TestNsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
     private IPlaywright? _playwright;
     private IBrowser? _browser;
@@ -174,11 +175,16 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(quickAmount).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await quickAmount.ClickAsync();
 
+        // P29 disables market-order submission when there is no executable
+        // orderbook depth. Use a limit order here so this test remains scoped
+        // to balance gating rather than liquidity availability.
+        await ClickVisibleLimitOrderAsync(page);
+
         var confirm = VisibleTradeConfirm(page);
         await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
         await confirm.ClickAsync();
 
-        // Zero balance + 100 sat order → InsufficientBalanceModal opens.
+        // Zero balance + limit buy collateral requirement → InsufficientBalanceModal opens.
         var modalHeader = page.GetByText("Insufficient Balance");
         try
         {
@@ -245,6 +251,10 @@ public class TradingFlowTests : IAsyncLifetime
         var amountInput = VisibleTradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync("500");
+
+        // No-liquidity market orders are now disabled. Use a limit order so
+        // the assertion remains about over-balance buy-side gating.
+        await ClickVisibleLimitOrderAsync(page);
 
         var confirm = VisibleTradeConfirm(page);
         await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
@@ -365,6 +375,138 @@ public class TradingFlowTests : IAsyncLifetime
         var pubkey = doc.RootElement.GetProperty("ephemeralPubkey").GetString();
         Assert.NotNull(pubkey);
         Assert.Matches(@"^(02|03)[0-9a-f]{64}$", pubkey!);
+    }
+
+    [Fact]
+    public async Task CategoricalBuyNoMarketOrder_UsesComplementaryBidLiquidity()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        var consoleMessages = TestHelpers.AttachConsoleCapture(page);
+        await SetupWalletAsync(page);
+        await StubP30ComplementaryLiquidityMarketAsync(page, bidPrice: 60, askPrice: 35);
+
+        string? capturedOrderBody = null;
+        string? capturedOrderUrl = null;
+        await page.RouteAsync("**/api/v1/participation-score", async route =>
+        {
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    pubkey = "p30-score-pubkey",
+                    balance = 0,
+                    purchasedTotal = 0,
+                    consumedTotal = 0,
+                    penaltyTotal = 0,
+                    matchDebitScore = 0,
+                    enabled = false,
+                }),
+            });
+        });
+        await page.RouteAsync("**/api/v1/*/orders", async route =>
+        {
+            if (route.Request.Method == "POST")
+            {
+                capturedOrderUrl = route.Request.Url;
+                capturedOrderBody = route.Request.PostData;
+                await route.FulfillAsync(new RouteFulfillOptions
+                {
+                    Status = 200,
+                    ContentType = "application/json",
+                    Body = JsonSerializer.Serialize(new
+                    {
+                        orderId = Guid.NewGuid().ToString(),
+                        status = "filled",
+                        remainingAmountSats = 0,
+                        fills = Array.Empty<object>(),
+                        ephemeralPubkey = ExtractEphemeralPubkey(route.Request.PostData),
+                        baseAsset = "sat",
+                        divisibility = 100,
+                    }),
+                });
+            }
+            else
+            {
+                await route.ContinueAsync();
+            }
+        });
+
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{P30ConditionId}", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+        await SeedBalanceAsync(page, 10_000);
+        await page.ReloadAsync(new PageReloadOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var tradingPanel = page.Locator("[data-trading-panel]")
+            .Filter(new() { Visible = true })
+            .First;
+        await tradingPanel.GetByTestId("buy-no-A").ClickAsync();
+        await tradingPanel.GetByTestId("trade-amount-input").FillAsync("1");
+
+        await Assertions.Expect(page.GetByText("No executable liquidity"))
+            .ToHaveCountAsync(0);
+        await Assertions.Expect(tradingPanel.GetByTestId("trade-average-execution-price"))
+            .ToContainTextAsync("40");
+
+        var confirm = VisibleTradeConfirm(page);
+        await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
+        await confirm.ClickAsync();
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (capturedOrderBody is null && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(100);
+        }
+
+        if (capturedOrderBody is null || capturedOrderUrl is null)
+        {
+            throw await TestHelpers.BuildDiagnosticExceptionAsync(
+                page, consoleMessages, "P30 Buy NO market order did not reach SubmitOrder.");
+        }
+
+        Assert.Contains($"/api/v1/{P30ConditionId}-A/orders", capturedOrderUrl);
+        using var orderDoc = JsonDocument.Parse(capturedOrderBody);
+        Assert.Equal("A", orderDoc.RootElement.GetProperty("outcomeId").GetString());
+        Assert.Equal("Complement", orderDoc.RootElement.GetProperty("tokenSide").GetString());
+        Assert.Equal("Buy", orderDoc.RootElement.GetProperty("side").GetString());
+        Assert.Equal("FAK", orderDoc.RootElement.GetProperty("timeInForce").GetString());
+        Assert.Equal(99, orderDoc.RootElement.GetProperty("price").GetInt32());
+        Assert.Equal(100, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
+    }
+
+    [Fact]
+    public async Task CategoricalBuyNoMarketOrder_IgnoresPublicAskOnlyLiquidity()
+    {
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupWalletAsync(page);
+        await StubP30ComplementaryLiquidityMarketAsync(page, bidPrice: null, askPrice: 35);
+
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{P30ConditionId}", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        var tradingPanel = page.Locator("[data-trading-panel]")
+            .Filter(new() { Visible = true })
+            .First;
+        await tradingPanel.GetByTestId("buy-no-A").ClickAsync();
+        await tradingPanel.GetByTestId("trade-amount-input").FillAsync("1");
+
+        await Assertions.Expect(tradingPanel.GetByText("No executable liquidity"))
+            .ToBeVisibleAsync(new() { Timeout = 5_000 });
+        await Assertions.Expect(VisibleTradeConfirm(page))
+            .ToBeDisabledAsync(new() { Timeout = 5_000 });
     }
 
     [Fact]
@@ -589,6 +731,120 @@ public class TradingFlowTests : IAsyncLifetime
         // the visible control in the trading panel without auto-scrolling it
         // under the header.
         await limitOrder.DispatchEventAsync("click");
+    }
+
+    private static async Task StubP30ComplementaryLiquidityMarketAsync(
+        IPage page,
+        int? bidPrice,
+        int? askPrice)
+    {
+        await page.RouteAsync("**/api/v1/markets/query*", async route =>
+        {
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    markets = new[]
+                    {
+                        new
+                        {
+                            conditionId = P30ConditionId,
+                            outcomes = new[] { "A", "B", "C" },
+                            title = "P30 categorical liquidity market",
+                            description = "Complementary liquidity regression fixture",
+                            thumbnailUrl = (string?)null,
+                            creatorPubkey = (string?)null,
+                            deadline = "2026-12-31T00:00:00Z",
+                            state = "open",
+                            createdAt = "2026-06-01T00:00:00Z",
+                            volume24hSats = 0,
+                            volume30dSats = 0,
+                            liquiditySats = 10_000L,
+                            traderCount = 2,
+                            volumeLifetimeSats = 0,
+                            lastTradedPrice = 0.6m,
+                            baseAsset = "sat",
+                            divisibility = 100,
+                            categoryTags = Array.Empty<string>(),
+                            lastSuccessfulRefreshAt = "2026-06-14T00:00:00Z",
+                        },
+                    },
+                    nextCursor = (string?)null,
+                    lastSuccessfulRefreshAt = "2026-06-14T00:00:00Z",
+                }),
+            });
+        });
+
+        await page.RouteAsync("**/api/v1/markets/*/price-history*", async route =>
+        {
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    conditionId = P30ConditionId,
+                    timeframe = "7d",
+                    outcomes = new[]
+                    {
+                        new
+                        {
+                            outcomeId = "A",
+                            data = new[]
+                            {
+                                new { timestamp = "2026-06-01T00:00:00Z", price = 60, volumeSats = 100L },
+                            },
+                        },
+                    },
+                }),
+            });
+        });
+
+        await page.RouteAsync("**/api/v1/*/orderbook", async route =>
+        {
+            var marketId = ExtractMarketId(route.Request.Url);
+            var isA = marketId.EndsWith("-A", StringComparison.Ordinal);
+            object[] bids = isA && bidPrice is { } bid
+                ? new object[] { new { price = bid, amount = 100L, total = 100L } }
+                : Array.Empty<object>();
+            object[] asks = isA && askPrice is { } ask
+                ? new object[] { new { price = ask, amount = 100L, total = 100L } }
+                : Array.Empty<object>();
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    marketId,
+                    bids,
+                    asks,
+                    spread = 0,
+                }),
+            });
+        });
+
+        await page.RouteAsync("**/api/v1/markets/*/comments", async route =>
+        {
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    conditionId = P30ConditionId,
+                    comments = Array.Empty<object>(),
+                }),
+            });
+        });
+    }
+
+    private static string ExtractMarketId(string url)
+    {
+        var match = Regex.Match(url, @"/api/v1/([^/]+)/orderbook");
+        return match.Success ? Uri.UnescapeDataString(match.Groups[1].Value) : $"{P30ConditionId}-A";
     }
 
     public async Task DisposeAsync()

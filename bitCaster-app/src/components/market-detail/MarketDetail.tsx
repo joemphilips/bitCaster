@@ -33,15 +33,6 @@ function computeCurrentDisplay(market: MarketDetailProps["market"]): string {
     return `${market.currentOdds.yes.toFixed(1)}%`;
   }
 
-  if (market.type === "categorical") {
-    const sorted = [...market.outcomes].sort((a, b) => b.odds - a.odds);
-    const leader = sorted[0];
-    if (leader) {
-      return `${leader.label} ${leader.odds.toFixed(1)}%`;
-    }
-    return "";
-  }
-
   return "";
 }
 
@@ -79,6 +70,11 @@ export function MarketDetail({
   const { t } = useTranslation();
   // Get outcomes for categorical markets
   const outcomes = market.type === "categorical" ? market.outcomes : undefined;
+  const marketOrderHasNoLiquidity =
+    orderType === "market" &&
+    !!tradeSelection &&
+    tradeAmount > 0 &&
+    tradePreview?.hasExecutableLiquidity === false;
 
   // Get outcome-specific data for categorical markets
   const outcomePriceHistories =
@@ -163,14 +159,9 @@ export function MarketDetail({
               unit={market.type === "numeric" ? market.unit : undefined}
             />
 
-            {/* Order Book — only for binary yes/no markets in Phase 1.
-                `liveMarketId` threads the per-outcome market ID through to
-                the SignalR subscription so the book updates live without
-                a page reload. The initial snapshot comes via `orderBook`
-                (prefetched in MarketDetailPage).
-                Closed markets render the order book frozen (no live
-                subscription) so users still get last-traded context — see
-                ADR-010 P4.1. */}
+            {/* Order Book. Live state is owned by MarketDetailPage so depth,
+                previews, and submit-time ticket building all read the same
+                book snapshots. Closed markets render the last known book. */}
             {market.type === "yesno" && (
               <div className="relative" data-testid="order-book-section">
                 {isEffectivelyClosed && (
@@ -185,10 +176,27 @@ export function MarketDetail({
                   orderBook={market.orderBook}
                   baseAsset={market.baseAsset}
                   divisibility={market.divisibility}
-                  liveMarketId={
-                    isTradingEnabled ? `${market.id}-YES` : undefined
-                  }
                 />
+              </div>
+            )}
+
+            {market.type === "categorical" && (
+              <div className="space-y-4" data-testid="categorical-order-books">
+                {market.outcomes.slice(0, 8).map((outcome) => (
+                  <OrderBookSection
+                    key={outcome.id}
+                    title={outcome.label}
+                    orderBook={
+                      market.outcomeOrderBooks?.[outcome.id] ?? {
+                        bids: [],
+                        asks: [],
+                        spread: 0,
+                      }
+                    }
+                    baseAsset={market.baseAsset}
+                    divisibility={market.divisibility}
+                  />
+                ))}
               </div>
             )}
 
@@ -255,7 +263,9 @@ export function MarketDetail({
                   {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
                  </p>
                  <p className="text-sm font-medium text-slate-900 dark:text-white">
-                   {tradeAmount > 0
+                   {marketOrderHasNoLiquidity
+                    ? t("trade.noExecutableLiquidity")
+                    : tradeAmount > 0
                     ? t("trade.shareCount", {
                         count: tradeAmount.toLocaleString(),
                       })
@@ -278,6 +288,7 @@ export function MarketDetail({
                 }}
                 disabled={
                   isTradeSubmitting ||
+                  marketOrderHasNoLiquidity ||
                   (walletReady && (!tradeAmount || tradeAmount <= 0))
                 }
                 className={`px-6 py-2 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${

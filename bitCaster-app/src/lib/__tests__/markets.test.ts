@@ -12,9 +12,12 @@ import {
   requestEcashDeposit,
   submitOrder,
   windowPriceHistory,
+  applyMarketPriceHistory,
+  priceNumeratorToPercent,
 } from "../markets";
 import type { MarketCatalogueEntry } from "../markets";
 import type { FilterState, Market } from "@/types/market";
+import type { MarketDetail } from "@/types/market-detail";
 
 vi.mock("@/lib/nostr", () => ({
   getNdk: () => ({
@@ -980,5 +983,56 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
   it("returns the series untouched when an empty timeframe is given", () => {
     const history = { timeframe: "7d" as const, data: [] };
     expect(windowPriceHistory(history).data).toHaveLength(0);
+  });
+});
+
+describe("price history normalization", () => {
+  it("normalizes raw price numerators to percentages", () => {
+    expect(priceNumeratorToPercent(500, 10_000)).toBe(5);
+    expect(priceNumeratorToPercent(500, 1_000)).toBe(50);
+    expect(priceNumeratorToPercent(500, 100)).toBe(100);
+  });
+
+  it("applies market divisibility when mapping fetched history", () => {
+    const market = {
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 10_000 }),
+      priceHistory: { timeframe: "7d" as const, data: [] },
+      orderBook: { bids: [], asks: [], spread: 0 },
+      recentTrades: [],
+      comments: [],
+      relatedMarkets: [],
+      baseUnit: "sats",
+      creator: {
+        id: "creator",
+        name: "creator",
+        totalMarketsCreated: 0,
+        feePercent: 0,
+      },
+      resolution: {
+        criteria: "criteria",
+        source: "oracle" as const,
+        resolutionDate: "2026-01-01T00:00:00Z",
+        status: "open" as const,
+      },
+    };
+
+    const updated = applyMarketPriceHistory(market as unknown as MarketDetail, {
+      conditionId: "abc123",
+      timeframe: "7d",
+      outcomes: [
+        {
+          outcomeId: "Yes",
+          data: [
+            {
+              timestamp: "2026-05-25T10:00:00Z",
+              price: 500,
+              volumeSats: 10,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(updated.priceHistory.data[0].price).toBe(5);
   });
 });

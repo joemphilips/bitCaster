@@ -254,6 +254,9 @@ export interface TradePreview {
   amount: number
   predictedOdds: number // Odds after trade
   priceImpact: number // Change in odds
+  averageExecutionPrice?: number
+  executableShares?: number
+  hasExecutableLiquidity?: boolean
   quoteSats: number
   mintFee: number
   potentialPayout: number

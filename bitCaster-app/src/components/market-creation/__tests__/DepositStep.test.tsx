@@ -6,10 +6,12 @@ import i18n from '@/i18n'
 import { DepositStep } from '../DepositStep'
 
 const requestLnInvoiceDeposit = vi.fn()
+const getDepositStatus = vi.fn()
 
 vi.mock('@/lib/markets', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/markets')>()),
   requestLnInvoiceDeposit: (...args: unknown[]) => requestLnInvoiceDeposit(...args),
+  getDepositStatus: (...args: unknown[]) => getDepositStatus(...args),
 }))
 
 const DISCLOSURE =
@@ -58,6 +60,18 @@ describe('DepositStep', () => {
       bolt11: 'lnbc10u1pjexampleinvoice',
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     })
+    getDepositStatus.mockReset()
+    getDepositStatus.mockResolvedValue({
+      depositId: 'deposit-1',
+      conditionId: 'cond-test-abc123',
+      state: 'Requested',
+      method: 'Lightning',
+      amountSats: 100_000,
+      requestedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      failureReason: null,
+    })
   })
 
   async function openFunding(user = userEvent.setup()) {
@@ -99,14 +113,19 @@ describe('DepositStep', () => {
     expect(screen.getByText(DISCLOSURE)).toBeInTheDocument()
   })
 
-  it('shows the thin-liquidity warning for custom budgets below 10,000 sats', async () => {
+  it('shows the warning only for no-liquidity funding', async () => {
     const user = userEvent.setup()
     renderStep()
 
     await openFunding(user)
+    await user.click(screen.getByTestId('amm-funding-tier-minimal'))
+    expect(screen.queryByText('Very thin liquidity')).not.toBeInTheDocument()
+
     await user.clear(screen.getByRole('spinbutton'))
     await user.type(screen.getByRole('spinbutton'), '9999')
+    expect(screen.queryByText('Very thin liquidity')).not.toBeInTheDocument()
 
+    await user.click(screen.getByTestId('amm-funding-tier-none'))
     expect(screen.getByText('Very thin liquidity')).toBeInTheDocument()
   })
 
@@ -127,6 +146,30 @@ describe('DepositStep', () => {
     expect(await screen.findByTestId('bolt11-display')).toHaveTextContent(
       'lnbc10u1pjexampleinvoice',
     )
+    await waitFor(() => {
+      expect(getDepositStatus).toHaveBeenCalledWith('cond-test-abc123', 'deposit-1')
+    })
+  })
+
+  it('marks the funding invoice paid after the deposit is credited', async () => {
+    const user = userEvent.setup()
+    getDepositStatus.mockResolvedValue({
+      depositId: 'deposit-1',
+      conditionId: 'cond-test-abc123',
+      state: 'Credited',
+      method: 'Lightning',
+      amountSats: 100_000,
+      requestedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      failureReason: null,
+    })
+    renderStep()
+
+    await openFunding(user)
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+
+    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
   })
 
   it('renders USD funding in dollars/cents and requests base subunits', async () => {
@@ -135,7 +178,7 @@ describe('DepositStep', () => {
 
     await openFunding(user)
     expect(screen.getByText('$1,000.00')).toBeInTheDocument()
-    expect(screen.getAllByText('cents').length).toBeGreaterThan(0)
+    expect(screen.queryByText('cents')).not.toBeInTheDocument()
 
     await user.click(screen.getByTestId('confirm-amm-funding'))
 

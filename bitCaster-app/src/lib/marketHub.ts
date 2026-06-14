@@ -23,9 +23,16 @@ import { resolveHubServerUrl } from '@/lib/hubUrl'
 
 export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
 export type MarketStatusChanged = components['schemas']['MarketStatusChanged']
+export interface TradeExecuted {
+  executionPrice: number
+  amountSats: number
+  side: string
+  timestamp: string
+}
 
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void
 type MarketStatusHandler = (status: MarketStatusChanged) => void
+type TradeExecutedHandler = (trade: TradeExecuted) => void
 
 const SERVER_URL = resolveHubServerUrl()
 const HUB_URL = `${SERVER_URL}/hubs/market`
@@ -41,6 +48,8 @@ let _startPromise: Promise<void> | null = null
 // market don't stomp on each other's subscriptions, and so the last unsubscribe
 // can cleanly leave the server group.
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>()
+const _tradeExecutedHandlers = new Map<string, Set<TradeExecutedHandler>>()
+const _marketJoinCounts = new Map<string, number>()
 
 // Per-condition lifecycle handlers. The server fans MarketStatusChanged out to
 // every per-outcome group of the condition, so a client joined to any one
@@ -62,6 +71,52 @@ function buildConnection(): HubConnection {
         handler(snapshot)
       } catch (err) {
         console.warn('[marketHub] OrderBookUpdated handler threw:', err)
+      }
+    }
+  })
+
+  conn.on('TradeExecuted', (payload: unknown) => {
+    const raw = payload as Record<string, unknown>
+    const marketId =
+      typeof raw.marketId === 'string'
+        ? raw.marketId
+        : typeof raw.MarketId === 'string'
+          ? raw.MarketId
+          : null
+    const executionPrice =
+      typeof raw.executionPrice === 'number'
+        ? raw.executionPrice
+        : typeof raw.ExecutionPrice === 'number'
+          ? raw.ExecutionPrice
+          : null
+    const amountSats =
+      typeof raw.amountSats === 'number'
+        ? raw.amountSats
+        : typeof raw.AmountSats === 'number'
+          ? raw.AmountSats
+          : null
+    const side =
+      typeof raw.side === 'string'
+        ? raw.side
+        : typeof raw.Side === 'string'
+          ? raw.Side
+          : ''
+    const timestamp =
+      typeof raw.timestamp === 'string'
+        ? raw.timestamp
+        : typeof raw.Timestamp === 'string'
+          ? raw.Timestamp
+          : new Date().toISOString()
+
+    if (!marketId || executionPrice == null || amountSats == null) return
+
+    const handlers = _tradeExecutedHandlers.get(marketId)
+    if (!handlers) return
+    for (const handler of handlers) {
+      try {
+        handler({ executionPrice, amountSats, side, timestamp })
+      } catch (err) {
+        console.warn('[marketHub] TradeExecuted handler threw:', err)
       }
     }
   })
@@ -105,11 +160,23 @@ async function ensureStarted(): Promise<HubConnection> {
 // ---------------------------------------------------------------------------
 
 export async function joinMarket(marketId: string): Promise<void> {
+  const currentCount = _marketJoinCounts.get(marketId) ?? 0
+  if (currentCount > 0) {
+    _marketJoinCounts.set(marketId, currentCount + 1)
+    return
+  }
   const conn = await ensureStarted()
   await conn.invoke('JoinMarket', marketId)
+  _marketJoinCounts.set(marketId, 1)
 }
 
 export async function leaveMarket(marketId: string): Promise<void> {
+  const currentCount = _marketJoinCounts.get(marketId) ?? 0
+  if (currentCount > 1) {
+    _marketJoinCounts.set(marketId, currentCount - 1)
+    return
+  }
+  _marketJoinCounts.delete(marketId)
   const conn = ensureConnection()
   if (conn.state !== HubConnectionState.Connected) return
   try {
@@ -168,6 +235,24 @@ export function onMarketStatusChanged(
   }
 }
 
+export function onTradeExecuted(
+  marketId: string,
+  handler: TradeExecutedHandler,
+): () => void {
+  let set = _tradeExecutedHandlers.get(marketId)
+  if (!set) {
+    set = new Set()
+    _tradeExecutedHandlers.set(marketId, set)
+  }
+  set.add(handler)
+  return () => {
+    const s = _tradeExecutedHandlers.get(marketId)
+    if (!s) return
+    s.delete(handler)
+    if (s.size === 0) _tradeExecutedHandlers.delete(marketId)
+  }
+}
+
 /**
  * Tear down the singleton connection. Mostly for tests and hot-reload
  * scenarios; normal app runs never call this.
@@ -177,7 +262,9 @@ export async function disconnect(): Promise<void> {
   _connection = null
   _startPromise = null
   _orderBookHandlers.clear()
+  _tradeExecutedHandlers.clear()
   _marketStatusHandlers.clear()
+  _marketJoinCounts.clear()
   if (conn) {
     try {
       await conn.stop()
