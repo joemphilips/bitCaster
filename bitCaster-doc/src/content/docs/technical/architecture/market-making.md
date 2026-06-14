@@ -1,68 +1,66 @@
 ---
-title: "LMSR Bot & Creator Funding"
-description: "How bitCaster bootstraps market liquidity with a creator-funded, bounded-loss LMSR bot on top of the CLOB."
+title: "AMM Liquidity for New Markets"
+description: "How creator-funded LMSR AMM liquidity helps a new bitCaster market start trading."
 sidebar:
   order: 3
 ---
 
-# LMSR Bot & Creator Funding
+# AMM Liquidity for New Markets
 
-This page covers bitCaster's automated market-making bot. For the human and professional market-maker trading model, online requirements, mint matching, and fee policy, see [Trading Model & Human Market Makers](/technical/architecture/trading-model/).
+bitCaster is built around a central limit order book (CLOB): traders and market
+makers place real bids and asks, and matching happens against that book. That is
+the long-term shape we want, because active human market makers can compete on
+spread, size, and judgement.
 
-## The Cold-Start Problem
+New markets have a cold-start problem. If the book is empty, early traders have
+no counterparty; if there are no traders, human market makers have little reason
+to watch the market yet. To bridge that gap, a market creator can fund an
+automated market maker (AMM) after creating the market.
 
-New prediction markets start with empty order books. Traders avoid empty markets, and market makers avoid markets with no traders. bitCaster lets the market creator fund a bot that posts initial bids and asks on the existing CLOB.
+## What the AMM Does
 
-Creator funding is attribution-only. It is not a withdrawable balance, LP share, P&L claim, or right to residual inventory. The deposit is non-refundable; after resolution, any residual collateral from the bot account is booked as operator income.
+The AMM uses the creator's non-refundable funding budget to post initial bid and
+ask orders on the CLOB. It is not a separate pool that replaces the order book.
+It is a bot that provides first liquidity so early users can trade and discover a
+price.
+
+For creators, this matters because it makes a newly-created market look alive
+from the first visit. A funded market is more likely to receive early trading
+interest than a completely empty book. The tradeoff is that the funding budget is
+risk capital: it can be spent paying informed traders, and it is not a
+withdrawable balance or LP share.
+
+AMM liquidity is meant to bootstrap trading, not dominate the market forever. In
+a healthy mature market, human and professional market makers should gradually
+replace the initial AMM quotes with tighter, more informed liquidity.
 
 ## Why LMSR
 
-bitCaster uses a Logarithmic Market Scoring Rule (LMSR) strategy for the funded bot.
+bitCaster currently uses an LMSR (Logarithmic Market Scoring Rule) AMM strategy.
+We chose LMSR for v1 because it gives a clear budget-based loss bound, works
+well for prediction-market probabilities, and can be sampled into ordinary CLOB
+limit orders.
 
-| Design | Why it loses for v1 |
-|--------|---------------------|
-| CPMM/FPMM | Simple, but creator loss is path-dependent and liquidity economics degrade near terminal outcomes. |
-| External liquidity rewards | Native to a CLOB, but requires professional makers before launch. |
-| Inventory-only quoting without a cost function | Easy to implement, but cannot provide a defensible creator loss bound. |
-| LMSR | Gives a hard budget-derived loss bound, supports categorical atom pricing, and can be sampled into CLOB limit orders. |
+That matters for creators: the budget they choose controls how much initial
+liquidity they provide and how much capital they put at risk. Larger budgets can
+quote deeper markets; smaller budgets create thinner quotes that move more
+easily.
 
-The creator budget determines the LMSR liquidity parameter. Creators choose a budget tier, not `b` directly.
+LMSR is not intended to be the only possible AMM forever. bitCaster may add other
+market-making strategies later, especially if they serve different market types,
+creator preferences, or professional liquidity workflows better.
 
-## Funding Flow
+## Funding Choices
 
-1. The creator registers the market and reaches the post-create funding screen.
-2. The creator chooses No liquidity, Minimal, Standard, Deep, or a Custom budget.
-3. If funded, the deposit is sent with `fundAmm=true`, the creator pubkey, the market unit, and the creator's outcome probability distribution.
-4. The wallet service earmarks the first funding deposit as the market-maker budget. First funding wins; later funding deposits are credited as plain collateral because v1 has no top-up path.
-5. The funded collateral is split into complete-set conditional-token inventory.
-6. The bot quotes from the LMSR curve only after the complete-set split succeeds.
+After creating a market, the creator can choose **No liquidity**, a preset
+funding tier, or a custom budget. Choosing **No liquidity** leaves the market
+open for human orders, but bitCaster will not post automated starting quotes.
 
-Sat markets use sats. USD markets use US cents. Field names in some APIs still say `Sats` for backward compatibility; in this context they mean base-asset subunits.
+Funded sat markets use sats. Funded USD markets use US cents backed by the
+market mint's USD ecash. Other units may be added later.
 
-## Pricing State
+The funding deposit is committed to market-making for that market. It does not
+create a creator withdrawal claim, residual claim, or profit-share claim.
 
-LMSR prices are computed from:
-
-- creator seed q, derived from the creator's registered probabilities;
-- terminal q, reconstructed from settled bot trades;
-- pending q, reconstructed from in-flight locked swaps.
-
-Seed q is pricing-only. It is not booked as filled inventory, settlement exposure, or terminal ledger state.
-
-For probabilities `p_i`, the seeded loss bound sizes:
-
-```
-b = effective_budget / -ln(min(p_i))
-```
-
-Creator probabilities below the accepted floor are rejected instead of clamped.
-
-## CLOB Quoting
-
-The bot samples the continuous LMSR curve into a ladder of CLOB limit orders. When fills move q across a level boundary, the bot cancels and reposts its ladder. Categorical markets use one LMSR over atomic outcomes; collection prices are sums of their member atoms.
-
-The bot never goes short. Funding first creates complete-set inventory, and later proceeds can be re-split into more complete sets. In-flight NUT-11 locks are counted as unavailable inventory until they settle, refund, or fail.
-
-## Close-Out
-
-After the oracle attests an outcome, the bot stops quoting, waits for or force-abandons stale pending swaps according to the operator policy, redeems all outcome inventory at the mint, and books residual collateral as operator income. The market creator has no withdrawal or residual claim.
+For the human and professional market-maker trading model, see
+[Trading Model & Human Market Makers](/technical/architecture/trading-model/).

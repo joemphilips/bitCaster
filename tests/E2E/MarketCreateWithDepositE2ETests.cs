@@ -39,6 +39,13 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     /// </summary>
     private const string LocalRelayUrl = "ws://localhost:7777";
 
+    public static IEnumerable<object[]> MarketUnitCases()
+    {
+        yield return ["sat", 100];
+        yield return ["sat", 10000];
+        yield return ["usd", 1000];
+    }
+
     public async Task InitializeAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
@@ -141,8 +148,38 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
     }
 
-    private static async Task AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(IPage page)
+    private static async Task SelectMarketUnitAsync(IPage page, string baseAsset, int divisibility)
     {
+        var assetLabel = string.Equals(baseAsset, "usd", StringComparison.OrdinalIgnoreCase)
+            ? "USD"
+            : "sats";
+        await page.GetByRole(AriaRole.Button, new() { Name = assetLabel }).ClickAsync();
+
+        var denominator = page.Locator("select").First;
+        await denominator.SelectOptionAsync(divisibility.ToString(CultureInfo.InvariantCulture));
+
+        await Assertions.Expect(denominator)
+            .ToHaveValueAsync(divisibility.ToString(CultureInfo.InvariantCulture));
+
+        var selectedBaseAsset = await page.EvaluateAsync<string>("""
+            JSON.parse(localStorage.getItem('bitcaster-market-draft') ?? '{}')
+                ?.state?.draft?.stepOutcomes?.baseAsset ?? ''
+        """);
+        var selectedDivisibility = await page.EvaluateAsync<int>("""
+            JSON.parse(localStorage.getItem('bitcaster-market-draft') ?? '{}')
+                ?.state?.draft?.stepOutcomes?.divisibility ?? 0
+        """);
+
+        Assert.Equal(baseAsset, selectedBaseAsset);
+        Assert.Equal(divisibility, selectedDivisibility);
+    }
+
+    private static async Task AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(
+        IPage page,
+        string baseAsset = "sat",
+        int divisibility = 100)
+    {
+        await SelectMarketUnitAsync(page, baseAsset, divisibility);
         await page.GetByRole(AriaRole.Button, new() { Name = "Next" }).ClickAsync();
         var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Review & Create" });
         await Assertions.Expect(heading).ToBeVisibleAsync(new() { Timeout = 5_000 });
@@ -255,13 +292,15 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     private static async Task<(IPage Page, string ConditionId)> NavigateThroughWizardToDepositStepAsync(
         IBrowserContext context,
         string title,
-        string description)
+        string description,
+        string baseAsset = "sat",
+        int divisibility = 100)
     {
         var (page, console) = await OpenWizardAsync(context);
         await AssertWizardStartsAtGetStartedAsync(page);
         await AdvanceStep2ToStep3_YesNoAsync(page);
         await AdvanceStep3ToStep4_FillBasicsAsync(page, title);
-        await AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(page);
+        await AdvanceStep4ToStep5_AcceptDefaultOutcomesAsync(page, baseAsset, divisibility);
         var conditionId = await CreateMarketAndReadConditionIdAsync(page, title, description, console);
         return (page, conditionId);
     }
@@ -273,13 +312,20 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     // Tests
     // -----------------------------------------------------------------------
 
-    [Fact]
-    public async Task DepositStep_AmmDisabled_ContinuesToMarket()
+    [Theory]
+    [MemberData(nameof(MarketUnitCases))]
+    public async Task CreatorCreatesMarket_NoAmmFunding_ContinuesWithoutPaymentControls(
+        string baseAsset,
+        int divisibility)
     {
         await using var context = await NewIsolatedContextAsync();
-        var title = UniqueTitle("E2E AMM TBD");
+        var title = UniqueTitle($"E2E AMM TBD {baseAsset}");
         var (page, conditionId) = await NavigateThroughWizardToDepositStepAsync(
-            context, title, "E2E AMM disabled continue path");
+            context,
+            title,
+            "E2E AMM disabled continue path",
+            baseAsset,
+            divisibility);
 
         await Assertions.Expect(page.GetByTestId("amm-funding-tier-minimal"))
             .ToBeVisibleAsync();
@@ -287,6 +333,11 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
             .ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("amm-funding-tier-deep"))
             .ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("tab-ln")).Not.ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("tab-ecash")).Not.ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("request-ln-invoice")).Not.ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("amount-input")).Not.ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("amm-funding-custom-budget")).ToBeVisibleAsync();
 
         await page.GetByTestId("amm-funding-tier-none").ClickAsync();
         var continueButton = page.GetByRole(AriaRole.Button, new() { Name = "Continue to your market" });
@@ -294,21 +345,6 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
         await continueButton.ClickAsync();
         await Assertions.Expect(page).ToHaveURLAsync(
             new Regex($"/markets/{Regex.Escape(conditionId)}$"));
-    }
-
-    [Fact]
-    public async Task DepositStep_AmmDisabled_DoesNotRenderPaymentControls()
-    {
-        await using var context = await NewIsolatedContextAsync();
-        var title = UniqueTitle("E2E Deposit No Pay");
-        var (page, _) = await NavigateThroughWizardToDepositStepAsync(
-            context, title, "E2E disabled payment controls");
-
-        await Assertions.Expect(page.GetByTestId("tab-ln")).Not.ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByTestId("tab-ecash")).Not.ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByTestId("request-ln-invoice")).Not.ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByTestId("confirm-amm-funding")).ToBeEnabledAsync();
-        await Assertions.Expect(page.GetByTestId("amm-funding-tier-none")).ToBeVisibleAsync();
     }
 
     [Fact]
@@ -329,19 +365,6 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
             .ToBeVisibleAsync(new() { Timeout = 15_000 });
         await Assertions.Expect(bolt11Display)
             .ToContainTextAsync(new Regex("^lnbcrt\\d+n1", RegexOptions.IgnoreCase));
-    }
-
-    [Fact]
-    public async Task DepositStep_AmmDisabled_HasNoAmountInputAndKeepsContinueEnabled()
-    {
-        await using var context = await NewIsolatedContextAsync();
-        var title = UniqueTitle("E2E Deposit Amt");
-        var (page, _) = await NavigateThroughWizardToDepositStepAsync(
-            context, title, "E2E disabled amount-input test");
-
-        await Assertions.Expect(page.GetByTestId("amount-input")).Not.ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByTestId("amm-funding-custom-budget")).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByTestId("amm-funding-tier-none")).ToBeVisibleAsync();
     }
 
     [Fact]
@@ -367,15 +390,4 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
             .ToBeVisibleAsync(new() { Timeout = 15_000 });
     }
 
-    [Fact(Skip = "Pending funded bot inventory/full-stack settlement harness")]
-    public async Task BotAsCounterparty_FullTradeSettlement()
-    {
-        // Placeholder: a full bot-as-counterparty trade-settlement E2E
-        // now has StrategyLoop/TradeDriver wiring, but still needs a harness
-        // that provisions funded bot inventory and drives the real bot as the
-        // counterparty. When that harness lands, drop the [Skip] string and
-        // assert the browser-visible trade reaches the settlement-complete
-        // state against the real bot.
-        await Task.CompletedTask;
-    }
 }

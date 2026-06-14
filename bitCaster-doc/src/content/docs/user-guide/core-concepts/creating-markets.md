@@ -45,13 +45,17 @@ Supported values: 100, 1,000, 10,000.
 
 ## Fund your market
 
-After market creation succeeds, bitCaster shows an optional **Fund the market maker** step. Funding requests a deposit for the market's automated market-maker. The deposit is sent with the market creator's Nostr public key and a `fundAmm` flag so the service can treat it as bot quoting budget instead of a withdrawable user balance. The creator key on a funding deposit must match the Nostr identity that signs the request itself — a deposit naming a different creator key is rejected, so funding attribution always belongs to the signed-in key.
+After market creation succeeds, bitCaster shows an optional **Fund the market maker** step. Funding gives the market's automated market maker an initial budget so it can post starting bids and asks on the order book. This helps a new market avoid an empty-book cold start.
+
+The funding deposit is sent with the creator's Nostr public key and a `fundAmm` flag so the service treats it as AMM quoting budget, not as a withdrawable user balance. The creator key on the deposit must match the Nostr identity that signs the request.
 
 Market-maker funding follows the market's base asset. Sat markets fund the bot in sats; USD markets fund it in US cents backed by the mint's BTC-collateralized USD ecash. JPY and other units are not available yet.
 
 The funding step offers No liquidity, Minimal, Standard, Deep, and Custom budgets. Binary markets show 0, 10,000, 100,000, and 1,000,000 base sub-units for the preset tiers. Categorical markets multiply the paid tiers by `log2(outcome count)`.
 
 No liquidity, Minimal funding, and custom budgets below 10,000 base sub-units show a **WARNING** badge: **Very thin liquidity**. Choosing **No liquidity** leaves the market available without bot-provided quotes, so human makers must provide liquidity.
+
+AMM funding is meant to start trading, not replace human market makers forever. As a market matures, human and professional makers should ideally replace the initial AMM quotes with tighter, more informed liquidity.
 
 Disclosure shown before confirming funding:
 
@@ -65,6 +69,6 @@ After a market closes, no new orders or deposits are accepted. From that point o
 
 ## Further reading
 
-- [Market Making & Creator Funding](/technical/architecture/market-making/) — the technical details of LMSR bot funding, pricing state, and close-out
+- [AMM Liquidity for New Markets](/technical/architecture/market-making/) — why creator-funded LMSR AMM liquidity helps new markets start trading
 - [Resolution](/user-guide/core-concepts/resolution/) — how oracles attest to outcomes and how winning tokens are redeemed
 - [Conditional Token Framework](/user-guide/core-concepts/conditional-tokens/) — bitCaster's three-layer asset model and how conditional tokens are minted

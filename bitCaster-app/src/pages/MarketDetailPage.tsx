@@ -11,11 +11,14 @@ import { useShareMarket } from "@/components/market-detail/useShareMarket";
 import {
   applyMarketComments,
   applyMarketPriceHistory,
+  appendLivePricePoint,
   fetchMarketDetail,
   fetchMarketComments,
   fetchMarketPriceHistory,
   fetchOrderBook,
   getParticipationScore,
+  mapSnapshotToOrderBook,
+  priceNumeratorToPercent,
   signTradeComment,
   submitOrder,
 } from "@/lib/markets";
@@ -23,6 +26,7 @@ import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import {
   computeTradeCost,
+  computeMarketOrderQuotePreview,
   displaySharesToFaceSats,
 } from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
@@ -45,6 +49,12 @@ import {
   resolveOutcomeSets,
 } from "@/lib/outcomeSets";
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
+import {
+  joinMarket,
+  leaveMarket,
+  onOrderBookUpdated,
+  onTradeExecuted,
+} from "@/lib/marketHub";
 import {
   getOutcomeProofs,
   releaseProofReservation,
@@ -115,15 +125,11 @@ export async function resolvePreflightSplitBuyCollateralRequirement(input: {
     return null;
   }
 
-  const outcomeSets = resolveOutcomeSets(input.market, input.tradeSelection);
-  if (!outcomeSets) return null;
+  const tradeBooks = resolveTradeOrderBooks(input.market, input.tradeSelection);
+  if (!tradeBooks) return null;
 
   const divisibility = normalizeMarketDivisibility(input.market.divisibility);
-  const selectedBook =
-    input.market.outcomeOrderBooks?.[outcomeSets.publicOutcomeSetId] ?? null;
-  const complementBook =
-    input.market.outcomeOrderBooks?.[outcomeSets.complementOutcomeSetId] ??
-    null;
+  const { outcomeSets, selectedBook, complementBook } = tradeBooks;
   const directCross =
     selectedBook?.asks[0] != null &&
     selectedBook.asks[0].price <= input.limitPrice;
@@ -163,6 +169,32 @@ export function decideTradeCollateralGate(input: {
     return { kind: "top-up", balance: input.balance, required };
   }
   return { kind: "proceed", balance: input.balance, required };
+}
+
+export function defaultLimitPriceForDivisibility(divisibility = 100): number {
+  return Math.max(1, Math.floor(normalizeMarketDivisibility(divisibility) / 2));
+}
+
+export function resolveTradeOrderBooks(
+  market: MarketDetailType,
+  tradeSelection: TradeSelection,
+): {
+  outcomeSets: NonNullable<ReturnType<typeof resolveOutcomeSets>>;
+  selectedBook: MarketDetailType["orderBook"] | null;
+  complementBook: MarketDetailType["orderBook"] | null;
+} | null {
+  const outcomeSets = resolveOutcomeSets(market, tradeSelection);
+  if (!outcomeSets) return null;
+
+  const bookFor = (outcomeSetId: string) =>
+    market.outcomeOrderBooks?.[outcomeSetId] ??
+    (outcomeSetId === outcomeSets.publicOutcomeSetId ? market.orderBook : null);
+
+  return {
+    outcomeSets,
+    selectedBook: bookFor(outcomeSets.selectedOutcomeSetId),
+    complementBook: bookFor(outcomeSets.complementOutcomeSetId),
+  };
 }
 
 function needsEngineDetailRefresh(market: MarketDetailType): boolean {
@@ -298,7 +330,7 @@ export function MarketDetailPage() {
   const [tradeSide, setTradeSide] = useState<TradeSide>("buy");
   const [orderType, setOrderType] = useState<OrderType>("market");
   const [preflightSplit, setPreflightSplit] = useState(true);
-  const [limitPrice, setLimitPrice] = useState(50);
+  const [limitPrice, setLimitPrice] = useState(defaultLimitPriceForDivisibility);
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
     message: string;
@@ -356,14 +388,100 @@ export function MarketDetailPage() {
   }, [id]);
 
   // Secondary live close-detection: subscribe to MarketStatusChanged pushes
-  // while this detail page is mounted. Best-effort — fires only when the client
-  // is joined to the market hub (via OrderBookSection). Feeds the same
+  // while this detail page is mounted. Best-effort — fires only when this page
+  // is joined to at least one singleton market hub group. Feeds the same
   // notification + reconcile-state path as the primary boot reconcile.
   const handleLiveStatus = useCallback(
     () => loadMarket({ showLoading: false }),
     [loadMarket],
   );
   useMarketStatusLive(market?.id ?? null, handleLiveStatus);
+
+  useEffect(() => {
+    if (!id || !market) return;
+    const outcomeSetIds = outcomeSetIdsForMarketBooks(market).slice(0, 8);
+    if (outcomeSetIds.length === 0) return;
+
+    let cancelled = false;
+    const cleanups: Array<() => void> = [];
+
+    for (const outcomeSetId of outcomeSetIds) {
+      const liveMarketId = outcomeSetMarketId(id, outcomeSetId);
+      cleanups.push(
+        onOrderBookUpdated(liveMarketId, (snapshot) => {
+          if (cancelled) return;
+          const liveBook = mapSnapshotToOrderBook(snapshot);
+          setMarket((current) => {
+            if (!current || current.id !== id) return current;
+            const outcomeOrderBooks = {
+              ...(current.outcomeOrderBooks ?? {}),
+              [outcomeSetId]: liveBook,
+            };
+            return {
+              ...current,
+              orderBook:
+                outcomeSetId === outcomeSetIds[0] ? liveBook : current.orderBook,
+              outcomeOrderBooks,
+            };
+          });
+        }),
+      );
+      cleanups.push(
+        onTradeExecuted(liveMarketId, (trade) => {
+          if (cancelled) return;
+          setMarket((current) => {
+            if (!current || current.id !== id) return current;
+            const livePoint = {
+              timestamp: trade.timestamp,
+              price: priceNumeratorToPercent(
+                trade.executionPrice,
+                normalizeMarketDivisibility(current.divisibility),
+              ),
+              volume: trade.amountSats,
+            };
+
+            if (current.type === "categorical") {
+              const currentHistory =
+                current.outcomePriceHistories[outcomeSetId] ?? {
+                  timeframe: chartTimeframe,
+                  data: [],
+                };
+              const outcomePriceHistories = {
+                ...current.outcomePriceHistories,
+                [outcomeSetId]: appendLivePricePoint(currentHistory, livePoint),
+              };
+              return {
+                ...current,
+                outcomePriceHistories,
+                priceHistory:
+                  outcomeSetId === outcomeSetIds[0]
+                    ? outcomePriceHistories[outcomeSetId]
+                    : current.priceHistory,
+              };
+            }
+
+            if (outcomeSetId !== outcomeSetIds[0]) return current;
+
+            return {
+              ...current,
+              priceHistory: appendLivePricePoint(current.priceHistory, livePoint),
+            };
+          });
+        }),
+      );
+      void joinMarket(liveMarketId).catch((err) => {
+        console.warn("[MarketDetailPage] joinMarket failed:", err);
+      });
+    }
+
+    return () => {
+      cancelled = true;
+      for (const cleanup of cleanups) cleanup();
+      for (const outcomeSetId of outcomeSetIds) {
+        void leaveMarket(outcomeSetMarketId(id, outcomeSetId));
+      }
+    };
+  }, [id, market?.id, chartTimeframe]);
 
   useEffect(() => {
     loadMarket();
@@ -483,13 +601,12 @@ export function MarketDetailPage() {
     };
   }, [walletReady]);
 
-  // Worst-case effective price for a MARKET order, mirroring the wire price
-  // `buildTradeTicket`/`marketPriceFor` resolves (buy crosses up to
-  // divisibility - 1, sell down to 1). The market preview's cost basis derives
-  // from this price so creator fee + total cost are computed on the quote, not
-  // the face amount.
   const marketDivisibility = normalizeMarketDivisibility(market?.divisibility);
-  const marketEffectivePrice =
+  useEffect(() => {
+    setLimitPrice(defaultLimitPriceForDivisibility(marketDivisibility));
+  }, [market?.id, marketDivisibility]);
+
+  const marketBalanceGatePrice =
     tradeSide === "sell" ? 1 : marketDivisibility - 1;
 
   const tradeFaceAmount = displaySharesToFaceSats(
@@ -505,19 +622,53 @@ export function MarketDetailPage() {
       return null;
     if (orderType === "limit") return null;
 
-    const cost = computeTradeCost({
+    const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
+    const selectedBook = tradeBooks?.selectedBook ?? null;
+    const complementBook = tradeBooks?.complementBook ?? null;
+    const quotePreview = computeMarketOrderQuotePreview({
       displayShares: tradeAmount,
-      price: marketEffectivePrice,
+      tradeSide,
+      orderBook: selectedBook,
+      complementaryOrderBook: complementBook,
+      divisibility: marketDivisibility,
+    });
+    if (!quotePreview) {
+      return {
+        amount: tradeAmount,
+        predictedOdds: 0,
+        priceImpact: 0,
+        averageExecutionPrice: undefined,
+        executableShares: 0,
+        hasExecutableLiquidity: false,
+        quoteSats: 0,
+        mintFee: 0,
+        potentialPayout: 0,
+        creatorFee: 0,
+        engineScoreFeeSats,
+        totalCost: 0,
+      };
+    }
+
+    const cost = computeTradeCost({
+      displayShares: quotePreview.executableDisplayShares,
+      price: quotePreview.averageExecutionPrice,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
     });
+    const predictedOdds = Math.max(
+      0,
+      Math.min(100, (quotePreview.averageExecutionPrice / marketDivisibility) * 100),
+    );
     return {
       amount: tradeAmount,
-      predictedOdds: 50, // Placeholder — real computation needs order book depth
+      predictedOdds,
       priceImpact: 0,
+      averageExecutionPrice: quotePreview.averageExecutionPrice,
+      executableShares: quotePreview.executableDisplayShares,
+      hasExecutableLiquidity: true,
       quoteSats: cost.quoteSats,
       mintFee: cost.mintFee,
-      potentialPayout: tradeFaceAmount,
+      potentialPayout: quotePreview.filledFaceSats,
       creatorFee: cost.creatorFee,
       engineScoreFeeSats,
       totalCost: cost.totalCost,
@@ -525,9 +676,9 @@ export function MarketDetailPage() {
   }, [
     tradeSelection,
     tradeAmount,
+    tradeSide,
     market,
     orderType,
-    marketEffectivePrice,
     activeMintInputFeePpk,
     marketDivisibility,
     tradeFaceAmount,
@@ -575,7 +726,7 @@ export function MarketDetailPage() {
   // top-up modal/overlay. Sells are gated on the position face amount.
   const requiredBuyCost = useMemo(() => {
     if (!market || !tradeAmount || tradeAmount <= 0) return 0;
-    const price = orderType === "limit" ? limitPrice : marketEffectivePrice;
+    const price = orderType === "limit" ? limitPrice : marketBalanceGatePrice;
     return computeTradeCost({
       displayShares: tradeAmount,
       price,
@@ -587,7 +738,7 @@ export function MarketDetailPage() {
     tradeAmount,
     orderType,
     limitPrice,
-    marketEffectivePrice,
+    marketBalanceGatePrice,
     activeMintInputFeePpk,
     marketDivisibility,
   ]);
@@ -639,17 +790,14 @@ export function MarketDetailPage() {
       let ticket: ReturnType<typeof buildTradeTicket>;
       let outcomeSets: NonNullable<ReturnType<typeof resolveOutcomeSets>>;
       try {
-        const resolvedOutcomeSets = resolveOutcomeSets(
-          latestMarket,
-          tradeSelection,
-        );
-        if (!resolvedOutcomeSets) {
+        const tradeBooks = resolveTradeOrderBooks(latestMarket, tradeSelection);
+        if (!tradeBooks) {
           throw new TradeTicketError(
             "missing-selection",
             "Choose an outcome before placing an order.",
           );
         }
-        outcomeSets = resolvedOutcomeSets;
+        outcomeSets = tradeBooks.outcomeSets;
         ticket = buildTradeTicket({
           market: latestMarket,
           selection: tradeSelection,
@@ -660,14 +808,8 @@ export function MarketDetailPage() {
           side: tradeSide,
           orderType,
           limitPrice,
-          orderBook:
-            latestMarket.outcomeOrderBooks?.[
-              outcomeSets.publicOutcomeSetId
-            ] ?? null,
-          complementaryOrderBook:
-            latestMarket.outcomeOrderBooks?.[
-              outcomeSets.complementOutcomeSetId
-            ] ?? null,
+          orderBook: tradeBooks.selectedBook,
+          complementaryOrderBook: tradeBooks.complementBook,
         });
       } catch (e) {
         const message =
@@ -684,13 +826,9 @@ export function MarketDetailPage() {
       let preparedPreflightSplit: PreparedPreflightSplit | undefined;
       let submitAttempted = false;
       try {
-        const selectedBook =
-          latestMarket.outcomeOrderBooks?.[outcomeSets.publicOutcomeSetId] ??
-          null;
-        const complementBook =
-          latestMarket.outcomeOrderBooks?.[
-            outcomeSets.complementOutcomeSetId
-          ] ?? null;
+        const tradeBooks = resolveTradeOrderBooks(latestMarket, tradeSelection);
+        const selectedBook = tradeBooks?.selectedBook ?? null;
+        const complementBook = tradeBooks?.complementBook ?? null;
         const directCross =
           selectedBook?.asks[0] != null &&
           selectedBook.asks[0].price <= ticket.request.price;

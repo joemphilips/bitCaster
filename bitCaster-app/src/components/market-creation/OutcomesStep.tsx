@@ -1,4 +1,4 @@
-import { Plus, Trash2 } from 'lucide-react'
+import { Info, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { WizardOutcome, OutcomeType, MarketBaseAsset } from '@/types/market-creation'
@@ -132,8 +132,17 @@ function MarketUnitControls({
           </div>
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-2">
-            {t('marketCreation.divisibility')}
+          <label className="mb-2 flex flex-wrap items-center gap-1.5 text-sm font-medium text-slate-300">
+            <span>{t('marketCreation.divisibility')}</span>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+              title={t('marketCreation.divisibilityHelp')}
+              aria-label={t('marketCreation.divisibilityHelp')}
+            >
+              <Info className="h-3.5 w-3.5" strokeWidth={1.75} />
+              <span>{t('marketCreation.whatIsThis')}</span>
+            </button>
           </label>
           <select
             value={selectedDivisibility}
@@ -150,9 +159,6 @@ function MarketUnitControls({
       </div>
       <p className="text-xs text-slate-400">
         {t('marketCreation.divisibilityExample', { stake, step })}
-      </p>
-      <p className="text-xs text-slate-500 mt-1">
-        {t('marketCreation.divisibilityHelp')}
       </p>
     </div>
   )

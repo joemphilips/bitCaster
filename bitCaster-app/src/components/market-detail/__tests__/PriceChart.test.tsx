@@ -1,16 +1,49 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PriceChart } from '../PriceChart'
 
-// These tests assert the rendered SVG STRUCTURE of the Predyx-style chart
-// (P22 Link D). They are the deterministic stand-in for a real visual diff:
-// step lines, a latest-value pill anchored at the right edge per series, a
-// full-width horizontal line for single-point series, and visible X-axis date
-// ticks. Pixel-perfect comparison to tmp/predyx_chart.PNG is deferred to the
-// local AppHost smoke gate.
+const plotInstances = vi.hoisted(() => [] as Array<{
+  setData: ReturnType<typeof vi.fn>
+  setSize: ReturnType<typeof vi.fn>
+  destroy: ReturnType<typeof vi.fn>
+  options: unknown
+  data: unknown
+}>)
 
-describe('PriceChart (Link D)', () => {
-  it('renders no Volume toggle (Volume tab dropped)', () => {
+vi.mock('uplot', () => {
+  class MockUPlot {
+    setData = vi.fn()
+    setSize = vi.fn()
+    destroy = vi.fn()
+    options: unknown
+    data: unknown
+
+    constructor(options: unknown, data: unknown, container: HTMLElement) {
+      this.options = options
+      this.data = data
+      plotInstances.push(this)
+      container.appendChild(document.createElement('canvas'))
+    }
+  }
+  return {
+    default: Object.assign(MockUPlot, {
+      paths: {
+        stepped: vi.fn(() => 'stepped-paths'),
+      },
+    }),
+  }
+})
+
+describe('PriceChart', () => {
+  beforeEach(() => {
+    plotInstances.length = 0
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('renders a uPlot chart with fixed probability axis labels', () => {
     render(
       <PriceChart
         priceHistory={{
@@ -23,127 +56,94 @@ describe('PriceChart (Link D)', () => {
         chartTimeframe="7d"
       />,
     )
-    expect(screen.queryByText(/volume/i)).not.toBeInTheDocument()
+
+    expect(screen.getByTestId('price-chart-uplot')).toBeInTheDocument()
+    expect(screen.getByTestId('latest-price-pill')).toHaveTextContent('55%')
+    expect(plotInstances).toHaveLength(1)
+    const options = plotInstances[0].options as {
+      axes: Array<{
+        splits?: () => number[]
+        values?: (_u: unknown, values: number[]) => string[]
+      }>
+    }
+    expect(options.axes[1].splits?.()).toEqual([0, 50, 100])
+    expect(options.axes[1].values?.({}, [0, 50, 100])).toEqual(['0%', '50%', '100%'])
   })
 
-  it('renders a step line + a latest-value pill at the right edge for a multi-point series', () => {
-    const { container } = render(
+  it('updates the existing plot data when history changes', () => {
+    const { rerender } = render(
+      <PriceChart
+        priceHistory={{
+          timeframe: '7d',
+          data: [{ timestamp: '2026-05-20T10:00:00Z', price: 40 }],
+        }}
+        chartTimeframe="7d"
+      />,
+    )
+
+    const instance = plotInstances[0]
+    rerender(
       <PriceChart
         priceHistory={{
           timeframe: '7d',
           data: [
             { timestamp: '2026-05-20T10:00:00Z', price: 40 },
-            { timestamp: '2026-05-22T10:00:00Z', price: 48 },
-            { timestamp: '2026-05-25T10:00:00Z', price: 55 },
+            { timestamp: '2026-05-21T10:00:00Z', price: 50 },
           ],
         }}
         chartTimeframe="7d"
       />,
     )
 
-    // Step line uses horizontal/vertical segments (H .. V .. commands).
-    const line = container.querySelector('[data-testid="series-line"]')
-    expect(line).toBeTruthy()
-    const d = line?.getAttribute('d') ?? ''
-    expect(d).toMatch(/M /)
-    expect(d).toMatch(/ H /)
-    expect(d).toMatch(/ V /)
-
-    // Latest-value pill shows the newest price (55 → "55.00").
-    const pills = container.querySelectorAll('[data-testid="latest-price-pill"]')
-    expect(pills.length).toBe(1)
-    expect(pills[0].querySelector('text')?.textContent).toBe('55.00')
+    expect(plotInstances).toHaveLength(1)
+    expect(instance.setData).toHaveBeenCalled()
+    expect(screen.getByTestId('latest-price-pill')).toHaveTextContent('50%')
   })
 
-  it('renders a full-width HORIZONTAL line (not a leftmost circle) for a single-point series', () => {
-    const { container } = render(
+  it('destroys the plot on unmount', () => {
+    const { unmount } = render(
       <PriceChart
         priceHistory={{
           timeframe: '7d',
-          data: [{ timestamp: '2026-05-25T10:00:00Z', price: 42 }],
+          data: [{ timestamp: '2026-05-20T10:00:00Z', price: 40 }],
         }}
         chartTimeframe="7d"
       />,
     )
 
-    expect(screen.queryByText(/no data available/i)).not.toBeInTheDocument()
-    // No single-point circle remains.
-    expect(container.querySelector('circle')).toBeNull()
-    // The series path is a horizontal line: M <x> <y> H <x2> with one Y value.
-    const d = container.querySelector('[data-testid="series-line"]')?.getAttribute('d') ?? ''
-    expect(d).toMatch(/^M \S+ \S+ H \S+$/)
+    const instance = plotInstances[0]
+    unmount()
+    expect(instance.destroy).toHaveBeenCalled()
   })
 
-  it('renders visible X-axis date ticks', () => {
-    const { container } = render(
-      <PriceChart
-        priceHistory={{
-          timeframe: '7d',
-          data: [
-            { timestamp: '2026-05-20T10:00:00Z', price: 40 },
-            { timestamp: '2026-05-25T10:00:00Z', price: 55 },
-          ],
-        }}
-        chartTimeframe="7d"
-      />,
-    )
-    const ticks = container.querySelectorAll('[data-testid="x-axis-tick"]')
-    expect(ticks.length).toBeGreaterThanOrEqual(2)
-    // Each tick carries a non-empty date label.
-    ticks.forEach((tick) => {
-      expect(tick.querySelector('text')?.textContent?.length ?? 0).toBeGreaterThan(0)
-    })
-  })
-
-  it('renders one step line + one pill per categorical outcome series', () => {
-    const { container } = render(
+  it('renders one latest-value pill per categorical outcome series', () => {
+    render(
       <PriceChart
         priceHistory={{ timeframe: '7d', data: [] }}
         chartTimeframe="7d"
         outcomes={[
-          { id: 'outcome-0', label: 'A', odds: 33 },
-          { id: 'outcome-1', label: 'B', odds: 33 },
-          { id: 'outcome-2', label: 'C', odds: 34 },
+          { id: 'Alice', label: 'Alice', odds: 33 },
+          { id: 'Bob', label: 'Bob', odds: 33 },
+          { id: 'Carol', label: 'Carol', odds: 34 },
         ]}
         outcomePriceHistories={{
-          'outcome-0': {
+          Alice: {
             timeframe: '7d',
-            data: [
-              { timestamp: '2026-05-20T10:00:00Z', price: 30 },
-              { timestamp: '2026-05-25T10:00:00Z', price: 33 },
-            ],
+            data: [{ timestamp: '2026-05-25T10:00:00Z', price: 33 }],
           },
-          'outcome-1': {
+          Bob: {
             timeframe: '7d',
-            data: [
-              { timestamp: '2026-05-20T10:00:00Z', price: 25 },
-              { timestamp: '2026-05-25T10:00:00Z', price: 28 },
-            ],
+            data: [{ timestamp: '2026-05-25T10:00:00Z', price: 28 }],
           },
         }}
       />,
     )
 
-    expect(screen.queryByText(/no data available/i)).not.toBeInTheDocument()
-    expect(container.querySelectorAll('[data-testid="series-line"]').length).toBe(2)
-    expect(container.querySelectorAll('[data-testid="latest-price-pill"]').length).toBe(2)
-  })
-
-  it('orders series time-ascending so the newest sample feeds the rightmost pill', () => {
-    const { container } = render(
-      <PriceChart
-        priceHistory={{
-          timeframe: '7d',
-          // Intentionally out of order — newest (60) is NOT last in the array.
-          data: [
-            { timestamp: '2026-05-25T10:00:00Z', price: 60 },
-            { timestamp: '2026-05-20T10:00:00Z', price: 40 },
-          ],
-        }}
-        chartTimeframe="7d"
-      />,
-    )
-    const pill = container.querySelector('[data-testid="latest-price-pill"] text')
-    expect(pill?.textContent).toBe('60.00')
+    const pills = screen.getAllByTestId('latest-price-pill')
+    expect(pills).toHaveLength(2)
+    expect(pills[0]).toHaveTextContent('Alice')
+    expect(pills[0]).toHaveTextContent('33%')
+    expect(pills[1]).toHaveTextContent('Bob')
+    expect(pills[1]).toHaveTextContent('28%')
   })
 })

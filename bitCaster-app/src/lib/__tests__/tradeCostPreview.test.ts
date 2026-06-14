@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computeLimitOrderPreview,
+  computeMarketOrderQuotePreview,
   computeTradeCost,
   displaySharesToFaceSats,
   faceSatsToDisplayShares,
@@ -184,5 +185,128 @@ describe("trade display-unit conversion", () => {
     expect(displaySharesToFaceSats(50, 100)).toBe(5_000);
     expect(displaySharesToFaceSats(50, 1_000)).toBe(50_000);
     expect(faceSatsToDisplayShares(50_000, 1_000)).toBe(50);
+  });
+});
+
+describe("computeMarketOrderQuotePreview", () => {
+  it("walks ask depth and returns average execution price for buys", () => {
+    const quote = computeMarketOrderQuotePreview({
+      displayShares: 3,
+      tradeSide: "buy",
+      divisibility: 100,
+      orderBook: {
+        bids: [],
+        asks: [
+          { price: 40, amount: 100, total: 100 },
+          { price: 50, amount: 200, total: 300 },
+        ],
+        spread: 10,
+      },
+    });
+
+    expect(quote?.executableDisplayShares).toBe(3);
+    expect(quote?.quoteSats).toBe(140);
+    expect(quote?.averageExecutionPrice).toBeCloseTo(46.67, 2);
+  });
+
+  it("walks bid depth for sells", () => {
+    const quote = computeMarketOrderQuotePreview({
+      displayShares: 2,
+      tradeSide: "sell",
+      divisibility: 100,
+      orderBook: {
+        bids: [{ price: 45, amount: 200, total: 200 }],
+        asks: [],
+        spread: 10,
+      },
+    });
+
+    expect(quote?.executableDisplayShares).toBe(2);
+    expect(quote?.quoteSats).toBe(90);
+    expect(quote?.averageExecutionPrice).toBe(45);
+  });
+
+  it("quotes complementary bids for market buys when the direct ask book is empty", () => {
+    const quote = computeMarketOrderQuotePreview({
+      displayShares: 2,
+      tradeSide: "buy",
+      divisibility: 100,
+      orderBook: { bids: [], asks: [], spread: 0 },
+      complementaryOrderBook: {
+        bids: [{ price: 42, amount: 200, total: 200 }],
+        asks: [],
+        spread: 0,
+      },
+    });
+
+    expect(quote?.executableDisplayShares).toBe(2);
+    expect(quote?.averageExecutionPrice).toBe(58);
+    expect(quote?.quoteSats).toBe(116);
+  });
+
+  it("does not treat complementary-book asks as executable market-buy liquidity", () => {
+    expect(
+      computeMarketOrderQuotePreview({
+        displayShares: 1,
+        tradeSide: "buy",
+        divisibility: 100,
+        orderBook: null,
+        complementaryOrderBook: {
+          bids: [],
+          asks: [{ price: 35, amount: 100, total: 100 }],
+          spread: 0,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("uses complementary bids rather than complementary asks for market buys", () => {
+    const quote = computeMarketOrderQuotePreview({
+      displayShares: 1,
+      tradeSide: "buy",
+      divisibility: 100,
+      orderBook: null,
+      complementaryOrderBook: {
+        bids: [{ price: 60, amount: 100, total: 100 }],
+        asks: [{ price: 35, amount: 100, total: 100 }],
+        spread: 25,
+      },
+    });
+
+    expect(quote?.averageExecutionPrice).toBe(40);
+    expect(quote?.quoteSats).toBe(40);
+  });
+
+  it("uses direct asks before complementary bids for partial market buys", () => {
+    const quote = computeMarketOrderQuotePreview({
+      displayShares: 3,
+      tradeSide: "buy",
+      divisibility: 100,
+      orderBook: {
+        bids: [],
+        asks: [{ price: 35, amount: 100, total: 100 }],
+        spread: 0,
+      },
+      complementaryOrderBook: {
+        bids: [{ price: 42, amount: 200, total: 200 }],
+        asks: [],
+        spread: 0,
+      },
+    });
+
+    expect(quote?.executableDisplayShares).toBe(3);
+    expect(quote?.quoteSats).toBe(151);
+    expect(quote?.averageExecutionPrice).toBeCloseTo(50.33, 2);
+  });
+
+  it("returns null when no executable depth is available", () => {
+    expect(
+      computeMarketOrderQuotePreview({
+        displayShares: 1,
+        tradeSide: "buy",
+        divisibility: 100,
+        orderBook: { bids: [], asks: [], spread: 0 },
+      }),
+    ).toBeNull();
   });
 });

@@ -128,7 +128,7 @@ public static partial class MarketEndpoints
                 // Mint unreachable — skip validation in dev
             }
 
-            // Build per-outcome market IDs and CPMM pools
+            // Build per-outcome market IDs and mock liquidity pools.
             var marketsCreated = new List<string>();
             var liquidityPerOutcome = (metadata.LiquiditySats ?? 0) / metadata.Outcomes.Count;
             var poolEntries = new List<(string MarketId, LiquidityStateResponse Pool)>();

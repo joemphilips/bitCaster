@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   decideTradeCollateralGate,
+  defaultLimitPriceForDivisibility,
   fetchMarketDetailWithBooks,
   resolvePreflightSplitBuyCollateralRequirement,
+  resolveTradeOrderBooks,
 } from '@/pages/MarketDetailPage'
 import { fetchMarketDetail, fetchOrderBook } from '@/lib/markets'
 import type { MarketDetail, OrderBook } from '@/types/market-detail'
@@ -28,6 +30,14 @@ function book(price: number): OrderBook {
   return {
     bids: [{ price, amount: 100, total: 100 }],
     asks: [],
+    spread: 0,
+  }
+}
+
+function askBook(price: number): OrderBook {
+  return {
+    bids: [],
+    asks: [{ price, amount: 100, total: 100 }],
     spread: 0,
   }
 }
@@ -83,7 +93,7 @@ describe('fetchMarketDetailWithBooks', () => {
     mocks.resolveRootPreflightOutputAmountSats.mockReset()
   })
 
-  it('fetches singleton and complement outcome-set books for categorical markets', async () => {
+  it('fetches singleton outcome-set books for categorical markets', async () => {
     vi.mocked(fetchMarketDetail).mockResolvedValue(categoricalMarket())
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
       book(marketId.length),
@@ -99,6 +109,50 @@ describe('fetchMarketDetailWithBooks', () => {
     ])
     expect(detail.outcomeOrderBooks).toHaveProperty('Alice')
     expect(detail.outcomeOrderBooks).not.toHaveProperty('Bob|Carol')
+  })
+})
+
+describe('defaultLimitPriceForDivisibility', () => {
+  it('uses the midpoint for non-default market denominators', () => {
+    expect(defaultLimitPriceForDivisibility(100)).toBe(50)
+    expect(defaultLimitPriceForDivisibility(1_000)).toBe(500)
+    expect(defaultLimitPriceForDivisibility(10_000)).toBe(5_000)
+  })
+})
+
+describe('resolveTradeOrderBooks', () => {
+  it('treats the public singleton book as complementary liquidity for categorical NO selections', () => {
+    const market = categoricalMarket()
+    market.outcomeOrderBooks = {
+      Alice: {
+        bids: [{ price: 60, amount: 100, total: 100 }],
+        asks: [{ price: 35, amount: 100, total: 100 }],
+        spread: 25,
+      },
+    }
+
+    const books = resolveTradeOrderBooks(market, {
+      side: 'no',
+      outcomeId: 'outcome-0',
+    })
+
+    expect(books?.outcomeSets.selectedOutcomeSetId).toBe('Bob|Carol')
+    expect(books?.selectedBook).toBeNull()
+    expect(books?.complementBook).toBe(market.outcomeOrderBooks.Alice)
+  })
+
+  it('uses the public singleton book as direct liquidity for categorical YES selections', () => {
+    const market = categoricalMarket()
+    market.outcomeOrderBooks = { Alice: askBook(35) }
+
+    const books = resolveTradeOrderBooks(market, {
+      side: 'yes',
+      outcomeId: 'outcome-0',
+    })
+
+    expect(books?.outcomeSets.selectedOutcomeSetId).toBe('Alice')
+    expect(books?.selectedBook).toBe(market.outcomeOrderBooks.Alice)
+    expect(books?.complementBook).toBeNull()
   })
 })
 

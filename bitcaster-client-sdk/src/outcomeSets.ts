@@ -60,10 +60,10 @@ export function outcomeSetDisplayLabel(
   if (uniqueUniverse.length > 2 && members.length === uniqueUniverse.length - 1) {
     const memberSet = new Set(members)
     const missing = uniqueUniverse.filter((outcome) => !memberSet.has(outcome))
-    if (missing.length === 1) return `NOT ${missing[0]}`
+    if (missing.length === 1) return `Not ${missing[0]}`
   }
 
-  return 'Complement'
+  return members.join(' or ')
 }
 
 export function resolveOutcomeSets(
