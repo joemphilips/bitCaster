@@ -36,6 +36,7 @@ export type ProofOperationKind =
   | "conditional-keyset-swap"
   | "swap-refund"
   | "ctf-split"
+  | "ctf-merge"
   | "ctf-redeem"
   | "ctf-condition-registration"
   | "regular-split"

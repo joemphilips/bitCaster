@@ -24,7 +24,7 @@ export function bookmarkSetsEqual(
 /**
  * Local bookmark store. Persists to localStorage under `bitcaster-bookmarks`.
  * When an nsec-backed Nostr identity is available, `useBookmarkSync` keeps
- * this in sync with a NIP-78 replaceable event on public relays.
+ * this in sync with a NIP-78 replaceable event on the configured bitCaster relay.
  *
  * This module deliberately has no Nostr or Cashu imports so it is cheap to
  * pull into tests that render a `MarketCard` or `MarketHeader`.

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router'
 import userEvent from '@testing-library/user-event'
 import i18n from '@/i18n'
@@ -129,6 +129,17 @@ describe('DepositStep', () => {
     expect(screen.getByText('Very thin liquidity')).toBeInTheDocument()
   })
 
+  it('previews custom funding in the market collateral unit', async () => {
+    const user = userEvent.setup()
+    renderStep({ baseAsset: 'usd' })
+
+    await openFunding(user)
+    await user.clear(screen.getByRole('spinbutton'))
+    await user.type(screen.getByRole('spinbutton'), '20000')
+
+    expect(screen.getByText('Funding amount: $200.00')).toBeInTheDocument()
+  })
+
   it('requests AMM funding and shows the shared invoice display', async () => {
     const user = userEvent.setup()
     renderStep()
@@ -170,6 +181,64 @@ describe('DepositStep', () => {
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     expect(await screen.findByText('Payment received!')).toBeInTheDocument()
+  })
+
+  it('auto-navigates five seconds after AMM funding is credited', async () => {
+    const user = userEvent.setup()
+    const timeoutSpy = vi.spyOn(window, 'setTimeout')
+    getDepositStatus.mockResolvedValue({
+      depositId: 'deposit-1',
+      conditionId: 'cond-test-abc123',
+      state: 'Credited',
+      method: 'Lightning',
+      amountSats: 100_000,
+      requestedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      failureReason: null,
+    })
+    renderStep()
+
+    await openFunding(user)
+    timeoutSpy.mockClear()
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
+
+    expect(screen.queryByTestId('market-detail-page')).not.toBeInTheDocument()
+    const navigationCall = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000)
+    expect(navigationCall).toBeDefined()
+    act(() => {
+      ;(navigationCall?.[0] as () => void)()
+    })
+    expect(screen.getByTestId('market-detail-page')).toBeInTheDocument()
+    timeoutSpy.mockRestore()
+  })
+
+  it('lets the creator request a fresh funding invoice after expiry', async () => {
+    const user = userEvent.setup()
+    requestLnInvoiceDeposit
+      .mockResolvedValueOnce({
+        depositId: 'deposit-expired',
+        bolt11: 'lnbc10u1pjexpired',
+        expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      })
+      .mockResolvedValueOnce({
+        depositId: 'deposit-fresh',
+        bolt11: 'lnbc10u1pjfresh',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      })
+    renderStep()
+
+    await openFunding(user)
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+    expect(await screen.findByText('Invoice expired')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Re-quote' }))
+
+    await waitFor(() => {
+      expect(requestLnInvoiceDeposit).toHaveBeenCalledTimes(2)
+    })
+    expect(await screen.findByText('lnbc10u1pjfresh')).toBeInTheDocument()
   })
 
   it('renders USD funding in dollars/cents and requests base subunits', async () => {

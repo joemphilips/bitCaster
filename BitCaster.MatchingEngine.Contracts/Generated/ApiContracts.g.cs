@@ -1090,7 +1090,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset? BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units. The creator UI may expose only a curated subset of this range.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]

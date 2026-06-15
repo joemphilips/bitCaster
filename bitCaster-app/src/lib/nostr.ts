@@ -2,7 +2,7 @@
  * NDK singleton and helpers for bitCaster.
  *
  * Responsibilities:
- *  - Provide a shared NDK instance wired to well-known public relays
+ *  - Provide a shared NDK instance wired to configured default relays
  *  - Support NIP-07 browser-extension signer and plain nsec login
  *  - Expose a helper to attach an NWC wallet for Lightning/Cashu top-ups
  *  - Provide typed filters for DLC oracle announcement events (kind 88)
@@ -14,21 +14,20 @@ import NDK, {
   type NDKSigner,
   type NDKFilter,
   type NDKEvent,
+  type NDKConstructorParams,
 } from "@nostr-dev-kit/ndk";
 import { NDKNWCWallet } from "@nostr-dev-kit/ndk-wallet";
 import { nip19 } from "nostr-tools";
 import * as nip49 from "nostr-tools/nip49";
 import { setPendingKormirNsec } from "./kormir";
 import { useSettingsStore } from "@/stores/settings";
-import { PRODUCTION_NOSTR_RELAYS } from "./relayDefaults";
+import { DEFAULT_NOSTR_RELAYS, effectiveRelayUrls } from "./relayDefaults";
 
 // ---------------------------------------------------------------------------
 // Singleton NDK instance
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_RELAYS: string[] = import.meta.env.VITE_NOSTR_RELAYS
-  ? (import.meta.env.VITE_NOSTR_RELAYS as string).split(",").map((r: string) => r.trim())
-  : [...PRODUCTION_NOSTR_RELAYS];
+export const DEFAULT_RELAYS: string[] = [...DEFAULT_NOSTR_RELAYS];
 
 let _ndk: NDK | null = null;
 // Snapshot of the user-relay set last reconciled into the singleton NDK.
@@ -42,6 +41,15 @@ type TeardownCapableSigner = NDKSigner & {
   stop?: () => void | Promise<void>;
 };
 
+export function createExplicitRelayNdk(opts: NDKConstructorParams = {}): NDK {
+  return new NDK({
+    ...opts,
+    enableOutboxModel: false,
+    autoConnectUserRelays: false,
+    outboxRelayUrls: [],
+  });
+}
+
 /**
  * Merge user-configured relays from the settings store with the static
  * {@link DEFAULT_RELAYS} list, deduplicating while preserving order. The
@@ -52,7 +60,7 @@ type TeardownCapableSigner = NDKSigner & {
  */
 function mergedRelayUrls(): string[] {
   try {
-    const userRelays = useSettingsStore.getState().relays.map((r) => r.url);
+    const userRelays = effectiveRelayUrls(useSettingsStore.getState().relays);
     const merged = [...DEFAULT_RELAYS];
     for (const url of userRelays) {
       if (!merged.includes(url)) merged.push(url);
@@ -97,7 +105,7 @@ function reconcileRelays(ndk: NDK, urls: string[]): void {
 export function getNdk(): NDK {
   const urls = mergedRelayUrls();
   if (!_ndk) {
-    _ndk = new NDK({ explicitRelayUrls: urls });
+    _ndk = createExplicitRelayNdk({ explicitRelayUrls: urls });
     _lastReconciledRelaysKey = urls.slice().sort().join("|");
     return _ndk;
   }

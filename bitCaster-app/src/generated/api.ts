@@ -695,7 +695,7 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Immutable price denominator `D`. Orders use price numerator `k` where `1 <= k <= D - 1` and one whole share has face value `D` base-asset sub-units.
+             * @description Immutable price denominator `D`. Orders use price numerator `k` where `1 <= k <= D - 1` and one whole share has face value `D` base-asset sub-units. The creator UI may expose only a curated subset of this range.
              * @default 100
              */
             divisibility: number;

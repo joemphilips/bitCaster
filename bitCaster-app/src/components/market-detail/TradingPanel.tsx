@@ -783,12 +783,6 @@ export function TradingPanel({
                       {formatPriceWithProbability(tradePreview.averageExecutionPrice ?? 0, divisibility)}
                     </span>
                   </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-500 dark:text-slate-400">{t('trade.estimatedPostFillOdds')}</span>
-                    <span className="font-medium text-slate-600 dark:text-slate-300">
-                      {tradePreview.predictedOdds.toFixed(1)}%
-                    </span>
-                  </div>
                   {tradePreview.executableShares !== tradeAmount && (
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-500 dark:text-slate-400">{t('trade.executableShares')}</span>

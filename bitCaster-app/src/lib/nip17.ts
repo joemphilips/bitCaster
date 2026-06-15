@@ -21,13 +21,13 @@ import {
 } from "nostr-tools/pure";
 import type { UnsignedEvent, EventTemplate } from "nostr-tools/core";
 import { bytesToHex, hexToBytes } from "nostr-tools/utils";
-import NDK, {
+import {
   NDKPrivateKeySigner,
   NDKEvent,
   NDKRelayStatus,
   type NDKFilter,
 } from "@nostr-dev-kit/ndk";
-import { DEFAULT_RELAYS } from "./nostr";
+import { createExplicitRelayNdk, DEFAULT_RELAYS } from "./nostr";
 
 // ---------------------------------------------------------------------------
 // Key derivation
@@ -151,7 +151,7 @@ export async function sendNip17DM(
   const wrapEvent = finalizeEvent(wrapTemplate, randomPrivKey);
 
   // 4. Publish via a temporary NDK instance
-  const ndk = new NDK({
+  const ndk = createExplicitRelayNdk({
     explicitRelayUrls: resolvedRelays,
     signer: new NDKPrivateKeySigner(bytesToHex(randomPrivKey)),
   });
@@ -196,9 +196,8 @@ export async function subscribeNip17DMs(
   const seenIds = new Set<string>();
   const MAX_SEEN_IDS = 5000;
 
-  const ndk = new NDK({
+  const ndk = createExplicitRelayNdk({
     explicitRelayUrls: resolvedRelays,
-    autoConnectUserRelays: false,
   });
 
   // NDK connect is best-effort — it will keep retrying failed relays internally

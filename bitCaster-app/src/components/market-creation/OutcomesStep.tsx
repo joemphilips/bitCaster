@@ -317,6 +317,7 @@ export function OutcomesStep({
                 <div className="ml-auto w-20 shrink-0">
                   <div className="relative">
                     <input
+                      data-outcome-probability-input={outcome.id}
                       type="number"
                       min={0}
                       max={100}
@@ -397,6 +398,7 @@ export function OutcomesStep({
               <div className="w-20 shrink-0">
                 <div className="relative">
                   <input
+                    data-outcome-probability-input={outcome.id}
                     type="number"
                     min={1}
                     max={99}

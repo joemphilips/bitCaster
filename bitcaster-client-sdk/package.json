@@ -55,6 +55,10 @@
       "types": "./dist/tradeFlow.d.ts",
       "import": "./dist/tradeFlow.js"
     },
+    "./tradePreparation": {
+      "types": "./dist/tradePreparation.d.ts",
+      "import": "./dist/tradePreparation.js"
+    },
     "./tradeSession": {
       "types": "./dist/tradeSession.d.ts",
       "import": "./dist/tradeSession.js"

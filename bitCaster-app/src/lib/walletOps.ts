@@ -7,6 +7,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useWalletStore, type StoredMint } from '@/stores/wallet'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 import { normalizeMarketBaseAsset, type MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
+import { effectiveRelayUrls, isAllowedNostrRelayUrl, isKnownPublicNostrRelayUrl } from '@/lib/relayDefaults'
 
 export type WalletIngressSource = 'paste' | 'scan' | 'nip17'
 
@@ -66,10 +67,17 @@ export function normalizeRelayUrl(wssUrl: string): string {
   } catch {
     throw new Error('Relay URL must start with wss://')
   }
-  if (parsed.protocol !== 'wss:') {
-    throw new Error('Relay URL must start with wss://')
+  if (parsed.protocol !== 'wss:' && parsed.protocol !== 'ws:') {
+    throw new Error('Relay URL must start with wss:// or local ws://')
   }
-  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed
+  const normalized = trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed
+  if (isKnownPublicNostrRelayUrl(normalized)) {
+    throw new Error('Public Nostr relays are not supported. Use a bitCaster-owned relay.')
+  }
+  if (!isAllowedNostrRelayUrl(normalized)) {
+    throw new Error('Relay URL must be the configured bitCaster relay or a local relay.')
+  }
+  return normalized
 }
 
 export function getRelayUrlValidationError(wssUrl: string): string | null {
@@ -153,7 +161,7 @@ export function userCreatePaymentRequest(mintUrl: string): CreatedWalletPaymentR
   }
 
   const keyPair = deriveNostrKeyPair(mnemonic)
-  const configuredRelays = useSettingsStore.getState().relays.map((r) => r.url)
+  const configuredRelays = effectiveRelayUrls(useSettingsStore.getState().relays)
   const nprofile = getNostrNprofile(
     keyPair.publicKey,
     configuredRelays.length > 0 ? configuredRelays : undefined,

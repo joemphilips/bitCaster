@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
+import { canonicalizeOutcomeSet } from '@/lib/outcomeSets'
 import type { PriceHistory, ChartTimeframe, Comment, PricePoint } from '@/types/market-detail'
 
 interface PriceChartProps {
@@ -70,7 +71,9 @@ function buildSeries(input: {
         id: outcome.id,
         label: outcome.label,
         color: OUTCOME_COLORS[idx % OUTCOME_COLORS.length],
-        data: sortAscending(input.outcomePriceHistories?.[outcome.id]?.data ?? []),
+        data: sortAscending(
+          input.outcomePriceHistories?.[canonicalizeOutcomeSet([outcome.label])]?.data ?? [],
+        ),
       }))
       .filter((series) => series.data.length > 0)
   }

@@ -18,6 +18,8 @@ import {
 import {
   amountToNumber,
   computeInputFeeSatsForProofs,
+  sumProofs,
+  takeProofsForLock,
 } from "./proofSelection.ts";
 import {
   normalizeMarketBaseAsset,
@@ -54,7 +56,10 @@ export interface StoredOutputData {
   secret: string;
 }
 
-export type CtfProofOperationKind = "ctf-split" | "regular-split";
+export type CtfProofOperationKind =
+  | "ctf-split"
+  | "ctf-merge"
+  | "regular-split";
 export type ProofOperationState = "prepared" | "completed" | "failed";
 
 export interface CtfProofOperationRecord {
@@ -148,6 +153,11 @@ export interface CtfSplitTransport {
     conditionId: string,
     selection?: CtfRootPartitionSelection,
   ): Promise<Record<string, string>>;
+  postConvert?(request: {
+    condition_id: CtfConvertRequest["condition_id"];
+    inputs: CtfConvertRequest["inputs"];
+    outputs: CtfConvertRequest["outputs"];
+  }): Promise<CtfConvertResponse>;
   postSplit(request: {
     condition_id: CtfConvertRequest["condition_id"];
     inputs: Proof[];
@@ -187,6 +197,19 @@ export interface RegularProofSplitResult {
   send: Proof[];
   keep: Proof[];
   spent: Proof[];
+}
+
+export interface MergeCompleteSetToRegularResult {
+  regularProofs: Proof[];
+  spentConditionalProofsByCollection: Record<string, Proof[]>;
+  outputAmountSats: number;
+}
+
+export interface CompleteSetMergeInputSelection {
+  selectedProofsByCollection: Record<string, Proof[]>;
+  grossInputSats: number;
+  convertFeeSats: number;
+  outputAmountSats: number;
 }
 
 export async function splitRegularProofsWithOperation(params: {
@@ -590,11 +613,14 @@ export async function splitRootCompleteSet(
     conditionId,
     selection,
   );
+  const splitKeysets = selection
+    ? outcomeCollectionKeysets
+    : preferAtomicRootPartitionKeysets(outcomeCollectionKeysets);
   return splitCompleteSet(
     transport,
     conditionId,
     inputs,
-    outcomeCollectionKeysets,
+    splitKeysets,
     amountSats,
     options,
   );
@@ -752,6 +778,16 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
       outputs: request.outputs,
     });
   }
+
+  async postConvert(
+    request: Parameters<NonNullable<CtfSplitTransport["postConvert"]>>[0],
+  ): Promise<CtfConvertResponse> {
+    return this.mint.ctfConvert({
+      condition_id: request.condition_id,
+      inputs: request.inputs,
+      outputs: request.outputs,
+    });
+  }
 }
 
 export async function splitCompleteSetWithOperation(params: {
@@ -821,6 +857,272 @@ export async function splitCompleteSetWithOperation(params: {
     result,
   );
   return result;
+}
+
+export async function mergeCompleteSetToRegularWithOperation(params: {
+  mintUrl: string;
+  baseAsset?: CtfCollateralBaseAsset;
+  operationId: string;
+  transport: CtfSplitTransport;
+  conditionId: string;
+  conditionalProofsByCollection: Record<string, Proof[]>;
+  outputAmountSats: number;
+  regularKeyset: MintKeys;
+  proofOperationStore: CtfProofOperationStore;
+  makeRegularOutputs?: (input: {
+    amountSats: number;
+    keyset: MintKeys;
+  }) => CtfSplitOutputData[];
+}): Promise<MergeCompleteSetToRegularResult> {
+  if (!Number.isSafeInteger(params.outputAmountSats) || params.outputAmountSats <= 0) {
+    throw new Error("outputAmountSats must be a positive safe integer");
+  }
+  if (!params.transport.postConvert) {
+    throw new Error("CTF transport does not support conditional merge convert");
+  }
+
+  const normalizedInputsByCollection = normalizeProofGroups(
+    params.conditionalProofsByCollection,
+  );
+  const existing = await params.proofOperationStore.getProofOperation(
+    params.operationId,
+  );
+  if (existing) {
+    const spentConditionalProofsByCollection = readMergeInputsByCollection(
+      existing,
+      normalizedInputsByCollection,
+    );
+    const regularProofs = await resumeCtfMergeToRegular(
+      params.mintUrl,
+      existing,
+      params.transport,
+      params.proofOperationStore,
+    );
+    return {
+      regularProofs,
+      spentConditionalProofsByCollection,
+      outputAmountSats: sumProofs(regularProofs),
+    };
+  }
+
+  const outputData =
+    params.makeRegularOutputs?.({
+      amountSats: params.outputAmountSats,
+      keyset: params.regularKeyset,
+    }) ??
+    RegularOutputData.createRandomData(
+      Amount.from(params.outputAmountSats),
+      params.regularKeyset,
+    );
+  await params.proofOperationStore.prepareProofOperation({
+    operationId: params.operationId,
+    kind: "ctf-merge",
+    mintUrl: params.mintUrl,
+    inputs: flattenProofs(normalizedInputsByCollection),
+    outputs: { "*": serializeOutputDataArray(outputData) },
+    metadata: {
+      conditionId: params.conditionId,
+      outputAmountSats: params.outputAmountSats,
+      baseAsset: normalizeMarketBaseAsset(params.baseAsset),
+      inputsByCollection: normalizedInputsByCollection,
+    },
+  });
+
+  const regularProofs = await executeCtfMergeToRegular({
+    transport: params.transport,
+    conditionId: params.conditionId,
+    inputsByCollection: normalizedInputsByCollection,
+    outputData,
+    regularKeyset: params.regularKeyset,
+  });
+  await params.proofOperationStore.markProofOperationCompleted(
+    params.operationId,
+    { regular: regularProofs },
+  );
+  return {
+    regularProofs,
+    spentConditionalProofsByCollection: normalizedInputsByCollection,
+    outputAmountSats: sumProofs(regularProofs),
+  };
+}
+
+export function selectCompleteSetMergeInputs(params: {
+  conditionalProofsByCollection: Record<string, Proof[]>;
+  desiredOutputSats: number;
+  inputFeePpkByKeyset: Record<string, number>;
+  maxScanExtraSats?: number;
+}): CompleteSetMergeInputSelection | null {
+  if (!Number.isSafeInteger(params.desiredOutputSats) || params.desiredOutputSats <= 0) {
+    throw new Error("desiredOutputSats must be a positive safe integer");
+  }
+  const normalized = normalizeProofGroups(params.conditionalProofsByCollection);
+  const collections = Object.keys(normalized).sort();
+  if (collections.length < 2) return null;
+
+  const scanLimit =
+    params.desiredOutputSats +
+    (params.maxScanExtraSats ?? Math.max(params.desiredOutputSats, 10_000));
+  for (
+    let targetGross = params.desiredOutputSats;
+    targetGross <= scanLimit;
+    targetGross += 1
+  ) {
+    const selected: Record<string, Proof[]> = {};
+    const selectedAmounts = new Set<number>();
+    let missing = false;
+    for (const collection of collections) {
+      const proofs = takeProofsForLock(
+        normalized[collection] ?? [],
+        targetGross,
+        params.inputFeePpkByKeyset,
+      );
+      if (!proofs) {
+        missing = true;
+        break;
+      }
+      const amount = sumProofs(proofs);
+      selected[collection] = proofs.map(normalizeProof);
+      selectedAmounts.add(amount);
+    }
+    if (missing || selectedAmounts.size !== 1) continue;
+
+    const grossInputSats = [...selectedAmounts][0]!;
+    const convertFeeSats = computeInputFeeSatsForProofs(
+      flattenProofs(selected),
+      params.inputFeePpkByKeyset,
+    );
+    const outputAmountSats = grossInputSats - convertFeeSats;
+    if (outputAmountSats >= params.desiredOutputSats) {
+      return {
+        selectedProofsByCollection: selected,
+        grossInputSats,
+        convertFeeSats,
+        outputAmountSats,
+      };
+    }
+  }
+
+  return null;
+}
+
+async function resumeCtfMergeToRegular(
+  mintUrl: string,
+  entry: CtfProofOperationRecord,
+  transport: CtfSplitTransport,
+  proofOperationStore: CtfProofOperationStore,
+): Promise<Proof[]> {
+  if (entry.kind !== "ctf-merge") {
+    throw new Error(`proof operation ${entry.operationId} is not a CTF merge`);
+  }
+  if (entry.state === "completed") {
+    return (entry.resultProofs?.regular ?? []).map(normalizeProof);
+  }
+  if (entry.state === "failed") {
+    throw new Error(
+      `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
+    );
+  }
+
+  const wallet = new CashuWallet(new CashuMint(mintUrl), {
+    unit: readOperationBaseAsset(entry.metadata),
+  });
+  await wallet.loadMint();
+  if (!wallet.checkProofsStates) {
+    throw new Error(
+      "Cashu wallet adapter does not support proof-state recovery checks",
+    );
+  }
+  const states = await wallet.checkProofsStates(
+    entry.inputs.map(({ id, secret }) => ({ id, secret })),
+  );
+  let completed: Proof[];
+  if (allStates(states, CheckStateEnum.SPENT)) {
+    const restored = await restoreOutputGroups(mintUrl, entry.outputs);
+    completed = (restored["*"] ?? restored.regular ?? []).map(normalizeProof);
+  } else if (allStates(states, CheckStateEnum.UNSPENT)) {
+    const metadata = entry.metadata as {
+      conditionId?: string;
+      inputsByCollection?: Record<string, Proof[]>;
+    };
+    if (!metadata.conditionId || !metadata.inputsByCollection) {
+      throw new Error(
+        `proof operation ${entry.operationId} is missing CTF merge metadata`,
+      );
+    }
+    const outputDataByCollection = deserializeCtfOutputGroups(entry.outputs);
+    const outputData = outputDataByCollection["*"] ?? outputDataByCollection.regular ?? [];
+    if (outputData.length === 0) {
+      throw new Error(`proof operation ${entry.operationId} has no regular merge outputs`);
+    }
+    const regularKeyset = await transport.getKeys(outputData[0].blindedMessage.id);
+    completed = await executeCtfMergeToRegular({
+      transport,
+      conditionId: metadata.conditionId,
+      inputsByCollection: normalizeProofGroups(metadata.inputsByCollection),
+      outputData,
+      regularKeyset,
+    });
+  } else {
+    throw new Error(
+      `Proof operation ${entry.operationId} is still pending at the mint`,
+    );
+  }
+
+  await proofOperationStore.markProofOperationCompleted(
+    entry.operationId,
+    { regular: completed },
+  );
+  return completed;
+}
+
+function readMergeInputsByCollection(
+  entry: CtfProofOperationRecord,
+  fallback: Record<string, Proof[]>,
+): Record<string, Proof[]> {
+  const metadata = entry.metadata as {
+    inputsByCollection?: Record<string, Proof[]>;
+  };
+  return metadata.inputsByCollection
+    ? normalizeProofGroups(metadata.inputsByCollection)
+    : fallback;
+}
+
+async function executeCtfMergeToRegular(params: {
+  transport: CtfSplitTransport;
+  conditionId: string;
+  inputsByCollection: Record<string, Proof[]>;
+  outputData: CtfSplitOutputData[];
+  regularKeyset: MintKeys;
+}): Promise<Proof[]> {
+  if (!params.transport.postConvert) {
+    throw new Error("CTF transport does not support conditional merge convert");
+  }
+  const response = await params.transport.postConvert({
+    condition_id: params.conditionId,
+    inputs: params.inputsByCollection,
+    outputs: {
+      "*": params.outputData.map((output) =>
+        toWireBlindedMessage(output.blindedMessage),
+      ),
+    },
+  });
+  const signatures = response.signatures["*"];
+  if (!signatures) {
+    throw new Error("Mint did not return merge signatures for regular collateral");
+  }
+  if (signatures.length !== params.outputData.length) {
+    throw new Error(
+      `Mint returned ${signatures.length} merge signatures, expected ${params.outputData.length}`,
+    );
+  }
+  return params.outputData.map((output, index) =>
+    normalizeProof(
+      output.toProof(
+        { ...signatures[index], amount: output.blindedMessage.amount },
+        params.regularKeyset,
+      ),
+    ),
+  );
 }
 
 async function resumeCtfSplit(
@@ -1223,6 +1525,17 @@ function normalizeRootConditionKeysets(
   return Object.fromEntries(normalized);
 }
 
+export function preferAtomicRootPartitionKeysets(
+  outcomeCollectionKeysets: Record<string, string>,
+): Record<string, string> {
+  const atomic = Object.fromEntries(
+    Object.entries(outcomeCollectionKeysets).filter(
+      ([collection]) => !collection.includes("|"),
+    ),
+  );
+  return Object.keys(atomic).length >= 2 ? atomic : outcomeCollectionKeysets;
+}
+
 function buildOutcomeCollectionKeysetLookup(
   conditionId: string,
   keysets: Record<string, string>,
@@ -1435,6 +1748,10 @@ function normalizeProofGroups(
       proofs.map(normalizeProof),
     ]),
   );
+}
+
+function flattenProofs(proofsByCollection: Record<string, Proof[]>): Proof[] {
+  return Object.values(proofsByCollection).flatMap((proofs) => proofs);
 }
 
 function deserializeCtfOutputGroups(

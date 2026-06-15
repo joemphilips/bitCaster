@@ -7,6 +7,8 @@ import {
   selectRootPartitionKeysets,
   splitRegularProofsWithOperation,
   splitCompleteSetWithOperation,
+  mergeCompleteSetToRegularWithOperation,
+  selectCompleteSetMergeInputs,
   type CtfPrepareProofOperationInput,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
@@ -355,6 +357,135 @@ test("splitCompleteSetWithOperation fails closed for failed existing operations"
   assert.equal(transport.posted.length, 0);
 });
 
+test("mergeCompleteSetToRegularWithOperation prepares conditional inputs and regular outputs", async () => {
+  const transport = new FakeSplitTransport();
+  const store = new MemoryProofOperationStore();
+
+  const result = await mergeCompleteSetToRegularWithOperation({
+    mintUrl: "https://mint.example",
+    baseAsset: "usd",
+    operationId: "merge-op-1",
+    transport,
+    conditionId: CONDITION_ID,
+    conditionalProofsByCollection: {
+      Alpha: [proof("keyset-alpha", 10, "alpha")],
+      Beta: [proof("keyset-beta", 10, "beta")],
+      Gamma: [proof("keyset-gamma", 10, "gamma")],
+    },
+    outputAmountSats: 9,
+    regularKeyset: feePlanningKeyset(0, { 1: "regular" }) as MintKeys,
+    proofOperationStore: store,
+    makeRegularOutputs: ({ amountSats, keyset }) => [
+      output("*", amountSats, keyset.id),
+    ],
+  });
+
+  assert.equal(result.regularProofs[0].secret, "proof-*");
+  assert.deepEqual(Object.keys(result.spentConditionalProofsByCollection).sort(), [
+    "Alpha",
+    "Beta",
+    "Gamma",
+  ]);
+  assert.equal(result.outputAmountSats, 9);
+  assert.equal(transport.converted.length, 1);
+  assert.deepEqual(Object.keys(transport.converted[0].inputs).sort(), [
+    "Alpha",
+    "Beta",
+    "Gamma",
+  ]);
+  assert.deepEqual(Object.keys(transport.converted[0].outputs), ["*"]);
+  assert.equal(store.records.get("merge-op-1")?.kind, "ctf-merge");
+  assert.equal(store.records.get("merge-op-1")?.metadata.baseAsset, "usd");
+});
+
+test("mergeCompleteSetToRegularWithOperation replays completed operations without mint calls", async () => {
+  const store = new MemoryProofOperationStore();
+  store.records.set("merge-op-completed", {
+    operationId: "merge-op-completed",
+    kind: "ctf-merge",
+    state: "completed",
+    mintUrl: "https://mint.example",
+    inputs: [proof("keyset-alpha", 10, "alpha")],
+    outputs: {},
+    metadata: {
+      inputsByCollection: {
+        Alpha: [proof("keyset-alpha", 10, "alpha")],
+      },
+    },
+    resultProofs: {
+      regular: [proof("regular-keyset", 9, "regular-stored")],
+    },
+    createdAt: 1,
+    updatedAt: 2,
+  });
+  const transport = new FakeSplitTransport();
+
+  const result = await mergeCompleteSetToRegularWithOperation({
+    mintUrl: "https://mint.example",
+    operationId: "merge-op-completed",
+    transport,
+    conditionId: CONDITION_ID,
+    conditionalProofsByCollection: {
+      Beta: [proof("keyset-beta", 10, "beta-not-recorded")],
+    },
+    outputAmountSats: 9,
+    regularKeyset: feePlanningKeyset(0, { 1: "regular" }) as MintKeys,
+    proofOperationStore: store,
+  });
+
+  assert.deepEqual(result.regularProofs, [
+    proof("regular-keyset", 9, "regular-stored"),
+  ]);
+  assert.deepEqual(result.spentConditionalProofsByCollection, {
+    Alpha: [proof("keyset-alpha", 10, "alpha")],
+  });
+  assert.equal(transport.converted.length, 0);
+});
+
+test("selectCompleteSetMergeInputs selects equal gross inputs across a complete partition", () => {
+  const selection = selectCompleteSetMergeInputs({
+    desiredOutputSats: 8,
+    inputFeePpkByKeyset: {
+      "keyset-alpha": 1_000,
+      "keyset-beta": 1_000,
+      "keyset-gamma": 1_000,
+    },
+    conditionalProofsByCollection: {
+      Alpha: [proof("keyset-alpha", 11, "alpha")],
+      Beta: [proof("keyset-beta", 11, "beta")],
+      Gamma: [proof("keyset-gamma", 11, "gamma")],
+    },
+  });
+
+  assert.deepEqual(Object.keys(selection?.selectedProofsByCollection ?? {}).sort(), [
+    "Alpha",
+    "Beta",
+    "Gamma",
+  ]);
+  assert.equal(selection?.grossInputSats, 11);
+  assert.equal(selection?.convertFeeSats, 3);
+  assert.equal(selection?.outputAmountSats, 8);
+});
+
+test("selectCompleteSetMergeInputs fails closed for uneven complete-set buckets", () => {
+  const selection = selectCompleteSetMergeInputs({
+    desiredOutputSats: 8,
+    inputFeePpkByKeyset: {
+      "keyset-alpha": 0,
+      "keyset-beta": 0,
+      "keyset-gamma": 0,
+    },
+    maxScanExtraSats: 2,
+    conditionalProofsByCollection: {
+      Alpha: [proof("keyset-alpha", 8, "alpha")],
+      Beta: [proof("keyset-beta", 9, "beta")],
+      Gamma: [proof("keyset-gamma", 8, "gamma")],
+    },
+  });
+
+  assert.equal(selection, null);
+});
+
 test("splitRegularProofsWithOperation turns a larger regular proof into an exact CTF input", async () => {
   const store = new MemoryProofOperationStore();
   const wallet = new FakeRegularSplitWallet({
@@ -465,6 +596,9 @@ const CONDITION_ID = "a".repeat(64);
 
 class FakeSplitTransport implements CtfSplitTransport {
   readonly posted: Array<Parameters<CtfSplitTransport["postSplit"]>[0]> = [];
+  readonly converted: Array<
+    Parameters<NonNullable<CtfSplitTransport["postConvert"]>>[0]
+  > = [];
 
   async getKeys(keysetId: string): Promise<MintKeys> {
     return {
@@ -483,6 +617,20 @@ class FakeSplitTransport implements CtfSplitTransport {
     request: Parameters<CtfSplitTransport["postSplit"]>[0],
   ): ReturnType<CtfSplitTransport["postSplit"]> {
     this.posted.push(request);
+    return {
+      signatures: Object.fromEntries(
+        Object.entries(request.outputs).map(([collection, outputs]) => [
+          collection,
+          outputs.map((message) => signature(message)),
+        ]),
+      ),
+    };
+  }
+
+  async postConvert(
+    request: Parameters<NonNullable<CtfSplitTransport["postConvert"]>>[0],
+  ): ReturnType<NonNullable<CtfSplitTransport["postConvert"]>> {
+    this.converted.push(request);
     return {
       signatures: Object.fromEntries(
         Object.entries(request.outputs).map(([collection, outputs]) => [

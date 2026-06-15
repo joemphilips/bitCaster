@@ -29,6 +29,7 @@ import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import { recoverKeysetCountersForMint } from "@/lib/cashu";
 import { startNip17Listener } from "@/lib/nip17-listener";
+import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import {
   refreshMintInfoWithoutActivating,
   userAddAndSelectMint,
@@ -225,7 +226,7 @@ function AppRoutes() {
   );
   useEffect(() => {
     if (!mnemonic) return;
-    const relays = useSettingsStore.getState().relays.map((r) => r.url);
+    const relays = effectiveRelayUrls(useSettingsStore.getState().relays);
     startNip17Listener(mnemonic, relays).catch((e) => {
       console.warn("[app] startNip17Listener failed:", e);
     });

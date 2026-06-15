@@ -122,9 +122,9 @@ describe('PriceChart', () => {
         priceHistory={{ timeframe: '7d', data: [] }}
         chartTimeframe="7d"
         outcomes={[
-          { id: 'Alice', label: 'Alice', odds: 33 },
-          { id: 'Bob', label: 'Bob', odds: 33 },
-          { id: 'Carol', label: 'Carol', odds: 34 },
+          { id: 'outcome-0', label: 'Alice', odds: 33 },
+          { id: 'outcome-1', label: 'Bob', odds: 33 },
+          { id: 'outcome-2', label: 'Carol', odds: 34 },
         ]}
         outcomePriceHistories={{
           Alice: {

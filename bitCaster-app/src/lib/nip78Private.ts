@@ -6,11 +6,11 @@
  * private client-side records such as portfolio activity.
  */
 
-import NDK, { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
+import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { nip44 } from "nostr-tools";
 import { getPublicKey } from "nostr-tools/pure";
 import { hexToBytes } from "nostr-tools/utils";
-import { DEFAULT_RELAYS } from "./nostr";
+import { createExplicitRelayNdk, DEFAULT_RELAYS } from "./nostr";
 
 export const BITCASTER_PRIVATE_STATE_KIND = 30078 as const;
 
@@ -44,7 +44,7 @@ export async function publishPrivateNip78(
   dTag: string,
   plaintext: string,
 ): Promise<void> {
-  const ndk = new NDK({
+  const ndk = createExplicitRelayNdk({
     explicitRelayUrls: DEFAULT_RELAYS,
     signer: new NDKPrivateKeySigner(privateKeyHex),
   });
@@ -72,7 +72,7 @@ export async function fetchPrivateNip78Content(
   dTag: string,
   privateKeyHex: string,
 ): Promise<string | null> {
-  const ndk = new NDK({ explicitRelayUrls: DEFAULT_RELAYS });
+  const ndk = createExplicitRelayNdk({ explicitRelayUrls: DEFAULT_RELAYS });
   await ndk.connect();
 
   try {

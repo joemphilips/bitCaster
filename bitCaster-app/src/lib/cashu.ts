@@ -484,8 +484,9 @@ export async function meltProofs(
 export async function checkMintQuote(
   quoteId: string,
   mintUrl?: string,
+  baseAsset?: MarketBaseAsset | string | null,
 ): Promise<PartialMintQuoteResponse> {
-  const wallet = await getWallet(mintUrl);
+  const wallet = await getWallet(mintUrl, baseAsset);
   return wallet.checkMintQuote(quoteId);
 }
 

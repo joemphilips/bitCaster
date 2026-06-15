@@ -2,14 +2,14 @@
  * NIP-78 bookmark sync for bitCaster.
  *
  * Stores the user's bookmarked markets as a parameterized replaceable event
- * (kind 30078, d-tag "bitcaster:bookmarks") on public relays so bookmarks
- * follow the user's Nostr identity across devices.
+ * (kind 30078, d-tag "bitcaster:bookmarks") on the configured bitCaster relay
+ * so bookmarks follow the user's Nostr identity across devices.
  *
  * Spec: https://github.com/nostr-protocol/nips/blob/master/78.md
  */
 
-import NDK, { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import { DEFAULT_RELAYS } from "./nostr";
+import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
+import { createExplicitRelayNdk, DEFAULT_RELAYS } from "./nostr";
 
 export const BOOKMARK_KIND = 30078 as const;
 export const BOOKMARK_D_TAG = "bitcaster:bookmarks" as const;
@@ -27,7 +27,7 @@ export async function publishBookmarks(
   privateKeyHex: string,
   marketIds: string[],
 ): Promise<void> {
-  const ndk = new NDK({
+  const ndk = createExplicitRelayNdk({
     explicitRelayUrls: DEFAULT_RELAYS,
     signer: new NDKPrivateKeySigner(privateKeyHex),
   });
@@ -53,7 +53,7 @@ export async function publishBookmarks(
  * Returns `null` if no event exists or the content cannot be parsed.
  */
 export async function fetchBookmarks(pubkey: string): Promise<string[] | null> {
-  const ndk = new NDK({ explicitRelayUrls: DEFAULT_RELAYS });
+  const ndk = createExplicitRelayNdk({ explicitRelayUrls: DEFAULT_RELAYS });
   await ndk.connect();
 
   try {

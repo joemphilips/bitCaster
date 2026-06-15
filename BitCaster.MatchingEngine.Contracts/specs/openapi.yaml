@@ -1408,12 +1408,14 @@ components:
         divisibility:
           type: integer
           format: int32
-          minimum: 2
+          minimum: 100
+          maximum: 1000000
           default: 100
           description: >
             Immutable price denominator `D`. Orders use price numerator `k`
             where `1 <= k <= D - 1` and one whole share has face value `D`
-            base-asset sub-units.
+            base-asset sub-units. The creator UI may expose only a curated
+            subset of this range.
         categoryTags:
           type: array
           items:
