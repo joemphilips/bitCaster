@@ -45,7 +45,6 @@ app.MapMetadataEndpoints();
 app.MapThumbnailEndpoints();
 app.MapLiquidityEndpoints();
 app.MapDepositEndpoints();
-app.MapMarketStatusEndpoints();
 app.MapParticipationScoreEndpoints();
 
 app.Run();

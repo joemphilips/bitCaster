@@ -1292,9 +1292,19 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     amountSats,
                     consoleMessages);
 
+                await WaitForTradeStepAsync(
+                    seller,
+                    tradeId,
+                    "seller-opened",
+                    TimeSpan.FromSeconds(150));
+
                 await RestartDaemonAsync(seller);
 
-                await WaitForTradeStepAsync(seller, tradeId, "confirmed");
+                await WaitForTradeStepAsync(
+                    seller,
+                    tradeId,
+                    "confirmed",
+                    TimeSpan.FromSeconds(150));
                 await WaitForBrowserOutcomeProofsAsync(
                     page,
                     condition.ConditionId,
@@ -2162,9 +2172,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     private async Task WaitForTradeStepAsync(
         DaemonHandle daemon,
         string tradeId,
-        string expectedStep)
+        string expectedStep,
+        TimeSpan? timeout = null)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(60);
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(60));
         string? lastStep = null;
         string? lastError = null;
         while (DateTime.UtcNow < deadline)

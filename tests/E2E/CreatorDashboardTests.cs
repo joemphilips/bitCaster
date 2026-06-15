@@ -206,6 +206,41 @@ public class CreatorDashboardTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SeededSelfOracleMarket_CloseClickWithoutNsec_ShowsSignerRequirement()
+    {
+        const string conditionId = "deadc0de000000000000000000000000000000000000000000000000000000ac";
+        const string title = "Seeded Self Oracle Market Close Guard";
+        var oracleEndpointCalled = false;
+
+        await using var context = await NewIsolatedContextAsync();
+        var page = await context.NewPageAsync();
+        await SetupComplete(page);
+        await page.RouteAsync("**/api/v1/markets/*/oracle-attestation", route =>
+        {
+            oracleEndpointCalled = true;
+            return route.FulfillAsync(new() { Status = 500, Body = "unexpected oracle submit" });
+        });
+
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/creator", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+        await SeedCreatorMarketsAsync(page, conditionId, title, selfOracle: true);
+        await page.ReloadAsync(new PageReloadOptions
+        {
+            WaitUntil = WaitUntilState.NetworkIdle,
+            Timeout = 30_000,
+        });
+
+        await page.GetByRole(AriaRole.Button, new() { Name = "Close market" }).ClickAsync();
+
+        await Assertions.Expect(page.GetByText("Connect with a Nostr private key (nsec)"))
+            .ToBeVisibleAsync(new() { Timeout = 5_000 });
+        Assert.False(oracleEndpointCalled, "Close-market UI should not submit an oracle attestation without nsec signer state.");
+    }
+
+    [Fact]
     public async Task AnalyticsTab_ShowsComingSoonPlaceholder()
     {
         await using var context = await NewIsolatedContextAsync();
