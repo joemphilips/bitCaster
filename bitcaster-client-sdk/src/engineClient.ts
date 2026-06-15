@@ -64,6 +64,70 @@ export interface SubmitOrderResponse {
   divisibility: number
 }
 
+export interface BatchSubmitOrdersRequest {
+  orders: BatchSubmitOrderRequestItem[]
+}
+
+export interface BatchSubmitOrderRequestItem
+  extends Omit<SubmitOrderRequest, 'comment'> {
+  clientOrderId?: string | null
+  marketId: string
+  expiresAt?: string | null
+}
+
+export interface BatchSubmitOrdersResponse {
+  results: BatchSubmitOrderResult[]
+}
+
+export interface BatchSubmitOrderResult {
+  requestIndex: number
+  clientOrderId?: string | null
+  success: boolean
+  marketId: string
+  orderId?: string | null
+  status: string
+  remainingAmountSats: number
+  fills: Fill[]
+  ephemeralPubkey?: string | null
+  baseAsset: MarketBaseAsset
+  divisibility: number
+  errorCode?: BatchSubmitOrderErrorCode | null
+  errorMessage?: string | null
+}
+
+export type BatchSubmitOrderErrorCode =
+  | 'invalidMarket'
+  | 'invalidOutcome'
+  | 'invalidTokenSide'
+  | 'invalidSide'
+  | 'invalidPrice'
+  | 'invalidAmount'
+  | 'invalidTimeInForce'
+  | 'invalidEphemeralPubkey'
+  | 'duplicateEphemeralPubkey'
+  | 'unsupportedOrder'
+  | 'bookRejected'
+
+export interface BatchCancelOrdersRequest {
+  orderIds: string[]
+}
+
+export interface BatchCancelOrdersResponse {
+  canceled: string[]
+  notCanceled: Record<string, BatchCancelOrderFailure>
+}
+
+export interface BatchCancelOrderFailure {
+  errorCode: BatchCancelOrderErrorCode
+  errorMessage: string
+}
+
+export type BatchCancelOrderErrorCode =
+  | 'notFoundOrNotActiveOrNotAuthorized'
+  | 'duplicateOrderId'
+  | 'invalidOrderId'
+  | 'bookRejected'
+
 export interface EngineProblem {
   code?: string
   detail?: string
@@ -198,6 +262,40 @@ export class BitcasterEngineClient {
     )
     if (response.status === 404) return null
     return (await response.json()) as OrderStatusResponse
+  }
+
+  async batchSubmitOrders(
+    conditionId: string,
+    request: BatchSubmitOrdersRequest,
+  ): Promise<BatchSubmitOrdersResponse> {
+    const bodyText = JSON.stringify(request)
+    const response = await this.request(
+      `/api/v1/conditions/${encodePathSegment(conditionId)}/orders/batch`,
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+      },
+      bodyText,
+    )
+    return (await response.json()) as BatchSubmitOrdersResponse
+  }
+
+  async batchCancelOrders(
+    conditionId: string,
+    request: BatchCancelOrdersRequest,
+  ): Promise<BatchCancelOrdersResponse> {
+    const bodyText = JSON.stringify(request)
+    const response = await this.request(
+      `/api/v1/conditions/${encodePathSegment(conditionId)}/orders/cancel-batch`,
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+      },
+      bodyText,
+    )
+    return (await response.json()) as BatchCancelOrdersResponse
   }
 
   async cancelOrder(marketId: string, orderId: string): Promise<boolean> {

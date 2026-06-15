@@ -104,6 +104,196 @@ public static class OrderEndpoints
                 status: result.Status));
         });
 
+        app.MapPost("/api/v1/conditions/{conditionId}/orders/batch", async (
+            string conditionId,
+            BatchSubmitOrdersRequest? req,
+            HttpRequest httpRequest,
+            InMemoryOrderBookManager bookManager,
+            InMemoryTradeRegistry trades,
+            InMemoryPriceHistoryStore priceHistory,
+            IHubContext<MarketHub, IMarketHubClient> marketHub,
+            IHubContext<TradeHub, ITradeHubClient> tradeHub) =>
+        {
+            if (req?.Orders is null)
+                return Results.BadRequest("Batch submit requires an orders array.");
+            if (req.Orders.Count == 0)
+                return Results.BadRequest("Batch submit requires at least one order.");
+
+            var takerUserId = Nip98PubkeyExtractor.TryExtract(httpRequest) ?? "anonymous";
+            var results = new List<BatchSubmitOrderResult>();
+            var duplicateEphemerals = req.Orders
+                .Where(item => !string.IsNullOrWhiteSpace(item.EphemeralPubkey))
+                .GroupBy(item => item.EphemeralPubkey, StringComparer.Ordinal)
+                .Where(group => group.Count() > 1)
+                .Select(group => group.Key)
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var (item, index) in req.Orders.Select((item, index) => (item, index)))
+            {
+                var unit = UnitForMarket(item.MarketId);
+                if (MarketParts.TryParse(item.MarketId) is not { } parts ||
+                    !string.Equals(parts.ConditionId, conditionId, StringComparison.Ordinal))
+                {
+                    return Results.BadRequest($"Order at index {index} does not belong to route conditionId.");
+                }
+                if (duplicateEphemerals.Contains(item.EphemeralPubkey))
+                {
+                    results.Add(BatchSubmitFailure(
+                        index,
+                        item,
+                        unit,
+                        BatchSubmitOrderErrorCode.DuplicateEphemeralPubkey,
+                        "Duplicate EphemeralPubkey in batch."));
+                    continue;
+                }
+                if (item.AmountSats <= 0 || !IsValidCompressedPubkey(item.EphemeralPubkey))
+                {
+                    results.Add(BatchSubmitFailure(
+                        index,
+                        item,
+                        unit,
+                        item.AmountSats <= 0
+                            ? BatchSubmitOrderErrorCode.InvalidAmount
+                            : BatchSubmitOrderErrorCode.InvalidEphemeralPubkey,
+                        item.AmountSats <= 0
+                            ? "AmountSats must be positive."
+                            : "EphemeralPubkey must be a 66-char hex string (33-byte compressed secp256k1 pubkey)."));
+                    continue;
+                }
+
+                var single = new SubmitOrderRequest(
+                    amountSats: item.AmountSats,
+                    comment: null,
+                    ephemeralPubkey: item.EphemeralPubkey,
+                    outcomeId: item.OutcomeId,
+                    price: item.Price,
+                    side: item.Side,
+                    timeInForce: item.TimeInForce ?? TimeInForce.GTC,
+                    tokenSide: item.TokenSide);
+                var resolvedRoute = ResolveOrderRoute(item.MarketId, single);
+                if (resolvedRoute is null)
+                {
+                    results.Add(BatchSubmitFailure(
+                        index,
+                        item,
+                        unit,
+                        BatchSubmitOrderErrorCode.InvalidOutcome,
+                        "OutcomeId must match the primitive outcome segment of marketId."));
+                    continue;
+                }
+
+                InMemoryOrderBookManager.SubmitOrderOutcome outcome;
+                try
+                {
+                    outcome = bookManager.SubmitOrderIdempotent(
+                        resolvedRoute.InternalMarketId,
+                        resolvedRoute.InternalOutcomeSetId,
+                        item.Side,
+                        item.Price,
+                        item.AmountSats,
+                        userId: takerUserId,
+                        timeInForce: item.TimeInForce ?? TimeInForce.GTC,
+                        ephemeralPubkey: item.EphemeralPubkey);
+                }
+                catch (ArgumentException ex)
+                {
+                    results.Add(BatchSubmitFailure(
+                        index,
+                        item,
+                        unit,
+                        ex.ParamName == "ephemeralPubkey"
+                            ? BatchSubmitOrderErrorCode.DuplicateEphemeralPubkey
+                            : BatchSubmitOrderErrorCode.BookRejected,
+                        ex.Message));
+                    continue;
+                }
+
+                var result = outcome.Result;
+                if (!outcome.Replayed)
+                {
+                    await marketHub.Clients.Group(item.MarketId)
+                        .OrderBookUpdated(bookManager.GetSnapshot(item.MarketId));
+                    foreach (var fill in result.Fills)
+                    {
+                        priceHistory.RecordFill(item.MarketId, fill);
+                    }
+                    await EmitTradeCreatedForFills(
+                        tradeHub,
+                        trades,
+                        result.Fills,
+                        item.Side,
+                        item.EphemeralPubkey,
+                        item.MarketId);
+                }
+
+                results.Add(new BatchSubmitOrderResult(
+                    baseAsset: unit.BaseAsset,
+                    clientOrderId: item.ClientOrderId,
+                    divisibility: unit.Divisibility,
+                    ephemeralPubkey: item.EphemeralPubkey,
+                    errorCode: null,
+                    errorMessage: null,
+                    fills: result.Fills,
+                    marketId: item.MarketId,
+                    orderId: result.OrderId,
+                    remainingAmountSats: result.RemainingAmountSats,
+                    requestIndex: index,
+                    status: result.Status,
+                    success: true));
+            }
+
+            return Results.Ok(new BatchSubmitOrdersResponse(results));
+        });
+
+        app.MapPost("/api/v1/conditions/{conditionId}/orders/cancel-batch", async (
+            string conditionId,
+            BatchCancelOrdersRequest? req,
+            InMemoryOrderBookManager bookManager,
+            IHubContext<MarketHub, IMarketHubClient> hubContext) =>
+        {
+            if (req?.OrderIds is null)
+                return Results.BadRequest("Batch cancel requires an orderIds array.");
+            if (req.OrderIds.Count == 0)
+                return Results.BadRequest("Batch cancel requires at least one order id.");
+
+            var canceled = new List<Guid>();
+            var notCanceled = new Dictionary<string, BatchCancelOrderFailure>();
+            var duplicateIds = req.OrderIds
+                .GroupBy(orderId => orderId)
+                .Where(group => group.Count() > 1)
+                .Select(group => group.Key)
+                .ToHashSet();
+            foreach (var orderId in req.OrderIds)
+            {
+                if (duplicateIds.Contains(orderId))
+                {
+                    notCanceled.TryAdd(orderId.ToString(), new BatchCancelOrderFailure(
+                        BatchCancelOrderErrorCode.DuplicateOrderId,
+                        "Duplicate order id in batch."));
+                    continue;
+                }
+                var status = bookManager.GetOrderStatus(orderId);
+                if (status is null ||
+                    string.IsNullOrWhiteSpace(status.MarketId) ||
+                    MarketParts.TryParse(status.MarketId) is not { } statusParts ||
+                    !string.Equals(statusParts.ConditionId, conditionId, StringComparison.Ordinal) ||
+                    !bookManager.CancelOrder(orderId, out var storedMarketId) ||
+                    storedMarketId is null ||
+                    !string.Equals(storedMarketId, status.MarketId, StringComparison.Ordinal))
+                {
+                    notCanceled[orderId.ToString()] = new BatchCancelOrderFailure(
+                        BatchCancelOrderErrorCode.NotFoundOrNotActiveOrNotAuthorized,
+                        "Order not found, inactive, or not cancellable by this user.");
+                    continue;
+                }
+
+                canceled.Add(orderId);
+                await hubContext.Clients.Group(storedMarketId)
+                    .OrderBookUpdated(bookManager.GetSnapshot(storedMarketId));
+            }
+
+            return Results.Ok(new BatchCancelOrdersResponse(canceled, notCanceled));
+        });
+
         app.MapGet("/api/v1/{marketId}/orders/{orderId:guid}", (
             string marketId,
             Guid orderId,
@@ -145,6 +335,27 @@ public static class OrderEndpoints
             return Results.Ok();
         });
     }
+
+    private static BatchSubmitOrderResult BatchSubmitFailure(
+        int requestIndex,
+        BatchSubmitOrderRequestItem item,
+        (BaseAsset BaseAsset, int Divisibility) unit,
+        BatchSubmitOrderErrorCode errorCode,
+        string errorMessage) =>
+        new(
+            baseAsset: unit.BaseAsset,
+            clientOrderId: item.ClientOrderId,
+            divisibility: unit.Divisibility,
+            ephemeralPubkey: string.IsNullOrWhiteSpace(item.EphemeralPubkey) ? null : item.EphemeralPubkey,
+            errorCode: errorCode,
+            errorMessage: errorMessage,
+            fills: [],
+            marketId: item.MarketId,
+            orderId: null,
+            remainingAmountSats: 0,
+            requestIndex: requestIndex,
+            status: "rejected",
+            success: false);
 
     private sealed record ResolvedOrderRoute(string InternalMarketId, string InternalOutcomeSetId);
 
