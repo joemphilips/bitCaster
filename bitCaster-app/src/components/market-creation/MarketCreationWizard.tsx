@@ -15,6 +15,7 @@ import { DepositStep } from './DepositStep'
 import { RegistrationFeeConfirmationModal } from './RegistrationFeeConfirmationModal'
 import { InsufficientBalanceModal } from '@/components/shared/InsufficientBalanceModal'
 import { TopUpOverlay } from '@/components/market-detail/TopUpOverlay'
+import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 
 export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const { t } = useTranslation()
@@ -93,12 +94,16 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const registrationFeeDeficit = registrationFeeTopUp
     ? Math.max(registrationFeeTopUp.feeSats - registrationFeeTopUp.balanceSats, 0)
     : 0
+  const formatRegistrationFeeAmount = registrationFeeTopUp
+    ? (amount: number) => formatMarketSubunits(amount, registrationFeeTopUp.baseAsset)
+    : undefined
   const feeOverlays = (
     <>
       {registrationFeePrompt && (
         <RegistrationFeeConfirmationModal
           feeSats={registrationFeePrompt.feeSats}
           balanceSats={registrationFeePrompt.balanceSats}
+          baseAsset={registrationFeePrompt.baseAsset}
           onCancel={onCancelRegistrationFee}
           onConfirm={onConfirmRegistrationFee}
         />
@@ -109,6 +114,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           required={registrationFeeTopUp.feeSats}
           title={t('marketCreation.registrationFeeTopUpTitle')}
           requiredDescription={t('marketCreation.registrationFeeTopUpRequiredDescription')}
+          formatAmount={formatRegistrationFeeAmount}
           onCancel={onCancelRegistrationFeeTopUp}
           onTopUp={onStartRegistrationFeeTopUp}
         />
@@ -116,11 +122,12 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
       {registrationFeeTopUpStage === 'overlay' && registrationFeeTopUp && (
         <TopUpOverlay
           deficit={registrationFeeDeficit}
+          baseAsset={registrationFeeTopUp.baseAsset}
           minimumDescription={t('marketCreation.registrationFeeTopUpMinimumDescription', {
-            sats: registrationFeeDeficit.toLocaleString(),
+            amount: formatMarketSubunits(registrationFeeDeficit, registrationFeeTopUp.baseAsset),
           })}
           minimumErrorDescription={t('marketCreation.registrationFeeTopUpMinimumError', {
-            sats: registrationFeeDeficit.toLocaleString(),
+            amount: formatMarketSubunits(registrationFeeDeficit, registrationFeeTopUp.baseAsset),
           })}
           onSuccess={onRegistrationFeeTopUpSuccess}
           onCancel={onCancelRegistrationFeeTopUp}

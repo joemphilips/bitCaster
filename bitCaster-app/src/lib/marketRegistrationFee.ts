@@ -20,6 +20,9 @@ import {
   requiredMarketCreationOutcomeCollections,
 } from "@bitcaster/client-sdk/ctfRegistration";
 import {
+  normalizeMarketBaseAsset,
+} from "@bitcaster/client-sdk/marketUnits";
+import {
   MintError,
   registerCondition,
 } from "@/lib/markets";
@@ -62,8 +65,9 @@ export { registrationFeeForPolicy, requiredMarketCreationOutcomeCollections };
 
 export async function getAvailableRegularBalanceSats(
   mintUrl: string,
+  baseAsset?: string | null,
 ): Promise<number> {
-  const proofs = await getBaseProofs(mintUrl);
+  const proofs = await getBaseProofs(mintUrl, { baseAsset });
   return sumProofs(proofs);
 }
 
@@ -88,19 +92,22 @@ export async function registerConditionWithFee(input: {
     input.request,
     input.requiredFeeSats,
   );
+  const feeBaseAsset = registrationFeeBaseAsset(input.request);
   const existing = await getProofOperation(operationId);
   if (existing) {
     return resumeOrRetryRegistration(input.mintUrl, input.request, existing);
   }
 
-  const available = await getBaseProofs(input.mintUrl);
+  const available = await getBaseProofs(input.mintUrl, {
+    baseAsset: feeBaseAsset,
+  });
   const selected = takeProofsForLock(
     available,
     input.requiredFeeSats,
   );
   if (!selected) {
     throw new Error(
-      `Not enough regular sat proofs are available for the ${input.requiredFeeSats} sat condition registration fee.`,
+      `Not enough regular ${feeBaseAsset} proofs are available for the ${input.requiredFeeSats} ${feeBaseAsset} condition registration fee.`,
     );
   }
 
@@ -108,7 +115,7 @@ export async function registerConditionWithFee(input: {
   const changeAmount = selectedTotal - input.requiredFeeSats;
   const changeOutputs =
     changeAmount > 0
-      ? await prepareRegularOutputs(input.mintUrl, changeAmount)
+      ? await prepareRegularOutputs(input.mintUrl, changeAmount, feeBaseAsset)
       : [];
 
   await prepareProofOperation({
@@ -119,6 +126,7 @@ export async function registerConditionWithFee(input: {
     outputs: { change: serializeOutputDataArray(changeOutputs) },
     metadata: {
       requiredFeeSats: input.requiredFeeSats,
+      feeBaseAsset,
       selectedTotalSats: selectedTotal,
       request: stableRegistrationRequest(input.request),
     },
@@ -132,6 +140,7 @@ export async function registerConditionWithFee(input: {
     operationId,
     inputs: selected,
     outputs: changeOutputs,
+    feeBaseAsset,
   });
 }
 
@@ -140,6 +149,7 @@ async function resumeOrRetryRegistration(
   request: ConditionRegistrationRequest,
   entry: ProofOperationRecord,
 ): Promise<ConditionRegistrationResult> {
+  const feeBaseAsset = registrationFeeBaseAsset(request);
   if (entry.kind !== "ctf-condition-registration") {
     throw new Error(`proof operation ${entry.operationId} is not condition registration`);
   }
@@ -153,7 +163,7 @@ async function resumeOrRetryRegistration(
     );
   }
 
-  const wallet = await getWallet(mintUrl);
+  const wallet = await getWallet(mintUrl, feeBaseAsset);
   if (!wallet.checkProofsStates) {
     throw new Error(
       "Cashu wallet adapter does not support condition registration recovery checks.",
@@ -175,6 +185,7 @@ async function resumeOrRetryRegistration(
       mintUrl,
       entry.inputs,
       changeProofs,
+      feeBaseAsset,
     );
     return registerCondition(request);
   }
@@ -191,6 +202,7 @@ async function resumeOrRetryRegistration(
       operationId: entry.operationId,
       inputs: entry.inputs,
       outputs,
+      feeBaseAsset,
     });
   }
 
@@ -206,6 +218,7 @@ async function postPreparedRegistration(
     operationId: string;
     inputs: Proof[];
     outputs: RegistrationOutputData[];
+    feeBaseAsset: string;
   },
 ): Promise<ConditionRegistrationResult> {
   try {
@@ -227,6 +240,7 @@ async function postPreparedRegistration(
       mintUrl,
       prepared.inputs,
       changeProofs,
+      prepared.feeBaseAsset,
     );
     return response;
   } catch (error) {
@@ -256,9 +270,11 @@ async function completeRegistrationFeeOperation(
   mintUrl: string,
   inputs: Proof[],
   changeProofs: Proof[],
+  baseAsset?: string | null,
 ): Promise<void> {
+  const normalizedBaseAsset = baseAsset == null ? undefined : normalizeMarketBaseAsset(baseAsset);
   if (changeProofs.length > 0) {
-    await addProofs(changeProofs.map((proof) => ({ ...proof, mintUrl })));
+    await addProofs(changeProofs.map((proof) => ({ ...proof, mintUrl, baseAsset: normalizedBaseAsset })));
   }
   await removeProofs(inputs.map((proof) => proof.secret));
   await markProofOperationCompleted(operationId, { change: changeProofs });
@@ -267,9 +283,10 @@ async function completeRegistrationFeeOperation(
 async function prepareRegularOutputs(
   mintUrl: string,
   amountSats: number,
+  baseAsset?: string | null,
 ): Promise<RegistrationOutputData[]> {
-  const wallet = await getWallet(mintUrl);
-  const keyset = await getActiveRegularKeyset(wallet);
+  const wallet = await getWallet(mintUrl, baseAsset);
+  const keyset = await getActiveRegularKeyset(wallet, baseAsset);
   const positiveOutputs = OutputData.createRandomData(
     Amount.from(amountSats),
     keyset,
@@ -287,15 +304,18 @@ async function prepareRegularOutputs(
   );
 }
 
-async function getActiveRegularKeyset(wallet: CashuWallet): Promise<MintKeys> {
+async function getActiveRegularKeyset(
+  wallet: CashuWallet,
+  baseAsset?: string | null,
+): Promise<MintKeys> {
+  const unit = normalizeMarketBaseAsset(baseAsset);
   const response = await wallet.mint.getKeys();
   const keyset =
     response.keysets.find(
-      (candidate) => candidate.unit === "sat" && candidate.active !== false,
+      (candidate) => candidate.unit === unit && candidate.active !== false,
     ) ??
-    response.keysets.find((candidate) => candidate.unit === "sat") ??
-    response.keysets[0];
-  if (!keyset) throw new Error("Mint did not return a regular keyset");
+    response.keysets.find((candidate) => candidate.unit === unit);
+  if (!keyset) throw new Error(`Mint did not return a regular ${unit} keyset`);
   return keyset;
 }
 
@@ -400,7 +420,11 @@ async function buildOperationId(
   requiredFeeSats: number,
 ): Promise<string> {
   const bytes = new TextEncoder().encode(
-    JSON.stringify({ request: stableRegistrationRequest(request), requiredFeeSats }),
+    JSON.stringify({
+      request: stableRegistrationRequest(request),
+      requiredFeeSats,
+      feeBaseAsset: registrationFeeBaseAsset(request),
+    }),
   );
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return `ctf-condition-registration:${bytesToHex(new Uint8Array(digest))}`;
@@ -417,6 +441,10 @@ function stableRegistrationRequest(
       ? [...request.outcomeCollections]
       : undefined,
   };
+}
+
+function registrationFeeBaseAsset(request: ConditionRegistrationRequest): string {
+  return normalizeMarketBaseAsset(request.collateral);
 }
 
 function bytesToHex(bytes: Uint8Array): string {

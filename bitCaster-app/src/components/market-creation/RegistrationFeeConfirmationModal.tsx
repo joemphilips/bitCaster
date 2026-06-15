@@ -1,9 +1,12 @@
 import { Zap } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import type { MarketBaseAsset } from '@/types/market-creation'
+import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 
 interface RegistrationFeeConfirmationModalProps {
   feeSats: number
   balanceSats: number
+  baseAsset: MarketBaseAsset
   onCancel: () => void
   onConfirm: () => void
 }
@@ -11,10 +14,13 @@ interface RegistrationFeeConfirmationModalProps {
 export function RegistrationFeeConfirmationModal({
   feeSats,
   balanceSats,
+  baseAsset,
   onCancel,
   onConfirm,
 }: RegistrationFeeConfirmationModalProps) {
   const { t } = useTranslation()
+  const feeAmount = formatMarketSubunits(feeSats, baseAsset)
+  const balanceAmount = formatMarketSubunits(balanceSats, baseAsset)
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center">
@@ -31,15 +37,13 @@ export function RegistrationFeeConfirmationModal({
 
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
           {t('marketCreation.registrationFeeDescription', {
-            sats: feeSats.toLocaleString(),
+            amount: feeAmount,
           })}
         </p>
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
           {t('marketCreation.registrationFeeBalancePrefix')}{' '}
           <span className="font-mono text-slate-700 dark:text-slate-200">
-            {t('marketCreation.liquiditySats', {
-              count: balanceSats.toLocaleString(),
-            })}
+            {balanceAmount}
           </span>{' '}
           {t('marketCreation.registrationFeeBalanceSuffix')}
         </p>

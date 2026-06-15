@@ -36,7 +36,9 @@ import {
   normalizeMarketCreationLiquiditySats,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
+  formatMarketSubunits,
 } from '@bitcaster/client-sdk/marketUnits'
+import { effectiveRelayUrls } from '@/lib/relayDefaults'
 
 /**
  * Default creator fee applied to every market created via the wizard. The
@@ -51,7 +53,7 @@ const DEFAULT_CREATOR_FEE_PERCENT = 0
 export const MAX_MARKET_OUTCOMES = 8
 
 const NSEC_ORACLE_REQUIRED_MESSAGE = 'You must register a nostr key to become an oracle'
-type RegistrationFeePrompt = { feeSats: number; balanceSats: number }
+type RegistrationFeePrompt = { feeSats: number; balanceSats: number; baseAsset: MarketBaseAsset }
 type RegistrationFeeTopUpStage = 'closed' | 'modal' | 'overlay'
 
 async function activeMintCapabilities() {
@@ -526,9 +528,11 @@ export function useMarketCreationState() {
       const ctfSettings = ctfCapabilities.ctfSettings
       const requiredRegistrationFee = registrationFeeForPolicy(outcomes, ctfSettings)
       if (requiredRegistrationFee > MAX_CONDITION_REGISTRATION_FEE_SATS) {
+        const requiredFee = formatMarketSubunits(requiredRegistrationFee, baseAsset)
+        const maxFee = formatMarketSubunits(MAX_CONDITION_REGISTRATION_FEE_SATS, baseAsset)
         throw new Error(
-          `This mint requires a ${requiredRegistrationFee} sat condition registration fee, ` +
-            `which exceeds the ${MAX_CONDITION_REGISTRATION_FEE_SATS} sat app limit.`,
+          `This mint requires a ${requiredFee} condition registration fee, ` +
+            `which exceeds the ${maxFee} app limit.`,
         )
       }
 
@@ -538,11 +542,12 @@ export function useMarketCreationState() {
         throw new Error('No active mint is configured.')
       }
       if (requiredRegistrationFee > 0 && !options.registrationFeeConfirmed) {
-        const balance = await getAvailableRegularBalanceSats(activeMintUrl)
+        const balance = await getAvailableRegularBalanceSats(activeMintUrl, baseAsset)
         if (balance < requiredRegistrationFee) {
           setRegistrationFeeTopUp({
             feeSats: requiredRegistrationFee,
             balanceSats: balance,
+            baseAsset,
           })
           setRegistrationFeeTopUpStage('modal')
           return
@@ -550,6 +555,7 @@ export function useMarketCreationState() {
         setRegistrationFeePrompt({
           feeSats: requiredRegistrationFee,
           balanceSats: balance,
+          baseAsset,
         })
         return
       }
@@ -569,7 +575,7 @@ export function useMarketCreationState() {
         | undefined
 
       const eventId = buildEventId(title || 'market')
-      const relayUrls = relays.map((r) => r.url)
+      const relayUrls = effectiveRelayUrls(relays)
       if (relayUrls.length === 0) {
         throw new Error(
           'Add at least one Nostr relay in Settings before publishing an oracle announcement.',

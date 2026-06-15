@@ -59,7 +59,7 @@ describe('walletOps facade', () => {
       _setActiveMint: setActiveMint as never,
     })
     useSettingsStore.setState({
-      relays: [{ url: 'wss://relay.example', connectionStatus: 'disconnected' }],
+      relays: [{ url: 'ws://localhost:7777', connectionStatus: 'disconnected' }],
       addRelay: vi.fn(),
       removeRelay: vi.fn(),
     })
@@ -198,20 +198,29 @@ describe('walletOps facade', () => {
 
   it('routes relay mutations through the settings store', () => {
     const store = useSettingsStore.getState()
-    userAddRelay('wss://relay.example/')
-    userRemoveRelay('wss://relay.example')
+    userAddRelay('ws://localhost:7778/')
+    userRemoveRelay('ws://localhost:7778')
 
-    expect(store.addRelay).toHaveBeenCalledWith('wss://relay.example')
-    expect(store.removeRelay).toHaveBeenCalledWith('wss://relay.example')
+    expect(store.addRelay).toHaveBeenCalledWith('ws://localhost:7778')
+    expect(store.removeRelay).toHaveBeenCalledWith('ws://localhost:7778')
   })
 
   it('keeps relay URL validation in the facade', () => {
-    expect(normalizeRelayUrl(' wss://relay.example/ ')).toBe('wss://relay.example')
+    expect(normalizeRelayUrl(' ws://localhost:7778/ ')).toBe('ws://localhost:7778')
     expect(getRelayUrlValidationError('https://relay.example')).toBe(
-      'Relay URL must start with wss://',
+      'Relay URL must start with wss:// or local ws://',
+    )
+    expect(getRelayUrlValidationError('wss://relay.example')).toBe(
+      'Relay URL must be the configured bitCaster relay or a local relay.',
+    )
+    expect(getRelayUrlValidationError('wss://relay.damus.io')).toBe(
+      'Public Nostr relays are not supported. Use a bitCaster-owned relay.',
     )
     expect(() => userAddRelay('https://relay.example')).toThrow(
-      'Relay URL must start with wss://',
+      'Relay URL must start with wss:// or local ws://',
+    )
+    expect(() => userAddRelay('wss://nos.lol')).toThrow(
+      'Public Nostr relays are not supported. Use a bitCaster-owned relay.',
     )
   })
 
@@ -223,7 +232,7 @@ describe('walletOps facade', () => {
 
     expect(result.id).toBe('abcdef12')
     expect(result.encoded).toMatch(/^creq/)
-    expect(nip17.getNostrNprofile).toHaveBeenCalledWith('1'.repeat(64), ['wss://relay.example'])
+    expect(nip17.getNostrNprofile).toHaveBeenCalledWith('1'.repeat(64), ['ws://localhost:7777'])
   })
 
   it('fails payment request creation when the wallet has no mnemonic', () => {

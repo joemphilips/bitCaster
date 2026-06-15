@@ -28,6 +28,7 @@ import {
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { prepareSwapInputsForTrade } from "@bitcaster/client-sdk/tradePreparation";
 
 export interface PreparedPreflightSplit {
   reservationId: string;
@@ -64,59 +65,76 @@ export async function preparePreflightSplitForLimitBuy(input: {
   let resolvedLockOutcomeSetId = input.complementOutcomeSetId;
 
   try {
-    const lotIndex = 0;
-    const preflightOutputAmountSats =
-      await resolveRootPreflightOutputAmountSats({
-        mintUrl: input.mintUrl,
-        baseAsset,
-        conditionId: input.market.id,
-        amountSats: input.amountSats,
-        keepOutcomeSetId: input.selectedOutcomeSetId,
-        lockOutcomeSetId: input.complementOutcomeSetId,
-      });
-    const collateral = await prepareCollateralLotForCtfSplit({
-      mintUrl: input.mintUrl,
-      available,
-      faceAmountSats: preflightOutputAmountSats,
-      baseAsset,
-      reservationId: input.reservationId,
-      lotIndex,
-    });
-    const operationId = `${input.reservationId}:ctf-split:${lotIndex}`;
-    await diagnoseProofStates({
-      label: "preflight:ctf-split-inputs-before",
-      mintUrl: input.mintUrl,
-      proofs: collateral.inputs,
-      extra: {
-        lotIndex,
-        conditionId: input.market.id,
-        operationId,
+    const prepared = await prepareSwapInputsForTrade({
+      role: "seller",
+      lockOutcomeSetId: input.complementOutcomeSetId,
+      amountSats: input.amountSats,
+      outcomeProofsByCollection: {},
+      regularProofs: available,
+      splitRegularToOutcome: async () => {
+        const lotIndex = 0;
+        const preflightOutputAmountSats =
+          await resolveRootPreflightOutputAmountSats({
+            mintUrl: input.mintUrl,
+            baseAsset,
+            conditionId: input.market.id,
+            amountSats: input.amountSats,
+            keepOutcomeSetId: input.selectedOutcomeSetId,
+            lockOutcomeSetId: input.complementOutcomeSetId,
+          });
+        const collateral = await prepareCollateralLotForCtfSplit({
+          mintUrl: input.mintUrl,
+          available,
+          faceAmountSats: preflightOutputAmountSats,
+          baseAsset,
+          reservationId: input.reservationId,
+          lotIndex,
+        });
+        const operationId = `${input.reservationId}:ctf-split:${lotIndex}`;
+        await diagnoseProofStates({
+          label: "preflight:ctf-split-inputs-before",
+          mintUrl: input.mintUrl,
+          proofs: collateral.inputs,
+          extra: {
+            lotIndex,
+            conditionId: input.market.id,
+            operationId,
+          },
+        });
+        const split = await splitRootCompleteSetForPreflightOrder({
+          mintUrl: input.mintUrl,
+          baseAsset,
+          conditionId: input.market.id,
+          collateralProofs: collateral.inputs,
+          amountSats: preflightOutputAmountSats,
+          keepOutcomeSetId: input.selectedOutcomeSetId,
+          lockOutcomeSetId: input.complementOutcomeSetId,
+          operationId,
+          proofOperationStore: ctfProofOperationStore,
+        });
+
+        resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId;
+        resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId;
+        await replaceProofs(
+          split.spentSatProofs.map((proof) => proof.secret),
+          await ctfProofsToStore({
+            mintUrl: input.mintUrl,
+            conditionId: input.market.id,
+            reservationId: input.reservationId,
+            proofsByCollection: split.proofsByCollection,
+            baseAsset,
+          }),
+        );
+        return {
+          proofsByCollection: split.proofsByCollection,
+          spentRegularProofs: split.spentSatProofs,
+          regularChangeProofs: collateral.keepProofs,
+        };
       },
     });
-    const split = await splitRootCompleteSetForPreflightOrder({
-      mintUrl: input.mintUrl,
-      baseAsset,
-      conditionId: input.market.id,
-      collateralProofs: collateral.inputs,
-      amountSats: preflightOutputAmountSats,
-      keepOutcomeSetId: input.selectedOutcomeSetId,
-      lockOutcomeSetId: input.complementOutcomeSetId,
-      operationId,
-      proofOperationStore: ctfProofOperationStore,
-    });
-
-    resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId;
-    resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId;
-    await replaceProofs(
-      split.spentSatProofs.map((proof) => proof.secret),
-      await ctfProofsToStore({
-        mintUrl: input.mintUrl,
-        conditionId: input.market.id,
-        reservationId: input.reservationId,
-        proofsByCollection: split.proofsByCollection,
-        baseAsset,
-      }),
-    );
+    if (prepared.status !== "prepared") {
+      throw new Error(`Pre-flight split unavailable: ${prepared.reason}`);
+    }
   } catch (err) {
     await releaseProofReservation(input.reservationId);
     throw err;

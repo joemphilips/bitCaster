@@ -1,4 +1,11 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { useParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { MarketDetail } from "@/components/market-detail";
@@ -21,6 +28,8 @@ import {
   priceNumeratorToPercent,
   signTradeComment,
   submitOrder,
+  type MarketPriceHistoryResponse,
+  type MarketCommentsResponse,
 } from "@/lib/markets";
 import { promoteFillsToActiveSwaps } from "@/lib/orderStatus";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
@@ -55,10 +64,7 @@ import {
   onOrderBookUpdated,
   onTradeExecuted,
 } from "@/lib/marketHub";
-import {
-  getOutcomeProofs,
-  releaseProofReservation,
-} from "@/stores/proof-db";
+import { getOutcomeProofs, releaseProofReservation } from "@/stores/proof-db";
 import {
   getBalance,
   useActiveMintInputFeePpk,
@@ -82,12 +88,42 @@ import type {
   TradeSide,
   OrderType,
   LimitOrderPreview,
+  OrderBook,
+  PriceHistory,
+  PricePoint,
+  Comment,
+  RelatedMarket,
+  Trade,
 } from "@/types/market-detail";
 
 type TopUpStage = "closed" | "modal" | "overlay";
 type TopUpReason =
   | { kind: "collateral"; required: number; baseAsset: string }
   | { kind: "score"; required: number };
+
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, Extract<keyof T, K>>
+  : never;
+type DerivedMarketDetailFields =
+  | "priceHistory"
+  | "orderBook"
+  | "outcomeOrderBooks"
+  | "outcomePriceHistories"
+  | "cellPriceHistories"
+  | "cellOrderBooks"
+  | "comments"
+  | "recentTrades"
+  | "relatedMarkets";
+type MarketDetailCore = DistributiveOmit<
+  MarketDetailType,
+  DerivedMarketDetailFields
+>;
+type CanonicalSliceSource = "snapshot" | "rest" | "live";
+type MarketOrderBooksLoad = {
+  orderBook: OrderBook;
+  outcomeOrderBooks: Record<string, OrderBook>;
+  fetchedOutcomeSetIds: string[];
+};
 
 function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
   if (state == null) return false;
@@ -164,7 +200,7 @@ export function decideTradeCollateralGate(input: {
   const required =
     input.tradeSide === "sell"
       ? input.tradeFaceAmount
-      : input.preflightSplitRequirement ?? input.requiredBuyCost;
+      : (input.preflightSplitRequirement ?? input.requiredBuyCost);
   if (input.balance < required) {
     return { kind: "top-up", balance: input.balance, required };
   }
@@ -223,64 +259,595 @@ function marketShapeMatches(
   );
 }
 
-function mergeMarketRefresh(
-  current: MarketDetailType | null,
-  detail: MarketDetailType,
-): MarketDetailType {
-  if (!current || current.id !== detail.id) return detail;
-  return {
-    ...current,
-    ...detail,
-    priceHistory: current.priceHistory,
-    comments: current.comments,
-    relatedMarkets: current.relatedMarkets,
-    recentTrades: current.recentTrades,
-  };
-}
-
 export async function fetchMarketDetailWithBooks(
   conditionId: string,
 ): Promise<MarketDetailType> {
   let detail = await fetchMarketDetail(conditionId);
   const books = await fetchMarketOrderBooks(conditionId, detail);
-  detail = { ...detail, ...books };
+  detail = {
+    ...detail,
+    orderBook: books.orderBook,
+    outcomeOrderBooks: books.outcomeOrderBooks,
+  };
   return detail;
 }
 
 async function fetchMarketOrderBooks(
   conditionId: string,
   detail: MarketDetailType,
-): Promise<Pick<MarketDetailType, "orderBook" | "outcomeOrderBooks">> {
+): Promise<MarketOrderBooksLoad> {
   const outcomeSetIds = outcomeSetIdsForMarketBooks(detail);
   if (outcomeSetIds.length === 0) {
     return {
       orderBook: detail.orderBook,
-      outcomeOrderBooks: detail.outcomeOrderBooks,
+      outcomeOrderBooks: detail.outcomeOrderBooks ?? {},
+      fetchedOutcomeSetIds: [],
     };
   }
 
-  try {
-    const entries = await Promise.all(
-      outcomeSetIds.map(
-        async (outcomeSetId) =>
-          [
+  const entries = (
+    await Promise.all(
+      outcomeSetIds.map(async (outcomeSetId) => {
+        try {
+          return [
             outcomeSetId,
             await fetchOrderBook(outcomeSetMarketId(conditionId, outcomeSetId)),
-          ] as const,
-      ),
-    );
-    const outcomeOrderBooks = Object.fromEntries(entries);
+          ] as const;
+        } catch {
+          return null;
+        }
+      }),
+    )
+  ).filter((entry): entry is readonly [string, OrderBook] => entry != null);
+
+  if (entries.length > 0) {
+    const fetchedOutcomeSetIds = entries.map(([outcomeSetId]) => outcomeSetId);
+    const outcomeOrderBooks = {
+      ...(detail.outcomeOrderBooks ?? {}),
+      ...Object.fromEntries(entries),
+    };
     const defaultOrderBook =
       outcomeOrderBooks[outcomeSetIds[0]] ?? detail.orderBook;
-    return { orderBook: defaultOrderBook, outcomeOrderBooks };
-  } catch {
-    // Order book fetch is best-effort; limit orders can still rest.
+    return {
+      orderBook: defaultOrderBook,
+      outcomeOrderBooks,
+      fetchedOutcomeSetIds,
+    };
   }
 
   return {
     orderBook: detail.orderBook,
-    outcomeOrderBooks: detail.outcomeOrderBooks,
+    outcomeOrderBooks: detail.outcomeOrderBooks ?? {},
+    fetchedOutcomeSetIds: [],
   };
+}
+
+export type MarketDetailDataState = {
+  marketId: string | null;
+  core: MarketDetailCore | null;
+  booksByMarketId: Record<string, Record<string, OrderBook>>;
+  bookSourcesByMarketId: Record<string, Record<string, CanonicalSliceSource>>;
+  historiesByMarketId: Record<
+    string,
+    Partial<Record<ChartTimeframe, Record<string, PriceHistory>>>
+  >;
+  historySourcesByMarketId: Record<
+    string,
+    Partial<Record<ChartTimeframe, Record<string, CanonicalSliceSource>>>
+  >;
+  enrichmentByMarketId: Record<
+    string,
+    {
+      comments: Comment[];
+      recentTrades: Trade[];
+      relatedMarkets: RelatedMarket[];
+    }
+  >;
+};
+
+export type MarketDetailDataAction =
+  | { type: "marketSnapshotLoaded"; detail: MarketDetailType }
+  | {
+      type: "marketSubmitRefreshLoaded";
+      detail: MarketDetailType;
+      booksByOutcomeSetId: Record<string, OrderBook>;
+      replaceOutcomeSetIds: string[];
+    }
+  | {
+      type: "booksLoaded";
+      marketId: string;
+      booksByOutcomeSetId: Record<string, OrderBook>;
+      replaceOutcomeSetIds: string[];
+    }
+  | {
+      type: "orderBookUpdated";
+      marketId: string;
+      outcomeSetId: string;
+      orderBook: OrderBook;
+    }
+  | {
+      type: "historyLoaded";
+      marketId: string;
+      timeframe: ChartTimeframe;
+      historiesByOutcomeSetId: Record<string, PriceHistory>;
+    }
+  | {
+      type: "tradeExecuted";
+      marketId: string;
+      outcomeSetId: string;
+      timeframe: ChartTimeframe;
+      point: PricePoint;
+    }
+  | { type: "commentsLoaded"; marketId: string; comments: Comment[] };
+
+const emptyMarketDetailDataState: MarketDetailDataState = {
+  marketId: null,
+  core: null,
+  booksByMarketId: {},
+  bookSourcesByMarketId: {},
+  historiesByMarketId: {},
+  historySourcesByMarketId: {},
+  enrichmentByMarketId: {},
+};
+
+function emptyPriceHistory(timeframe: ChartTimeframe): PriceHistory {
+  return { timeframe, data: [] };
+}
+
+function emptyOrderBook(): OrderBook {
+  return { bids: [], asks: [], spread: 0 };
+}
+
+function primaryOutcomeSetId(
+  market: Parameters<typeof outcomeSetIdsForMarketBooks>[0],
+): string | null {
+  return outcomeSetIdsForMarketBooks(market)[0] ?? null;
+}
+
+function marketCoreFromDetail(detail: MarketDetailType): MarketDetailCore {
+  const core = { ...detail } as Record<string, unknown>;
+  delete core.priceHistory;
+  delete core.orderBook;
+  delete core.outcomeOrderBooks;
+  delete core.outcomePriceHistories;
+  delete core.cellPriceHistories;
+  delete core.cellOrderBooks;
+  delete core.comments;
+  delete core.recentTrades;
+  delete core.relatedMarkets;
+  return core as MarketDetailCore;
+}
+
+export function booksByOutcomeSetFromDetail(
+  detail: MarketDetailType,
+  onlyOutcomeSetIds?: readonly string[],
+): Record<string, OrderBook> {
+  const result: Record<string, OrderBook> = {};
+  const outcomeSetIds =
+    onlyOutcomeSetIds ?? outcomeSetIdsForMarketBooks(detail);
+  for (const [index, outcomeSetId] of outcomeSetIds.entries()) {
+    const book =
+      detail.outcomeOrderBooks?.[outcomeSetId] ??
+      (!onlyOutcomeSetIds && index === 0 ? detail.orderBook : undefined);
+    if (book) result[outcomeSetId] = book;
+  }
+  return result;
+}
+
+function historiesByOutcomeSetFromDetail(
+  detail: MarketDetailType,
+  timeframe: ChartTimeframe,
+): Record<string, PriceHistory> {
+  const result: Record<string, PriceHistory> = {};
+  const outcomeSetIds = outcomeSetIdsForMarketBooks(detail);
+  if (detail.type === "categorical") {
+    for (const outcomeSetId of outcomeSetIds) {
+      const history = detail.outcomePriceHistories[outcomeSetId];
+      if (history?.timeframe === timeframe) result[outcomeSetId] = history;
+    }
+  }
+
+  const primary = primaryOutcomeSetId(detail);
+  if (primary && detail.priceHistory.timeframe === timeframe) {
+    result[primary] = result[primary] ?? detail.priceHistory;
+  }
+  return result;
+}
+
+function historiesByOutcomeSetFromResponse(
+  market: MarketDetailType,
+  response: MarketPriceHistoryResponse,
+): {
+  timeframe: ChartTimeframe;
+  historiesByOutcomeSetId: Record<string, PriceHistory>;
+} {
+  const withHistory = applyMarketPriceHistory(market, response);
+  const timeframe = response.timeframe as ChartTimeframe;
+  return {
+    timeframe,
+    historiesByOutcomeSetId: historiesByOutcomeSetFromDetail(
+      withHistory,
+      timeframe,
+    ),
+  };
+}
+
+export function liveTradeChartUpdate(
+  market: MarketDetailType,
+  outcomeSetId: string,
+  trade: { timestamp: string; executionPrice: number; amountSats: number },
+): { outcomeSetId: string; point: PricePoint } {
+  const divisibility = normalizeMarketDivisibility(market.divisibility);
+  const pricePercent = priceNumeratorToPercent(
+    trade.executionPrice,
+    divisibility,
+  );
+  const primary = primaryOutcomeSetId(market);
+  const chartOutcomeSetId =
+    market.type === "yesno" && primary ? primary : outcomeSetId;
+  const chartPrice =
+    market.type === "yesno" && primary && outcomeSetId !== primary
+      ? Math.max(0, Math.min(100, 100 - pricePercent))
+      : pricePercent;
+  return {
+    outcomeSetId: chartOutcomeSetId,
+    point: {
+      timestamp: trade.timestamp,
+      price: chartPrice,
+      volume: trade.amountSats,
+    },
+  };
+}
+
+function sourceMapFor<T>(
+  slices: Record<string, T>,
+  source: CanonicalSliceSource,
+): Record<string, CanonicalSliceSource> {
+  return Object.fromEntries(
+    Object.keys(slices).map((key) => [key, source] as const),
+  );
+}
+
+function mergeBookUpdates(
+  currentBooks: Record<string, OrderBook>,
+  currentSources: Record<string, CanonicalSliceSource>,
+  incomingBooks: Record<string, OrderBook>,
+  replaceOutcomeSetIds: string[],
+  source: CanonicalSliceSource,
+): {
+  books: Record<string, OrderBook>;
+  sources: Record<string, CanonicalSliceSource>;
+} {
+  const books = { ...currentBooks };
+  const sources = { ...currentSources };
+  for (const outcomeSetId of replaceOutcomeSetIds) {
+    const book = incomingBooks[outcomeSetId];
+    if (!book) continue;
+    if (source === "rest" && sources[outcomeSetId] === "live") continue;
+    books[outcomeSetId] = book;
+    sources[outcomeSetId] = source;
+  }
+  return { books, sources };
+}
+
+function mergePriceHistory(
+  current: PriceHistory | undefined,
+  incoming: PriceHistory,
+  currentSource: CanonicalSliceSource | undefined,
+): PriceHistory {
+  if (!current || currentSource !== "live") return incoming;
+  const byTimestamp = new Map<string, PricePoint>();
+  for (const point of incoming.data) byTimestamp.set(point.timestamp, point);
+  for (const point of current.data) byTimestamp.set(point.timestamp, point);
+  return {
+    timeframe: incoming.timeframe,
+    data: [...byTimestamp.values()].sort((a, b) =>
+      a.timestamp.localeCompare(b.timestamp),
+    ),
+  };
+}
+
+function mergeHistoryUpdates(
+  currentHistories: Record<string, PriceHistory>,
+  currentSources: Record<string, CanonicalSliceSource>,
+  incomingHistories: Record<string, PriceHistory>,
+  source: CanonicalSliceSource,
+): {
+  histories: Record<string, PriceHistory>;
+  sources: Record<string, CanonicalSliceSource>;
+} {
+  const histories = { ...currentHistories };
+  const sources = { ...currentSources };
+  for (const [outcomeSetId, history] of Object.entries(incomingHistories)) {
+    const previousSource = sources[outcomeSetId];
+    histories[outcomeSetId] = mergePriceHistory(
+      histories[outcomeSetId],
+      history,
+      previousSource,
+    );
+    sources[outcomeSetId] =
+      previousSource === "live" && source === "rest" ? "live" : source;
+  }
+  return { histories, sources };
+}
+
+function commentsFromResponse(
+  market: MarketDetailType,
+  response: MarketCommentsResponse,
+): Comment[] {
+  return applyMarketComments(market, response).comments;
+}
+
+export function createMarketDetailDataState(
+  detail: MarketDetailType,
+): MarketDetailDataState {
+  const booksByOutcomeSetId = booksByOutcomeSetFromDetail(detail);
+  const historiesByOutcomeSetId = historiesByOutcomeSetFromDetail(
+    detail,
+    detail.priceHistory.timeframe,
+  );
+  return {
+    marketId: detail.id,
+    core: marketCoreFromDetail(detail),
+    booksByMarketId: {
+      [detail.id]: booksByOutcomeSetId,
+    },
+    bookSourcesByMarketId: {
+      [detail.id]: sourceMapFor(booksByOutcomeSetId, "snapshot"),
+    },
+    historiesByMarketId: {
+      [detail.id]: {
+        [detail.priceHistory.timeframe]: historiesByOutcomeSetId,
+      },
+    },
+    historySourcesByMarketId: {
+      [detail.id]: {
+        [detail.priceHistory.timeframe]: sourceMapFor(
+          historiesByOutcomeSetId,
+          "snapshot",
+        ),
+      },
+    },
+    enrichmentByMarketId: {
+      [detail.id]: {
+        comments: detail.comments,
+        recentTrades: detail.recentTrades,
+        relatedMarkets: detail.relatedMarkets,
+      },
+    },
+  };
+}
+
+function withSnapshotLoaded(
+  state: MarketDetailDataState,
+  detail: MarketDetailType,
+): MarketDetailDataState {
+  if (!state.core || state.marketId !== detail.id) {
+    return createMarketDetailDataState(detail);
+  }
+
+  return {
+    ...state,
+    core: marketCoreFromDetail(detail),
+  };
+}
+
+export function marketDetailDataReducer(
+  state: MarketDetailDataState,
+  action: MarketDetailDataAction,
+): MarketDetailDataState {
+  switch (action.type) {
+    case "marketSnapshotLoaded":
+      return withSnapshotLoaded(state, action.detail);
+    case "marketSubmitRefreshLoaded": {
+      const next = withSnapshotLoaded(state, action.detail);
+      if (next.marketId !== action.detail.id) return next;
+      const currentBooks = next.booksByMarketId[action.detail.id] ?? {};
+      const currentSources = next.bookSourcesByMarketId[action.detail.id] ?? {};
+      const merged = mergeBookUpdates(
+        currentBooks,
+        currentSources,
+        action.booksByOutcomeSetId,
+        action.replaceOutcomeSetIds,
+        "rest",
+      );
+      return {
+        ...next,
+        booksByMarketId: {
+          ...next.booksByMarketId,
+          [action.detail.id]: merged.books,
+        },
+        bookSourcesByMarketId: {
+          ...next.bookSourcesByMarketId,
+          [action.detail.id]: merged.sources,
+        },
+      };
+    }
+    case "booksLoaded": {
+      if (state.marketId !== action.marketId) return state;
+      const merged = mergeBookUpdates(
+        state.booksByMarketId[action.marketId] ?? {},
+        state.bookSourcesByMarketId[action.marketId] ?? {},
+        action.booksByOutcomeSetId,
+        action.replaceOutcomeSetIds,
+        "rest",
+      );
+      return {
+        ...state,
+        booksByMarketId: {
+          ...state.booksByMarketId,
+          [action.marketId]: merged.books,
+        },
+        bookSourcesByMarketId: {
+          ...state.bookSourcesByMarketId,
+          [action.marketId]: merged.sources,
+        },
+      };
+    }
+    case "orderBookUpdated":
+      if (state.marketId !== action.marketId) return state;
+      return {
+        ...state,
+        booksByMarketId: {
+          ...state.booksByMarketId,
+          [action.marketId]: {
+            ...(state.booksByMarketId[action.marketId] ?? {}),
+            [action.outcomeSetId]: action.orderBook,
+          },
+        },
+        bookSourcesByMarketId: {
+          ...state.bookSourcesByMarketId,
+          [action.marketId]: {
+            ...(state.bookSourcesByMarketId[action.marketId] ?? {}),
+            [action.outcomeSetId]: "live",
+          },
+        },
+      };
+    case "historyLoaded": {
+      if (state.marketId !== action.marketId) return state;
+      const historiesForMarket =
+        state.historiesByMarketId[action.marketId] ?? {};
+      const historiesForTimeframe = historiesForMarket[action.timeframe] ?? {};
+      const sourcesForMarket =
+        state.historySourcesByMarketId[action.marketId] ?? {};
+      const sourcesForTimeframe = sourcesForMarket[action.timeframe] ?? {};
+      const merged = mergeHistoryUpdates(
+        historiesForTimeframe,
+        sourcesForTimeframe,
+        action.historiesByOutcomeSetId,
+        "rest",
+      );
+      return {
+        ...state,
+        historiesByMarketId: {
+          ...state.historiesByMarketId,
+          [action.marketId]: {
+            ...historiesForMarket,
+            [action.timeframe]: merged.histories,
+          },
+        },
+        historySourcesByMarketId: {
+          ...state.historySourcesByMarketId,
+          [action.marketId]: {
+            ...sourcesForMarket,
+            [action.timeframe]: merged.sources,
+          },
+        },
+      };
+    }
+    case "tradeExecuted": {
+      if (state.marketId !== action.marketId) return state;
+      const historiesForMarket =
+        state.historiesByMarketId[action.marketId] ?? {};
+      const historiesForTimeframe = historiesForMarket[action.timeframe] ?? {};
+      const sourcesForMarket =
+        state.historySourcesByMarketId[action.marketId] ?? {};
+      const sourcesForTimeframe = sourcesForMarket[action.timeframe] ?? {};
+      const currentHistory =
+        historiesForTimeframe[action.outcomeSetId] ??
+        emptyPriceHistory(action.timeframe);
+      return {
+        ...state,
+        historiesByMarketId: {
+          ...state.historiesByMarketId,
+          [action.marketId]: {
+            ...historiesForMarket,
+            [action.timeframe]: {
+              ...historiesForTimeframe,
+              [action.outcomeSetId]: appendLivePricePoint(
+                currentHistory,
+                action.point,
+              ),
+            },
+          },
+        },
+        historySourcesByMarketId: {
+          ...state.historySourcesByMarketId,
+          [action.marketId]: {
+            ...sourcesForMarket,
+            [action.timeframe]: {
+              ...sourcesForTimeframe,
+              [action.outcomeSetId]: "live",
+            },
+          },
+        },
+      };
+    }
+    case "commentsLoaded":
+      if (state.marketId !== action.marketId) return state;
+      {
+        const current = state.enrichmentByMarketId[action.marketId] ?? {
+          comments: [],
+          recentTrades: [],
+          relatedMarkets: [],
+        };
+        return {
+          ...state,
+          enrichmentByMarketId: {
+            ...state.enrichmentByMarketId,
+            [action.marketId]: {
+              ...current,
+              comments: action.comments,
+            },
+          },
+        };
+      }
+    default:
+      return assertNever(action);
+  }
+}
+
+export function composeMarketDetail(
+  state: MarketDetailDataState,
+  timeframe: ChartTimeframe,
+): MarketDetailType | null {
+  const core = state.core;
+  if (!core) return null;
+
+  const primary = primaryOutcomeSetId(core);
+  const historiesForTimeframe =
+    state.historiesByMarketId[core.id]?.[timeframe] ?? {};
+  const fallbackHistory = emptyPriceHistory(timeframe);
+  const priceHistory =
+    (primary ? historiesForTimeframe[primary] : undefined) ?? fallbackHistory;
+  const booksByOutcomeSetId = state.booksByMarketId[core.id] ?? {};
+  const enrichment = state.enrichmentByMarketId[core.id] ?? {
+    comments: [],
+    recentTrades: [],
+    relatedMarkets: [],
+  };
+  const orderBook =
+    (primary ? booksByOutcomeSetId[primary] : undefined) ?? emptyOrderBook();
+  const base = {
+    ...core,
+    priceHistory,
+    orderBook,
+    outcomeOrderBooks: booksByOutcomeSetId,
+    comments: enrichment.comments,
+    recentTrades: enrichment.recentTrades,
+    relatedMarkets: enrichment.relatedMarkets,
+  };
+
+  if (core.type === "categorical") {
+    return {
+      ...base,
+      type: "categorical",
+      outcomes: core.outcomes,
+      outcomePriceHistories: historiesForTimeframe,
+      outcomeOrderBooks: base.outcomeOrderBooks,
+    };
+  }
+
+  if (core.type === "twodimensional") {
+    return {
+      ...base,
+      type: "twodimensional",
+      cellPriceHistories: {},
+      cellOrderBooks: {},
+    } as MarketDetailType;
+  }
+
+  return base as MarketDetailType;
 }
 
 async function getSellSideBalance(
@@ -316,13 +883,20 @@ export function MarketDetailPage() {
   const activeMintInputFeePpk = useActiveMintInputFeePpk(activeMintUrl);
 
   // Data state
-  const [market, setMarket] = useState<MarketDetailType | null>(null);
+  const [marketData, dispatchMarketData] = useReducer(
+    marketDetailDataReducer,
+    emptyMarketDetailDataState,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const marketBaseAsset = normalizeMarketBaseAsset(market?.baseAsset);
 
   // UI state
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>("7d");
+  const market = useMemo(
+    () => composeMarketDetail(marketData, chartTimeframe),
+    [marketData, chartTimeframe],
+  );
+  const marketBaseAsset = normalizeMarketBaseAsset(market?.baseAsset);
   const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(
     null,
   );
@@ -330,7 +904,9 @@ export function MarketDetailPage() {
   const [tradeSide, setTradeSide] = useState<TradeSide>("buy");
   const [orderType, setOrderType] = useState<OrderType>("market");
   const [preflightSplit, setPreflightSplit] = useState(true);
-  const [limitPrice, setLimitPrice] = useState(defaultLimitPriceForDivisibility);
+  const [limitPrice, setLimitPrice] = useState(
+    defaultLimitPriceForDivisibility,
+  );
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
     message: string;
@@ -362,30 +938,44 @@ export function MarketDetailPage() {
   const walletReady = setupComplete && nostrSignerMode !== "none";
 
   // Load market data
-  const loadMarket = useCallback((options: { showLoading?: boolean } = {}) => {
-    if (!id) return;
-    const showLoading = options.showLoading ?? true;
-    if (showLoading) setLoading(true);
-    setError(null);
+  const loadMarket = useCallback(
+    (options: { showLoading?: boolean } = {}) => {
+      if (!id) return;
+      const showLoading = options.showLoading ?? true;
+      if (showLoading) setLoading(true);
+      setError(null);
 
-    fetchMarketDetail(id)
-      .then((detail) => {
-        setMarket((current) => mergeMarketRefresh(current, detail));
-        void fetchMarketOrderBooks(id, detail).then((books) => {
-          setMarket((current) =>
-            current?.id === id ? { ...current, ...books } : current,
+      fetchMarketDetail(id)
+        .then((detail) => {
+          dispatchMarketData({ type: "marketSnapshotLoaded", detail });
+          void fetchMarketOrderBooks(id, detail).then((books) => {
+            const detailWithBooks = {
+              ...detail,
+              orderBook: books.orderBook,
+              outcomeOrderBooks: books.outcomeOrderBooks,
+            };
+            dispatchMarketData({
+              type: "booksLoaded",
+              marketId: id,
+              booksByOutcomeSetId: booksByOutcomeSetFromDetail(
+                detailWithBooks,
+                books.fetchedOutcomeSetIds,
+              ),
+              replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
+            });
+          });
+        })
+        .catch(() => {
+          setError(
+            "Failed to load market. Please check that the mint is running.",
           );
+        })
+        .finally(() => {
+          if (showLoading) setLoading(false);
         });
-      })
-      .catch(() => {
-        setError(
-          "Failed to load market. Please check that the mint is running.",
-        );
-      })
-      .finally(() => {
-        if (showLoading) setLoading(false);
-      });
-  }, [id]);
+    },
+    [id],
+  );
 
   // Secondary live close-detection: subscribe to MarketStatusChanged pushes
   // while this detail page is mounted. Best-effort — fires only when this page
@@ -411,61 +1001,24 @@ export function MarketDetailPage() {
         onOrderBookUpdated(liveMarketId, (snapshot) => {
           if (cancelled) return;
           const liveBook = mapSnapshotToOrderBook(snapshot);
-          setMarket((current) => {
-            if (!current || current.id !== id) return current;
-            const outcomeOrderBooks = {
-              ...(current.outcomeOrderBooks ?? {}),
-              [outcomeSetId]: liveBook,
-            };
-            return {
-              ...current,
-              orderBook:
-                outcomeSetId === outcomeSetIds[0] ? liveBook : current.orderBook,
-              outcomeOrderBooks,
-            };
+          dispatchMarketData({
+            type: "orderBookUpdated",
+            marketId: id,
+            outcomeSetId,
+            orderBook: liveBook,
           });
         }),
       );
       cleanups.push(
         onTradeExecuted(liveMarketId, (trade) => {
           if (cancelled) return;
-          setMarket((current) => {
-            if (!current || current.id !== id) return current;
-            const livePoint = {
-              timestamp: trade.timestamp,
-              price: priceNumeratorToPercent(
-                trade.executionPrice,
-                normalizeMarketDivisibility(current.divisibility),
-              ),
-              volume: trade.amountSats,
-            };
-
-            if (current.type === "categorical") {
-              const currentHistory =
-                current.outcomePriceHistories[outcomeSetId] ?? {
-                  timeframe: chartTimeframe,
-                  data: [],
-                };
-              const outcomePriceHistories = {
-                ...current.outcomePriceHistories,
-                [outcomeSetId]: appendLivePricePoint(currentHistory, livePoint),
-              };
-              return {
-                ...current,
-                outcomePriceHistories,
-                priceHistory:
-                  outcomeSetId === outcomeSetIds[0]
-                    ? outcomePriceHistories[outcomeSetId]
-                    : current.priceHistory,
-              };
-            }
-
-            if (outcomeSetId !== outcomeSetIds[0]) return current;
-
-            return {
-              ...current,
-              priceHistory: appendLivePricePoint(current.priceHistory, livePoint),
-            };
+          const chartUpdate = liveTradeChartUpdate(market, outcomeSetId, trade);
+          dispatchMarketData({
+            type: "tradeExecuted",
+            marketId: id,
+            outcomeSetId: chartUpdate.outcomeSetId,
+            timeframe: chartTimeframe,
+            point: chartUpdate.point,
           });
         }),
       );
@@ -498,19 +1051,30 @@ export function MarketDetailPage() {
     const refresh = async () => {
       attempts += 1;
       try {
-        const latest = await fetchMarketDetailWithBooks(id);
+        const latestDetail = await fetchMarketDetail(id);
+        const books = await fetchMarketOrderBooks(id, latestDetail);
+        const latest = {
+          ...latestDetail,
+          orderBook: books.orderBook,
+          outcomeOrderBooks: books.outcomeOrderBooks,
+        };
         if (cancelled) return;
-        setMarket((current) => {
-          if (!current || !marketShapeMatches(current, latest)) return current;
-          if (
-            current.closingDate === latest.closingDate &&
-            current.state === latest.state &&
-            needsEngineDetailRefresh(latest)
-          ) {
-            return current;
-          }
-          return latest;
-        });
+        if (!marketShapeMatches(market, latest)) return;
+        const unchangedPartialSnapshot =
+          market.closingDate === latest.closingDate &&
+          market.state === latest.state &&
+          needsEngineDetailRefresh(latest);
+        if (!unchangedPartialSnapshot) {
+          dispatchMarketData({
+            type: "marketSubmitRefreshLoaded",
+            detail: latest,
+            booksByOutcomeSetId: booksByOutcomeSetFromDetail(
+              latest,
+              books.fetchedOutcomeSetIds,
+            ),
+            replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
+          });
+        }
         if (!needsEngineDetailRefresh(latest) || attempts >= maxAttempts) {
           return;
         }
@@ -540,11 +1104,14 @@ export function MarketDetailPage() {
           chartTimeframe,
         );
         if (!cancelled) {
-          setMarket((current) =>
-            current?.id === market.id
-              ? applyMarketPriceHistory(current, history)
-              : current,
-          );
+          const { timeframe, historiesByOutcomeSetId } =
+            historiesByOutcomeSetFromResponse(market, history);
+          dispatchMarketData({
+            type: "historyLoaded",
+            marketId: market.id,
+            timeframe,
+            historiesByOutcomeSetId,
+          });
         }
       } catch {
         // Chart history is non-critical; keep the primary market UI visible.
@@ -563,11 +1130,11 @@ export function MarketDetailPage() {
       try {
         const comments = await fetchMarketComments(market.id);
         if (!cancelled) {
-          setMarket((current) =>
-            current?.id === market.id
-              ? applyMarketComments(current, comments)
-              : current,
-          );
+          dispatchMarketData({
+            type: "commentsLoaded",
+            marketId: market.id,
+            comments: commentsFromResponse(market, comments),
+          });
         }
       } catch {
         // Comments are non-blocking for the trading surface.
@@ -624,12 +1191,11 @@ export function MarketDetailPage() {
 
     const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
     const selectedBook = tradeBooks?.selectedBook ?? null;
-    const complementBook = tradeBooks?.complementBook ?? null;
     const quotePreview = computeMarketOrderQuotePreview({
       displayShares: tradeAmount,
       tradeSide,
       orderBook: selectedBook,
-      complementaryOrderBook: complementBook,
+      complementaryOrderBook: tradeBooks?.complementBook ?? null,
       divisibility: marketDivisibility,
     });
     if (!quotePreview) {
@@ -657,7 +1223,10 @@ export function MarketDetailPage() {
     });
     const predictedOdds = Math.max(
       0,
-      Math.min(100, (quotePreview.averageExecutionPrice / marketDivisibility) * 100),
+      Math.min(
+        100,
+        (quotePreview.averageExecutionPrice / marketDivisibility) * 100,
+      ),
     );
     return {
       amount: tradeAmount,
@@ -755,8 +1324,22 @@ export function MarketDetailPage() {
 
       let latestMarket: MarketDetailType;
       try {
-        latestMarket = await fetchMarketDetailWithBooks(market.id);
-        setMarket(latestMarket);
+        const latestDetail = await fetchMarketDetail(market.id);
+        const books = await fetchMarketOrderBooks(market.id, latestDetail);
+        latestMarket = {
+          ...latestDetail,
+          orderBook: books.orderBook,
+          outcomeOrderBooks: books.outcomeOrderBooks,
+        };
+        dispatchMarketData({
+          type: "marketSubmitRefreshLoaded",
+          detail: latestMarket,
+          booksByOutcomeSetId: booksByOutcomeSetFromDetail(
+            latestMarket,
+            books.fetchedOutcomeSetIds,
+          ),
+          replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
+        });
       } catch {
         setTradeSubmitStatus({
           kind: "error",
@@ -1062,23 +1645,26 @@ export function MarketDetailPage() {
     ],
   );
 
-  const handleWalletRequired = useCallback(async (comment?: string) => {
-    setLazySetupError(null);
-    if (nostrSignerMode === "none") {
-      setLazySetupComment(comment?.trim() || undefined);
-      setShowNostrChooser(true);
-      return;
-    }
-    setLazySetupCreating(true);
-    const result = await createImplicitWalletAndNostrIdentity();
-    setLazySetupCreating(false);
-    if (!result.ok) {
-      setLazySetupError(result.error ?? "Could not create wallet");
-      setShowNostrChooser(true);
-      return;
-    }
-    await handleTradeConfirm(comment);
-  }, [handleTradeConfirm, nostrSignerMode]);
+  const handleWalletRequired = useCallback(
+    async (comment?: string) => {
+      setLazySetupError(null);
+      if (nostrSignerMode === "none") {
+        setLazySetupComment(comment?.trim() || undefined);
+        setShowNostrChooser(true);
+        return;
+      }
+      setLazySetupCreating(true);
+      const result = await createImplicitWalletAndNostrIdentity();
+      setLazySetupCreating(false);
+      if (!result.ok) {
+        setLazySetupError(result.error ?? "Could not create wallet");
+        setShowNostrChooser(true);
+        return;
+      }
+      await handleTradeConfirm(comment);
+    },
+    [handleTradeConfirm, nostrSignerMode],
+  );
 
   const handleCreateImplicitAccount = useCallback(async () => {
     setLazySetupCreating(true);

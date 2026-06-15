@@ -95,11 +95,12 @@ vi.mock('@cashu/cashu-ts', () => {
       mocks.createdOutputs.push(this)
     }
 
-    static createRandomData() {
+    static createRandomData(_amount: number, keyset: { id?: string }) {
+      const keysetId = keyset.id ?? 'regular-keyset'
       return [1, 4].map((amount, index) => ({
         blindedMessage: {
           amount,
-          id: 'regular-keyset',
+          id: keysetId,
           B_: `B_${index}`,
         },
         blindingFactor: BigInt(index + 1),
@@ -206,6 +207,91 @@ describe('registerConditionWithFee', () => {
       expect.stringMatching(/^ctf-condition-registration:/),
       { change: [expect.objectContaining({ amount: 5 })] },
     )
+  })
+
+  it('pays a USD registration fee for USD market collateral', async () => {
+    mocks.getBaseProofs.mockResolvedValueOnce([{
+      id: 'usd-keyset',
+      amount: 8,
+      secret: 'usd-fee-proof-secret',
+      C: 'usd-fee-proof-C',
+    }])
+    mocks.getWallet.mockResolvedValue({
+      mint: {
+        getKeys: async () => ({
+          keysets: [{
+            id: 'usd-keyset',
+            unit: 'usd',
+            active: true,
+            input_fee_ppk: 0,
+            keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
+          }],
+        }),
+      },
+    })
+    mocks.registerCondition.mockResolvedValue({
+      condition_id: 'cond-usd',
+      keysets: { Yes: 'ks-yes', No: 'ks-no' },
+      change: [{ id: 'usd-keyset', amount: 5, C_: 'blind-sig' }],
+    })
+
+    const result = await registerConditionWithFee({
+      mintUrl: 'https://mint.example.test',
+      requiredFeeSats: 3,
+      request: {
+        tags: [['title', 'USD Fee']],
+        announcementHex: 'announcement',
+        collateral: 'usd',
+      },
+    })
+
+    expect(result.condition_id).toBe('cond-usd')
+    expect(mocks.getBaseProofs).toHaveBeenCalledWith(
+      'https://mint.example.test',
+      { baseAsset: 'usd' },
+    )
+    expect(mocks.getWallet).toHaveBeenCalledWith('https://mint.example.test', 'usd')
+    expect(mocks.registerCondition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collateral: 'usd',
+        fee: [expect.objectContaining({ secret: 'usd-fee-proof-secret' })],
+      }),
+    )
+    expect(mocks.addProofs).toHaveBeenCalledWith([
+      expect.objectContaining({
+        mintUrl: 'https://mint.example.test',
+        baseAsset: 'usd',
+        amount: 5,
+      }),
+    ])
+  })
+
+  it('fails closed when no regular USD keyset is available for USD fee change', async () => {
+    mocks.getWallet.mockResolvedValueOnce({
+      mint: {
+        getKeys: async () => ({
+          keysets: [{
+            id: 'sat-keyset',
+            unit: 'sat',
+            active: true,
+            input_fee_ppk: 0,
+            keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
+          }],
+        }),
+      },
+    })
+
+    await expect(registerConditionWithFee({
+      mintUrl: 'https://mint.example.test',
+      requiredFeeSats: 3,
+      request: {
+        tags: [['title', 'Missing USD']],
+        announcementHex: 'announcement',
+        collateral: 'usd',
+      },
+    })).rejects.toThrow('Mint did not return a regular usd keyset')
+
+    expect(mocks.registerCondition).not.toHaveBeenCalled()
   })
 
   it('rejects more registration-fee change signatures than prepared outputs', async () => {

@@ -25,9 +25,8 @@ import { assertNever } from '../lib/enumDiscipline'
  *
  * Requirements:
  *   - `conditionId` must be joined to the MarketHub via `joinMarket` before
- *     status pushes are delivered.  `OrderBookSection` joins the market via
- *     `joinMarket(liveMarketId)` on mount, so this hook receives pushes as
- *     long as `OrderBookSection` is present.
+ *     status pushes are delivered. `MarketDetailPage` owns that subscription
+ *     while the detail route is mounted.
  *   - Call `onRefresh` when a push arrives so the market state is refreshed in
  *     the parent component (e.g. `MarketDetailPage`).
  *   - Feed into the same notification + reconcile-state paths that

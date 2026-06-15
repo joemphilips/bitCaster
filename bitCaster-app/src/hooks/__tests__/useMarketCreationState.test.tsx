@@ -253,6 +253,56 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(result.current.createdMarketBaseAsset).toBe('usd')
   })
 
+  it('uses regular USD balance for a USD market registration fee top-up', async () => {
+    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 10
+    mockWalletState.mints[0].info.nuts.CTF.registration_fee_per_keyset = 2
+    mockGetAvailableRegularBalanceSats
+      .mockResolvedValueOnce(3)
+      .mockResolvedValueOnce(1000)
+    const result = await setupDraftForSubmission()
+
+    await act(async () => { result.current.onBaseAssetChange('usd') })
+    await act(async () => { await result.current.onCreateMarket() })
+
+    expect(mockGetAvailableRegularBalanceSats).toHaveBeenLastCalledWith(
+      'https://mint.example.test',
+      'usd',
+    )
+    expect(result.current.registrationFeeTopUpStage).toBe('modal')
+    expect(result.current.registrationFeeTopUp).toEqual({
+      feeSats: 14,
+      balanceSats: 3,
+      baseAsset: 'usd',
+    })
+
+    await act(async () => { await result.current.onRegistrationFeeTopUpSuccess() })
+
+    expect(mockGetAvailableRegularBalanceSats).toHaveBeenLastCalledWith(
+      'https://mint.example.test',
+      'usd',
+    )
+    expect(result.current.registrationFeeTopUpStage).toBe('closed')
+    expect(result.current.registrationFeePrompt).toEqual({
+      feeSats: 14,
+      balanceSats: 1000,
+      baseAsset: 'usd',
+    })
+
+    await act(async () => { await result.current.onConfirmRegistrationFee() })
+
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requiredFeeSats: 14,
+        request: expect.objectContaining({
+          collateral: 'usd',
+        }),
+      }),
+    )
+    expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
+      baseAsset: 'usd',
+    })
+  })
+
   it('refreshes the active mint before rejecting missing CTF metadata', async () => {
     mockWalletState.activeMintUrl = 'http://localhost:8086'
     mockWalletState.mints = []
@@ -280,6 +330,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(result.current.registrationFeePrompt).toEqual({
       feeSats: 3,
       balanceSats: 1000,
+      baseAsset: 'sat',
     })
     expect(result.current.submitError).toBeNull()
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
@@ -311,6 +362,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(result.current.registrationFeePrompt).toEqual({
       feeSats: 14,
       balanceSats: 1000,
+      baseAsset: 'sat',
     })
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
     expect(mockCreateMarket).not.toHaveBeenCalled()
@@ -335,6 +387,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(result.current.registrationFeeTopUp).toEqual({
       feeSats: 14,
       balanceSats: 3,
+      baseAsset: 'sat',
     })
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
   })
@@ -354,6 +407,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(result.current.registrationFeePrompt).toEqual({
       feeSats: 14,
       balanceSats: 1000,
+      baseAsset: 'sat',
     })
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
   })
@@ -365,7 +419,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.submitError).toBe(
-      'This mint requires a 1001 sat condition registration fee, which exceeds the 1000 sat app limit.',
+      'This mint requires a 1,001 sats condition registration fee, which exceeds the 1,000 sats app limit.',
     )
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
     expect(mockCreateMarket).not.toHaveBeenCalled()
@@ -428,7 +482,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(mockCreateMarket).toHaveBeenCalledOnce()
-    // Post-CPMM-Phase-5: createMarket success transitions the wizard to the
+    // createMarket success transitions the wizard to the
     // deposit step rather than navigating to the market detail page. The
     // user funds the bot first; navigation happens from DepositStep on
     // `Credited`. The hook signals this via `createdMarketConditionId`.
@@ -492,11 +546,11 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(mockEnsureKormirNsec).toHaveBeenCalledWith(
-      ['wss://relay.example.test'],
+      ['ws://localhost:7777'],
       '11'.repeat(32),
     )
     expect(mockCreateEnumAnnouncement).toHaveBeenCalledWith(
-      ['wss://relay.example.test'],
+      ['ws://localhost:7777'],
       expect.stringMatching(/^will_btc_hit_150k_[0-9a-f]{12}$/),
       ['Yes', 'No'],
       expect.any(Number),

@@ -7,6 +7,7 @@ import { buildOracleAttestationEvent } from '@/lib/oracleAttestation'
 import { getOracleAnnouncementEventId, signEnumAttestation } from '@/lib/kormir'
 import { submitOracleAttestation } from '@/lib/markets'
 import { useCreatorDashboardState } from '@/hooks/useCreatorDashboardState'
+import { effectiveRelayUrls } from '@/lib/relayDefaults'
 import { MyMarkets } from '@/components/portfolio/MyMarkets'
 import { PrimaryGradientButton } from '@/components/shared/PrimaryGradientButton'
 import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
@@ -81,7 +82,7 @@ export function CreatorDashboard() {
       setResolutionError(t('creator.nsecRequiredToResolve'))
       return
     }
-    const relayUrls = relays.map((relay) => relay.url)
+    const relayUrls = effectiveRelayUrls(relays)
     if (relayUrls.length === 0) {
       setResolutionError(t('creator.relayRequiredToResolve'))
       return

@@ -41,6 +41,7 @@ export type ProofOperationKind =
   | 'swap-claim'
   | 'conditional-keyset-swap'
   | 'ctf-split'
+  | 'ctf-merge'
   | 'ctf-consolidation'
   | 'ctf-redeem'
   | 'regular-split'
@@ -1103,6 +1104,7 @@ function isProofOperationKind(value: unknown): value is ProofOperationKind {
     value === 'swap-claim' ||
     value === 'conditional-keyset-swap' ||
     value === 'ctf-split' ||
+    value === 'ctf-merge' ||
     value === 'ctf-consolidation' ||
     value === 'ctf-redeem' ||
     value === 'regular-split' ||

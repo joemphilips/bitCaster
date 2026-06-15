@@ -820,7 +820,7 @@ export function Settings({
                 value={newRelayUrl}
                 onChange={(e) => setNewRelayUrl(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleAddRelay()}
-                placeholder="wss://relay.example.com"
+                placeholder="ws://localhost:7778"
                 className="flex-1 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 autoFocus
               />

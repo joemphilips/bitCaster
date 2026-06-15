@@ -4,6 +4,7 @@ import {
   DEFAULT_MARKET_DIVISIBILITY,
   formatMarketSubunits,
   formatPricePercent,
+  isValidMarketDivisibility,
   formatWholeShareFaceValue,
   isSupportedMarketDivisibility,
   marketSubunitLabel,
@@ -22,8 +23,13 @@ test('normalizes market unit defaults', () => {
   assert.equal(normalizeMarketBaseAsset('bogus'), 'sat')
   assert.equal(normalizeMarketDivisibility(undefined), DEFAULT_MARKET_DIVISIBILITY)
   assert.equal(normalizeMarketDivisibility(1_000), 1_000)
+  assert.equal(normalizeMarketDivisibility(250), 250)
+  assert.equal(normalizeMarketDivisibility(99), DEFAULT_MARKET_DIVISIBILITY)
+  assert.equal(normalizeMarketDivisibility(1_000_001), DEFAULT_MARKET_DIVISIBILITY)
   assert.equal(marketUnitLabel('usd'), 'USD')
   assert.equal(marketUnitLabel('sat'), 'sats')
+  assert.equal(isValidMarketDivisibility(250), true)
+  assert.equal(isValidMarketDivisibility(99), false)
   assert.equal(isSupportedMarketDivisibility(1_000), true)
   assert.equal(isSupportedMarketDivisibility(123), false)
 })

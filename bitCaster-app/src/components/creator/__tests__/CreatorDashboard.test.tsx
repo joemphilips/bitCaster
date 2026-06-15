@@ -283,7 +283,7 @@ describe('CreatorDashboard', () => {
     // mirrored announcement hex is passed so a fresh profile can re-import the
     // nonce index before signing (P22 B1b).
     expect(mockSignEnumAttestation).toHaveBeenCalledWith(
-      ['wss://relay.example.test'],
+      ['ws://localhost:7777'],
       'will_btc_hit_150k_abcd',
       'Yes',
       'aabbccdd',

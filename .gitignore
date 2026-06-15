@@ -29,3 +29,4 @@ Thumbs.db
 
 # playwright-cli screenshots, logs, page dumps
 .playwright-cli/
+artifacts/

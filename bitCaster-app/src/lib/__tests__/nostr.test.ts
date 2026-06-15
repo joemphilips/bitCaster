@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
   }
   return {
     settingsState,
+    ndkCtor: vi.fn(),
     privateKeySignerCtor: vi.fn(),
     nip07SignerCtor: vi.fn(),
     setPendingKormirNsecSpy: vi.fn(),
@@ -41,7 +42,9 @@ vi.mock('@nostr-dev-kit/ndk', () => {
     pool = { relays: new Map<string, unknown>() }
     addExplicitRelay = vi.fn((_url: string) => ({}))
     connect = vi.fn(() => Promise.resolve())
-    constructor(_opts: unknown) {}
+    constructor(opts: unknown) {
+      mocks.ndkCtor(opts)
+    }
   }
   class FakeNDKPrivateKeySigner {
     constructor(nsec: string) {
@@ -82,6 +85,7 @@ describe('rehydrateNostrSigner', () => {
     vi.mocked(mocks.settingsState.setSignerMode).mockClear()
     mocks.privateKeySignerCtor.mockClear()
     mocks.nip07SignerCtor.mockClear()
+    mocks.ndkCtor.mockClear()
     mocks.setPendingKormirNsecSpy.mockClear()
     nostrModule = await import('../nostr')
   })
@@ -139,6 +143,7 @@ describe('fetchAndStoreNostrProfile', () => {
     vi.resetModules()
     mocks.settingsState.relays = [{ url: 'wss://relay.damus.io' }]
     mocks.settingsState.nostrProfile = null
+    mocks.ndkCtor.mockClear()
     vi.mocked(mocks.settingsState.setProfile).mockClear()
     nostrModule = await import('../nostr')
   })
@@ -175,25 +180,45 @@ describe('getNdk relay reconciliation', () => {
   beforeEach(async () => {
     vi.resetModules()
     mocks.settingsState.relays = [{ url: 'wss://relay.damus.io' }]
+    mocks.ndkCtor.mockClear()
     nostrModule = await import('../nostr')
   })
 
-  it('merges user-configured relays with DEFAULT_RELAYS on first construction', () => {
+  it('ignores arbitrary user relays and constructs from allowed defaults', () => {
     mocks.settingsState.relays = [
-      { url: 'wss://relay.damus.io' }, // dedup vs DEFAULT_RELAYS
-      { url: 'wss://relay.user.example' }, // unique to the user
+      { url: 'wss://relay.user.example' },
     ]
-    const ndk = nostrModule.getNdk() as unknown as {
+    nostrModule.getNdk() as unknown as {
       addExplicitRelay: (url: string) => unknown
       pool: { relays: Map<string, unknown> }
     }
-    // First call seeds the pool via the constructor; addExplicitRelay
-    // shouldn't fire for the seeded URLs.
-    expect(ndk.addExplicitRelay).not.toHaveBeenCalled()
+    expect(mocks.ndkCtor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        explicitRelayUrls: ['ws://localhost:7777'],
+      }),
+    )
   })
 
-  it('keeps search-only relays out of production defaults', () => {
+  it('keeps public relays out of default construction', () => {
     expect(nostrModule.DEFAULT_RELAYS).not.toContain('wss://relay.nostr.band')
+    expect(nostrModule.DEFAULT_RELAYS).not.toContain('wss://relay.damus.io')
+    expect(nostrModule.DEFAULT_RELAYS).not.toContain('wss://nos.lol')
+  })
+
+  it('defaults non-production builds to the local relay', () => {
+    expect(nostrModule.DEFAULT_RELAYS).toEqual(['ws://localhost:7777'])
+  })
+
+  it('constructs NDK with relay discovery disabled', () => {
+    nostrModule.getNdk()
+
+    expect(mocks.ndkCtor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enableOutboxModel: false,
+        autoConnectUserRelays: false,
+        outboxRelayUrls: [],
+      }),
+    )
   })
 
   it('reconciles new user relays added between calls without duplicating', () => {
@@ -203,20 +228,19 @@ describe('getNdk relay reconciliation', () => {
     }
     // Simulate the FakeNDK pool being seeded on construction.
     for (const url of nostrModule.DEFAULT_RELAYS) ndk.pool.relays.set(url, {})
-    ndk.pool.relays.set('wss://relay.damus.io', {})
     // User adds a new relay after first getNdk().
     mocks.settingsState.relays = [
-      { url: 'wss://relay.damus.io' },
-      { url: 'wss://relay.newly-added.example' },
+      { url: 'ws://localhost:7777' },
+      { url: 'ws://localhost:7778' },
     ]
     nostrModule.getNdk()
     expect(ndk.addExplicitRelay).toHaveBeenCalledWith(
-      'wss://relay.newly-added.example',
+      'ws://localhost:7778',
       undefined,
       true,
     )
     // Calling again with no further changes must NOT walk the pool again.
-    ndk.pool.relays.set('wss://relay.newly-added.example', {})
+    ndk.pool.relays.set('ws://localhost:7778', {})
     ndk.addExplicitRelay.mockClear()
     nostrModule.getNdk()
     expect(ndk.addExplicitRelay).not.toHaveBeenCalled()

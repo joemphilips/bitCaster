@@ -1,12 +1,5 @@
-import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { OrderBook } from '@/types/market-detail'
-import { mapSnapshotToOrderBook } from '@/lib/markets'
-import {
-  joinMarket,
-  leaveMarket,
-  onOrderBookUpdated,
-} from '@/lib/marketHub'
 import {
   formatMarketSubunits,
   formatPricePercent,
@@ -22,16 +15,8 @@ interface OrderBookSectionProps {
   outcomes?: Array<{ id: string; label: string }>
   baseAsset?: string | null
   divisibility?: number | null
-  /**
-   * Fully-qualified per-outcome market ID (`{conditionId}-{outcomeName}`).
-   * When present, the component subscribes to live `OrderBookUpdated`
-   * pushes from MarketHub for this market. Initial snapshot comes from the
-   * `orderBook` prop (fetched by the parent), so users see depth before
-   * the first push lands.
-   *
-   * Omit to render a static book (e.g. historical view, tests).
-   */
-  liveMarketId?: string
+  title?: string
+  outcomeId?: string
 }
 
 export function OrderBookSection({
@@ -42,49 +27,17 @@ export function OrderBookSection({
   outcomes,
   baseAsset: baseAssetInput,
   divisibility: divisibilityInput,
-  liveMarketId,
+  title,
+  outcomeId,
 }: OrderBookSectionProps) {
   const { t } = useTranslation()
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
   const divisibility = normalizeMarketDivisibility(divisibilityInput)
 
-  // Local mirror of the prop — updated in place when a MarketHub push lands.
-  // Falls back to the initial `orderBook` prop until the first push arrives,
-  // so users never see an empty book while the subscription handshake runs.
-  const [liveOrderBook, setLiveOrderBook] = useState<OrderBook>(orderBook)
-  useEffect(() => {
-    // Reset to the fresh parent-provided snapshot whenever the upstream
-    // `orderBook` prop changes (e.g. after a manual refetch) — otherwise a
-    // stale live-book from the previous market would linger.
-    setLiveOrderBook(orderBook)
-  }, [orderBook])
-
-  useEffect(() => {
-    if (!liveMarketId) return
-    let cancelled = false
-
-    const unsubscribe = onOrderBookUpdated(liveMarketId, (snapshot) => {
-      if (cancelled) return
-      setLiveOrderBook(mapSnapshotToOrderBook(snapshot))
-    })
-
-    // JoinMarket sends an initial snapshot back to the caller — we apply it
-    // via the handler above, which also handles every subsequent push.
-    joinMarket(liveMarketId).catch((err) => {
-      console.warn('[OrderBookSection] joinMarket failed:', err)
-    })
-
-    return () => {
-      cancelled = true
-      unsubscribe()
-      void leaveMarket(liveMarketId)
-    }
-  }, [liveMarketId])
-
   // Use outcome-specific order book if available
   const activeOrderBook = selectedOutcomeId && outcomeOrderBooks
-    ? outcomeOrderBooks[selectedOutcomeId] || liveOrderBook
-    : liveOrderBook
+    ? outcomeOrderBooks[selectedOutcomeId] || orderBook
+    : orderBook
 
   const maxTotal = Math.max(
     ...activeOrderBook.bids.map((b) => b.total),
@@ -93,10 +46,14 @@ export function OrderBookSection({
   )
 
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5">
+    <div
+      data-testid="order-book-panel"
+      data-outcome-id={outcomeId}
+      className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5"
+    >
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-          {t('orderBook.title')}
+          {title ?? t('orderBook.title')}
         </h3>
 
         {/* Outcome Selector for Categorical Markets */}
@@ -182,6 +139,8 @@ export function OrderBookSection({
               activeOrderBook.bids.slice(0, 5).map((bid, i) => (
                 <div
                   key={`bid-row-${i}`}
+                  data-testid="order-book-bid-row"
+                  data-outcome-id={outcomeId}
                   className="flex items-center justify-between text-xs"
                 >
                   <span className="font-mono text-emerald-600 dark:text-emerald-400">
@@ -211,6 +170,8 @@ export function OrderBookSection({
               activeOrderBook.asks.slice(0, 5).map((ask, i) => (
                 <div
                   key={`ask-row-${i}`}
+                  data-testid="order-book-ask-row"
+                  data-outcome-id={outcomeId}
                   className="flex items-center justify-between text-xs"
                 >
                   <span className="font-mono text-red-600 dark:text-red-400">

@@ -9,6 +9,8 @@ import { OrderBookSection } from "./OrderBookSection";
 import { ResolutionInfo } from "./ResolutionInfo";
 import { RelatedMarkets } from "./RelatedMarkets";
 import { CommentSection } from "./CommentSection";
+import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
+import { deriveExecutableOrderBook } from "./orderBookViewModel";
 
 function formatNumericPrice(value: number, unit: string): string {
   if (unit === "USD") return `$${value.toLocaleString()}`;
@@ -30,10 +32,25 @@ function computeCurrentDisplay(market: MarketDetailProps["market"]): string {
   }
 
   if (market.type === "yesno") {
-    return `${market.currentOdds.yes.toFixed(1)}%`;
+    const latestPoint = market.priceHistory.data.at(-1);
+    const latestYesPrice =
+      latestPoint && Number.isFinite(latestPoint.price)
+        ? latestPoint.price
+        : market.currentOdds.yes;
+    return `${latestYesPrice.toFixed(1)}%`;
   }
 
   return "";
+}
+
+function yesNoOutcomes(market: MarketDetailProps["market"]) {
+  if (market.type !== "yesno") return [];
+  return market.outcomes?.length
+    ? market.outcomes
+    : [
+        { id: "Yes", label: "Yes", odds: market.currentOdds.yes },
+        { id: "No", label: "No", odds: market.currentOdds.no },
+      ];
 }
 
 export function MarketDetail({
@@ -68,8 +85,12 @@ export function MarketDetail({
   onWalletRequired,
 }: MarketDetailProps) {
   const { t } = useTranslation();
-  // Get outcomes for categorical markets
-  const outcomes = market.type === "categorical" ? market.outcomes : undefined;
+  const outcomes =
+    market.type === "categorical"
+      ? market.outcomes
+      : market.type === "yesno"
+        ? yesNoOutcomes(market)
+        : undefined;
   const marketOrderHasNoLiquidity =
     orderType === "market" &&
     !!tradeSelection &&
@@ -79,6 +100,7 @@ export function MarketDetail({
   // Get outcome-specific data for categorical markets
   const outcomePriceHistories =
     market.type === "categorical" ? market.outcomePriceHistories : undefined;
+  const outcomeBookKey = (label: string) => canonicalizeOutcomeSet([label]);
 
   // Compute current display for price chart
   const currentDisplay = computeCurrentDisplay(market);
@@ -153,7 +175,7 @@ export function MarketDetail({
               chartTimeframe={chartTimeframe}
               onTimeframeChange={onTimeframeChange}
               outcomePriceHistories={outcomePriceHistories}
-              outcomes={outcomes}
+              outcomes={market.type === "categorical" ? outcomes : undefined}
               currentDisplay={currentDisplay}
               comments={market.comments}
               unit={market.type === "numeric" ? market.unit : undefined}
@@ -172,11 +194,30 @@ export function MarketDetail({
                     {t("market.closed")}
                   </span>
                 )}
-                <OrderBookSection
-                  orderBook={market.orderBook}
-                  baseAsset={market.baseAsset}
-                  divisibility={market.divisibility}
-                />
+                {(() => {
+                  const primaryOutcomeId = outcomeBookKey(
+                    yesNoOutcomes(market)[0]?.label ?? "Yes",
+                  );
+                  const directBook =
+                    market.outcomeOrderBooks?.[primaryOutcomeId] ??
+                    market.orderBook;
+                  const complementBook = Object.entries(
+                    market.outcomeOrderBooks ?? {},
+                  ).find(([id]) => id !== primaryOutcomeId)?.[1];
+                  return (
+                    <OrderBookSection
+                      outcomeId={primaryOutcomeId}
+                      orderBook={deriveExecutableOrderBook({
+                        book: directBook,
+                        complementBook,
+                        divisibility: market.divisibility,
+                        completeness: "executable",
+                      })}
+                      baseAsset={market.baseAsset}
+                      divisibility={market.divisibility}
+                    />
+                  );
+                })()}
               </div>
             )}
 
@@ -186,13 +227,23 @@ export function MarketDetail({
                   <OrderBookSection
                     key={outcome.id}
                     title={outcome.label}
-                    orderBook={
-                      market.outcomeOrderBooks?.[outcome.id] ?? {
+                    outcomeId={outcomeBookKey(outcome.label)}
+                    orderBook={deriveExecutableOrderBook({
+                      book: market.outcomeOrderBooks?.[
+                        outcomeBookKey(outcome.label)
+                      ] ?? {
                         bids: [],
                         asks: [],
                         spread: 0,
-                      }
-                    }
+                      },
+                      complementBook: Object.entries(
+                        market.outcomeOrderBooks ?? {},
+                      ).find(
+                        ([id]) => id !== outcomeBookKey(outcome.label),
+                      )?.[1],
+                      divisibility: market.divisibility,
+                      completeness: "executable",
+                    })}
                     baseAsset={market.baseAsset}
                     divisibility={market.divisibility}
                   />
@@ -261,16 +312,16 @@ export function MarketDetail({
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   {tradeSelection.side.toUpperCase()}
                   {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
-                 </p>
-                 <p className="text-sm font-medium text-slate-900 dark:text-white">
-                   {marketOrderHasNoLiquidity
+                </p>
+                <p className="text-sm font-medium text-slate-900 dark:text-white">
+                  {marketOrderHasNoLiquidity
                     ? t("trade.noExecutableLiquidity")
                     : tradeAmount > 0
-                    ? t("trade.shareCount", {
-                        count: tradeAmount.toLocaleString(),
-                      })
-                     : t("trade.enterAmount")}
-                 </p>
+                      ? t("trade.shareCount", {
+                          count: tradeAmount.toLocaleString(),
+                        })
+                      : t("trade.enterAmount")}
+                </p>
               </div>
               <button
                 onClick={onTradeClear}
@@ -298,7 +349,9 @@ export function MarketDetail({
                 }`}
               >
                 <span className="inline-flex items-center justify-center gap-2">
-                  {isTradeSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {isTradeSubmitting && (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  )}
                   {isTradeSubmitting
                     ? t("trade.submittingOrder")
                     : walletReady
@@ -328,7 +381,6 @@ export function MarketDetail({
           )}
         </div>
       )}
-
     </div>
   );
 }
