@@ -384,7 +384,8 @@ public class TradingFlowTests : IAsyncLifetime
         var page = await context.NewPageAsync();
         var consoleMessages = TestHelpers.AttachConsoleCapture(page);
         await SetupWalletAsync(page);
-        await StubP30ComplementaryLiquidityMarketAsync(page, bidPrice: 60, askPrice: 35);
+        var conditionId = NewP30ConditionId();
+        await StubP30ComplementaryLiquidityMarketAsync(page, conditionId, bidPrice: 60, askPrice: 35);
 
         string? capturedOrderBody = null;
         string? capturedOrderUrl = null;
@@ -434,7 +435,7 @@ public class TradingFlowTests : IAsyncLifetime
             }
         });
 
-        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{P30ConditionId}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{conditionId}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -452,7 +453,7 @@ public class TradingFlowTests : IAsyncLifetime
         await tradingPanel.GetByTestId("buy-no-A").ClickAsync();
         await tradingPanel.GetByTestId("trade-amount-input").FillAsync("1");
 
-        await Assertions.Expect(page.GetByText("No executable liquidity"))
+        await Assertions.Expect(tradingPanel.GetByText("No executable liquidity"))
             .ToHaveCountAsync(0);
         await Assertions.Expect(tradingPanel.GetByTestId("trade-average-execution-price"))
             .ToContainTextAsync("40");
@@ -473,7 +474,7 @@ public class TradingFlowTests : IAsyncLifetime
                 page, consoleMessages, "P30 Buy NO market order did not reach SubmitOrder.");
         }
 
-        Assert.Contains($"/api/v1/{P30ConditionId}-A/orders", capturedOrderUrl);
+        Assert.Contains($"/api/v1/{conditionId}-A/orders", capturedOrderUrl);
         using var orderDoc = JsonDocument.Parse(capturedOrderBody);
         Assert.Equal("A", orderDoc.RootElement.GetProperty("outcomeId").GetString());
         Assert.Equal("Complement", orderDoc.RootElement.GetProperty("tokenSide").GetString());
@@ -489,9 +490,10 @@ public class TradingFlowTests : IAsyncLifetime
         await using var context = await NewIsolatedContextAsync();
         var page = await context.NewPageAsync();
         await SetupWalletAsync(page);
-        await StubP30ComplementaryLiquidityMarketAsync(page, bidPrice: null, askPrice: 35);
+        var conditionId = NewP30ConditionId();
+        await StubP30ComplementaryLiquidityMarketAsync(page, conditionId, bidPrice: null, askPrice: 35);
 
-        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{P30ConditionId}", new PageGotoOptions
+        await page.GotoAsync($"{TestPorts.FrontendUrl}/markets/{conditionId}", new PageGotoOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
@@ -735,9 +737,12 @@ public class TradingFlowTests : IAsyncLifetime
 
     private static async Task StubP30ComplementaryLiquidityMarketAsync(
         IPage page,
+        string conditionId,
         int? bidPrice,
         int? askPrice)
     {
+        await SeedMockOrderBookAsync(conditionId, bidPrice, askPrice);
+
         await page.RouteAsync("**/api/v1/markets/query*", async route =>
         {
             await route.FulfillAsync(new RouteFulfillOptions
@@ -750,7 +755,7 @@ public class TradingFlowTests : IAsyncLifetime
                     {
                         new
                         {
-                            conditionId = P30ConditionId,
+                            conditionId,
                             outcomes = new[] { "A", "B", "C" },
                             title = "P30 categorical liquidity market",
                             description = "Complementary liquidity regression fixture",
@@ -785,7 +790,7 @@ public class TradingFlowTests : IAsyncLifetime
                 ContentType = "application/json",
                 Body = JsonSerializer.Serialize(new
                 {
-                    conditionId = P30ConditionId,
+                    conditionId,
                     timeframe = "7d",
                     outcomes = new[]
                     {
@@ -802,30 +807,6 @@ public class TradingFlowTests : IAsyncLifetime
             });
         });
 
-        await page.RouteAsync("**/api/v1/*/orderbook", async route =>
-        {
-            var marketId = ExtractMarketId(route.Request.Url);
-            var isA = marketId.EndsWith("-A", StringComparison.Ordinal);
-            object[] bids = isA && bidPrice is { } bid
-                ? new object[] { new { price = bid, amount = 100L, total = 100L } }
-                : Array.Empty<object>();
-            object[] asks = isA && askPrice is { } ask
-                ? new object[] { new { price = ask, amount = 100L, total = 100L } }
-                : Array.Empty<object>();
-            await route.FulfillAsync(new RouteFulfillOptions
-            {
-                Status = 200,
-                ContentType = "application/json",
-                Body = JsonSerializer.Serialize(new
-                {
-                    marketId,
-                    bids,
-                    asks,
-                    spread = 0,
-                }),
-            });
-        });
-
         await page.RouteAsync("**/api/v1/markets/*/comments", async route =>
         {
             await route.FulfillAsync(new RouteFulfillOptions
@@ -834,18 +815,57 @@ public class TradingFlowTests : IAsyncLifetime
                 ContentType = "application/json",
                 Body = JsonSerializer.Serialize(new
                 {
-                    conditionId = P30ConditionId,
+                    conditionId,
                     comments = Array.Empty<object>(),
                 }),
             });
         });
     }
 
-    private static string ExtractMarketId(string url)
+    private static string NewP30ConditionId() =>
+        ("b30ca" + Guid.NewGuid().ToString("N")).PadRight(64, '0')[..64];
+
+    private static async Task SeedMockOrderBookAsync(string conditionId, int? bidPrice, int? askPrice)
     {
-        var match = Regex.Match(url, @"/api/v1/([^/]+)/orderbook");
-        return match.Success ? Uri.UnescapeDataString(match.Groups[1].Value) : $"{P30ConditionId}-A";
+        if (bidPrice is { } bid)
+            await SeedMockOrderAsync(conditionId, side: "Buy", price: bid);
+
+        // A crossed bid/ask would immediately match in the mock CLOB, leaving
+        // no resting liquidity for the quote preview. Seed the ask only when
+        // it can coexist or when the scenario intentionally needs ask-only
+        // public liquidity.
+        if (askPrice is { } ask && (bidPrice is null || ask > bidPrice.Value))
+            await SeedMockOrderAsync(conditionId, side: "Sell", price: ask);
     }
+
+    private static async Task SeedMockOrderAsync(string conditionId, string side, int price)
+    {
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        var body = JsonSerializer.Serialize(new
+        {
+            outcomeId = "A",
+            tokenSide = "Outcome",
+            side,
+            price,
+            amountSats = 100L,
+            timeInForce = "GTC",
+            ephemeralPubkey = NewCompressedPubkey(),
+            comment = (object?)null,
+        });
+        using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+        using var response = await httpClient.PostAsync(
+            $"{TestPorts.ServerUrl}/api/v1/{Uri.EscapeDataString($"{conditionId}-A")}/orders",
+            content);
+        if (!response.IsSuccessStatusCode)
+        {
+            var responseBody = await response.Content.ReadAsStringAsync();
+            throw new InvalidOperationException(
+                $"Failed to seed P30 mock orderbook: {(int)response.StatusCode} {responseBody}");
+        }
+    }
+
+    private static string NewCompressedPubkey() =>
+        "02" + Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
 
     public async Task DisposeAsync()
     {

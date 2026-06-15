@@ -197,6 +197,76 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConditionAttestationProblem'
 
+  /api/v1/conditions/{conditionId}/orders/batch:
+    post:
+      operationId: batchSubmitOrders
+      summary: Submit multiple orders for one condition
+      security:
+        - nip98: []
+      description: >
+        Applies order items in request order across visible books that share
+        conditionId. Each item returns an independent result; envelope, auth,
+        route, closed-market, and rate-limit failures still use HTTP errors.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchSubmitOrdersRequest'
+      responses:
+        '200':
+          description: Per-item batch submit result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchSubmitOrdersResponse'
+        '400':
+          description: Invalid batch envelope or route mismatch
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '404':
+          description: Condition not registered
+        '409':
+          description: Market is closed or batch conflicted with book state
+        '429':
+          description: Item-weighted rate limit exceeded
+
+  /api/v1/conditions/{conditionId}/orders/cancel-batch:
+    post:
+      operationId: batchCancelOrders
+      summary: Cancel multiple orders for one condition
+      security:
+        - nip98: []
+      description: >
+        Cancels order ids under conditionId with privacy-preserving notCanceled
+        failures. The response does not disclose whether an uncanceled order
+        exists but belongs to another user.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchCancelOrdersRequest'
+      responses:
+        '200':
+          description: Batch cancel result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchCancelOrdersResponse'
+        '400':
+          description: Invalid batch envelope
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '404':
+          description: Condition not registered
+        '429':
+          description: Item-weighted rate limit exceeded
+
   /api/v1/{marketId}/orders:
     get:
       operationId: listRestingOrders
@@ -1273,6 +1343,190 @@ components:
           minimum: 2
           default: 100
           description: Market price denominator `D`.
+
+    BatchSubmitOrdersRequest:
+      type: object
+      required:
+        - orders
+      properties:
+        orders:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/BatchSubmitOrderRequestItem'
+
+    BatchSubmitOrderRequestItem:
+      type: object
+      required:
+        - marketId
+        - outcomeId
+        - tokenSide
+        - side
+        - price
+        - amountSats
+        - ephemeralPubkey
+      properties:
+        clientOrderId:
+          type:
+            - string
+            - 'null'
+          description: Optional client correlation id; not an idempotency key.
+        marketId:
+          type: string
+          description: Visible market id for this item. Must belong to the route conditionId.
+        outcomeId:
+          type: string
+          description: Primitive outcome segment for marketId.
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        price:
+          $ref: '#/components/schemas/Probability'
+        amountSats:
+          $ref: '#/components/schemas/Sats'
+        timeInForce:
+          $ref: '#/components/schemas/TimeInForce'
+          default: GTC
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        ephemeralPubkey:
+          type: string
+          pattern: '^[0-9a-fA-F]{66}$'
+
+    BatchSubmitOrdersResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchSubmitOrderResult'
+
+    BatchSubmitOrderResult:
+      type: object
+      required:
+        - requestIndex
+        - success
+        - marketId
+        - status
+        - remainingAmountSats
+        - fills
+        - baseAsset
+        - divisibility
+      properties:
+        requestIndex:
+          type: integer
+          format: int32
+          minimum: 0
+        clientOrderId:
+          type:
+            - string
+            - 'null'
+        success:
+          type: boolean
+        marketId:
+          type: string
+        orderId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        status:
+          type: string
+        remainingAmountSats:
+          $ref: '#/components/schemas/Sats'
+        fills:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fill'
+        ephemeralPubkey:
+          type:
+            - string
+            - 'null'
+          pattern: '^[0-9a-fA-F]{66}$'
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+        divisibility:
+          type: integer
+          format: int32
+          minimum: 2
+        errorCode:
+          oneOf:
+            - $ref: '#/components/schemas/BatchSubmitOrderErrorCode'
+            - type: 'null'
+        errorMessage:
+          type:
+            - string
+            - 'null'
+
+    BatchSubmitOrderErrorCode:
+      type: string
+      enum:
+        - invalidMarket
+        - invalidOutcome
+        - invalidTokenSide
+        - invalidSide
+        - invalidPrice
+        - invalidAmount
+        - invalidTimeInForce
+        - invalidEphemeralPubkey
+        - duplicateEphemeralPubkey
+        - unsupportedOrder
+        - bookRejected
+
+    BatchCancelOrdersRequest:
+      type: object
+      required:
+        - orderIds
+      properties:
+        orderIds:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+            format: uuid
+
+    BatchCancelOrdersResponse:
+      type: object
+      required:
+        - canceled
+        - notCanceled
+      properties:
+        canceled:
+          type: array
+          items:
+            type: string
+            format: uuid
+        notCanceled:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/BatchCancelOrderFailure'
+
+    BatchCancelOrderFailure:
+      type: object
+      required:
+        - errorCode
+        - errorMessage
+      properties:
+        errorCode:
+          $ref: '#/components/schemas/BatchCancelOrderErrorCode'
+        errorMessage:
+          type: string
+
+    BatchCancelOrderErrorCode:
+      type: string
+      enum:
+        - notFoundOrNotActiveOrNotAuthorized
+        - duplicateOrderId
+        - invalidOrderId
+        - bookRejected
 
     LevelDto:
       type: object

@@ -34,8 +34,11 @@ public class InMemoryOrderBookManager
 {
     private readonly ConcurrentDictionary<string, OrderBook> _books = new();
     private readonly ConcurrentDictionary<Guid, string> _orderMarketIndex = new();
+    private readonly ConcurrentDictionary<string, AcceptedSubmit> _acceptedSubmits = new();
     private readonly object _matchingGate = new();
     private sealed record MarketUnit(BaseAsset BaseAsset, int Divisibility);
+    public sealed record SubmitOrderOutcome(SubmitResult Result, bool Replayed);
+    private sealed record AcceptedSubmit(string NormalizedRequest, SubmitResult Result);
 
     public SubmitResult SubmitOrder(
         string marketId,
@@ -106,6 +109,37 @@ public class InMemoryOrderBookManager
             RemainingAmountSats: remaining,
             Fills: fills,
             EphemeralPubkey: ephemeralPubkey ?? string.Empty);
+    }
+
+    public SubmitOrderOutcome SubmitOrderIdempotent(
+        string marketId,
+        string outcomeId,
+        OrderSide side,
+        int priceValue,
+        long amountSats,
+        string userId,
+        TimeInForce? timeInForce,
+        string? ephemeralPubkey)
+    {
+        if (string.IsNullOrWhiteSpace(ephemeralPubkey))
+            return new SubmitOrderOutcome(
+                SubmitOrder(marketId, outcomeId, side, priceValue, amountSats, userId, timeInForce, ephemeralPubkey),
+                Replayed: false);
+
+        var tif = timeInForce ?? TimeInForce.GTC;
+        var fingerprint = $"{userId}\n{ephemeralPubkey}";
+        var normalized = string.Join('\n', marketId, outcomeId, side, priceValue, amountSats, tif);
+        if (_acceptedSubmits.TryGetValue(fingerprint, out var existing))
+        {
+            if (existing.NormalizedRequest == normalized)
+                return new SubmitOrderOutcome(existing.Result, Replayed: true);
+
+            throw new ArgumentException("Duplicate EphemeralPubkey for a different order request.", nameof(ephemeralPubkey));
+        }
+
+        var result = SubmitOrder(marketId, outcomeId, side, priceValue, amountSats, userId, tif, ephemeralPubkey);
+        _acceptedSubmits[fingerprint] = new AcceptedSubmit(normalized, result);
+        return new SubmitOrderOutcome(result, Replayed: false);
     }
 
     public bool CancelOrder(Guid orderId, out string? marketId)

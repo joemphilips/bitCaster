@@ -104,6 +104,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conditions/{conditionId}/orders/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit multiple orders for one condition
+         * @description Applies order items in request order across visible books that share conditionId. Each item returns an independent result; envelope, auth, route, closed-market, and rate-limit failures still use HTTP errors.
+         */
+        post: operations["batchSubmitOrders"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conditions/{conditionId}/orders/cancel-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel multiple orders for one condition
+         * @description Cancels order ids under conditionId with privacy-preserving notCanceled failures. The response does not disclose whether an uncanceled order exists but belongs to another user.
+         */
+        post: operations["batchCancelOrders"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/{marketId}/orders": {
         parameters: {
             query?: never;
@@ -631,6 +671,64 @@ export interface components {
              */
             divisibility: number;
         };
+        BatchSubmitOrdersRequest: {
+            orders: components["schemas"]["BatchSubmitOrderRequestItem"][];
+        };
+        BatchSubmitOrderRequestItem: {
+            /** @description Optional client correlation id; not an idempotency key. */
+            clientOrderId?: string | null;
+            /** @description Visible market id for this item. Must belong to the route conditionId. */
+            marketId: string;
+            /** @description Primitive outcome segment for marketId. */
+            outcomeId: string;
+            tokenSide: components["schemas"]["TokenSide"];
+            side: components["schemas"]["OrderSide"];
+            price: components["schemas"]["Probability"];
+            amountSats: components["schemas"]["Sats"];
+            /** @default GTC */
+            timeInForce: components["schemas"]["TimeInForce"];
+            /** Format: date-time */
+            expiresAt?: string | null;
+            ephemeralPubkey: string;
+        };
+        BatchSubmitOrdersResponse: {
+            results: components["schemas"]["BatchSubmitOrderResult"][];
+        };
+        BatchSubmitOrderResult: {
+            /** Format: int32 */
+            requestIndex: number;
+            clientOrderId?: string | null;
+            success: boolean;
+            marketId: string;
+            /** Format: uuid */
+            orderId?: string | null;
+            status: string;
+            remainingAmountSats: components["schemas"]["Sats"];
+            fills: components["schemas"]["Fill"][];
+            ephemeralPubkey?: string | null;
+            baseAsset: components["schemas"]["BaseAsset"];
+            /** Format: int32 */
+            divisibility: number;
+            errorCode?: components["schemas"]["BatchSubmitOrderErrorCode"] | null;
+            errorMessage?: string | null;
+        };
+        /** @enum {string} */
+        BatchSubmitOrderErrorCode: "invalidMarket" | "invalidOutcome" | "invalidTokenSide" | "invalidSide" | "invalidPrice" | "invalidAmount" | "invalidTimeInForce" | "invalidEphemeralPubkey" | "duplicateEphemeralPubkey" | "unsupportedOrder" | "bookRejected";
+        BatchCancelOrdersRequest: {
+            orderIds: string[];
+        };
+        BatchCancelOrdersResponse: {
+            canceled: string[];
+            notCanceled: {
+                [key: string]: components["schemas"]["BatchCancelOrderFailure"];
+            };
+        };
+        BatchCancelOrderFailure: {
+            errorCode: components["schemas"]["BatchCancelOrderErrorCode"];
+            errorMessage: string;
+        };
+        /** @enum {string} */
+        BatchCancelOrderErrorCode: "notFoundOrNotActiveOrNotAuthorized" | "duplicateOrderId" | "invalidOrderId" | "bookRejected";
         /** @description A single price level in the order book depth. */
         LevelDto: {
             price: components["schemas"]["Probability"];
@@ -1288,6 +1386,123 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ConditionAttestationProblem"];
                 };
+            };
+        };
+    };
+    batchSubmitOrders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchSubmitOrdersRequest"];
+            };
+        };
+        responses: {
+            /** @description Per-item batch submit result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchSubmitOrdersResponse"];
+                };
+            };
+            /** @description Invalid batch envelope or route mismatch */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Condition not registered */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Market is closed or batch conflicted with book state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Item-weighted rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    batchCancelOrders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchCancelOrdersRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch cancel result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchCancelOrdersResponse"];
+                };
+            };
+            /** @description Invalid batch envelope */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Condition not registered */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Item-weighted rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

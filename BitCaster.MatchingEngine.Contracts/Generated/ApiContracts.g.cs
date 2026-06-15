@@ -861,6 +861,331 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class BatchSubmitOrdersRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public BatchSubmitOrdersRequest(System.Collections.Generic.List<BatchSubmitOrderRequestItem> @orders)
+        {
+            this.Orders = @orders;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orders")]
+        public System.Collections.Generic.List<BatchSubmitOrderRequestItem> Orders { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class BatchSubmitOrderRequestItem
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public BatchSubmitOrderRequestItem(long @amountSats, string @clientOrderId, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce, TokenSide @tokenSide)
+        {
+            this.ClientOrderId = @clientOrderId;
+            this.MarketId = @marketId;
+            this.OutcomeId = @outcomeId;
+            this.TokenSide = @tokenSide;
+            this.Side = @side;
+            this.Price = @price;
+            this.AmountSats = @amountSats;
+            this.TimeInForce = @timeInForce;
+            this.ExpiresAt = @expiresAt;
+            this.EphemeralPubkey = @ephemeralPubkey;
+        }
+
+        /// <summary>
+        /// Optional client correlation id; not an idempotency key.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("clientOrderId")]
+        public string ClientOrderId { get; }
+
+        /// <summary>
+        /// Visible market id for this item. Must belong to the route conditionId.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// Primitive outcome segment for marketId.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
+        public OrderSide Side { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int Price { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
+        public long AmountSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TimeInForce>))]
+        public TimeInForce? TimeInForce { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
+        public System.DateTimeOffset? ExpiresAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("ephemeralPubkey")]
+        public string EphemeralPubkey { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class BatchSubmitOrdersResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public BatchSubmitOrdersResponse(System.Collections.Generic.List<BatchSubmitOrderResult> @results)
+        {
+            this.Results = @results;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("results")]
+        public System.Collections.Generic.List<BatchSubmitOrderResult> Results { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class BatchSubmitOrderResult
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public BatchSubmitOrderResult(BaseAsset @baseAsset, string @clientOrderId, int @divisibility, string @ephemeralPubkey, BatchSubmitOrderErrorCode? @errorCode, string @errorMessage, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid? @orderId, long @remainingAmountSats, int @requestIndex, string @status, bool @success)
+        {
+            this.RequestIndex = @requestIndex;
+            this.ClientOrderId = @clientOrderId;
+            this.Success = @success;
+            this.MarketId = @marketId;
+            this.OrderId = @orderId;
+            this.Status = @status;
+            this.RemainingAmountSats = @remainingAmountSats;
+            this.Fills = @fills;
+            this.EphemeralPubkey = @ephemeralPubkey;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
+            this.ErrorCode = @errorCode;
+            this.ErrorMessage = @errorMessage;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("requestIndex")]
+        public int RequestIndex { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("clientOrderId")]
+        public string ClientOrderId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("success")]
+        public bool Success { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid? OrderId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        public string Status { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSats")]
+        public long RemainingAmountSats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("fills")]
+        public System.Collections.Generic.List<Fill> Fills { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("ephemeralPubkey")]
+        public string EphemeralPubkey { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int Divisibility { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("errorCode")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BatchSubmitOrderErrorCode>))]
+        public BatchSubmitOrderErrorCode? ErrorCode { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("errorMessage")]
+        public string ErrorMessage { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum BatchSubmitOrderErrorCode
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalidMarket")]
+        InvalidMarket = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalidOutcome")]
+        InvalidOutcome = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalidTokenSide")]
+        InvalidTokenSide = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalidSide")]
+        InvalidSide = 3,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalidPrice")]
+        InvalidPrice = 4,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalidAmount")]
+        InvalidAmount = 5,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalidTimeInForce")]
+        InvalidTimeInForce = 6,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalidEphemeralPubkey")]
+        InvalidEphemeralPubkey = 7,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"duplicateEphemeralPubkey")]
+        DuplicateEphemeralPubkey = 8,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"unsupportedOrder")]
+        UnsupportedOrder = 9,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"bookRejected")]
+        BookRejected = 10,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class BatchCancelOrdersRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public BatchCancelOrdersRequest(System.Collections.Generic.List<System.Guid> @orderIds)
+        {
+            this.OrderIds = @orderIds;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orderIds")]
+        public System.Collections.Generic.List<System.Guid> OrderIds { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class BatchCancelOrdersResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public BatchCancelOrdersResponse(System.Collections.Generic.List<System.Guid> @canceled, System.Collections.Generic.Dictionary<string, BatchCancelOrderFailure> @notCanceled)
+        {
+            this.Canceled = @canceled;
+            this.NotCanceled = @notCanceled;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("canceled")]
+        public System.Collections.Generic.List<System.Guid> Canceled { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("notCanceled")]
+        public System.Collections.Generic.Dictionary<string, BatchCancelOrderFailure> NotCanceled { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class BatchCancelOrderFailure
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public BatchCancelOrderFailure(BatchCancelOrderErrorCode @errorCode, string @errorMessage)
+        {
+            this.ErrorCode = @errorCode;
+            this.ErrorMessage = @errorMessage;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("errorCode")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BatchCancelOrderErrorCode>))]
+        public BatchCancelOrderErrorCode ErrorCode { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("errorMessage")]
+        public string ErrorMessage { get; }
+
+        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum BatchCancelOrderErrorCode
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"notFoundOrNotActiveOrNotAuthorized")]
+        NotFoundOrNotActiveOrNotAuthorized = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"duplicateOrderId")]
+        DuplicateOrderId = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalidOrderId")]
+        InvalidOrderId = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"bookRejected")]
+        BookRejected = 3,
+
+    }
+
     /// <summary>
     /// A single price level in the order book depth.
     /// </summary>
