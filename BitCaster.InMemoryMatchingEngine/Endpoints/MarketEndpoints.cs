@@ -142,9 +142,9 @@ public static partial class MarketEndpoints
 
                 poolEntries.Add((marketId, new LiquidityStateResponse(
                     activeOrders: 0,
-                    baseAsset: BaseAsset.Sat,
+                    baseAsset: baseAsset,
                     completeSetLiquiditySubunits: 0,
-                    divisibility: 100,
+                    divisibility: divisibility,
                     impliedProbability: outcome.Probability,
                     marketId: marketId,
                     reserveA: reserveA,
