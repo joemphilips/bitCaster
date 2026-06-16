@@ -141,12 +141,17 @@ public static partial class MarketEndpoints
                 var reserveB = liquidityPerOutcome - reserveA;
 
                 poolEntries.Add((marketId, new LiquidityStateResponse(
+                    activeOrders: 0,
+                    baseAsset: BaseAsset.Sat,
+                    completeSetLiquiditySubunits: 0,
+                    divisibility: 100,
+                    impliedProbability: outcome.Probability,
                     marketId: marketId,
                     reserveA: reserveA,
                     reserveB: reserveB,
-                    impliedProbability: outcome.Probability,
+                    restingOrderLiquiditySubunits: 0,
                     totalLiquiditySats: liquidityPerOutcome,
-                    activeOrders: 0)));
+                    totalLiquiditySubunits: liquidityPerOutcome)));
             }
 
             var response = new CreateMarketResponse(

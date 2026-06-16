@@ -868,8 +868,29 @@ export interface components {
             /** Format: int64 */
             reserveB: number;
             impliedProbability: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Legacy field. For non-sat markets this is market-base subunits, not satoshis.
+             */
             totalLiquiditySats: number;
+            baseAsset: components["schemas"]["BaseAsset"];
+            /** @description Price denominator / market collateral divisibility. */
+            divisibility: number;
+            /**
+             * Format: int64
+             * @description Liquidity represented by currently resting bot orders, in market-base subunits.
+             */
+            restingOrderLiquiditySubunits: number;
+            /**
+             * Format: int64
+             * @description Conservative value of free complete-set inventory, in market-base subunits.
+             */
+            completeSetLiquiditySubunits: number;
+            /**
+             * Format: int64
+             * @description Total public liquidity in market-base subunits.
+             */
+            totalLiquiditySubunits: number;
             /** @description Number of active liquidity orders. */
             activeOrders: number;
         };

@@ -1835,6 +1835,11 @@ components:
         - reserveB
         - impliedProbability
         - totalLiquiditySats
+        - baseAsset
+        - divisibility
+        - restingOrderLiquiditySubunits
+        - completeSetLiquiditySubunits
+        - totalLiquiditySubunits
         - activeOrders
       properties:
         marketId:
@@ -1852,6 +1857,24 @@ components:
         totalLiquiditySats:
           type: integer
           format: int64
+          description: Legacy field. For non-sat markets this is market-base subunits, not satoshis.
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+        divisibility:
+          type: integer
+          description: Price denominator / market collateral divisibility.
+        restingOrderLiquiditySubunits:
+          type: integer
+          format: int64
+          description: Liquidity represented by currently resting bot orders, in market-base subunits.
+        completeSetLiquiditySubunits:
+          type: integer
+          format: int64
+          description: Conservative value of free complete-set inventory, in market-base subunits.
+        totalLiquiditySubunits:
+          type: integer
+          format: int64
+          description: Total public liquidity in market-base subunits.
         activeOrders:
           type: integer
           description: Number of active liquidity orders.
