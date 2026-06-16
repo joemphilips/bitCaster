@@ -1296,7 +1296,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     seller,
                     tradeId,
                     "seller-opened",
-                    TimeSpan.FromSeconds(150));
+                    TimeSpan.FromSeconds(150),
+                    // The browser buyer can drive the mock direct-settlement
+                    // path from seller-opened to confirmed between daemon
+                    // polls. For this restart smoke, any later monotonic step
+                    // proves the seller opened before the restart assertion.
+                    allowLaterStep: true);
 
                 await RestartDaemonAsync(seller);
 
@@ -2173,7 +2178,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         DaemonHandle daemon,
         string tradeId,
         string expectedStep,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        bool allowLaterStep = false)
     {
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(60));
         string? lastStep = null;
@@ -2194,6 +2200,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     }
                     if (string.Equals(lastStep, expectedStep, StringComparison.OrdinalIgnoreCase))
                         return;
+                    if (allowLaterStep && HasReachedOrPassedTradeStep(lastStep, expectedStep))
+                        return;
                     if (string.Equals(lastStep, "failed", StringComparison.OrdinalIgnoreCase))
                         break;
                 }
@@ -2205,6 +2213,28 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             $"Trade {tradeId} did not reach {expectedStep}. " +
             $"Last step={lastStep ?? "(none)"}, error={lastError ?? "(none)"}");
     }
+
+    private static bool HasReachedOrPassedTradeStep(string? actualStep, string expectedStep)
+    {
+        if (string.IsNullOrWhiteSpace(actualStep)) return false;
+        var expectedIndex = TradeStepProgressionIndex(expectedStep);
+        var actualIndex = TradeStepProgressionIndex(actualStep);
+        return expectedIndex >= 0 && actualIndex >= expectedIndex;
+    }
+
+    private static int TradeStepProgressionIndex(string step) =>
+        step.ToLowerInvariant() switch
+        {
+            "awaiting-trade-created" => 0,
+            "opened" => 1,
+            "seller-opened" => 2,
+            "buyer-responded" => 3,
+            "settling" => 4,
+            "awaiting-confirmation" => 5,
+            "confirmed" => 6,
+            "refunded" => 6,
+            _ => -1,
+        };
 
     private async Task<string> RunBrowserBuyerDirectFillAsync(
         string conditionId,
