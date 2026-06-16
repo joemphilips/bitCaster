@@ -2200,13 +2200,13 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                     }
                     if (string.Equals(lastStep, expectedStep, StringComparison.OrdinalIgnoreCase))
                         return;
-                    if (allowLaterStep && HasReachedOrPassedTradeStep(lastStep, expectedStep))
+                    if (allowLaterStep && HasReachedOrPassedNonTerminalTradeStep(lastStep, expectedStep))
                         return;
                     if (string.Equals(lastStep, "failed", StringComparison.OrdinalIgnoreCase))
                         break;
                 }
             }
-            await Task.Delay(500);
+            await Task.Delay(allowLaterStep ? 100 : 500);
         }
 
         throw new TimeoutException(
@@ -2214,12 +2214,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             $"Last step={lastStep ?? "(none)"}, error={lastError ?? "(none)"}");
     }
 
-    private static bool HasReachedOrPassedTradeStep(string? actualStep, string expectedStep)
+    private static bool HasReachedOrPassedNonTerminalTradeStep(string? actualStep, string expectedStep)
     {
         if (string.IsNullOrWhiteSpace(actualStep)) return false;
         var expectedIndex = TradeStepProgressionIndex(expectedStep);
         var actualIndex = TradeStepProgressionIndex(actualStep);
-        return expectedIndex >= 0 && actualIndex >= expectedIndex;
+        return expectedIndex >= 0 && actualIndex >= expectedIndex && actualIndex < 6;
     }
 
     private static int TradeStepProgressionIndex(string step) =>
