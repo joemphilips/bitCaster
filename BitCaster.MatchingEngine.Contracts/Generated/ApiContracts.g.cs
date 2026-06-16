@@ -1717,13 +1717,18 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class LiquidityStateResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public LiquidityStateResponse(int @activeOrders, int @impliedProbability, string @marketId, long @reserveA, long @reserveB, long @totalLiquiditySats)
+        public LiquidityStateResponse(int @activeOrders, BaseAsset @baseAsset, long @completeSetLiquiditySubunits, int @divisibility, int @impliedProbability, string @marketId, long @reserveA, long @reserveB, long @restingOrderLiquiditySubunits, long @totalLiquiditySats, long @totalLiquiditySubunits)
         {
             this.MarketId = @marketId;
             this.ReserveA = @reserveA;
             this.ReserveB = @reserveB;
             this.ImpliedProbability = @impliedProbability;
             this.TotalLiquiditySats = @totalLiquiditySats;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
+            this.RestingOrderLiquiditySubunits = @restingOrderLiquiditySubunits;
+            this.CompleteSetLiquiditySubunits = @completeSetLiquiditySubunits;
+            this.TotalLiquiditySubunits = @totalLiquiditySubunits;
             this.ActiveOrders = @activeOrders;
         }
 
@@ -1739,8 +1744,39 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("impliedProbability")]
         public int ImpliedProbability { get; }
 
+        /// <summary>
+        /// Legacy field. For non-sat markets this is market-base subunits, not satoshis.
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySats")]
         public long TotalLiquiditySats { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        /// <summary>
+        /// Price denominator / market collateral divisibility.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int Divisibility { get; }
+
+        /// <summary>
+        /// Liquidity represented by currently resting bot orders, in market-base subunits.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("restingOrderLiquiditySubunits")]
+        public long RestingOrderLiquiditySubunits { get; }
+
+        /// <summary>
+        /// Conservative value of free complete-set inventory, in market-base subunits.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("completeSetLiquiditySubunits")]
+        public long CompleteSetLiquiditySubunits { get; }
+
+        /// <summary>
+        /// Total public liquidity in market-base subunits.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySubunits")]
+        public long TotalLiquiditySubunits { get; }
 
         /// <summary>
         /// Number of active liquidity orders.
