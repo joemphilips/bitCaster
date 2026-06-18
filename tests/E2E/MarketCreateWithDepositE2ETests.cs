@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
@@ -348,12 +349,45 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DepositStep_AmmFunding_ShowsLightningInvoice()
+    public async Task DepositStep_AmmFunding_ShowsPaidStateAndAutoNavigates()
     {
         await using var context = await NewIsolatedContextAsync();
         var title = UniqueTitle("E2E AMM Invoice");
-        var (page, _) = await NavigateThroughWizardToDepositStepAsync(
+        var (page, conditionId) = await NavigateThroughWizardToDepositStepAsync(
             context, title, "E2E AMM invoice modal path");
+
+        await page.RouteAsync("**/api/v1/markets/*/deposit/*", async route =>
+        {
+            if (!string.Equals(route.Request.Method, "GET", StringComparison.OrdinalIgnoreCase))
+            {
+                await route.ContinueAsync();
+                return;
+            }
+
+            var match = Regex.Match(
+                route.Request.Url,
+                @"/api/v1/markets/([^/]+)/deposit/([0-9a-fA-F-]+)");
+            Assert.True(match.Success, $"Unexpected deposit status URL: {route.Request.Url}");
+            var depositId = match.Groups[2].Value;
+            var now = DateTimeOffset.UtcNow;
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new
+                {
+                    amountSats = 1_000,
+                    conditionId,
+                    depositId,
+                    expiresAt = now.AddMinutes(5),
+                    failureReason = (string?)null,
+                    method = "lightningInvoice",
+                    requestedAt = now.AddSeconds(-3),
+                    state = "paid",
+                    updatedAt = now,
+                }),
+            });
+        });
 
         await page.GetByTestId("amm-funding-tier-minimal").ClickAsync();
         await page.GetByTestId("confirm-amm-funding").ClickAsync();
@@ -365,6 +399,11 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
             .ToBeVisibleAsync(new() { Timeout = 15_000 });
         await Assertions.Expect(bolt11Display)
             .ToContainTextAsync(new Regex("^lnbcrt\\d+n1", RegexOptions.IgnoreCase));
+        await Assertions.Expect(page.GetByText("Payment received!"))
+            .ToBeVisibleAsync(new() { Timeout = 10_000 });
+        await Assertions.Expect(page).ToHaveURLAsync(
+            new Regex($"/markets/{Regex.Escape(conditionId)}$"),
+            new() { Timeout = 10_000 });
     }
 
     [Fact]

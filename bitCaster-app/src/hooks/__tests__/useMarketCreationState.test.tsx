@@ -484,8 +484,9 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(mockCreateMarket).toHaveBeenCalledOnce()
     // createMarket success transitions the wizard to the
     // deposit step rather than navigating to the market detail page. The
-    // user funds the bot first; navigation happens from DepositStep on
-    // `Credited`. The hook signals this via `createdMarketConditionId`.
+    // user funds the bot first; navigation happens from DepositStep once
+    // the Lightning payment reaches Paid. The hook signals this via
+    // `createdMarketConditionId`.
     expect(result.current.createdMarketConditionId).toBe('test-cond-id')
     expect(mockNavigate).not.toHaveBeenCalled()
   })

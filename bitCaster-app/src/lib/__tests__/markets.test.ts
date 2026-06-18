@@ -359,14 +359,14 @@ describe("deposit API normalization", () => {
     vi.restoreAllMocks();
   });
 
-  it("normalizes camel-case engine deposit states to the generated contract shape", async () => {
+  it("normalizes engine deposit status to the generated contract shape", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           depositId: "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
           conditionId: "deadbeef",
-          state: "credited",
-          method: "lightningInvoice",
+          state: "Credited",
+          method: "LightningInvoice",
           amountSats: 1000,
           requestedAt: "2026-05-17T06:05:06.200Z",
           updatedAt: "2026-05-17T06:05:10.660Z",
@@ -379,7 +379,10 @@ describe("deposit API normalization", () => {
 
     await expect(
       getDepositStatus("deadbeef", "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a"),
-    ).resolves.toMatchObject({ state: "Credited" });
+    ).resolves.toMatchObject({
+      state: "credited",
+      method: "lightningInvoice",
+    });
   });
 
   it("normalizes ecash deposit creation state", async () => {
@@ -395,7 +398,7 @@ describe("deposit API normalization", () => {
 
     await expect(
       requestEcashDeposit("deadbeef", 1000, "cashu-token"),
-    ).resolves.toMatchObject({ state: "Requested" });
+    ).resolves.toMatchObject({ state: "requested" });
   });
 });
 

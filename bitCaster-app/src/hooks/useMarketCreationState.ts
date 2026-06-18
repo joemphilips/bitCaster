@@ -673,8 +673,8 @@ export function useMarketCreationState() {
       clearDraft()
       // Hand off to the deposit step. The wizard renders DepositStep when
       // `createdMarketConditionId` is set; the user navigates to
-      // /markets/{conditionId} from there once the deposit reaches
-      // `Credited`.
+      // /markets/{conditionId} once the Lightning payment reaches Paid while
+      // AMM crediting and order posting continue asynchronously.
       setCreatedMarketOutcomeCount(snapshotOutcomeCount)
       setCreatedMarketBaseAsset(snapshotBaseAsset)
       setCreatedMarketConditionId(condition_id)
