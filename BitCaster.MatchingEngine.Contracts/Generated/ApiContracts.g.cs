@@ -226,7 +226,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Engine processing result for the submitted attestation.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("result")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OracleAttestationResponseResult>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OracleAttestationResponseResult>))]
         public OracleAttestationResponseResult Result { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
@@ -287,7 +287,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("result")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<ConditionAttestationProblemResult>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<ConditionAttestationProblemResult>))]
         public ConditionAttestationProblemResult Result { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
@@ -414,18 +414,18 @@ namespace BitCaster.MatchingEngine.Contracts
         public int ExecutionPrice { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("path")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<MatchPath>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<MatchPath>))]
         public MatchPath Path { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("status")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<FillStatus>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<FillStatus>))]
         public FillStatus Status { get; }
 
         /// <summary>
         /// Base asset for the fill amount and quote payment.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
@@ -496,11 +496,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public string OutcomeId { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
         public TokenSide TokenSide { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSide>))]
         public OrderSide Side { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("price")]
@@ -514,7 +514,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long AmountSats { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TimeInForce>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TimeInForce>))]
         public TimeInForce? TimeInForce { get; }
 
         /// <summary>
@@ -646,14 +646,14 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<Fill> Fills { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
         public TokenSide TokenSide { get; }
 
         /// <summary>
         /// Base asset context for amount and price fields.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
@@ -714,11 +714,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public string OutcomeId { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
         public TokenSide TokenSide { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSide>))]
         public OrderSide Side { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("price")]
@@ -731,7 +731,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long AmountSats { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TimeInForce>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TimeInForce>))]
         public TimeInForce TimeInForce { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("placedAt")]
@@ -750,7 +750,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Base asset context for amount and price fields.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
@@ -841,7 +841,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Base asset context for amount and price fields.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
@@ -921,11 +921,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public string OutcomeId { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TokenSide>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
         public TokenSide TokenSide { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("side")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OrderSide>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSide>))]
         public OrderSide Side { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("price")]
@@ -935,7 +935,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long AmountSats { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<TimeInForce>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TimeInForce>))]
         public TimeInForce? TimeInForce { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
@@ -1027,14 +1027,14 @@ namespace BitCaster.MatchingEngine.Contracts
         public string EphemeralPubkey { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
         public BaseAsset BaseAsset { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
         public int Divisibility { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("errorCode")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BatchSubmitOrderErrorCode>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BatchSubmitOrderErrorCode>))]
         public BatchSubmitOrderErrorCode? ErrorCode { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("errorMessage")]
@@ -1151,7 +1151,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("errorCode")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BatchCancelOrderErrorCode>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BatchCancelOrderErrorCode>))]
         public BatchCancelOrderErrorCode ErrorCode { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("errorMessage")]
@@ -1291,7 +1291,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("state")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<MarketStatusChangedState>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<MarketStatusChangedState>))]
         public MarketStatusChangedState State { get; }
 
         /// <summary>
@@ -1396,7 +1396,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeType")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<CreateMarketRequestOutcomeType>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<CreateMarketRequestOutcomeType>))]
         public CreateMarketRequestOutcomeType? OutcomeType { get; }
 
         /// <summary>
@@ -1411,7 +1411,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
         public BaseAsset? BaseAsset { get; }
 
         /// <summary>
@@ -1562,7 +1562,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ConditionId { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("timeframe")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<MarketPriceHistoryResponseTimeframe>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<MarketPriceHistoryResponseTimeframe>))]
         public MarketPriceHistoryResponseTimeframe Timeframe { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
@@ -1681,7 +1681,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("kind")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<SwapFailureKind>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<SwapFailureKind>))]
         public SwapFailureKind Kind { get; }
 
         /// <summary>
@@ -1751,7 +1751,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long TotalLiquiditySats { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
@@ -1878,7 +1878,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("state")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<CreatorMarketEntryState>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<CreatorMarketEntryState>))]
         public CreatorMarketEntryState State { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
@@ -1927,23 +1927,23 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed and crediting is in progress. `Credited` → the market account was credited (terminal-success). `Failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
+    /// Lifecycle state of a single deposit. `requested` → invoice issued or ecash submission accepted, awaiting payment proof. `paid` → payment confirmed and crediting is in progress. `credited` → the market account was credited (terminal-success). `failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum DepositState
     {
 
-        [System.Runtime.Serialization.EnumMember(Value = @"Requested")]
+        [System.Runtime.Serialization.EnumMember(Value = @"requested")]
         Requested = 0,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"Paid")]
+        [System.Runtime.Serialization.EnumMember(Value = @"paid")]
         Paid = 1,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"Credited")]
+        [System.Runtime.Serialization.EnumMember(Value = @"credited")]
         Credited = 2,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"Failed")]
+        [System.Runtime.Serialization.EnumMember(Value = @"failed")]
         Failed = 3,
 
     }
@@ -1955,10 +1955,10 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum DepositMethod
     {
 
-        [System.Runtime.Serialization.EnumMember(Value = @"LightningInvoice")]
+        [System.Runtime.Serialization.EnumMember(Value = @"lightningInvoice")]
         LightningInvoice = 0,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"Ecash")]
+        [System.Runtime.Serialization.EnumMember(Value = @"ecash")]
         Ecash = 1,
 
     }
@@ -2111,7 +2111,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid DepositId { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("state")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<DepositState>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositState>))]
         public DepositState State { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
@@ -2256,7 +2256,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Terminal success state for the synchronous ecash payment flow.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("status")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<PayParticipationScoreEcashResponseStatus>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<PayParticipationScoreEcashResponseStatus>))]
         public PayParticipationScoreEcashResponseStatus Status { get; }
 
         /// <summary>
@@ -2315,11 +2315,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ConditionId { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("state")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<DepositState>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositState>))]
         public DepositState State { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("method")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<DepositMethod>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositMethod>))]
         public DepositMethod Method { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
@@ -2453,7 +2453,7 @@ namespace BitCaster.MatchingEngine.Contracts
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("state")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<MarketCatalogueEntryState>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<MarketCatalogueEntryState>))]
         public MarketCatalogueEntryState State { get; }
 
         /// <summary>
@@ -2492,7 +2492,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long VolumeLifetimeSats { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<BaseAsset>))]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
         public BaseAsset BaseAsset { get; }
 
         /// <summary>

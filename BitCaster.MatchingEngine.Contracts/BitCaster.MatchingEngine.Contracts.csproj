@@ -12,8 +12,31 @@
   </ItemGroup>
 
   <!-- Generate C# DTOs from OpenAPI spec before compile -->
+  <UsingTask
+    TaskName="RewriteGeneratedEnumConverters"
+    TaskFactory="RoslynCodeTaskFactory"
+    AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <GeneratedFile ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.IO" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+var text = File.ReadAllText(GeneratedFile);
+var patched = text.Replace(
+    "System.Text.Json.Serialization.JsonStringEnumConverter<",
+    "BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<");
+if (!string.Equals(text, patched, StringComparison.Ordinal))
+{
+    File.WriteAllText(GeneratedFile, patched);
+}
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
   <Target Name="NSwagGenerate" BeforeTargets="CoreCompile" Inputs="specs/openapi.yaml;nswag.json" Outputs="Generated/ApiContracts.g.cs">
     <Exec Command="dotnet nswag run nswag.json" WorkingDirectory="$(MSBuildProjectDirectory)" />
+    <RewriteGeneratedEnumConverters GeneratedFile="$(MSBuildProjectDirectory)/Generated/ApiContracts.g.cs" />
   </Target>
 
 </Project>

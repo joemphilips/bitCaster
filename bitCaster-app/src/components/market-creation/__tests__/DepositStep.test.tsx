@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router'
 import userEvent from '@testing-library/user-event'
 import i18n from '@/i18n'
@@ -16,6 +16,31 @@ vi.mock('@/lib/markets', async (importOriginal) => ({
 
 const DISCLOSURE =
   'This deposit is non-refundable. If the market resolves, the budget is expected to be spent paying traders who informed the price. Any residual at close becomes operator income.'
+
+async function flushAsyncEffects() {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+function depositStatus(
+  state: 'requested' | 'paid' | 'credited' | 'failed',
+  options: { expiresAt?: string } = {},
+) {
+  return {
+    depositId: 'deposit-1',
+    conditionId: 'cond-test-abc123',
+    state,
+    method: 'lightningInvoice',
+    amountSats: 100_000,
+    requestedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    expiresAt: options.expiresAt ?? new Date(Date.now() + 60_000).toISOString(),
+    failureReason: null,
+  }
+}
 
 function renderStep(
   props?: Partial<{
@@ -61,17 +86,11 @@ describe('DepositStep', () => {
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     })
     getDepositStatus.mockReset()
-    getDepositStatus.mockResolvedValue({
-      depositId: 'deposit-1',
-      conditionId: 'cond-test-abc123',
-      state: 'Requested',
-      method: 'Lightning',
-      amountSats: 100_000,
-      requestedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      failureReason: null,
-    })
+    getDepositStatus.mockResolvedValue(depositStatus('requested'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   async function openFunding(user = userEvent.setup()) {
@@ -162,19 +181,9 @@ describe('DepositStep', () => {
     })
   })
 
-  it('marks the funding invoice paid after the deposit is credited', async () => {
+  it('marks the funding invoice paid once the Lightning payment is confirmed', async () => {
     const user = userEvent.setup()
-    getDepositStatus.mockResolvedValue({
-      depositId: 'deposit-1',
-      conditionId: 'cond-test-abc123',
-      state: 'Credited',
-      method: 'Lightning',
-      amountSats: 100_000,
-      requestedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      failureReason: null,
-    })
+    getDepositStatus.mockResolvedValue(depositStatus('paid'))
     renderStep()
 
     await openFunding(user)
@@ -183,20 +192,44 @@ describe('DepositStep', () => {
     expect(await screen.findByText('Payment received!')).toBeInTheDocument()
   })
 
-  it('auto-navigates five seconds after AMM funding is credited', async () => {
+  it('keeps polling until a requested invoice is paid', async () => {
+    vi.useFakeTimers()
+    getDepositStatus
+      .mockResolvedValueOnce(depositStatus('requested'))
+      .mockResolvedValueOnce(depositStatus('paid'))
+    renderStep()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Attract Traders' }))
+    fireEvent.click(screen.getByTestId('confirm-amm-funding'))
+    await flushAsyncEffects()
+
+    expect(getDepositStatus).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Payment received!')).not.toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500)
+    })
+    await flushAsyncEffects()
+
+    expect(screen.getByText('Payment received!')).toBeInTheDocument()
+    expect(getDepositStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('still marks credited deposits as paid when polling observes the terminal state first', async () => {
+    const user = userEvent.setup()
+    getDepositStatus.mockResolvedValue(depositStatus('credited'))
+    renderStep()
+
+    await openFunding(user)
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+
+    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
+  })
+
+  it('auto-navigates five seconds after Lightning payment is confirmed', async () => {
     const user = userEvent.setup()
     const timeoutSpy = vi.spyOn(window, 'setTimeout')
-    getDepositStatus.mockResolvedValue({
-      depositId: 'deposit-1',
-      conditionId: 'cond-test-abc123',
-      state: 'Credited',
-      method: 'Lightning',
-      amountSats: 100_000,
-      requestedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      failureReason: null,
-    })
+    getDepositStatus.mockResolvedValue(depositStatus('paid'))
     renderStep()
 
     await openFunding(user)
@@ -212,6 +245,45 @@ describe('DepositStep', () => {
     })
     expect(screen.getByTestId('market-detail-page')).toBeInTheDocument()
     timeoutSpy.mockRestore()
+  })
+
+  it('auto-navigates when polling observes credited before paid', async () => {
+    const user = userEvent.setup()
+    const timeoutSpy = vi.spyOn(window, 'setTimeout')
+    getDepositStatus.mockResolvedValue(depositStatus('credited'))
+    renderStep()
+
+    await openFunding(user)
+    timeoutSpy.mockClear()
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
+
+    const navigationCall = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000)
+    expect(navigationCall).toBeDefined()
+    act(() => {
+      ;(navigationCall?.[0] as () => void)()
+    })
+    expect(screen.getByTestId('market-detail-page')).toBeInTheDocument()
+    timeoutSpy.mockRestore()
+  })
+
+  it('does not expire an invoice after payment is already confirmed', async () => {
+    const user = userEvent.setup()
+    requestLnInvoiceDeposit.mockResolvedValueOnce({
+      depositId: 'deposit-1',
+      bolt11: 'lnbc10u1pjexampleinvoice',
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    })
+    getDepositStatus.mockResolvedValue(
+      depositStatus('paid', { expiresAt: new Date(Date.now() - 1_000).toISOString() }),
+    )
+    renderStep()
+
+    await openFunding(user)
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+
+    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
+    expect(screen.queryByText('Invoice expired')).not.toBeInTheDocument()
   })
 
   it('lets the creator request a fresh funding invoice after expiry', async () => {

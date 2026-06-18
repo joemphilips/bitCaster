@@ -963,18 +963,31 @@ function normalizeDepositState(state: unknown): DepositState {
   switch (state) {
     case "Requested":
     case "requested":
-      return "Requested";
+      return "requested";
     case "Paid":
     case "paid":
-      return "Paid";
+      return "paid";
     case "Credited":
     case "credited":
-      return "Credited";
+      return "credited";
     case "Failed":
     case "failed":
-      return "Failed";
+      return "failed";
     default:
       throw new Error(`Unknown deposit state: ${String(state)}`);
+  }
+}
+
+function normalizeDepositMethod(method: unknown): DepositMethod {
+  switch (method) {
+    case "LightningInvoice":
+    case "lightningInvoice":
+      return "lightningInvoice";
+    case "Ecash":
+    case "ecash":
+      return "ecash";
+    default:
+      throw new Error(`Unknown deposit method: ${String(method)}`);
   }
 }
 
@@ -1061,7 +1074,11 @@ export async function getDepositStatus(
     throw new Error(`Failed to read deposit status: ${response.status}`);
   }
   const result = (await response.json()) as GetDepositResponseDto;
-  return { ...result, state: normalizeDepositState(result.state) };
+  return {
+    ...result,
+    state: normalizeDepositState(result.state),
+    method: normalizeDepositMethod(result.method),
+  };
 }
 
 export async function getParticipationScore(): Promise<ParticipationScoreResponse> {

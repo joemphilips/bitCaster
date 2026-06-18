@@ -13,10 +13,29 @@ import {
 import {
   getDepositStatus,
   requestLnInvoiceDeposit,
+  type DepositState,
   type RequestLnInvoiceDepositResponse,
 } from '@/lib/markets'
 import { useSettingsStore } from '@/stores/settings'
 import type { MarketBaseAsset } from '@/types/market-creation'
+
+function isFundingDepositComplete(state: DepositState | null | undefined): boolean {
+  if (state == null) return false
+  switch (state) {
+    case 'requested':
+    case 'failed':
+      return false
+    case 'paid':
+    case 'credited':
+      return true
+    default:
+      return assertNeverDepositState(state)
+  }
+}
+
+function assertNeverDepositState(state: never): never {
+  throw new Error(`Unhandled deposit state: ${String(state)}`)
+}
 
 interface DepositStepProps {
   /** The just-created market's condition id, returned by `createMarket`. */
@@ -73,7 +92,7 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
         const status = await getDepositStatus(conditionId, invoice.depositId)
         if (cancelled) return
 
-        if (status?.state === 'Credited') {
+        if (isFundingDepositComplete(status?.state)) {
           setInvoiceStatus('paid')
           setInvoiceError(null)
           navigationTimer = window.setTimeout(() => {
@@ -81,12 +100,12 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
           }, 5_000)
           return
         }
-        if (status?.state === 'Failed') {
+        if (status?.state === 'failed') {
           setInvoiceStatus('error')
           setInvoiceError(status.failureReason ?? t('marketCreation.ammFundingRequestFailed'))
           return
         }
-        if (new Date(invoice.expiresAt).getTime() <= Date.now() && status?.state !== 'Paid') {
+        if (new Date(invoice.expiresAt).getTime() <= Date.now()) {
           setInvoiceStatus('expired')
           return
         }

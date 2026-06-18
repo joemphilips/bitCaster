@@ -936,15 +936,15 @@ export interface components {
             markets: components["schemas"]["CreatorMarketEntry"][];
         };
         /**
-         * @description Lifecycle state of a single deposit. `Requested` → invoice issued or ecash submission accepted, awaiting payment proof. `Paid` → payment confirmed and crediting is in progress. `Credited` → the market account was credited (terminal-success). `Failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
+         * @description Lifecycle state of a single deposit. `requested` → invoice issued or ecash submission accepted, awaiting payment proof. `paid` → payment confirmed and crediting is in progress. `credited` → the market account was credited (terminal-success). `failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
          * @enum {string}
          */
-        DepositState: "Requested" | "Paid" | "Credited" | "Failed";
+        DepositState: "requested" | "paid" | "credited" | "failed";
         /**
          * @description How the funder is paying the deposit.
          * @enum {string}
          */
-        DepositMethod: "LightningInvoice" | "Ecash";
+        DepositMethod: "lightningInvoice" | "ecash";
         RequestLnInvoiceDepositRequest: {
             /**
              * Format: int64
