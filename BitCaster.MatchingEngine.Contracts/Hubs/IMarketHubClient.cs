@@ -16,8 +16,6 @@ public interface IMarketHubClient
 
     Task Matched(MatchedDelta delta);
 
-    Task DepthChanged(DepthDelta delta);
-
     /// <summary>
     /// Pushed to every per-outcome market group of a condition when its
     /// lifecycle state changes (e.g. open -> closed on oracle/deadline close).
@@ -46,12 +44,6 @@ public sealed record MatchedDelta(
     long AmountSats,
     MatchPath Path,
     DateTimeOffset MatchedAt);
-
-public sealed record DepthDelta(
-    string MarketId,
-    IReadOnlyList<LevelDto> Bids,
-    IReadOnlyList<LevelDto> Asks,
-    int? Spread);
 
 public sealed record MarketStatusChanged(
     string ConditionId,

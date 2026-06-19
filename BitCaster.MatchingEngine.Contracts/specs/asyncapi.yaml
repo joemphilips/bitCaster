@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
-  title: BitCaster Market Hub
-  description: SignalR hub for real-time order book updates.
+  title: BitCaster SignalR Hubs
+  description: SignalR hubs for real-time market and trade updates.
   version: 0.1.0
   license:
     name: MIT
@@ -11,7 +11,12 @@ servers:
     host: localhost:5000
     pathname: /hubs/market
     protocol: signalr
-    description: Local development SignalR hub
+    description: Local development MarketHub SignalR hub
+  developmentTrade:
+    host: localhost:5000
+    pathname: /hubs/trade
+    protocol: signalr
+    description: Local development TradeHub SignalR hub
 
 channels:
   joinMarket:
@@ -56,13 +61,6 @@ channels:
         $ref: '#/components/messages/MatchedMessage'
     description: Server pushes a public match delta to affected market groups.
 
-  depthChanged:
-    address: DepthChanged
-    messages:
-      depthChangedMessage:
-        $ref: '#/components/messages/DepthChangedMessage'
-    description: Server pushes a compact depth delta to the market group.
-
   marketStatusChanged:
     address: MarketStatusChanged
     messages:
@@ -71,6 +69,29 @@ channels:
     description: >
       Server pushes a lifecycle-change notification (e.g. open -> closed) to
       every per-outcome market group of a condition.
+
+  tradeCreated:
+    address: TradeCreated
+    messages:
+      tradeCreatedMessage:
+        $ref: '#/components/messages/TradeCreatedMessage'
+    description: >
+      Server pushes the initial atomic-swap trade payload to both parties.
+      SignalR JSON clients receive this as an ordered argument list.
+
+  swapMessageReceived:
+    address: SwapMessageReceived
+    messages:
+      swapMessageReceivedMessage:
+        $ref: '#/components/messages/SwapMessageReceivedMessage'
+    description: Server relays an opaque encrypted swap-protocol message.
+
+  tradeStateChanged:
+    address: TradeStateChanged
+    messages:
+      tradeStateChangedMessage:
+        $ref: '#/components/messages/TradeStateChangedMessage'
+    description: Server pushes an atomic-swap trade state transition.
 
 operations:
   joinMarket:
@@ -129,14 +150,6 @@ operations:
     messages:
       - $ref: '#/channels/matched/messages/matchedMessage'
 
-  depthChanged:
-    action: receive
-    channel:
-      $ref: '#/channels/depthChanged'
-    summary: Receive depth delta
-    messages:
-      - $ref: '#/channels/depthChanged/messages/depthChangedMessage'
-
   marketStatusChanged:
     action: receive
     channel:
@@ -149,6 +162,33 @@ operations:
       A client joined to any one outcome group of the condition receives it.
     messages:
       - $ref: '#/channels/marketStatusChanged/messages/marketStatusChangedMessage'
+
+  tradeCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/tradeCreated'
+    summary: Receive trade creation payload
+    description: >
+      Server pushes the positional TradeCreated payload after an order fill
+      creates an atomic-swap trade.
+    messages:
+      - $ref: '#/channels/tradeCreated/messages/tradeCreatedMessage'
+
+  swapMessageReceived:
+    action: receive
+    channel:
+      $ref: '#/channels/swapMessageReceived'
+    summary: Receive encrypted swap message
+    messages:
+      - $ref: '#/channels/swapMessageReceived/messages/swapMessageReceivedMessage'
+
+  tradeStateChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/tradeStateChanged'
+    summary: Receive trade state change
+    messages:
+      - $ref: '#/channels/tradeStateChanged/messages/tradeStateChangedMessage'
 
 components:
   messages:
@@ -190,13 +230,21 @@ components:
       payload:
         $ref: '#/components/schemas/MatchedDelta'
 
-    DepthChangedMessage:
-      payload:
-        $ref: '#/components/schemas/DepthDelta'
-
     MarketStatusChangedMessage:
       payload:
         $ref: '#/components/schemas/MarketStatusChanged'
+
+    TradeCreatedMessage:
+      payload:
+        $ref: '#/components/schemas/TradeCreatedArguments'
+
+    SwapMessageReceivedMessage:
+      payload:
+        $ref: '#/components/schemas/SwapMessageReceivedArguments'
+
+    TradeStateChangedMessage:
+      payload:
+        $ref: '#/components/schemas/TradeStateChangedArguments'
 
   schemas:
     Sats:
@@ -208,8 +256,10 @@ components:
     Probability:
       type: integer
       minimum: 1
-      maximum: 99
-      description: A probability price representing a percentage chance [1, 99].
+      description: >
+        Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
+        `D` is the market's immutable `divisibility`. Legacy sat markets use
+        `D = 100`, so values still render as whole percentage points there.
 
     OrderSide:
       type: string
@@ -222,6 +272,13 @@ components:
       enum:
         - Complementary
         - Mint
+
+    BaseAsset:
+      type: string
+      enum:
+        - sat
+        - usd
+        - jpy
 
     LevelDto:
       type: object
@@ -236,6 +293,11 @@ components:
 
     OrderBookSnapshot:
       type: object
+      description: >
+        Order book snapshot for market-detail rendering. When `depthLimit` is
+        present, `bids` and `asks` contain at most that many top executable
+        price levels per side; clients must not treat the snapshot as full
+        depth.
       required:
         - marketId
         - bids
@@ -260,6 +322,14 @@ components:
             - integer
             - 'null'
           description: Difference between best ask and best bid. Null if either side is empty.
+        depthLimit:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+          description: >
+            Maximum number of top price levels included per side. Null or absent
+            means the producer did not declare whether the snapshot is bounded.
 
     OrderAcceptedDelta:
       type: object
@@ -330,28 +400,6 @@ components:
           type: string
           format: date-time
 
-    DepthDelta:
-      type: object
-      required:
-        - marketId
-        - bids
-        - asks
-      properties:
-        marketId:
-          type: string
-        bids:
-          type: array
-          items:
-            $ref: '#/components/schemas/LevelDto'
-        asks:
-          type: array
-          items:
-            $ref: '#/components/schemas/LevelDto'
-        spread:
-          type:
-            - integer
-            - 'null'
-
     MarketStatusChanged:
       type: object
       required:
@@ -380,3 +428,96 @@ components:
           description: >
             Winning outcome after an oracle attestation close. Null for
             deadline-only closes or non-resolving transitions.
+
+    TradeCreatedArguments:
+      type: array
+      description: >
+        Positional SignalR arguments for ITradeHubClient.TradeCreated. The
+        nullable tail fields are additive compatibility fields; clients should
+        prefer quotePaymentSubunits and outcomeFaceAmountSubunits when present.
+      minItems: 7
+      maxItems: 16
+      prefixItems:
+        - type: string
+          format: uuid
+          description: tradeId
+        - type: string
+          description: sellerPubkey
+        - type: string
+          description: buyerPubkey
+        - type: string
+          format: date-time
+          description: sellerLocktime
+        - type: string
+          format: date-time
+          description: buyerLocktime
+        - type: string
+          description: marketId
+        - type: integer
+          format: int64
+          description: fillAmountSats
+        - type:
+            - integer
+            - 'null'
+          format: int64
+          description: outcomeFaceAmountSats
+        - type:
+            - integer
+            - 'null'
+          format: int64
+          description: quotePaymentSats
+        - type:
+            - string
+            - 'null'
+          description: settlementKind
+        - type:
+            - string
+            - 'null'
+          description: sellerKeepOutcomeSetId
+        - type:
+            - string
+            - 'null'
+          description: sellerLockOutcomeSetId
+        - oneOf:
+            - $ref: '#/components/schemas/BaseAsset'
+            - type: 'null'
+          description: baseAsset
+        - type:
+            - integer
+            - 'null'
+          format: int32
+          description: divisibility
+        - type:
+            - integer
+            - 'null'
+          format: int64
+          description: quotePaymentSubunits
+        - type:
+            - integer
+            - 'null'
+          format: int64
+          description: outcomeFaceAmountSubunits
+
+    SwapMessageReceivedArguments:
+      type: array
+      minItems: 3
+      maxItems: 3
+      prefixItems:
+        - type: string
+          format: uuid
+          description: tradeId
+        - type: string
+          description: messageType
+        - type: string
+          description: ciphertext
+
+    TradeStateChangedArguments:
+      type: array
+      minItems: 2
+      maxItems: 2
+      prefixItems:
+        - type: string
+          format: uuid
+          description: tradeId
+        - type: string
+          description: newState

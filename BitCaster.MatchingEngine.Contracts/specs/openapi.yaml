@@ -114,9 +114,15 @@ paths:
       operationId: getMarketPriceHistory
       summary: Fetch primitive outcome price history for a market
       description: >
-        Returns settled trade ticks grouped by primitive outcome id. Compound
-        outcome-set matches are projected only when settlement commits, and
-        the response never uses compound outcome ids.
+        Returns primitive outcome price points grouped by primitive outcome id.
+        A newly registered market includes an initial zero-volume anchor point
+        (`source = initial`) sourced from the creator probabilities. Initial
+        anchors act as a left-edge carry-forward value and are clamped to the
+        requested timeframe boundary when needed; settled trade ticks
+        (`source = fill`) are added only when settlement commits and are
+        filtered to the requested timeframe. Compound outcome-set matches are
+        projected only when settlement commits, and the response never uses
+        compound outcome ids.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
         - name: timeframe
@@ -1057,6 +1063,14 @@ components:
           description: >
             Engine-computed quote payment in the market base-asset sub-unit.
             Present for new trade-start fills; omitted for older replay data.
+        outcomeFaceAmountSubunits:
+          type: integer
+          format: int64
+          nullable: true
+          description: >
+            Engine-computed conditional-token face amount in the market
+            base-asset sub-unit. Present for new trade-start fills; omitted
+            for older replay data.
         filledAt:
           type: string
           format: date-time
@@ -1542,6 +1556,11 @@ components:
 
     OrderBookSnapshot:
       type: object
+      description: >
+        Order book snapshot for market-detail rendering. When `depthLimit` is
+        present, `bids` and `asks` contain at most that many top executable
+        price levels per side; clients must not treat the snapshot as full
+        depth.
       required:
         - marketId
         - bids
@@ -1566,6 +1585,14 @@ components:
             - type: integer
             - type: 'null'
           description: Difference between best ask and best bid. Null if either side is empty.
+        depthLimit:
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: 'null'
+          description: >
+            Maximum number of top price levels included per side. Null or absent
+            means the producer did not declare whether the snapshot is bounded.
 
     MarketStatusChanged:
       type: object
@@ -1664,12 +1691,15 @@ components:
           format: int32
           minimum: 100
           maximum: 1000000
+          multipleOf: 100
           default: 100
           description: >
             Immutable price denominator `D`. Orders use price numerator `k`
             where `1 <= k <= D - 1` and one whole share has face value `D`
-            base-asset sub-units. The creator UI may expose only a curated
-            subset of this range.
+            base-asset sub-units. Creator-probability markets currently
+            require `D` to be divisible by 100; future arbitrary divisibility
+            support needs a shared probability-rounding policy. The creator UI
+            may expose only a curated subset of this range.
         categoryTags:
           type: array
           items:
@@ -1712,6 +1742,8 @@ components:
         - timestamp
         - price
         - volumeSats
+        - volumeSubunits
+        - source
       properties:
         timestamp:
           type: string
@@ -1719,11 +1751,32 @@ components:
         price:
           type: integer
           minimum: 1
-          maximum: 99
+          description: >
+            Market price numerator `k`. Valid range is `1 <= k <= D - 1`,
+            where `D` is the market's immutable `divisibility`.
         volumeSats:
           type: integer
           format: int64
           minimum: 0
+          description: >
+            Legacy volume field. For non-sat markets this is market
+            collateral/share subunits, not literal sats. Prefer
+            `volumeSubunits` for new clients.
+        volumeSubunits:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Volume represented in the market's collateral/share subunits.
+            Initial anchor points always carry zero volume.
+        source:
+          type: string
+          enum: [initial, fill]
+          description: >
+            `initial` is the creator-probability anchor and is clamped to the
+            selected timeframe boundary when used as carry-forward context.
+            `fill` is a settlement-committed trade tick inside the selected
+            timeframe.
 
     MarketOutcomePriceHistory:
       type: object
@@ -2329,8 +2382,11 @@ components:
           type: number
           nullable: true
           description: >
-            Most recent execution price (probability in `[1, 99]`), null if
-            the market has never traded.
+            Most recent execution price as a decimal ratio in `[0, 1]`, null
+            if the market has never traded. Runtime order, fill, orderbook, and
+            price-history price fields use integer numerators against the
+            market's `divisibility`; this catalogue summary keeps the legacy
+            ratio form for sorting/display compatibility.
         categoryTags:
           type: array
           items:

@@ -35,25 +35,25 @@ public readonly record struct Sats : IComparable<Sats>
 }
 
 /// <summary>
-/// A probability price in the range [1, 99] representing a percentage chance.
-/// Used for limit order prices in binary outcome markets.
+/// Market price numerator `k`. Interpret against the market's immutable
+/// divisibility `D`; legacy sat markets use `D = 100`.
 /// Serializes as a plain JSON number.
 /// </summary>
 [JsonConverter(typeof(ProbabilityJsonConverter))]
 public readonly record struct Probability : IComparable<Probability>
 {
-    /// <summary>The price value. Always in the range [1, 99].</summary>
+    /// <summary>The positive price numerator.</summary>
     public int Value { get; }
 
     public Probability(int value)
     {
-        if (value is < 1 or > 99)
-            throw new ArgumentOutOfRangeException(nameof(value), value, "Probability must be between 1 and 99.");
+        if (value < 1)
+            throw new ArgumentOutOfRangeException(nameof(value), value, "Price numerator must be positive.");
         Value = value;
     }
 
-    /// <summary>Returns the complementary probability (100 - this).</summary>
-    public Probability Complement() => new(100 - Value);
+    /// <summary>Returns the complementary numerator (D - this).</summary>
+    public Probability Complement(int divisibility = 100) => new(divisibility - Value);
 
     public int CompareTo(Probability other) => Value.CompareTo(other.Value);
 
