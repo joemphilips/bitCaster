@@ -991,14 +991,14 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
 
 describe("price history normalization", () => {
   it("normalizes raw price numerators to percentages", () => {
-    expect(priceNumeratorToPercent(500, 10_000)).toBe(5);
+    expect(priceNumeratorToPercent(50, 100)).toBe(50);
     expect(priceNumeratorToPercent(500, 1_000)).toBe(50);
     expect(priceNumeratorToPercent(500, 100)).toBe(100);
   });
 
   it("applies market divisibility when mapping fetched history", () => {
     const market = {
-      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 10_000 }),
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 1_000 }),
       priceHistory: { timeframe: "7d" as const, data: [] },
       orderBook: { bids: [], asks: [], spread: 0 },
       recentTrades: [],
@@ -1036,6 +1036,6 @@ describe("price history normalization", () => {
       ],
     });
 
-    expect(updated.priceHistory.data[0].price).toBe(5);
+    expect(updated.priceHistory.data[0].price).toBe(50);
   });
 });

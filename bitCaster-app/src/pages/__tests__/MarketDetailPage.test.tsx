@@ -405,10 +405,9 @@ describe("marketDetailDataReducer", () => {
 });
 
 describe("defaultLimitPriceForDivisibility", () => {
-  it("uses the midpoint for non-default market denominators", () => {
+  it("uses the midpoint for supported market denominators", () => {
     expect(defaultLimitPriceForDivisibility(100)).toBe(50);
     expect(defaultLimitPriceForDivisibility(1_000)).toBe(500);
-    expect(defaultLimitPriceForDivisibility(10_000)).toBe(5_000);
   });
 });
 

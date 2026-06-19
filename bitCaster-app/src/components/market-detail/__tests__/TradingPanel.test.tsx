@@ -173,20 +173,35 @@ describe('TradingPanel', () => {
     expect(onAmountChange).toHaveBeenCalledWith(50)
   })
 
-  it('respects finer price ticks for D=1000 and D=10000', () => {
+  it('respects supported price ticks for D=100 and D=1000', () => {
     const preview: LimitOrderPreview = {
-      limitPrice: 301,
+      limitPrice: 30,
       amount: 1,
       sharesIfFilled: 1,
-      quoteSats: 301,
+      quoteSats: 30,
       creatorFee: 0,
       mintFee: 0,
       engineScoreFeeSats: 0,
-      potentialPayout: 1_000,
-      totalCost: 301,
+      potentialPayout: 100,
+      totalCost: 30,
     }
 
     const { rerender } = render(
+      <TradingPanel
+        market={makeMarket({ divisibility: 100 })}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={30}
+        limitOrderPreview={preview}
+      />,
+    )
+
+    expect(screen.getByText('30 (30%)')).toBeInTheDocument()
+
+    rerender(
       <TradingPanel
         market={makeMarket({ divisibility: 1_000 })}
         tradeSelection={{ side: 'yes' }}
@@ -195,31 +210,16 @@ describe('TradingPanel', () => {
         tradeSide="buy"
         orderType="limit"
         limitPrice={301}
-        limitOrderPreview={preview}
-      />,
-    )
-
-    expect(screen.getByText('301 (30.1%)')).toBeInTheDocument()
-
-    rerender(
-      <TradingPanel
-        market={makeMarket({ divisibility: 10_000 })}
-        tradeSelection={{ side: 'yes' }}
-        tradeAmount={1}
-        tradePreview={null}
-        tradeSide="buy"
-        orderType="limit"
-        limitPrice={3_015}
         limitOrderPreview={{
           ...preview,
-          limitPrice: 3_015,
-          quoteSats: 3_015,
-          potentialPayout: 10_000,
-          totalCost: 3_015,
+          limitPrice: 301,
+          quoteSats: 301,
+          potentialPayout: 1_000,
+          totalCost: 301,
         }}
       />,
     )
 
-    expect(screen.getByText('3,015 (30.15%)')).toBeInTheDocument()
+    expect(screen.getByText('301 (30.1%)')).toBeInTheDocument()
   })
 })

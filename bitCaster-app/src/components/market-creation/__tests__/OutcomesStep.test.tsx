@@ -134,21 +134,26 @@ describe('OutcomesStep divisibility UX copy', () => {
     expect(options).not.toContain(10_000)
   })
 
-  it('shows a rejection message and falls back when given an unsupported D>1000', () => {
-    render(
-      <OutcomesStep
-        outcomeType="categorical"
-        outcomes={makeOutcomes([50, 50])}
-        baseAsset="sat"
-        divisibility={10_000}
-      />,
-    )
+  it.each([10_000, 200, 500, 900])(
+    'shows a rejection message and falls back when given unsupported D=%i',
+    async (divisibility) => {
+      render(
+        <OutcomesStep
+          outcomeType="categorical"
+          outcomes={makeOutcomes([50, 50])}
+          baseAsset="sat"
+          divisibility={divisibility}
+        />,
+      )
 
-    expect(screen.getByTestId('divisibility-unsupported-message')).toHaveTextContent(/not supported/i)
-    expect(screen.getByTestId('divisibility-unsupported-message')).toHaveTextContent(/10,?000/)
-    const select = screen.getByRole('combobox') as HTMLSelectElement
-    expect(Number(select.value)).toBe(100)
-  })
+      expect(screen.getByTestId('divisibility-unsupported-message')).toHaveTextContent(/not supported/i)
+      expect(screen.getByTestId('divisibility-unsupported-message')).toHaveTextContent(
+        new RegExp(divisibility.toString().replace(/(\d)(?=(\d{3})+$)/g, '$1,?')),
+      )
+      const select = screen.getByRole('combobox') as HTMLSelectElement
+      expect(Number(select.value)).toBe(100)
+    },
+  )
 
   it('does not show a rejection message for supported D=1000', () => {
     render(

@@ -6,6 +6,7 @@ import {
   DEFAULT_MARKET_BASE_ASSET,
   DEFAULT_MARKET_DIVISIBILITY,
   SUPPORTED_MARKET_DIVISIBILITIES,
+  isSupportedMarketDivisibility,
   marketUnitLabel,
   formatWholeShareFaceValue,
 } from '@bitcaster/client-sdk/marketUnits'
@@ -105,10 +106,9 @@ function MarketUnitControls({
   const selectedDivisibility = divisibility ?? DEFAULT_MARKET_DIVISIBILITY
 
   // Backend policy: only D=100 and D=1000 are supported in P34.
-  // If a persisted draft or external state carries a higher value, surface
+  // If a persisted draft or external state carries any other value, surface
   // a rejection message and fall back to the default in the dropdown.
-  const maxSupportedCreatorDivisibility = 1_000
-  const isUnsupportedDivisibility = selectedDivisibility > maxSupportedCreatorDivisibility
+  const isUnsupportedDivisibility = !isSupportedMarketDivisibility(selectedDivisibility)
   const selectDivisibility = isUnsupportedDivisibility
     ? DEFAULT_MARKET_DIVISIBILITY
     : selectedDivisibility
