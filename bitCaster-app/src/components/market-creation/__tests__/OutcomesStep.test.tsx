@@ -117,6 +117,51 @@ describe('OutcomesStep divisibility UX copy', () => {
     expect(help).toHaveTextContent(/what is this/i)
     expect(screen.queryByText(guidance)).not.toBeInTheDocument()
   })
+
+  it('hides unsupported D>1000 divisibility options from the dropdown', () => {
+    render(
+      <OutcomesStep
+        outcomeType="categorical"
+        outcomes={makeOutcomes([50, 50])}
+        baseAsset="sat"
+        divisibility={100}
+      />,
+    )
+
+    const options = screen.getAllByRole('option').map((o) => Number((o as HTMLOptionElement).value))
+    expect(options).toContain(100)
+    expect(options).toContain(1000)
+    expect(options).not.toContain(10_000)
+  })
+
+  it('shows a rejection message and falls back when given an unsupported D>1000', () => {
+    render(
+      <OutcomesStep
+        outcomeType="categorical"
+        outcomes={makeOutcomes([50, 50])}
+        baseAsset="sat"
+        divisibility={10_000}
+      />,
+    )
+
+    expect(screen.getByTestId('divisibility-unsupported-message')).toHaveTextContent(/not supported/i)
+    expect(screen.getByTestId('divisibility-unsupported-message')).toHaveTextContent(/10,?000/)
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    expect(Number(select.value)).toBe(100)
+  })
+
+  it('does not show a rejection message for supported D=1000', () => {
+    render(
+      <OutcomesStep
+        outcomeType="categorical"
+        outcomes={makeOutcomes([50, 50])}
+        baseAsset="sat"
+        divisibility={1000}
+      />,
+    )
+
+    expect(screen.queryByTestId('divisibility-unsupported-message')).not.toBeInTheDocument()
+  })
 })
 
 // ── Auto-normalize: probability edit ───────────────────────────────────────

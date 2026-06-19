@@ -104,6 +104,15 @@ function MarketUnitControls({
   const selectedBaseAsset = baseAsset ?? DEFAULT_MARKET_BASE_ASSET
   const selectedDivisibility = divisibility ?? DEFAULT_MARKET_DIVISIBILITY
 
+  // Backend policy: only D=100 and D=1000 are supported in P34.
+  // If a persisted draft or external state carries a higher value, surface
+  // a rejection message and fall back to the default in the dropdown.
+  const maxSupportedCreatorDivisibility = 1_000
+  const isUnsupportedDivisibility = selectedDivisibility > maxSupportedCreatorDivisibility
+  const selectDivisibility = isUnsupportedDivisibility
+    ? DEFAULT_MARKET_DIVISIBILITY
+    : selectedDivisibility
+
   const stake = formatWholeShareFaceValue({ baseAsset: selectedBaseAsset, divisibility: selectedDivisibility })
   const step = formatPriceStep(selectedDivisibility)
 
@@ -145,7 +154,7 @@ function MarketUnitControls({
             </button>
           </label>
           <select
-            value={selectedDivisibility}
+            value={selectDivisibility}
             onChange={(event) => onDivisibilityChange?.(Number(event.target.value))}
             className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
           >
@@ -157,6 +166,11 @@ function MarketUnitControls({
           </select>
         </div>
       </div>
+      {isUnsupportedDivisibility && (
+        <p className="text-xs text-red-400 mb-2" data-testid="divisibility-unsupported-message">
+          {t('marketCreation.divisibilityUnsupported', { divisibility: selectedDivisibility })}
+        </p>
+      )}
       <p className="text-xs text-slate-400">
         {t('marketCreation.divisibilityExample', { stake, step })}
       </p>

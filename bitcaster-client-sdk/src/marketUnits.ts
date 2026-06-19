@@ -4,7 +4,7 @@ export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
 export const DEFAULT_MARKET_DIVISIBILITY = 100
 export const MIN_MARKET_DIVISIBILITY = 100
 export const MAX_MARKET_DIVISIBILITY = 1_000_000
-export const SUPPORTED_MARKET_DIVISIBILITIES = [100, 1_000, 10_000] as const
+export const SUPPORTED_MARKET_DIVISIBILITIES = [100, 1_000] as const
 
 export interface MarketUnitSpec {
   baseAsset?: MarketBaseAsset | null
@@ -14,11 +14,17 @@ export interface MarketUnitSpec {
 export function normalizeMarketBaseAsset(
   value: MarketBaseAsset | string | null | undefined,
 ): MarketBaseAsset {
+  return parseMarketBaseAsset(value) ?? DEFAULT_MARKET_BASE_ASSET
+}
+
+export function parseMarketBaseAsset(
+  value: MarketBaseAsset | string | null | undefined,
+): MarketBaseAsset | null {
   const normalized = value?.trim().toLowerCase()
   if (normalized === 'usd' || normalized === 'jpy' || normalized === 'sat') {
     return normalized
   }
-  return DEFAULT_MARKET_BASE_ASSET
+  return null
 }
 
 export function normalizeMarketDivisibility(value: number | null | undefined): number {
@@ -27,12 +33,17 @@ export function normalizeMarketDivisibility(value: number | null | undefined): n
     : DEFAULT_MARKET_DIVISIBILITY
 }
 
+export function parseMarketDivisibility(value: number | null | undefined): number | null {
+  return isValidMarketDivisibility(value) ? value : null
+}
+
 export function isValidMarketDivisibility(value: unknown): value is number {
   return (
     typeof value === 'number' &&
     Number.isSafeInteger(value) &&
     value >= MIN_MARKET_DIVISIBILITY &&
-    value <= MAX_MARKET_DIVISIBILITY
+    value <= MAX_MARKET_DIVISIBILITY &&
+    value % 100 === 0
   )
 }
 

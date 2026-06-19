@@ -483,6 +483,7 @@
     "whatIsThis": "What is this?",
     "divisibilityExample": "1 share = {{stake}} · price moves in {{step}} steps",
     "divisibilityHelp": "Lower value = cheaper to participate but coarser prices. Higher value = finer prices but a bigger minimum stake per share.",
+    "divisibilityUnsupported": "Divisibility {{divisibility}} is not supported in this release. Supported values: 100 and 1,000.",
     "precision": "Precision (decimal places)",
     "precisionHint": "Number of decimal places for the outcome value",
     "marketOutcomes": "Market Outcomes",
