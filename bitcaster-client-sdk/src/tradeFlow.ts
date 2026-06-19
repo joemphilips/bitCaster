@@ -1,4 +1,13 @@
 import { validateTradeCreatedProtocol } from './tradeSession.ts'
+import {
+  DEFAULT_MARKET_BASE_ASSET,
+  DEFAULT_MARKET_DIVISIBILITY,
+  parseMarketBaseAsset,
+  parseMarketDivisibility,
+  quotePaymentSubunits,
+  validateWholeShareFaceAmount,
+  type MarketBaseAsset,
+} from './marketUnits.ts'
 
 const TRADE_MESSAGE_TYPES = {
   adaptorPoint: 'adaptor-point',
@@ -37,7 +46,23 @@ export interface TradeCreatedDecisionInput {
   sellerLockOutcomeSetId?: string | null
   outcomeFaceAmountSats?: number | null
   quotePaymentSats?: number | null
+  baseAsset?: string | null
+  divisibility?: number | null
+  expectedBaseAsset?: string | null
+  expectedDivisibility?: number | null
+  expectedOrder?: TradeCreatedExpectedOrder | null
+  requireExpectedOrder?: boolean
+  outcomeFaceAmountSubunits?: number | null
+  quotePaymentSubunits?: number | null
   minLocktimeDeltaSecs?: number
+}
+
+export interface TradeCreatedExpectedOrder {
+  side: 'Buy' | 'Sell' | 'bid' | 'ask'
+  tokenSide?: 'Outcome' | 'Complement' | null
+  priceSubunits: number
+  amountSubunits: number
+  quotePolicy?: 'limit' | 'exact'
 }
 
 export type TradeCreatedDecision =
@@ -80,6 +105,19 @@ export function decideTradeCreated(
   const counterpartyPubkey =
     role === 'seller' ? input.buyerPubkey : input.sellerPubkey
 
+  const settlementMetadataError = validateTradeCreatedSettlementAmounts(input, role)
+  if (settlementMetadataError) {
+    return {
+      accepted: false,
+      reason: 'invalid-protocol',
+      error: settlementMetadataError,
+      role,
+      counterpartyPubkey,
+      sellerLocktime,
+      buyerLocktime,
+    }
+  }
+
   const protocolError = validateTradeCreatedProtocol(
     {
       sellerLocktime,
@@ -87,8 +125,9 @@ export function decideTradeCreated(
       settlementKind: input.settlementKind,
       sellerKeepOutcomeSetId: input.sellerKeepOutcomeSetId,
       sellerLockOutcomeSetId: input.sellerLockOutcomeSetId,
-      outcomeFaceAmountSats: input.outcomeFaceAmountSats,
-      quotePaymentSats: input.quotePaymentSats,
+      outcomeFaceAmountSats:
+        input.outcomeFaceAmountSubunits ?? input.outcomeFaceAmountSats,
+      quotePaymentSats: input.quotePaymentSubunits ?? input.quotePaymentSats,
     },
     input.minLocktimeDeltaSecs,
   )
@@ -111,6 +150,223 @@ export function decideTradeCreated(
     sellerLocktime,
     buyerLocktime,
   }
+}
+
+function validateTradeCreatedSettlementAmounts(
+  input: TradeCreatedDecisionInput,
+  role: SwapRole,
+): string | null {
+  const unit = resolveSettlementUnit(input)
+  if (unit.error) return unit.error
+  const { baseAsset, divisibility, expectedBaseAsset, expectedDivisibility } = unit
+  const expectedUnitSpecified = expectedBaseAsset != null && expectedDivisibility != null
+  const isDefaultUnit = baseAsset === DEFAULT_MARKET_BASE_ASSET && divisibility === DEFAULT_MARKET_DIVISIBILITY
+  if (!expectedUnitSpecified && !isDefaultUnit) {
+    return 'TradeCreated carries a non-default unit but the local expected unit is missing.'
+  }
+  if (expectedBaseAsset != null && baseAsset !== expectedBaseAsset) {
+    return `Trade unit mismatch: expected ${expectedBaseAsset}, received ${baseAsset}.`
+  }
+  if (expectedDivisibility != null && divisibility !== expectedDivisibility) {
+    return `Trade divisibility mismatch: expected ${expectedDivisibility}, received ${divisibility}.`
+  }
+
+  const canonicalBaseAsset = expectedBaseAsset ?? baseAsset
+  const canonicalDivisibility = expectedDivisibility ?? divisibility
+  const isDefault = canonicalBaseAsset === 'sat' && canonicalDivisibility === 100
+  if (!isDefault) {
+    if (!isPositiveInteger(input.outcomeFaceAmountSubunits)) {
+      return 'Trade settlement metadata is missing outcome face subunits.'
+    }
+    if (!isPositiveInteger(input.quotePaymentSubunits)) {
+      return 'Trade settlement metadata is missing quote payment subunits.'
+    }
+  }
+  if (
+    input.outcomeFaceAmountSubunits != null &&
+    input.outcomeFaceAmountSats != null &&
+    input.outcomeFaceAmountSubunits !== input.outcomeFaceAmountSats
+  ) {
+    return 'Trade settlement metadata has inconsistent outcome face amounts.'
+  }
+  if (
+    input.quotePaymentSubunits != null &&
+    input.quotePaymentSats != null &&
+    input.quotePaymentSubunits !== input.quotePaymentSats
+  ) {
+    return 'Trade settlement metadata has inconsistent quote payment amounts.'
+  }
+  const orderError = validateExpectedOrderEconomics({
+    role,
+    settlementKind: input.settlementKind,
+    order: input.expectedOrder,
+    required: input.requireExpectedOrder,
+    divisibility: canonicalDivisibility,
+    outcomeFaceAmountSubunits: input.outcomeFaceAmountSubunits ?? input.outcomeFaceAmountSats,
+    quotePaymentSubunits: input.quotePaymentSubunits ?? input.quotePaymentSats,
+  })
+  if (orderError) return orderError
+  return null
+}
+
+function resolveSettlementUnit(input: TradeCreatedDecisionInput): {
+  baseAsset: MarketBaseAsset
+  divisibility: number
+  expectedBaseAsset: MarketBaseAsset | null
+  expectedDivisibility: number | null
+  error: string | null
+} {
+  const baseAsset = parseOptionalBaseAsset(input.baseAsset, 'Trade unit')
+  if (baseAsset.error) return { ...defaultResolvedUnit(), error: baseAsset.error }
+  const divisibility = parseOptionalDivisibility(input.divisibility, 'Trade divisibility')
+  if (divisibility.error) return { ...defaultResolvedUnit(), error: divisibility.error }
+  const expectedBaseAsset = parseExpectedBaseAsset(input.expectedBaseAsset)
+  if (expectedBaseAsset.error) return { ...defaultResolvedUnit(), error: expectedBaseAsset.error }
+  const expectedDivisibility = parseExpectedDivisibility(input.expectedDivisibility)
+  if (expectedDivisibility.error) return { ...defaultResolvedUnit(), error: expectedDivisibility.error }
+
+  return {
+    baseAsset: baseAsset.value,
+    divisibility: divisibility.value,
+    expectedBaseAsset: expectedBaseAsset.value,
+    expectedDivisibility: expectedDivisibility.value,
+    error: null,
+  }
+}
+
+function defaultResolvedUnit(): {
+  baseAsset: MarketBaseAsset
+  divisibility: number
+  expectedBaseAsset: MarketBaseAsset | null
+  expectedDivisibility: number | null
+} {
+  return {
+    baseAsset: DEFAULT_MARKET_BASE_ASSET,
+    divisibility: DEFAULT_MARKET_DIVISIBILITY,
+    expectedBaseAsset: null,
+    expectedDivisibility: null,
+  }
+}
+
+function parseOptionalBaseAsset(
+  value: string | null | undefined,
+  label: string,
+): { value: MarketBaseAsset; error: string | null } {
+  if (value == null || value.trim() === '') {
+    return { value: DEFAULT_MARKET_BASE_ASSET, error: null }
+  }
+  const parsed = parseMarketBaseAsset(value)
+  return parsed
+    ? { value: parsed, error: null }
+    : { value: DEFAULT_MARKET_BASE_ASSET, error: `${label} is unsupported.` }
+}
+
+function parseExpectedBaseAsset(
+  value: string | null | undefined,
+): { value: MarketBaseAsset | null; error: string | null } {
+  if (value == null || value.trim() === '') return { value: null, error: null }
+  const parsed = parseMarketBaseAsset(value)
+  return parsed
+    ? { value: parsed, error: null }
+    : { value: null, error: 'Expected trade unit is unsupported.' }
+}
+
+function parseOptionalDivisibility(
+  value: number | null | undefined,
+  label: string,
+): { value: number; error: string | null } {
+  if (value == null) return { value: DEFAULT_MARKET_DIVISIBILITY, error: null }
+  const parsed = parseMarketDivisibility(value)
+  return parsed
+    ? { value: parsed, error: null }
+    : { value: DEFAULT_MARKET_DIVISIBILITY, error: `${label} is unsupported.` }
+}
+
+function parseExpectedDivisibility(
+  value: number | null | undefined,
+): { value: number | null; error: string | null } {
+  if (value == null) return { value: null, error: null }
+  const parsed = parseMarketDivisibility(value)
+  return parsed
+    ? { value: parsed, error: null }
+    : { value: null, error: 'Expected trade divisibility is unsupported.' }
+}
+
+function validateExpectedOrderEconomics(input: {
+  role: SwapRole
+  settlementKind?: string | null
+  order?: TradeCreatedExpectedOrder | null
+  required?: boolean
+  divisibility: number
+  outcomeFaceAmountSubunits?: number | null
+  quotePaymentSubunits?: number | null
+}): string | null {
+  const order = input.order
+  if (!order) {
+    return input.required
+      ? 'Expected order economics are missing for this local trade.'
+      : null
+  }
+  if (!isPositiveInteger(order.priceSubunits) || order.priceSubunits >= input.divisibility) {
+    return 'Expected order price is out of range.'
+  }
+  if (
+    !validateWholeShareFaceAmount(order.amountSubunits, input.divisibility)
+  ) {
+    return 'Expected order amount is not a positive whole-share amount.'
+  }
+  const faceAmount = input.outcomeFaceAmountSubunits
+  const quotePayment = input.quotePaymentSubunits
+  if (!isPositiveInteger(faceAmount)) return 'Trade settlement metadata is missing outcome face subunits.'
+  if (!isPositiveInteger(quotePayment)) return 'Trade settlement metadata is missing quote payment subunits.'
+  if (!validateWholeShareFaceAmount(faceAmount, input.divisibility)) {
+    return 'Trade outcome face amount is not a whole market share.'
+  }
+  if (faceAmount > order.amountSubunits) {
+    return 'Trade outcome face amount exceeds the submitted order amount.'
+  }
+
+  const side = normalizeOrderSide(order.side)
+  if (input.role === 'buyer') {
+    if (side !== 'buy') return 'Trade role does not match the submitted order side.'
+    const maxQuote = quotePaymentSubunits({
+      faceAmountSubunits: faceAmount,
+      priceNumerator: order.priceSubunits,
+      divisibility: input.divisibility,
+    })
+    if (order.quotePolicy === 'exact' ? quotePayment !== maxQuote : quotePayment > maxQuote) {
+      return 'Trade quote payment exceeds the submitted order price.'
+    }
+    return null
+  }
+
+  const mintBidSeller =
+    input.settlementKind === 'Mint' &&
+    side === 'buy' &&
+    order.tokenSide === 'Complement'
+  if (side !== 'sell' && !mintBidSeller) {
+    return 'Trade role does not match the submitted order side.'
+  }
+  const effectiveSellerPrice = mintBidSeller
+    ? input.divisibility - order.priceSubunits
+    : order.priceSubunits
+  const minQuote = quotePaymentSubunits({
+    faceAmountSubunits: faceAmount,
+    priceNumerator: effectiveSellerPrice,
+    divisibility: input.divisibility,
+  })
+  if (order.quotePolicy === 'exact' ? quotePayment !== minQuote : quotePayment < minQuote) {
+    return 'Trade quote payment does not satisfy the submitted order price.'
+  }
+  return null
+}
+
+function normalizeOrderSide(side: TradeCreatedExpectedOrder['side']): 'buy' | 'sell' {
+  return side === 'bid' || side === 'Buy' ? 'buy' : 'sell'
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
 }
 
 export type SwapMessageAction = 'none' | 'buyer-respond' | 'settlement-claim'
