@@ -3,7 +3,7 @@ export type MarketBaseAsset = 'sat' | 'usd' | 'jpy'
 export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
 export const DEFAULT_MARKET_DIVISIBILITY = 100
 export const MIN_MARKET_DIVISIBILITY = 100
-export const MAX_MARKET_DIVISIBILITY = 1_000_000
+export const MAX_MARKET_DIVISIBILITY = 1_000
 export const SUPPORTED_MARKET_DIVISIBILITIES = [100, 1_000] as const
 
 export interface MarketUnitSpec {
@@ -41,9 +41,7 @@ export function isValidMarketDivisibility(value: unknown): value is number {
   return (
     typeof value === 'number' &&
     Number.isSafeInteger(value) &&
-    value >= MIN_MARKET_DIVISIBILITY &&
-    value <= MAX_MARKET_DIVISIBILITY &&
-    value % 100 === 0
+    isSupportedMarketDivisibility(value)
   )
 }
 

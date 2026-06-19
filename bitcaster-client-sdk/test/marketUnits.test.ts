@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   DEFAULT_MARKET_DIVISIBILITY,
@@ -22,14 +23,20 @@ test('normalizes market unit defaults', () => {
   assert.equal(normalizeMarketBaseAsset('USD'), 'usd')
   assert.equal(normalizeMarketBaseAsset('bogus'), 'sat')
   assert.equal(normalizeMarketDivisibility(undefined), DEFAULT_MARKET_DIVISIBILITY)
+  assert.equal(normalizeMarketDivisibility(100), 100)
   assert.equal(normalizeMarketDivisibility(1_000), 1_000)
-  assert.equal(normalizeMarketDivisibility(250), 250)
+  assert.equal(normalizeMarketDivisibility(250), DEFAULT_MARKET_DIVISIBILITY)
   assert.equal(normalizeMarketDivisibility(99), DEFAULT_MARKET_DIVISIBILITY)
+  assert.equal(normalizeMarketDivisibility(10_000), DEFAULT_MARKET_DIVISIBILITY)
   assert.equal(normalizeMarketDivisibility(1_000_001), DEFAULT_MARKET_DIVISIBILITY)
   assert.equal(marketUnitLabel('usd'), 'USD')
   assert.equal(marketUnitLabel('sat'), 'sats')
-  assert.equal(isValidMarketDivisibility(250), true)
+  assert.equal(isValidMarketDivisibility(100), true)
+  assert.equal(isValidMarketDivisibility(1_000), true)
+  assert.equal(isValidMarketDivisibility(250), false)
   assert.equal(isValidMarketDivisibility(99), false)
+  assert.equal(isValidMarketDivisibility(10_000), false)
+  assert.equal(isValidMarketDivisibility(1_000_000), false)
   assert.equal(isSupportedMarketDivisibility(1_000), true)
   assert.equal(isSupportedMarketDivisibility(123), false)
 })
@@ -51,7 +58,7 @@ test('formats market subunits without confusing cents for dollars', () => {
   assert.equal(formatWholeShareFaceValue({ baseAsset: 'usd', divisibility: 100 }), '$1.00')
   assert.equal(formatPricePercent(50, 100), '50.0%')
   assert.equal(formatPricePercent(50, 1_000), '5.0%')
-  assert.equal(formatPricePercent(1, 10_000), '0.01%')
+  assert.equal(formatPricePercent(1, 1_000), '0.1%')
 })
 
 test('validates price numerator and whole-share face amount', () => {
@@ -81,3 +88,46 @@ test('computes quote payment by dividing into whole shares first', () => {
     /whole-share/,
   )
 })
+
+test('matches shared market-unit settlement vectors', () => {
+  for (const vector of sharedMarketUnitSettlementVectors()) {
+    assert.equal(
+      quotePaymentSubunits({
+        faceAmountSubunits: vector.faceAmountSubunits,
+        priceNumerator: vector.priceSubunits,
+        divisibility: vector.divisibility,
+      }),
+      vector.quotePaymentSubunits,
+      vector.name,
+    )
+    assert.equal(
+      quotePaymentSubunits({
+        faceAmountSubunits: vector.faceAmountSubunits,
+        priceNumerator: vector.divisibility - vector.priceSubunits,
+        divisibility: vector.divisibility,
+      }),
+      vector.complementQuotePaymentSubunits,
+      `${vector.name} complement`,
+    )
+  }
+})
+
+interface MarketUnitSettlementVector {
+  name: string
+  baseAsset: string
+  divisibility: number
+  faceAmountSubunits: number
+  priceSubunits: number
+  quotePaymentSubunits: number
+  complementQuotePaymentSubunits: number
+}
+
+function sharedMarketUnitSettlementVectors(): MarketUnitSettlementVector[] {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL('../../test-vectors/market-unit-settlement.json', import.meta.url),
+      'utf8',
+    ),
+  ) as { vectors: MarketUnitSettlementVector[] }
+  return fixture.vectors
+}
