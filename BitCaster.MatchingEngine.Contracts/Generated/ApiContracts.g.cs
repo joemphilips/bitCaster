@@ -368,7 +368,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSats, BaseAsset @baseAsset, int @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, System.Guid? @tradeId)
+        public Fill(long @amountSats, BaseAsset @baseAsset, int @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, long? @outcomeFaceAmountSubunits, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, System.Guid? @tradeId)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
@@ -380,6 +380,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
             this.QuotePaymentSubunits = @quotePaymentSubunits;
+            this.OutcomeFaceAmountSubunits = @outcomeFaceAmountSubunits;
             this.FilledAt = @filledAt;
             this.TradeId = @tradeId;
             this.MakerEphemeralPubkey = @makerEphemeralPubkey;
@@ -440,6 +441,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("quotePaymentSubunits")]
         public long? QuotePaymentSubunits { get; }
+
+        /// <summary>
+        /// Engine-computed conditional-token face amount in the market base-asset sub-unit. Present for new trade-start fills; omitted for older replay data.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeFaceAmountSubunits")]
+        public long? OutcomeFaceAmountSubunits { get; }
 
         /// <summary>
         /// Timestamp when this fill was executed.
@@ -1216,16 +1224,21 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    /// <summary>
+    /// Order book snapshot for market-detail rendering. When `depthLimit` is present, `bids` and `asks` contain at most that many top executable price levels per side; clients must not treat the snapshot as full depth.
+    /// <br/>
+    /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class OrderBookSnapshot
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderBookSnapshot(System.Collections.Generic.List<LevelDto> @asks, System.Collections.Generic.List<LevelDto> @bids, string @marketId, int? @spread)
+        public OrderBookSnapshot(System.Collections.Generic.List<LevelDto> @asks, System.Collections.Generic.List<LevelDto> @bids, int? @depthLimit, string @marketId, int? @spread)
         {
             this.MarketId = @marketId;
             this.Bids = @bids;
             this.Asks = @asks;
             this.Spread = @spread;
+            this.DepthLimit = @depthLimit;
         }
 
         /// <summary>
@@ -1252,6 +1265,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("spread")]
         public int? Spread { get; }
+
+        /// <summary>
+        /// Maximum number of top price levels included per side. Null or absent means the producer did not declare whether the snapshot is bounded.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("depthLimit")]
+        public int? DepthLimit { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1415,7 +1435,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset? BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units. The creator UI may expose only a curated subset of this range.
+        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units. Creator-probability markets currently require `D` to be divisible by 100; future arbitrary divisibility support needs a shared probability-rounding policy. The creator UI may expose only a curated subset of this range.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -1490,21 +1510,46 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketPriceHistoryPoint
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketPriceHistoryPoint(int @price, System.DateTimeOffset @timestamp, long @volumeSats)
+        public MarketPriceHistoryPoint(int @price, MarketPriceHistoryPointSource @source, System.DateTimeOffset @timestamp, long @volumeSats, long @volumeSubunits)
         {
             this.Timestamp = @timestamp;
             this.Price = @price;
             this.VolumeSats = @volumeSats;
+            this.VolumeSubunits = @volumeSubunits;
+            this.Source = @source;
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("timestamp")]
         public System.DateTimeOffset Timestamp { get; }
 
+        /// <summary>
+        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`.
+        /// <br/>
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("price")]
         public int Price { get; }
 
+        /// <summary>
+        /// Legacy volume field. For non-sat markets this is market collateral/share subunits, not literal sats. Prefer `volumeSubunits` for new clients.
+        /// <br/>
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volumeSats")]
         public long VolumeSats { get; }
+
+        /// <summary>
+        /// Volume represented in the market's collateral/share subunits. Initial anchor points always carry zero volume.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("volumeSubunits")]
+        public long VolumeSubunits { get; }
+
+        /// <summary>
+        /// `initial` is the creator-probability anchor and is clamped to the selected timeframe boundary when used as carry-forward context. `fill` is a settlement-committed trade tick inside the selected timeframe.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("source")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<MarketPriceHistoryPointSource>))]
+        public MarketPriceHistoryPointSource Source { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -2503,7 +2548,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public int Divisibility { get; }
 
         /// <summary>
-        /// Most recent execution price (probability in `[1, 99]`), null if the market has never traded.
+        /// Most recent execution price as a decimal ratio in `[0, 1]`, null if the market has never traded. Runtime order, fill, orderbook, and price-history price fields use integer numerators against the market's `divisibility`; this catalogue summary keeps the legacy ratio form for sorting/display compatibility.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("lastTradedPrice")]
@@ -2768,6 +2813,18 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"numeric")]
         Numeric = 2,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum MarketPriceHistoryPointSource
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"initial")]
+        Initial = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"fill")]
+        Fill = 1,
 
     }
 

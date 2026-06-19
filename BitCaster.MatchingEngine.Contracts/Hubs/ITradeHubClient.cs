@@ -3,7 +3,6 @@ namespace BitCaster.MatchingEngine.Contracts.Hubs;
 /// <summary>
 /// Strongly-typed SignalR client interface for trade hub callbacks.
 /// All cryptographic operations happen client-side; the engine relays opaque ciphertexts.
-/// Kept in sync with specs/asyncapi.yaml.
 /// </summary>
 public interface ITradeHubClient
 {
@@ -29,5 +28,6 @@ public interface ITradeHubClient
         string? sellerLockOutcomeSetId = null,
         string? baseAsset = null,
         int? divisibility = null,
-        long? quotePaymentSubunits = null);
+        long? quotePaymentSubunits = null,
+        long? outcomeFaceAmountSubunits = null);
 }
