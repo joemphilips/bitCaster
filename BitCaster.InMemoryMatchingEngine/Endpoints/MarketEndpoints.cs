@@ -35,7 +35,8 @@ public static partial class MarketEndpoints
         app.MapPost("/api/v1/markets/{conditionId}", async (
             string conditionId,
             HttpRequest request,
-            IHttpClientFactory httpClientFactory) =>
+            IHttpClientFactory httpClientFactory,
+            InMemoryPriceHistoryStore priceHistory) =>
         {
             if (!request.HasFormContentType)
                 return Results.BadRequest("Expected multipart/form-data");
@@ -79,6 +80,8 @@ public static partial class MarketEndpoints
             var divisibility = metadata.Divisibility ?? 100;
             if (divisibility <= 1)
                 return Results.BadRequest("divisibility must be greater than 1");
+            if (divisibility % 100 != 0)
+                return Results.BadRequest("divisibility must be divisible by 100 for creator probability markets");
 
             // Validate thumbnail before committing any state
             var thumbnailFile = form.Files.GetFile("thumbnail");
@@ -173,6 +176,12 @@ public static partial class MarketEndpoints
             // Commit side-effect state only after market is registered
             foreach (var (marketId, pool) in poolEntries)
                 LiquidityEndpoints.Pools[marketId] = pool;
+
+            priceHistory.SeedInitialPriceHistory(
+                conditionId,
+                metadata.Outcomes.Select(outcome => (outcome.Name, outcome.Probability)),
+                divisibility,
+                record.CreatedAt);
 
             if (thumbnailBytes is not null)
                 ThumbnailEndpoints.Thumbnails[conditionId] = (thumbnailBytes, thumbnailContentType!);

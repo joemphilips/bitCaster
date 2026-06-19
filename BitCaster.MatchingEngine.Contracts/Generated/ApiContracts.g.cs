@@ -364,11 +364,15 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    /// <summary>
+    /// One leg of a match: the taker's incoming order crossing a single maker. Canonical settlement amounts are carried by `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`. Consumers should prefer those fields when present and fall back to legacy `amountSats` / sat / 100 interpretations only for unambiguous legacy rows. `quotePaymentSubunits + baseAsset + divisibility` is the authoritative quote payment; `amountSats` and inferred sat values are retained for backward compatibility.
+    /// <br/>
+    /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSats, BaseAsset @baseAsset, int @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, long? @outcomeFaceAmountSubunits, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, System.Guid? @tradeId)
+        public Fill(long @amountSats, BaseAsset? @baseAsset, int? @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, long? @outcomeFaceAmountSubunits, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, TokenSide? @tokenSide, System.Guid? @tradeId)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
@@ -381,6 +385,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.Divisibility = @divisibility;
             this.QuotePaymentSubunits = @quotePaymentSubunits;
             this.OutcomeFaceAmountSubunits = @outcomeFaceAmountSubunits;
+            this.TokenSide = @tokenSide;
             this.FilledAt = @filledAt;
             this.TradeId = @tradeId;
             this.MakerEphemeralPubkey = @makerEphemeralPubkey;
@@ -405,7 +410,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid MakerOrderId { get; }
 
         /// <summary>
-        /// Conditional-token face amount matched for settlement. Provisional mint matches appear here before final fill commit so clients can join the atomic-swap TradeHub session.
+        /// Legacy conditional-token face amount matched for settlement. Prefer `outcomeFaceAmountSubunits` when present; for rows where only `amountSats` is available, consumers may infer a sat/100 face amount for backward compatibility.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
@@ -423,31 +428,41 @@ namespace BitCaster.MatchingEngine.Contracts
         public FillStatus Status { get; }
 
         /// <summary>
-        /// Base asset for the fill amount and quote payment.
+        /// Base asset for the canonical settlement amount. Optional for backward compatibility; omitting it implies the legacy `sat` base asset.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
-        public BaseAsset BaseAsset { get; }
+        public BaseAsset? BaseAsset { get; }
 
         /// <summary>
-        /// Market price denominator `D` for this fill.
+        /// Market price denominator `D` for this fill. Optional for backward compatibility; omitting it implies the legacy `D = 100` sat market.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int Divisibility { get; }
+        public int? Divisibility { get; }
 
         /// <summary>
-        /// Engine-computed quote payment in the market base-asset sub-unit. Present for new trade-start fills; omitted for older replay data.
+        /// Engine-computed quote payment in the market base-asset sub-unit. This field plus `baseAsset` and `divisibility` is the authoritative quote payment. Present for new trade-start fills; omitted or null for older replay data.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("quotePaymentSubunits")]
         public long? QuotePaymentSubunits { get; }
 
         /// <summary>
-        /// Engine-computed conditional-token face amount in the market base-asset sub-unit. Present for new trade-start fills; omitted for older replay data.
+        /// Engine-computed conditional-token face amount in the market base-asset sub-unit. Present for new trade-start fills; omitted or null for older replay data.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeFaceAmountSubunits")]
         public long? OutcomeFaceAmountSubunits { get; }
+
+        /// <summary>
+        /// Which token on the primitive outcome book was traded for the order that produced this fill. Optional for backward compatibility; omitting it implies `Outcome`.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
+        public TokenSide? TokenSide { get; }
 
         /// <summary>
         /// Timestamp when this fill was executed.
@@ -1380,7 +1395,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(BaseAsset? @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, CreateMarketRequestDivisibility? @divisibility, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
+        public CreateMarketRequest(BaseAsset? @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, int? @divisibility, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
@@ -1435,11 +1450,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset? BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units. Only `D = 100` and `D = 1000` are supported in this release; higher divisibility support is tracked in docs/TODO.md.
+        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units. The matching engine rejects divisibility values other than `100` and `1000` in this release; higher divisibility support is tracked in docs/TODO.md.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public CreateMarketRequestDivisibility? Divisibility { get; }
+        public int? Divisibility { get; }
 
         /// <summary>
         /// Optional category tags for the market.
@@ -2798,16 +2813,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"closed")]
         Closed = 1,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum CreateMarketRequestDivisibility
-    {
-
-        _100 = 100,
-
-        _1000 = 1000,
 
     }
 

@@ -216,6 +216,7 @@ public static class OrderEndpoints
                     {
                         priceHistory.RecordFill(item.MarketId, fill);
                     }
+
                     await EmitTradeCreatedForFills(
                         tradeHub,
                         trades,
@@ -471,6 +472,7 @@ public static class OrderEndpoints
             var baseAsset = ReadString(fill, "baseAsset");
             var divisibility = ReadInt(fill, "divisibility");
             var quotePaymentSubunits = ReadLong(fill, "quotePaymentSubunits");
+            var outcomeFaceAmountSubunits = ReadLong(fill, "outcomeFaceAmountSubunits");
             var record = trades.Register(
                 tradeId.Value,
                 sellerPubkey,
@@ -484,13 +486,16 @@ public static class OrderEndpoints
                 sellerLockOutcomeSetId,
                 baseAsset,
                 divisibility,
-                quotePaymentSubunits);
+                quotePaymentSubunits,
+                outcomeFaceAmountSubunits,
+                fill.TokenSide is null ? null : TokenSideWireValue(fill.TokenSide.Value));
             await tradeHub.Clients.Group(TradeHub.GroupName(tradeId.Value))
                 .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
                     record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
                     record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
                     record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId,
-                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits);
+                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits,
+                    record.OutcomeFaceAmountSubunits, record.TokenSide);
             await tradeHub.Clients.Groups([
                     TradeHub.OrderGroupName(fill.MakerOrderId),
                     TradeHub.OrderGroupName(fill.TakerOrderId)
@@ -499,7 +504,8 @@ public static class OrderEndpoints
                     record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
                     record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
                     record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId,
-                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits);
+                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits,
+                    record.OutcomeFaceAmountSubunits, record.TokenSide);
         }
     }
 
@@ -579,4 +585,12 @@ public static class OrderEndpoints
         return true;
     }
 
+    private static string TokenSideWireValue(TokenSide tokenSide) =>
+        tokenSide switch
+        {
+            TokenSide.Outcome => "Outcome",
+            TokenSide.Complement => "Complement",
+            _ => "Outcome"
+        };
 }
+

@@ -16,7 +16,10 @@ public interface ITradeHubClient
     /// Sent to both parties immediately after a trade is created from a fill.
     /// Carries counterparty pubkeys, the engine-computed asymmetric locktimes,
     /// the market id, the legacy matched fill amount, and explicit settlement
-    /// amounts when the engine supports TradeCreatedV2 semantics.
+    /// amounts when the engine supports TradeCreatedV2 semantics. The
+    /// canonical settlement amount is `quotePaymentSubunits + baseAsset +
+    /// divisibility`; consumers should prefer those fields when present and
+    /// treat `quotePaymentSats` as legacy sat/100 compatibility only.
     /// </summary>
     Task TradeCreated(Guid tradeId, string sellerPubkey, string buyerPubkey,
         DateTimeOffset sellerLocktime, DateTimeOffset buyerLocktime,
@@ -29,5 +32,6 @@ public interface ITradeHubClient
         string? baseAsset = null,
         int? divisibility = null,
         long? quotePaymentSubunits = null,
-        long? outcomeFaceAmountSubunits = null);
+        long? outcomeFaceAmountSubunits = null,
+        string? tokenSide = null);
 }

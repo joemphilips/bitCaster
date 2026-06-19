@@ -32,6 +32,8 @@ namespace BitCaster.InMemoryMatchingEngine;
 /// </summary>
 public class InMemoryOrderBookManager
 {
+    public const int DefaultSnapshotDepthLimit = 5;
+
     private readonly ConcurrentDictionary<string, OrderBook> _books = new();
     private readonly ConcurrentDictionary<Guid, string> _orderMarketIndex = new();
     private readonly ConcurrentDictionary<string, AcceptedSubmit> _acceptedSubmits = new();
@@ -179,17 +181,20 @@ public class InMemoryOrderBookManager
         if (complementAsks.Count == 0)
             return directSnapshot;
 
-        var asks = MergeLevels(directSnapshot.Asks.Concat(complementAsks), descending: false);
+        var asks = MergeLevels(
+            directSnapshot.Asks.Concat(complementAsks),
+            descending: false,
+            limit: DefaultSnapshotDepthLimit);
         int? spread = directSnapshot.Bids.Count > 0 && asks.Count > 0
             ? asks[0].Price - directSnapshot.Bids[0].Price
             : null;
-        return new OrderBookSnapshot(asks, directSnapshot.Bids, marketId, spread);
+        return new OrderBookSnapshot(asks, directSnapshot.Bids, DefaultSnapshotDepthLimit, marketId, spread);
     }
 
     private OrderBookSnapshot SnapshotForInternalBook(string marketId, string outcomeId)
     {
         if (!_books.TryGetValue(marketId, out var book))
-            return new OrderBookSnapshot([], [], marketId, null);
+            return new OrderBookSnapshot([], [], DefaultSnapshotDepthLimit, marketId, null);
 
         lock (book)
             return book.SnapshotForOutcome(marketId, outcomeId);
@@ -222,17 +227,24 @@ public class InMemoryOrderBookManager
         {
             return complementBook.Value.BuyDepthForOutcome(complementOutcomeId)
                 .Select(level => new LevelDto(level.Amount, complementBook.Value.PriceDenominator - level.Price))
+                .OrderBy(level => level.Price)
+                .Take(DefaultSnapshotDepthLimit)
                 .ToList();
         }
     }
 
-    private static List<LevelDto> MergeLevels(IEnumerable<LevelDto> levels, bool descending)
+    private static List<LevelDto> MergeLevels(
+        IEnumerable<LevelDto> levels,
+        bool descending,
+        int? limit = null)
     {
         var grouped = levels
             .GroupBy(level => level.Price)
             .Select(group => new LevelDto(group.Sum(level => level.Amount), group.Key));
-        return (descending ? grouped.OrderByDescending(level => level.Price) : grouped.OrderBy(level => level.Price))
-            .ToList();
+        var sorted = descending
+            ? grouped.OrderByDescending(level => level.Price)
+            : grouped.OrderBy(level => level.Price);
+        return (limit is { } n ? sorted.Take(n) : sorted).ToList();
     }
 
     /// <summary>
@@ -363,12 +375,15 @@ public class InMemoryOrderBookManager
             makerOrderId: maker.Id,
             path: MatchPath.Complementary,
             quotePaymentSubunits: quotePaymentSubunits,
+            outcomeFaceAmountSubunits: amount,
             status: FillStatus.Filled,
             takerOrderId: taker.Id,
+            tokenSide: TokenSide.Outcome,
             tradeId: tradeId);
         fill.AdditionalProperties["settlementMarketId"] = marketId;
         fill.AdditionalProperties["settlementKind"] = "DirectSwap";
         fill.AdditionalProperties["outcomeFaceAmountSats"] = amount;
+        fill.AdditionalProperties["outcomeFaceAmountSubunits"] = amount;
         fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSubunits;
         fill.AdditionalProperties["baseAsset"] = BaseAssetWireValue(unit.BaseAsset);
         fill.AdditionalProperties["divisibility"] = unit.Divisibility;
@@ -398,12 +413,15 @@ public class InMemoryOrderBookManager
             makerOrderId: maker.Id,
             path: MatchPath.Mint,
             quotePaymentSubunits: quotePaymentSubunits,
+            outcomeFaceAmountSubunits: amount,
             status: FillStatus.Filled,
             takerOrderId: taker.Id,
+            tokenSide: TokenSide.Outcome,
             tradeId: tradeId);
         fill.AdditionalProperties["settlementMarketId"] = settlementMarketId;
         fill.AdditionalProperties["settlementKind"] = "Mint";
         fill.AdditionalProperties["outcomeFaceAmountSats"] = amount;
+        fill.AdditionalProperties["outcomeFaceAmountSubunits"] = amount;
         fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSubunits;
         fill.AdditionalProperties["baseAsset"] = BaseAssetWireValue(unit.BaseAsset);
         fill.AdditionalProperties["divisibility"] = unit.Divisibility;
@@ -582,24 +600,34 @@ internal sealed class OrderBook
     public OrderBookSnapshot SnapshotForOutcome(string marketId, string outcomeId)
     {
         var live = _resting.Where(o => o.OutcomeId == outcomeId).ToList();
-        var bids = AggregateLevels(live.Where(o => o.Side == OrderSide.Buy), descending: true);
-        var asks = AggregateLevels(live.Where(o => o.Side == OrderSide.Sell), descending: false);
+        var bids = AggregateLevels(
+            live.Where(o => o.Side == OrderSide.Buy),
+            descending: true,
+            limit: InMemoryOrderBookManager.DefaultSnapshotDepthLimit);
+        var asks = AggregateLevels(
+            live.Where(o => o.Side == OrderSide.Sell),
+            descending: false,
+            limit: InMemoryOrderBookManager.DefaultSnapshotDepthLimit);
         int? spread = bids.Count > 0 && asks.Count > 0 ? asks[0].Price - bids[0].Price : null;
-        return new OrderBookSnapshot(asks, bids, marketId, spread);
+        return new OrderBookSnapshot(asks, bids, InMemoryOrderBookManager.DefaultSnapshotDepthLimit, marketId, spread);
     }
 
     public List<LevelDto> BuyDepthForOutcome(string outcomeId) =>
         AggregateLevels(
             _resting.Where(o => o.OutcomeId == outcomeId && o.Side == OrderSide.Buy),
-            descending: true);
+            descending: true,
+            limit: InMemoryOrderBookManager.DefaultSnapshotDepthLimit);
 
-    private static List<LevelDto> AggregateLevels(IEnumerable<RestingOrder> orders, bool descending)
+    private static List<LevelDto> AggregateLevels(
+        IEnumerable<RestingOrder> orders,
+        bool descending,
+        int? limit = null)
     {
         var grouped = orders
             .GroupBy(o => o.Price)
             .Select(g => new LevelDto(g.Sum(o => o.RemainingSats), g.Key));
-        return (descending ? grouped.OrderByDescending(l => l.Price) : grouped.OrderBy(l => l.Price))
-            .ToList();
+        var sorted = descending ? grouped.OrderByDescending(l => l.Price) : grouped.OrderBy(l => l.Price);
+        return (limit is { } n ? sorted.Take(n) : sorted).ToList();
     }
 
     private List<Fill> GetOrCreateFills(Guid orderId)

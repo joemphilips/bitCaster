@@ -280,6 +280,16 @@ components:
         - usd
         - jpy
 
+    TokenSide:
+      type: string
+      enum:
+        - Outcome
+        - Complement
+      description: >
+        Which token on the primitive outcome book is being traded. `Outcome`
+        means the selected primitive outcome named by outcomeId; `Complement`
+        means the one-vs-rest complement of that outcome.
+
     LevelDto:
       type: object
       required:
@@ -369,6 +379,11 @@ components:
 
     MatchedDelta:
       type: object
+      description: >
+        Public match delta broadcast to affected market groups. Canonical
+        settlement amounts are additive and nullable; consumers should prefer
+        `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`,
+        `divisibility`, and `tokenSide` when present.
       required:
         - marketId
         - tradeId
@@ -399,6 +414,45 @@ components:
         matchedAt:
           type: string
           format: date-time
+        baseAsset:
+          oneOf:
+            - $ref: '#/components/schemas/BaseAsset'
+            - type: 'null'
+          description: >
+            Base asset for the canonical settlement amount. Null or omitted
+            for legacy sat/100 rows.
+        divisibility:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          minimum: 2
+          description: >
+            Market price denominator `D`. Null or omitted for legacy sat/100
+            rows.
+        quotePaymentSubunits:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: >
+            Engine-computed quote payment in the market base-asset sub-unit.
+            Authoritative when `baseAsset` and `divisibility` are also present.
+        outcomeFaceAmountSubunits:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: >
+            Engine-computed conditional-token face amount in the market
+            base-asset sub-unit.
+        tokenSide:
+          oneOf:
+            - $ref: '#/components/schemas/TokenSide'
+            - type: 'null'
+          description: >
+            Which token on the primitive outcome book was traded. Null or
+            omitted for legacy rows.
 
     MarketStatusChanged:
       type: object
@@ -433,10 +487,14 @@ components:
       type: array
       description: >
         Positional SignalR arguments for ITradeHubClient.TradeCreated. The
-        nullable tail fields are additive compatibility fields; clients should
-        prefer quotePaymentSubunits and outcomeFaceAmountSubunits when present.
+        nullable tail fields are additive compatibility fields. The
+        authoritative canonical settlement amount is
+        `quotePaymentSubunits + baseAsset + divisibility`; consumers should
+        prefer `quotePaymentSubunits` and `outcomeFaceAmountSubunits` when
+        present. `quotePaymentSats` is legacy compatibility only for
+        unambiguous `sat / 100` rows.
       minItems: 7
-      maxItems: 16
+      maxItems: 17
       prefixItems:
         - type: string
           format: uuid
@@ -497,6 +555,10 @@ components:
             - 'null'
           format: int64
           description: outcomeFaceAmountSubunits
+        - oneOf:
+            - $ref: '#/components/schemas/TokenSide'
+            - type: 'null'
+          description: tokenSide
 
     SwapMessageReceivedArguments:
       type: array
