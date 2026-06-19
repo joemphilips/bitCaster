@@ -53,7 +53,7 @@ public readonly record struct Probability : IComparable<Probability>
     }
 
     /// <summary>Returns the complementary numerator (D - this).</summary>
-    public Probability Complement(int divisibility = 100) => new(divisibility - Value);
+    public Probability Complement(int divisibility) => new(divisibility - Value);
 
     public int CompareTo(Probability other) => Value.CompareTo(other.Value);
 
