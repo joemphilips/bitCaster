@@ -1380,7 +1380,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(BaseAsset? @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, int? @divisibility, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
+        public CreateMarketRequest(BaseAsset? @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, CreateMarketRequestDivisibility? @divisibility, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
@@ -1435,11 +1435,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset? BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units. Creator-probability markets currently require `D` to be divisible by 100; future arbitrary divisibility support needs a shared probability-rounding policy. The creator UI may expose only a curated subset of this range.
+        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units. Only `D = 100` and `D = 1000` are supported in this release; higher divisibility support is tracked in docs/TODO.md.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int? Divisibility { get; }
+        public CreateMarketRequestDivisibility? Divisibility { get; }
 
         /// <summary>
         /// Optional category tags for the market.
@@ -2798,6 +2798,16 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"closed")]
         Closed = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum CreateMarketRequestDivisibility
+    {
+
+        _100 = 100,
+
+        _1000 = 1000,
 
     }
 

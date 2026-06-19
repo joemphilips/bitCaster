@@ -801,10 +801,11 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Immutable price denominator `D`. Orders use price numerator `k` where `1 <= k <= D - 1` and one whole share has face value `D` base-asset sub-units. Creator-probability markets currently require `D` to be divisible by 100; future arbitrary divisibility support needs a shared probability-rounding policy. The creator UI may expose only a curated subset of this range.
+             * @description Immutable price denominator `D`. Orders use price numerator `k` where `1 <= k <= D - 1` and one whole share has face value `D` base-asset sub-units. Only `D = 100` and `D = 1000` are supported in this release; higher divisibility support is tracked in docs/TODO.md.
              * @default 100
+             * @enum {integer}
              */
-            divisibility: number;
+            divisibility: 100 | 1000;
             /** @description Optional category tags for the market. */
             categoryTags?: string[];
             /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */
