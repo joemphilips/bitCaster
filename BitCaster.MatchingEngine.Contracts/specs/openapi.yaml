@@ -1008,6 +1008,15 @@ components:
 
     Fill:
       type: object
+      description: >
+        One leg of a match: the taker's incoming order crossing a single maker.
+        Canonical settlement amounts are carried by `quotePaymentSubunits`,
+        `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`.
+        Consumers should prefer those fields when present and fall back to
+        legacy `amountSats` / sat / 100 interpretations only for unambiguous
+        legacy rows. `quotePaymentSubunits + baseAsset + divisibility` is the
+        authoritative quote payment; `amountSats` and inferred sat values are
+        retained for backward compatibility.
       required:
         - id
         - takerOrderId
@@ -1017,8 +1026,6 @@ components:
         - path
         - filledAt
         - status
-        - baseAsset
-        - divisibility
       properties:
         id:
           type: string
@@ -1036,9 +1043,10 @@ components:
           allOf:
             - $ref: '#/components/schemas/Sats'
           description: >
-            Conditional-token face amount matched for settlement. Provisional
-            mint matches appear here before final fill commit so clients can
-            join the atomic-swap TradeHub session.
+            Legacy conditional-token face amount matched for settlement.
+            Prefer `outcomeFaceAmountSubunits` when present; for rows where
+            only `amountSats` is available, consumers may infer a sat/100 face
+            amount for backward compatibility.
         executionPrice:
           $ref: '#/components/schemas/Probability'
         path:
@@ -1049,20 +1057,28 @@ components:
           allOf:
             - $ref: '#/components/schemas/BaseAsset'
           default: sat
-          description: Base asset for the fill amount and quote payment.
+          description: >
+            Base asset for the canonical settlement amount. Optional for
+            backward compatibility; omitting it implies the legacy `sat` base
+            asset.
         divisibility:
           type: integer
           format: int32
           minimum: 2
           default: 100
-          description: Market price denominator `D` for this fill.
+          description: >
+            Market price denominator `D` for this fill. Optional for
+            backward compatibility; omitting it implies the legacy `D = 100`
+            sat market.
         quotePaymentSubunits:
           type: integer
           format: int64
           nullable: true
           description: >
             Engine-computed quote payment in the market base-asset sub-unit.
-            Present for new trade-start fills; omitted for older replay data.
+            This field plus `baseAsset` and `divisibility` is the
+            authoritative quote payment. Present for new trade-start fills;
+            omitted or null for older replay data.
         outcomeFaceAmountSubunits:
           type: integer
           format: int64
@@ -1070,7 +1086,15 @@ components:
           description: >
             Engine-computed conditional-token face amount in the market
             base-asset sub-unit. Present for new trade-start fills; omitted
-            for older replay data.
+            or null for older replay data.
+        tokenSide:
+          allOf:
+            - $ref: '#/components/schemas/TokenSide'
+          default: Outcome
+          description: >
+            Which token on the primitive outcome book was traded for the
+            order that produced this fill. Optional for backward
+            compatibility; omitting it implies `Outcome`.
         filledAt:
           type: string
           format: date-time
@@ -1689,14 +1713,16 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [100, 1000]
+          minimum: 100
+          maximum: 1000
+          multipleOf: 100
           default: 100
           description: >
             Immutable price denominator `D`. Orders use price numerator `k`
             where `1 <= k <= D - 1` and one whole share has face value `D`
-            base-asset sub-units. Only `D = 100` and `D = 1000` are supported
-            in this release; higher divisibility support is tracked in
-            docs/TODO.md.
+            base-asset sub-units. The matching engine rejects divisibility
+            values other than `100` and `1000` in this release; higher
+            divisibility support is tracked in docs/TODO.md.
         categoryTags:
           type: array
           items:

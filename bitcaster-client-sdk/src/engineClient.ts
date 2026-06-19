@@ -51,7 +51,9 @@ export interface Fill {
   makerEphemeralPubkey?: string
   baseAsset: MarketBaseAsset
   divisibility: number
+  tokenSide: 'Outcome' | 'Complement'
   quotePaymentSubunits?: number | null
+  outcomeFaceAmountSubunits?: number | null
 }
 
 export interface SubmitOrderResponse {

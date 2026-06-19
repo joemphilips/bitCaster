@@ -502,6 +502,7 @@ export interface components {
             /** @description Outcome string signed by the oracle. */
             outcome: string;
         };
+        /** @description One leg of a match: the taker's incoming order crossing a single maker. Canonical settlement amounts are carried by `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`. Consumers should prefer those fields when present and fall back to legacy `amountSats` / sat / 100 interpretations only for unambiguous legacy rows. `quotePaymentSubunits + baseAsset + divisibility` is the authoritative quote payment; `amountSats` and inferred sat values are retained for backward compatibility. */
         Fill: {
             /**
              * Format: uuid
@@ -518,32 +519,37 @@ export interface components {
              * @description The resting order that was matched against.
              */
             makerOrderId: string;
-            /** @description Conditional-token face amount matched for settlement. Provisional mint matches appear here before final fill commit so clients can join the atomic-swap TradeHub session. */
+            /** @description Legacy conditional-token face amount matched for settlement. Prefer `outcomeFaceAmountSubunits` when present; for rows where only `amountSats` is available, consumers may infer a sat/100 face amount for backward compatibility. */
             amountSats: components["schemas"]["Sats"];
             executionPrice: components["schemas"]["Probability"];
             path: components["schemas"]["MatchPath"];
             status: components["schemas"]["FillStatus"];
             /**
-             * @description Base asset for the fill amount and quote payment.
+             * @description Base asset for the canonical settlement amount. Optional for backward compatibility; omitting it implies the legacy `sat` base asset.
              * @default sat
              */
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Market price denominator `D` for this fill.
+             * @description Market price denominator `D` for this fill. Optional for backward compatibility; omitting it implies the legacy `D = 100` sat market.
              * @default 100
              */
             divisibility: number;
             /**
              * Format: int64
-             * @description Engine-computed quote payment in the market base-asset sub-unit. Present for new trade-start fills; omitted for older replay data.
+             * @description Engine-computed quote payment in the market base-asset sub-unit. This field plus `baseAsset` and `divisibility` is the authoritative quote payment. Present for new trade-start fills; omitted or null for older replay data.
              */
             quotePaymentSubunits?: number | null;
             /**
              * Format: int64
-             * @description Engine-computed conditional-token face amount in the market base-asset sub-unit. Present for new trade-start fills; omitted for older replay data.
+             * @description Engine-computed conditional-token face amount in the market base-asset sub-unit. Present for new trade-start fills; omitted or null for older replay data.
              */
             outcomeFaceAmountSubunits?: number | null;
+            /**
+             * @description Which token on the primitive outcome book was traded for the order that produced this fill. Optional for backward compatibility; omitting it implies `Outcome`.
+             * @default Outcome
+             */
+            tokenSide: components["schemas"]["TokenSide"];
             /**
              * Format: date-time
              * @description Timestamp when this fill was executed.
@@ -801,11 +807,10 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Immutable price denominator `D`. Orders use price numerator `k` where `1 <= k <= D - 1` and one whole share has face value `D` base-asset sub-units. Only `D = 100` and `D = 1000` are supported in this release; higher divisibility support is tracked in docs/TODO.md.
+             * @description Immutable price denominator `D`. Orders use price numerator `k` where `1 <= k <= D - 1` and one whole share has face value `D` base-asset sub-units. The matching engine rejects divisibility values other than `100` and `1000` in this release; higher divisibility support is tracked in docs/TODO.md.
              * @default 100
-             * @enum {integer}
              */
-            divisibility: 100 | 1000;
+            divisibility: number;
             /** @description Optional category tags for the market. */
             categoryTags?: string[];
             /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */

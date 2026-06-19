@@ -35,6 +35,8 @@ public class InMemoryTradeRegistry
         string? BaseAsset,
         int? Divisibility,
         long? QuotePaymentSubunits,
+        long? OutcomeFaceAmountSubunits,
+        string? TokenSide,
         HashSet<string> ConfirmedBy,
         bool Confirmed);
 
@@ -66,7 +68,9 @@ public class InMemoryTradeRegistry
         string? sellerLockOutcomeSetId = null,
         string? baseAsset = null,
         int? divisibility = null,
-        long? quotePaymentSubunits = null)
+        long? quotePaymentSubunits = null,
+        long? outcomeFaceAmountSubunits = null,
+        string? tokenSide = null)
     {
         var now = DateTimeOffset.UtcNow;
         var record = new TradeRecord(
@@ -83,6 +87,8 @@ public class InMemoryTradeRegistry
             BaseAsset: baseAsset,
             Divisibility: divisibility,
             QuotePaymentSubunits: quotePaymentSubunits,
+            OutcomeFaceAmountSubunits: outcomeFaceAmountSubunits,
+            TokenSide: tokenSide,
             ConfirmedBy: [],
             Confirmed: false);
         return _trades.GetOrAdd(tradeId, record);

@@ -62,7 +62,9 @@ public class TradeHub : Hub<ITradeHubClient>
             record.SellerLockOutcomeSetId,
             record.BaseAsset,
             record.Divisibility,
-            record.QuotePaymentSubunits);
+            record.QuotePaymentSubunits,
+            record.OutcomeFaceAmountSubunits,
+            record.TokenSide);
 
         foreach (var message in _trades.GetSwapMessages(tradeId))
         {
@@ -112,7 +114,8 @@ public class TradeHub : Hub<ITradeHubClient>
                 record.SellerLockOutcomeSetId,
                 record.BaseAsset,
                 record.Divisibility,
-                record.QuotePaymentSubunits);
+                record.QuotePaymentSubunits,
+                record.OutcomeFaceAmountSubunits);
         }
     }
 
