@@ -53,7 +53,7 @@ describe('MarketCard', () => {
     render(<MarketCard market={yesNoMarket} />)
 
     expect(screen.getByText('Will BTC reach 100K?')).toBeInTheDocument()
-    expect(screen.getByText('65.0%')).toBeInTheDocument()
+    expect(screen.getByText('65.00%')).toBeInTheDocument()
     expect(screen.getByText('Buy YES')).toBeInTheDocument()
     expect(screen.getByText('Buy NO')).toBeInTheDocument()
   })

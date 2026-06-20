@@ -32,7 +32,6 @@ import {
 } from '@/lib/marketRegistrationFee'
 import {
   DEFAULT_MARKET_BASE_ASSET,
-  DEFAULT_MARKET_DIVISIBILITY,
   normalizeMarketCreationLiquiditySats,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
@@ -238,7 +237,6 @@ export function useMarketCreationState() {
             outcomeType,
             outcomes: outcomeType === 'yesno' ? defaultYesNoOutcomes() : [],
             baseAsset: DEFAULT_MARKET_BASE_ASSET,
-            divisibility: DEFAULT_MARKET_DIVISIBILITY,
           }
         }
       }
@@ -450,16 +448,6 @@ export function useMarketCreationState() {
     }))
   }, [])
 
-  const onDivisibilityChange = useCallback((value: number) => {
-    setDraft((prev) => ({
-      ...prev,
-      stepOutcomes: prev.stepOutcomes
-        ? { ...prev.stepOutcomes, divisibility: normalizeMarketDivisibility(value) }
-        : null,
-      lastModified: new Date().toISOString(),
-    }))
-  }, [])
-
   // --- Review & Create (Step 4) ---
   const onDescriptionChange = useCallback((description: string) => {
     updateDraft({ stepReviewAndCreate: { description } })
@@ -503,7 +491,6 @@ export function useMarketCreationState() {
         throw new Error('Numeric oracle events are not yet supported.')
       }
       const baseAsset = normalizeMarketBaseAsset(draft.stepOutcomes?.baseAsset)
-      const divisibility = normalizeMarketDivisibility(draft.stepOutcomes?.divisibility)
       const closingDate = draft.stepBasicInfo?.closingDate
       if (!closingDate) {
         throw new Error('A closing date is required to publish an oracle announcement.')
@@ -636,7 +623,6 @@ export function useMarketCreationState() {
           outcomeType: draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? 'yesno',
           liquiditySats,
           baseAsset,
-          divisibility,
           categoryTags,
           oracleAnnouncementHex: announcementHex,
         },
@@ -653,12 +639,12 @@ export function useMarketCreationState() {
         useCreatorMarketsStore.getState().addCreatedMarket({
           conditionId: condition_id,
           title,
-          thumbnailUrl: createResponse.thumbnailUrl ?? null,
-          createdAt: new Date().toISOString(),
-          baseAsset,
-          divisibility,
-          creatorFeePercent: DEFAULT_CREATOR_FEE_PERCENT,
-          oracle: creatorOracle,
+            thumbnailUrl: createResponse.thumbnailUrl ?? null,
+            createdAt: new Date().toISOString(),
+            baseAsset,
+            divisibility: normalizeMarketDivisibility(createResponse.divisibility),
+            creatorFeePercent: DEFAULT_CREATOR_FEE_PERCENT,
+            oracle: creatorOracle,
         })
       } catch (storeErr) {
         console.warn(
@@ -748,7 +734,6 @@ export function useMarketCreationState() {
     onPrecisionChange,
     onUnitChange,
     onBaseAssetChange,
-    onDivisibilityChange,
     onDescriptionChange,
     onCreateMarket,
     onConfirmRegistrationFee,

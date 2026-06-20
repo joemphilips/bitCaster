@@ -5,7 +5,6 @@ import { MarketCreationPage } from '../MarketCreationPage'
 
 const mocks = vi.hoisted(() => ({
   onBaseAssetChange: vi.fn(),
-  onDivisibilityChange: vi.fn(),
 }))
 
 vi.mock('@/hooks/useMarketCreationState', () => ({
@@ -27,7 +26,6 @@ vi.mock('@/hooks/useMarketCreationState', () => ({
           { id: 'b', label: 'B', description: '', probability: 50 },
         ],
         baseAsset: 'sat',
-        divisibility: 100,
       },
       stepReviewAndCreate: null,
     },
@@ -57,7 +55,6 @@ vi.mock('@/hooks/useMarketCreationState', () => ({
     onPrecisionChange: vi.fn(),
     onUnitChange: vi.fn(),
     onBaseAssetChange: mocks.onBaseAssetChange,
-    onDivisibilityChange: mocks.onDivisibilityChange,
     onDescriptionChange: vi.fn(),
     onCreateMarket: vi.fn(),
     onConfirmRegistrationFee: vi.fn(),
@@ -74,29 +71,23 @@ vi.mock('@/hooks/useMarketCreationState', () => ({
 vi.mock('@/components/market-creation', () => ({
   MarketCreationWizard: (props: {
     onBaseAssetChange?: (value: 'sat' | 'usd' | 'jpy') => void
-    onDivisibilityChange?: (value: number) => void
   }) => (
     <div>
       <button type="button" onClick={() => props.onBaseAssetChange?.('usd')}>
         choose USD
-      </button>
-      <button type="button" onClick={() => props.onDivisibilityChange?.(1000)}>
-        choose D1000
       </button>
     </div>
   ),
 }))
 
 describe('MarketCreationPage', () => {
-  it('passes market unit callbacks through to the creation wizard', async () => {
+  it('passes base asset callback through to the creation wizard', async () => {
     const user = userEvent.setup()
 
     render(<MarketCreationPage />)
 
     await user.click(screen.getByRole('button', { name: /choose usd/i }))
-    await user.click(screen.getByRole('button', { name: /choose d1000/i }))
 
     expect(mocks.onBaseAssetChange).toHaveBeenCalledWith('usd')
-    expect(mocks.onDivisibilityChange).toHaveBeenCalledWith(1000)
   })
 })

@@ -1,14 +1,10 @@
-import { Info, Plus, Trash2 } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { WizardOutcome, OutcomeType, MarketBaseAsset } from '@/types/market-creation'
 import {
   DEFAULT_MARKET_BASE_ASSET,
-  DEFAULT_MARKET_DIVISIBILITY,
-  SUPPORTED_MARKET_DIVISIBILITIES,
-  isSupportedMarketDivisibility,
   marketUnitLabel,
-  formatWholeShareFaceValue,
 } from '@bitcaster/client-sdk/marketUnits'
 import {
   MAX_MARKET_OUTCOMES,
@@ -24,7 +20,6 @@ interface OutcomesStepProps {
   precision?: number
   unit?: string
   baseAsset?: MarketBaseAsset
-  divisibility?: number
   onAddOutcome?: () => void
   onRemoveOutcome?: (outcomeId: string) => void
   onOutcomeLabelChange?: (outcomeId: string, label: string) => void
@@ -35,7 +30,6 @@ interface OutcomesStepProps {
   onPrecisionChange?: (value: number) => void
   onUnitChange?: (value: string) => void
   onBaseAssetChange?: (value: MarketBaseAsset) => void
-  onDivisibilityChange?: (value: number) => void
   onNext?: () => void
 }
 
@@ -80,41 +74,15 @@ function ProbabilityBar({ outcomes, sumOk, rangeOk }: { outcomes: WizardOutcome[
   )
 }
 
-/**
- * Format the price step as a percentage string for a given divisibility.
- * D=100 → "1%", D=1000 → "0.1%", D=10000 → "0.01%".
- */
-function formatPriceStep(d: number): string {
-  const step = 100 / d
-  // Use up to 4 significant fractional digits, strip trailing zeros.
-  return `${parseFloat(step.toPrecision(4))}%`
-}
-
 function MarketUnitControls({
   baseAsset,
-  divisibility,
   onBaseAssetChange,
-  onDivisibilityChange,
 }: {
   baseAsset?: MarketBaseAsset
-  divisibility?: number
   onBaseAssetChange?: (value: MarketBaseAsset) => void
-  onDivisibilityChange?: (value: number) => void
 }) {
   const { t } = useTranslation()
   const selectedBaseAsset = baseAsset ?? DEFAULT_MARKET_BASE_ASSET
-  const selectedDivisibility = divisibility ?? DEFAULT_MARKET_DIVISIBILITY
-
-  // Backend policy: only D=100 and D=1000 are supported in P34.
-  // If a persisted draft or external state carries any other value, surface
-  // a rejection message and fall back to the default in the dropdown.
-  const isUnsupportedDivisibility = !isSupportedMarketDivisibility(selectedDivisibility)
-  const selectDivisibility = isUnsupportedDivisibility
-    ? DEFAULT_MARKET_DIVISIBILITY
-    : selectedDivisibility
-
-  const stake = formatWholeShareFaceValue({ baseAsset: selectedBaseAsset, divisibility: selectedDivisibility })
-  const step = formatPriceStep(selectedDivisibility)
 
   return (
     <div className="mb-6">
@@ -140,40 +108,7 @@ function MarketUnitControls({
             ))}
           </div>
         </div>
-        <div>
-          <label className="mb-2 flex flex-wrap items-center gap-1.5 text-sm font-medium text-slate-300">
-            <span>{t('marketCreation.divisibility')}</span>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-              title={t('marketCreation.divisibilityHelp')}
-              aria-label={t('marketCreation.divisibilityHelp')}
-            >
-              <Info className="h-3.5 w-3.5" strokeWidth={1.75} />
-              <span>{t('marketCreation.whatIsThis')}</span>
-            </button>
-          </label>
-          <select
-            value={selectDivisibility}
-            onChange={(event) => onDivisibilityChange?.(Number(event.target.value))}
-            className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
-          >
-            {SUPPORTED_MARKET_DIVISIBILITIES.map((value) => (
-              <option key={value} value={value}>
-                {value.toLocaleString()}
-              </option>
-            ))}
-          </select>
-        </div>
       </div>
-      {isUnsupportedDivisibility && (
-        <p className="text-xs text-red-400 mb-2" data-testid="divisibility-unsupported-message">
-          {t('marketCreation.divisibilityUnsupported', { divisibility: selectedDivisibility })}
-        </p>
-      )}
-      <p className="text-xs text-slate-400">
-        {t('marketCreation.divisibilityExample', { stake, step })}
-      </p>
     </div>
   )
 }
@@ -186,7 +121,6 @@ export function OutcomesStep({
   precision,
   unit,
   baseAsset,
-  divisibility,
   onAddOutcome,
   onRemoveOutcome,
   onOutcomeLabelChange,
@@ -198,7 +132,6 @@ export function OutcomesStep({
   onPrecisionChange,
   onUnitChange,
   onBaseAssetChange,
-  onDivisibilityChange,
   onNext,
 }: OutcomesStepProps) {
   const { t } = useTranslation()
@@ -311,9 +244,7 @@ export function OutcomesStep({
 
         <MarketUnitControls
           baseAsset={baseAsset}
-          divisibility={divisibility}
           onBaseAssetChange={onBaseAssetChange}
-          onDivisibilityChange={onDivisibilityChange}
         />
 
         <div className="space-y-3 mb-4">
@@ -389,9 +320,7 @@ export function OutcomesStep({
 
       <MarketUnitControls
         baseAsset={baseAsset}
-        divisibility={divisibility}
         onBaseAssetChange={onBaseAssetChange}
-        onDivisibilityChange={onDivisibilityChange}
       />
 
       <div className="space-y-3 mb-4">

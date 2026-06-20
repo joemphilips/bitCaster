@@ -19,7 +19,7 @@ function makeMarket(
     createdDate: '2026-01-01T00:00:00Z',
     activeSince: '2026-01-01T00:00:00Z',
     baseAsset: 'usd',
-    divisibility: 100,
+    divisibility: 10_000,
     baseUnit: 'USD',
     creator: {
       id: 'creator',
@@ -70,7 +70,7 @@ describe('TradingPanel', () => {
     )
 
     expect(screen.getByText('Shares')).toBeInTheDocument()
-    expect(screen.getByText('1 share = $1.00')).toBeInTheDocument()
+    expect(screen.getByText('1 share = $0.10')).toBeInTheDocument()
     expect(
       screen.getByRole('button', { name: 'Buy YES for 50 shares' }),
     ).toBeInTheDocument()
@@ -104,7 +104,7 @@ describe('TradingPanel', () => {
       />,
     )
 
-    expect(screen.getByText('30 (30%)')).toBeInTheDocument()
+    expect(screen.getByText('30 (30.00%)')).toBeInTheDocument()
     expect(screen.getByText('Shares you receive if order fills')).toBeInTheDocument()
     expect(screen.getByText('Market Creator fee (1%)')).toBeInTheDocument()
     expect(screen.getAllByText('0 sats')).toHaveLength(3)
@@ -173,7 +173,7 @@ describe('TradingPanel', () => {
     expect(onAmountChange).toHaveBeenCalledWith(50)
   })
 
-  it('respects supported price ticks for D=100 and D=1000', () => {
+  it('respects price ticks for D=100 and D=1000', () => {
     const preview: LimitOrderPreview = {
       limitPrice: 30,
       amount: 1,
@@ -199,7 +199,7 @@ describe('TradingPanel', () => {
       />,
     )
 
-    expect(screen.getByText('30 (30%)')).toBeInTheDocument()
+    expect(screen.getByText('30 (30.00%)')).toBeInTheDocument()
 
     rerender(
       <TradingPanel
@@ -220,6 +220,6 @@ describe('TradingPanel', () => {
       />,
     )
 
-    expect(screen.getByText('301 (30.1%)')).toBeInTheDocument()
+    expect(screen.getByText('301 (30.10%)')).toBeInTheDocument()
   })
 })

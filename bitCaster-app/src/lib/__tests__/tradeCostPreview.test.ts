@@ -60,18 +60,18 @@ describe("computeLimitOrderPreview", () => {
     expect(preview.quoteSats).toBe(150);
   });
 
-  it("pins share-ticket math for 50 shares at price 30 with D=100", () => {
+  it("pins share-ticket math for 50 shares at price 3000 with D=10000", () => {
     const preview = computeLimitOrderPreview({
       displayShares: 50,
-      limitPrice: 30,
+      limitPrice: 3_000,
       feePercent: 0,
       mintInputFeePpk: 0,
-      divisibility: 100,
+      divisibility: 10_000,
     });
 
-    expect(preview.quoteSats).toBe(1_500);
-    expect(preview.totalCost).toBe(1_500);
-    expect(preview.potentialPayout).toBe(5_000);
+    expect(preview.quoteSats).toBe(150_000);
+    expect(preview.totalCost).toBe(150_000);
+    expect(preview.potentialPayout).toBe(500_000);
   });
 
   it("collapses the mint fee to 0 for the first-release zero-fee mint", () => {
@@ -176,9 +176,9 @@ describe("computeTradeCost", () => {
 });
 
 describe("trade display-unit conversion", () => {
-  it("maps one display share to one 100-sat protocol face lot", () => {
-    expect(displaySharesToFaceSats(3)).toBe(300);
-    expect(faceSatsToDisplayShares(300)).toBe(3);
+  it("maps one display share to one 10000-subunit protocol face lot", () => {
+    expect(displaySharesToFaceSats(3)).toBe(30_000);
+    expect(faceSatsToDisplayShares(30_000)).toBe(3);
   });
 
   it("maps shares to protocol face using market divisibility", () => {

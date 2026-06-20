@@ -33,7 +33,6 @@ export function MarketCreationPage() {
       onPrecisionChange={state.onPrecisionChange}
       onUnitChange={state.onUnitChange}
       onBaseAssetChange={state.onBaseAssetChange}
-      onDivisibilityChange={state.onDivisibilityChange}
       onDescriptionChange={state.onDescriptionChange}
       onCreateMarket={state.onCreateMarket}
       onConfirmRegistrationFee={state.onConfirmRegistrationFee}

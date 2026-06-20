@@ -14,6 +14,7 @@ import type {
 import { useTranslation } from 'react-i18next'
 import {
   formatMarketSubunits,
+  formatPricePercentage,
   formatWholeShareFaceValue,
   marketSubunitLabel,
   normalizeMarketBaseAsset,
@@ -156,7 +157,7 @@ function YesNoOutcomes({
           {isSell ? t('trade.sellYes') : t('common.yes')}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
-          {market.currentOdds.yes.toFixed(1)}%
+          {market.currentOdds.yes.toFixed(2)}%
         </div>
       </button>
 
@@ -173,7 +174,7 @@ function YesNoOutcomes({
           {isSell ? t('trade.sellNo') : t('common.no')}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
-          {market.currentOdds.no.toFixed(1)}%
+          {market.currentOdds.no.toFixed(2)}%
         </div>
       </button>
     </div>
@@ -211,7 +212,7 @@ function CategoricalOutcomes({
                 {outcome.label}
               </span>
               <span className="text-sm font-bold text-slate-600 dark:text-slate-400">
-                {outcome.odds.toFixed(1)}%
+                {outcome.odds.toFixed(2)}%
               </span>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -443,19 +444,8 @@ function LimitPriceInput({
   )
 }
 
-function probabilityFractionDigits(divisibility: number): number {
-  return Math.max(0, Math.ceil(Math.log10(divisibility)) - 2)
-}
-
-function formatProbabilityPercent(price: number, divisibility: number): string {
-  return ((price / divisibility) * 100).toLocaleString(undefined, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: probabilityFractionDigits(divisibility),
-  })
-}
-
 function formatPriceWithProbability(price: number, divisibility: number): string {
-  return `${price.toLocaleString()} (${formatProbabilityPercent(price, divisibility)}%)`
+  return `${price.toLocaleString()} (${formatPricePercentage(price, divisibility)})`
 }
 
 function formatEngineScoreFee(

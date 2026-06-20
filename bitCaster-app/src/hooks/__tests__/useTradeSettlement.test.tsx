@@ -267,6 +267,11 @@ describe("useTradeSettlement", () => {
       marketId: "cond-YES",
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Buy",
+      tokenSide: "Outcome",
+      divisibility: 100,
+      priceSubunits: 50,
+      amountSubunits: 100,
       submittedAt: Date.now(),
     });
 
@@ -404,6 +409,10 @@ describe("useTradeSettlement", () => {
       marketId: "cond-NO",
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
       submittedAt: Date.now(),
     });
 
@@ -425,6 +434,7 @@ describe("useTradeSettlement", () => {
         quotePaymentSats?: number;
         baseAsset?: string;
         divisibility?: number;
+        outcomeFaceAmountSubunits?: number;
         quotePaymentSubunits?: number;
       }) => void;
     };
@@ -440,11 +450,12 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 100,
-        quotePaymentSats: 50,
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
         baseAsset: "sat",
-        divisibility: 100,
-        quotePaymentSubunits: 50,
+        divisibility: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 5_000,
       });
     });
 
@@ -455,11 +466,11 @@ describe("useTradeSettlement", () => {
     expect(swap.orderId).toBe("order-pending");
     expect(swap.marketId).toBe("cond-NO");
     expect(swap.role).toBe("buyer");
-    expect(swap.outcomeFaceAmountSats).toBe(100);
-    expect(swap.quotePaymentSats).toBe(50);
+    expect(swap.outcomeFaceAmountSats).toBe(10_000);
+    expect(swap.quotePaymentSats).toBe(5_000);
     expect(swap.baseAsset).toBe("sat");
-    expect(swap.divisibility).toBe(100);
-    expect(swap.quotePaymentSubunits).toBe(50);
+    expect(swap.divisibility).toBe(10_000);
+    expect(swap.quotePaymentSubunits).toBe(5_000);
   });
 
   it("fails before locking proofs when TradeCreated unit metadata mismatches the local order", async () => {
@@ -469,7 +480,11 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "usd",
-      divisibility: 100,
+      divisibility: 10_000,
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
       submittedAt: Date.now(),
     });
 
@@ -505,11 +520,11 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 100,
-        quotePaymentSats: 50,
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
         baseAsset: "sat",
-        divisibility: 100,
-        quotePaymentSubunits: 50,
+        divisibility: 10_000,
+        quotePaymentSubunits: 5_000,
       });
     });
 
@@ -526,12 +541,139 @@ describe("useTradeSettlement", () => {
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
   });
 
-  it("keeps the maker market when promoting a mint seller TradeCreated event", async () => {
+  it("fails before locking proofs when TradeCreated violates local order economics", async () => {
     usePendingTradesStore.getState().add({
-      orderId: "order-pending",
+      orderId: "order-price-mismatch",
       marketId: "cond-YES",
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
+      baseAsset: "sat",
+      divisibility: 10_000,
+      side: "Sell",
+      tokenSide: "Outcome",
+      priceSubunits: 4_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        settlementKind?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+        baseAsset?: string;
+        divisibility?: number;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-price-mismatch",
+        sellerPubkey: "02" + "22".repeat(32),
+        buyerPubkey: "02" + "33".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-YES",
+        settlementKind: "DirectSwap",
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 3_900,
+        baseAsset: "sat",
+        divisibility: 10_000,
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId["trade-price-mismatch"]?.step,
+      ).toBe("failed"),
+    );
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-price-mismatch"]?.error,
+    ).toContain("does not satisfy the submitted order price");
+    expect(mockJoinTrade).not.toHaveBeenCalled();
+    expect(mockSendSwapMessage).not.toHaveBeenCalled();
+    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
+  });
+
+  it("fails before joining when a legacy pending trade lacks order economics", async () => {
+    usePendingTradesStore.getState().add({
+      orderId: "order-legacy-no-economics",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      baseAsset: "sat",
+      divisibility: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        settlementKind?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+        baseAsset?: string;
+        divisibility?: number;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-legacy-no-economics",
+        sellerPubkey: "02" + "22".repeat(32),
+        buyerPubkey: "02" + "33".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-YES",
+        settlementKind: "DirectSwap",
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 4_000,
+        baseAsset: "sat",
+        divisibility: 10_000,
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId["trade-legacy-no-economics"]?.step,
+      ).toBe("failed"),
+    );
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-legacy-no-economics"]?.error,
+    ).toContain("Expected order economics are missing");
+    expect(mockJoinTrade).not.toHaveBeenCalled();
+    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
+  });
+
+  it("fails before locking proofs when non-default TradeCreated is missing canonical settlement amounts", async () => {
+    usePendingTradesStore.getState().add({
+      orderId: "order-usd-canonical",
+      marketId: "cond-NO",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      baseAsset: "usd",
+      divisibility: 10_000,
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
       submittedAt: Date.now(),
     });
 
@@ -550,6 +692,143 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId?: string;
         outcomeFaceAmountSats?: number;
         quotePaymentSats?: number;
+        baseAsset?: string;
+        divisibility?: number;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-missing-canonical",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-NO",
+        settlementKind: "Mint",
+        sellerKeepOutcomeSetId: "YES",
+        sellerLockOutcomeSetId: "NO",
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
+        baseAsset: "usd",
+        divisibility: 10_000,
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId["trade-missing-canonical"]?.step,
+      ).toBe("failed"),
+    );
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-missing-canonical"]?.error,
+    ).toContain("missing outcome face subunits");
+    expect(mockJoinTrade).not.toHaveBeenCalled();
+    expect(mockSendSwapMessage).not.toHaveBeenCalled();
+    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
+  });
+
+  it("uses canonical non-default settlement amounts without legacy sats fields", async () => {
+    usePendingTradesStore.getState().add({
+      orderId: "order-usd-canonical-only",
+      marketId: "cond-NO",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      baseAsset: "usd",
+      divisibility: 1_000,
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 400,
+      amountSubunits: 1_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        settlementKind?: string;
+        sellerKeepOutcomeSetId?: string;
+        sellerLockOutcomeSetId?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+        baseAsset?: string;
+        divisibility?: number;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-canonical-only",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-NO",
+        settlementKind: "Mint",
+        sellerKeepOutcomeSetId: "YES",
+        sellerLockOutcomeSetId: "NO",
+        baseAsset: "usd",
+        divisibility: 1_000,
+        outcomeFaceAmountSubunits: 1_000,
+        quotePaymentSubunits: 400,
+      });
+    });
+
+    await waitFor(() =>
+      expect(mockJoinTrade).toHaveBeenCalledWith("trade-canonical-only"),
+    );
+    const swap = useActiveSwapsStore.getState().byTradeId["trade-canonical-only"];
+    expect(swap.role).toBe("buyer");
+    expect(swap.outcomeFaceAmountSats).toBeNull();
+    expect(swap.quotePaymentSats).toBeNull();
+    expect(swap.outcomeFaceAmountSubunits).toBe(1_000);
+    expect(swap.quotePaymentSubunits).toBe(400);
+    expect(mockSendSwapMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps the maker market when promoting a mint seller TradeCreated event", async () => {
+    usePendingTradesStore.getState().add({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Buy",
+      tokenSide: "Complement",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        settlementKind?: string;
+        sellerKeepOutcomeSetId?: string;
+        sellerLockOutcomeSetId?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
+        divisibility?: number;
       }) => void;
     };
 
@@ -564,8 +843,8 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 100,
-        quotePaymentSats: 50,
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
       });
     });
 
@@ -612,6 +891,10 @@ describe("useTradeSettlement", () => {
       marketId: "cond-YES",
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
       submittedAt: Date.now(),
     });
 
@@ -627,6 +910,9 @@ describe("useTradeSettlement", () => {
         marketId?: string;
         outcomeFaceAmountSats?: number;
         quotePaymentSats?: number;
+        divisibility?: number;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
       }) => void;
       onSwapMessageReceived: (msg: {
         tradeId: string;
@@ -643,8 +929,8 @@ describe("useTradeSettlement", () => {
         sellerLocktime: "2026-05-07T12:01:00Z",
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-YES",
-        outcomeFaceAmountSats: 100,
-        quotePaymentSats: 50,
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
       });
     });
     await act(async () => {
@@ -673,7 +959,7 @@ describe("useTradeSettlement", () => {
       "cipher-adaptor",
       "cipher-seller",
       originalInputs,
-      50,
+      5_000,
       expect.objectContaining({
         operationId: "trade-buyer-recover/browser/buyer-lock",
       }),
@@ -688,7 +974,7 @@ describe("useTradeSettlement", () => {
     const reservationId = `order-preflight:${"02" + "22".repeat(32)}`;
     mockGetReservedProofs.mockResolvedValue([
       {
-        ...proof(136, "reserved-lock-no-136", "keyset-NO"),
+        ...proof(10_036, "reserved-lock-no-10036", "keyset-NO"),
         mintUrl: "https://mint.example",
         reservedBy: reservationId,
         conditionId: "cond",
@@ -696,7 +982,7 @@ describe("useTradeSettlement", () => {
         marketId: "cond-NO",
       },
       {
-        ...proof(136, "reserved-keep-yes-136", "keyset-YES"),
+        ...proof(10_036, "reserved-keep-yes-10036", "keyset-YES"),
         mintUrl: "https://mint.example",
         reservedBy: reservationId,
         conditionId: "cond",
@@ -709,13 +995,17 @@ describe("useTradeSettlement", () => {
       marketId: "cond-YES",
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Buy",
+      tokenSide: "Complement",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
       submittedAt: Date.now(),
       preflightSplit: {
         reservationId,
         conditionId: "cond",
         keepOutcomeSetId: "YES",
         lockOutcomeSetId: "NO",
-        amountSats: 100,
+        amountSats: 10_000,
       },
     });
 
@@ -734,6 +1024,9 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId?: string;
         outcomeFaceAmountSats?: number;
         quotePaymentSats?: number;
+        divisibility?: number;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
       }) => void;
     };
 
@@ -748,8 +1041,11 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 100,
-        quotePaymentSats: 50,
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
+        divisibility: 10_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 5_000,
       });
     });
     await waitFor(() =>
@@ -757,19 +1053,19 @@ describe("useTradeSettlement", () => {
     );
     expect(mockSplitProofsForExactSend).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountSats: 100,
+        amountSats: 10_000,
         operationId:
           "trade-preflight-overpay/browser/seller-preflight-keep-exact-v2",
         preserveSourceKeyset: true,
         sourceProofs: [
-          expect.objectContaining({ secret: "reserved-keep-yes-136" }),
+          expect.objectContaining({ secret: "reserved-keep-yes-10036" }),
         ],
       }),
     );
     expect(mockSellerLockOutcomeProofs).toHaveBeenCalledWith(
       expect.objectContaining({ tradeId: "trade-preflight-overpay" }),
-      [expect.objectContaining({ secret: "reserved-lock-no-136" })],
-      100,
+      [expect.objectContaining({ secret: "reserved-lock-no-10036" })],
+      10_000,
       expect.objectContaining({
         operationId: "trade-preflight-overpay/browser/seller-preflight-lock",
       }),
@@ -779,7 +1075,7 @@ describe("useTradeSettlement", () => {
       [expect.objectContaining({ secret: "lock-locked-100" })],
     );
     expect(mockReplaceProofs).toHaveBeenCalledWith(
-      ["reserved-lock-no-136"],
+      ["reserved-lock-no-10036"],
       [
         expect.objectContaining({
           secret: "lock-change-36",
@@ -792,7 +1088,7 @@ describe("useTradeSettlement", () => {
       ],
     );
     expect(mockReplaceProofs).toHaveBeenCalledWith(
-      ["reserved-keep-yes-136"],
+      ["reserved-keep-yes-10036"],
       [
         expect.objectContaining({
           secret: "keep-exact-100",
@@ -895,6 +1191,10 @@ describe("useTradeSettlement", () => {
       marketId: "cond-YES",
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
       submittedAt: Date.now(),
     });
 
@@ -917,12 +1217,92 @@ describe("useTradeSettlement", () => {
       sellerLocktime: "2026-05-07T12:01:00Z",
       buyerLocktime: "2026-05-07T12:00:00Z",
       marketId: "cond-YES",
+      outcomeFaceAmountSats: 10_000,
+      quotePaymentSats: 5_000,
     };
 
     await act(async () => callbacks.onTradeCreated(payload));
     await act(async () => callbacks.onTradeCreated(payload));
 
     expect(mockJoinTrade).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails a changed duplicate TradeCreated while role assignment is in flight", async () => {
+    let resolveJoinTrade: (() => void) | null = null;
+    mockJoinTrade.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveJoinTrade = resolve;
+        }),
+    );
+    usePendingTradesStore.getState().add({
+      orderId: "order-pending",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Sell",
+      tokenSide: "Outcome",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+      }) => void;
+    };
+    const payload = {
+      tradeId: "trade-duplicate-inflight",
+      sellerPubkey: "02" + "22".repeat(32),
+      buyerPubkey: "02" + "33".repeat(32),
+      sellerLocktime: "2026-05-07T12:01:00Z",
+      buyerLocktime: "2026-05-07T12:00:00Z",
+      marketId: "cond-YES",
+      outcomeFaceAmountSats: 10_000,
+      quotePaymentSats: 5_000,
+    };
+
+    await act(async () => callbacks.onTradeCreated(payload));
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"],
+      ).toBeTruthy(),
+    );
+
+    await act(async () =>
+      callbacks.onTradeCreated({
+        ...payload,
+        quotePaymentSats: 5_100,
+      }),
+    );
+
+    let swap =
+      useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"];
+    expect(swap.step).toBe("failed");
+    expect(swap.role).toBeNull();
+    expect(swap.error).toMatch(/TradeCreated payload changed/i);
+
+    await act(async () => {
+      resolveJoinTrade?.();
+    });
+
+    await waitFor(() => {
+      swap =
+        useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"];
+      expect(swap.step).toBe("failed");
+      expect(swap.role).toBeNull();
+    });
+    expect(mockSellerPreparePrelockedSwap).not.toHaveBeenCalled();
   });
 
   it("fails the swap before role assignment when TradeCreated locktimes are inverted", async () => {
@@ -935,6 +1315,10 @@ describe("useTradeSettlement", () => {
         marketId: "market-1",
         ephemeralPrivkeyHex: "11".repeat(32),
         ephemeralPubkeyHex: "22".repeat(32),
+        side: "Sell",
+        tokenSide: "Outcome",
+        priceSubunits: 5_000,
+        amountSubunits: 10_000,
       });
     });
 
@@ -945,6 +1329,8 @@ describe("useTradeSettlement", () => {
         buyerPubkey: string;
         sellerLocktime: string;
         buyerLocktime: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
       }) => void;
     };
 
@@ -955,6 +1341,8 @@ describe("useTradeSettlement", () => {
         buyerPubkey: "33".repeat(32),
         sellerLocktime: "2026-05-07T12:00:00Z",
         buyerLocktime: "2026-05-07T12:01:00Z",
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
       });
     });
 
@@ -998,6 +1386,270 @@ describe("useTradeSettlement", () => {
     const swap = useActiveSwapsStore.getState().byTradeId["trade-3"];
     expect(swap.step).toBe("completed");
     expect(swap.error).toBeNull();
+  });
+  it("fails before locking proofs when TradeCreated legacy and canonical amounts disagree for sat/100", async () => {
+    usePendingTradesStore.getState().add({
+      orderId: "order-ambiguous-sat100",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        settlementKind?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
+        baseAsset?: string;
+        divisibility?: number;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-ambiguous-sat100",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-YES",
+        settlementKind: "DirectSwap",
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
+        outcomeFaceAmountSubunits: 101,
+        quotePaymentSubunits: 5_000,
+        baseAsset: "sat",
+        divisibility: 10_000,
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId["trade-ambiguous-sat100"]?.step,
+      ).toBe("failed"),
+    );
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-ambiguous-sat100"]?.error,
+    ).toContain("inconsistent outcome face amounts");
+    expect(mockSendSwapMessage).not.toHaveBeenCalled();
+    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
+  });
+
+  it("fails before locking proofs when non-default TradeCreated carries inconsistent quote payment amounts", async () => {
+    usePendingTradesStore.getState().add({
+      orderId: "order-ambiguous-usd",
+      marketId: "cond-NO",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      baseAsset: "usd",
+      divisibility: 1_000,
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 400,
+      amountSubunits: 1_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        settlementKind?: string;
+        sellerKeepOutcomeSetId?: string;
+        sellerLockOutcomeSetId?: string;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
+        quotePaymentSats?: number;
+        baseAsset?: string;
+        divisibility?: number;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-ambiguous-usd-quote",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-NO",
+        settlementKind: "Mint",
+        sellerKeepOutcomeSetId: "YES",
+        sellerLockOutcomeSetId: "NO",
+        outcomeFaceAmountSubunits: 1_000,
+        quotePaymentSubunits: 400,
+        quotePaymentSats: 401,
+        baseAsset: "usd",
+        divisibility: 1_000,
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId["trade-ambiguous-usd-quote"]?.step,
+      ).toBe("failed"),
+    );
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-ambiguous-usd-quote"]?.error,
+    ).toContain("inconsistent quote payment amounts");
+    expect(mockSendSwapMessage).not.toHaveBeenCalled();
+    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
+  });
+
+  it("fails before locking proofs when a non-default TradeCreated arrives for a legacy pending trade with no expected unit", async () => {
+    usePendingTradesStore.getState().add({
+      orderId: "order-legacy-no-unit",
+      marketId: "cond-NO",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        settlementKind?: string;
+        sellerKeepOutcomeSetId?: string;
+        sellerLockOutcomeSetId?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
+        baseAsset?: string;
+        divisibility?: number;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-nondefault-no-expected-unit",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-NO",
+        settlementKind: "Mint",
+        sellerKeepOutcomeSetId: "YES",
+        sellerLockOutcomeSetId: "NO",
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 5_000,
+        baseAsset: "usd",
+        divisibility: 10_000,
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId["trade-nondefault-no-expected-unit"]?.step,
+      ).toBe("failed"),
+    );
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-nondefault-no-expected-unit"]?.error,
+    ).toContain("non-default unit but the local expected unit is missing");
+    expect(mockSendSwapMessage).not.toHaveBeenCalled();
+    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
+  });
+
+  it("fails before locking proofs when a mint seller TradeCreated tokenSide does not match the local order", async () => {
+    usePendingTradesStore.getState().add({
+      orderId: "order-tokenside-mismatch",
+      marketId: "cond-YES",
+      ephemeralPrivkey: "11".repeat(32),
+      ephemeralPubkey: "02" + "22".repeat(32),
+      side: "Buy",
+      tokenSide: "Outcome",
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        settlementKind?: string;
+        sellerKeepOutcomeSetId?: string;
+        sellerLockOutcomeSetId?: string;
+        outcomeFaceAmountSats?: number;
+        quotePaymentSats?: number;
+        baseAsset?: string;
+        divisibility?: number;
+      }) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeCreated({
+        tradeId: "trade-tokenside-mismatch",
+        sellerPubkey: "02" + "22".repeat(32),
+        buyerPubkey: "02" + "33".repeat(32),
+        sellerLocktime: "2026-05-07T12:01:00Z",
+        buyerLocktime: "2026-05-07T12:00:00Z",
+        marketId: "cond-NO",
+        settlementKind: "Mint",
+        sellerKeepOutcomeSetId: "YES",
+        sellerLockOutcomeSetId: "NO",
+        outcomeFaceAmountSats: 10_000,
+        quotePaymentSats: 5_000,
+        baseAsset: "sat",
+        divisibility: 10_000,
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId["trade-tokenside-mismatch"]?.step,
+      ).toBe("failed"),
+    );
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-tokenside-mismatch"]?.error,
+    ).toContain("does not match the submitted order side");
+    expect(mockJoinTrade).not.toHaveBeenCalled();
+    expect(mockSendSwapMessage).not.toHaveBeenCalled();
+    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
+    expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
   });
 });
 

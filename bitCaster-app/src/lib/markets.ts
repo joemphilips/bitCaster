@@ -18,6 +18,7 @@ import {
 } from "@bitcaster/client-sdk/engineClient";
 import {
   marketUnitLabel,
+  DEFAULT_MARKET_DIVISIBILITY,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -530,10 +531,13 @@ export function applyMarketComments(
   };
 }
 
+const MAX_PRICE_HISTORY_POINTS_PER_OUTCOME = 1000;
+
 // Width of each timeframe window in milliseconds. The chart X-axis scale is
 // derived from the visible point span, so trimming the series to the active
 // window keeps the date ticks proportional to the selected timeframe instead
-// of always spanning the full retained history. `all` keeps everything.
+// of always spanning the full retained history. `all` keeps the newest capped
+// retained points so live tabs cannot grow without bound.
 const TIMEFRAME_WINDOW_MS: Record<PriceHistory["timeframe"], number | null> = {
   "1h": 60 * 60 * 1000,
   "24h": 24 * 60 * 60 * 1000,
@@ -550,18 +554,34 @@ const TIMEFRAME_WINDOW_MS: Record<PriceHistory["timeframe"], number | null> = {
  */
 export function windowPriceHistory(history: PriceHistory): PriceHistory {
   const windowMs = TIMEFRAME_WINDOW_MS[history.timeframe];
-  if (windowMs === null || history.data.length === 0) return history;
+  if (history.data.length === 0) return history;
   const sorted = [...history.data].sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
   );
+  if (windowMs === null) {
+    return {
+      ...history,
+      data: sorted.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME),
+    };
+  }
   const newest = new Date(sorted[sorted.length - 1].timestamp).getTime();
   const cutoff = newest - windowMs;
   const firstInWindow = sorted.findIndex(
     (p) => new Date(p.timestamp).getTime() >= cutoff,
   );
-  if (firstInWindow <= 0) return { ...history, data: sorted };
+  if (firstInWindow <= 0) {
+    return {
+      ...history,
+      data: sorted.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME),
+    };
+  }
   // Keep one point before the cutoff so the line has a left-edge value.
-  return { ...history, data: sorted.slice(firstInWindow - 1) };
+  return {
+    ...history,
+    data: sorted
+      .slice(firstInWindow - 1)
+      .slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME),
+  };
 }
 
 export function priceNumeratorToPercent(price: number, divisibility: number): number {
@@ -577,7 +597,8 @@ function normalizePricePoint(
   return {
     timestamp: point.timestamp,
     price: priceNumeratorToPercent(point.price, divisibility),
-    volume: point.volumeSats,
+    volume: point.volumeSubunits ?? point.volumeSats,
+    source: point.source,
   };
 }
 
@@ -609,7 +630,7 @@ export function applyMarketPriceHistory(
   ): PriceHistory =>
     windowPriceHistory({
       timeframe: response.timeframe as PriceHistory["timeframe"],
-      data: data.map((point) => normalizePricePoint(point, market.divisibility ?? 100)),
+      data: data.map((point) => normalizePricePoint(point, market.divisibility ?? DEFAULT_MARKET_DIVISIBILITY)),
     });
   const histories = Object.fromEntries(
     response.outcomes.map((outcome) => {

@@ -231,11 +231,10 @@ describe('useMarketCreationState – onCreateMarket', () => {
     )
   })
 
-  it('passes selected market unit to mintd registration and engine market creation', async () => {
+  it('passes selected base asset to mintd registration and omits request divisibility', async () => {
     const result = await setupDraftForSubmission()
 
     await act(async () => { result.current.onBaseAssetChange('usd') })
-    await act(async () => { result.current.onDivisibilityChange(1000) })
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
@@ -247,9 +246,9 @@ describe('useMarketCreationState – onCreateMarket', () => {
     )
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
       baseAsset: 'usd',
-      divisibility: 1000,
       liquiditySats: 0,
     })
+    expect(mockCreateMarket.mock.calls[0][1]).not.toHaveProperty('divisibility')
     expect(result.current.createdMarketBaseAsset).toBe('usd')
   })
 

@@ -37,7 +37,7 @@ function computeCurrentDisplay(market: MarketDetailProps["market"]): string {
       latestPoint && Number.isFinite(latestPoint.price)
         ? latestPoint.price
         : market.currentOdds.yes;
-    return `${latestYesPrice.toFixed(1)}%`;
+    return `${latestYesPrice.toFixed(2)}%`;
   }
 
   return "";
@@ -122,7 +122,7 @@ export function MarketDetail({
   const isTradingEnabled = !isEffectivelyClosed;
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
+    <div className="min-h-screen bg-slate-50 pb-[calc(9rem+env(safe-area-inset-bottom))] dark:bg-slate-900 lg:pb-0">
       {/* Desktop Layout: Two Columns (single column when resolved) */}
       <div className="max-w-7xl mx-auto">
         <div
@@ -305,7 +305,7 @@ export function MarketDetail({
 
       {/* Mobile: Sticky Bottom Trade Bar (only for open markets) */}
       {isTradingEnabled && (
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 p-4 bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 safe-area-pb">
+        <div className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden">
           {tradeSelection ? (
             <div className="flex items-center gap-3">
               <div className="flex-1">
