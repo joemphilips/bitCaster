@@ -152,7 +152,139 @@ test('decideTradeCreated derives system sat/10000 default from canonical payload
   })
 })
 
-test('decideTradeCreated validates payload unit against expected local unit', () => {
+test('decideTradeCreated accepts default sat/10000 TradeCreated without expected unit assertion', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'Mint',
+    sellerKeepOutcomeSetId: 'YES',
+    sellerLockOutcomeSetId: 'NO',
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 5_000,
+  })
+
+  assert.equal(decision.accepted, true)
+})
+
+test('decideTradeCreated rejects non-default divisibility without expected unit assertion', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'Mint',
+    sellerKeepOutcomeSetId: 'YES',
+    sellerLockOutcomeSetId: 'NO',
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 500,
+  })
+
+  assert.equal(decision.accepted, false)
+  if (!decision.accepted) {
+    assert.equal(decision.reason, 'invalid-protocol')
+    assert.match(decision.error, /non-default unit.*expected unit is missing/i)
+  }
+})
+
+test('decideTradeCreated accepts explicit non-default divisibility assertion', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'Mint',
+    sellerKeepOutcomeSetId: 'YES',
+    sellerLockOutcomeSetId: 'NO',
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    expectedBaseAsset: 'sat',
+    expectedDivisibility: 1_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 500,
+  })
+
+  assert.equal(decision.accepted, true)
+})
+
+test('decideTradeCreated rejects default divisibility when expected non-default divisibility is asserted', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'Mint',
+    sellerKeepOutcomeSetId: 'YES',
+    sellerLockOutcomeSetId: 'NO',
+    baseAsset: 'sat',
+    divisibility: 10_000,
+    expectedBaseAsset: 'sat',
+    expectedDivisibility: 1_000,
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 5_000,
+  })
+
+  assert.equal(decision.accepted, false)
+  if (!decision.accepted) {
+    assert.equal(decision.reason, 'invalid-protocol')
+    assert.match(decision.error, /divisibility mismatch/i)
+  }
+})
+
+test('decideTradeCreated rejects non-default base asset without expected unit assertion', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'Mint',
+    sellerKeepOutcomeSetId: 'YES',
+    sellerLockOutcomeSetId: 'NO',
+    baseAsset: 'usd',
+    divisibility: 10_000,
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 5_000,
+  })
+
+  assert.equal(decision.accepted, false)
+  if (!decision.accepted) {
+    assert.equal(decision.reason, 'invalid-protocol')
+    assert.match(decision.error, /non-default unit.*expected unit is missing/i)
+  }
+})
+
+test('decideTradeCreated accepts explicit non-default base asset assertion', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'Mint',
+    sellerKeepOutcomeSetId: 'YES',
+    sellerLockOutcomeSetId: 'NO',
+    baseAsset: 'usd',
+    divisibility: 10_000,
+    expectedBaseAsset: 'usd',
+    expectedDivisibility: 10_000,
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 5_000,
+  })
+
+  assert.equal(decision.accepted, true)
+})
+
+test('decideTradeCreated accepts legacy sat/100 TradeCreated only with explicit expected unit assertion', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -164,6 +296,27 @@ test('decideTradeCreated validates payload unit against expected local unit', ()
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
     divisibility: 100,
+    expectedBaseAsset: 'sat',
+    expectedDivisibility: 100,
+    outcomeFaceAmountSubunits: 100,
+    quotePaymentSubunits: 50,
+  })
+
+  assert.equal(decision.accepted, true)
+})
+
+test('decideTradeCreated validates payload unit against expected local unit', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'Mint',
+    sellerKeepOutcomeSetId: 'YES',
+    sellerLockOutcomeSetId: 'NO',
+    baseAsset: 'sat',
+    divisibility: 10_000,
     expectedBaseAsset: 'usd',
     expectedDivisibility: 1_000,
     outcomeFaceAmountSubunits: 1_000,
@@ -383,8 +536,8 @@ test('decideTradeCreated fails closed when expected order economics are required
     buyerPubkey: 'def',
     sellerLocktime: 120,
     buyerLocktime: 60,
-    outcomeFaceAmountSubunits: 100,
-    quotePaymentSubunits: 40,
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 4_000,
     requireExpectedOrder: true,
   })
 
