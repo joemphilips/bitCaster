@@ -1797,7 +1797,7 @@ describe("useTradeSettlement", () => {
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
   });
 
-  it("fails before locking proofs when a mint seller TradeCreated tokenSide does not match the local order", async () => {
+  it("accepts an outcome-side buy order as the mint seller", async () => {
     usePendingTradesStore.getState().add({
       orderId: "order-tokenside-mismatch",
       marketId: "cond-YES",
@@ -1837,7 +1837,7 @@ describe("useTradeSettlement", () => {
         buyerPubkey: "02" + "33".repeat(32),
         sellerLocktime: "2026-05-07T12:01:00Z",
         buyerLocktime: "2026-05-07T12:00:00Z",
-        marketId: "cond-NO",
+        marketId: "cond-YES",
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
@@ -1849,16 +1849,16 @@ describe("useTradeSettlement", () => {
     });
 
     await waitFor(() =>
-      expect(
-        useActiveSwapsStore.getState().byTradeId["trade-tokenside-mismatch"]?.step,
-      ).toBe("failed"),
+      expect(mockJoinTrade).toHaveBeenCalledWith("trade-tokenside-mismatch"),
     );
-    expect(
-      useActiveSwapsStore.getState().byTradeId["trade-tokenside-mismatch"]?.error,
-    ).toContain("does not match the submitted order side");
-    expect(mockJoinTrade).not.toHaveBeenCalled();
+    const swap =
+      useActiveSwapsStore.getState().byTradeId["trade-tokenside-mismatch"];
+    expect(swap?.role).toBe("seller");
+    expect(swap?.orderId).toBe("order-tokenside-mismatch");
+    expect(swap?.error ?? "").not.toContain(
+      "does not match the submitted order side",
+    );
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
-    expect(mockSellerLockOutcomeProofs).not.toHaveBeenCalled();
     expect(mockBuyerPrepareSwap).not.toHaveBeenCalled();
   });
 });

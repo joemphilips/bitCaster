@@ -499,8 +499,8 @@ test('decideTradeCreated validates exact maker bid-as-complement quote', () => {
   }
 })
 
-test('decideTradeCreated rejects mint seller settlement backed by outcome-side bid', () => {
-  const rejected = decideTradeCreated({
+test('decideTradeCreated accepts mint seller settlement backed by outcome-side bid', () => {
+  const accepted = decideTradeCreated({
     ownEphemeralPubkey: 'abc',
     sellerPubkey: 'abc',
     buyerPubkey: 'def',
@@ -522,11 +522,30 @@ test('decideTradeCreated rejects mint seller settlement backed by outcome-side b
     },
   })
 
-  assert.equal(rejected.accepted, false)
-  if (!rejected.accepted) {
-    assert.equal(rejected.reason, 'invalid-protocol')
-    assert.match(rejected.error, /role does not match/i)
-  }
+  assert.equal(accepted.accepted, true)
+})
+
+test('decideTradeCreated accepts mint seller settlement backed by complement-side bid', () => {
+  const accepted = decideTradeCreated({
+    ownEphemeralPubkey: 'abc',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'Mint',
+    sellerKeepOutcomeSetId: 'YES',
+    sellerLockOutcomeSetId: 'NO',
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 6_000,
+    expectedOrder: {
+      side: 'Buy',
+      tokenSide: 'Complement',
+      priceSubunits: 4_000,
+      amountSubunits: 10_000,
+    },
+  })
+
+  assert.equal(accepted.accepted, true)
 })
 
 test('decideTradeCreated fails closed when expected order economics are required but missing', () => {
@@ -548,7 +567,7 @@ test('decideTradeCreated fails closed when expected order economics are required
   }
 })
 
-test('decideTradeCreated rejects buy-side mint seller without explicit token side', () => {
+test('decideTradeCreated accepts buy-side mint seller without explicit token side', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'abc',
     sellerPubkey: 'abc',
@@ -562,6 +581,94 @@ test('decideTradeCreated rejects buy-side mint seller without explicit token sid
     quotePaymentSubunits: 6_000,
     expectedOrder: {
       side: 'Buy',
+      priceSubunits: 4_000,
+      amountSubunits: 10_000,
+    },
+  })
+
+  assert.equal(decision.accepted, true)
+})
+
+test('decideTradeCreated accepts direct seller settlement backed by sell order', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'abc',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'DirectSwap',
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 4_000,
+    expectedOrder: {
+      side: 'Sell',
+      tokenSide: 'Outcome',
+      priceSubunits: 4_000,
+      amountSubunits: 10_000,
+    },
+  })
+
+  assert.equal(decision.accepted, true)
+})
+
+test('decideTradeCreated accepts direct buyer settlement backed by buy order', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'DirectSwap',
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 4_000,
+    expectedOrder: {
+      side: 'Buy',
+      tokenSide: 'Outcome',
+      priceSubunits: 4_000,
+      amountSubunits: 10_000,
+    },
+  })
+
+  assert.equal(decision.accepted, true)
+})
+
+test('decideTradeCreated rejects direct seller settlement backed by buy order', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'abc',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'DirectSwap',
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 4_000,
+    expectedOrder: {
+      side: 'Buy',
+      tokenSide: 'Outcome',
+      priceSubunits: 4_000,
+      amountSubunits: 10_000,
+    },
+  })
+
+  assert.equal(decision.accepted, false)
+  if (!decision.accepted) {
+    assert.equal(decision.reason, 'invalid-protocol')
+    assert.match(decision.error, /role does not match/)
+  }
+})
+
+test('decideTradeCreated rejects direct buyer settlement backed by sell order', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    settlementKind: 'DirectSwap',
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 4_000,
+    expectedOrder: {
+      side: 'Sell',
+      tokenSide: 'Outcome',
       priceSubunits: 4_000,
       amountSubunits: 10_000,
     },
