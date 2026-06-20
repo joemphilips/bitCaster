@@ -129,7 +129,7 @@ test('decideTradeCreated rejects non-default canonical amounts when only expecte
   }
 })
 
-test('decideTradeCreated derives unambiguous sat/100 default from legacy-only payload when expected unit is missing', () => {
+test('decideTradeCreated derives system sat/10000 default from canonical payload when expected unit is missing', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -139,8 +139,8 @@ test('decideTradeCreated derives unambiguous sat/100 default from legacy-only pa
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSats: 100,
-    quotePaymentSats: 40,
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 4_000,
   })
 
   assert.deepEqual(decision, {
@@ -246,25 +246,19 @@ test('decideTradeCreated rejects unsupported explicit unit metadata', () => {
   }
 })
 
-test('decideTradeCreated rejects unsupported explicit divisibility metadata', () => {
-  for (const divisibility of [1, 99, 101]) {
-    const decision = decideTradeCreated({
-      ownEphemeralPubkey: 'def',
-      sellerPubkey: 'abc',
-      buyerPubkey: 'def',
-      sellerLocktime: 120,
-      buyerLocktime: 60,
-      divisibility,
-      outcomeFaceAmountSubunits: 100,
-      quotePaymentSubunits: 40,
-    })
+test('decideTradeCreated accepts explicit positive divisibility metadata', () => {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: 'def',
+    sellerPubkey: 'abc',
+    buyerPubkey: 'def',
+    sellerLocktime: 120,
+    buyerLocktime: 60,
+    divisibility: 10_000,
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 4_000,
+  })
 
-    assert.equal(decision.accepted, false)
-    if (!decision.accepted) {
-      assert.equal(decision.reason, 'invalid-protocol')
-      assert.match(decision.error, /divisibility is unsupported/i)
-    }
-  }
+  assert.equal(decision.accepted, true)
 })
 
 test('decideTradeCreated validates buyer quote against submitted order limit', () => {
@@ -363,14 +357,14 @@ test('decideTradeCreated rejects mint seller settlement backed by outcome-side b
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
-    divisibility: 100,
-    outcomeFaceAmountSubunits: 100,
-    quotePaymentSubunits: 99,
+    divisibility: 10_000,
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 9_900,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Outcome',
-      priceSubunits: 1,
-      amountSubunits: 100,
+      priceSubunits: 100,
+      amountSubunits: 10_000,
       quotePolicy: 'exact',
     },
   })
@@ -411,12 +405,12 @@ test('decideTradeCreated rejects buy-side mint seller without explicit token sid
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 100,
-    quotePaymentSubunits: 60,
+    outcomeFaceAmountSubunits: 10_000,
+    quotePaymentSubunits: 6_000,
     expectedOrder: {
       side: 'Buy',
-      priceSubunits: 40,
-      amountSubunits: 100,
+      priceSubunits: 4_000,
+      amountSubunits: 10_000,
     },
   })
 

@@ -1,10 +1,8 @@
 export type MarketBaseAsset = 'sat' | 'usd' | 'jpy'
 
 export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
-export const DEFAULT_MARKET_DIVISIBILITY = 100
-export const MIN_MARKET_DIVISIBILITY = 100
-export const MAX_MARKET_DIVISIBILITY = 1_000
-export const SUPPORTED_MARKET_DIVISIBILITIES = [100, 1_000] as const
+export const DEFAULT_MARKET_DIVISIBILITY = 10_000
+export const SYSTEM_DIVISIBILITY = 10_000
 
 export interface MarketUnitSpec {
   baseAsset?: MarketBaseAsset | null
@@ -28,27 +26,13 @@ export function parseMarketBaseAsset(
 }
 
 export function normalizeMarketDivisibility(value: number | null | undefined): number {
-  return isValidMarketDivisibility(value)
-    ? value
-    : DEFAULT_MARKET_DIVISIBILITY
+  if (typeof value !== 'number') return DEFAULT_MARKET_DIVISIBILITY
+  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MARKET_DIVISIBILITY
 }
 
 export function parseMarketDivisibility(value: number | null | undefined): number | null {
-  return isValidMarketDivisibility(value) ? value : null
-}
-
-export function isValidMarketDivisibility(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isSafeInteger(value) &&
-    isSupportedMarketDivisibility(value)
-  )
-}
-
-export function isSupportedMarketDivisibility(value: number): boolean {
-  return SUPPORTED_MARKET_DIVISIBILITIES.includes(
-    value as (typeof SUPPORTED_MARKET_DIVISIBILITIES)[number],
-  )
+  if (typeof value !== 'number') return null
+  return Number.isSafeInteger(value) && value > 0 ? value : null
 }
 
 export function marketUnitLabel(value: MarketBaseAsset | string | null | undefined): string {
@@ -63,6 +47,12 @@ export function marketSubunitLabel(value: MarketBaseAsset | string | null | unde
   if (baseAsset === 'usd') return 'cents'
   if (baseAsset === 'jpy') return 'yen'
   return 'sats'
+}
+
+export function defaultCollateralUnit(value: MarketBaseAsset | string | null | undefined): string {
+  const baseAsset = normalizeMarketBaseAsset(value)
+  if (baseAsset === 'usd') return 'milli-cent'
+  return 'msat'
 }
 
 export function formatMarketSubunits(
@@ -90,23 +80,37 @@ export function formatMarketSubunits(
 export function formatWholeShareFaceValue(
   spec: MarketUnitSpec,
 ): string {
-  return formatMarketSubunits(
-    normalizeMarketDivisibility(spec.divisibility),
-    spec.baseAsset,
-  )
+  return formatShareFace(normalizeMarketDivisibility(spec.divisibility), spec.baseAsset)
+}
+
+export function formatPricePercentage(
+  priceNumerator: number,
+  divisibility: number | null | undefined,
+): string {
+  const normalizedDivisibility = normalizeMarketDivisibility(divisibility)
+  const percent = Number.isFinite(priceNumerator)
+    ? (priceNumerator / normalizedDivisibility) * 100
+    : 0
+  return `${percent.toFixed(2)}%`
+}
+
+export function formatShareFace(
+  divisibility: number | null | undefined,
+  baseAsset: MarketBaseAsset | string | null | undefined,
+): string {
+  const normalizedDivisibility = normalizeMarketDivisibility(divisibility)
+  const normalizedBaseAsset = normalizeMarketBaseAsset(baseAsset)
+  if (normalizedBaseAsset === 'usd') {
+    return `$${(normalizedDivisibility / 100_000).toFixed(2)}`
+  }
+  return `${(normalizedDivisibility / 1_000).toString()} sat`
 }
 
 export function formatPricePercent(
   priceNumerator: number,
   divisibility: number | null | undefined,
 ): string {
-  const normalizedDivisibility = normalizeMarketDivisibility(divisibility)
-  if (!Number.isFinite(priceNumerator)) return '0.0%'
-  const percent = (priceNumerator / normalizedDivisibility) * 100
-  return `${percent.toLocaleString(undefined, {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 2,
-  })}%`
+  return formatPricePercentage(priceNumerator, divisibility)
 }
 
 export function validatePriceNumerator(price: number, divisibility: number): boolean {
