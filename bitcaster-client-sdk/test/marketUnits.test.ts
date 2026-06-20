@@ -3,11 +3,13 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   DEFAULT_MARKET_DIVISIBILITY,
+  SYSTEM_DIVISIBILITY,
+  defaultCollateralUnit,
+  formatPricePercentage,
   formatMarketSubunits,
   formatPricePercent,
-  isValidMarketDivisibility,
+  formatShareFace,
   formatWholeShareFaceValue,
-  isSupportedMarketDivisibility,
   marketSubunitLabel,
   marketUnitLabel,
   normalizeMarketBaseAsset,
@@ -23,22 +25,28 @@ test('normalizes market unit defaults', () => {
   assert.equal(normalizeMarketBaseAsset('USD'), 'usd')
   assert.equal(normalizeMarketBaseAsset('bogus'), 'sat')
   assert.equal(normalizeMarketDivisibility(undefined), DEFAULT_MARKET_DIVISIBILITY)
+  assert.equal(DEFAULT_MARKET_DIVISIBILITY, 10_000)
+  assert.equal(SYSTEM_DIVISIBILITY, 10_000)
   assert.equal(normalizeMarketDivisibility(100), 100)
   assert.equal(normalizeMarketDivisibility(1_000), 1_000)
-  assert.equal(normalizeMarketDivisibility(250), DEFAULT_MARKET_DIVISIBILITY)
-  assert.equal(normalizeMarketDivisibility(99), DEFAULT_MARKET_DIVISIBILITY)
-  assert.equal(normalizeMarketDivisibility(10_000), DEFAULT_MARKET_DIVISIBILITY)
-  assert.equal(normalizeMarketDivisibility(1_000_001), DEFAULT_MARKET_DIVISIBILITY)
+  assert.equal(normalizeMarketDivisibility(250), 250)
+  assert.equal(normalizeMarketDivisibility(99), 99)
+  assert.equal(normalizeMarketDivisibility(10_000), 10_000)
+  assert.equal(normalizeMarketDivisibility(1_000_001), 1_000_001)
+  assert.equal(normalizeMarketDivisibility(0), DEFAULT_MARKET_DIVISIBILITY)
+  assert.equal(normalizeMarketDivisibility(1.5), DEFAULT_MARKET_DIVISIBILITY)
   assert.equal(marketUnitLabel('usd'), 'USD')
   assert.equal(marketUnitLabel('sat'), 'sats')
-  assert.equal(isValidMarketDivisibility(100), true)
-  assert.equal(isValidMarketDivisibility(1_000), true)
-  assert.equal(isValidMarketDivisibility(250), false)
-  assert.equal(isValidMarketDivisibility(99), false)
-  assert.equal(isValidMarketDivisibility(10_000), false)
-  assert.equal(isValidMarketDivisibility(1_000_000), false)
-  assert.equal(isSupportedMarketDivisibility(1_000), true)
-  assert.equal(isSupportedMarketDivisibility(123), false)
+})
+
+test('formats system market display units', () => {
+  assert.equal(defaultCollateralUnit('sat'), 'msat')
+  assert.equal(defaultCollateralUnit('usd'), 'milli-cent')
+  assert.equal(defaultCollateralUnit('jpy'), 'msat')
+  assert.equal(formatPricePercentage(5_327, 10_000), '53.27%')
+  assert.equal(formatPricePercentage(1, 10_000), '0.01%')
+  assert.equal(formatShareFace(10_000, 'sat'), '10 sat')
+  assert.equal(formatShareFace(10_000, 'usd'), '$0.10')
 })
 
 test('normalizes initial AMM liquidity to sat markets only', () => {
@@ -55,10 +63,10 @@ test('formats market subunits without confusing cents for dollars', () => {
   assert.equal(formatMarketSubunits(-50, 'usd'), '-$0.50')
   assert.equal(formatMarketSubunits(100, 'usd'), '$1.00')
   assert.equal(marketSubunitLabel('usd'), 'cents')
-  assert.equal(formatWholeShareFaceValue({ baseAsset: 'usd', divisibility: 100 }), '$1.00')
-  assert.equal(formatPricePercent(50, 100), '50.0%')
-  assert.equal(formatPricePercent(50, 1_000), '5.0%')
-  assert.equal(formatPricePercent(1, 1_000), '0.1%')
+  assert.equal(formatWholeShareFaceValue({ baseAsset: 'usd', divisibility: 10_000 }), '$0.10')
+  assert.equal(formatPricePercent(5_000, 10_000), '50.00%')
+  assert.equal(formatPricePercent(50, 1_000), '5.00%')
+  assert.equal(formatPricePercent(1, 1_000), '0.10%')
 })
 
 test('validates price numerator and whole-share face amount', () => {

@@ -23,19 +23,19 @@ const categoricalMarket: SdkMarketForTrading = {
 }
 
 const liquidBook: SdkOrderBook = {
-  bids: [{ price: 47, amount: 100, total: 100 }],
-  asks: [{ price: 53, amount: 100, total: 100 }],
-  spread: 6,
+  bids: [{ price: 4_700, amount: 10_000, total: 10_000 }],
+  asks: [{ price: 5_300, amount: 10_000, total: 10_000 }],
+  spread: 600,
 }
 
 test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome names', () => {
   const ticket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'yes' },
-    amountSats: 100,
+    amountSats: 10_000,
     side: 'buy',
     orderType: 'limit',
-    limitPrice: 50,
+    limitPrice: 5_000,
     orderBook: liquidBook,
   })
 
@@ -44,8 +44,8 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
     outcomeId: 'Yes',
     tokenSide: 'Outcome',
     side: 'Buy',
-    price: 50,
-    amountSats: 100,
+    price: 5_000,
+    amountSats: 10_000,
     timeInForce: 'GTC',
   })
 })
@@ -54,10 +54,10 @@ test('buildTradeTicket builds categorical NO tickets on primitive route with com
   const ticket = buildTradeTicket({
     market: categoricalMarket,
     selection: { side: 'no', outcomeId: 'alice' },
-    amountSats: 100,
+    amountSats: 10_000,
     side: 'buy',
     orderType: 'limit',
-    limitPrice: 45,
+    limitPrice: 4_500,
     orderBook: liquidBook,
   })
 
@@ -76,10 +76,10 @@ test('buildTradeTicket builds two-outcome categorical NO tickets against a primi
       ],
     },
     selection: { side: 'no', outcomeId: 'alice' },
-    amountSats: 100,
+    amountSats: 10_000,
     side: 'buy',
     orderType: 'limit',
-    limitPrice: 45,
+    limitPrice: 4_500,
     orderBook: liquidBook,
   })
 
@@ -92,27 +92,33 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
   const directTicket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'no' },
-    amountSats: 100,
+    amountSats: 10_000,
     side: 'buy',
     orderType: 'market',
-    limitPrice: 50,
+    limitPrice: 5_000,
     orderBook: liquidBook,
-    complementaryOrderBook: { bids: [{ price: 49, amount: 100 }], asks: [], spread: 0 },
+    complementaryOrderBook: { bids: [{ price: 4_900, amount: 10_000 }], asks: [], spread: 0 },
   })
-  assert.equal(directTicket.request.price, 99)
+  assert.equal(directTicket.marketId, 'condition-yesno-Yes')
+  assert.equal(directTicket.request.outcomeId, 'Yes')
+  assert.equal(directTicket.request.tokenSide, 'Complement')
+  assert.equal(directTicket.request.price, 9_999)
   assert.equal(directTicket.request.timeInForce, 'FAK')
 
   const complementaryTicket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'no' },
-    amountSats: 100,
+    amountSats: 10_000,
     side: 'buy',
     orderType: 'market',
-    limitPrice: 50,
+    limitPrice: 5_000,
     orderBook: { bids: [], asks: [], spread: 0 },
-    complementaryOrderBook: { bids: [{ price: 49, amount: 100 }], asks: [], spread: 0 },
+    complementaryOrderBook: { bids: [{ price: 4_900, amount: 10_000 }], asks: [], spread: 0 },
   })
-  assert.equal(complementaryTicket.request.price, 99)
+  assert.equal(complementaryTicket.marketId, 'condition-yesno-Yes')
+  assert.equal(complementaryTicket.request.outcomeId, 'Yes')
+  assert.equal(complementaryTicket.request.tokenSide, 'Complement')
+  assert.equal(complementaryTicket.request.price, 9_999)
   assert.equal(complementaryTicket.request.timeInForce, 'FAK')
 })
 
@@ -149,10 +155,10 @@ test('buildTradeTicket rejects market orders with no liquidity instead of price 
       buildTradeTicket({
         market: yesNoMarket,
         selection: { side: 'yes' },
-        amountSats: 100,
+        amountSats: 10_000,
         side: 'buy',
         orderType: 'market',
-        limitPrice: 50,
+        limitPrice: 5_000,
         orderBook: { bids: [], asks: [], spread: 0 },
       }),
     (error) =>
@@ -165,10 +171,10 @@ test('buildTradeTicket builds direct sell orders after same-outcome CTF swaps ar
   const ticket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'yes' },
-    amountSats: 100,
+    amountSats: 10_000,
     side: 'sell',
     orderType: 'limit',
-    limitPrice: 50,
+    limitPrice: 5_000,
     orderBook: liquidBook,
   })
 
@@ -177,8 +183,8 @@ test('buildTradeTicket builds direct sell orders after same-outcome CTF swaps ar
     outcomeId: 'Yes',
     tokenSide: 'Outcome',
     side: 'Sell',
-    price: 50,
-    amountSats: 100,
+    price: 5_000,
+    amountSats: 10_000,
     timeInForce: 'GTC',
   })
 })

@@ -173,7 +173,7 @@ function validateTradeCreatedSettlementAmounts(
 
   const canonicalBaseAsset = expectedBaseAsset ?? baseAsset
   const canonicalDivisibility = expectedDivisibility ?? divisibility
-  const isDefault = canonicalBaseAsset === 'sat' && canonicalDivisibility === 100
+  const isDefault = canonicalBaseAsset === DEFAULT_MARKET_BASE_ASSET && canonicalDivisibility === DEFAULT_MARKET_DIVISIBILITY
   if (!isDefault) {
     if (!isPositiveInteger(input.outcomeFaceAmountSubunits)) {
       return 'Trade settlement metadata is missing outcome face subunits.'

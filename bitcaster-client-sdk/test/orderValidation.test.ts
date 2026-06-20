@@ -7,8 +7,8 @@ const validOrder = {
   outcomeId: 'YES',
   tokenSide: 'Outcome',
   side: 'Buy',
-  price: 42,
-  amountSats: 100,
+  price: 4_200,
+  amountSats: 10_000,
   timeInForce: 'GTC',
 }
 
@@ -34,16 +34,16 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
     ],
     [{ ...validOrder, tokenSide: 'Either' }, /tokenSide must be Outcome or Complement/],
     [{ ...validOrder, side: 'Hold' }, /side must be Buy or Sell/],
-    [{ ...validOrder, price: 0 }, /price must be an integer from 1 to 99/],
-    [{ ...validOrder, price: 100 }, /price must be an integer from 1 to 99/],
-    [{ ...validOrder, price: 42.5 }, /price must be an integer from 1 to 99/],
+    [{ ...validOrder, price: 0 }, /price must be an integer from 1 to 9999/],
+    [{ ...validOrder, price: 10_000 }, /price must be an integer from 1 to 9999/],
+    [{ ...validOrder, price: 42.5 }, /price must be an integer from 1 to 9999/],
     [
       { ...validOrder, amountSats: 0 },
-      /amountSats must be a positive integer in 100 sub-unit increments/,
+      /amountSats must be a positive integer in 10000 sub-unit increments/,
     ],
     [
-      { ...validOrder, amountSats: 50 },
-      /amountSats must be a positive integer in 100 sub-unit increments/,
+      { ...validOrder, amountSats: 5_000 },
+      /amountSats must be a positive integer in 10000 sub-unit increments/,
     ],
     [
       { ...validOrder, timeInForce: 'IOC' },
@@ -66,7 +66,7 @@ test('validateOrderIntent applies supplied market divisibility', () => {
   assert.equal(priceResult.valid, false)
   assert.match(priceResult.valid ? '' : priceResult.message, /from 1 to 999/)
 
-  const amountResult = validateOrderIntent({ ...validOrder, divisibility: 1_000, amountSats: 1_500 })
+  const amountResult = validateOrderIntent({ ...validOrder, divisibility: 1_000, price: 500, amountSats: 1_500 })
   assert.equal(amountResult.valid, false)
   assert.match(amountResult.valid ? '' : amountResult.message, /1000 sub-unit increments/)
 })
