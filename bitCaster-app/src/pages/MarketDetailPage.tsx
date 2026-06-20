@@ -578,10 +578,12 @@ function mergePriceHistory(
   incoming: PriceHistory,
   currentSource: CanonicalSliceSource | undefined,
 ): PriceHistory {
-  if (!current || currentSource !== "live") return incoming;
+  if (!current) return windowPriceHistory(incoming);
   const byTimestamp = new Map<string, PricePoint>();
-  for (const point of incoming.data) byTimestamp.set(point.timestamp, point);
-  for (const point of current.data) byTimestamp.set(point.timestamp, point);
+  const first = currentSource === "live" ? incoming.data : current.data;
+  const second = currentSource === "live" ? current.data : incoming.data;
+  for (const point of first) byTimestamp.set(point.timestamp, point);
+  for (const point of second) byTimestamp.set(point.timestamp, point);
   return windowPriceHistory({
     timeframe: incoming.timeframe,
     data: [...byTimestamp.values()].sort((a, b) =>
@@ -694,6 +696,17 @@ export function marketDetailDataReducer(
         action.replaceOutcomeSetIds,
         "rest",
       );
+      const timeframe = action.detail.priceHistory.timeframe;
+      const historiesForMarket = next.historiesByMarketId[action.detail.id] ?? {};
+      const historiesForTimeframe = historiesForMarket[timeframe] ?? {};
+      const sourcesForMarket = next.historySourcesByMarketId[action.detail.id] ?? {};
+      const sourcesForTimeframe = sourcesForMarket[timeframe] ?? {};
+      const historyMerged = mergeHistoryUpdates(
+        historiesForTimeframe,
+        sourcesForTimeframe,
+        historiesByOutcomeSetFromDetail(action.detail, timeframe),
+        "rest",
+      );
       return {
         ...next,
         booksByMarketId: {
@@ -703,6 +716,20 @@ export function marketDetailDataReducer(
         bookSourcesByMarketId: {
           ...next.bookSourcesByMarketId,
           [action.detail.id]: merged.sources,
+        },
+        historiesByMarketId: {
+          ...next.historiesByMarketId,
+          [action.detail.id]: {
+            ...historiesForMarket,
+            [timeframe]: historyMerged.histories,
+          },
+        },
+        historySourcesByMarketId: {
+          ...next.historySourcesByMarketId,
+          [action.detail.id]: {
+            ...sourcesForMarket,
+            [timeframe]: historyMerged.sources,
+          },
         },
       };
     }

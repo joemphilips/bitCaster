@@ -4,6 +4,7 @@ import type {
   OrderBook,
   Order,
   PriceHistory,
+  PricePoint,
 } from "@/types/market-detail";
 import type { MarketSort } from "@/hooks/useMarketSort";
 import type {
@@ -555,7 +556,9 @@ const TIMEFRAME_WINDOW_MS: Record<PriceHistory["timeframe"], number | null> = {
 export function windowPriceHistory(history: PriceHistory): PriceHistory {
   const windowMs = TIMEFRAME_WINDOW_MS[history.timeframe];
   if (history.data.length === 0) return history;
-  const sorted = [...history.data].sort(
+  const byTimestamp = new Map<string, PricePoint>();
+  for (const point of history.data) byTimestamp.set(point.timestamp, point);
+  const sorted = [...byTimestamp.values()].sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
   );
   if (windowMs === null) {
