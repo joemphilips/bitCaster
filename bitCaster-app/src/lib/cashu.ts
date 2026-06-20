@@ -1092,6 +1092,14 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
     return structuredClone(entry.resultProofs?.regular ?? []);
   }
   if (entry.state === "failed") {
+    if (
+      entry.failureCode !== undefined &&
+      entry.failureCode !== ORACLE_NOT_ATTESTED_OUTCOME_CODE
+    ) {
+      throw new Error(
+        `CTF redeem ${entry.operationId} failed with non-losing failure code ${entry.failureCode}; refusing to condemn proofs`,
+      );
+    }
     await removeProofs(entry.inputs.map((proof) => proof.secret));
     return [];
   }

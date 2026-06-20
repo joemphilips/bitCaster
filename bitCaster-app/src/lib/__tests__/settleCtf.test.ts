@@ -77,6 +77,13 @@ vi.mock('@/stores/proof-db', () => {
           ...existing,
           state: 'failed',
           lastError: error instanceof Error ? error.message : String(error),
+          failureCode:
+            typeof error === 'object' &&
+            error !== null &&
+            'code' in error &&
+            typeof (error as { code?: unknown }).code === 'number'
+              ? (error as { code: number }).code
+              : undefined,
         }
         proofDbState.operations.set(operationId, updated)
         return updated
@@ -422,6 +429,68 @@ describe('settleCtfPosition — per-keyset redeem', () => {
       (op) => op.metadata?.keysetId === 'keyset-B',
     )
     expect(losingOp?.state).toBe('failed')
+    expect(losingOp?.failureCode).toBe(13015)
+  })
+
+  it('does not treat a failed CTF redeem with a non-losing mint code as a condemned leg on resume', async () => {
+    mockAttestation('A')
+    const { settleCtfPosition } = await import('@/lib/cashu')
+
+    const proof = makeProof('sA', 100, 'keyset-A', 'A')
+    proofDbState.operations.set(`ctf-redeem:${CONDITION_ID}:keyset-A:sA`, {
+      operationId: `ctf-redeem:${CONDITION_ID}:keyset-A:sA`,
+      kind: 'ctf-redeem',
+      state: 'failed',
+      mintUrl: 'http://mint.test',
+      inputs: [proof],
+      outputs: { regular: [] },
+      metadata: { conditionId: CONDITION_ID, keysetId: 'keyset-A', amountSats: 100 },
+      lastError: 'mint rejected duplicate outputs',
+      failureCode: 20006,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    })
+
+    await expect(
+      settleCtfPosition({
+        conditionId: CONDITION_ID,
+        amountSats: 100,
+        proofs: [proof],
+        mintUrl: 'http://mint.test',
+      }),
+    ).rejects.toThrow(/non-losing failure code 20006/)
+
+    expect(proofDbState.removedSecrets).toEqual([])
+    expect(cashuState.redeemCalls).toHaveLength(0)
+  })
+
+  it('preserves legacy failed CTF redeem behavior when no failure code was stored', async () => {
+    mockAttestation('A')
+    const { settleCtfPosition } = await import('@/lib/cashu')
+
+    const proof = makeProof('sA', 100, 'keyset-A', 'A')
+    proofDbState.operations.set(`ctf-redeem:${CONDITION_ID}:keyset-A:sA`, {
+      operationId: `ctf-redeem:${CONDITION_ID}:keyset-A:sA`,
+      kind: 'ctf-redeem',
+      state: 'failed',
+      mintUrl: 'http://mint.test',
+      inputs: [proof],
+      outputs: { regular: [] },
+      metadata: { conditionId: CONDITION_ID, keysetId: 'keyset-A', amountSats: 100 },
+      lastError: 'legacy losing leg',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    })
+
+    const result = await settleCtfPosition({
+      conditionId: CONDITION_ID,
+      amountSats: 100,
+      proofs: [proof],
+      mintUrl: 'http://mint.test',
+    })
+
+    expect(result).toEqual([])
+    expect(proofDbState.removedSecrets).toEqual(['sA'])
   })
 
   it('singular "A" maker claim still redeems the single keyset', async () => {
