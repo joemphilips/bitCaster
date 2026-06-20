@@ -237,6 +237,7 @@ test('BitcasterEngineClient default fetch keeps the browser fetch receiver', asy
           bids: [],
           asks: [],
           spread: null,
+          depthLimit: 5,
         }),
         {
           status: 200,
@@ -250,8 +251,9 @@ test('BitcasterEngineClient default fetch keeps the browser fetch receiver', asy
     const client = new BitcasterEngineClient({
       baseUrl: 'https://engine.example',
     })
-    await client.getOrderBook('condition-1-YES')
+    const snapshot = await client.getOrderBook('condition-1-YES')
     assert.equal(observedThis, globalThis)
+    assert.equal(snapshot.depthLimit, 5)
   } finally {
     globalThis.fetch = originalFetch
   }

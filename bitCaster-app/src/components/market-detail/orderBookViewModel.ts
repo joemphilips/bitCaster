@@ -9,7 +9,8 @@ export function deriveExecutableOrderBook(input: {
   divisibility?: number;
   completeness: OrderBookCompleteness;
 }): OrderBook {
-  const book = recomputeBookTotals(input.book);
+  const depthLimit = normalizeDepthLimit(input.book.depthLimit);
+  const book = recomputeBookTotals(input.book, depthLimit);
   if (input.completeness === "executable" || !input.complementBook) {
     return book;
   }
@@ -23,32 +24,44 @@ export function deriveExecutableOrderBook(input: {
       ),
     ],
     "ask",
+    depthLimit,
   );
-  return withSpread({ ...book, asks });
+  return withSpread({ ...book, asks, depthLimit: input.book.depthLimit });
 }
 
-export function recomputeBookTotals(orderBook: OrderBook): OrderBook {
-  const bids = mergeOrdersByPrice(orderBook.bids, "bid");
-  const asks = mergeOrdersByPrice(orderBook.asks, "ask");
+export function recomputeBookTotals(
+  orderBook: OrderBook,
+  limit = normalizeDepthLimit(orderBook.depthLimit),
+): OrderBook {
+  const bids = mergeOrdersByPrice(orderBook.bids, "bid", limit);
+  const asks = mergeOrdersByPrice(orderBook.asks, "ask", limit);
   return withSpread({ ...orderBook, bids, asks });
 }
 
 export function mergeOrdersByPrice(
   orders: Order[],
   side: "bid" | "ask",
+  limit?: number,
 ): Order[] {
   const byPrice = new Map<number, number>();
   for (const order of orders) {
     byPrice.set(order.price, (byPrice.get(order.price) ?? 0) + order.amount);
   }
   let total = 0;
-  return [...byPrice.entries()]
+  const sorted = [...byPrice.entries()]
     .map(([price, amount]) => ({ price, amount }))
-    .sort((a, b) => (side === "bid" ? b.price - a.price : a.price - b.price))
+    .sort((a, b) => (side === "bid" ? b.price - a.price : a.price - b.price));
+  return (limit ? sorted.slice(0, limit) : sorted)
     .map(({ price, amount }) => {
       total += amount;
       return { price, amount, total };
     });
+}
+
+function normalizeDepthLimit(limit: number | undefined): number | undefined {
+  return Number.isFinite(limit) && limit !== undefined && limit > 0
+    ? Math.floor(limit)
+    : undefined;
 }
 
 function withSpread(orderBook: OrderBook): OrderBook {

@@ -68,4 +68,44 @@ describe("deriveExecutableOrderBook", () => {
       spread: 30,
     });
   });
+
+  it("uses server depthLimit to merge then truncate stable top-N rows", () => {
+    const book = deriveExecutableOrderBook({
+      completeness: "direct",
+      divisibility: 100,
+      book: {
+        depthLimit: 2,
+        bids: [
+          { price: 40, amount: 100, total: 1 },
+          { price: 45, amount: 200, total: 1 },
+          { price: 45, amount: 300, total: 1 },
+          { price: 30, amount: 400, total: 1 },
+        ],
+        asks: [
+          { price: 65, amount: 100, total: 1 },
+          { price: 80, amount: 100, total: 1 },
+        ],
+        spread: 0,
+      },
+      complementBook: {
+        bids: [
+          { price: 35, amount: 250, total: 1 },
+          { price: 10, amount: 500, total: 1 },
+        ],
+        asks: [],
+        spread: 0,
+      },
+    });
+
+    expect(book.depthLimit).toBe(2);
+    expect(book.bids).toEqual([
+      { price: 45, amount: 500, total: 500 },
+      { price: 40, amount: 100, total: 600 },
+    ]);
+    expect(book.asks).toEqual([
+      { price: 65, amount: 350, total: 350 },
+      { price: 80, amount: 100, total: 450 },
+    ]);
+    expect(book.spread).toBe(20);
+  });
 });
