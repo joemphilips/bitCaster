@@ -38,12 +38,19 @@ export function OrderBookSection({
   const activeOrderBook = selectedOutcomeId && outcomeOrderBooks
     ? outcomeOrderBooks[selectedOutcomeId] || orderBook
     : orderBook
+  const depthLimit = Number.isFinite(activeOrderBook.depthLimit) && activeOrderBook.depthLimit && activeOrderBook.depthLimit > 0
+    ? Math.floor(activeOrderBook.depthLimit)
+    : 5
+  const visibleBids = activeOrderBook.bids.slice(0, depthLimit)
+  const visibleAsks = activeOrderBook.asks.slice(0, depthLimit)
 
   const maxTotal = Math.max(
-    ...activeOrderBook.bids.map((b) => b.total),
-    ...activeOrderBook.asks.map((a) => a.total),
+    ...visibleBids.map((b) => b.total),
+    ...visibleAsks.map((a) => a.total),
     1
   )
+  const bidPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleBids.length) })
+  const askPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleAsks.length) })
 
   return (
     <div
@@ -83,8 +90,8 @@ export function OrderBookSection({
       {/* Depth Visualization */}
       <div className="relative h-24 mb-4 rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-900">
         {/* Bids (Left - Green) */}
-        <div className="absolute inset-y-0 left-0 w-1/2 flex flex-col justify-end">
-          {activeOrderBook.bids.slice(0, 4).map((bid, i) => {
+        <div className="absolute inset-y-0 left-0 w-1/2 grid content-end" style={{ gridTemplateRows: `repeat(${depthLimit}, minmax(0, 1fr))` }}>
+          {visibleBids.map((bid, i) => {
             const width = (bid.total / maxTotal) * 100
             return (
               <div
@@ -98,11 +105,14 @@ export function OrderBookSection({
               </div>
             )
           })}
+          {bidPlaceholders.map((_, i) => (
+            <div key={`bid-depth-placeholder-${i}`} className="min-h-0" />
+          ))}
         </div>
 
         {/* Asks (Right - Red) */}
-        <div className="absolute inset-y-0 right-0 w-1/2 flex flex-col justify-end">
-          {activeOrderBook.asks.slice(0, 4).map((ask, i) => {
+        <div className="absolute inset-y-0 right-0 w-1/2 grid content-end" style={{ gridTemplateRows: `repeat(${depthLimit}, minmax(0, 1fr))` }}>
+          {visibleAsks.map((ask, i) => {
             const width = (ask.total / maxTotal) * 100
             return (
               <div
@@ -116,6 +126,9 @@ export function OrderBookSection({
               </div>
             )
           })}
+          {askPlaceholders.map((_, i) => (
+            <div key={`ask-depth-placeholder-${i}`} className="min-h-0" />
+          ))}
         </div>
 
         {/* Center Line */}
@@ -136,7 +149,8 @@ export function OrderBookSection({
             {activeOrderBook.bids.length === 0 ? (
               <p className="text-xs text-slate-400 dark:text-slate-500 py-2">{t('orderBook.noBids')}</p>
             ) : (
-              activeOrderBook.bids.slice(0, 5).map((bid, i) => (
+              <>
+              {visibleBids.map((bid, i) => (
                 <div
                   key={`bid-row-${i}`}
                   data-testid="order-book-bid-row"
@@ -150,7 +164,16 @@ export function OrderBookSection({
                     {formatMarketSubunits(bid.amount, baseAsset)}
                   </span>
                 </div>
-              ))
+              ))}
+              {bidPlaceholders.map((_, i) => (
+                <div
+                  key={`bid-row-placeholder-${i}`}
+                  data-testid="order-book-bid-placeholder"
+                  aria-hidden="true"
+                  className="h-4"
+                />
+              ))}
+              </>
             )}
           </div>
         </div>
@@ -167,7 +190,8 @@ export function OrderBookSection({
             {activeOrderBook.asks.length === 0 ? (
               <p className="text-xs text-slate-400 dark:text-slate-500 py-2">{t('orderBook.noAsks')}</p>
             ) : (
-              activeOrderBook.asks.slice(0, 5).map((ask, i) => (
+              <>
+              {visibleAsks.map((ask, i) => (
                 <div
                   key={`ask-row-${i}`}
                   data-testid="order-book-ask-row"
@@ -181,7 +205,16 @@ export function OrderBookSection({
                     {formatMarketSubunits(ask.amount, baseAsset)}
                   </span>
                 </div>
-              ))
+              ))}
+              {askPlaceholders.map((_, i) => (
+                <div
+                  key={`ask-row-placeholder-${i}`}
+                  data-testid="order-book-ask-placeholder"
+                  aria-hidden="true"
+                  className="h-4"
+                />
+              ))}
+              </>
             )}
           </div>
         </div>

@@ -62,6 +62,7 @@ export interface OrderBook {
   bids: Order[] // Buy orders, sorted by price descending
   asks: Order[] // Sell orders, sorted by price ascending
   spread: number // Difference between best bid and best ask
+  depthLimit?: number // Server-advertised max visible price levels per side
 }
 
 // =============================================================================

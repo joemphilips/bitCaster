@@ -157,6 +157,7 @@ export interface OrderBookSnapshot {
   bids: LevelDto[]
   asks: LevelDto[]
   spread?: number | null
+  depthLimit?: number | null
 }
 
 export interface QueryMarketsParams {
