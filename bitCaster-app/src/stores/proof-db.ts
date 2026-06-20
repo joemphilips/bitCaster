@@ -53,6 +53,8 @@ export interface ProofOperationRecord {
   metadata: Record<string, unknown>;
   resultProofs?: Record<string, Proof[]>;
   lastError?: string | null;
+  /** Structured mint error code for failed operations, when available. */
+  failureCode?: number | undefined;
   createdAt: number;
   updatedAt: number;
 }
@@ -388,6 +390,7 @@ export async function prepareProofOperation(
     metadata: structuredClone(input.metadata ?? {}),
     resultProofs: undefined,
     lastError: null,
+    failureCode: undefined,
     createdAt: now,
     updatedAt: now,
   };
@@ -405,6 +408,7 @@ export async function markProofOperationCompleted(
     state: "completed",
     resultProofs: structuredClone(resultProofs),
     lastError: null,
+    failureCode: undefined,
     updatedAt: Date.now(),
   };
   await db.proofOperations.put(updated);
@@ -420,10 +424,19 @@ export async function markProofOperationFailed(
     ...existing,
     state: "failed",
     lastError: error instanceof Error ? error.message : String(error),
+    failureCode: mintErrorCode(error),
     updatedAt: Date.now(),
   };
   await db.proofOperations.put(updated);
   return updated;
+}
+
+function mintErrorCode(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "number" ? code : undefined;
 }
 
 async function getRequiredProofOperation(
