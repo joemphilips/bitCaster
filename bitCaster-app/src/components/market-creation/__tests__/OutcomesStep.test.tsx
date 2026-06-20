@@ -70,101 +70,32 @@ describe('OutcomesStep auto-normalize — add/remove', () => {
   })
 })
 
-// ── Divisibility example line ───────────────────────────────────────────────
+// ── Market unit controls ────────────────────────────────────────────────────
 
-describe('OutcomesStep divisibility UX copy', () => {
-  it('renders the example line for D=100 (sat)', () => {
+describe('OutcomesStep market unit controls', () => {
+  it('does not render a divisibility selector or denominator guidance', () => {
     render(
       <OutcomesStep
         outcomeType="categorical"
         outcomes={makeOutcomes([50, 50])}
         baseAsset="sat"
-        divisibility={100}
       />,
     )
-    // Should render text like "1 share = 100 sats · price moves in 1% steps"
-    expect(screen.getByText(/1 share = 100 sats/i)).toBeInTheDocument()
-    expect(screen.getByText(/1% steps/i)).toBeInTheDocument()
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.queryByText(/divisibility/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/price moves/i)).not.toBeInTheDocument()
   })
 
-  it('renders the example line for D=1000 (sat)', () => {
+  it('still renders the base asset selector', () => {
     render(
       <OutcomesStep
         outcomeType="categorical"
         outcomes={makeOutcomes([50, 50])}
-        baseAsset="sat"
-        divisibility={1000}
-      />,
-    )
-    expect(screen.getByText(/1 share = 1,?000 sats/i)).toBeInTheDocument()
-    expect(screen.getByText(/0\.1% steps/i)).toBeInTheDocument()
-  })
-
-  it('moves denominator guidance into the info tooltip', () => {
-    render(
-      <OutcomesStep
-        outcomeType="categorical"
-        outcomes={makeOutcomes([50, 50])}
-        baseAsset="sat"
-        divisibility={1000}
       />,
     )
 
-    const guidance =
-      'Lower value = cheaper to participate but coarser prices. Higher value = finer prices but a bigger minimum stake per share.'
-    const help = screen.getByRole('button', { name: guidance })
-    expect(help).toBeInTheDocument()
-    expect(help).toHaveTextContent(/what is this/i)
-    expect(screen.queryByText(guidance)).not.toBeInTheDocument()
-  })
-
-  it('hides unsupported D>1000 divisibility options from the dropdown', () => {
-    render(
-      <OutcomesStep
-        outcomeType="categorical"
-        outcomes={makeOutcomes([50, 50])}
-        baseAsset="sat"
-        divisibility={100}
-      />,
-    )
-
-    const options = screen.getAllByRole('option').map((o) => Number((o as HTMLOptionElement).value))
-    expect(options).toContain(100)
-    expect(options).toContain(1000)
-    expect(options).not.toContain(10_000)
-  })
-
-  it.each([10_000, 200, 500, 900])(
-    'shows a rejection message and falls back when given unsupported D=%i',
-    async (divisibility) => {
-      render(
-        <OutcomesStep
-          outcomeType="categorical"
-          outcomes={makeOutcomes([50, 50])}
-          baseAsset="sat"
-          divisibility={divisibility}
-        />,
-      )
-
-      expect(screen.getByTestId('divisibility-unsupported-message')).toHaveTextContent(/not supported/i)
-      expect(screen.getByTestId('divisibility-unsupported-message')).toHaveTextContent(
-        new RegExp(divisibility.toString().replace(/(\d)(?=(\d{3})+$)/g, '$1,?')),
-      )
-      const select = screen.getByRole('combobox') as HTMLSelectElement
-      expect(Number(select.value)).toBe(100)
-    },
-  )
-
-  it('does not show a rejection message for supported D=1000', () => {
-    render(
-      <OutcomesStep
-        outcomeType="categorical"
-        outcomes={makeOutcomes([50, 50])}
-        baseAsset="sat"
-        divisibility={1000}
-      />,
-    )
-
+    expect(screen.getByRole('button', { name: /sats/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /usd/i })).toBeInTheDocument()
     expect(screen.queryByTestId('divisibility-unsupported-message')).not.toBeInTheDocument()
   })
 })

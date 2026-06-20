@@ -40,7 +40,6 @@ export interface WizardStepOutcomes {
   precision?: number
   unit?: string
   baseAsset?: MarketBaseAsset
-  divisibility?: number
 }
 
 // =============================================================================
@@ -173,9 +172,6 @@ export interface MarketCreationWizardProps {
 
   /** Called when user updates market base asset */
   onBaseAssetChange?: (value: MarketBaseAsset) => void
-
-  /** Called when user updates market price denominator */
-  onDivisibilityChange?: (value: number) => void
 
   // -------------------------------------------------------------------------
   // Review Callbacks (Step 4)

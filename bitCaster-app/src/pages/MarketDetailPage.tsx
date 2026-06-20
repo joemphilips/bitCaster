@@ -28,6 +28,7 @@ import {
   priceNumeratorToPercent,
   signTradeComment,
   submitOrder,
+  windowPriceHistory,
   type MarketPriceHistoryResponse,
   type MarketCommentsResponse,
 } from "@/lib/markets";
@@ -77,6 +78,7 @@ import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   formatMarketSubunits,
+  DEFAULT_MARKET_DIVISIBILITY,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -207,7 +209,7 @@ export function decideTradeCollateralGate(input: {
   return { kind: "proceed", balance: input.balance, required };
 }
 
-export function defaultLimitPriceForDivisibility(divisibility = 100): number {
+export function defaultLimitPriceForDivisibility(divisibility = DEFAULT_MARKET_DIVISIBILITY): number {
   return Math.max(1, Math.floor(normalizeMarketDivisibility(divisibility) / 2));
 }
 
@@ -472,6 +474,47 @@ function historiesByOutcomeSetFromResponse(
   };
 }
 
+function latestHistoryPrice(history: PriceHistory | undefined): number | null {
+  const latest = history?.data.at(-1)?.price;
+  return typeof latest === "number" && Number.isFinite(latest)
+    ? Math.max(0, Math.min(100, latest))
+    : null;
+}
+
+function applyLatestHistoryOdds(
+  market: MarketDetailCore,
+  historiesByOutcomeSetId: Record<string, PriceHistory>,
+): MarketDetailCore {
+  if (market.type === "yesno") {
+    const primary = primaryOutcomeSetId(market);
+    const yes = latestHistoryPrice(primary ? historiesByOutcomeSetId[primary] : undefined);
+    if (yes == null) return market;
+    return {
+      ...market,
+      currentOdds: {
+        yes,
+        no: Math.max(0, Math.min(100, 100 - yes)),
+      },
+    };
+  }
+
+  if (market.type === "categorical") {
+    return {
+      ...market,
+      outcomes: market.outcomes.map((outcome) => ({
+        ...outcome,
+        odds:
+          latestHistoryPrice(
+            historiesByOutcomeSetId[outcome.label] ??
+              historiesByOutcomeSetId[outcome.id],
+          ) ?? outcome.odds,
+      })),
+    };
+  }
+
+  return market;
+}
+
 export function liveTradeChartUpdate(
   market: MarketDetailType,
   outcomeSetId: string,
@@ -539,12 +582,12 @@ function mergePriceHistory(
   const byTimestamp = new Map<string, PricePoint>();
   for (const point of incoming.data) byTimestamp.set(point.timestamp, point);
   for (const point of current.data) byTimestamp.set(point.timestamp, point);
-  return {
+  return windowPriceHistory({
     timeframe: incoming.timeframe,
     data: [...byTimestamp.values()].sort((a, b) =>
       a.timestamp.localeCompare(b.timestamp),
     ),
-  };
+  });
 }
 
 function mergeHistoryUpdates(
@@ -811,6 +854,7 @@ export function composeMarketDetail(
   const priceHistory =
     (primary ? historiesForTimeframe[primary] : undefined) ?? fallbackHistory;
   const booksByOutcomeSetId = state.booksByMarketId[core.id] ?? {};
+  const oddsAlignedCore = applyLatestHistoryOdds(core, historiesForTimeframe);
   const enrichment = state.enrichmentByMarketId[core.id] ?? {
     comments: [],
     recentTrades: [],
@@ -819,7 +863,7 @@ export function composeMarketDetail(
   const orderBook =
     (primary ? booksByOutcomeSetId[primary] : undefined) ?? emptyOrderBook();
   const base = {
-    ...core,
+    ...oddsAlignedCore,
     priceHistory,
     orderBook,
     outcomeOrderBooks: booksByOutcomeSetId,
@@ -829,10 +873,14 @@ export function composeMarketDetail(
   };
 
   if (core.type === "categorical") {
+    const categoricalCore = oddsAlignedCore as Extract<
+      MarketDetailType,
+      { type: "categorical" }
+    >;
     return {
       ...base,
       type: "categorical",
-      outcomes: core.outcomes,
+      outcomes: categoricalCore.outcomes,
       outcomePriceHistories: historiesForTimeframe,
       outcomeOrderBooks: base.outcomeOrderBooks,
     };
@@ -1479,6 +1527,10 @@ export function MarketDetailPage() {
           ephemeralPrivkey: ephemeral.privkey,
           baseAsset: acceptedBaseAsset,
           divisibility: acceptedDivisibility,
+          side: ticket.request.side,
+          tokenSide: ticket.request.tokenSide,
+          priceSubunits: ticket.request.price,
+          amountSubunits: ticket.request.amountSats,
           submittedAt: Date.now(),
           preflightSplit: preparedPreflightSplit,
         });
@@ -1489,6 +1541,10 @@ export function MarketDetailPage() {
           ephemeralPrivkey: ephemeral.privkey,
           baseAsset: acceptedBaseAsset,
           divisibility: acceptedDivisibility,
+          side: ticket.request.side,
+          tokenSide: ticket.request.tokenSide,
+          priceSubunits: ticket.request.price,
+          amountSubunits: ticket.request.amountSats,
         });
         addOrderSubmitNotifications({
           add: useNotificationsStore.getState().add,

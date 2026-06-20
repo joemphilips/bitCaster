@@ -16,9 +16,9 @@ describe('OrderBookSection', () => {
       />,
     )
 
-    expect(screen.getByText('1.0%')).toBeInTheDocument()
-    expect(screen.getByText('5.0%')).toBeInTheDocument()
-    expect(screen.getByText('6.0%')).toBeInTheDocument()
+    expect(screen.getByText('1.00%')).toBeInTheDocument()
+    expect(screen.getByText('5.00%')).toBeInTheDocument()
+    expect(screen.getByText('6.00%')).toBeInTheDocument()
     expect(screen.getByText('$1.00')).toBeInTheDocument()
     expect(screen.getByText('$2.00')).toBeInTheDocument()
     expect(screen.queryByText(/sats/)).not.toBeInTheDocument()

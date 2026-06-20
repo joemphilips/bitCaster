@@ -48,10 +48,10 @@ function RelatedMarketCard({
       {market.currentOdds && (
         <div className="flex gap-2 mb-3">
           <span className="px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-medium">
-            {t('common.yes')} {market.currentOdds.yes.toFixed(0)}%
+            {t('common.yes')} {market.currentOdds.yes.toFixed(2)}%
           </span>
           <span className="px-2 py-1 rounded-md bg-red-500/10 text-red-600 dark:text-red-400 text-xs font-medium">
-            {t('common.no')} {market.currentOdds.no.toFixed(0)}%
+            {t('common.no')} {market.currentOdds.no.toFixed(2)}%
           </span>
         </div>
       )}

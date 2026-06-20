@@ -156,7 +156,7 @@ describe("preflight split preparation", () => {
 
     await preparePreflightSplitForLimitBuy({
       mintUrl: "https://mint.example",
-      market: { id: "condition" } as MarketDetail,
+      market: { id: "condition", divisibility: 100 } as MarketDetail,
       selectedOutcomeSetId: "YES",
       complementOutcomeSetId: "NO",
       amountSats: 200,
