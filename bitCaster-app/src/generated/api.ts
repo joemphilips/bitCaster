@@ -532,7 +532,7 @@ export interface components {
             /**
              * Format: int32
              * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
-             * @default 100
+             * @default 10000
              */
             divisibility: number;
             /**
@@ -569,7 +569,7 @@ export interface components {
             tokenSide: components["schemas"]["TokenSide"];
             side: components["schemas"]["OrderSide"];
             price: components["schemas"]["Probability"];
-            /** @description Limit-order size as conditional-token face amount. First release requires this to be divisible by 100 sats so integer-cent prices produce exact quote payments. */
+            /** @description Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value (`divisibility` base-asset sub-units). Current markets use D=10000, so the minimum whole share is 10000 sub-units (10 sats for msat-collateral markets, $0.10 for milli-cent markets). */
             amountSats: components["schemas"]["Sats"];
             /** @default GTC */
             timeInForce: components["schemas"]["TimeInForce"];
@@ -616,7 +616,7 @@ export interface components {
             /**
              * Format: int32
              * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
-             * @default 100
+             * @default 10000
              */
             divisibility: number;
         };
@@ -650,7 +650,7 @@ export interface components {
             /**
              * Format: int32
              * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
-             * @default 100
+             * @default 10000
              */
             divisibility: number;
         };
@@ -678,7 +678,7 @@ export interface components {
             /**
              * Format: int32
              * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
-             * @default 100
+             * @default 10000
              */
             divisibility: number;
         };
@@ -829,7 +829,7 @@ export interface components {
         MarketPriceHistoryPoint: {
             /** Format: date-time */
             timestamp: string;
-            /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. */
+            /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use D=10000 (0.01% price precision). */
             price: number;
             /**
              * Format: int64

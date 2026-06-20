@@ -530,7 +530,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public int Price { get; }
 
         /// <summary>
-        /// Limit-order size as conditional-token face amount. First release requires this to be divisible by 100 sats so integer-cent prices produce exact quote payments.
+        /// Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value (`divisibility` base-asset sub-units). Current markets use D=10000, so the minimum whole share is 10000 sub-units (10 sats for msat-collateral markets, $0.10 for milli-cent markets).
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
@@ -1545,7 +1545,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset Timestamp { get; }
 
         /// <summary>
-        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`.
+        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use D=10000 (0.01% price precision).
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("price")]

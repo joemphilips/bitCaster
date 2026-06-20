@@ -39,7 +39,7 @@ function makeMarket(
     activeSince: "2026-01-01T00:00:00Z",
     state: "open",
     baseAsset: "sat",
-    divisibility: 100,
+    divisibility: 10_000,
     baseUnit: "sats",
     creator: {
       id: "creator",

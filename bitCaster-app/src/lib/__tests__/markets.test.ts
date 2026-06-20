@@ -68,7 +68,7 @@ const yesNoEntry: MarketCatalogueEntry = {
   liquiditySats: 88_000,
   volumeLifetimeSats: 980_000,
   baseAsset: "sat",
-  divisibility: 100,
+  divisibility: 10_000,
   lastTradedPrice: 0.62,
   categoryTags: ["crypto"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
@@ -88,7 +88,7 @@ const categoricalEntry: MarketCatalogueEntry = {
   liquiditySats: 12_000,
   volumeLifetimeSats: 45_000,
   baseAsset: "sat",
-  divisibility: 100,
+  divisibility: 10_000,
   lastTradedPrice: null,
   categoryTags: ["politics"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
@@ -105,7 +105,7 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.title).toBe("Will BTC hit 100K?");
     expect(market.type).toBe("yesno");
     expect(market.baseAsset).toBe("sat");
-    expect(market.divisibility).toBe(100);
+    expect(market.divisibility).toBe(10_000);
     expect(market.baseMarket).toBe("sats");
     if (market.type === "yesno") {
       expect(market.currentOdds).toEqual({ yes: 50, no: 50 });

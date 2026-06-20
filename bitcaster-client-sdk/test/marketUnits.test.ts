@@ -73,8 +73,12 @@ test('validates price numerator and whole-share face amount', () => {
   assert.equal(validatePriceNumerator(1, 1_000), true)
   assert.equal(validatePriceNumerator(999, 1_000), true)
   assert.equal(validatePriceNumerator(1_000, 1_000), false)
+  assert.equal(validatePriceNumerator(5_000, 10_000), true)
+  assert.equal(validatePriceNumerator(10_000, 10_000), false)
   assert.equal(validateWholeShareFaceAmount(2_000, 1_000), true)
   assert.equal(validateWholeShareFaceAmount(1_500, 1_000), false)
+  assert.equal(validateWholeShareFaceAmount(10_000, 10_000), true)
+  assert.equal(validateWholeShareFaceAmount(5_000, 10_000), false)
 })
 
 test('computes quote payment by dividing into whole shares first', () => {
@@ -94,6 +98,14 @@ test('computes quote payment by dividing into whole shares first', () => {
         divisibility: 1_000,
       }),
     /whole-share/,
+  )
+  assert.equal(
+    quotePaymentSubunits({
+      faceAmountSubunits: 10_000,
+      priceNumerator: 5_000,
+      divisibility: 10_000,
+    }),
+    5_000,
   )
 })
 

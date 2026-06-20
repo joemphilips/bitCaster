@@ -1065,7 +1065,7 @@ components:
           type: integer
           format: int32
           minimum: 2
-          default: 100
+          default: 10000
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
             use D=10000 (0.01% price precision). One whole share has face
@@ -1143,9 +1143,11 @@ components:
           allOf:
             - $ref: '#/components/schemas/Sats'
           description: >
-            Limit-order size as conditional-token face amount. First release
-            requires this to be divisible by 100 sats so integer-cent prices
-            produce exact quote payments.
+            Limit-order size as conditional-token face amount. Must be
+            divisible by the market's whole-share face value (`divisibility`
+            base-asset sub-units). Current markets use D=10000, so the minimum
+            whole share is 10000 sub-units (10 sats for msat-collateral
+            markets, $0.10 for milli-cent markets).
         timeInForce:
           $ref: '#/components/schemas/TimeInForce'
           default: GTC
@@ -1261,7 +1263,7 @@ components:
           type: integer
           format: int32
           minimum: 2
-          default: 100
+          default: 10000
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
             use D=10000 (0.01% price precision). One whole share has face
@@ -1326,7 +1328,7 @@ components:
           type: integer
           format: int32
           minimum: 2
-          default: 100
+          default: 10000
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
             use D=10000 (0.01% price precision). One whole share has face
@@ -1385,7 +1387,7 @@ components:
           type: integer
           format: int32
           minimum: 2
-          default: 100
+          default: 10000
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
             use D=10000 (0.01% price precision). One whole share has face
@@ -1784,7 +1786,8 @@ components:
           minimum: 1
           description: >
             Market price numerator `k`. Valid range is `1 <= k <= D - 1`,
-            where `D` is the market's immutable `divisibility`.
+            where `D` is the market's immutable `divisibility`. Current markets
+            use D=10000 (0.01% price precision).
         volumeSats:
           type: integer
           format: int64
