@@ -340,10 +340,12 @@ function validateExpectedOrderEconomics(input: {
     return null
   }
 
-  const mintBidSeller =
-    input.settlementKind === 'Mint' &&
-    side === 'buy' &&
-    order.tokenSide === 'Complement'
+  // Polymarket complementary matching is Buy-vs-Buy on complementary outcomes.
+  // In bitCaster that produces Mint settlement: one buy order becomes the CTF
+  // swap seller that splits collateral, regardless of whether its tokenSide is
+  // Outcome, Complement, or omitted. tokenSide describes which token the maker
+  // wants to keep, not whether the maker may take the swap seller role.
+  const mintBidSeller = input.settlementKind === 'Mint' && side === 'buy'
   if (side !== 'sell' && !mintBidSeller) {
     return 'Trade role does not match the submitted order side.'
   }
