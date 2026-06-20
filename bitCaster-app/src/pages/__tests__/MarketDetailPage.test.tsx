@@ -86,7 +86,7 @@ function yesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     activeSince: "2026-01-01T00:00:00Z",
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 100,
+    divisibility: 10_000,
     creator: {
       id: "creator",
       name: "creator",
@@ -133,7 +133,7 @@ function categoricalMarket(): MarketDetail {
     activeSince: "2026-01-01T00:00:00Z",
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 100,
+    divisibility: 10_000,
     creator: {
       id: "creator",
       name: "creator",
@@ -408,6 +408,7 @@ describe("defaultLimitPriceForDivisibility", () => {
   it("uses the midpoint for supported market denominators", () => {
     expect(defaultLimitPriceForDivisibility(100)).toBe(50);
     expect(defaultLimitPriceForDivisibility(1_000)).toBe(500);
+    expect(defaultLimitPriceForDivisibility(10_000)).toBe(5_000);
   });
 });
 
@@ -480,7 +481,7 @@ describe("resolvePreflightSplitBuyCollateralRequirement", () => {
       mintUrl: "https://mint.example",
       baseAsset: "sat",
       conditionId: "condition-1",
-      amountSats: 100,
+      amountSats: 10_000,
       keepOutcomeSetId: "Alice",
       lockOutcomeSetId: "Bob|Carol",
     });

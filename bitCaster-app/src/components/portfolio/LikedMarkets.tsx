@@ -101,7 +101,7 @@ function LikedMarketCard({ market, onClick }: { market: Market; onClick: () => v
         </p>
         {market.type === 'yesno' && (
           <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
-            {market.currentOdds.yes}% / {market.currentOdds.no}%
+            {market.currentOdds.yes.toFixed(2)}% / {market.currentOdds.no.toFixed(2)}%
           </p>
         )}
       </div>
