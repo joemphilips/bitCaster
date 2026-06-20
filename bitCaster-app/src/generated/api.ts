@@ -414,10 +414,10 @@ export interface components {
          * @description A non-negative amount of satoshis.
          */
         Sats: number;
-        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Legacy sat markets use `D = 100`, so values still render as whole percentage points there. */
+        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use `D = 10000`. */
         Probability: number;
         /**
-         * @description Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time; collateral and prices are denominated in cents. `jpy` is reserved.
+         * @description Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time. Collateral is held in msat for `sat` markets and milli-cent for `usd` markets. `jpy` is reserved.
          * @enum {string}
          */
         BaseAsset: "sat" | "usd" | "jpy";
@@ -531,7 +531,7 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Market price denominator `D` for this fill. Optional for backward compatibility; omitting it implies the legacy `D = 100` sat market.
+             * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
              * @default 100
              */
             divisibility: number;
@@ -615,7 +615,7 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Market price denominator `D`.
+             * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
              * @default 100
              */
             divisibility: number;
@@ -649,7 +649,7 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Market price denominator `D`.
+             * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
              * @default 100
              */
             divisibility: number;
@@ -677,7 +677,7 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Market price denominator `D`.
+             * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
              * @default 100
              */
             divisibility: number;
@@ -718,7 +718,10 @@ export interface components {
             fills: components["schemas"]["Fill"][];
             ephemeralPubkey?: string | null;
             baseAsset: components["schemas"]["BaseAsset"];
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+             */
             divisibility: number;
             errorCode?: components["schemas"]["BatchSubmitOrderErrorCode"] | null;
             errorMessage?: string | null;
@@ -805,12 +808,6 @@ export interface components {
              * @default sat
              */
             baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * Format: int32
-             * @description Immutable price denominator `D`. Orders use price numerator `k` where `1 <= k <= D - 1` and one whole share has face value `D` base-asset sub-units. The matching engine rejects divisibility values other than `100` and `1000` in this release; higher divisibility support is tracked in docs/TODO.md.
-             * @default 100
-             */
-            divisibility: number;
             /** @description Optional category tags for the market. */
             categoryTags?: string[];
             /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */
@@ -823,6 +820,11 @@ export interface components {
             marketsCreated: string[];
             /** @description URL to the uploaded thumbnail, or null if none was provided. */
             thumbnailUrl?: string | null;
+            /**
+             * Format: int32
+             * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+             */
+            divisibility?: number;
         };
         MarketPriceHistoryPoint: {
             /** Format: date-time */
@@ -902,7 +904,7 @@ export interface components {
              */
             totalLiquiditySats: number;
             baseAsset: components["schemas"]["BaseAsset"];
-            /** @description Price denominator / market collateral divisibility. */
+            /** @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units. */
             divisibility: number;
             /**
              * Format: int64
@@ -1179,7 +1181,7 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32
-             * @description Immutable market price denominator `D`. Legacy sat markets replay as `100`.
+             * @description Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
              */
             divisibility: number;
             /** @description Most recent execution price as a decimal ratio in `[0, 1]`, null if the market has never traded. Runtime order, fill, orderbook, and price-history price fields use integer numerators against the market's `divisibility`; this catalogue summary keeps the legacy ratio form for sorting/display compatibility. */

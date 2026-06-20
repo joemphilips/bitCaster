@@ -27,7 +27,7 @@ namespace BitCaster.MatchingEngine.Contracts
     
 
     /// <summary>
-    /// Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time; collateral and prices are denominated in cents. `jpy` is reserved.
+    /// Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time. Collateral is held in msat for `sat` markets and milli-cent for `usd` markets. `jpy` is reserved.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -436,7 +436,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset? BaseAsset { get; }
 
         /// <summary>
-        /// Market price denominator `D` for this fill. Optional for backward compatibility; omitting it implies the legacy `D = 100` sat market.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -680,7 +680,8 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Market price denominator `D`.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
         public int Divisibility { get; }
@@ -777,7 +778,8 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Market price denominator `D`.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
         public int Divisibility { get; }
@@ -868,7 +870,8 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Market price denominator `D`.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
         public int Divisibility { get; }
@@ -1053,6 +1056,10 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
         public BaseAsset BaseAsset { get; }
 
+        /// <summary>
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// <br/>
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
         public int Divisibility { get; }
 
@@ -1395,7 +1402,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(BaseAsset? @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, int? @divisibility, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
+        public CreateMarketRequest(BaseAsset? @baseAsset, System.Collections.Generic.List<string> @categoryTags, string @description, long? @liquiditySats, string @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
@@ -1403,7 +1410,6 @@ namespace BitCaster.MatchingEngine.Contracts
             this.OutcomeType = @outcomeType;
             this.LiquiditySats = @liquiditySats;
             this.BaseAsset = @baseAsset;
-            this.Divisibility = @divisibility;
             this.CategoryTags = @categoryTags;
             this.OracleAnnouncementHex = @oracleAnnouncementHex;
         }
@@ -1450,13 +1456,6 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset? BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`. Orders use price numerator `k` where `1 &lt;= k &lt;= D - 1` and one whole share has face value `D` base-asset sub-units. The matching engine rejects divisibility values other than `100` and `1000` in this release; higher divisibility support is tracked in docs/TODO.md.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public int? Divisibility { get; }
-
-        /// <summary>
         /// Optional category tags for the market.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("categoryTags")]
@@ -1484,11 +1483,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketResponse(string @conditionId, System.Collections.Generic.List<string> @marketsCreated, string @thumbnailUrl)
+        public CreateMarketResponse(string @conditionId, int? @divisibility, System.Collections.Generic.List<string> @marketsCreated, string @thumbnailUrl)
         {
             this.ConditionId = @conditionId;
             this.MarketsCreated = @marketsCreated;
             this.ThumbnailUrl = @thumbnailUrl;
+            this.Divisibility = @divisibility;
         }
 
         /// <summary>
@@ -1509,6 +1509,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("thumbnailUrl")]
         public string ThumbnailUrl { get; }
+
+        /// <summary>
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int? Divisibility { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1815,7 +1822,8 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Price denominator / market collateral divisibility.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
         public int Divisibility { get; }
@@ -2556,7 +2564,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable market price denominator `D`. Legacy sat markets replay as `100`.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]

@@ -36,7 +36,7 @@ public readonly record struct Sats : IComparable<Sats>
 
 /// <summary>
 /// Market price numerator `k`. Interpret against the market's immutable
-/// divisibility `D`; legacy sat markets use `D = 100`.
+/// divisibility `D`; current markets use `D = 10000`.
 /// Serializes as a plain JSON number.
 /// </summary>
 [JsonConverter(typeof(ProbabilityJsonConverter))]
