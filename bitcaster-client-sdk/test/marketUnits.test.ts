@@ -42,7 +42,9 @@ test('normalizes market unit defaults', () => {
 test('formats system market display units', () => {
   assert.equal(defaultCollateralUnit('sat'), 'msat')
   assert.equal(defaultCollateralUnit('usd'), 'milli-cent')
+  assert.equal(defaultCollateralUnit(null), 'msat')
   assert.equal(defaultCollateralUnit('jpy'), 'msat')
+  assert.equal(formatPricePercentage(5_000, 10_000), '50.00%')
   assert.equal(formatPricePercentage(5_327, 10_000), '53.27%')
   assert.equal(formatPricePercentage(1, 10_000), '0.01%')
   assert.equal(formatShareFace(10_000, 'sat'), '10 sat')
