@@ -21,6 +21,12 @@ import type {
 
 const mocks = vi.hoisted(() => ({
   resolveRootPreflightOutputAmountSats: vi.fn(),
+  windowPriceHistory: vi.fn(
+    (history: { timeframe: string; data: Array<unknown> }) => ({
+      ...history,
+      data: history.data.slice(-1000),
+    }),
+  ),
 }));
 
 vi.mock("@/lib/markets", () => ({
@@ -36,6 +42,7 @@ vi.mock("@/lib/markets", () => ({
   priceNumeratorToPercent: (price: number, divisibility = 100) =>
     (price / divisibility) * 100,
   submitOrder: vi.fn(),
+  windowPriceHistory: mocks.windowPriceHistory,
 }));
 
 vi.mock("@/lib/ctfSplit", () => ({
@@ -166,6 +173,7 @@ describe("fetchMarketDetailWithBooks", () => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
     mocks.resolveRootPreflightOutputAmountSats.mockReset();
+    mocks.windowPriceHistory.mockClear();
   });
 
   it("fetches singleton outcome-set books for categorical markets", async () => {
@@ -186,6 +194,10 @@ describe("fetchMarketDetailWithBooks", () => {
 });
 
 describe("marketDetailDataReducer", () => {
+  beforeEach(() => {
+    mocks.windowPriceHistory.mockClear();
+  });
+
   it("preserves yes/no chart history and comments across submit refresh", () => {
     const history = {
       timeframe: "7d" as const,
@@ -225,6 +237,69 @@ describe("marketDetailDataReducer", () => {
     expect(view?.priceHistory.data).toEqual(history.data);
     expect(view?.orderBook).toBe(initial.outcomeOrderBooks?.Yes);
     expect(view?.comments).toEqual([loadedComment]);
+  });
+
+  it("aligns yes/no displayed odds with the latest backend price history point", () => {
+    const initial = yesNoMarket({
+      currentOdds: { yes: 50, no: 50 },
+      priceHistory: {
+        timeframe: "7d",
+        data: [
+          { timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" },
+        ],
+      },
+    });
+
+    const view = composeMarketDetail(createMarketDetailDataState(initial), "7d");
+
+    expect(view?.type).toBe("yesno");
+    if (view?.type === "yesno") {
+      expect(view.currentOdds).toEqual({ yes: 80, no: 20 });
+    }
+  });
+
+  it("aligns categorical outcome odds with the latest backend outcome histories", () => {
+    const initial = categoricalMarket() as CategoricalMarketDetail;
+    initial.outcomes = [
+      { id: "outcome-0", label: "Alice", odds: 33.33 },
+      { id: "outcome-1", label: "Bob", odds: 33.33 },
+      { id: "outcome-2", label: "Carol", odds: 33.33 },
+    ];
+    initial.priceHistory = {
+      timeframe: "7d",
+      data: [
+        { timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" },
+      ],
+    };
+    initial.outcomePriceHistories = {
+      Alice: {
+        timeframe: "7d",
+        data: [
+          { timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" },
+        ],
+      },
+      Bob: {
+        timeframe: "7d",
+        data: [
+          { timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" },
+        ],
+      },
+      Carol: {
+        timeframe: "7d",
+        data: [
+          { timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" },
+        ],
+      },
+    };
+
+    const view = composeMarketDetail(createMarketDetailDataState(initial), "7d");
+
+    expect(view?.type).toBe("categorical");
+    if (view?.type === "categorical") {
+      expect(view.outcomes.map((outcome) => outcome.odds)).toEqual([
+        80, 10, 10,
+      ]);
+    }
   });
 
   it("preserves categorical histories and comments across lifecycle refresh", () => {
@@ -377,6 +452,63 @@ describe("marketDetailDataReducer", () => {
 
     expect(view?.priceHistory.data).toEqual([
       { timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 },
+      { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
+      { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
+    ]);
+    expect(mocks.windowPriceHistory).toHaveBeenCalledWith({
+      timeframe: "7d",
+      data: [
+        { timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 },
+        { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
+        { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
+      ],
+    });
+  });
+
+  it("merges order-submit refresh history with existing initial and live chart points", () => {
+    const initial = yesNoMarket({
+      priceHistory: {
+        timeframe: "7d",
+        data: [
+          { timestamp: "2026-01-01T00:00:00Z", price: 49, source: "initial" },
+        ],
+      },
+      outcomeOrderBooks: { Yes: book(50), No: book(50) },
+    });
+    const stateWithLive = marketDetailDataReducer(
+      createMarketDetailDataState(initial),
+      {
+        type: "tradeExecuted",
+        marketId: initial.id,
+        outcomeSetId: "Yes",
+        timeframe: "7d",
+        point: { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
+      },
+    );
+
+    const refresh = yesNoMarket({
+      ...initial,
+      priceHistory: {
+        timeframe: "7d",
+        data: [
+          { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
+          { timestamp: "2026-01-03T00:00:00Z", price: 54, volume: 1 },
+        ],
+      },
+      outcomeOrderBooks: { Yes: book(52), No: book(48) },
+    });
+
+    const stateAfterRefresh = marketDetailDataReducer(stateWithLive, {
+      type: "marketSubmitRefreshLoaded",
+      detail: refresh,
+      booksByOutcomeSetId: { Yes: book(52), No: book(48) },
+      replaceOutcomeSetIds: ["Yes", "No"],
+    });
+
+    const view = composeMarketDetail(stateAfterRefresh, "7d");
+
+    expect(view?.priceHistory.data).toEqual([
+      { timestamp: "2026-01-01T00:00:00Z", price: 49, source: "initial" },
       { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
       { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
     ]);

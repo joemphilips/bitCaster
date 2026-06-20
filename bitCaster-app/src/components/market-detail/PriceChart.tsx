@@ -17,6 +17,12 @@ interface PriceChartProps {
 }
 
 const TIMEFRAMES: ChartTimeframe[] = ['1h', '24h', '7d', '30d', 'all']
+const TIMEFRAME_SECONDS: Record<Exclude<ChartTimeframe, 'all'>, number> = {
+  '1h': 60 * 60,
+  '24h': 24 * 60 * 60,
+  '7d': 7 * 24 * 60 * 60,
+  '30d': 30 * 24 * 60 * 60,
+}
 
 const TIMEFRAME_LABELS: Record<ChartTimeframe, string> = {
   '1h': '1H',
@@ -38,6 +44,7 @@ const OUTCOME_COLORS = [
 ]
 
 const CHART_HEIGHT = 224
+const MAX_PRICE_HISTORY_POINTS_PER_OUTCOME = 1000
 
 type Series = { id: string; label: string; color: string; data: PricePoint[] }
 
@@ -49,12 +56,30 @@ function sortAscending(data: PricePoint[]): PricePoint[] {
   return [...data].sort((a, b) => timeOf(a) - timeOf(b))
 }
 
+function normalizeSeriesData(data: PricePoint[], timeframe: ChartTimeframe): PricePoint[] {
+  const byTimestamp = new Map<string, PricePoint>()
+  for (const point of data) byTimestamp.set(point.timestamp, point)
+  const sorted = sortAscending([...byTimestamp.values()])
+  if (sorted.length === 0) return sorted
+
+  if (timeframe === 'all') {
+    return sorted.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME)
+  }
+
+  const newest = timeOf(sorted[sorted.length - 1])
+  const cutoff = newest - TIMEFRAME_SECONDS[timeframe] * 1000
+  const firstInWindow = sorted.findIndex((point) => timeOf(point) >= cutoff)
+  const windowed = firstInWindow <= 0 ? sorted : sorted.slice(firstInWindow - 1)
+  return windowed.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME)
+}
+
 function toUnixSeconds(point: PricePoint): number {
   return Math.floor(timeOf(point) / 1000)
 }
 
 function buildSeries(input: {
   priceHistory: PriceHistory
+  timeframe: ChartTimeframe
   outcomePriceHistories?: Record<string, PriceHistory>
   outcomes?: Array<{ id: string; label: string; odds: number }>
 }): Series[] {
@@ -71,8 +96,9 @@ function buildSeries(input: {
         id: outcome.id,
         label: outcome.label,
         color: OUTCOME_COLORS[idx % OUTCOME_COLORS.length],
-        data: sortAscending(
+        data: normalizeSeriesData(
           input.outcomePriceHistories?.[canonicalizeOutcomeSet([outcome.label])]?.data ?? [],
+          input.timeframe,
         ),
       }))
       .filter((series) => series.data.length > 0)
@@ -83,7 +109,7 @@ function buildSeries(input: {
       id: 'primary',
       label: '',
       color: OUTCOME_COLORS[0],
-      data: sortAscending(input.priceHistory.data),
+      data: normalizeSeriesData(input.priceHistory.data, input.timeframe),
     },
   ].filter((series) => series.data.length > 0)
 }
@@ -101,8 +127,34 @@ function alignSeries(series: Series[]): uPlot.AlignedData {
   return [times, ...yValues] as uPlot.AlignedData
 }
 
+function xScaleFor(
+  data: uPlot.AlignedData,
+  timeframe: ChartTimeframe,
+  series: Series[],
+): { min: number; max: number } | null {
+  const times = data[0] as number[]
+  if (times.length === 0) return null
+  if (timeframe !== 'all') {
+    const windowSeconds = TIMEFRAME_SECONDS[timeframe]
+    const points = series.flatMap((s) => s.data)
+    if (points.length > 0 && points.every((point) => point.source === 'initial')) {
+      const min = times[0]
+      return { min, max: min + windowSeconds }
+    }
+    const max = times[times.length - 1]
+    return { min: max - windowSeconds, max }
+  }
+  const max = times[times.length - 1]
+  const min = times[0]
+  if (min === max) {
+    return { min: min - 60 * 60, max: max + 60 * 60 }
+  }
+  return { min, max }
+}
+
 function formatPercent(value: number): string {
   return `${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}%`
 }
@@ -121,10 +173,11 @@ export function PriceChart({
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
 
   const series = useMemo(
-    () => buildSeries({ priceHistory, outcomePriceHistories, outcomes }),
-    [priceHistory, outcomePriceHistories, outcomes],
+    () => buildSeries({ priceHistory, timeframe: chartTimeframe, outcomePriceHistories, outcomes }),
+    [priceHistory, chartTimeframe, outcomePriceHistories, outcomes],
   )
   const chartData = useMemo(() => alignSeries(series), [series])
+  const xScale = useMemo(() => xScaleFor(chartData, chartTimeframe, series), [chartData, chartTimeframe, series])
   const hasChartData = series.length > 0 && chartData[0].length > 0
   const latestValues = series
     .map((s) => {
@@ -153,7 +206,7 @@ export function PriceChart({
         },
         legend: { show: false },
         scales: {
-          x: { time: true },
+          x: { time: true, min: xScale?.min, max: xScale?.max },
           y: { range: [0, 100] },
         },
         axes: [
@@ -203,7 +256,10 @@ export function PriceChart({
   useEffect(() => {
     if (!plotRef.current || !hasChartData) return
     plotRef.current.setData(chartData)
-  }, [chartData, hasChartData])
+    if (xScale) {
+      plotRef.current.setScale('x', xScale)
+    }
+  }, [chartData, hasChartData, xScale])
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5">
