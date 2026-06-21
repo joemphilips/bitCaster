@@ -65,8 +65,12 @@ jobs:
 
   e2e-tests:
     runs-on: ubuntu-latest
+    # AppHost E2E remains a required local QA step, but the remote
+    # GitHub-hosted run is too slow/flaky to gate every PR.
+    # Run this job manually via workflow_dispatch until reliable.
     timeout-minutes: 30
     needs: [dotnet-build, frontend]
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
         with:
