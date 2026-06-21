@@ -551,7 +551,7 @@ public static class OrderEndpoints
     {
         var conditionId = MarketParts.TryParse(marketId)?.ConditionId;
         var market = conditionId is null ? null : MarketEndpoints.TryGetMarket(conditionId);
-        return (market?.BaseAsset ?? BaseAsset.Sat, market?.Divisibility is > 1 ? market.Divisibility : 100);
+        return (market?.BaseAsset ?? BaseAsset.Sat, market?.Divisibility is > 1 ? market.Divisibility : MarketEndpoints.DefaultMarketDivisibility);
     }
 
     private static Guid? TryReadTradeId(Fill fill)
@@ -593,4 +593,3 @@ public static class OrderEndpoints
             _ => "Outcome"
         };
 }
-
