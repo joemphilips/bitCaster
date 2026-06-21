@@ -336,10 +336,13 @@ describe('useDepositWithdrawState', () => {
       act(() => result.current.onNumpadPress('1'))
       act(() => result.current.onNumpadPress('0'))
       act(() => result.current.onNumpadPress('0'))
+      act(() => result.current.onNumpadPress('0'))
+      act(() => result.current.onNumpadPress('0'))
+      act(() => result.current.onNumpadPress('0'))
 
       await act(async () => { await result.current.onCreateInvoice() })
 
-      expect(cashu.createMintQuote).toHaveBeenCalledWith(100, 'http://localhost:8085', 'usd')
+      expect(cashu.createMintQuote).toHaveBeenCalledWith(100_000, 'http://localhost:8085', 'usd')
       expect(cashu.waitForMintQuotePaid).toHaveBeenCalledWith(
         quote,
         expect.any(Function),
@@ -349,7 +352,7 @@ describe('useDepositWithdrawState', () => {
       )
       expect(result.current.amountLabel).toBe('$1.00')
       expect(result.current.invoiceRateInfo).toEqual({
-        label: '10 sat/cent',
+        label: '0.01 sat/milli-cent',
         source: 'implied',
       })
     })

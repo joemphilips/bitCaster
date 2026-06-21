@@ -7,7 +7,7 @@ import {
 } from '@bitcaster/client-sdk/marketUnits'
 
 /**
- * App-level cents-aware amount formatter. Delegates to the SDK's
+ * App-level subunit-aware amount formatter. Delegates to the SDK's
  * `formatMarketSubunits` so every surface renders identical strings
  * ("1,000 sats", "$1.23", "¥120") — do NOT fork the label spelling here.
  */
@@ -21,7 +21,7 @@ export function formatAmount(
 /** Display name for a funding unit ("sats" / "USD" / "JPY"). */
 export const formatUnitName = marketUnitLabel
 
-/** Display name for the subunit a raw amount is entered in ("sats" / "cents" / "yen"). */
+/** Display name for the subunit a raw amount is entered in ("sats" / "milli-cents" / "yen"). */
 export const formatUnitSubunitName = marketSubunitLabel
 
 export interface AmountByUnit {
@@ -31,7 +31,7 @@ export interface AmountByUnit {
 
 /**
  * Sum amounts per normalized unit. This is the single shared guard that
- * keeps totals per unit — sats and cents must NEVER be summed together.
+ * keeps totals per unit — sats and USD subunits must NEVER be summed together.
  */
 export function groupAmountsByUnit<T>(
   items: Iterable<T>,

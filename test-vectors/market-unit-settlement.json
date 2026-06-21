@@ -4,29 +4,29 @@
     {
       "name": "sat-default-direct",
       "baseAsset": "sat",
-      "divisibility": 100,
-      "faceAmountSubunits": 300,
-      "priceSubunits": 40,
-      "quotePaymentSubunits": 120,
-      "complementQuotePaymentSubunits": 180
+      "divisibility": 10000,
+      "faceAmountSubunits": 1000000,
+      "priceSubunits": 4000,
+      "quotePaymentSubunits": 400000,
+      "complementQuotePaymentSubunits": 600000
     },
     {
-      "name": "usd-thousand-direct",
+      "name": "usd-default-direct",
       "baseAsset": "usd",
-      "divisibility": 1000,
-      "faceAmountSubunits": 3000,
-      "priceSubunits": 333,
-      "quotePaymentSubunits": 999,
-      "complementQuotePaymentSubunits": 2001
+      "divisibility": 10000,
+      "faceAmountSubunits": 100000,
+      "priceSubunits": 3333,
+      "quotePaymentSubunits": 33330,
+      "complementQuotePaymentSubunits": 66670
     },
     {
       "name": "sat-high-divisibility-direct",
       "baseAsset": "sat",
       "divisibility": 10000,
-      "faceAmountSubunits": 20000,
+      "faceAmountSubunits": 2000000,
       "priceSubunits": 1234,
-      "quotePaymentSubunits": 2468,
-      "complementQuotePaymentSubunits": 17532
+      "quotePaymentSubunits": 246800,
+      "complementQuotePaymentSubunits": 1753200
     }
   ]
 }

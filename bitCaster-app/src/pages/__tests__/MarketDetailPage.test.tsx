@@ -521,7 +521,7 @@ describe("marketDetailDataReducer", () => {
       {
         timestamp: "2026-01-03T00:00:00Z",
         executionPrice: 200,
-        amountSats: 1000,
+        amountSats: 1_000_000,
       },
     );
 
@@ -530,7 +530,7 @@ describe("marketDetailDataReducer", () => {
       point: {
         timestamp: "2026-01-03T00:00:00Z",
         price: 80,
-        volume: 1000,
+        volume: 1_000_000,
       },
     });
   });
@@ -613,7 +613,7 @@ describe("resolvePreflightSplitBuyCollateralRequirement", () => {
       mintUrl: "https://mint.example",
       baseAsset: "sat",
       conditionId: "condition-1",
-      amountSats: 1_000,
+      amountSats: 1_000_000,
       keepOutcomeSetId: "Alice",
       lockOutcomeSetId: "Bob|Carol",
     });

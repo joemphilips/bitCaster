@@ -9,8 +9,8 @@ describe('OrderBookSection', () => {
         baseAsset="usd"
         divisibility={1_000}
         orderBook={{
-          bids: [{ price: 50, amount: 100, total: 100 }],
-          asks: [{ price: 60, amount: 200, total: 200 }],
+          bids: [{ price: 50, amount: 100_000, total: 100_000 }],
+          asks: [{ price: 60, amount: 200_000, total: 200_000 }],
           spread: 10,
         }}
       />,

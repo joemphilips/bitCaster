@@ -36,6 +36,7 @@ import {
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   formatMarketSubunits,
+  defaultCollateralUnit,
 } from '@bitcaster/client-sdk/marketUnits'
 import { effectiveRelayUrls } from '@/lib/relayDefaults'
 
@@ -600,7 +601,7 @@ export function useMarketCreationState() {
         request: {
           tags,
           announcementHex,
-          collateral: baseAsset,
+          collateral: defaultCollateralUnit(baseAsset),
           outcomeCollections,
         },
       })

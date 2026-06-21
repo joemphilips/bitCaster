@@ -3,12 +3,12 @@ import { formatAmount, groupAmountsByUnit } from '../formatAmount'
 
 describe('formatAmount', () => {
   it('formats sat amounts without converting units', () => {
-    expect(formatAmount(1000, 'sat')).toBe('1,000 sats')
+    expect(formatAmount(1_000_000, 'sat')).toBe('1,000 sats')
   })
 
-  it('formats USD cents as dollars', () => {
-    expect(formatAmount(23, 'usd')).toBe('$0.23')
-    expect(formatAmount(-123, 'usd')).toBe('-$1.23')
+  it('formats USD milli-cents as dollars', () => {
+    expect(formatAmount(23_000, 'usd')).toBe('$0.23')
+    expect(formatAmount(-123_000, 'usd')).toBe('-$1.23')
   })
 })
 

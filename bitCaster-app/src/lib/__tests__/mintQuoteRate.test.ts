@@ -36,7 +36,7 @@ describe('getMintQuoteRateInfo', () => {
       expiry: null,
     }
     expect(getMintQuoteRateInfo(quote as never, 100)).toEqual({
-      label: '10 sat/cent',
+      label: '10 sat/milli-cent',
       source: 'implied',
     })
   })

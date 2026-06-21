@@ -156,7 +156,7 @@ describe('DepositStep', () => {
     await user.clear(screen.getByRole('spinbutton'))
     await user.type(screen.getByRole('spinbutton'), '20000')
 
-    expect(screen.getByText('Funding amount: $200.00')).toBeInTheDocument()
+    expect(screen.getByText('Funding amount: $0.20')).toBeInTheDocument()
   })
 
   it('requests AMM funding and shows the shared invoice display', async () => {
@@ -318,7 +318,7 @@ describe('DepositStep', () => {
     renderStep({ baseAsset: 'usd' })
 
     await openFunding(user)
-    expect(screen.getByText('$1,000.00')).toBeInTheDocument()
+    expect(screen.getByText('$1.00')).toBeInTheDocument()
     expect(screen.queryByText('cents')).not.toBeInTheDocument()
 
     await user.click(screen.getByTestId('confirm-amm-funding'))

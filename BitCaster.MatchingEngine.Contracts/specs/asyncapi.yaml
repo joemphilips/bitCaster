@@ -259,7 +259,7 @@ components:
       description: >
         Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
         `D` is the market's immutable `divisibility`. Current markets use
-        `D = 1000`.
+        `D = 10000`.
 
     OrderSide:
       type: string
@@ -432,8 +432,9 @@ components:
           minimum: 2
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
         quotePaymentSubunits:
           type:
             - integer
@@ -550,8 +551,9 @@ components:
           format: int32
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
         - type:
             - integer
             - 'null'

@@ -82,7 +82,7 @@ export function getMintQuoteRateInfo(
   return {
     label: `${(invoiceSats / requested).toLocaleString(undefined, {
       maximumFractionDigits: 8,
-    })} sat/cent`,
+    })} sat/milli-cent`,
     source: 'implied',
   }
 }

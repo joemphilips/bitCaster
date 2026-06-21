@@ -23,8 +23,8 @@ const categoricalMarket: SdkMarketForTrading = {
 }
 
 const liquidBook: SdkOrderBook = {
-  bids: [{ price: 470, amount: 1_000, total: 1_000 }],
-  asks: [{ price: 530, amount: 1_000, total: 1_000 }],
+  bids: [{ price: 4_700, amount: 1_000_000, total: 1_000_000 }],
+  asks: [{ price: 5_300, amount: 1_000_000, total: 1_000_000 }],
   spread: 600,
 }
 
@@ -32,7 +32,7 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
   const ticket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'yes' },
-    amountSats: 1_000,
+    amountSats: 1_000_000,
     side: 'buy',
     orderType: 'limit',
     limitPrice: 500,
@@ -45,7 +45,7 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
     tokenSide: 'Outcome',
     side: 'Buy',
     price: 500,
-    amountSats: 1_000,
+    amountSats: 1_000_000,
     timeInForce: 'GTC',
   })
 })
@@ -54,7 +54,7 @@ test('buildTradeTicket builds categorical NO tickets on primitive route with com
   const ticket = buildTradeTicket({
     market: categoricalMarket,
     selection: { side: 'no', outcomeId: 'alice' },
-    amountSats: 1_000,
+    amountSats: 1_000_000,
     side: 'buy',
     orderType: 'limit',
     limitPrice: 4_500,
@@ -76,7 +76,7 @@ test('buildTradeTicket builds two-outcome categorical NO tickets against a primi
       ],
     },
     selection: { side: 'no', outcomeId: 'alice' },
-    amountSats: 1_000,
+    amountSats: 1_000_000,
     side: 'buy',
     orderType: 'limit',
     limitPrice: 4_500,
@@ -92,33 +92,33 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
   const directTicket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'no' },
-    amountSats: 1_000,
+    amountSats: 1_000_000,
     side: 'buy',
     orderType: 'market',
     limitPrice: 500,
     orderBook: liquidBook,
-    complementaryOrderBook: { bids: [{ price: 490, amount: 1_000 }], asks: [], spread: 0 },
+    complementaryOrderBook: { bids: [{ price: 4_900, amount: 1_000_000 }], asks: [], spread: 0 },
   })
   assert.equal(directTicket.marketId, 'condition-yesno-Yes')
   assert.equal(directTicket.request.outcomeId, 'Yes')
   assert.equal(directTicket.request.tokenSide, 'Complement')
-  assert.equal(directTicket.request.price, 999)
+  assert.equal(directTicket.request.price, 9999)
   assert.equal(directTicket.request.timeInForce, 'FAK')
 
   const complementaryTicket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'no' },
-    amountSats: 1_000,
+    amountSats: 1_000_000,
     side: 'buy',
     orderType: 'market',
     limitPrice: 500,
     orderBook: { bids: [], asks: [], spread: 0 },
-    complementaryOrderBook: { bids: [{ price: 490, amount: 1_000 }], asks: [], spread: 0 },
+    complementaryOrderBook: { bids: [{ price: 4_900, amount: 1_000_000 }], asks: [], spread: 0 },
   })
   assert.equal(complementaryTicket.marketId, 'condition-yesno-Yes')
   assert.equal(complementaryTicket.request.outcomeId, 'Yes')
   assert.equal(complementaryTicket.request.tokenSide, 'Complement')
-  assert.equal(complementaryTicket.request.price, 999)
+  assert.equal(complementaryTicket.request.price, 9999)
   assert.equal(complementaryTicket.request.timeInForce, 'FAK')
 })
 
@@ -155,7 +155,7 @@ test('buildTradeTicket rejects market orders with no liquidity instead of price 
       buildTradeTicket({
         market: yesNoMarket,
         selection: { side: 'yes' },
-        amountSats: 1_000,
+        amountSats: 1_000_000,
         side: 'buy',
         orderType: 'market',
         limitPrice: 500,
@@ -171,7 +171,7 @@ test('buildTradeTicket builds direct sell orders after same-outcome CTF swaps ar
   const ticket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'yes' },
-    amountSats: 1_000,
+    amountSats: 1_000_000,
     side: 'sell',
     orderType: 'limit',
     limitPrice: 500,
@@ -184,7 +184,7 @@ test('buildTradeTicket builds direct sell orders after same-outcome CTF swaps ar
     tokenSide: 'Outcome',
     side: 'Sell',
     price: 500,
-    amountSats: 1_000,
+    amountSats: 1_000_000,
     timeInForce: 'GTC',
   })
 })

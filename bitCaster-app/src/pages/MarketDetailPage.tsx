@@ -184,7 +184,7 @@ export async function resolvePreflightSplitBuyCollateralRequirement(input: {
     mintUrl: input.activeMintUrl,
     baseAsset: normalizeMarketBaseAsset(input.market.baseAsset),
     conditionId: input.market.id,
-    amountSats: displaySharesToFaceSats(input.tradeAmount, divisibility),
+    amountSats: displaySharesToFaceSats(input.tradeAmount, input.market.baseAsset),
     keepOutcomeSetId: outcomeSets.selectedOutcomeSetId,
     lockOutcomeSetId: outcomeSets.complementOutcomeSetId,
   });
@@ -1253,7 +1253,7 @@ export function MarketDetailPage() {
 
   const tradeFaceAmount = displaySharesToFaceSats(
     tradeAmount,
-    marketDivisibility,
+    marketBaseAsset,
   );
 
   // Computed trade preview (market orders). `tradeAmount` is the user-entered
@@ -1271,6 +1271,7 @@ export function MarketDetailPage() {
       tradeSide,
       orderBook: selectedBook,
       complementaryOrderBook: tradeBooks?.complementBook ?? null,
+      baseAsset: marketBaseAsset,
       divisibility: marketDivisibility,
     });
     if (!quotePreview) {
@@ -1295,6 +1296,8 @@ export function MarketDetailPage() {
       price: quotePreview.averageExecutionPrice,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
+      baseAsset: marketBaseAsset,
+      divisibility: marketDivisibility,
     });
     const predictedOdds = Math.max(
       0,
@@ -1324,6 +1327,7 @@ export function MarketDetailPage() {
     market,
     orderType,
     activeMintInputFeePpk,
+    marketBaseAsset,
     marketDivisibility,
     tradeFaceAmount,
     engineScoreFeeSats,
@@ -1342,6 +1346,8 @@ export function MarketDetailPage() {
       price: limitPrice,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
+      baseAsset: marketBaseAsset,
+      divisibility: marketDivisibility,
     });
     return {
       limitPrice,
@@ -1361,6 +1367,7 @@ export function MarketDetailPage() {
     orderType,
     limitPrice,
     activeMintInputFeePpk,
+    marketBaseAsset,
     marketDivisibility,
     tradeFaceAmount,
     engineScoreFeeSats,
@@ -1376,6 +1383,8 @@ export function MarketDetailPage() {
       price,
       feePercent: market.creator.feePercent,
       mintInputFeePpk: activeMintInputFeePpk,
+      baseAsset: marketBaseAsset,
+      divisibility: marketDivisibility,
     }).totalCost;
   }, [
     market,
@@ -1384,6 +1393,7 @@ export function MarketDetailPage() {
     limitPrice,
     marketBalanceGatePrice,
     activeMintInputFeePpk,
+    marketBaseAsset,
     marketDivisibility,
   ]);
 
@@ -1461,7 +1471,7 @@ export function MarketDetailPage() {
           selection: tradeSelection,
           amountSats: displaySharesToFaceSats(
             tradeAmount,
-            normalizeMarketDivisibility(latestMarket.divisibility),
+            latestMarket.baseAsset,
           ),
           side: tradeSide,
           orderType,

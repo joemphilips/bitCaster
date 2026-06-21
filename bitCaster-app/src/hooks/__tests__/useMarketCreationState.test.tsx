@@ -205,7 +205,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
           ['description', 'Test description'],
         ],
         announcementHex: 'announcement-hex',
-        collateral: 'sat',
+        collateral: 'msat',
         outcomeCollections: undefined,
       },
     })
@@ -224,14 +224,14 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
         request: expect.objectContaining({
-          collateral: 'sat',
+          collateral: 'msat',
           outcomeCollections: ['Yes', 'No'],
         }),
       }),
     )
   })
 
-  it('passes selected base asset to mintd registration and omits request divisibility', async () => {
+  it('passes selected base asset collateral unit to mintd registration and omits request divisibility', async () => {
     const result = await setupDraftForSubmission()
 
     await act(async () => { result.current.onBaseAssetChange('usd') })
@@ -240,7 +240,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
         request: expect.objectContaining({
-          collateral: 'usd',
+          collateral: 'milli-cent',
         }),
       }),
     )
@@ -293,7 +293,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
       expect.objectContaining({
         requiredFeeSats: 14,
         request: expect.objectContaining({
-          collateral: 'usd',
+          collateral: 'milli-cent',
         }),
       }),
     )
@@ -344,7 +344,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
         request: expect.objectContaining({
-          collateral: 'sat',
+          collateral: 'msat',
           outcomeCollections: undefined,
         }),
       }),
@@ -418,7 +418,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.submitError).toBe(
-      'This mint requires a 1,001 sats condition registration fee, which exceeds the 1,000 sats app limit.',
+      'This mint requires a 1.001 sats condition registration fee, which exceeds the 1 sats app limit.',
     )
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
     expect(mockCreateMarket).not.toHaveBeenCalled()

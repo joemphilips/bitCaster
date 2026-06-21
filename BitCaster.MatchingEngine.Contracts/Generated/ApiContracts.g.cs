@@ -436,7 +436,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset? BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value 1,000,000 msat (1000 sats) for sat markets or 100,000 milli-cent ($1.00) for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -530,7 +530,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public int Price { get; }
 
         /// <summary>
-        /// Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value (`divisibility` base-asset sub-units). Current markets use D=1000, so the minimum whole share is 1000 base-asset sub-units.
+        /// Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value, independent of `divisibility`. Current markets use D=10000 (0.01% price precision) with whole-share face value 1,000,000 msat (1000 sats) for sat markets or 100,000 milli-cent ($1.00) for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
@@ -680,7 +680,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value 1,000,000 msat (1000 sats) for sat markets or 100,000 milli-cent ($1.00) for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -778,7 +778,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value 1,000,000 msat (1000 sats) for sat markets or 100,000 milli-cent ($1.00) for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -870,7 +870,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value 1,000,000 msat (1000 sats) for sat markets or 100,000 milli-cent ($1.00) for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -1057,7 +1057,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value 1,000,000 msat (1000 sats) for sat markets or 100,000 milli-cent ($1.00) for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -1511,7 +1511,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ThumbnailUrl { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value 1,000,000 msat (1000 sats) for sat markets or 100,000 milli-cent ($1.00) for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -1545,7 +1545,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset Timestamp { get; }
 
         /// <summary>
-        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use D=1000 (0.1% price precision).
+        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use D=10000 (0.01% price precision).
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("price")]
@@ -1822,7 +1822,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value 1,000,000 msat (1000 sats) for sat markets or 100,000 milli-cent ($1.00) for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -2043,7 +2043,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Legacy field name. Amount of market-collateral base subunits the funder intends to deposit. The engine derives the unit from the registered market: sats for sat markets, cents for USD markets.
+        /// Legacy field name. Amount of market-collateral base subunits the funder intends to deposit. The engine derives the unit from the registered market: msat for sat markets, milli-cent for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
@@ -2532,21 +2532,21 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset CreatedAt { get; }
 
         /// <summary>
-        /// Trading volume over the last 24 hours in the market collateral's base subunits: sats for sat markets, cents for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Trending` sort dimension.
+        /// Trading volume over the last 24 hours in the market collateral's base subunits: msat for sat markets, milli-cent for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Trending` sort dimension.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volume24hSats")]
         public long Volume24hSats { get; }
 
         /// <summary>
-        /// Trading volume over the last 30 days in the market collateral's base subunits: sats for sat markets, cents for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Popular` sort dimension.
+        /// Trading volume over the last 30 days in the market collateral's base subunits: msat for sat markets, milli-cent for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Popular` sort dimension.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volume30dSats")]
         public long Volume30dSats { get; }
 
         /// <summary>
-        /// Total face amount of currently-resting orders across the market's order books, denominated in the market collateral's base subunits: sats for sat markets, cents for USD markets. The `Sats` suffix is retained for wire compatibility.
+        /// Total face amount of currently-resting orders across the market's order books, denominated in the market collateral's base subunits: msat for sat markets, milli-cent for USD markets. The `Sats` suffix is retained for wire compatibility.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
@@ -2564,7 +2564,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value 1,000,000 msat (1000 sats) for sat markets or 100,000 milli-cent ($1.00) for USD markets.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]

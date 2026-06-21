@@ -34,8 +34,8 @@ describe("CreatedMarketRow", () => {
       <CreatedMarketRow
         market={fixture({
           baseAsset: "usd",
-          volume: 2500,
-          creatorFeesEarned: 125,
+          volume: 2_500_000,
+          creatorFeesEarned: 125_000,
           status: "resolved",
         })}
       />,

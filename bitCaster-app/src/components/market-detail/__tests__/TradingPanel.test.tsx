@@ -70,14 +70,14 @@ describe('TradingPanel', () => {
     )
 
     expect(screen.getByText('Shares')).toBeInTheDocument()
-    expect(screen.getByText('1 share = $10.00')).toBeInTheDocument()
+    expect(screen.getByText('1 share = $1.00')).toBeInTheDocument()
     expect(
       screen.getByRole('button', { name: 'Buy YES for 50 shares' }),
     ).toBeInTheDocument()
     expect(screen.getByText('0 sats')).toBeInTheDocument()
   })
 
-  it('pins 50 shares at price 30 for D=100 as 1,500 sats cost and 5,000 sats payout', () => {
+  it('formats sat-denominated preview values from msat subunits', () => {
     const preview: LimitOrderPreview = {
       limitPrice: 30,
       amount: 50,
@@ -108,8 +108,8 @@ describe('TradingPanel', () => {
     expect(screen.getByText('Shares you receive if order fills')).toBeInTheDocument()
     expect(screen.getByText('Market Creator fee (1%)')).toBeInTheDocument()
     expect(screen.getAllByText('0 sats')).toHaveLength(3)
-    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1,500 sats')
-    expect(screen.getByTestId('limit-payout-if-win')).toHaveTextContent('500 sats')
+    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1.5 sats')
+    expect(screen.getByTestId('limit-payout-if-win')).toHaveTextContent('0.5 sats')
   })
 
   it('shows fee tooltips on each fee row', () => {

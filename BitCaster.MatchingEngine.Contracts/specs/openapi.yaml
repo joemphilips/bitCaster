@@ -817,7 +817,7 @@ components:
       description: >
         Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
         `D` is the market's immutable `divisibility`. Current markets use
-        `D = 1000`.
+        `D = 10000`.
 
     BaseAsset:
       type: string
@@ -1065,11 +1065,12 @@ components:
           type: integer
           format: int32
           minimum: 2
-          default: 1000
+          default: 10000
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
         quotePaymentSubunits:
           type: integer
           format: int64
@@ -1144,9 +1145,10 @@ components:
             - $ref: '#/components/schemas/Sats'
           description: >
             Limit-order size as conditional-token face amount. Must be
-            divisible by the market's whole-share face value (`divisibility`
-            base-asset sub-units). Current markets use D=1000, so the minimum
-            whole share is 1000 base-asset sub-units.
+            divisible by the market's whole-share face value, independent of
+            `divisibility`. Current markets use D=10000 (0.01% price precision)
+            with whole-share face value 1,000,000 msat (1000 sats) for sat
+            markets or 100,000 milli-cent ($1.00) for USD markets.
         timeInForce:
           $ref: '#/components/schemas/TimeInForce'
           default: GTC
@@ -1262,11 +1264,12 @@ components:
           type: integer
           format: int32
           minimum: 2
-          default: 1000
+          default: 10000
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
 
     RestingOrderResponse:
       type: object
@@ -1327,11 +1330,12 @@ components:
           type: integer
           format: int32
           minimum: 2
-          default: 1000
+          default: 10000
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
 
     ListRestingOrdersResponse:
       type: object
@@ -1386,11 +1390,12 @@ components:
           type: integer
           format: int32
           minimum: 2
-          default: 1000
+          default: 10000
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
 
     BatchSubmitOrdersRequest:
       type: object
@@ -1506,8 +1511,9 @@ components:
           minimum: 2
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
         errorCode:
           oneOf:
             - $ref: '#/components/schemas/BatchSubmitOrderErrorCode'
@@ -1765,8 +1771,9 @@ components:
           minimum: 2
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
 
     MarketPriceHistoryPoint:
       type: object
@@ -1786,7 +1793,7 @@ components:
           description: >
             Market price numerator `k`. Valid range is `1 <= k <= D - 1`,
             where `D` is the market's immutable `divisibility`. Current markets
-            use D=1000 (0.1% price precision).
+            use D=10000 (0.01% price precision).
         volumeSats:
           type: integer
           format: int64
@@ -1950,8 +1957,9 @@ components:
           type: integer
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
         restingOrderLiquiditySubunits:
           type: integer
           format: int64
@@ -2072,7 +2080,7 @@ components:
           description: >
             Legacy field name. Amount of market-collateral base subunits the
             funder intends to deposit. The engine derives the unit from the
-            registered market: sats for sat markets, cents for USD markets.
+            registered market: msat for sat markets, milli-cent for USD markets.
         creatorPubkey:
           type: string
           pattern: '^[0-9a-f]{64}$'
@@ -2377,7 +2385,7 @@ components:
           minimum: 0
           description: >
             Trading volume over the last 24 hours in the market collateral's
-            base subunits: sats for sat markets, cents for USD markets. The
+            base subunits: msat for sat markets, milli-cent for USD markets. The
             `Sats` suffix is retained for wire compatibility. Drives the
             `Trending` sort dimension.
         volume30dSats:
@@ -2386,7 +2394,7 @@ components:
           minimum: 0
           description: >
             Trading volume over the last 30 days in the market collateral's
-            base subunits: sats for sat markets, cents for USD markets. The
+            base subunits: msat for sat markets, milli-cent for USD markets. The
             `Sats` suffix is retained for wire compatibility. Drives the
             `Popular` sort dimension.
         liquiditySats:
@@ -2396,7 +2404,7 @@ components:
           description: >
             Total face amount of currently-resting orders across the market's
             order books, denominated in the market collateral's base subunits:
-            sats for sat markets, cents for USD markets. The `Sats` suffix is
+            msat for sat markets, milli-cent for USD markets. The `Sats` suffix is
             retained for wire compatibility.
         volumeLifetimeSats:
           type: integer
@@ -2413,8 +2421,9 @@ components:
           minimum: 2
           description: >
             Immutable price denominator `D`, server-determined. Enum markets
-            use D=1000 (0.1% price precision). One whole share has face
-            value `D` base-asset sub-units.
+            use D=10000 (0.01% price precision). One whole share has face
+            value 1,000,000 msat (1000 sats) for sat markets or 100,000
+            milli-cent ($1.00) for USD markets.
         lastTradedPrice:
           type: number
           nullable: true

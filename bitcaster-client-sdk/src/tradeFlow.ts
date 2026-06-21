@@ -160,7 +160,7 @@ function validateTradeCreatedSettlementAmounts(
   if (unit.error) return unit.error
   const { baseAsset, divisibility, expectedBaseAsset, expectedDivisibility } = unit
   const expectedUnitSpecified = expectedBaseAsset != null && expectedDivisibility != null
-  const isDefaultUnit = baseAsset === DEFAULT_MARKET_BASE_ASSET && divisibility === DEFAULT_MARKET_DIVISIBILITY
+  const isDefaultUnit = isDefaultSettlementUnit(baseAsset, divisibility)
   if (!expectedUnitSpecified && !isDefaultUnit) {
     return 'TradeCreated carries a non-default unit but the local expected unit is missing.'
   }
@@ -173,7 +173,7 @@ function validateTradeCreatedSettlementAmounts(
 
   const canonicalBaseAsset = expectedBaseAsset ?? baseAsset
   const canonicalDivisibility = expectedDivisibility ?? divisibility
-  const isDefault = canonicalBaseAsset === DEFAULT_MARKET_BASE_ASSET && canonicalDivisibility === DEFAULT_MARKET_DIVISIBILITY
+  const isDefault = isDefaultSettlementUnit(canonicalBaseAsset, canonicalDivisibility)
   if (!isDefault) {
     if (!isPositiveInteger(input.outcomeFaceAmountSubunits)) {
       return 'Trade settlement metadata is missing outcome face subunits.'
@@ -209,6 +209,13 @@ function validateTradeCreatedSettlementAmounts(
   return null
 }
 
+function isDefaultSettlementUnit(baseAsset: MarketBaseAsset, divisibility: number): boolean {
+  return (
+    baseAsset === DEFAULT_MARKET_BASE_ASSET &&
+    (divisibility === DEFAULT_MARKET_DIVISIBILITY || divisibility === 1_000)
+  )
+}
+
 function resolveSettlementUnit(input: TradeCreatedDecisionInput): {
   baseAsset: MarketBaseAsset
   divisibility: number
@@ -218,7 +225,14 @@ function resolveSettlementUnit(input: TradeCreatedDecisionInput): {
 } {
   const baseAsset = parseOptionalBaseAsset(input.baseAsset, 'Trade unit')
   if (baseAsset.error) return { ...defaultResolvedUnit(), error: baseAsset.error }
-  const divisibility = parseOptionalDivisibility(input.divisibility, 'Trade divisibility')
+  const legacyDefaultDivisibility =
+    input.divisibility == null &&
+    input.outcomeFaceAmountSubunits == null &&
+    input.quotePaymentSubunits == null &&
+    (input.outcomeFaceAmountSats != null || input.quotePaymentSats != null)
+      ? 1_000
+      : input.divisibility
+  const divisibility = parseOptionalDivisibility(legacyDefaultDivisibility, 'Trade divisibility')
   if (divisibility.error) return { ...defaultResolvedUnit(), error: divisibility.error }
   const expectedBaseAsset = parseExpectedBaseAsset(input.expectedBaseAsset)
   if (expectedBaseAsset.error) return { ...defaultResolvedUnit(), error: expectedBaseAsset.error }

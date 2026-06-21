@@ -42,8 +42,8 @@ test('decideTradeCreated validates canonical amounts without legacy sats fields'
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 400_000,
   })
 
   assert.deepEqual(decision, {
@@ -129,7 +129,7 @@ test('decideTradeCreated rejects non-default canonical amounts when only expecte
   }
 })
 
-test('decideTradeCreated derives system sat/1000 default from canonical payload when expected unit is missing', () => {
+test('decideTradeCreated derives system sat/10000 default from canonical payload when expected unit is missing', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -139,8 +139,8 @@ test('decideTradeCreated derives system sat/1000 default from canonical payload 
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 400_000,
   })
 
   assert.deepEqual(decision, {
@@ -152,7 +152,7 @@ test('decideTradeCreated derives system sat/1000 default from canonical payload 
   })
 })
 
-test('decideTradeCreated accepts default sat/1000 TradeCreated without expected unit assertion', () => {
+test('decideTradeCreated accepts default sat/10000 TradeCreated without expected unit assertion', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -163,9 +163,9 @@ test('decideTradeCreated accepts default sat/1000 TradeCreated without expected 
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
-    divisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 500,
+    divisibility: 10_000,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 500_000,
   })
 
   assert.equal(decision.accepted, true)
@@ -406,9 +406,9 @@ test('decideTradeCreated accepts explicit positive divisibility metadata', () =>
     buyerPubkey: 'def',
     sellerLocktime: 120,
     buyerLocktime: 60,
-    divisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
+    divisibility: 10_000,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 400_000,
   })
 
   assert.equal(decision.accepted, true)
@@ -511,6 +511,8 @@ test('decideTradeCreated accepts mint seller settlement backed by outcome-side b
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
     divisibility: 1_000,
+    expectedBaseAsset: 'sat',
+    expectedDivisibility: 1_000,
     outcomeFaceAmountSubunits: 1_000,
     quotePaymentSubunits: 900,
     expectedOrder: {
@@ -535,13 +537,13 @@ test('decideTradeCreated accepts mint seller settlement backed by complement-sid
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 600,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 600_000,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Complement',
-      priceSubunits: 400,
-      amountSubunits: 1_000,
+      priceSubunits: 4_000,
+      amountSubunits: 1_000_000,
     },
   })
 
@@ -577,12 +579,12 @@ test('decideTradeCreated accepts buy-side mint seller without explicit token sid
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 600,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 600_000,
     expectedOrder: {
       side: 'Buy',
-      priceSubunits: 400,
-      amountSubunits: 1_000,
+      priceSubunits: 4_000,
+      amountSubunits: 1_000_000,
     },
   })
 
@@ -597,13 +599,13 @@ test('decideTradeCreated accepts direct seller settlement backed by sell order',
     sellerLocktime: 120,
     buyerLocktime: 60,
     settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 400_000,
     expectedOrder: {
       side: 'Sell',
       tokenSide: 'Outcome',
-      priceSubunits: 400,
-      amountSubunits: 1_000,
+      priceSubunits: 4_000,
+      amountSubunits: 1_000_000,
     },
   })
 
@@ -618,13 +620,13 @@ test('decideTradeCreated accepts direct buyer settlement backed by buy order', (
     sellerLocktime: 120,
     buyerLocktime: 60,
     settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 400_000,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Outcome',
-      priceSubunits: 400,
-      amountSubunits: 1_000,
+      priceSubunits: 4_000,
+      amountSubunits: 1_000_000,
     },
   })
 
@@ -639,13 +641,13 @@ test('decideTradeCreated rejects direct seller settlement backed by buy order', 
     sellerLocktime: 120,
     buyerLocktime: 60,
     settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 400_000,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Outcome',
-      priceSubunits: 400,
-      amountSubunits: 1_000,
+      priceSubunits: 4_000,
+      amountSubunits: 1_000_000,
     },
   })
 
@@ -664,13 +666,13 @@ test('decideTradeCreated rejects direct buyer settlement backed by sell order', 
     sellerLocktime: 120,
     buyerLocktime: 60,
     settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 400,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 400_000,
     expectedOrder: {
       side: 'Sell',
       tokenSide: 'Outcome',
-      priceSubunits: 400,
-      amountSubunits: 1_000,
+      priceSubunits: 4_000,
+      amountSubunits: 1_000_000,
     },
   })
 
