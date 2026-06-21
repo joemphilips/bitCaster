@@ -1,4 +1,4 @@
-import type { Market, FilterState } from "@/types/market";
+import type { CurrentOdds, Market, FilterState } from "@/types/market";
 import type {
   MarketDetail,
   OrderBook,
@@ -173,6 +173,62 @@ export type MarketCatalogueEntry =
 export type MarketCatalogueResponse =
   components["schemas"]["MarketCatalogueResponse"];
 
+type MarketCatalogueEntryWithProbabilityMetadata = MarketCatalogueEntry & {
+  /**
+   * Forward-compatible catalogue metadata: newer engines include the
+   * creator-specified seed probability per outcome so fresh, never-traded
+   * markets do not render as a fabricated 50/50 split.
+   */
+  outcomeProbabilities?: Record<string, number | null | undefined>;
+};
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function probabilityFromMetadata(
+  entry: MarketCatalogueEntryWithProbabilityMetadata,
+  outcomeName: string,
+): number | null {
+  const probabilities = entry.outcomeProbabilities;
+  if (!probabilities) return null;
+
+  const exact = probabilities[outcomeName];
+  if (Number.isFinite(exact)) return clampPercent(Number(exact));
+
+  const match = Object.entries(probabilities).find(
+    ([key]) => key.toLowerCase() === outcomeName.toLowerCase(),
+  );
+  const value = match?.[1];
+  return Number.isFinite(value) ? clampPercent(Number(value)) : null;
+}
+
+function resolveOutcomePercent(
+  entry: MarketCatalogueEntryWithProbabilityMetadata,
+  outcomeName: string,
+  fallbackPercent: number,
+): number {
+  const metadataProbability = probabilityFromMetadata(entry, outcomeName);
+  return metadataProbability ?? fallbackPercent;
+}
+
+function resolveYesNoOdds(
+  entry: MarketCatalogueEntryWithProbabilityMetadata,
+  orderedOutcomes: readonly string[],
+): CurrentOdds {
+  if (Number.isFinite(entry.lastTradedPrice)) {
+    const yes = clampPercent(Number(entry.lastTradedPrice) * 100);
+    return { yes, no: 100 - yes };
+  }
+
+  const yesOutcome = orderedOutcomes.find(
+    (outcome) => outcome.toLowerCase() === "yes",
+  ) ?? "Yes";
+  const evenSplit = 100 / Math.max(orderedOutcomes.length, 1);
+  const yes = resolveOutcomePercent(entry, yesOutcome, evenSplit);
+  return { yes, no: 100 - yes };
+}
+
 function buildMarketsQueryString(params: GetMarketsParams): string {
   const search = new URLSearchParams();
   if (params.sort) search.set("sort", SORT_TO_QUERY[params.sort]);
@@ -194,6 +250,7 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
  * list needs; the mapper just shapes it into the existing `Market` union.
  */
 export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
+  const entryWithProbabilityMetadata = entry as MarketCatalogueEntryWithProbabilityMetadata;
   const outcomes = orderAtomicOutcomes(entry.outcomes ?? []);
   const isYesNo = isYesNoUniverse(outcomes);
 
@@ -227,9 +284,11 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     return {
       ...base,
       type: "yesno",
-      currentOdds: { yes: 50, no: 50 },
+      currentOdds: resolveYesNoOdds(entryWithProbabilityMetadata, outcomes),
     };
   }
+
+  const evenOutcomePercent = 100 / Math.max(outcomes.length, 1);
 
   return {
     ...base,
@@ -237,7 +296,11 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     outcomes: outcomes.map((label) => ({
       id: label,
       label,
-      odds: 100 / Math.max(outcomes.length, 1),
+      odds: resolveOutcomePercent(
+        entryWithProbabilityMetadata,
+        label,
+        evenOutcomePercent,
+      ),
     })),
   };
 }

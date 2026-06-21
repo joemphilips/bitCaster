@@ -108,7 +108,20 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.divisibility).toBe(1_000);
     expect(market.baseMarket).toBe("sats");
     if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 50, no: 50 });
+      expect(market.currentOdds).toEqual({ yes: 62, no: 38 });
+    }
+  });
+
+  it("falls back to creator probability metadata when a yes/no market has no traded price", () => {
+    const market = mapCatalogueEntryToMarket({
+      ...yesNoEntry,
+      lastTradedPrice: null,
+      outcomeProbabilities: { YES: 72, NO: 28 },
+    } as MarketCatalogueEntry & { outcomeProbabilities: Record<string, number> });
+
+    expect(market.type).toBe("yesno");
+    if (market.type === "yesno") {
+      expect(market.currentOdds).toEqual({ yes: 72, no: 28 });
     }
   });
 

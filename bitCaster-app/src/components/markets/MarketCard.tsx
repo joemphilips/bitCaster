@@ -5,6 +5,7 @@ import { formatBtc } from '@/lib/format'
 import { getMarketThumbnail } from '@/lib/markets'
 import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import { useBookmarkStore } from '@/stores/bookmarks'
+import { formatPricePercentage } from '@bitcaster/client-sdk/marketUnits'
 import type {
   Market,
   YesNoMarket,
@@ -127,7 +128,7 @@ function CategoricalOutcomes({
                 {outcome.label}
               </div>
               <div className="text-sm font-bold text-slate-900 dark:text-slate-100 ml-2">
-                {outcome.odds.toFixed(2)}%
+                {formatPricePercentage(outcome.odds, 100)}
               </div>
             </div>
             <div className="flex gap-1.5">
@@ -241,7 +242,7 @@ function TwoDimensionalYesNoGrid({
                 {cell.label}
               </span>
               <span className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                {cell.odds.toFixed(2)}%
+                {formatPricePercentage(cell.odds, 100)}
               </span>
             </button>
           )
@@ -329,7 +330,7 @@ function TwoDimensionalCategoricalGrid({
                   }}
                   className="px-2 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 rounded text-emerald-600 dark:text-emerald-400 font-bold text-[10px] transition-all"
                 >
-                  Y {odds.yes.toFixed(2)}%
+                  Y {formatPricePercentage(odds.yes, 100)}
                 </button>
                 <button
                   onClick={(e) => {
@@ -338,7 +339,7 @@ function TwoDimensionalCategoricalGrid({
                   }}
                   className="px-2 py-1 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 rounded text-rose-600 dark:text-rose-400 font-bold text-[10px] transition-all"
                 >
-                  N {odds.no.toFixed(2)}%
+                  N {formatPricePercentage(odds.no, 100)}
                 </button>
               </div>
             </div>
@@ -454,7 +455,7 @@ export function MarketCard({
           <div className="flex items-center justify-center gap-2 py-2 flex-1">
             <span className="text-sm font-medium text-slate-500 dark:text-slate-400">{t('market.chance')}</span>
             <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-              {yesNoMarket.currentOdds.yes.toFixed(2)}%
+              {formatPricePercentage(yesNoMarket.currentOdds.yes, 100)}
             </span>
           </div>
 
