@@ -62,10 +62,10 @@ test('resolveOutcomeSets maps categorical NO to primitive public route plus inte
   )
 })
 
-test('resolveOutcomeSets maps binary NO to the No primitive outcome', () => {
+test('resolveOutcomeSets maps binary NO to the YES complement', () => {
   assert.deepEqual(resolveOutcomeSets(yesNoMarket, { side: 'no' }), {
-    publicOutcomeSetId: 'No',
-    tokenSide: 'Outcome',
+    publicOutcomeSetId: 'Yes',
+    tokenSide: 'Complement',
     selectedOutcomeSetId: 'No',
     complementOutcomeSetId: 'Yes',
   })

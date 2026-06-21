@@ -82,10 +82,10 @@ export function AppShell({
       </header>
 
       {/* Main Content */}
-      <main className="relative pb-20 md:pb-0">{children}</main>
+      <main className="relative pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-0">{children}</main>
 
       {/* Mobile Bottom Navigation Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 md:hidden">
+      <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 pb-[env(safe-area-inset-bottom)] md:hidden">
         <div className="grid grid-cols-5 h-16">
           {/* Markets */}
           <button

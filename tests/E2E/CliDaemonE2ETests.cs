@@ -3244,7 +3244,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     // amount the assertions expect into the share count the UI wants.
     private static int ToDisplayShares(int faceAmountSats)
     {
-        const int faceSatsPerDisplayShare = 100; // MarketUnitPolicy.DefaultDivisibility
+        const int faceSatsPerDisplayShare = 100; // legacy D=100 market divisibility
         Assert.True(
             faceAmountSats > 0 && faceAmountSats % faceSatsPerDisplayShare == 0,
             $"faceAmountSats={faceAmountSats} is not a positive multiple of {faceSatsPerDisplayShare}; " +

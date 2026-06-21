@@ -49,6 +49,10 @@ type PendingTradeForPromotion = {
   ephemeralPrivkey: string
   baseAsset?: string | null
   divisibility?: number | null
+  side?: 'Buy' | 'Sell'
+  tokenSide?: 'Outcome' | 'Complement'
+  priceSubunits?: number | null
+  amountSubunits?: number | null
 }
 
 type FillLike = {
@@ -115,6 +119,10 @@ export function promoteFillsToActiveSwaps(
       ephemeralPubkeyHex: trade.ephemeralPubkey,
       baseAsset: trade.baseAsset,
       divisibility: trade.divisibility,
+      side: trade.side,
+      tokenSide: trade.tokenSide,
+      priceSubunits: trade.priceSubunits,
+      amountSubunits: trade.amountSubunits,
     })
     promoted += 1
   }

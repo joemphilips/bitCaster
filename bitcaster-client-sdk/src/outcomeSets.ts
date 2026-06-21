@@ -78,7 +78,7 @@ export function resolveOutcomeSets(
 
   const primitiveSetId = canonicalizeOutcomeSet([primitive])
   const tokenSide =
-    market.type === 'categorical' && selection.side === 'no'
+    (market.type === 'yesno' || market.type === 'categorical') && selection.side === 'no'
       ? 'Complement'
       : selection.side === 'lo'
         ? 'Complement'
@@ -125,6 +125,9 @@ function selectedPrimitiveOutcome(
   }
 
   if (selection.side === 'no') {
+    if (market.type === 'yesno') {
+      return findOutcomeByName(universe, 'yes') ?? universe[0] ?? null
+    }
     return (
       findOutcomeByName(universe, 'no') ??
       universe.find((outcome) => outcome.toLowerCase() !== 'yes') ??

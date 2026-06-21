@@ -215,7 +215,7 @@ test("splitCompleteSetWithOperation prepares outputs before posting and complete
 
   const result = await splitCompleteSetWithOperation({
     mintUrl: "https://mint.example",
-    baseAsset: "usd",
+    baseAsset: "sat",
     operationId: "op-1",
     transport,
     conditionId: CONDITION_ID,
@@ -240,7 +240,7 @@ test("splitCompleteSetWithOperation prepares outputs before posting and complete
   assert.equal(record?.state, "completed");
   assert.equal(record?.metadata.conditionId, CONDITION_ID);
   assert.equal(record?.metadata.amountSats, 100);
-  assert.equal(record?.metadata.baseAsset, "usd");
+  assert.equal(record?.metadata.baseAsset, "sat");
   assert.deepEqual(record?.metadata.outcomeCollectionKeysets, {
     YES: "keyset-yes",
     NO: "keyset-no",

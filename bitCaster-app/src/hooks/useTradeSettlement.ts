@@ -278,6 +278,7 @@ async function prepareRegularCollateralForCtfSplit(input: {
 }
 
 const tradeCreatedInFlight = new Set<string>();
+const tradeCreatedFingerprints = new Map<string, string>();
 const joinedTradeIds = new Set<string>();
 const JOIN_ORDER_RETRY_MS = 1_000;
 const JOIN_TRADE_RETRY_MS = 1_000;
@@ -561,6 +562,19 @@ async function handleTradeCreated(
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
 ): Promise<void> {
+  const fingerprint = tradeCreatedFingerprint(payload);
+  const existingFingerprint = tradeCreatedFingerprints.get(payload.tradeId);
+  if (existingFingerprint && existingFingerprint !== fingerprint) {
+    useActiveSwapsStore
+      .getState()
+      .setStep(
+        payload.tradeId,
+        "failed",
+        "TradeCreated payload changed for an existing trade.",
+      );
+    return;
+  }
+  tradeCreatedFingerprints.set(payload.tradeId, fingerprint);
   if (tradeCreatedInFlight.has(payload.tradeId)) return;
   tradeCreatedInFlight.add(payload.tradeId);
   try {
@@ -585,11 +599,38 @@ async function handleTradeCreatedOnce(
   }
   if (!swap) return;
 
-  const unitMismatch = tradeCreatedUnitMismatch(payload, swap);
-  if (unitMismatch) {
+  const decision = decideTradeCreated({
+    ownEphemeralPubkey: swap.ephemeralPubkeyHex,
+    sellerPubkey: payload.sellerPubkey,
+    buyerPubkey: payload.buyerPubkey,
+    sellerLocktime: payload.sellerLocktime,
+    buyerLocktime: payload.buyerLocktime,
+    settlementKind: payload.settlementKind,
+    sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId,
+    sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId,
+    baseAsset: payload.baseAsset,
+    divisibility: payload.divisibility,
+    expectedBaseAsset: swap.baseAsset,
+    expectedDivisibility: swap.divisibility,
+    expectedOrder:
+      swap.side && swap.priceSubunits != null && swap.amountSubunits != null
+        ? {
+            side: swap.side,
+            tokenSide: swap.tokenSide,
+            priceSubunits: swap.priceSubunits,
+            amountSubunits: swap.amountSubunits,
+          }
+        : null,
+    requireExpectedOrder: true,
+    outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
+    quotePaymentSats: payload.quotePaymentSats,
+    outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits,
+    quotePaymentSubunits: payload.quotePaymentSubunits,
+  });
+  if (!decision.accepted) {
     useActiveSwapsStore
       .getState()
-      .setStep(payload.tradeId, "failed", unitMismatch);
+      .setStep(payload.tradeId, "failed", decision.error);
     return;
   }
 
@@ -604,24 +645,10 @@ async function handleTradeCreatedOnce(
     }
   }
 
-  const decision = decideTradeCreated({
-    ownEphemeralPubkey: swap.ephemeralPubkeyHex,
-    sellerPubkey: payload.sellerPubkey,
-    buyerPubkey: payload.buyerPubkey,
-    sellerLocktime: payload.sellerLocktime,
-    buyerLocktime: payload.buyerLocktime,
-    settlementKind: payload.settlementKind,
-    sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId,
-    sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId,
-    outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
-    quotePaymentSats: payload.quotePaymentSats,
-  });
-  if (!decision.accepted) {
-    useActiveSwapsStore
-      .getState()
-      .setStep(payload.tradeId, "failed", decision.error);
-    return;
-  }
+  const latest = useActiveSwapsStore.getState().byTradeId[payload.tradeId];
+  if (!latest || latest.role || latest.step === "failed") return;
+  swap = latest;
+
   useActiveSwapsStore.getState().setRoleAndCounterparty(
     payload.tradeId,
     decision.role,
@@ -632,6 +659,7 @@ async function handleTradeCreatedOnce(
     },
     {
       outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
+      outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits ?? undefined,
       quotePaymentSats: payload.quotePaymentSats,
       baseAsset: payload.baseAsset,
       divisibility: payload.divisibility,
@@ -645,6 +673,26 @@ async function handleTradeCreatedOnce(
   if (decision.role === "seller") {
     void runSellerSendOpening(payload.tradeId, sendSwapMessage, mintUrl);
   }
+}
+
+function tradeCreatedFingerprint(payload: TradeCreatedPayload): string {
+  return JSON.stringify({
+    tradeId: payload.tradeId,
+    marketId: payload.marketId ?? null,
+    sellerPubkey: payload.sellerPubkey,
+    buyerPubkey: payload.buyerPubkey,
+    sellerLocktime: payload.sellerLocktime,
+    buyerLocktime: payload.buyerLocktime,
+    settlementKind: payload.settlementKind ?? null,
+    sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId ?? null,
+    sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId ?? null,
+    outcomeFaceAmountSats: payload.outcomeFaceAmountSats ?? null,
+    outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits ?? null,
+    quotePaymentSats: payload.quotePaymentSats ?? null,
+    quotePaymentSubunits: payload.quotePaymentSubunits ?? null,
+    baseAsset: normalizeMarketBaseAsset(payload.baseAsset),
+    divisibility: normalizeMarketDivisibility(payload.divisibility),
+  });
 }
 
 function promotePendingTradeFromTradeCreated(
@@ -662,6 +710,10 @@ function promotePendingTradeFromTradeCreated(
     ephemeralPubkeyHex: pendingTrade.ephemeralPubkey,
     baseAsset: pendingTrade.baseAsset,
     divisibility: pendingTrade.divisibility,
+    side: pendingTrade.side,
+    tokenSide: pendingTrade.tokenSide,
+    priceSubunits: pendingTrade.priceSubunits,
+    amountSubunits: pendingTrade.amountSubunits,
   });
 
   return useActiveSwapsStore.getState().byTradeId[payload.tradeId] ?? null;
@@ -728,25 +780,6 @@ function tradeCreatedMatchesPendingOrderPath(
   return (
     pendingTrade.marketId === `${market.conditionId}-${expectedOutcomeSetId}`
   );
-}
-
-function tradeCreatedUnitMismatch(
-  payload: TradeCreatedPayload,
-  swap: ActiveSwap,
-): string | null {
-  const expectedBaseAsset = normalizeMarketBaseAsset(swap.baseAsset);
-  const actualBaseAsset = normalizeMarketBaseAsset(payload.baseAsset);
-  if (expectedBaseAsset !== actualBaseAsset) {
-    return `Trade unit mismatch: expected ${expectedBaseAsset}, received ${actualBaseAsset}.`;
-  }
-
-  const expectedDivisibility = normalizeMarketDivisibility(swap.divisibility);
-  const actualDivisibility = normalizeMarketDivisibility(payload.divisibility);
-  if (expectedDivisibility !== actualDivisibility) {
-    return `Trade divisibility mismatch: expected ${expectedDivisibility}, received ${actualDivisibility}.`;
-  }
-
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -829,11 +862,12 @@ async function prepareDirectSellerOpening(
       ? existingOperation.inputs
       : await loadProofsForLock(
           mintUrl,
-          swap.outcomeFaceAmountSats ?? undefined,
+          swap.outcomeFaceAmountSubunits ?? swap.outcomeFaceAmountSats ?? undefined,
           swap.marketId,
           swap.baseAsset,
         );
   const amountSats =
+    swap.outcomeFaceAmountSubunits ??
     swap.outcomeFaceAmountSats ??
     proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
   const outcome = outcomeMetadataForMarket(swap.marketId);
@@ -858,7 +892,7 @@ async function prepareMintSellerOpening(
   mintUrl: string,
   split: MintSellerSplit,
 ): Promise<SellerOpening> {
-  const amountSats = swap.outcomeFaceAmountSats;
+  const amountSats = swap.outcomeFaceAmountSubunits ?? swap.outcomeFaceAmountSats;
   if (
     amountSats === null ||
     !Number.isSafeInteger(amountSats) ||

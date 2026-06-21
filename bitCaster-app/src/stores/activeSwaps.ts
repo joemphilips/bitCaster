@@ -90,10 +90,16 @@ export interface ActiveSwap {
   buyerLocktime: number | null
   /** Face amount of outcome tokens the seller locks. */
   outcomeFaceAmountSats: number | null
+  /** Canonical face amount of outcome tokens the seller locks, in market subunits. */
+  outcomeFaceAmountSubunits: number | null
   /** Regular sats the buyer locks. */
   quotePaymentSats: number | null
   baseAsset: string | null
   divisibility: number | null
+  side?: 'Buy' | 'Sell'
+  tokenSide?: 'Outcome' | 'Complement'
+  priceSubunits?: number | null
+  amountSubunits?: number | null
   quotePaymentSubunits: number | null
   settlementKind: string | null
   sellerKeepOutcomeSetId: string | null
@@ -118,6 +124,10 @@ interface ActiveSwapsState {
     ephemeralPubkeyHex: string
     baseAsset?: string | null
     divisibility?: number | null
+    side?: 'Buy' | 'Sell'
+    tokenSide?: 'Outcome' | 'Complement'
+    priceSubunits?: number | null
+    amountSubunits?: number | null
   }) => void
   setRoleAndCounterparty: (
     tradeId: string,
@@ -126,6 +136,7 @@ interface ActiveSwapsState {
     locktimes: { sellerLocktime: number; buyerLocktime: number },
     settlementAmounts?: {
       outcomeFaceAmountSats?: number
+      outcomeFaceAmountSubunits?: number
       quotePaymentSats?: number
       baseAsset?: string | null
       divisibility?: number | null
@@ -168,6 +179,10 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
     ephemeralPubkeyHex,
     baseAsset,
     divisibility,
+    side,
+    tokenSide,
+    priceSubunits,
+    amountSubunits,
   }) => {
     set((s) => {
       if (s.byTradeId[tradeId]) return s
@@ -182,9 +197,14 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
         sellerLocktime: null,
         buyerLocktime: null,
         outcomeFaceAmountSats: null,
+        outcomeFaceAmountSubunits: null,
         quotePaymentSats: null,
         baseAsset: baseAsset ?? null,
         divisibility: divisibility ?? null,
+        side,
+        tokenSide,
+        priceSubunits: priceSubunits ?? null,
+        amountSubunits: amountSubunits ?? null,
         quotePaymentSubunits: null,
         settlementKind: null,
         sellerKeepOutcomeSetId: null,
@@ -223,6 +243,9 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
             outcomeFaceAmountSats:
               settlementAmounts?.outcomeFaceAmountSats ??
               existing.outcomeFaceAmountSats,
+            outcomeFaceAmountSubunits:
+              settlementAmounts?.outcomeFaceAmountSubunits ??
+              existing.outcomeFaceAmountSubunits,
             quotePaymentSats:
               settlementAmounts?.quotePaymentSats ?? existing.quotePaymentSats,
             baseAsset:

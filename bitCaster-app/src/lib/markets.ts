@@ -680,6 +680,7 @@ export function mapSnapshotToOrderBook(snapshot: OrderBookSnapshot): OrderBook {
     bids,
     asks,
     spread: snapshot.spread ?? 0,
+    depthLimit: snapshot.depthLimit ?? undefined,
   };
 }
 

@@ -8,7 +8,6 @@ import {
 } from '@bitcaster-market/client-sdk/tradeFlow'
 import {
   normalizeMarketBaseAsset,
-  normalizeMarketDivisibility,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type {
@@ -111,6 +110,9 @@ export interface LocalOrderRecord {
   orderId: string
   marketId: string
   tokenSide?: 'Outcome' | 'Complement'
+  side?: 'Buy' | 'Sell'
+  priceSubunits?: number
+  amountSubunits?: number
   status: string
   ephemeralPubkey?: string
   preflightSplit?: LocalOrderPreflightSplit
@@ -151,6 +153,7 @@ export interface LocalSwapRecord {
   buyerLocktime?: number
   fillAmountSats?: number
   outcomeFaceAmountSats?: number
+  outcomeFaceAmountSubunits?: number
   quotePaymentSats?: number
   baseAsset?: string | null
   divisibility?: number
@@ -194,6 +197,7 @@ export interface DaemonTradeCreatedPayload {
   marketId: string
   fillAmountSats?: number
   outcomeFaceAmountSats?: number
+  outcomeFaceAmountSubunits?: number
   quotePaymentSats?: number
   baseAsset?: string | null
   divisibility?: number
@@ -633,6 +637,9 @@ export async function recordSubmittedOrder(
   engineResponse: unknown,
   preflightSplit?: LocalOrderPreflightSplit | null,
   tokenSide?: 'Outcome' | 'Complement',
+  side?: 'Buy' | 'Sell',
+  priceSubunits?: number,
+  amountSubunits?: number,
 ): Promise<LocalOrderRecord> {
   const orderId = readStringProperty(engineResponse, 'orderId')
   if (!orderId) {
@@ -645,6 +652,9 @@ export async function recordSubmittedOrder(
     ephemeralPubkey,
     preflightSplit,
     tokenSide,
+    side,
+    priceSubunits,
+    amountSubunits,
   )
 }
 
@@ -682,6 +692,9 @@ function upsertOrderFromEngine(
   ephemeralPubkey?: string,
   preflightSplit?: LocalOrderPreflightSplit | null,
   tokenSide?: 'Outcome' | 'Complement',
+  side?: 'Buy' | 'Sell',
+  priceSubunits?: number,
+  amountSubunits?: number,
 ): Promise<LocalOrderRecord> {
   return updateState((state, now) => {
     const existing = state.orders[orderId]
@@ -697,10 +710,16 @@ function upsertOrderFromEngine(
       ]),
     ]
     const nextTokenSide = tokenSide ?? existing?.tokenSide
+    const nextSide = side ?? existing?.side
+    const nextPriceSubunits = priceSubunits ?? existing?.priceSubunits
+    const nextAmountSubunits = amountSubunits ?? existing?.amountSubunits
     const record: LocalOrderRecord = {
       orderId,
       marketId,
       ...(nextTokenSide ? { tokenSide: nextTokenSide } : {}),
+      ...(nextSide ? { side: nextSide } : {}),
+      ...(nextPriceSubunits != null ? { priceSubunits: nextPriceSubunits } : {}),
+      ...(nextAmountSubunits != null ? { amountSubunits: nextAmountSubunits } : {}),
       status,
       ephemeralPubkey: ephemeralPubkey ?? existing?.ephemeralPubkey,
       ...(baseAsset ? { baseAsset } : {}),
@@ -728,6 +747,7 @@ function upsertOrderFromEngine(
         buyerLocktime: swap?.buyerLocktime,
         fillAmountSats: swap?.fillAmountSats,
         outcomeFaceAmountSats: swap?.outcomeFaceAmountSats,
+        outcomeFaceAmountSubunits: swap?.outcomeFaceAmountSubunits,
         quotePaymentSats: swap?.quotePaymentSats,
         baseAsset: swap?.baseAsset,
         divisibility: swap?.divisibility,
@@ -774,12 +794,27 @@ export async function recordTradeCreated(
       settlementKind: payload.settlementKind,
       sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId,
       sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId,
+      baseAsset: payload.baseAsset,
+      divisibility: payload.divisibility,
+      expectedBaseAsset: order?.baseAsset,
+      expectedDivisibility: order?.divisibility,
+      expectedOrder:
+        order?.side && order.priceSubunits != null && order.amountSubunits != null
+          ? {
+              side: order.side,
+              tokenSide: order.tokenSide,
+              priceSubunits: order.priceSubunits,
+              amountSubunits: order.amountSubunits,
+            }
+          : null,
+      requireExpectedOrder: true,
       outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
       quotePaymentSats: payload.quotePaymentSats,
+      outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits,
+      quotePaymentSubunits: payload.quotePaymentSubunits,
     })
-    const unitError = order ? tradeCreatedUnitMismatch(order, payload) : null
     const protocolError = decision.accepted ? null : decision.error
-    const accepted = decision.accepted && unitError === null
+    const accepted = decision.accepted
 
     const record: LocalSwapRecord = {
       tradeId: payload.tradeId,
@@ -792,6 +827,8 @@ export async function recordTradeCreated(
       fillAmountSats: payload.fillAmountSats ?? existing?.fillAmountSats,
       outcomeFaceAmountSats:
         payload.outcomeFaceAmountSats ?? existing?.outcomeFaceAmountSats,
+      outcomeFaceAmountSubunits:
+        payload.outcomeFaceAmountSubunits ?? existing?.outcomeFaceAmountSubunits,
       quotePaymentSats: payload.quotePaymentSats ?? existing?.quotePaymentSats,
       baseAsset: payload.baseAsset ?? order?.baseAsset ?? existing?.baseAsset ?? null,
       divisibility: payload.divisibility ?? order?.divisibility ?? existing?.divisibility,
@@ -810,7 +847,7 @@ export async function recordTradeCreated(
       sellerPreSigsHex: existing?.sellerPreSigsHex,
       engineState: existing?.engineState,
       step: accepted ? promoteTradeCreatedStep(existing?.step) : 'failed',
-      error: unitError ?? protocolError ?? existing?.error,
+      error: protocolError ?? existing?.error,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
@@ -825,25 +862,6 @@ function promoteTradeCreatedStep(
   return existingStep === undefined || existingStep === 'awaiting-trade-created'
     ? 'opened'
     : existingStep
-}
-
-function tradeCreatedUnitMismatch(
-  order: LocalOrderRecord,
-  payload: DaemonTradeCreatedPayload,
-): string | null {
-  const expectedBaseAsset = normalizeMarketBaseAsset(order.baseAsset)
-  const actualBaseAsset = normalizeMarketBaseAsset(payload.baseAsset)
-  if (expectedBaseAsset !== actualBaseAsset) {
-    return `Trade unit mismatch: expected ${expectedBaseAsset}, received ${actualBaseAsset}.`
-  }
-
-  const expectedDivisibility = normalizeMarketDivisibility(order.divisibility)
-  const actualDivisibility = normalizeMarketDivisibility(payload.divisibility)
-  if (expectedDivisibility !== actualDivisibility) {
-    return `Trade divisibility mismatch: expected ${expectedDivisibility}, received ${actualDivisibility}.`
-  }
-
-  return null
 }
 
 export async function recordSwapMessage(

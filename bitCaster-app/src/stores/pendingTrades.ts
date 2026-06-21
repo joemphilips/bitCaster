@@ -32,6 +32,10 @@ export interface PendingTrade {
   /** Market base asset and denominator captured from the accepted order. */
   baseAsset?: string | null
   divisibility?: number | null
+  side?: 'Buy' | 'Sell'
+  tokenSide?: 'Outcome' | 'Complement'
+  priceSubunits?: number | null
+  amountSubunits?: number | null
   /** Reserved complete-set proofs created before a mint-maker buy rests. */
   preflightSplit?: PendingPreflightSplit
 }

@@ -957,15 +957,20 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
     price,
   });
 
-  it('keeps the full series for the "all" timeframe', () => {
+  it('caps the "all" timeframe to the newest retained points', () => {
     const history = {
       timeframe: "all" as const,
-      data: [
-        makePoint("2026-01-01T00:00:00Z", 10),
-        makePoint("2026-05-01T00:00:00Z", 20),
-      ],
+      data: Array.from({ length: 1002 }, (_, index) =>
+        makePoint(
+          new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+          index,
+        ),
+      ),
     };
-    expect(windowPriceHistory(history).data).toHaveLength(2);
+    const result = windowPriceHistory(history);
+    expect(result.data).toHaveLength(1000);
+    expect(result.data[0].price).toBe(2);
+    expect(result.data.at(-1)?.price).toBe(1001);
   });
 
   it("trims points older than the window, anchored on the newest sample", () => {
@@ -1030,6 +1035,8 @@ describe("price history normalization", () => {
               timestamp: "2026-05-25T10:00:00Z",
               price: 500,
               volumeSats: 10,
+              volumeSubunits: 10,
+              source: "fill",
             },
           ],
         },

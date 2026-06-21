@@ -20,6 +20,7 @@ test('parseTradeCreatedPayload accepts current TradeCreated contract shape', () 
       'sat',
       100,
       42,
+      100,
     ),
     {
       tradeId: 'trade-1',
@@ -37,6 +38,7 @@ test('parseTradeCreatedPayload accepts current TradeCreated contract shape', () 
       baseAsset: 'sat',
       divisibility: 100,
       quotePaymentSubunits: 42,
+      outcomeFaceAmountSubunits: 100,
     },
   )
 })

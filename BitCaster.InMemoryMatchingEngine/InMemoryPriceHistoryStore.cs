@@ -5,7 +5,32 @@ namespace BitCaster.InMemoryMatchingEngine;
 
 public sealed class InMemoryPriceHistoryStore
 {
+    public const int MaxPointsPerOutcomeResponse = 1000;
+
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, List<MarketPriceHistoryPoint>>> _ticks = new();
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, MarketPriceHistoryPoint>> _initial = new();
+
+    public void SeedInitialPriceHistory(
+        string conditionId,
+        IEnumerable<(string OutcomeId, int ProbabilityPercent)> outcomes,
+        int divisibility,
+        DateTimeOffset timestamp)
+    {
+        var byOutcome = _initial.GetOrAdd(
+            conditionId,
+            _ => new ConcurrentDictionary<string, MarketPriceHistoryPoint>(StringComparer.Ordinal));
+
+        foreach (var outcome in outcomes)
+        {
+            var price = Math.Clamp(outcome.ProbabilityPercent * divisibility / 100, 1, divisibility - 1);
+            byOutcome[outcome.OutcomeId] = new MarketPriceHistoryPoint(
+                price: price,
+                source: MarketPriceHistoryPointSource.Initial,
+                timestamp: timestamp,
+                volumeSats: 0,
+                volumeSubunits: 0);
+        }
+    }
 
     public void RecordFill(string marketId, Fill fill)
     {
@@ -20,9 +45,11 @@ public sealed class InMemoryPriceHistoryStore
         lock (points)
         {
             points.Add(new MarketPriceHistoryPoint(
-                timestamp: fill.FilledAt,
                 price: fill.ExecutionPrice,
-                volumeSats: fill.AmountSats));
+                source: MarketPriceHistoryPointSource.Fill,
+                timestamp: fill.FilledAt,
+                volumeSats: fill.AmountSats,
+                volumeSubunits: fill.AmountSats));
             if (points.Count > 1000)
             {
                 points.RemoveRange(0, points.Count - 1000);
@@ -41,24 +68,70 @@ public sealed class InMemoryPriceHistoryStore
             "all" => (DateTimeOffset?)null,
             _ => nowUtc - TimeSpan.FromDays(7)
         };
-        if (!_ticks.TryGetValue(conditionId, out var byOutcome))
+        _ticks.TryGetValue(conditionId, out var byOutcome);
+        _initial.TryGetValue(conditionId, out var initialByOutcome);
+        if (byOutcome is null && initialByOutcome is null)
         {
             return new MarketPriceHistoryResponse(conditionId, [], ToResponseTimeframe(timeframe));
         }
 
-        var outcomes = byOutcome
-            .OrderBy(entry => entry.Key, StringComparer.Ordinal)
-            .Select(entry =>
+        var outcomeIds = new HashSet<string>(StringComparer.Ordinal);
+        if (initialByOutcome is not null)
+        {
+            foreach (var outcomeId in initialByOutcome.Keys) outcomeIds.Add(outcomeId);
+        }
+        if (byOutcome is not null)
+        {
+            foreach (var outcomeId in byOutcome.Keys) outcomeIds.Add(outcomeId);
+        }
+
+        var outcomes = outcomeIds
+            .OrderBy(outcomeId => outcomeId, StringComparer.Ordinal)
+            .Select(outcomeId =>
             {
-                lock (entry.Value)
+                var points = new List<MarketPriceHistoryPoint>();
+                if (initialByOutcome?.TryGetValue(outcomeId, out var initial) == true)
                 {
-                    return new MarketOutcomePriceHistory(
-                        entry.Value
-                            .Where(point => since is null || point.Timestamp >= since)
-                            .OrderBy(point => point.Timestamp)
-                            .ToList(),
-                        entry.Key);
+                    points.Add(since is not null && initial.Timestamp < since.Value
+                        ? new MarketPriceHistoryPoint(
+                            price: initial.Price,
+                            source: initial.Source,
+                            timestamp: since.Value,
+                            volumeSats: initial.VolumeSats,
+                            volumeSubunits: initial.VolumeSubunits)
+                        : initial);
                 }
+                if (byOutcome?.TryGetValue(outcomeId, out var fills) == true)
+                {
+                    lock (fills)
+                    {
+                        points.AddRange(fills.Where(point => since is null || point.Timestamp >= since));
+                    }
+                }
+                var fillCapacity = initialByOutcome?.ContainsKey(outcomeId) == true
+                    ? MaxPointsPerOutcomeResponse - 1
+                    : MaxPointsPerOutcomeResponse;
+                var maxPoints = initialByOutcome?.ContainsKey(outcomeId) == true
+                    ? fillCapacity + 1
+                    : fillCapacity;
+                if (points.Count > maxPoints)
+                {
+                    var initialPoint = points.FirstOrDefault(point => point.Source == MarketPriceHistoryPointSource.Initial);
+                    var newestFills = points
+                        .Where(point => point.Source != MarketPriceHistoryPointSource.Initial)
+                        .OrderBy(point => point.Timestamp)
+                        .TakeLast(fillCapacity)
+                        .ToList();
+                    points = initialPoint is null
+                        ? newestFills
+                        : newestFills.Prepend(initialPoint).ToList();
+                }
+                return new MarketOutcomePriceHistory(
+                    points
+                        .OrderBy(point => point.Timestamp)
+                        .ThenBy(point => point.Source)
+                        .ToList(),
+                    outcomeId);
             })
             .Where(series => series.Data.Count > 0)
             .ToList();

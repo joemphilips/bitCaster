@@ -20,5 +20,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\BitCaster.MatchingEngine.Contracts\BitCaster.MatchingEngine.Contracts.csproj" />
+    <ProjectReference Include="..\..\BitCaster.InMemoryMatchingEngine\BitCaster.InMemoryMatchingEngine.csproj" />
   </ItemGroup>
 </Project>

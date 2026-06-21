@@ -26,6 +26,8 @@ import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 const cashuMockState = vi.hoisted(() => ({
   failNextFeeLookup: false,
   loadedKeysets: [] as Array<{ keys: Record<number, string> }>,
+  keysetUnits: new Map<string, string>(),
+  walletUnits: [] as string[],
   prepareSwapToSendAmounts: [] as number[],
   prepareSwapToSendConfigs: [] as unknown[],
   prepareSwapToSendCalls: 0,
@@ -186,7 +188,7 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
           keysets: [
             {
               id: keysetId,
-              unit: 'sat',
+              unit: cashuMockState.keysetUnits.get(keysetId) ?? 'sat',
               active: true,
               keys: { 1: '02'.padEnd(66, '1') },
             },
@@ -218,9 +220,10 @@ vi.mock('@cashu/cashu-ts', async (importOriginal) => {
         }),
       }
     }),
-    Wallet: vi.fn(function MockWallet() {
+    Wallet: vi.fn(function MockWallet(_mint: unknown, options?: { unit?: string }) {
       const keyset = { keys: {} }
       cashuMockState.loadedKeysets.push(keyset)
+      cashuMockState.walletUnits.push(options?.unit ?? 'sat')
       return {
         loadMint: vi.fn().mockResolvedValue(undefined),
         keyChain: {
@@ -537,7 +540,7 @@ vi.mock('../../../../cashu-ts/lib/cashu-ts.es.js', () => {
           keysets: [
             {
               id: keysetId,
-              unit: 'sat',
+              unit: cashuMockState.keysetUnits.get(keysetId) ?? 'sat',
               active: true,
               keys: { 1: '02'.padEnd(66, '1') },
             },
@@ -570,7 +573,8 @@ vi.mock('../../../../cashu-ts/lib/cashu-ts.es.js', () => {
       }
     }),
     OutputData: MockCtfOutputData,
-    Wallet: vi.fn(function MockCtfWallet() {
+    Wallet: vi.fn(function MockCtfWallet(_mint: unknown, options?: { unit?: string }) {
+      cashuMockState.walletUnits.push(options?.unit ?? 'sat')
       return {
         checkProofsStates: vi.fn().mockImplementation(async (proofs: Proof[]) =>
           proofs.map((p) => ({
@@ -646,6 +650,8 @@ const proofOperationStore: ProofOperationStore = {
 beforeEach(() => {
   cashuMockState.failNextFeeLookup = false
   cashuMockState.loadedKeysets.length = 0
+  cashuMockState.keysetUnits.clear()
+  cashuMockState.walletUnits.length = 0
   cashuMockState.prepareSwapToSendAmounts.length = 0
   cashuMockState.prepareSwapToSendConfigs.length = 0
   cashuMockState.prepareSwapToSendCalls = 0
@@ -776,6 +782,22 @@ describe('buyerPrepareSwap', () => {
     expect(buyerOut.sellerPreSigsHex).toHaveLength(1)
   })
 
+  it('uses the buyer source-proof unit when locking quote payment proofs', async () => {
+    cashuMockState.keysetUnits.set('usd-buyer-keyset', 'usd')
+    const { sellerCtx, buyerCtx } = swapContexts('trade-buyer-usd-lock')
+    const sellerOut = await sellerPrepareSwap(sellerCtx, [proof('alice-1', 7)])
+
+    await buyerPrepareSwap(
+      buyerCtx,
+      sellerOut.adaptorPointCipher,
+      sellerOut.lockedProofsCipher,
+      [proof('bob-usd-1', 7, 'usd-buyer-keyset')],
+      7,
+    )
+
+    expect(cashuMockState.walletUnits).toContain('usd')
+  })
+
   it('rejects raw outcome proofs passed to the prelocked seller opening', async () => {
     const { sellerCtx } = swapContexts('trade-prelocked-raw-proof')
 
@@ -786,6 +808,36 @@ describe('buyerPrepareSwap', () => {
 })
 
 describe('conditionalKeysetSwap', () => {
+  it('uses the source conditional keyset unit for conditional refresh outputs', async () => {
+    cashuMockState.keysetUnits.set('usd-conditional-keyset', 'usd')
+
+    await conditionalKeysetSwap(
+      'https://mint.test',
+      [proof('conditional-usd-source', 100, 'usd-conditional-keyset')],
+      [{ label: 'keep', kind: 'random', amount: 100 }],
+    )
+
+    expect(cashuMockState.walletUnits).toContain('usd')
+  })
+
+  it('fails closed before mint swap when conditional source proof units are mixed', async () => {
+    cashuMockState.keysetUnits.set('usd-conditional-keyset', 'usd')
+    cashuMockState.keysetUnits.set('sat-conditional-keyset', 'sat')
+
+    await expect(
+      conditionalKeysetSwap(
+        'https://mint.test',
+        [
+          proof('conditional-usd-source', 100, 'usd-conditional-keyset'),
+          proof('conditional-sat-source', 100, 'sat-conditional-keyset'),
+        ],
+        [{ label: 'keep', kind: 'random', amount: 200 }],
+      ),
+    ).rejects.toThrow(/single unit/)
+
+    expect(cashuMockState.mintSwapCalls).toBe(0)
+  })
+
   it('mints every output on the source conditional keyset and persists the operation', async () => {
     const outputs = await conditionalKeysetSwap(
       'https://mint.test',
