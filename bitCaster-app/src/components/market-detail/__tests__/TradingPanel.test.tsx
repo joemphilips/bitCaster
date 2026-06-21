@@ -44,17 +44,20 @@ function makeMarket(
 }
 
 describe('TradingPanel', () => {
-  it('uses a share input while keeping market base-asset labels for payouts', () => {
+  it('uses a share input and only shows market price plus expected cost', () => {
     const tradePreview: TradePreview = {
       amount: 50,
       predictedOdds: 50,
       priceImpact: 0,
-      quoteSats: 1_500,
+      averageExecutionPrice: 30,
+      executableShares: 25,
+      hasExecutableLiquidity: true,
+      quoteSats: 150_000,
       mintFee: 0,
       potentialPayout: 500,
       creatorFee: 1,
       engineScoreFeeSats: 0,
-      totalCost: 1_501,
+      totalCost: 150_001,
     }
 
     render(
@@ -71,13 +74,21 @@ describe('TradingPanel', () => {
 
     expect(screen.getByText('Shares')).toBeInTheDocument()
     expect(screen.getByText('1 share = $1.00')).toBeInTheDocument()
+    expect(screen.getByText('Price per share')).toBeInTheDocument()
+    expect(screen.getByTestId('trade-total-cost')).toHaveTextContent('$1.50')
     expect(
       screen.getByRole('button', { name: 'Buy YES for 50 shares' }),
     ).toBeInTheDocument()
-    expect(screen.getByText('0 sats')).toBeInTheDocument()
+    expect(screen.queryByText('Executable shares')).not.toBeInTheDocument()
+    expect(screen.queryByText('Market Creator fee (1%)')).not.toBeInTheDocument()
+    expect(screen.queryByText('Mint fee')).not.toBeInTheDocument()
+    expect(screen.queryByText('Engine Score fee')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Gross settlement payout per filled share if this outcome wins'),
+    ).not.toBeInTheDocument()
   })
 
-  it('formats sat-denominated preview values from msat subunits', () => {
+  it('formats sat-denominated limit preview as price plus expected cost only', () => {
     const preview: LimitOrderPreview = {
       limitPrice: 30,
       amount: 50,
@@ -104,15 +115,20 @@ describe('TradingPanel', () => {
       />,
     )
 
+    expect(screen.getByText('Price per share')).toBeInTheDocument()
     expect(screen.getByText('30 (30.00%)')).toBeInTheDocument()
-    expect(screen.getByText('Shares you receive if order fills')).toBeInTheDocument()
-    expect(screen.getByText('Market Creator fee (1%)')).toBeInTheDocument()
-    expect(screen.getAllByText('0 sats')).toHaveLength(3)
+    expect(screen.getByText('Total expected cost')).toBeInTheDocument()
     expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1.5 sats')
-    expect(screen.getByTestId('limit-payout-if-win')).toHaveTextContent('0.5 sats')
+    expect(screen.queryByText('Shares you receive if order fills')).not.toBeInTheDocument()
+    expect(screen.queryByText('Market Creator fee (1%)')).not.toBeInTheDocument()
+    expect(screen.queryByText('Mint fee')).not.toBeInTheDocument()
+    expect(screen.queryByText('Engine Score fee')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Gross settlement payout per filled share if this outcome wins'),
+    ).not.toBeInTheDocument()
   })
 
-  it('shows fee tooltips on each fee row', () => {
+  it('does not show fee rows in the simplified limit preview', () => {
     const preview: LimitOrderPreview = {
       limitPrice: 30,
       amount: 50,
@@ -140,14 +156,14 @@ describe('TradingPanel', () => {
     )
 
     expect(
-      screen.getByTitle('Paid to the market creator as a reward for creating this market'),
-    ).toBeInTheDocument()
+      screen.queryByTitle('Paid to the market creator as a reward for creating this market'),
+    ).not.toBeInTheDocument()
     expect(
-      screen.getByTitle('Charged by the Cashu mint for processing the transaction'),
-    ).toBeInTheDocument()
+      screen.queryByTitle('Charged by the Cashu mint for processing the transaction'),
+    ).not.toBeInTheDocument()
     expect(
-      screen.getByTitle('Charged by the matching engine for order execution'),
-    ).toBeInTheDocument()
+      screen.queryByTitle('Charged by the matching engine for order execution'),
+    ).not.toBeInTheDocument()
   })
 
   it('keeps the share input as an integer of at least one when editing', () => {

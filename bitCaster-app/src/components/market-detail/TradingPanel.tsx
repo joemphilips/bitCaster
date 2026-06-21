@@ -15,7 +15,7 @@ import { useTranslation } from 'react-i18next'
 import {
   formatMarketSubunits,
   formatPricePercentage,
-  formatWholeShareFaceValue,
+  formatShareFace,
   marketSubunitLabel,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
@@ -448,100 +448,30 @@ function formatPriceWithProbability(price: number, divisibility: number): string
   return `${price.toLocaleString()} (${formatPricePercentage(price, divisibility)})`
 }
 
-function formatEngineScoreFee(
-  amountSats: number | null,
-  shownAtConfirmation: string,
-): string {
-  if (amountSats == null) return shownAtConfirmation
-  return `${Math.trunc(amountSats).toLocaleString()} sats`
-}
-
-function FeeRow({
-  label,
-  tooltip,
-  value,
-}: {
-  label: string
-  tooltip: string
-  value: string
-}) {
-  return (
-    <div className="flex justify-between text-sm" title={tooltip} aria-label={`${label}: ${tooltip}`}>
-      <span className="text-slate-500 dark:text-slate-400">{label}</span>
-      <span className="font-medium text-slate-600 dark:text-slate-300">
-        {value}
-      </span>
-    </div>
-  )
-}
-
 function LimitOrderPreviewSection({
   preview,
-  feePercent,
   divisibility,
   formatAmount,
 }: {
   preview: LimitOrderPreview
-  feePercent: number
   divisibility: number
   formatAmount: (amount: number) => string
 }) {
   const { t } = useTranslation()
-  const formatScoreFee = () =>
-    formatEngineScoreFee(
-      preview.engineScoreFeeSats,
-      t('trade.engineScoreFeeShownAtConfirmation'),
-    )
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
       <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">{t('trade.limitPrice')}</span>
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.pricePerShareLabel')}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
           {formatPriceWithProbability(preview.limitPrice, divisibility)}
         </span>
       </div>
-      <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesIfFilled')}</span>
-        <span className="font-medium text-slate-600 dark:text-slate-300">
-          {(preview.sharesIfFilled ?? preview.amount).toLocaleString()}
-        </span>
-      </div>
-      <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesTimesPrice')}</span>
-        <span className="font-medium text-slate-600 dark:text-slate-300">
+      <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
+        <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalExpectedCost')}</span>
+        <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-total-cost">
           {formatAmount(preview.quoteSats)}
         </span>
       </div>
-      <FeeRow
-        label={t('trade.creatorFee', { percent: feePercent })}
-        tooltip={t('trade.creatorFeeTooltip')}
-        value={formatAmount(preview.creatorFee)}
-      />
-      <FeeRow
-        label={t('trade.mintFee')}
-        tooltip={t('trade.mintFeeTooltip')}
-        value={formatAmount(preview.mintFee)}
-      />
-      <FeeRow
-        label={t('trade.engineScoreFee')}
-        tooltip={t('trade.engineScoreFeeTooltip')}
-        value={formatScoreFee()}
-      />
-      <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
-        <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalCost')}</span>
-        <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-total-cost">
-          {formatAmount(preview.totalCost)}
-        </span>
-      </div>
-      <div className="flex justify-between text-sm">
-        <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.payoutIfWin')}</span>
-        <span className="font-bold text-emerald-600 dark:text-emerald-400" data-testid="limit-payout-if-win">
-          {formatAmount(preview.potentialPayout)}
-        </span>
-      </div>
-      <p className="text-[10px] text-slate-400 dark:text-slate-500 pt-1">
-        {t('trade.orderFillHint')}
-      </p>
     </div>
   )
 }
@@ -578,10 +508,8 @@ export function TradingPanel({
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset)
   const divisibility = normalizeMarketDivisibility(market.divisibility)
   const subunitLabel = marketSubunitLabel(baseAsset)
-  const wholeShareLabel = formatWholeShareFaceValue({ baseAsset, divisibility })
+  const wholeShareLabel = formatShareFace(baseAsset)
   const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
-  const formatScoreFee = (amountSats: number | null) =>
-    formatEngineScoreFee(amountSats, t('trade.engineScoreFeeShownAtConfirmation'))
   const shareCountLabel = (shares: number) =>
     t('trade.shareCount', { count: shares.toLocaleString() })
   const userHoldingShares =
@@ -768,61 +696,22 @@ export function TradingPanel({
               ) : (
                 <>
                   <div className="flex justify-between text-sm">
-                    <span className="text-slate-500 dark:text-slate-400">{t('trade.averageExecutionPrice')}</span>
+                    <span className="text-slate-500 dark:text-slate-400">{t('trade.pricePerShareLabel')}</span>
                     <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="trade-average-execution-price">
                       {formatPriceWithProbability(tradePreview.averageExecutionPrice ?? 0, divisibility)}
-                    </span>
-                  </div>
-                  {tradePreview.executableShares !== tradeAmount && (
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-500 dark:text-slate-400">{t('trade.executableShares')}</span>
-                      <span className="font-medium text-slate-600 dark:text-slate-300">
-                        {shareCountLabel(tradePreview.executableShares ?? 0)}
-                      </span>
-                    </div>
-                  )}
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-500 dark:text-slate-400">{t('trade.sharesTimesPrice')}</span>
-                    <span className="font-medium text-slate-600 dark:text-slate-300">
-                      {formatAmount(tradePreview.quoteSats)}
                     </span>
                   </div>
                 </>
               )}
               {tradePreview.hasExecutableLiquidity !== false && (
-                <>
-                  <FeeRow
-                    label={t('trade.creatorFee', { percent: market.creator.feePercent })}
-                    tooltip={t('trade.creatorFeeTooltip')}
-                    value={formatAmount(tradePreview.creatorFee)}
-                  />
-                  <FeeRow
-                    label={t('trade.mintFee')}
-                    tooltip={t('trade.mintFeeTooltip')}
-                    value={formatAmount(tradePreview.mintFee)}
-                  />
-                  <FeeRow
-                    label={t('trade.engineScoreFee')}
-                    tooltip={t('trade.engineScoreFeeTooltip')}
-                    value={formatScoreFee(tradePreview.engineScoreFeeSats)}
-                  />
-                  {!isSell && (
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-500 dark:text-slate-400">{t('trade.totalCost')}</span>
-                      <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="trade-total-cost">
-                        {formatAmount(tradePreview.totalCost)}
-                      </span>
-                    </div>
-                  )}
-                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
-                    <span className="text-slate-700 dark:text-slate-300 font-medium">
-                      {isSell ? t('trade.proceeds') : t('trade.payoutIfWin')}
-                    </span>
-                    <span className="font-bold text-emerald-600 dark:text-emerald-400" data-testid="trade-payout-if-win">
-                      {formatAmount(isSell ? tradePreview.totalCost : tradePreview.potentialPayout)}
-                    </span>
-                  </div>
-                </>
+                <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
+                  <span className="text-slate-700 dark:text-slate-300 font-medium">
+                    {t('trade.totalExpectedCost')}
+                  </span>
+                  <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="trade-total-cost">
+                    {formatAmount(tradePreview.quoteSats)}
+                  </span>
+                </div>
               )}
             </div>
           )}
@@ -831,7 +720,6 @@ export function TradingPanel({
           {isLimit && limitOrderPreview && tradeAmount > 0 && (
             <LimitOrderPreviewSection
               preview={limitOrderPreview}
-              feePercent={market.creator.feePercent}
               divisibility={divisibility}
               formatAmount={formatAmount}
             />
