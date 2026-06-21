@@ -3,12 +3,12 @@ import { useNavigate } from 'react-router'
 import { AlertTriangle, Check, Info, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { InvoiceDisplay } from '@/components/deposit-withdraw/InvoiceDisplay'
-import { formatAmount } from '@/lib/formatAmount'
 import { resolveCreatorPubkey } from '@/lib/identityOps'
 import {
   BINARY_AMM_FUNDING_TIERS,
+  formatFundingBudget,
+  fundingTierBudget,
   type AmmFundingTierId,
-  displayedFundingBudgetSats,
 } from '@/lib/marketMakerFunding'
 import {
   getDepositStatus,
@@ -48,7 +48,7 @@ interface DepositStepProps {
   baseAsset?: MarketBaseAsset
 }
 
-export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }: DepositStepProps) {
+export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [selectedTier, setSelectedTier] = useState<AmmFundingTierId>('standard')
@@ -70,14 +70,17 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
     () =>
       BINARY_AMM_FUNDING_TIERS.map((tier) => ({
         ...tier,
-        budgetSats: displayedFundingBudgetSats(tier.baseBudgetSats, outcomeCount),
+        budgetSats: fundingTierBudget(tier, baseAsset),
       })),
-    [outcomeCount],
+    [baseAsset],
   )
   const selectedTierBudget =
     tiers.find((tier) => tier.id === selectedTier)?.budgetSats ?? customBudgetSats
   const budgetSats = selectedTier === 'custom' ? customBudgetSats : selectedTierBudget
-  const customBudgetPreview = formatAmount(customBudgetSats, fundingUnit)
+  const customBudgetPreview = formatFundingBudget(customBudgetSats, fundingUnit)
+  const budgetLabel = formatFundingBudget(budgetSats, fundingUnit, {
+    wholeUsd: selectedTier !== 'custom',
+  })
   const showWarning = selectedTier === 'none'
 
   useEffect(() => {
@@ -190,7 +193,7 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
         <InvoiceDisplay
           bolt11={invoice.bolt11}
           amountSats={budgetSats}
-          amountLabel={formatAmount(budgetSats, fundingUnit)}
+          amountLabel={budgetLabel}
           status={invoiceStatus}
           errorMessage={invoiceError}
           expiresAtSec={Math.floor(new Date(invoice.expiresAt).getTime() / 1000)}
@@ -227,7 +230,7 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
               {t(`marketCreation.ammFundingTier.${tier.id}`)}
             </span>
             <span className="mt-1 block text-lg font-bold text-slate-100">
-              {formatAmount(tier.budgetSats, fundingUnit)}
+              {formatFundingBudget(tier.budgetSats, fundingUnit, { wholeUsd: true })}
             </span>
             {tier.warning && (
               <span className="mt-3 inline-flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-normal text-amber-200">

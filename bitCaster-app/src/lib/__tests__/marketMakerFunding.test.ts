@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  BINARY_AMM_FUNDING_TIERS,
   calculateAmmFundingPreview,
-  displayedFundingBudgetSats,
+  fundingTierBudget,
 } from '../marketMakerFunding'
 
 describe('market-maker funding math', () => {
@@ -12,10 +13,18 @@ describe('market-maker funding math', () => {
     })
   })
 
-  it('scales displayed categorical tiers by log2(outcome count)', () => {
-    expect(displayedFundingBudgetSats(1_000, 4)).toBe(2_000)
-    expect(displayedFundingBudgetSats(100_000, 4)).toBe(200_000)
-    expect(displayedFundingBudgetSats(1_000_000, 4)).toBe(2_000_000)
+  it('keeps categorical tiers as hardcoded round SAT and USD amounts', () => {
+    const [none, minimal, standard, deep] = BINARY_AMM_FUNDING_TIERS
+
+    expect(fundingTierBudget(none, 'sat')).toBe(0)
+    expect(fundingTierBudget(minimal, 'sat')).toBe(1_500)
+    expect(fundingTierBudget(standard, 'sat')).toBe(15_000)
+    expect(fundingTierBudget(deep, 'sat')).toBe(30_000)
+
+    expect(fundingTierBudget(none, 'usd')).toBe(0)
+    expect(fundingTierBudget(minimal, 'usd')).toBe(1_500_000)
+    expect(fundingTierBudget(standard, 'usd')).toBe(15_000_000)
+    expect(fundingTierBudget(deep, 'usd')).toBe(30_000_000)
   })
 })
 
