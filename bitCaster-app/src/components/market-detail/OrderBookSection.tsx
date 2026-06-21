@@ -6,6 +6,7 @@ import {
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from '@bitcaster/client-sdk/marketUnits'
+import { buildOrderBookDepthRows } from './orderBookViewModel'
 
 interface OrderBookSectionProps {
   orderBook: OrderBook
@@ -43,12 +44,8 @@ export function OrderBookSection({
     : 5
   const visibleBids = activeOrderBook.bids.slice(0, depthLimit)
   const visibleAsks = activeOrderBook.asks.slice(0, depthLimit)
-
-  const maxTotal = Math.max(
-    ...visibleBids.map((b) => b.total),
-    ...visibleAsks.map((a) => a.total),
-    1
-  )
+  const bidRows = buildOrderBookDepthRows(visibleBids, 'bid')
+  const askRows = buildOrderBookDepthRows(visibleAsks, 'ask')
   const bidPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleBids.length) })
   const askPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleAsks.length) })
 
@@ -79,144 +76,111 @@ export function OrderBookSection({
         )}
       </div>
 
-      {/* Spread Indicator */}
-      <div className="flex items-center justify-center gap-2 py-2 mb-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
-        <span className="text-xs text-slate-500 dark:text-slate-400">{t('orderBook.spread')}</span>
-        <span className="text-sm font-mono font-medium text-slate-700 dark:text-slate-300">
-          {formatPricePercent(activeOrderBook.spread, divisibility)}
-        </span>
-      </div>
-
-      {/* Depth Visualization */}
-      <div className="relative h-24 mb-4 rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-900">
-        {/* Bids (Left - Green) */}
-        <div className="absolute inset-y-0 left-0 w-1/2 grid content-end" style={{ gridTemplateRows: `repeat(${depthLimit}, minmax(0, 1fr))` }}>
-          {visibleBids.map((bid, i) => {
-            const width = (bid.total / maxTotal) * 100
-            return (
-              <div
-                key={`bid-${i}`}
-                className="h-1/4 flex items-center justify-end pr-2"
-              >
-                <div
-                  className="h-full bg-emerald-500/30 dark:bg-emerald-500/40 rounded-l transition-all"
-                  style={{ width: `${width}%` }}
-                />
-              </div>
-            )
-          })}
-          {bidPlaceholders.map((_, i) => (
-            <div key={`bid-depth-placeholder-${i}`} className="min-h-0" />
-          ))}
+      <div className="rounded-xl border border-slate-100 dark:border-slate-700/70 bg-slate-50/70 dark:bg-slate-900/40 p-2">
+        <div className="grid grid-cols-[1fr_auto] px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+          <span>{t('orderBook.price')}</span>
+          <span>{t('orderBook.amount')}</span>
         </div>
 
-        {/* Asks (Right - Red) */}
-        <div className="absolute inset-y-0 right-0 w-1/2 grid content-end" style={{ gridTemplateRows: `repeat(${depthLimit}, minmax(0, 1fr))` }}>
-          {visibleAsks.map((ask, i) => {
-            const width = (ask.total / maxTotal) * 100
-            return (
-              <div
-                key={`ask-${i}`}
-                className="h-1/4 flex items-center justify-start pl-2"
-              >
-                <div
-                  className="h-full bg-red-500/30 dark:bg-red-500/40 rounded-r transition-all"
-                  style={{ width: `${width}%` }}
-                />
-              </div>
-            )
-          })}
-          {askPlaceholders.map((_, i) => (
-            <div key={`ask-depth-placeholder-${i}`} className="min-h-0" />
-          ))}
-        </div>
-
-        {/* Center Line */}
-        <div className="absolute inset-y-0 left-1/2 w-px bg-slate-300 dark:bg-slate-600" />
-      </div>
-
-      {/* Order Tables */}
-      <div className="grid grid-cols-2 gap-4">
-        {/* Bids */}
-        <div>
-          <div className="flex items-center gap-1 mb-2">
+        <div className="space-y-1">
+          <div className="flex items-center gap-1 px-3 pt-1">
             <div className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+            <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
               {t('orderBook.bids')}
             </span>
           </div>
-          <div className="space-y-1">
-            {activeOrderBook.bids.length === 0 ? (
-              <p className="text-xs text-slate-400 dark:text-slate-500 py-2">{t('orderBook.noBids')}</p>
-            ) : (
-              <>
-              {visibleBids.map((bid, i) => (
+          {activeOrderBook.bids.length === 0 ? (
+            <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noBids')}</p>
+          ) : (
+            <>
+            {bidRows.map((row, i) => (
+              <div
+                key={`bid-row-${i}`}
+                data-testid="order-book-bid-row"
+                data-outcome-id={outcomeId}
+                data-depth-percent={row.depthPercent}
+                data-depth-side={row.side}
+                className="relative overflow-hidden rounded-lg px-3 py-1.5 text-xs"
+              >
                 <div
-                  key={`bid-row-${i}`}
-                  data-testid="order-book-bid-row"
-                  data-outcome-id={outcomeId}
-                  className="flex items-center justify-between text-xs"
-                >
-                  <span className="font-mono text-emerald-600 dark:text-emerald-400">
-                    {formatPricePercent(bid.price, divisibility)}
+                  data-testid="order-book-bid-depth-fill"
+                  aria-hidden="true"
+                  className="absolute inset-y-0 right-0 bg-emerald-500/10 dark:bg-emerald-500/20 transition-all"
+                  style={{ width: `${row.depthPercent}%` }}
+                />
+                <div className="relative grid grid-cols-[1fr_auto] items-center gap-3">
+                  <span className="font-mono font-medium text-emerald-600 dark:text-emerald-400">
+                    {formatPricePercent(row.order.price, divisibility)}
                   </span>
-                  <span className="text-slate-500 dark:text-slate-400 font-mono">
-                    {formatMarketSubunits(bid.amount, baseAsset)}
+                  <span className="text-slate-600 dark:text-slate-300 font-mono">
+                    {formatMarketSubunits(row.order.amount, baseAsset)}
                   </span>
                 </div>
-              ))}
-              {bidPlaceholders.map((_, i) => (
-                <div
-                  key={`bid-row-placeholder-${i}`}
-                  data-testid="order-book-bid-placeholder"
-                  aria-hidden="true"
-                  className="h-4"
-                />
-              ))}
-              </>
-            )}
-          </div>
-        </div>
+              </div>
+            ))}
+            {bidPlaceholders.map((_, i) => (
+              <div
+                key={`bid-row-placeholder-${i}`}
+                data-testid="order-book-bid-placeholder"
+                aria-hidden="true"
+                className="h-7"
+              />
+            ))}
+            </>
+          )}
 
-        {/* Asks */}
-        <div>
-          <div className="flex items-center gap-1 mb-2">
+          <div className="flex items-center justify-center gap-2 rounded-lg bg-white/80 dark:bg-slate-800/70 px-3 py-2">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('orderBook.spread')}</span>
+            <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300">
+              {formatPricePercent(activeOrderBook.spread, divisibility)}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1 px-3 pt-1">
             <div className="w-2 h-2 rounded-full bg-red-500" />
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+            <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
               {t('orderBook.asks')}
             </span>
           </div>
-          <div className="space-y-1">
-            {activeOrderBook.asks.length === 0 ? (
-              <p className="text-xs text-slate-400 dark:text-slate-500 py-2">{t('orderBook.noAsks')}</p>
-            ) : (
-              <>
-              {visibleAsks.map((ask, i) => (
+          {activeOrderBook.asks.length === 0 ? (
+            <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noAsks')}</p>
+          ) : (
+            <>
+            {askRows.map((row, i) => (
+              <div
+                key={`ask-row-${i}`}
+                data-testid="order-book-ask-row"
+                data-outcome-id={outcomeId}
+                data-depth-percent={row.depthPercent}
+                data-depth-side={row.side}
+                className="relative overflow-hidden rounded-lg px-3 py-1.5 text-xs"
+              >
                 <div
-                  key={`ask-row-${i}`}
-                  data-testid="order-book-ask-row"
-                  data-outcome-id={outcomeId}
-                  className="flex items-center justify-between text-xs"
-                >
-                  <span className="font-mono text-red-600 dark:text-red-400">
-                    {formatPricePercent(ask.price, divisibility)}
+                  data-testid="order-book-ask-depth-fill"
+                  aria-hidden="true"
+                  className="absolute inset-y-0 left-0 bg-red-500/10 dark:bg-red-500/20 transition-all"
+                  style={{ width: `${row.depthPercent}%` }}
+                />
+                <div className="relative grid grid-cols-[1fr_auto] items-center gap-3">
+                  <span className="font-mono font-medium text-red-600 dark:text-red-400">
+                    {formatPricePercent(row.order.price, divisibility)}
                   </span>
-                  <span className="text-slate-500 dark:text-slate-400 font-mono">
-                    {formatMarketSubunits(ask.amount, baseAsset)}
+                  <span className="text-slate-600 dark:text-slate-300 font-mono">
+                    {formatMarketSubunits(row.order.amount, baseAsset)}
                   </span>
                 </div>
-              ))}
-              {askPlaceholders.map((_, i) => (
-                <div
-                  key={`ask-row-placeholder-${i}`}
-                  data-testid="order-book-ask-placeholder"
-                  aria-hidden="true"
-                  className="h-4"
-                />
-              ))}
-              </>
-            )}
-          </div>
+              </div>
+            ))}
+            {askPlaceholders.map((_, i) => (
+              <div
+                key={`ask-row-placeholder-${i}`}
+                data-testid="order-book-ask-placeholder"
+                aria-hidden="true"
+                className="h-7"
+              />
+            ))}
+            </>
+          )}
         </div>
       </div>
     </div>

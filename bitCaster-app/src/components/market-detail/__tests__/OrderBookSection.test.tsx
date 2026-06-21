@@ -24,7 +24,7 @@ describe('OrderBookSection', () => {
     expect(screen.queryByText(/sats/)).not.toBeInTheDocument()
   })
 
-  it('renders only the server depthLimit rows per side while preserving stable side columns', () => {
+  it('renders only the server depthLimit rows per side while preserving stable bounded sides', () => {
     render(
       <OrderBookSection
         divisibility={100}
@@ -55,5 +55,40 @@ describe('OrderBookSection', () => {
     expect(screen.queryByText('94.00%')).not.toBeInTheDocument()
     expect(screen.queryAllByTestId('order-book-bid-placeholder')).toHaveLength(0)
     expect(screen.queryAllByTestId('order-book-ask-placeholder')).toHaveLength(0)
+  })
+
+  it('combines price, amount, and proportional depth into each compact row', () => {
+    render(
+      <OrderBookSection
+        divisibility={100}
+        orderBook={{
+          depthLimit: 2,
+          bids: [
+            { price: 52, amount: 100, total: 100 },
+            { price: 51, amount: 200, total: 300 },
+          ],
+          asks: [
+            { price: 53, amount: 30, total: 30 },
+            { price: 54, amount: 60, total: 90 },
+          ],
+          spread: 1,
+        }}
+      />,
+    )
+
+    const bidRows = screen.getAllByTestId('order-book-bid-row')
+    const askRows = screen.getAllByTestId('order-book-ask-row')
+
+    expect(bidRows[0]).toHaveAttribute('data-depth-percent', '50')
+    expect(bidRows[0]).toHaveAttribute('data-depth-side', 'bid')
+    expect(bidRows[0]).toHaveTextContent('52.00%')
+    expect(bidRows[0]).toHaveTextContent('0.1 sats')
+    expect(screen.getAllByTestId('order-book-bid-depth-fill')[0]).toHaveStyle({ width: '50%' })
+
+    expect(askRows[0]).toHaveAttribute('data-depth-percent', '50')
+    expect(askRows[0]).toHaveAttribute('data-depth-side', 'ask')
+    expect(askRows[0]).toHaveTextContent('53.00%')
+    expect(askRows[0]).toHaveTextContent('0.03 sats')
+    expect(screen.getAllByTestId('order-book-ask-depth-fill')[0]).toHaveStyle({ width: '50%' })
   })
 })
