@@ -27,7 +27,7 @@ namespace BitCaster.MatchingEngine.Contracts
     
 
     /// <summary>
-    /// Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time. Collateral is held in the base asset itself (`sat` or `usd`). `jpy` is reserved.
+    /// Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time. Collateral is held in msat for `sat` markets and milli-cent for `usd` markets. `jpy` is reserved.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]

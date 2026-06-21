@@ -8,6 +8,7 @@ import type {
 } from './types.ts'
 import {
   normalizeMarketDivisibility,
+  shareFaceSubunits,
   validatePriceNumerator,
   validateWholeShareFaceAmount,
 } from './marketUnits.ts'
@@ -104,10 +105,11 @@ export function buildTradeTicket(params: {
     )
   }
   const divisibility = normalizeMarketDivisibility(market.divisibility)
-  if (!validateWholeShareFaceAmount(amountSats, divisibility)) {
+  const shareFace = shareFaceSubunits(market.baseAsset)
+  if (!validateWholeShareFaceAmount(amountSats, shareFace)) {
     throw new TradeTicketError(
       'invalid-amount',
-      `Enter an amount in ${divisibility} sub-unit increments.`,
+      `Enter an amount in ${shareFace} sub-unit increments.`,
     )
   }
 

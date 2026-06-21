@@ -425,13 +425,13 @@ test('decideTradeCreated validates buyer quote against submitted order limit', (
     divisibility: 1_000,
     expectedBaseAsset: 'usd',
     expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 401,
+    outcomeFaceAmountSubunits: 100_000,
+    quotePaymentSubunits: 40_001,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Outcome',
       priceSubunits: 400,
-      amountSubunits: 1_000,
+      amountSubunits: 100_000,
     },
   })
 
@@ -456,13 +456,13 @@ test('decideTradeCreated validates exact maker bid-as-complement quote', () => {
     divisibility: 1_000,
     expectedBaseAsset: 'usd',
     expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 800,
+    outcomeFaceAmountSubunits: 100_000,
+    quotePaymentSubunits: 80_000,
     expectedOrder: {
       side: 'bid',
       tokenSide: 'Complement',
       priceSubunits: 200,
-      amountSubunits: 1_000,
+      amountSubunits: 100_000,
       quotePolicy: 'exact',
     },
   })
@@ -481,13 +481,13 @@ test('decideTradeCreated validates exact maker bid-as-complement quote', () => {
     divisibility: 1_000,
     expectedBaseAsset: 'usd',
     expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 801,
+    outcomeFaceAmountSubunits: 100_000,
+    quotePaymentSubunits: 80_001,
     expectedOrder: {
       side: 'bid',
       tokenSide: 'Complement',
       priceSubunits: 200,
-      amountSubunits: 1_000,
+      amountSubunits: 100_000,
       quotePolicy: 'exact',
     },
   })
@@ -513,13 +513,13 @@ test('decideTradeCreated accepts mint seller settlement backed by outcome-side b
     divisibility: 1_000,
     expectedBaseAsset: 'sat',
     expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 900,
+    outcomeFaceAmountSubunits: 1_000_000,
+    quotePaymentSubunits: 900_000,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Outcome',
       priceSubunits: 100,
-      amountSubunits: 1_000,
+      amountSubunits: 1_000_000,
       quotePolicy: 'exact',
     },
   })

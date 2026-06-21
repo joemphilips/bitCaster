@@ -417,7 +417,7 @@ export interface components {
         /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use `D = 10000`. */
         Probability: number;
         /**
-         * @description Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time. Collateral is held in the base asset itself (`sat` or `usd`). `jpy` is reserved.
+         * @description Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time. Collateral is held in msat for `sat` markets and milli-cent for `usd` markets. `jpy` is reserved.
          * @enum {string}
          */
         BaseAsset: "sat" | "usd" | "jpy";

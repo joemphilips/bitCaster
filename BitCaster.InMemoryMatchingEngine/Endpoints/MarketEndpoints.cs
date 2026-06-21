@@ -8,7 +8,7 @@ namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 public static partial class MarketEndpoints
 {
     private const int MaxOutcomes = 8;
-    internal const int DefaultMarketDivisibility = 1_000;
+    internal const int DefaultMarketDivisibility = 10_000;
 
     internal sealed record MarketRecord(
         CreateMarketResponse Response,

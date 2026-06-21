@@ -38,7 +38,7 @@ public class InMemoryOrderBookManager
     private readonly ConcurrentDictionary<Guid, string> _orderMarketIndex = new();
     private readonly ConcurrentDictionary<string, AcceptedSubmit> _acceptedSubmits = new();
     private readonly object _matchingGate = new();
-    private sealed record MarketUnit(BaseAsset BaseAsset, int Divisibility);
+    private sealed record MarketUnit(BaseAsset BaseAsset, int Divisibility, long ShareFaceSubunits);
     public sealed record SubmitOrderOutcome(SubmitResult Result, bool Replayed);
     private sealed record AcceptedSubmit(string NormalizedRequest, SubmitResult Result);
 
@@ -56,8 +56,8 @@ public class InMemoryOrderBookManager
         var unit = UnitForMarket(marketId);
         if (priceValue < 1 || priceValue >= unit.Divisibility)
             throw new ArgumentOutOfRangeException(nameof(priceValue), $"Price must be between 1 and {unit.Divisibility - 1}.");
-        if (amountSats <= 0 || amountSats % unit.Divisibility != 0)
-            throw new ArgumentException($"AmountSats must be a positive whole-share amount divisible by {unit.Divisibility}.", nameof(amountSats));
+        if (amountSats <= 0 || amountSats % unit.ShareFaceSubunits != 0)
+            throw new ArgumentException($"AmountSats must be a positive whole-share amount divisible by {unit.ShareFaceSubunits}.", nameof(amountSats));
 
         var book = _books.GetOrAdd(marketId, _ => new OrderBook(marketId, unit.Divisibility));
 
@@ -435,8 +435,15 @@ public class InMemoryOrderBookManager
     {
         var conditionId = MarketParts.TryParse(marketId)?.ConditionId;
         var market = conditionId is null ? null : MarketEndpoints.TryGetMarket(conditionId);
-        return new MarketUnit(market?.BaseAsset ?? BaseAsset.Sat, market?.Divisibility is > 1 ? market.Divisibility : MarketEndpoints.DefaultMarketDivisibility);
+        var baseAsset = market?.BaseAsset ?? BaseAsset.Sat;
+        return new MarketUnit(
+            baseAsset,
+            market?.Divisibility is > 1 ? market.Divisibility : MarketEndpoints.DefaultMarketDivisibility,
+            ShareFaceSubunits(baseAsset));
     }
+
+    private static long ShareFaceSubunits(BaseAsset baseAsset) =>
+        baseAsset == BaseAsset.Usd ? 100_000L : 1_000_000L;
 
     private static long QuotePaymentSubunits(long faceAmountSubunits, int priceNumerator, int divisibility)
     {

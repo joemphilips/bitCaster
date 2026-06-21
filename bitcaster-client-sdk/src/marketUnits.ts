@@ -124,12 +124,14 @@ export function validatePriceNumerator(price: number, divisibility: number): boo
 
 export function validateWholeShareFaceAmount(
   faceAmountSubunits: number,
-  divisibility: number,
+  shareFace: number,
 ): boolean {
   return (
     Number.isSafeInteger(faceAmountSubunits) &&
     faceAmountSubunits > 0 &&
-    faceAmountSubunits % divisibility === 0
+    Number.isSafeInteger(shareFace) &&
+    shareFace > 0 &&
+    faceAmountSubunits % shareFace === 0
   )
 }
 
@@ -137,9 +139,11 @@ export function quotePaymentSubunits(params: {
   faceAmountSubunits: number
   priceNumerator: number
   divisibility: number
+  shareFaceSubunits?: number
 }): number {
   const { faceAmountSubunits, priceNumerator, divisibility } = params
-  if (!validateWholeShareFaceAmount(faceAmountSubunits, divisibility)) {
+  const shareFace = params.shareFaceSubunits ?? divisibility
+  if (!validateWholeShareFaceAmount(faceAmountSubunits, shareFace)) {
     throw new Error('faceAmountSubunits must be a positive whole-share amount')
   }
   if (!validatePriceNumerator(priceNumerator, divisibility)) {

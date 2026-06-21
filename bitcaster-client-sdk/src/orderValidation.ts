@@ -1,5 +1,6 @@
 import {
   normalizeMarketDivisibility,
+  shareFaceSubunits,
   validatePriceNumerator,
   validateWholeShareFaceAmount,
 } from './marketUnits.ts'
@@ -14,6 +15,7 @@ export interface OrderIntentForValidation {
   side?: unknown
   price?: unknown
   amountSats?: unknown
+  baseAsset?: unknown
   divisibility?: unknown
   timeInForce?: unknown
 }
@@ -83,14 +85,17 @@ export function validateOrderIntent(
     }
   }
   const amountSats = intent.amountSats
+  const shareFace = shareFaceSubunits(
+    typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined,
+  )
   if (
     typeof amountSats !== 'number' ||
-    !validateWholeShareFaceAmount(amountSats, divisibility)
+    !validateWholeShareFaceAmount(amountSats, shareFace)
   ) {
     return {
       valid: false,
       message:
-        `Order rejected: amountSats must be a positive integer in ${divisibility} sub-unit increments.`,
+        `Order rejected: amountSats must be a positive integer in ${shareFace} sub-unit increments.`,
     }
   }
   if (

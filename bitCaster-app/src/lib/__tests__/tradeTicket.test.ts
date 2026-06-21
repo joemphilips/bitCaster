@@ -99,7 +99,7 @@ describe("buildTradeTicket", () => {
     expect(ticket.request.timeInForce).toBe("FAK");
   });
 
-  it("rejects amounts outside the system 10000 sub-unit settlement tick", () => {
+  it("rejects amounts outside the sat whole-share face amount", () => {
     expect(() =>
       buildTradeTicket({
         market,
@@ -110,7 +110,7 @@ describe("buildTradeTicket", () => {
         limitPrice: 500,
         orderBook: market.orderBook,
       }),
-    ).toThrow("Enter an amount in 10000 sub-unit increments.");
+    ).toThrow("Enter an amount in 1000000 sub-unit increments.");
   });
 
   it("builds sell orders after same-outcome CTF swaps are supported", () => {

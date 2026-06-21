@@ -5,6 +5,7 @@ import {
   parseMarketBaseAsset,
   parseMarketDivisibility,
   quotePaymentSubunits,
+  shareFaceSubunits,
   validateWholeShareFaceAmount,
   type MarketBaseAsset,
 } from './marketUnits.ts'
@@ -201,6 +202,7 @@ function validateTradeCreatedSettlementAmounts(
     settlementKind: input.settlementKind,
     order: input.expectedOrder,
     required: input.requireExpectedOrder,
+    baseAsset: canonicalBaseAsset,
     divisibility: canonicalDivisibility,
     outcomeFaceAmountSubunits: input.outcomeFaceAmountSubunits ?? input.outcomeFaceAmountSats,
     quotePaymentSubunits: input.quotePaymentSubunits ?? input.quotePaymentSats,
@@ -311,6 +313,7 @@ function validateExpectedOrderEconomics(input: {
   settlementKind?: string | null
   order?: TradeCreatedExpectedOrder | null
   required?: boolean
+  baseAsset: MarketBaseAsset
   divisibility: number
   outcomeFaceAmountSubunits?: number | null
   quotePaymentSubunits?: number | null
@@ -324,16 +327,15 @@ function validateExpectedOrderEconomics(input: {
   if (!isPositiveInteger(order.priceSubunits) || order.priceSubunits >= input.divisibility) {
     return 'Expected order price is out of range.'
   }
-  if (
-    !validateWholeShareFaceAmount(order.amountSubunits, input.divisibility)
-  ) {
+  const shareFace = shareFaceSubunits(input.baseAsset)
+  if (!validateWholeShareFaceAmount(order.amountSubunits, shareFace)) {
     return 'Expected order amount is not a positive whole-share amount.'
   }
   const faceAmount = input.outcomeFaceAmountSubunits
   const quotePayment = input.quotePaymentSubunits
   if (!isPositiveInteger(faceAmount)) return 'Trade settlement metadata is missing outcome face subunits.'
   if (!isPositiveInteger(quotePayment)) return 'Trade settlement metadata is missing quote payment subunits.'
-  if (!validateWholeShareFaceAmount(faceAmount, input.divisibility)) {
+  if (!validateWholeShareFaceAmount(faceAmount, shareFace)) {
     return 'Trade outcome face amount is not a whole market share.'
   }
   if (faceAmount > order.amountSubunits) {
@@ -347,6 +349,7 @@ function validateExpectedOrderEconomics(input: {
       faceAmountSubunits: faceAmount,
       priceNumerator: order.priceSubunits,
       divisibility: input.divisibility,
+      shareFaceSubunits: shareFace,
     })
     if (order.quotePolicy === 'exact' ? quotePayment !== maxQuote : quotePayment > maxQuote) {
       return 'Trade quote payment exceeds the submitted order price.'
@@ -370,6 +373,7 @@ function validateExpectedOrderEconomics(input: {
     faceAmountSubunits: faceAmount,
     priceNumerator: effectiveSellerPrice,
     divisibility: input.divisibility,
+    shareFaceSubunits: shareFace,
   })
   if (order.quotePolicy === 'exact' ? quotePayment !== minQuote : quotePayment < minQuote) {
     return 'Trade quote payment does not satisfy the submitted order price.'

@@ -81,37 +81,41 @@ test('validates price numerator and whole-share face amount', () => {
   assert.equal(validatePriceNumerator(1_000, 1_000), false)
   assert.equal(validatePriceNumerator(5_000, 10_000), true)
   assert.equal(validatePriceNumerator(10_000, 10_000), false)
-  assert.equal(validateWholeShareFaceAmount(2_000, 1_000), true)
-  assert.equal(validateWholeShareFaceAmount(1_500, 1_000), false)
-  assert.equal(validateWholeShareFaceAmount(10_000, 10_000), true)
-  assert.equal(validateWholeShareFaceAmount(5_000, 10_000), false)
+  assert.equal(validateWholeShareFaceAmount(2_000_000, 1_000_000), true)
+  assert.equal(validateWholeShareFaceAmount(1_500_000, 1_000_000), false)
+  assert.equal(validateWholeShareFaceAmount(100_000, 100_000), true)
+  assert.equal(validateWholeShareFaceAmount(50_000, 100_000), false)
+  assert.equal(validateWholeShareFaceAmount(10_000, 1_000_000), false)
 })
 
 test('computes quote payment by dividing into whole shares first', () => {
   assert.equal(
-    quotePaymentSubunits({
-      faceAmountSubunits: 3_000,
-      priceNumerator: 333,
-      divisibility: 1_000,
-    }),
-    999,
+      quotePaymentSubunits({
+        faceAmountSubunits: 3_000_000,
+        priceNumerator: 333,
+        divisibility: 1_000,
+        shareFaceSubunits: 1_000_000,
+      }),
+    999_000,
   )
   assert.throws(
     () =>
       quotePaymentSubunits({
-        faceAmountSubunits: 1_500,
+        faceAmountSubunits: 1_500_000,
         priceNumerator: 333,
         divisibility: 1_000,
+        shareFaceSubunits: 1_000_000,
       }),
     /whole-share/,
   )
   assert.equal(
-    quotePaymentSubunits({
-      faceAmountSubunits: 1_000,
-      priceNumerator: 500,
-      divisibility: 1_000,
-    }),
-    500,
+      quotePaymentSubunits({
+        faceAmountSubunits: 1_000_000,
+        priceNumerator: 500,
+        divisibility: 1_000,
+        shareFaceSubunits: 1_000_000,
+      }),
+    500_000,
   )
 })
 
@@ -122,6 +126,7 @@ test('matches shared market-unit settlement vectors', () => {
         faceAmountSubunits: vector.faceAmountSubunits,
         priceNumerator: vector.priceSubunits,
         divisibility: vector.divisibility,
+        shareFaceSubunits: shareFaceSubunits(vector.baseAsset),
       }),
       vector.quotePaymentSubunits,
       vector.name,
@@ -131,6 +136,7 @@ test('matches shared market-unit settlement vectors', () => {
         faceAmountSubunits: vector.faceAmountSubunits,
         priceNumerator: vector.divisibility - vector.priceSubunits,
         divisibility: vector.divisibility,
+        shareFaceSubunits: shareFaceSubunits(vector.baseAsset),
       }),
       vector.complementQuotePaymentSubunits,
       `${vector.name} complement`,
