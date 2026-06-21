@@ -3,6 +3,26 @@ import { DEFAULT_MARKET_DIVISIBILITY } from "@bitcaster/client-sdk/marketUnits";
 
 export type OrderBookCompleteness = "direct" | "executable";
 
+export type OrderBookDepthSide = "bid" | "ask";
+
+export interface OrderBookDepthRow {
+  side: OrderBookDepthSide;
+  order: Order;
+  depthPercent: number;
+}
+
+export function buildOrderBookDepthRows(
+  orders: Order[],
+  side: OrderBookDepthSide,
+): OrderBookDepthRow[] {
+  const maxAmount = Math.max(...orders.map((order) => order.amount), 0);
+  return orders.map((order) => ({
+    side,
+    order,
+    depthPercent: maxAmount > 0 ? Math.round((order.amount / maxAmount) * 100) : 0,
+  }));
+}
+
 export function deriveExecutableOrderBook(input: {
   book: OrderBook;
   complementBook?: OrderBook | null;

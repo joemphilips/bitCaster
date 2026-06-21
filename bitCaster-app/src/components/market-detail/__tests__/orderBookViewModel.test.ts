@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { deriveExecutableOrderBook } from "../orderBookViewModel";
+import { buildOrderBookDepthRows, deriveExecutableOrderBook } from "../orderBookViewModel";
+
+describe("buildOrderBookDepthRows", () => {
+  it("scales row depth by side-local amount instead of cumulative total", () => {
+    expect(
+      buildOrderBookDepthRows(
+        [
+          { price: 52, amount: 100, total: 1_000 },
+          { price: 51, amount: 200, total: 1_200 },
+        ],
+        "bid",
+      ),
+    ).toEqual([
+      { side: "bid", order: { price: 52, amount: 100, total: 1_000 }, depthPercent: 50 },
+      { side: "bid", order: { price: 51, amount: 200, total: 1_200 }, depthPercent: 100 },
+    ]);
+  });
+});
 
 describe("deriveExecutableOrderBook", () => {
   it("can internally derive executable asks from a raw complement bid book", () => {

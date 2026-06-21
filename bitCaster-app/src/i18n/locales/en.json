@@ -185,6 +185,8 @@
   "orderBook": {
     "title": "Order Book",
     "spread": "Spread",
+    "price": "Price",
+    "amount": "Amount",
     "bids": "Bids",
     "asks": "Asks",
     "noBids": "No bids",
