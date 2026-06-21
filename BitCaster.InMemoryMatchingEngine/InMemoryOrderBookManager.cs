@@ -435,7 +435,7 @@ public class InMemoryOrderBookManager
     {
         var conditionId = MarketParts.TryParse(marketId)?.ConditionId;
         var market = conditionId is null ? null : MarketEndpoints.TryGetMarket(conditionId);
-        return new MarketUnit(market?.BaseAsset ?? BaseAsset.Sat, market?.Divisibility is > 1 ? market.Divisibility : 100);
+        return new MarketUnit(market?.BaseAsset ?? BaseAsset.Sat, market?.Divisibility is > 1 ? market.Divisibility : MarketEndpoints.DefaultMarketDivisibility);
     }
 
     private static long QuotePaymentSubunits(long faceAmountSubunits, int priceNumerator, int divisibility)

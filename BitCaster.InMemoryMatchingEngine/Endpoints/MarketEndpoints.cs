@@ -8,6 +8,7 @@ namespace BitCaster.InMemoryMatchingEngine.Endpoints;
 public static partial class MarketEndpoints
 {
     private const int MaxOutcomes = 8;
+    internal const int DefaultMarketDivisibility = 10_000;
 
     internal sealed record MarketRecord(
         CreateMarketResponse Response,
@@ -77,11 +78,7 @@ public static partial class MarketEndpoints
             if (probSum != 100)
                 return Results.BadRequest($"Outcome probabilities must sum to 100 (got {probSum})");
             var baseAsset = metadata.BaseAsset ?? BaseAsset.Sat;
-            var divisibility = metadata.Divisibility ?? 100;
-            if (divisibility <= 1)
-                return Results.BadRequest("divisibility must be greater than 1");
-            if (divisibility % 100 != 0)
-                return Results.BadRequest("divisibility must be divisible by 100 for creator probability markets");
+            const int divisibility = DefaultMarketDivisibility;
 
             // Validate thumbnail before committing any state
             var thumbnailFile = form.Files.GetFile("thumbnail");
@@ -159,6 +156,7 @@ public static partial class MarketEndpoints
 
             var response = new CreateMarketResponse(
                 conditionId: conditionId,
+                divisibility: divisibility,
                 marketsCreated: marketsCreated,
                 thumbnailUrl: thumbnailUrl);
 

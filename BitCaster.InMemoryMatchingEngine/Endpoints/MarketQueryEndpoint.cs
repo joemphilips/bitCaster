@@ -143,7 +143,7 @@ public static class MarketQueryEndpoint
             creatorPubkey: null!,
             deadline: null,
             description: null!,
-            divisibility: market?.Divisibility ?? 100,
+            divisibility: market?.Divisibility ?? MarketEndpoints.DefaultMarketDivisibility,
             finalOutcome: null!,
             lastSuccessfulRefreshAt: refreshedAt,
             lastTradedPrice: null,
