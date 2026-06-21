@@ -27,7 +27,7 @@ namespace BitCaster.MatchingEngine.Contracts
     
 
     /// <summary>
-    /// Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time. Collateral is held in msat for `sat` markets and milli-cent for `usd` markets. `jpy` is reserved.
+    /// Market quote/collateral base asset. `sat` and `usd` are accepted for market registration. `usd`: BTC-backed; deposits are priced as BTC Lightning invoices at quote time. Collateral is held in the base asset itself (`sat` or `usd`). `jpy` is reserved.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -436,7 +436,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset? BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -530,7 +530,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public int Price { get; }
 
         /// <summary>
-        /// Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value (`divisibility` base-asset sub-units). Current markets use D=10000, so the minimum whole share is 10000 sub-units (10 sats for msat-collateral markets, $0.10 for milli-cent markets).
+        /// Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value (`divisibility` base-asset sub-units). Current markets use D=1000, so the minimum whole share is 1000 base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
@@ -680,7 +680,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -778,7 +778,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -870,7 +870,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -1057,7 +1057,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -1511,7 +1511,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ThumbnailUrl { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -1545,7 +1545,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset Timestamp { get; }
 
         /// <summary>
-        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use D=10000 (0.01% price precision).
+        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use D=1000 (0.1% price precision).
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("price")]
@@ -1822,7 +1822,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -2564,7 +2564,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Enum markets use D=10000 (0.01% price precision). One whole share has face value `D` base-asset sub-units.
+        /// Immutable price denominator `D`, server-determined. Enum markets use D=1000 (0.1% price precision). One whole share has face value `D` base-asset sub-units.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]

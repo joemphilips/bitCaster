@@ -19,7 +19,7 @@ function makeMarket(
     createdDate: '2026-01-01T00:00:00Z',
     activeSince: '2026-01-01T00:00:00Z',
     baseAsset: 'usd',
-    divisibility: 10_000,
+    divisibility: 1_000,
     baseUnit: 'USD',
     creator: {
       id: 'creator',
@@ -51,7 +51,7 @@ describe('TradingPanel', () => {
       priceImpact: 0,
       quoteSats: 1_500,
       mintFee: 0,
-      potentialPayout: 5_000,
+      potentialPayout: 500,
       creatorFee: 1,
       engineScoreFeeSats: 0,
       totalCost: 1_501,
@@ -70,7 +70,7 @@ describe('TradingPanel', () => {
     )
 
     expect(screen.getByText('Shares')).toBeInTheDocument()
-    expect(screen.getByText('1 share = $0.10')).toBeInTheDocument()
+    expect(screen.getByText('1 share = $10.00')).toBeInTheDocument()
     expect(
       screen.getByRole('button', { name: 'Buy YES for 50 shares' }),
     ).toBeInTheDocument()
@@ -86,7 +86,7 @@ describe('TradingPanel', () => {
       creatorFee: 0,
       mintFee: 0,
       engineScoreFeeSats: 0,
-      potentialPayout: 5_000,
+      potentialPayout: 500,
       totalCost: 1_500,
     }
 
@@ -109,7 +109,7 @@ describe('TradingPanel', () => {
     expect(screen.getByText('Market Creator fee (1%)')).toBeInTheDocument()
     expect(screen.getAllByText('0 sats')).toHaveLength(3)
     expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1,500 sats')
-    expect(screen.getByTestId('limit-payout-if-win')).toHaveTextContent('5,000 sats')
+    expect(screen.getByTestId('limit-payout-if-win')).toHaveTextContent('500 sats')
   })
 
   it('shows fee tooltips on each fee row', () => {
@@ -121,7 +121,7 @@ describe('TradingPanel', () => {
       creatorFee: 15,
       mintFee: 2,
       engineScoreFeeSats: 0,
-      potentialPayout: 5_000,
+      potentialPayout: 500,
       totalCost: 1_517,
     }
 

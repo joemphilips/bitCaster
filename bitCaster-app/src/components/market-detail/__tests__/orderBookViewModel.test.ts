@@ -28,22 +28,22 @@ describe("deriveExecutableOrderBook", () => {
     });
   });
 
-  it("uses the default D=10000 denominator for complement bids", () => {
+  it("uses the default D=1000 denominator for complement bids", () => {
     const book = deriveExecutableOrderBook({
       completeness: "direct",
       book: {
-        bids: [{ price: 4_000, amount: 100, total: 1 }],
+        bids: [{ price: 400, amount: 100, total: 1 }],
         asks: [],
         spread: 0,
       },
       complementBook: {
-        bids: [{ price: 3_000, amount: 300, total: 1 }],
+        bids: [{ price: 300, amount: 300, total: 1 }],
         asks: [],
         spread: 0,
       },
     });
 
-    expect(book.asks).toEqual([{ price: 7_000, amount: 300, total: 300 }]);
+    expect(book.asks).toEqual([{ price: 700, amount: 300, total: 300 }]);
   });
 
   it("does not duplicate complement levels when the incoming book is already executable", () => {

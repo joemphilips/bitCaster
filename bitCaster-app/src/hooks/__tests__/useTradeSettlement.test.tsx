@@ -269,9 +269,9 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Buy",
       tokenSide: "Outcome",
-      divisibility: 10_000,
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      divisibility: 2_000,
+      priceSubunits: 1_000,
+      amountSubunits: 2_000,
       submittedAt: Date.now(),
     });
 
@@ -411,8 +411,8 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 500,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -450,12 +450,12 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
         baseAsset: "sat",
-        divisibility: 10_000,
-        outcomeFaceAmountSubunits: 10_000,
-        quotePaymentSubunits: 5_000,
+        divisibility: 1_000,
+        outcomeFaceAmountSubunits: 1_000,
+        quotePaymentSubunits: 500,
       });
     });
 
@@ -466,11 +466,11 @@ describe("useTradeSettlement", () => {
     expect(swap.orderId).toBe("order-pending");
     expect(swap.marketId).toBe("cond-NO");
     expect(swap.role).toBe("buyer");
-    expect(swap.outcomeFaceAmountSats).toBe(10_000);
-    expect(swap.quotePaymentSats).toBe(5_000);
+    expect(swap.outcomeFaceAmountSats).toBe(1_000);
+    expect(swap.quotePaymentSats).toBe(500);
     expect(swap.baseAsset).toBe("sat");
-    expect(swap.divisibility).toBe(10_000);
-    expect(swap.quotePaymentSubunits).toBe(5_000);
+    expect(swap.divisibility).toBe(1_000);
+    expect(swap.quotePaymentSubunits).toBe(500);
   });
 
   it("fails before locking proofs when TradeCreated unit metadata mismatches the local order", async () => {
@@ -480,11 +480,11 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "usd",
-      divisibility: 10_000,
+      divisibility: 2_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 1_000,
+      amountSubunits: 2_000,
       submittedAt: Date.now(),
     });
 
@@ -520,11 +520,11 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
         baseAsset: "sat",
-        divisibility: 10_000,
-        quotePaymentSubunits: 5_000,
+        divisibility: 1_000,
+        quotePaymentSubunits: 500,
       });
     });
 
@@ -548,11 +548,11 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
       side: "Sell",
       tokenSide: "Outcome",
-      priceSubunits: 4_000,
-      amountSubunits: 10_000,
+      priceSubunits: 400,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -583,10 +583,10 @@ describe("useTradeSettlement", () => {
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-YES",
         settlementKind: "DirectSwap",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 3_900,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 300,
         baseAsset: "sat",
-        divisibility: 10_000,
+        divisibility: 1_000,
       });
     });
 
@@ -611,7 +611,7 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -642,10 +642,10 @@ describe("useTradeSettlement", () => {
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-YES",
         settlementKind: "DirectSwap",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 4_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 400,
         baseAsset: "sat",
-        divisibility: 10_000,
+        divisibility: 1_000,
       });
     });
 
@@ -669,11 +669,11 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "usd",
-      divisibility: 10_000,
+      divisibility: 1_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 1_000,
+      amountSubunits: 2_000,
       submittedAt: Date.now(),
     });
 
@@ -710,10 +710,10 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
         baseAsset: "usd",
-        divisibility: 10_000,
+        divisibility: 1_000,
       });
     });
 
@@ -843,9 +843,9 @@ describe("useTradeSettlement", () => {
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         baseAsset: "sat",
-        divisibility: 1_000,
-        outcomeFaceAmountSubunits: 1_000,
-        quotePaymentSubunits: 500,
+        divisibility: 2_000,
+        outcomeFaceAmountSubunits: 2_000,
+        quotePaymentSubunits: 1_000,
       });
     });
 
@@ -874,11 +874,11 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 2_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 500,
-      amountSubunits: 1_000,
+      priceSubunits: 1_000,
+      amountSubunits: 2_000,
       submittedAt: Date.now(),
     });
 
@@ -914,9 +914,9 @@ describe("useTradeSettlement", () => {
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         baseAsset: "sat",
-        divisibility: 1_000,
-        outcomeFaceAmountSubunits: 1_000,
-        quotePaymentSubunits: 500,
+        divisibility: 2_000,
+        outcomeFaceAmountSubunits: 2_000,
+        quotePaymentSubunits: 1_000,
       });
     });
 
@@ -931,9 +931,9 @@ describe("useTradeSettlement", () => {
       ];
     expect(swap.role).toBe("buyer");
     expect(swap.baseAsset).toBe("sat");
-    expect(swap.divisibility).toBe(1_000);
-    expect(swap.outcomeFaceAmountSubunits).toBe(1_000);
-    expect(swap.quotePaymentSubunits).toBe(500);
+    expect(swap.divisibility).toBe(2_000);
+    expect(swap.outcomeFaceAmountSubunits).toBe(2_000);
+    expect(swap.quotePaymentSubunits).toBe(1_000);
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
   });
 
@@ -944,11 +944,11 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 2_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 500,
-      amountSubunits: 1_000,
+      priceSubunits: 1_000,
+      amountSubunits: 2_000,
       submittedAt: Date.now(),
     });
 
@@ -984,9 +984,9 @@ describe("useTradeSettlement", () => {
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         baseAsset: "sat",
-        divisibility: 10_000,
-        outcomeFaceAmountSubunits: 10_000,
-        quotePaymentSubunits: 5_000,
+        divisibility: 1_000,
+        outcomeFaceAmountSubunits: 1_000,
+        quotePaymentSubunits: 500,
       });
     });
 
@@ -1016,8 +1016,8 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Buy",
       tokenSide: "Complement",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 500,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -1053,8 +1053,8 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
       });
     });
 
@@ -1103,8 +1103,8 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 500,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -1139,8 +1139,8 @@ describe("useTradeSettlement", () => {
         sellerLocktime: "2026-05-07T12:01:00Z",
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-YES",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
       });
     });
     await act(async () => {
@@ -1169,7 +1169,7 @@ describe("useTradeSettlement", () => {
       "cipher-adaptor",
       "cipher-seller",
       originalInputs,
-      5_000,
+      500,
       expect.objectContaining({
         operationId: "trade-buyer-recover/browser/buyer-lock",
       }),
@@ -1207,15 +1207,15 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Buy",
       tokenSide: "Complement",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 500,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
       preflightSplit: {
         reservationId,
         conditionId: "cond",
         keepOutcomeSetId: "YES",
         lockOutcomeSetId: "NO",
-        amountSats: 10_000,
+        amountSats: 1_000,
       },
     });
 
@@ -1251,11 +1251,11 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
-        divisibility: 10_000,
-        outcomeFaceAmountSubunits: 10_000,
-        quotePaymentSubunits: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
+        divisibility: 1_000,
+        outcomeFaceAmountSubunits: 1_000,
+        quotePaymentSubunits: 500,
       });
     });
     await waitFor(() =>
@@ -1263,7 +1263,7 @@ describe("useTradeSettlement", () => {
     );
     expect(mockSplitProofsForExactSend).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountSats: 10_000,
+        amountSats: 1_000,
         operationId:
           "trade-preflight-overpay/browser/seller-preflight-keep-exact-v2",
         preserveSourceKeyset: true,
@@ -1275,7 +1275,7 @@ describe("useTradeSettlement", () => {
     expect(mockSellerLockOutcomeProofs).toHaveBeenCalledWith(
       expect.objectContaining({ tradeId: "trade-preflight-overpay" }),
       [expect.objectContaining({ secret: "reserved-lock-no-10036" })],
-      10_000,
+      1_000,
       expect.objectContaining({
         operationId: "trade-preflight-overpay/browser/seller-preflight-lock",
       }),
@@ -1403,8 +1403,8 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 500,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -1427,8 +1427,8 @@ describe("useTradeSettlement", () => {
       sellerLocktime: "2026-05-07T12:01:00Z",
       buyerLocktime: "2026-05-07T12:00:00Z",
       marketId: "cond-YES",
-      outcomeFaceAmountSats: 10_000,
-      quotePaymentSats: 5_000,
+      outcomeFaceAmountSats: 1_000,
+      quotePaymentSats: 500,
     };
 
     await act(async () => callbacks.onTradeCreated(payload));
@@ -1452,8 +1452,8 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Sell",
       tokenSide: "Outcome",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 500,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -1478,8 +1478,8 @@ describe("useTradeSettlement", () => {
       sellerLocktime: "2026-05-07T12:01:00Z",
       buyerLocktime: "2026-05-07T12:00:00Z",
       marketId: "cond-YES",
-      outcomeFaceAmountSats: 10_000,
-      quotePaymentSats: 5_000,
+      outcomeFaceAmountSats: 1_000,
+      quotePaymentSats: 500,
     };
 
     await act(async () => callbacks.onTradeCreated(payload));
@@ -1527,8 +1527,8 @@ describe("useTradeSettlement", () => {
         ephemeralPubkeyHex: "22".repeat(32),
         side: "Sell",
         tokenSide: "Outcome",
-        priceSubunits: 5_000,
-        amountSubunits: 10_000,
+        priceSubunits: 500,
+        amountSubunits: 1_000,
       });
     });
 
@@ -1551,8 +1551,8 @@ describe("useTradeSettlement", () => {
         buyerPubkey: "33".repeat(32),
         sellerLocktime: "2026-05-07T12:00:00Z",
         buyerLocktime: "2026-05-07T12:01:00Z",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
       });
     });
 
@@ -1605,8 +1605,8 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 500,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -1639,12 +1639,12 @@ describe("useTradeSettlement", () => {
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-YES",
         settlementKind: "DirectSwap",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
         outcomeFaceAmountSubunits: 101,
-        quotePaymentSubunits: 5_000,
+        quotePaymentSubunits: 500,
         baseAsset: "sat",
-        divisibility: 10_000,
+        divisibility: 1_000,
       });
     });
 
@@ -1737,8 +1737,8 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 500,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -1775,12 +1775,12 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
-        outcomeFaceAmountSubunits: 10_000,
-        quotePaymentSubunits: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
+        outcomeFaceAmountSubunits: 1_000,
+        quotePaymentSubunits: 500,
         baseAsset: "usd",
-        divisibility: 10_000,
+        divisibility: 1_000,
       });
     });
 
@@ -1805,8 +1805,8 @@ describe("useTradeSettlement", () => {
       ephemeralPubkey: "02" + "22".repeat(32),
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 5_000,
-      amountSubunits: 10_000,
+      priceSubunits: 500,
+      amountSubunits: 1_000,
       submittedAt: Date.now(),
     });
 
@@ -1841,10 +1841,10 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSats: 10_000,
-        quotePaymentSats: 5_000,
+        outcomeFaceAmountSats: 1_000,
+        quotePaymentSats: 500,
         baseAsset: "sat",
-        divisibility: 10_000,
+        divisibility: 1_000,
       });
     });
 

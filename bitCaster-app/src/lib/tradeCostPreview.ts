@@ -1,6 +1,6 @@
 import type { LimitOrderPreview, OrderBook, TradeSide } from '@/types/market-detail'
 
-export const FACE_SATS_PER_DISPLAY_SHARE = 10_000
+export const FACE_SATS_PER_DISPLAY_SHARE = 1_000
 
 export function displaySharesToFaceSats(
   displayShares: number,

@@ -7,8 +7,8 @@ const validOrder = {
   outcomeId: 'YES',
   tokenSide: 'Outcome',
   side: 'Buy',
-  price: 4_200,
-  amountSats: 10_000,
+  price: 420,
+  amountSats: 1_000,
   timeInForce: 'GTC',
 }
 
@@ -34,16 +34,16 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
     ],
     [{ ...validOrder, tokenSide: 'Either' }, /tokenSide must be Outcome or Complement/],
     [{ ...validOrder, side: 'Hold' }, /side must be Buy or Sell/],
-    [{ ...validOrder, price: 0 }, /price must be an integer from 1 to 9999/],
-    [{ ...validOrder, price: 10_000 }, /price must be an integer from 1 to 9999/],
-    [{ ...validOrder, price: 42.5 }, /price must be an integer from 1 to 9999/],
+    [{ ...validOrder, price: 0 }, /price must be an integer from 1 to 999/],
+    [{ ...validOrder, price: 1_000 }, /price must be an integer from 1 to 999/],
+    [{ ...validOrder, price: 42.5 }, /price must be an integer from 1 to 999/],
     [
       { ...validOrder, amountSats: 0 },
-      /amountSats must be a positive integer in 10000 sub-unit increments/,
+      /amountSats must be a positive integer in 1000 sub-unit increments/,
     ],
     [
-      { ...validOrder, amountSats: 5_000 },
-      /amountSats must be a positive integer in 10000 sub-unit increments/,
+      { ...validOrder, amountSats: 500 },
+      /amountSats must be a positive integer in 1000 sub-unit increments/,
     ],
     [
       { ...validOrder, timeInForce: 'IOC' },

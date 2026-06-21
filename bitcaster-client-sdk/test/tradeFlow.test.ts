@@ -129,7 +129,7 @@ test('decideTradeCreated rejects non-default canonical amounts when only expecte
   }
 })
 
-test('decideTradeCreated derives system sat/10000 default from canonical payload when expected unit is missing', () => {
+test('decideTradeCreated derives system sat/1000 default from canonical payload when expected unit is missing', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -139,8 +139,8 @@ test('decideTradeCreated derives system sat/10000 default from canonical payload
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 4_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 400,
   })
 
   assert.deepEqual(decision, {
@@ -152,7 +152,7 @@ test('decideTradeCreated derives system sat/10000 default from canonical payload
   })
 })
 
-test('decideTradeCreated accepts default sat/10000 TradeCreated without expected unit assertion', () => {
+test('decideTradeCreated accepts default sat/1000 TradeCreated without expected unit assertion', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -163,9 +163,9 @@ test('decideTradeCreated accepts default sat/10000 TradeCreated without expected
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
-    divisibility: 10_000,
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 5_000,
+    divisibility: 1_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 500,
   })
 
   assert.equal(decision.accepted, true)
@@ -182,9 +182,9 @@ test('decideTradeCreated rejects non-default divisibility without expected unit 
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
-    divisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 500,
+    divisibility: 2_000,
+    outcomeFaceAmountSubunits: 2_000,
+    quotePaymentSubunits: 1_000,
   })
 
   assert.equal(decision.accepted, false)
@@ -205,11 +205,11 @@ test('decideTradeCreated accepts explicit non-default divisibility assertion', (
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
-    divisibility: 1_000,
+    divisibility: 2_000,
     expectedBaseAsset: 'sat',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 1_000,
-    quotePaymentSubunits: 500,
+    expectedDivisibility: 2_000,
+    outcomeFaceAmountSubunits: 2_000,
+    quotePaymentSubunits: 1_000,
   })
 
   assert.equal(decision.accepted, true)
@@ -226,11 +226,11 @@ test('decideTradeCreated rejects default divisibility when expected non-default 
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     expectedBaseAsset: 'sat',
-    expectedDivisibility: 1_000,
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 5_000,
+    expectedDivisibility: 2_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 500,
   })
 
   assert.equal(decision.accepted, false)
@@ -251,9 +251,9 @@ test('decideTradeCreated rejects non-default base asset without expected unit as
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'usd',
-    divisibility: 10_000,
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 5_000,
+    divisibility: 1_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 500,
   })
 
   assert.equal(decision.accepted, false)
@@ -274,11 +274,11 @@ test('decideTradeCreated accepts explicit non-default base asset assertion', () 
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'usd',
-    divisibility: 10_000,
+    divisibility: 1_000,
     expectedBaseAsset: 'usd',
-    expectedDivisibility: 10_000,
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 5_000,
+    expectedDivisibility: 1_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 500,
   })
 
   assert.equal(decision.accepted, true)
@@ -316,7 +316,7 @@ test('decideTradeCreated validates payload unit against expected local unit', ()
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     expectedBaseAsset: 'usd',
     expectedDivisibility: 1_000,
     outcomeFaceAmountSubunits: 1_000,
@@ -406,9 +406,9 @@ test('decideTradeCreated accepts explicit positive divisibility metadata', () =>
     buyerPubkey: 'def',
     sellerLocktime: 120,
     buyerLocktime: 60,
-    divisibility: 10_000,
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 4_000,
+    divisibility: 1_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 400,
   })
 
   assert.equal(decision.accepted, true)
@@ -510,14 +510,14 @@ test('decideTradeCreated accepts mint seller settlement backed by outcome-side b
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
     baseAsset: 'sat',
-    divisibility: 10_000,
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 9_900,
+    divisibility: 1_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 900,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Outcome',
       priceSubunits: 100,
-      amountSubunits: 10_000,
+      amountSubunits: 1_000,
       quotePolicy: 'exact',
     },
   })
@@ -535,13 +535,13 @@ test('decideTradeCreated accepts mint seller settlement backed by complement-sid
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 6_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 600,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Complement',
-      priceSubunits: 4_000,
-      amountSubunits: 10_000,
+      priceSubunits: 400,
+      amountSubunits: 1_000,
     },
   })
 
@@ -555,8 +555,8 @@ test('decideTradeCreated fails closed when expected order economics are required
     buyerPubkey: 'def',
     sellerLocktime: 120,
     buyerLocktime: 60,
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 4_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 400,
     requireExpectedOrder: true,
   })
 
@@ -577,12 +577,12 @@ test('decideTradeCreated accepts buy-side mint seller without explicit token sid
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'NO',
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 6_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 600,
     expectedOrder: {
       side: 'Buy',
-      priceSubunits: 4_000,
-      amountSubunits: 10_000,
+      priceSubunits: 400,
+      amountSubunits: 1_000,
     },
   })
 
@@ -597,13 +597,13 @@ test('decideTradeCreated accepts direct seller settlement backed by sell order',
     sellerLocktime: 120,
     buyerLocktime: 60,
     settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 4_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 400,
     expectedOrder: {
       side: 'Sell',
       tokenSide: 'Outcome',
-      priceSubunits: 4_000,
-      amountSubunits: 10_000,
+      priceSubunits: 400,
+      amountSubunits: 1_000,
     },
   })
 
@@ -618,13 +618,13 @@ test('decideTradeCreated accepts direct buyer settlement backed by buy order', (
     sellerLocktime: 120,
     buyerLocktime: 60,
     settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 4_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 400,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Outcome',
-      priceSubunits: 4_000,
-      amountSubunits: 10_000,
+      priceSubunits: 400,
+      amountSubunits: 1_000,
     },
   })
 
@@ -639,13 +639,13 @@ test('decideTradeCreated rejects direct seller settlement backed by buy order', 
     sellerLocktime: 120,
     buyerLocktime: 60,
     settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 4_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 400,
     expectedOrder: {
       side: 'Buy',
       tokenSide: 'Outcome',
-      priceSubunits: 4_000,
-      amountSubunits: 10_000,
+      priceSubunits: 400,
+      amountSubunits: 1_000,
     },
   })
 
@@ -664,13 +664,13 @@ test('decideTradeCreated rejects direct buyer settlement backed by sell order', 
     sellerLocktime: 120,
     buyerLocktime: 60,
     settlementKind: 'DirectSwap',
-    outcomeFaceAmountSubunits: 10_000,
-    quotePaymentSubunits: 4_000,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 400,
     expectedOrder: {
       side: 'Sell',
       tokenSide: 'Outcome',
-      priceSubunits: 4_000,
-      amountSubunits: 10_000,
+      priceSubunits: 400,
+      amountSubunits: 1_000,
     },
   })
 

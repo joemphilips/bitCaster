@@ -1073,7 +1073,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
     })
 
-    await t.test('order.submit validates D=10000 prices using engine market metadata', async () => {
+    await t.test('order.submit validates D=1000 prices using engine market metadata', async () => {
       await writeState(emptyDaemonState())
       let capturedRequest: unknown = null
       const engine: EngineClientLike = {
@@ -1081,7 +1081,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         async submitOrder(_marketId, request) {
           capturedRequest = request
           return {
-            orderId: 'order-d10000',
+            orderId: 'order-d1000',
             status: 'resting',
             remainingAmountSats: request.amountSats,
             ephemeralPubkey: request.ephemeralPubkey,
@@ -1101,7 +1101,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           return { markets: [], nextCursor: null }
         },
         async getMarket() {
-          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 10_000 }
+          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000 }
         },
       }
 
@@ -1112,8 +1112,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             marketId: 'cond-YES',
             outcomeId: 'YES',
             side: 'Buy',
-            price: 5_000,
-            amountSats: 10_000,
+            price: 500,
+            amountSats: 1_000,
             timeInForce: 'GTC',
           },
         },
@@ -1139,8 +1139,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         outcomeId: 'YES',
         tokenSide: 'Outcome',
         side: 'Buy',
-        price: 5_000,
-        amountSats: 10_000,
+        price: 500,
+        amountSats: 1_000,
         timeInForce: 'GTC',
         ephemeralPubkey: `02${'66'.repeat(32)}`,
       })

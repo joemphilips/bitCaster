@@ -13,7 +13,7 @@ describe('market-maker funding math', () => {
   })
 
   it('scales displayed categorical tiers by log2(outcome count)', () => {
-    expect(displayedFundingBudgetSats(10_000, 4)).toBe(20_000)
+    expect(displayedFundingBudgetSats(1_000, 4)).toBe(2_000)
     expect(displayedFundingBudgetSats(100_000, 4)).toBe(200_000)
     expect(displayedFundingBudgetSats(1_000_000, 4)).toBe(2_000_000)
   })

@@ -1,8 +1,8 @@
 export type MarketBaseAsset = 'sat' | 'usd' | 'jpy'
 
 export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
-export const DEFAULT_MARKET_DIVISIBILITY = 10_000
-export const SYSTEM_DIVISIBILITY = 10_000
+export const DEFAULT_MARKET_DIVISIBILITY = 1_000
+export const SYSTEM_DIVISIBILITY = 1_000
 
 export interface MarketUnitSpec {
   baseAsset?: MarketBaseAsset | null
@@ -50,9 +50,7 @@ export function marketSubunitLabel(value: MarketBaseAsset | string | null | unde
 }
 
 export function defaultCollateralUnit(value: MarketBaseAsset | string | null | undefined): string {
-  const baseAsset = normalizeMarketBaseAsset(value)
-  if (baseAsset === 'usd') return 'milli-cent'
-  return 'msat'
+  return normalizeMarketBaseAsset(value)
 }
 
 export function formatMarketSubunits(
@@ -101,9 +99,9 @@ export function formatShareFace(
   const normalizedDivisibility = normalizeMarketDivisibility(divisibility)
   const normalizedBaseAsset = normalizeMarketBaseAsset(baseAsset)
   if (normalizedBaseAsset === 'usd') {
-    return `$${(normalizedDivisibility / 100_000).toFixed(2)}`
+    return `$${(normalizedDivisibility / 100).toFixed(2)}`
   }
-  return `${(normalizedDivisibility / 1_000).toString()} sat`
+  return `${normalizedDivisibility.toString()} sat`
 }
 
 export function formatPricePercent(

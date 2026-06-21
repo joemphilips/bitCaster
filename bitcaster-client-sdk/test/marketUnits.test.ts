@@ -25,8 +25,8 @@ test('normalizes market unit defaults', () => {
   assert.equal(normalizeMarketBaseAsset('USD'), 'usd')
   assert.equal(normalizeMarketBaseAsset('bogus'), 'sat')
   assert.equal(normalizeMarketDivisibility(undefined), DEFAULT_MARKET_DIVISIBILITY)
-  assert.equal(DEFAULT_MARKET_DIVISIBILITY, 10_000)
-  assert.equal(SYSTEM_DIVISIBILITY, 10_000)
+  assert.equal(DEFAULT_MARKET_DIVISIBILITY, 1_000)
+  assert.equal(SYSTEM_DIVISIBILITY, 1_000)
   assert.equal(normalizeMarketDivisibility(100), 100)
   assert.equal(normalizeMarketDivisibility(1_000), 1_000)
   assert.equal(normalizeMarketDivisibility(250), 250)
@@ -40,15 +40,15 @@ test('normalizes market unit defaults', () => {
 })
 
 test('formats system market display units', () => {
-  assert.equal(defaultCollateralUnit('sat'), 'msat')
-  assert.equal(defaultCollateralUnit('usd'), 'milli-cent')
-  assert.equal(defaultCollateralUnit(null), 'msat')
-  assert.equal(defaultCollateralUnit('jpy'), 'msat')
-  assert.equal(formatPricePercentage(5_000, 10_000), '50.00%')
-  assert.equal(formatPricePercentage(5_327, 10_000), '53.27%')
-  assert.equal(formatPricePercentage(1, 10_000), '0.01%')
-  assert.equal(formatShareFace(10_000, 'sat'), '10 sat')
-  assert.equal(formatShareFace(10_000, 'usd'), '$0.10')
+  assert.equal(defaultCollateralUnit('sat'), 'sat')
+  assert.equal(defaultCollateralUnit('usd'), 'usd')
+  assert.equal(defaultCollateralUnit(null), 'sat')
+  assert.equal(defaultCollateralUnit('jpy'), 'jpy')
+  assert.equal(formatPricePercentage(500, 1_000), '50.00%')
+  assert.equal(formatPricePercentage(532, 1_000), '53.20%')
+  assert.equal(formatPricePercentage(1, 1_000), '0.10%')
+  assert.equal(formatShareFace(1_000, 'sat'), '1000 sat')
+  assert.equal(formatShareFace(1_000, 'usd'), '$10.00')
 })
 
 test('normalizes initial AMM liquidity to sat markets only', () => {
@@ -65,8 +65,8 @@ test('formats market subunits without confusing cents for dollars', () => {
   assert.equal(formatMarketSubunits(-50, 'usd'), '-$0.50')
   assert.equal(formatMarketSubunits(100, 'usd'), '$1.00')
   assert.equal(marketSubunitLabel('usd'), 'cents')
-  assert.equal(formatWholeShareFaceValue({ baseAsset: 'usd', divisibility: 10_000 }), '$0.10')
-  assert.equal(formatPricePercent(5_000, 10_000), '50.00%')
+  assert.equal(formatWholeShareFaceValue({ baseAsset: 'usd', divisibility: 1_000 }), '$10.00')
+  assert.equal(formatPricePercent(500, 1_000), '50.00%')
   assert.equal(formatPricePercent(50, 1_000), '5.00%')
   assert.equal(formatPricePercent(1, 1_000), '0.10%')
 })
@@ -103,11 +103,11 @@ test('computes quote payment by dividing into whole shares first', () => {
   )
   assert.equal(
     quotePaymentSubunits({
-      faceAmountSubunits: 10_000,
-      priceNumerator: 5_000,
-      divisibility: 10_000,
+      faceAmountSubunits: 1_000,
+        priceNumerator: 500,
+      divisibility: 1_000,
     }),
-    5_000,
+    500,
   )
 })
 
