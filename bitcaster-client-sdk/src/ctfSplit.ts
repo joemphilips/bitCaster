@@ -22,12 +22,13 @@ import {
   takeProofsForLock,
 } from "./proofSelection.ts";
 import {
-  normalizeMarketBaseAsset,
+  parseMarketBaseAsset,
   type MarketBaseAsset,
 } from "./marketUnits.ts";
 
 export interface CtfConditionalKeysetInfo {
   id: string;
+  unit?: string | null;
   condition_id: string;
   outcome_collection: string;
   outcome_collection_id: string;
@@ -36,6 +37,7 @@ export interface CtfConditionalKeysetInfo {
 
 export interface CtfConditionInfo {
   condition_id: string;
+  collateral?: string | null;
   keysets: Record<string, string>;
 }
 
@@ -145,10 +147,14 @@ export interface ComplementaryOutcomeLegResolution {
 export interface CtfRootPartitionSelection {
   lockOutcomeSetId: string;
   keepOutcomeSetId: string;
+  baseAsset?: CtfCollateralBaseAsset;
 }
 
 export interface CtfSplitTransport {
   getKeys(keysetId: string): Promise<MintKeys>;
+  getConditionalKeysets?(query?: {
+    active?: boolean;
+  }): Promise<CtfConditionalKeysetInfo[]>;
   getRootPartitionKeysets(
     conditionId: string,
     selection?: CtfRootPartitionSelection,
@@ -165,12 +171,19 @@ export interface CtfSplitTransport {
   }): Promise<CtfConvertResponse>;
 }
 
+export interface CtfSplitMakeOutputsInput {
+  collection: string;
+  amountSats: number;
+  keyset: MintKeys;
+}
+
+export type CtfSplitMakeOutputs = (
+  input: CtfSplitMakeOutputsInput,
+) => CtfSplitOutputData[];
+
 export interface CtfSplitOptions {
-  makeOutputs?: (input: {
-    collection: string;
-    amountSats: number;
-    keyset: MintKeys;
-  }) => CtfSplitOutputData[];
+  makeOutputs?: CtfSplitMakeOutputs;
+  baseAsset?: CtfCollateralBaseAsset;
   onPrepared?: (prepared: {
     inputs: Proof[];
     outputsByCollection: Record<string, CtfSplitOutputData[]>;
@@ -263,7 +276,7 @@ export async function splitRegularProofsWithOperation(params: {
       amount: amountToNumber(preview.amount),
       fees: amountToNumber(preview.fees),
       keysetId: preview.keysetId,
-      baseAsset: normalizeMarketBaseAsset(params.baseAsset),
+      baseAsset: requireMarketBaseAsset(params.baseAsset, "regular split baseAsset"),
       unselectedProofs: preview.unselectedProofs ?? [],
     },
   });
@@ -292,7 +305,7 @@ export async function selectCollateralForCtfSplit(
 
   const mint = new CashuMint(mintUrl);
   const wallet = new CashuWallet(mint, {
-    unit: normalizeMarketBaseAsset(baseAsset),
+    unit: requireMarketBaseAsset(baseAsset, "CTF split collateral baseAsset"),
   });
   await wallet.loadMint();
   if (!wallet.selectProofsToSend) {
@@ -396,6 +409,7 @@ export async function splitRootCompleteSetForSwap(params: {
     {
       lockOutcomeSetId: params.lockOutcomeSetId,
       keepOutcomeSetId: params.keepOutcomeSetId,
+      baseAsset: params.baseAsset,
     },
   );
   const outcomeLegs = resolveComplementaryOutcomeLegs(
@@ -473,6 +487,7 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
     {
       lockOutcomeSetId: params.lockOutcomeSetId,
       keepOutcomeSetId: params.keepOutcomeSetId,
+      baseAsset: params.baseAsset,
     },
   );
   const outcomeLegs = resolveComplementaryOutcomeLegs(
@@ -529,6 +544,7 @@ export async function resolveRootPreflightOutputAmountSats(params: {
     {
       lockOutcomeSetId: params.lockOutcomeSetId,
       keepOutcomeSetId: params.keepOutcomeSetId,
+      baseAsset: params.baseAsset,
     },
   );
 
@@ -569,6 +585,7 @@ export async function resolveRootDirectLockOutputAmountSats(params: {
     {
       lockOutcomeSetId: params.lockOutcomeSetId,
       keepOutcomeSetId: params.keepOutcomeSetId,
+      baseAsset: params.baseAsset,
     },
   );
   const outcomeLegs = resolveComplementaryOutcomeLegs(
@@ -622,7 +639,7 @@ export async function splitRootCompleteSet(
     inputs,
     splitKeysets,
     amountSats,
-    options,
+    { ...options, baseAsset: selection?.baseAsset ?? options.baseAsset },
   );
 }
 
@@ -635,6 +652,9 @@ export async function splitCompleteSet(
   options: CtfSplitOptions = {},
 ): Promise<Record<string, Proof[]>> {
   const normalizedInputs = inputs.map(normalizeProof);
+  const expectedBaseAsset = options.baseAsset
+    ? requireMarketBaseAsset(options.baseAsset, "CTF split baseAsset")
+    : null;
   validateSplitInput(
     conditionId,
     normalizedInputs,
@@ -652,7 +672,12 @@ export async function splitCompleteSet(
     return keyset;
   };
 
-  await validateInputBalance(normalizedInputs, amountSats, getCachedKeys);
+  await validateInputBalance(
+    normalizedInputs,
+    amountSats,
+    getCachedKeys,
+    expectedBaseAsset,
+  );
 
   const keysetsByCollection = new Map<string, MintKeys>();
   const outputsByCollection: Record<string, CtfSplitOutputData[]> = {};
@@ -662,6 +687,13 @@ export async function splitCompleteSet(
     outcomeCollectionKeysets,
   )) {
     const keyset = await getCachedKeys(keysetId);
+    if (expectedBaseAsset) {
+      validateKeysetUnit(
+        keyset,
+        expectedBaseAsset,
+        `CTF split output keyset ${keysetId} for ${collection}`,
+      );
+    }
     keysetsByCollection.set(collection, keyset);
     const outputs = makeOutputs({ collection, amountSats, keyset });
     validateOutputs(collection, keysetId, amountSats, outputs);
@@ -769,6 +801,12 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
     );
   }
 
+  async getConditionalKeysets(query?: {
+    active?: boolean;
+  }): Promise<CtfConditionalKeysetInfo[]> {
+    return (await this.mint.getConditionalKeysets(query)).keysets;
+  }
+
   async postSplit(
     request: Parameters<CtfSplitTransport["postSplit"]>[0],
   ): Promise<CtfConvertResponse> {
@@ -825,6 +863,7 @@ export async function splitCompleteSetWithOperation(params: {
     params.outcomeCollectionKeysets,
     params.amountSats,
     {
+      baseAsset: params.baseAsset,
       makeOutputs: params.makeOutputs,
       onPrepared: async (prepared) => {
         const preparedOutputs = Object.fromEntries(
@@ -844,7 +883,7 @@ export async function splitCompleteSetWithOperation(params: {
           metadata: {
             conditionId: params.conditionId,
             amountSats: params.amountSats,
-            baseAsset: normalizeMarketBaseAsset(params.baseAsset),
+            baseAsset: requireMarketBaseAsset(params.baseAsset, "CTF split baseAsset"),
             outcomeCollectionKeysets: params.outcomeCollectionKeysets,
           },
         });
@@ -923,7 +962,7 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     metadata: {
       conditionId: params.conditionId,
       outputAmountSats: params.outputAmountSats,
-      baseAsset: normalizeMarketBaseAsset(params.baseAsset),
+      baseAsset: requireMarketBaseAsset(params.baseAsset, "CTF merge baseAsset"),
       inputsByCollection: normalizedInputsByCollection,
     },
   });
@@ -1204,8 +1243,9 @@ async function resumeCtfSplit(
 }
 
 function readOperationBaseAsset(metadata: Record<string, unknown>): MarketBaseAsset {
-  return normalizeMarketBaseAsset(
+  return requireMarketBaseAsset(
     typeof metadata.baseAsset === "string" ? metadata.baseAsset : undefined,
+    "proof operation baseAsset",
   );
 }
 
@@ -1435,16 +1475,21 @@ export function selectRootPartitionKeysets(
   selection?: CtfRootPartitionSelection,
   conditionalKeysets: CtfConditionalKeysetInfo[] = [],
 ): Record<string, string> {
+  const baseAsset = requireMarketBaseAsset(
+    selection?.baseAsset ?? condition.collateral ?? "sat",
+    "CTF condition collateral",
+  );
   const rootKeysets = normalizeRootConditionKeysets(
     condition.condition_id,
     condition.keysets,
     conditionalKeysets,
+    baseAsset,
   );
 
   if (!selection) {
     if (Object.keys(rootKeysets).length < 2) {
       throw new Error(
-        `Expected at least two root sat CTF keysets for condition ${condition.condition_id}, found ${Object.keys(rootKeysets).length}`,
+        `Expected at least two root ${baseAsset} CTF keysets for condition ${condition.condition_id}, found ${Object.keys(rootKeysets).length}`,
       );
     }
     return rootKeysets;
@@ -1453,7 +1498,7 @@ export function selectRootPartitionKeysets(
   const selected = selectKeysetsMatchingSelection(rootKeysets, selection);
   if (Object.keys(selected).length < 2) {
     throw new Error(
-      `Expected root sat CTF keysets for condition ${condition.condition_id} matching lock ${selection.lockOutcomeSetId} and keep ${selection.keepOutcomeSetId}, found ${Object.keys(selected).length} of ${Object.keys(rootKeysets).length}`,
+      `Expected root ${baseAsset} CTF keysets for condition ${condition.condition_id} matching lock ${selection.lockOutcomeSetId} and keep ${selection.keepOutcomeSetId}, found ${Object.keys(selected).length} of ${Object.keys(rootKeysets).length}`,
     );
   }
   return selected;
@@ -1495,11 +1540,13 @@ function normalizeRootConditionKeysets(
   conditionId: string,
   keysets: Record<string, string>,
   conditionalKeysets: CtfConditionalKeysetInfo[],
+  baseAsset: MarketBaseAsset,
 ): Record<string, string> {
   const lookup = buildOutcomeCollectionKeysetLookup(
     conditionId,
     keysets,
     conditionalKeysets,
+    baseAsset,
   );
   const normalized = new Map<string, string>();
   for (const collection of Object.keys(keysets)) {
@@ -1512,6 +1559,7 @@ function normalizeRootConditionKeysets(
       const keyset = conditionalKeysets.find(
         (candidate) =>
           sameConditionId(candidate.condition_id, conditionId) &&
+          conditionalKeysetMatchesUnit(candidate, baseAsset) &&
           candidate.outcome_collection_id === collection,
       );
       if (keyset?.outcome_collection) {
@@ -1540,6 +1588,7 @@ function buildOutcomeCollectionKeysetLookup(
   conditionId: string,
   keysets: Record<string, string>,
   conditionalKeysets: CtfConditionalKeysetInfo[],
+  baseAsset: MarketBaseAsset,
 ): Map<string, string> {
   const lookup = new Map<string, string>();
   for (const [collection, keysetId] of Object.entries(keysets)) {
@@ -1548,6 +1597,7 @@ function buildOutcomeCollectionKeysetLookup(
   const conditionKeysetIds = new Set(Object.values(keysets));
   for (const keyset of conditionalKeysets) {
     if (!sameConditionId(keyset.condition_id, conditionId)) continue;
+    if (!conditionalKeysetMatchesUnit(keyset, baseAsset)) continue;
     const keysetId =
       keysets[keyset.outcome_collection] ??
       keysets[keyset.outcome_collection_id] ??
@@ -1561,6 +1611,44 @@ function buildOutcomeCollectionKeysetLookup(
     }
   }
   return lookup;
+}
+
+function conditionalKeysetMatchesUnit(
+  keyset: CtfConditionalKeysetInfo,
+  baseAsset: MarketBaseAsset,
+): boolean {
+  if (keyset.unit == null) return baseAsset === "sat";
+  return parseMarketBaseAsset(keyset.unit) === baseAsset;
+}
+
+function requireMarketBaseAsset(
+  value: CtfCollateralBaseAsset,
+  context: string,
+): MarketBaseAsset {
+  if (value == null) return "sat";
+  const parsed = parseMarketBaseAsset(value);
+  if (!parsed) {
+    throw new Error(`${context} must be one of: sat, usd, jpy`);
+  }
+  return parsed;
+}
+
+function validateKeysetUnit(
+  keyset: Pick<MintKeys, "id" | "unit">,
+  expectedBaseAsset: MarketBaseAsset,
+  context: string,
+): void {
+  if (keyset.unit == null) {
+    if (expectedBaseAsset === "sat") return;
+    throw new Error(`${context} is missing unit metadata for ${expectedBaseAsset}`);
+  }
+  const parsed = parseMarketBaseAsset(keyset.unit);
+  if (!parsed) {
+    throw new Error(`${context} has unsupported unit ${keyset.unit}`);
+  }
+  if (parsed !== expectedBaseAsset) {
+    throw new Error(`${context} unit mismatch: expected ${expectedBaseAsset}, got ${parsed}`);
+  }
 }
 
 function isOutcomeCollectionId(value: string): boolean {
@@ -1608,10 +1696,18 @@ async function validateInputBalance(
   inputs: Proof[],
   amountSats: number,
   getKeys: (keysetId: string) => Promise<MintKeys>,
+  expectedBaseAsset: MarketBaseAsset | null = null,
 ): Promise<void> {
   const inputFeePpkByKeyset: Record<string, number> = {};
   for (const proof of inputs) {
     const keyset = await getKeys(proof.id);
+    if (expectedBaseAsset) {
+      validateKeysetUnit(
+        keyset,
+        expectedBaseAsset,
+        `CTF split input proof keyset ${proof.id}`,
+      );
+    }
     inputFeePpkByKeyset[proof.id] = keyset.input_fee_ppk ?? 0;
   }
 

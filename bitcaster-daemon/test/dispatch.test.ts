@@ -1073,6 +1073,79 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
     })
 
+    await t.test('order.submit validates D=10000 prices using engine market metadata', async () => {
+      await writeState(emptyDaemonState())
+      let capturedRequest: unknown = null
+      const engine: EngineClientLike = {
+        ...scoreDisabledEngineMethods,
+        async submitOrder(_marketId, request) {
+          capturedRequest = request
+          return {
+            orderId: 'order-d10000',
+            status: 'resting',
+            remainingAmountSats: request.amountSats,
+            ephemeralPubkey: request.ephemeralPubkey,
+            fills: [],
+          }
+        },
+        async getOrderStatus() {
+          return null
+        },
+        async cancelOrder() {
+          throw new Error('cancelOrder unused')
+        },
+        async getOrderBook() {
+          throw new Error('getOrderBook unused')
+        },
+        async queryMarkets() {
+          return { markets: [], nextCursor: null }
+        },
+        async getMarket() {
+          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 10_000 }
+        },
+      }
+
+      const response = await dispatch(
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-YES',
+            outcomeId: 'YES',
+            side: 'Buy',
+            price: 5_000,
+            amountSats: 10_000,
+            timeInForce: 'GTC',
+          },
+        },
+        {
+          createEngineClient() {
+            return engine
+          },
+          generateEphemeralKeypair: () => ({
+            privateKeyHex: '55'.repeat(32),
+            publicKeyHex: `02${'66'.repeat(32)}`,
+          }),
+          tradeRuntime: {
+            async start() {
+              return { orders: [], trades: [] }
+            },
+            async stop() {},
+          },
+        },
+      )
+
+      assert.equal(response.ok, true)
+      assert.deepEqual(capturedRequest, {
+        outcomeId: 'YES',
+        tokenSide: 'Outcome',
+        side: 'Buy',
+        price: 5_000,
+        amountSats: 10_000,
+        timeInForce: 'GTC',
+        ephemeralPubkey: `02${'66'.repeat(32)}`,
+      })
+    })
+
     await t.test('order.submit starts runtime with complement order subscription state', async () => {
       const priorState = await readState()
       await writeState(emptyDaemonState())
@@ -1099,9 +1172,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
           async queryMarkets() {
             throw new Error('queryMarkets unused')
-          },
-          async getMarket() {
-            throw new Error('getMarket unused')
           },
         }
         let runtimeOrder:

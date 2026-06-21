@@ -4,9 +4,10 @@
  * The bug we are guarding against:
  *
  * - CDK rejects re-used deterministic blinded outputs as a database
- *   duplicate, then mislabels the error as `"Invoice already paid or
- *   pending"` (`cdk-common/src/error.rs:1017`, `Database(Duplicate)` →
- *   `ErrorCode::InvoiceAlreadyPaid`).
+ *   duplicate. Older builds mislabeled that as `"Invoice already paid or
+ *   pending"`; current builds expose `"Blinded message already signed or
+ *   pending"` (`cdk-common/src/error.rs`, `Database(Duplicate)` →
+ *   `ErrorCode::BlindedMessageAlreadySigned`).
  * - The `cdk-buy-yes` codex investigation (2026-05-06) traced this back to
  *   `ZustandCounterSource` lacking a migration for wallets that pre-existed
  *   commit `8711c73` — `keysetCounters[keysetId]` is `undefined`/0 while the
@@ -30,11 +31,13 @@ const mocks = vi.hoisted(() => {
     batchRestore: vi.fn(),
     groupProofsByState: vi.fn(),
     mint: { getKeySets: vi.fn() },
+    getKeyset: vi.fn(),
   }
+  const getWallet = vi.fn(async () => wallet)
   const store: {
     mnemonic: string
     activeMintUrl: string
-    mints: { url: string; keysets?: { id: string }[] }[]
+    mints: { url: string; keysets?: { id: string; unit?: string }[] }[]
     keysetCounters: Record<string, number>
     keysetCountersRecovered: Record<string, boolean>
     getWallet: (url?: string) => Promise<unknown>
@@ -44,7 +47,7 @@ const mocks = vi.hoisted(() => {
     mints: [{ url: 'https://mint.test', keysets: [{ id: 'k1' }] }],
     keysetCounters: {},
     keysetCountersRecovered: {},
-    getWallet: async () => wallet,
+    getWallet,
   }
   const setStateImpl = vi.fn((updater: unknown) => {
     if (typeof updater === 'function') {
@@ -53,7 +56,7 @@ const mocks = vi.hoisted(() => {
     }
   })
   const addProofs = vi.fn(async (_p: unknown[]) => {})
-  return { wallet, store, setStateImpl, addProofs }
+  return { wallet, store, setStateImpl, addProofs, getWallet }
 })
 
 vi.mock('@/stores/wallet', () => ({
@@ -77,12 +80,14 @@ import * as cashu from '../cashu'
 // `.code` and `.status`. The structural sanity check in
 // `isCdkDuplicateOutputsError` requires at least one to match, so the
 // tests build their thrown errors via this helper rather than bare `Error`.
-function cdkDuplicateError(): Error {
-  const e = new Error('Invoice already paid or pending') as Error & {
+function cdkDuplicateError(
+  message = 'Blinded message already signed or pending',
+): Error {
+  const e = new Error(message) as Error & {
     name: string; code: number; status: number
   }
   e.name = 'MintOperationError'
-  e.code = 20006
+  e.code = message.includes('Blinded message') ? 11003 : 20006
   e.status = 400
   return e
 }
@@ -91,6 +96,8 @@ beforeEach(() => {
   mocks.wallet.mintProofs.mockReset()
   mocks.wallet.batchRestore.mockReset()
   mocks.wallet.groupProofsByState.mockReset()
+  mocks.wallet.getKeyset.mockReset()
+  mocks.wallet.getKeyset.mockReturnValue({ id: 'k1' })
   // Default: every recovered proof is treated as UNSPENT unless a test
   // overrides — keeps existing tests behaving the same as before the
   // spent-filter landed.
@@ -107,16 +114,39 @@ beforeEach(() => {
   mocks.store.mints = [{ url: 'https://mint.test', keysets: [{ id: 'k1' }] }]
   mocks.store.mnemonic = 'seed words'
   mocks.addProofs.mockClear()
-  mocks.store.getWallet = async () => mocks.wallet
+  mocks.getWallet.mockClear()
+  mocks.getWallet.mockResolvedValue(mocks.wallet)
+  mocks.store.getWallet = mocks.getWallet
 })
 
 describe('mintProofs — CDK duplicate-output recovery', () => {
   const QUOTE = { quote: 'q1', request: 'lnbc1...' } as never
   const PROOFS = [{ id: 'k1', amount: 100, secret: 's1', C: 'C1' }] as never
 
+  it('advances persisted counters after a successful deterministic mint even when the wallet adapter did not persist the reservation', async () => {
+    mocks.wallet.mintProofs.mockResolvedValueOnce(PROOFS)
+
+    const result = await cashu.mintProofs(100, QUOTE, 'https://mint.test', 'usd')
+
+    expect(result).toEqual(PROOFS)
+    expect(mocks.store.keysetCounters.k1).toBe(1)
+  })
+
+  it('does not double-advance counters when cashu-ts already reserved the minted output range', async () => {
+    mocks.store.keysetCounters = { k1: 7 }
+    mocks.wallet.mintProofs.mockImplementationOnce(async () => {
+      mocks.store.keysetCounters = { k1: 8 }
+      return PROOFS
+    })
+
+    await cashu.mintProofs(100, QUOTE, 'https://mint.test', 'usd')
+
+    expect(mocks.store.keysetCounters.k1).toBe(8)
+  })
+
   it('retries mintProofs once after running counter recovery on CDK duplicate error', async () => {
     mocks.wallet.mintProofs
-      .mockRejectedValueOnce(cdkDuplicateError())
+      .mockRejectedValueOnce(cdkDuplicateError('Invoice already paid or pending'))
       .mockResolvedValueOnce(PROOFS)
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: [],
@@ -126,12 +156,49 @@ describe('mintProofs — CDK duplicate-output recovery', () => {
     const result = await cashu.mintProofs(100, QUOTE, 'https://mint.test')
 
     expect(result).toEqual(PROOFS)
-    // Counter advanced past the highest known signature.
-    expect(mocks.store.keysetCounters.k1).toBe(8)
+    // Counter advanced past the highest known signature and the retry mint.
+    expect(mocks.store.keysetCounters.k1).toBe(9)
     // Recovery flag set so the next mintProofs call doesn't re-run batchRestore.
     expect(mocks.store.keysetCountersRecovered.k1).toBe(true)
     expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(2)
     expect(mocks.wallet.batchRestore).toHaveBeenCalledTimes(1)
+  })
+
+  it('also retries the current CDK blinded-message duplicate detail', async () => {
+    mocks.wallet.mintProofs
+      .mockRejectedValueOnce(cdkDuplicateError('Blinded message already signed or pending'))
+      .mockResolvedValueOnce(PROOFS)
+    mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
+      keysets: [{ id: 'k1', unit: 'usd' }],
+    })
+    mocks.wallet.batchRestore.mockResolvedValueOnce({
+      proofs: [],
+      lastCounterWithSignature: 11,
+    })
+
+    const result = await cashu.mintProofs(100, QUOTE, 'https://mint.test', 'usd')
+
+    expect(result).toEqual(PROOFS)
+    expect(mocks.store.keysetCounters.k1).toBe(13)
+    expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(2)
+  })
+
+  it('falls back to a bounded active-keyset counter bump when duplicate recovery cannot scan the unit', async () => {
+    mocks.wallet.mintProofs
+      .mockRejectedValueOnce(cdkDuplicateError('Blinded message already signed or pending'))
+      .mockResolvedValueOnce(PROOFS)
+    mocks.wallet.getKeyset.mockReturnValue({ id: 'usd-keyset' })
+    mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
+      keysets: [{ id: 'usd-keyset', unit: 'usd' }],
+    })
+    mocks.wallet.batchRestore.mockRejectedValueOnce(new Error('restore unavailable'))
+
+    const result = await cashu.mintProofs(100, QUOTE, 'https://mint.test', 'usd')
+
+    expect(result).toEqual(PROOFS)
+    expect(mocks.wallet.batchRestore).toHaveBeenCalledOnce()
+    expect(mocks.store.keysetCounters['usd-keyset']).toBe(100)
+    expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(2)
   })
 
   it('persists any proofs that batchRestore recovers (so the user does not lose ecash)', async () => {
@@ -141,17 +208,24 @@ describe('mintProofs — CDK duplicate-output recovery', () => {
     const recoveredProofs = [
       { id: 'k1', amount: 50, secret: 'rs1', C: 'rC1' },
     ] as never
+    mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
+      keysets: [{ id: 'k1', unit: 'usd' }],
+    })
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: recoveredProofs,
       lastCounterWithSignature: 3,
     })
 
-    await cashu.mintProofs(100, QUOTE, 'https://mint.test')
+    await cashu.mintProofs(100, QUOTE, 'https://mint.test', 'usd')
 
     expect(mocks.addProofs).toHaveBeenCalledOnce()
     expect(mocks.addProofs).toHaveBeenCalledWith(
       expect.arrayContaining([
-        expect.objectContaining({ secret: 'rs1', mintUrl: 'https://mint.test' }),
+        expect.objectContaining({
+          secret: 'rs1',
+          mintUrl: 'https://mint.test',
+          baseAsset: 'usd',
+        }),
       ]),
     )
   })
@@ -183,7 +257,7 @@ describe('mintProofs — CDK duplicate-output recovery', () => {
 
     await expect(
       cashu.mintProofs(100, QUOTE, 'https://mint.test'),
-    ).rejects.toThrow('Invoice already paid or pending')
+    ).rejects.toThrow('Blinded message already signed or pending')
     expect(mocks.wallet.mintProofs).toHaveBeenCalledTimes(2) // one retry, no more
   })
 
@@ -219,6 +293,39 @@ describe('recoverKeysetCountersForMint — idempotency', () => {
     expect(mocks.store.keysetCounters).toEqual({ k1: 5, k2: 10 })
     expect(mocks.store.keysetCountersRecovered).toEqual({ k1: true, k2: true })
     expect(r.scannedKeysets).toEqual(['k1', 'k2'])
+  })
+
+  it('walks every advertised keyset unit when no baseAsset filter is provided', async () => {
+    mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
+      keysets: [{ id: 'sat-keyset', unit: 'sat' }, { id: 'usd-keyset', unit: 'usd' }],
+    })
+    mocks.wallet.batchRestore
+      .mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 2 })
+      .mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 8 })
+
+    const r = await cashu.recoverKeysetCountersForMint('https://mint.test')
+
+    expect(mocks.getWallet).toHaveBeenCalledWith('https://mint.test', 'sat')
+    expect(mocks.getWallet).toHaveBeenCalledWith('https://mint.test', 'usd')
+    expect(mocks.store.keysetCounters).toEqual({ 'sat-keyset': 3, 'usd-keyset': 9 })
+    expect(r.scannedKeysets).toEqual(['sat-keyset', 'usd-keyset'])
+  })
+
+  it('filters recovery to the requested non-sat unit', async () => {
+    mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
+      keysets: [{ id: 'sat-keyset', unit: 'sat' }, { id: 'usd-keyset', unit: 'usd' }],
+    })
+    mocks.wallet.batchRestore.mockResolvedValueOnce({
+      proofs: [],
+      lastCounterWithSignature: 4,
+    })
+
+    const r = await cashu.recoverKeysetCountersForMint('https://mint.test', { baseAsset: 'usd' })
+
+    expect(mocks.wallet.batchRestore).toHaveBeenCalledWith(300, 100, 0, 'usd-keyset')
+    expect(mocks.wallet.batchRestore).toHaveBeenCalledTimes(1)
+    expect(mocks.store.keysetCounters).toEqual({ 'usd-keyset': 5 })
+    expect(r.scannedKeysets).toEqual(['usd-keyset'])
   })
 
   it('uses fresh keysets from mint.getKeySets, not stale store keysets (codex review #3)', async () => {

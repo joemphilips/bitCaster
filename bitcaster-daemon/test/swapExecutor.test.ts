@@ -42,6 +42,7 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...directSellerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -131,6 +132,7 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
       marketId: 'cond-A',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...directSellerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -500,6 +502,7 @@ test('DaemonSwapExecutor leaves persisted seller open resumable when hub send fa
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...directSellerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -561,6 +564,7 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...directSellerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -628,6 +632,7 @@ test('DaemonSwapExecutor retries mint-pending seller open without another event'
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...directSellerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -707,6 +712,7 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
       marketId: 'cond-NO',
       status: 'resting',
       ephemeralPubkey: `03${'33'.repeat(32)}`,
+      ...directBuyerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -874,6 +880,7 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...mintSellerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -1014,6 +1021,7 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...mintSellerOrderEconomics(),
       preflightSplit: {
         reservationId,
         conditionId: 'cond',
@@ -1141,6 +1149,7 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
       marketId: 'cond-A',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...mintSellerOrderEconomics(),
       preflightSplit: {
         reservationId,
         conditionId: 'cond',
@@ -1295,6 +1304,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...mintSellerOrderEconomics(),
       preflightSplit: {
         reservationId,
         conditionId: 'cond',
@@ -1535,6 +1545,33 @@ function orderKey(secrets: DaemonSecrets): DaemonSecrets['orderEphemeralKeys'][s
     privateKeyHex: '11'.repeat(32),
     publicKeyHex: `02${'11'.repeat(32)}`,
     createdAt: secrets.createdAt,
+  }
+}
+
+function directSellerOrderEconomics() {
+  return {
+    side: 'Sell' as const,
+    tokenSide: 'Outcome' as const,
+    priceSubunits: 42,
+    amountSubunits: 100,
+  }
+}
+
+function directBuyerOrderEconomics() {
+  return {
+    side: 'Buy' as const,
+    tokenSide: 'Outcome' as const,
+    priceSubunits: 42,
+    amountSubunits: 100,
+  }
+}
+
+function mintSellerOrderEconomics() {
+  return {
+    side: 'Buy' as const,
+    tokenSide: 'Complement' as const,
+    priceSubunits: 58,
+    amountSubunits: 100,
   }
 }
 

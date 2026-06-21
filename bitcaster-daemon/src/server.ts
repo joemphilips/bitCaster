@@ -559,18 +559,49 @@ export async function dispatch(
         tokenSide: 'Outcome' as const,
         ...command.params,
       }
-      const requestValidation = validateOrderIntent(orderParams)
+      let profile: Awaited<ReturnType<typeof readProfile>> | null = null
+      let secrets: Awaited<ReturnType<typeof readSecrets>> | null = null
+      let client: EngineClientLike | null = null
+      const ensureOrderContext = async (): Promise<
+        | { ok: true; profile: NonNullable<typeof profile>; secrets: NonNullable<typeof secrets>; client: EngineClientLike }
+        | { ok: false; error: string }
+      > => {
+        profile ??= await readProfile()
+        if (!profile) {
+          return { ok: false, error: 'daemon profile is not initialized' }
+        }
+        secrets ??= await readSecrets()
+        if (!secrets) {
+          return { ok: false, error: 'daemon secrets are not initialized' }
+        }
+        client ??= createEngineClient(deps, {
+          baseUrl: profile.engineBaseUrl,
+          nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+        })
+        return { ok: true, profile, secrets, client }
+      }
+
+      let requestValidation = validateOrderIntent(orderParams)
+      if (
+        !requestValidation.valid &&
+        shouldRetryOrderValidationWithMarketUnit(orderParams, requestValidation.message)
+      ) {
+        const context = await ensureOrderContext()
+        if (!context.ok) return context
+        const marketUnit = await loadMarketUnit(
+          context.client,
+          conditionIdFromMarketId(orderParams.marketId),
+        )
+        requestValidation = validateOrderIntent({
+          ...orderParams,
+          divisibility: marketUnit.divisibility,
+        })
+      }
       if (!requestValidation.valid) {
         return { ok: false, error: requestValidation.message }
       }
-      const profile = await readProfile()
-      if (!profile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      const secrets = await readSecrets()
-      if (!secrets) {
-        return { ok: false, error: 'daemon secrets are not initialized' }
-      }
+      const context = await ensureOrderContext()
+      if (!context.ok) return context
       const settlementSupport = checkOrderSettlementSupport({
         request: { side: orderParams.side },
       })
@@ -579,13 +610,9 @@ export async function dispatch(
       }
       const ephemeral =
         deps.generateEphemeralKeypair?.() ?? generateOrderEphemeralKeypair()
-      const client = createEngineClient(deps, {
-        baseUrl: profile.engineBaseUrl,
-        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-      })
       const preparedPreflight = await maybePreparePreflightSplitForOrder({
-        client,
-        mintUrl: profile.mintUrl,
+        client: context.client,
+        mintUrl: context.profile.mintUrl,
         marketId: orderParams.marketId,
         outcomeId: orderParams.outcomeId,
         side: orderParams.side,
@@ -599,9 +626,9 @@ export async function dispatch(
       let participationScore: DaemonParticipationScorePreflightResult
       try {
         participationScore = await ensureDaemonParticipationScoreForNextMatch({
-          client,
-          profile,
-          secrets,
+          client: context.client,
+          profile: context.profile,
+          secrets: context.secrets,
           deps,
         })
       } catch (err) {
@@ -612,7 +639,7 @@ export async function dispatch(
       }
       let submitted: SubmitOrderResponse
       try {
-        submitted = await client.submitOrder(orderParams.marketId, {
+        submitted = await context.client.submitOrder(orderParams.marketId, {
           outcomeId: orderParams.outcomeId,
           tokenSide: orderParams.tokenSide,
           side: orderParams.side,
@@ -640,6 +667,9 @@ export async function dispatch(
         submitted,
         preparedPreflight,
         orderParams.tokenSide,
+        orderParams.side,
+        orderParams.price,
+        orderParams.amountSats,
       )
       await updateSecrets((current, now) => {
         current.orderEphemeralKeys[submitted.orderId] = {
@@ -1054,6 +1084,34 @@ function extractParentCollectionId(market: unknown): string | undefined {
 function conditionIdFromMarketId(marketId: string): string {
   const parsed = splitMarketId(marketId)
   return parsed?.conditionId ?? marketId
+}
+
+function shouldRetryOrderValidationWithMarketUnit(
+  request: unknown,
+  validationMessage: string,
+): boolean {
+  if (!validationMessage.includes('price must be an integer') &&
+      !validationMessage.includes('amountSats must be a positive integer')) {
+    return false
+  }
+  if (typeof request !== 'object' || request === null || Array.isArray(request)) {
+    return false
+  }
+
+  const intent = request as { price?: unknown; amountSats?: unknown }
+  const price = intent.price
+  const amountSats = intent.amountSats
+  if (typeof price !== 'number' || typeof amountSats !== 'number') {
+    return false
+  }
+  if (!Number.isInteger(price) || !Number.isInteger(amountSats)) {
+    return false
+  }
+  if (price <= 0 || amountSats <= 0) {
+    return false
+  }
+
+  return price >= DEFAULT_MARKET_DIVISIBILITY || amountSats >= DEFAULT_MARKET_DIVISIBILITY
 }
 
 async function maybePreparePreflightSplitForOrder(input: {

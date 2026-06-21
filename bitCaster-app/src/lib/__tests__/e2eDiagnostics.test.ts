@@ -54,4 +54,45 @@ describe("e2e diagnostics", () => {
     expect(serialized).not.toContain("33".repeat(32));
     expect(serialized).not.toContain("ciphertext");
   });
+
+  it("retains a sanitized terminal swap after the active row is removed", () => {
+    installE2EDiagnostics();
+    useActiveSwapsStore.getState().promote({
+      tradeId: "trade-removed",
+      orderId: "order-removed",
+      marketId: "cond-Yes",
+      ephemeralPrivkeyHex: "55".repeat(32),
+      ephemeralPubkeyHex: "02" + "66".repeat(32),
+      baseAsset: "usd",
+      divisibility: 1000,
+    });
+    useActiveSwapsStore.getState().setRoleAndCounterparty(
+      "trade-removed",
+      "buyer",
+      "77".repeat(32),
+      { sellerLocktime: 1, buyerLocktime: 2 },
+      {
+        baseAsset: "usd",
+        divisibility: 1000,
+        outcomeFaceAmountSubunits: 1000,
+        quotePaymentSubunits: 999,
+      },
+    );
+    useActiveSwapsStore.getState().setStep("trade-removed", "completed");
+    useActiveSwapsStore.getState().remove("trade-removed");
+
+    const snapshot = getSwapDiagnostics("trade-removed");
+    const serialized = JSON.stringify(snapshot);
+
+    expect(snapshot.activeTrade).toMatchObject({
+      tradeId: "trade-removed",
+      step: "completed",
+      baseAsset: "usd",
+      divisibility: 1000,
+      outcomeFaceAmountSubunits: 1000,
+      quotePaymentSubunits: 999,
+    });
+    expect(snapshot.activeTradeIds).toEqual([]);
+    expect(serialized).not.toContain("55".repeat(32));
+  });
 });

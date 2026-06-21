@@ -89,7 +89,7 @@ export function ToastContainer() {
       role="status"
       aria-live="polite"
       aria-label="Notifications"
-      className="fixed z-50 pointer-events-auto flex flex-col gap-2 top-4 left-4 right-4 sm:top-auto sm:left-auto sm:bottom-4 sm:right-4 sm:w-80"
+      className="fixed z-50 pointer-events-auto flex flex-col gap-2 top-16 left-3 right-3 sm:top-auto sm:left-auto sm:bottom-4 sm:right-4 sm:w-80"
     >
       {toasts.map((t) => (
         <ToastItem key={t.id} toast={t} />

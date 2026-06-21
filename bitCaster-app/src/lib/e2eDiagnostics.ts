@@ -9,6 +9,12 @@ type SanitizedActiveSwap = {
   role: string | null;
   step: string;
   error: string | null;
+  baseAsset: string | null;
+  divisibility: number | null;
+  quotePaymentSats: number | null;
+  quotePaymentSubunits: number | null;
+  outcomeFaceAmountSats: number | null;
+  outcomeFaceAmountSubunits: number | null;
   messageTypes: string[];
   inFlightSteps: string[];
 };
@@ -26,6 +32,9 @@ export type SwapDiagnosticsSnapshot = {
   pendingOrderIds: string[];
   pendingTrades: Record<string, SanitizedPendingTrade>;
 };
+
+const recentTerminalSwaps = new Map<string, SanitizedActiveSwap>();
+let unsubscribeActiveSwapDiagnostics: (() => void) | null = null;
 
 declare global {
   interface Window {
@@ -52,7 +61,10 @@ export function getSwapDiagnostics(tradeId: string): SwapDiagnosticsSnapshot {
   );
 
   return {
-    activeTrade: sanitizeActiveSwap(activeState.byTradeId[tradeId] ?? null),
+    activeTrade:
+      sanitizeActiveSwap(activeState.byTradeId[tradeId] ?? null) ??
+      recentTerminalSwaps.get(tradeId) ??
+      null,
     activeTradeIds: Object.keys(activeState.byTradeId),
     pendingOrderIds: Object.keys(pendingState.byOrderId),
     pendingTrades,
@@ -61,10 +73,39 @@ export function getSwapDiagnostics(tradeId: string): SwapDiagnosticsSnapshot {
 
 export function installE2EDiagnostics(): void {
   if (typeof window === "undefined") return;
+  if (!unsubscribeActiveSwapDiagnostics) {
+    unsubscribeActiveSwapDiagnostics = useActiveSwapsStore.subscribe(
+      (state, previous) => {
+        for (const [tradeId, swap] of Object.entries(previous.byTradeId)) {
+          if (!(tradeId in state.byTradeId)) {
+            rememberTerminalSwap(swap);
+          }
+        }
+        for (const swap of Object.values(state.byTradeId)) {
+          if (swap.step === "completed" || swap.step === "failed") {
+            rememberTerminalSwap(swap);
+          }
+        }
+      },
+    );
+  }
   window.__BITCASTER_E2E__ = {
     getSwapDiagnostics,
     getNip17ListenerDiagnostics,
   };
+}
+
+function rememberTerminalSwap(
+  swap: NonNullable<
+    ReturnType<typeof useActiveSwapsStore.getState>["byTradeId"][string]
+  >,
+): void {
+  const sanitized = sanitizeActiveSwap(swap);
+  if (!sanitized) return;
+  recentTerminalSwaps.set(swap.tradeId, sanitized);
+  if (recentTerminalSwaps.size <= 20) return;
+  const oldest = recentTerminalSwaps.keys().next().value;
+  if (oldest) recentTerminalSwaps.delete(oldest);
 }
 
 function sanitizeActiveSwap(
@@ -80,6 +121,12 @@ function sanitizeActiveSwap(
     role: swap.role,
     step: swap.step,
     error: swap.error,
+    baseAsset: swap.baseAsset,
+    divisibility: swap.divisibility,
+    quotePaymentSats: swap.quotePaymentSats,
+    quotePaymentSubunits: swap.quotePaymentSubunits,
+    outcomeFaceAmountSats: swap.outcomeFaceAmountSats,
+    outcomeFaceAmountSubunits: swap.outcomeFaceAmountSubunits,
     messageTypes: Object.keys(swap.messages),
     inFlightSteps: Object.keys(swap.inFlightSteps),
   };

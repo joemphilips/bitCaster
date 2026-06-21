@@ -113,12 +113,13 @@ export async function createMintQuote(
 
 /** Mint proofs after the invoice in `quote` has been paid.
  *
- * Wraps cashu-ts `wallet.mintProofs` with a one-shot recovery+retry on the
- * CDK "Invoice already paid or pending" error. That string is misleading:
- * `cdk-common/src/error.rs:1017` maps any database-duplicate error to
- * `ErrorCode::InvoiceAlreadyPaid` with that detail — including the case
- * where the wallet's deterministic blinded outputs (counter-derived) collide
- * with outputs the mint already signed for this seed.
+ * Wraps cashu-ts `wallet.mintProofs` with a one-shot recovery+retry on CDK's
+ * database-duplicate response. Older CDK builds surfaced this as the
+ * misleading `"Invoice already paid or pending"` detail. Current CDK maps the
+ * same database duplicate to `"Blinded message already signed or pending"` /
+ * `ErrorCode::BlindedMessageAlreadySigned`. Both mean the wallet's
+ * deterministic blinded outputs (counter-derived) collided with outputs the
+ * mint already signed for this seed.
  *
  * When the safety net trips:
  *  1. Force a counter rescan against the relevant keysets (bypassing the
@@ -137,8 +138,14 @@ export async function mintProofs(
   baseAsset?: MarketBaseAsset | string | null,
 ): Promise<Proof[]> {
   const wallet = await getWallet(mintUrl, baseAsset);
+  const mintOnce = async (): Promise<Proof[]> => {
+    const beforeCounters = snapshotCountersForSuccessfulMintRepair();
+    const proofs = await wallet.mintProofs(amountSats, quote.quote);
+    repairCountersAfterSuccessfulMint(proofs, beforeCounters);
+    return proofs;
+  };
   try {
-    return await wallet.mintProofs(amountSats, quote.quote);
+    return await mintOnce();
   } catch (err) {
     if (!isCdkDuplicateOutputsError(err)) throw err;
     // Anonymous (no-mnemonic) wallets cannot have deterministic counter
@@ -150,28 +157,62 @@ export async function mintProofs(
     );
     const result = await recoverKeysetCountersForMint(url, { force: true, baseAsset });
     if (!result.scannedKeysets.length) {
-      // Recovery couldn't scan ANY keyset (network down, mint unreachable,
-      // store had no keysets). A retry would just re-throw the same error.
-      throw err;
+      // Recovery couldn't scan the active unit (network down, restore not
+      // supported for that unit, stale keyset metadata). Skip a bounded
+      // deterministic counter window before the one allowed retry so local
+      // wallets can still escape a stale counter without looping forever.
+      const bumped = await bumpActiveKeysetCounter(wallet, baseAsset).catch(
+        () => false,
+      );
+      if (!bumped) throw err;
     }
     // ZustandCounterSource.reserve() reads from the live store on every
     // call (`stores/wallet.ts:65`), so the cached cashu-ts wallet picks up
     // the recovered counter on the retry without rebuilding the wallet.
-    return await wallet.mintProofs(amountSats, quote.quote);
+    return await mintOnce();
   }
 }
 
+function snapshotCountersForSuccessfulMintRepair(): Record<string, number> | null {
+  if (!useWalletStore.getState().mnemonic) return null;
+  return { ...useWalletStore.getState().keysetCounters };
+}
+
+function repairCountersAfterSuccessfulMint(
+  proofs: Proof[],
+  beforeCounters: Record<string, number> | null,
+): void {
+  if (!beforeCounters || proofs.length === 0) return;
+  const mintedByKeyset = new Map<string, number>();
+  for (const proof of proofs) {
+    if (!proof.id) continue;
+    mintedByKeyset.set(proof.id, (mintedByKeyset.get(proof.id) ?? 0) + 1);
+  }
+  if (mintedByKeyset.size === 0) return;
+  useWalletStore.setState((s) => {
+    let changed = false;
+    const nextCounters = { ...s.keysetCounters };
+    for (const [keysetId, mintedCount] of mintedByKeyset) {
+      const floor = (beforeCounters[keysetId] ?? 0) + mintedCount;
+      const current = nextCounters[keysetId] ?? 0;
+      if (current < floor) {
+        nextCounters[keysetId] = floor;
+        changed = true;
+      }
+    }
+    return changed ? { keysetCounters: nextCounters } : s;
+  });
+}
+
 /**
- * Match the CDK "Invoice already paid or pending" error precisely. CDK emits
- * this string for `Database(Duplicate)` (see `cdk-common/src/error.rs:1017`)
- * — typically a deterministic-output / counter collision, NOT an actual
- * payment-state issue. We match on the literal detail string AND cashu-ts's
- * `MintOperationError` shape (a 400 with a numeric `code`); both must
- * match so a stray bare `Error('Invoice already paid or pending')` from app
- * code can't trip the recovery path. NOTE: matching on `code` alone is
- * unsafe — CDK's `20006` is also used for genuine paid-quote cases — so we
- * use the message as the discriminator and the code/status as a structural
- * sanity check.
+ * Match CDK's database-duplicate mint response precisely. This is typically a
+ * deterministic-output / counter collision, NOT an actual payment-state issue.
+ * We match on known literal detail strings AND cashu-ts's `MintOperationError`
+ * shape (a 400 with a numeric `code`); both must match so a stray bare
+ * `Error(...)` from app code can't trip the recovery path. NOTE: matching on
+ * `code` alone is unsafe — older CDK used `20006` for both genuine paid-quote
+ * cases and database duplicates — so we use the message as the discriminator
+ * and the code/status as a structural sanity check.
  */
 function isCdkDuplicateOutputsError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
@@ -182,7 +223,12 @@ function isCdkDuplicateOutputsError(err: unknown): boolean {
     name?: unknown;
   };
   const msg = typeof e.message === "string" ? e.message : "";
-  if (!msg.includes("Invoice already paid or pending")) return false;
+  if (
+    !msg.includes("Invoice already paid or pending") &&
+    !msg.includes("Blinded message already signed or pending")
+  ) {
+    return false;
+  }
   // Structural sanity check: cashu-ts surfaces this as `MintOperationError`
   // with status 400. If neither shape matches, the error is some other code
   // path (e.g. a wrapped fetch failure) using the same human string — skip.
@@ -197,6 +243,38 @@ export interface KeysetRecoveryResult {
   /** Keyset IDs that were scanned (regardless of whether anything new was
    *  found). Empty means recovery couldn't run (e.g. mint unreachable). */
   scannedKeysets: string[];
+}
+
+type RecoverableMintKeyset = {
+  id: string;
+  unit?: string | null;
+};
+
+const COUNTER_RECOVERY_FALLBACK_SKIP = 100;
+
+function keysetBaseAsset(keyset: RecoverableMintKeyset): MarketBaseAsset {
+  return normalizeMarketBaseAsset(keyset.unit);
+}
+
+async function bumpActiveKeysetCounter(
+  wallet: CashuWallet,
+  baseAsset?: MarketBaseAsset | string | null,
+): Promise<boolean> {
+  const keyset = wallet.getKeyset();
+  if (!keyset?.id) return false;
+  useWalletStore.setState((s) => {
+    const current = s.keysetCounters[keyset.id] ?? 0;
+    return {
+      keysetCounters: {
+        ...s.keysetCounters,
+        [keyset.id]: current + COUNTER_RECOVERY_FALLBACK_SKIP,
+      },
+    };
+  });
+  console.warn(
+    `[cashu] counter recovery could not scan ${normalizeMarketBaseAsset(baseAsset)} keyset ${keyset.id}; advanced by ${COUNTER_RECOVERY_FALLBACK_SKIP}`,
+  );
+  return true;
 }
 
 /**
@@ -223,63 +301,75 @@ export async function recoverKeysetCountersForMint(
   const url = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
   if (!store.mnemonic) return { scannedKeysets: [] };
-  const wallet = await getWallet(url, opts.baseAsset);
+  const requestedUnit = opts.baseAsset === undefined || opts.baseAsset === null
+    ? null
+    : normalizeMarketBaseAsset(opts.baseAsset);
+  const discoveryWallet = await getWallet(url, requestedUnit);
   // Use the wallet's freshly-loaded keysets via the underlying mint, not the
   // possibly-stale `store.mints[].keysets`. After mint key rotation the
   // store can be days behind; the duplicate-error path needs to scan
   // whatever keyset the wallet is actually trying to mint against right now.
-  const fresh = await wallet.mint.getKeySets().catch(() => null);
-  const keysets =
+  const fresh = await discoveryWallet.mint.getKeySets().catch(() => null);
+  const keysets: RecoverableMintKeyset[] =
     fresh?.keysets ?? store.mints.find((m) => m.url === url)?.keysets ?? [];
+  const units = requestedUnit
+    ? [requestedUnit]
+    : Array.from(new Set(keysets.map(keysetBaseAsset)));
   const scanned: string[] = [];
-  for (const keyset of keysets) {
-    const recovered =
-      useWalletStore.getState().keysetCountersRecovered[keyset.id];
-    if (!opts.force && recovered) continue;
-    try {
-      const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
-        300,
-        100,
-        0,
-        keyset.id,
-      );
-      const next =
-        lastCounterWithSignature !== undefined
-          ? lastCounterWithSignature + 1
-          : 0;
-      const current = useWalletStore.getState().keysetCounters[keyset.id] ?? 0;
-      const advanced = Math.max(current, next);
-      useWalletStore.setState((s) => ({
-        keysetCounters: { ...s.keysetCounters, [keyset.id]: advanced },
-        keysetCountersRecovered: {
-          ...s.keysetCountersRecovered,
-          [keyset.id]: true,
-        },
-      }));
-      // CRITICAL: batchRestore returns ALL deterministic proofs the mint
-      // ever signed for this seed, including SPENT ones. Persisting spent
-      // proofs would inflate the displayed balance and cause spent-token
-      // errors on the next spend. Filter via `groupProofsByState` and keep
-      // only UNSPENT. PENDING is also excluded — those are mid-flight on
-      // another device and will resolve to SPENT or UNSPENT shortly.
-      if (proofs.length > 0) {
-        const grouped = await wallet
-          .groupProofsByState(proofs)
-          .catch(() => null);
-        const safe = grouped?.unspent ?? [];
-        if (safe.length > 0) {
-          const stored: StoredProof[] = safe.map((p) => ({
-            ...p,
-            mintUrl: url,
-          }));
-          await addProofs(stored);
+  for (const unit of units) {
+    const wallet = requestedUnit === unit || (requestedUnit === null && unit === "sat")
+      ? discoveryWallet
+      : await getWallet(url, unit);
+    for (const keyset of keysets.filter((k) => keysetBaseAsset(k) === unit)) {
+      const recovered =
+        useWalletStore.getState().keysetCountersRecovered[keyset.id];
+      if (!opts.force && recovered) continue;
+      try {
+        const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
+          300,
+          100,
+          0,
+          keyset.id,
+        );
+        const next =
+          lastCounterWithSignature !== undefined
+            ? lastCounterWithSignature + 1
+            : 0;
+        const current = useWalletStore.getState().keysetCounters[keyset.id] ?? 0;
+        const advanced = Math.max(current, next);
+        useWalletStore.setState((s) => ({
+          keysetCounters: { ...s.keysetCounters, [keyset.id]: advanced },
+          keysetCountersRecovered: {
+            ...s.keysetCountersRecovered,
+            [keyset.id]: true,
+          },
+        }));
+        // CRITICAL: batchRestore returns ALL deterministic proofs the mint
+        // ever signed for this seed, including SPENT ones. Persisting spent
+        // proofs would inflate the displayed balance and cause spent-token
+        // errors on the next spend. Filter via `groupProofsByState` and keep
+        // only UNSPENT. PENDING is also excluded — those are mid-flight on
+        // another device and will resolve to SPENT or UNSPENT shortly.
+        if (proofs.length > 0) {
+          const grouped = await wallet
+            .groupProofsByState(proofs)
+            .catch(() => null);
+          const safe = grouped?.unspent ?? [];
+          if (safe.length > 0) {
+            const stored: StoredProof[] = safe.map((p) => ({
+              ...p,
+              mintUrl: url,
+              baseAsset: unit,
+            }));
+            await addProofs(stored);
+          }
         }
+        scanned.push(keyset.id);
+      } catch {
+        // Best-effort: if this keyset's recovery fails (mint unreachable,
+        // keyset rotated, etc.) leave the flag unset so the next trip
+        // retries. Fall through to the next keyset.
       }
-      scanned.push(keyset.id);
-    } catch {
-      // Best-effort: if this keyset's recovery fails (mint unreachable,
-      // keyset rotated, etc.) leave the flag unset so the next trip
-      // retries. Fall through to the next keyset.
     }
   }
   return { scannedKeysets: scanned };

@@ -54,6 +54,7 @@ export function parseTradeCreatedPayload(
   baseAsset?: unknown,
   divisibility?: unknown,
   quotePaymentSubunits?: unknown,
+  outcomeFaceAmountSubunits?: unknown,
 ): DaemonTradeCreatedPayload {
   const tradeIdText = stringFromSignalR(tradeId)
   const sellerPubkeyText = stringFromSignalR(sellerPubkey)
@@ -95,6 +96,7 @@ export function parseTradeCreatedPayload(
     baseAsset: typeof baseAsset === 'string' ? baseAsset : null,
     divisibility: numberOrUndefined(divisibility),
     quotePaymentSubunits: numberOrUndefined(quotePaymentSubunits),
+    outcomeFaceAmountSubunits: numberOrUndefined(outcomeFaceAmountSubunits),
   }
 }
 
@@ -183,6 +185,7 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
         baseAsset?: unknown,
         divisibility?: unknown,
         quotePaymentSubunits?: unknown,
+        outcomeFaceAmountSubunits?: unknown,
       ) => {
         void this.invokeCallback(async () => {
           await this.callbacks.onTradeCreated?.(
@@ -202,6 +205,7 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
               baseAsset,
               divisibility,
               quotePaymentSubunits,
+              outcomeFaceAmountSubunits,
             ),
           )
         })

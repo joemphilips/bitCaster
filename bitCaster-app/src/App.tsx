@@ -172,11 +172,12 @@ function AppRoutes() {
   // `keysetCounters` are missing or stale and the next `mintProofs` call
   // collides at counter 0.
   //
-  // Recovery walks `wallet.batchRestore(...)` for every keyset of every
-  // configured mint and advances `keysetCounters[keysetId]` past the
-  // highest signed output. Idempotent via `keysetCountersRecovered`. Runs
-  // ONCE per (mint, keyset) at startup, gated on persist hydration so the
-  // mints / mnemonic are loaded.
+  // Recovery walks `wallet.batchRestore(...)` for default sat keysets and
+  // advances `keysetCounters[keysetId]` past the highest signed output.
+  // Non-default units recover on the duplicate-output repair path with an
+  // explicit unit, so startup does not fan out across every mint unit.
+  // Idempotent via `keysetCountersRecovered`. Runs ONCE per (mint, keyset)
+  // at startup, gated on persist hydration so the mints / mnemonic are loaded.
   const counterRecoveryAttempted = useRef(false);
   useEffect(() => {
     if (counterRecoveryAttempted.current) return;
@@ -186,7 +187,7 @@ function AppRoutes() {
       const { mints, mnemonic } = useWalletStore.getState();
       if (!mnemonic || mints.length === 0) return;
       for (const m of mints) {
-        recoverKeysetCountersForMint(m.url).catch(() => {});
+        recoverKeysetCountersForMint(m.url, { baseAsset: "sat" }).catch(() => {});
       }
     };
     if (useWalletStore.persist.hasHydrated()) runRecovery();

@@ -416,7 +416,11 @@ export class DaemonSwapExecutor {
     if (ctx.role !== 'seller') return
 
     try {
-      const amount = requiredAmount(swap.outcomeFaceAmountSats ?? swap.fillAmountSats)
+      const amount = requiredAmount(
+        swap.outcomeFaceAmountSubunits ??
+        swap.outcomeFaceAmountSats ??
+        swap.fillAmountSats,
+      )
       const mint = resolveMintSellerSplit(swap)
       if (mint) {
         await this.sellerOpenMint(

@@ -527,8 +527,10 @@ export async function conditionalKeysetSwap(
   if (groups.length === 0) {
     throw new Error("conditionalKeysetSwap requires at least one output group");
   }
-  const wallet = new CashuWallet(new CashuMint(mintUrl), {
-    unit: CASHU_SWAP_UNIT,
+  const mint = new CashuMint(mintUrl);
+  const unit = await unitForProofs(mint, sourceProofs);
+  const wallet = new CashuWallet(mint, {
+    unit,
     enableCtf: true,
   });
   const prepare = async () =>
@@ -1040,8 +1042,12 @@ export async function buyerClaimSwap(
   return claimConditionalProofsAtMint(ctx.mintUrl, inputProofs, options);
 }
 
-export function buildReceiveToken(mintUrl: string, proofs: Proof[]): Token {
-  return { mint: mintUrl, unit: CASHU_SWAP_UNIT, proofs };
+export function buildReceiveToken(
+  mintUrl: string,
+  proofs: Proof[],
+  unit: string = CASHU_SWAP_UNIT,
+): Token {
+  return { mint: mintUrl, unit, proofs };
 }
 
 async function lockProofsForSwap(
@@ -1150,8 +1156,8 @@ async function receiveProofsAtMint(
   proofOperationStore?: ProofOperationStore,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl);
-  const { wallet } = await walletForSourceProofs(mint, inputProofs);
-  const token = buildReceiveToken(mintUrl, inputProofs);
+  const { wallet, unit } = await walletForSourceProofs(mint, inputProofs);
+  const token = buildReceiveToken(mintUrl, inputProofs, unit);
   if (operationId) {
     return receiveProofsWithOperation(
       operationId,
@@ -1434,14 +1440,34 @@ async function walletForSourceProofs(
   wallet: CashuWallet;
   sendConfig: SendConfig | undefined;
   inputFeeSats: number;
+  unit: string;
 }> {
-  const wallet = new CashuWallet(mint, { unit: CASHU_SWAP_UNIT });
+  const unit = await unitForProofs(mint, sourceProofs);
+  const wallet = new CashuWallet(mint, { unit });
   await wallet.loadMint();
   return {
     wallet,
     sendConfig: undefined,
     inputFeeSats: amountToNumber(wallet.getFeesForProofs(sourceProofs)),
+    unit,
   };
+}
+
+async function unitForProofs(mint: CashuMint, proofs: Proof[]): Promise<string> {
+  const ids = [...new Set(proofs.map((proof) => proof.id).filter(Boolean))];
+  if (ids.length === 0) {
+    throw new Error("Atomic swap proof set must contain keyset ids");
+  }
+  const units = new Set<string>();
+  for (const id of ids) {
+    units.add((await fetchMintKeys(mint, id)).unit);
+  }
+  if (units.size !== 1) {
+    throw new Error(
+      `Atomic swap proof set must use a single unit; got ${[...units].join(",")}`,
+    );
+  }
+  return [...units][0] ?? CASHU_SWAP_UNIT;
 }
 
 function hasLocalCtfProofMetadata(proof: Proof): boolean {

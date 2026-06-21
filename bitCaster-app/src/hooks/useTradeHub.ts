@@ -51,6 +51,7 @@ export interface TradeCreatedPayload {
   baseAsset?: string | null
   divisibility?: number | null
   quotePaymentSubunits?: number | null
+  outcomeFaceAmountSubunits?: number | null
 }
 
 export interface TradeHubCallbacks {
@@ -175,6 +176,7 @@ export function useTradeHub(
         baseAsset?: string | null,
         divisibility?: number | null,
         quotePaymentSubunits?: number | null,
+        outcomeFaceAmountSubunits?: number | null,
       ) => {
         callbacksRef.current.onTradeCreated?.({
           tradeId,
@@ -192,6 +194,7 @@ export function useTradeHub(
           baseAsset,
           divisibility,
           quotePaymentSubunits,
+          outcomeFaceAmountSubunits,
         })
       },
     )

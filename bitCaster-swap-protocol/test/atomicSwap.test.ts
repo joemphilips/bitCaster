@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   Amount,
   CheckStateEnum,
+  Mint as CashuMint,
   Wallet as CashuWallet,
   type ConditionalSwapPreview,
   type Proof,
@@ -95,7 +96,20 @@ test("conditional keyset swap stays resumable when completion aborts before sign
   const originalPrepare = CashuWallet.prototype.prepareConditionalSwap;
   const originalComplete = CashuWallet.prototype.completeConditionalSwap;
   const originalCheckProofsStates = CashuWallet.prototype.checkProofsStates;
+  const originalGetKeys = CashuMint.prototype.getKeys;
 
+  CashuMint.prototype.getKeys = async (id?: string) =>
+    ({
+      keysets: [
+        {
+          id: id ?? keysetId,
+          unit: "sat",
+          active: true,
+          input_fee_ppk: 0,
+          keys: { 1: "02".padEnd(66, "1") },
+        },
+      ],
+    }) as never;
   CashuWallet.prototype.prepareConditionalSwap = async () =>
     ({
       keysetId,
@@ -157,6 +171,7 @@ test("conditional keyset swap stays resumable when completion aborts before sign
     CashuWallet.prototype.prepareConditionalSwap = originalPrepare;
     CashuWallet.prototype.completeConditionalSwap = originalComplete;
     CashuWallet.prototype.checkProofsStates = originalCheckProofsStates;
+    CashuMint.prototype.getKeys = originalGetKeys;
   }
 });
 
