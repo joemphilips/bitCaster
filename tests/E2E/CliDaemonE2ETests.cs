@@ -23,6 +23,7 @@ namespace BitCaster.E2ETest;
 public sealed class CliDaemonE2ETests : IAsyncLifetime
 {
     private const int MintInputFeePpk = 1;
+    private const int SatShareFaceSubunits = 1_000_000;
     private static readonly JsonSerializerOptions BrowserDiagnosticJsonOptions = new()
     {
         NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
@@ -3239,17 +3240,17 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             .First;
 
     // The frontend trade ticket is share-denominated: the amount input takes
-    // display shares and the wire amountSats is shares × market divisibility
-    // (100 for every market this suite registers). Convert the wire face
-    // amount the assertions expect into the share count the UI wants.
+    // display shares and the wire amountSats is shares × share face. Share face
+    // is intentionally decoupled from market divisibility; sat markets use
+    // 1,000,000 msat subunits per displayed share. Convert the wire face amount
+    // the assertions expect into the share count the UI wants.
     private static int ToDisplayShares(int faceAmountSats)
     {
-        const int faceSatsPerDisplayShare = 100; // legacy D=100 market divisibility
         Assert.True(
-            faceAmountSats > 0 && faceAmountSats % faceSatsPerDisplayShare == 0,
-            $"faceAmountSats={faceAmountSats} is not a positive multiple of {faceSatsPerDisplayShare}; " +
+            faceAmountSats > 0 && faceAmountSats % SatShareFaceSubunits == 0,
+            $"faceAmountSats={faceAmountSats} is not a positive multiple of {SatShareFaceSubunits}; " +
             "the browser trade ticket can only express whole display shares.");
-        return faceAmountSats / faceSatsPerDisplayShare;
+        return faceAmountSats / SatShareFaceSubunits;
     }
 
     private static async Task FillNumberInputAsync(ILocator input, int value)

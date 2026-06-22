@@ -15,6 +15,7 @@ public class TradingFlowTests : IAsyncLifetime
 {
     private const string P30ConditionId = "b30ca000000000000000000000000000000000000000000000000000000000000";
     private const string TestNsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
+    private const int SatShareFaceSubunits = 1_000_000;
     private IPlaywright? _playwright;
     private IBrowser? _browser;
 
@@ -76,7 +77,7 @@ public class TradingFlowTests : IAsyncLifetime
     /// running the real mint flow. Must be called after navigation so the DB
     /// exists for the current origin.
     /// </summary>
-    private static async Task SeedBalanceAsync(IPage page, int sats)
+    private static async Task SeedBalanceAsync(IPage page, int amountSubunits)
     {
         var mintUrl = $"{TestPorts.MintUrl}";
         // Raw IDB write — we open without a version so we attach to whatever
@@ -111,7 +112,7 @@ public class TradingFlowTests : IAsyncLifetime
                     secret: 'e2e-seed-' + Date.now(),
                     id: 'keyset-00',
                     C: '02' + '00'.repeat(32),
-                    amount: {sats},
+                    amount: {amountSubunits},
                     mintUrl: '{mintUrl}',
                 }});
                 await new Promise((resolve, reject) => {{
@@ -163,7 +164,8 @@ public class TradingFlowTests : IAsyncLifetime
         await GoToFirstMarketDetailAsync(page);
 
         // Pick a Yes side from the outcomes — YesNoOutcomes renders clickable
-        // buttons like "Yes 50¢" / "No 50¢" once the panel is visible.
+        // buttons with the outcome label plus its displayed probability once
+        // the panel is visible.
         var yesSide = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Yes\\s", RegexOptions.IgnoreCase) }).First;
         await Assertions.Expect(yesSide).ToBeVisibleAsync(new() { Timeout = 10_000 });
         await yesSide.ClickAsync();
@@ -217,7 +219,7 @@ public class TradingFlowTests : IAsyncLifetime
         var consoleMessages = TestHelpers.AttachConsoleCapture(page);
         await SetupWalletAsync(page);
         await GoToFirstMarketDetailAsync(page);
-        await SeedBalanceAsync(page, 10_000);
+        await SeedBalanceAsync(page, 10_000_000);
         // Seed writes through raw indexedDB.open(), bypassing Dexie's change
         // broadcast. An already-subscribed useLiveQuery (from `useBalance()`
         // in the app shell) won't observe the write in CI. Reload so the app
@@ -246,8 +248,8 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(buyBalanceHint).ToHaveCountAsync(0);
 
         // Type an amount in shares that exceeds the seeded balance (10,000 sats
-        // = 100 shares at divisibility 100). 500 shares would cost 50,000 sats,
-        // well past the funded 10,000 sats.
+        // = 10,000,000 msat subunits). At the default 50% price, 500 shares
+        // would cost 250,000 sats, well past the funded 10,000 sats.
         var amountInput = VisibleTradeAmountInput(page);
         await Assertions.Expect(amountInput).ToBeVisibleAsync(new() { Timeout = 5_000 });
         await amountInput.FillAsync("500");
@@ -288,7 +290,7 @@ public class TradingFlowTests : IAsyncLifetime
         var consoleMessages = TestHelpers.AttachConsoleCapture(page);
         await SetupWalletAsync(page);
         await GoToFirstMarketDetailAsync(page);
-        await SeedBalanceAsync(page, 10_000);
+        await SeedBalanceAsync(page, 10_000_000);
         // Reload so the seeded proof is in IDB before useLiveQuery subscribes
         // — see BuySide_NoBalanceHint_InsufficientBalanceModal_StillAppears for the same pattern.
         await page.ReloadAsync(new PageReloadOptions
@@ -315,7 +317,7 @@ public class TradingFlowTests : IAsyncLifetime
                     {
                         orderId = Guid.NewGuid().ToString(),
                         status = "resting",
-                        remainingAmountSats = 100,
+                        remainingAmountSats = 10 * SatShareFaceSubunits,
                         fills = Array.Empty<object>(),
                         ephemeralPubkey = ExtractEphemeralPubkey(route.Request.PostData),
                     }),
@@ -440,7 +442,7 @@ public class TradingFlowTests : IAsyncLifetime
             WaitUntil = WaitUntilState.NetworkIdle,
             Timeout = 30_000,
         });
-        await SeedBalanceAsync(page, 10_000);
+        await SeedBalanceAsync(page, 10_000_000);
         await page.ReloadAsync(new PageReloadOptions
         {
             WaitUntil = WaitUntilState.NetworkIdle,
@@ -456,7 +458,7 @@ public class TradingFlowTests : IAsyncLifetime
         await Assertions.Expect(tradingPanel.GetByText("No executable liquidity"))
             .ToHaveCountAsync(0);
         await Assertions.Expect(tradingPanel.GetByTestId("trade-average-execution-price"))
-            .ToContainTextAsync("40");
+            .ToContainTextAsync("40.00%");
 
         var confirm = VisibleTradeConfirm(page);
         await Assertions.Expect(confirm).ToBeEnabledAsync(new() { Timeout = 5_000 });
@@ -481,7 +483,7 @@ public class TradingFlowTests : IAsyncLifetime
         Assert.Equal("Buy", orderDoc.RootElement.GetProperty("side").GetString());
         Assert.Equal("FAK", orderDoc.RootElement.GetProperty("timeInForce").GetString());
         Assert.Equal(99, orderDoc.RootElement.GetProperty("price").GetInt32());
-        Assert.Equal(100, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
+        Assert.Equal(SatShareFaceSubunits, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
     }
 
     [Fact]
@@ -578,7 +580,7 @@ public class TradingFlowTests : IAsyncLifetime
                     {
                         orderId = Guid.NewGuid().ToString(),
                         status = "resting",
-                        remainingAmountSats = 100,
+                        remainingAmountSats = 10 * SatShareFaceSubunits,
                         fills = Array.Empty<object>(),
                         ephemeralPubkey = ExtractEphemeralPubkey(route.Request.PostData),
                         baseAsset = "sat",
@@ -651,8 +653,8 @@ public class TradingFlowTests : IAsyncLifetime
 
         using var orderDoc = JsonDocument.Parse(capturedOrderBody);
         // Trade tickets are share-denominated: 10 displayed shares map to
-        // 1,000 protocol subunits at divisibility 100.
-        Assert.Equal(1000, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
+        // 10 whole sat-share faces at the protocol boundary.
+        Assert.Equal(10 * SatShareFaceSubunits, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
         Assert.Equal("Outcome", orderDoc.RootElement.GetProperty("tokenSide").GetString());
         Assert.Matches(
             @"^(02|03)[0-9a-f]{64}$",
@@ -847,7 +849,7 @@ public class TradingFlowTests : IAsyncLifetime
             tokenSide = "Outcome",
             side,
             price,
-            amountSats = 100L,
+            amountSats = SatShareFaceSubunits,
             timeInForce = "GTC",
             ephemeralPubkey = NewCompressedPubkey(),
             comment = (object?)null,

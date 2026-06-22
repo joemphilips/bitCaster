@@ -17,6 +17,7 @@ namespace BitCaster.E2ETest;
 /// </summary>
 public class NotificationPollerTests : IAsyncLifetime
 {
+    private const int OneHundredSatsSubunits = 100_000;
     private IPlaywright? _playwright;
     private IBrowser? _browser;
 
@@ -95,7 +96,7 @@ public class NotificationPollerTests : IAsyncLifetime
                     marketId,
                     status = "filled",
                     remainingAmountSats = 0,
-                    filledAmountSats = 100,
+                    filledAmountSats = OneHundredSatsSubunits,
                     fills = new[]
                     {
                         new
@@ -103,7 +104,7 @@ public class NotificationPollerTests : IAsyncLifetime
                             id = Guid.NewGuid().ToString(),
                             takerOrderId = orderId,
                             makerOrderId = Guid.NewGuid().ToString(),
-                            amountSats = 100,
+                            amountSats = OneHundredSatsSubunits,
                             executionPrice = 50,
                             path = "Complementary",
                             filledAt = DateTime.UtcNow.ToString("O"),
@@ -183,8 +184,8 @@ public class NotificationPollerTests : IAsyncLifetime
                     orderId,
                     marketId,
                     status = "partially_filled",
-                    remainingAmountSats = 100,
-                    filledAmountSats = 100,
+                    remainingAmountSats = OneHundredSatsSubunits,
+                    filledAmountSats = OneHundredSatsSubunits,
                     fills = new[]
                     {
                         new
@@ -192,7 +193,7 @@ public class NotificationPollerTests : IAsyncLifetime
                             id = Guid.NewGuid().ToString(),
                             takerOrderId = Guid.NewGuid().ToString(),
                             makerOrderId = orderId,
-                            amountSats = 100,
+                            amountSats = OneHundredSatsSubunits,
                             executionPrice = 50,
                             path = "Mint",
                             filledAt = DateTime.UtcNow.ToString("O"),
