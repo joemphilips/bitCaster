@@ -101,21 +101,10 @@ async function prepareRegularBlankOutputs(
 ): Promise<RegistrationOutputData[]> {
   const mint = new CashuMint(mintUrl)
   const keyset = await getActiveCollateralKeyset(mint, unit)
-  const outputs = OutputData.createRandomData(
+  return OutputData.createRandomData(
     Amount.from(changeAmountSubunits),
     keyset,
   ) as RegistrationOutputData[]
-  return outputs.map(
-    (output) =>
-      new OutputData(
-        {
-          ...output.blindedMessage,
-          amount: Amount.from(0),
-        },
-        output.blindingFactor,
-        output.secret,
-      ) as RegistrationOutputData,
-  )
 }
 
 async function getActiveCollateralKeyset(
