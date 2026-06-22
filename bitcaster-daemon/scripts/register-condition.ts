@@ -32,7 +32,9 @@ const announcements = parseStringArray(announcementsJson, 'announcements-json')
 const outcomes = parseStringArray(outcomesJson, 'outcomes-json')
 const info = await fetchMintInfo(mintUrl)
 const baseFeeSubunits = registrationFeeForPolicy(outcomes, info)
-// Scale fee to the collateral unit (sat=1, msat=1000, milli-cent=100000)
+// The CDK mint scales the registration fee to the collateral unit internally.
+// We just need to mint proofs worth the base fee in the collateral unit.
+// The collateral scale converts the base-asset fee to collateral subunits.
 const collateralScale = collateral === 'msat' ? 1000 : collateral === 'milli-cent' ? 100_000 : 1
 const requiredFeeSubunits = baseFeeSubunits * collateralScale
 const feeProofs =
@@ -40,14 +42,12 @@ const feeProofs =
     ? await mintRegularProofs(mintUrl, collateral, requiredFeeSubunits)
     : []
 const selectedTotalSubunits = sumProofs(feeProofs)
-const changeOutputs =
-  selectedTotalSubunits > requiredFeeSubunits
-    ? await prepareRegularBlankOutputs(
-      mintUrl,
-      collateral,
-      selectedTotalSubunits - requiredFeeSubunits,
-    )
-    : []
+const changeAmount = selectedTotalSubunits > requiredFeeSubunits
+  ? selectedTotalSubunits - requiredFeeSubunits
+  : 0
+const changeOutputs = changeAmount > 0
+  ? await prepareRegularBlankOutputs(mintUrl, collateral, changeAmount)
+  : []
 
 const response = await fetch(new URL('/v1/conditions', mintUrl), {
   method: 'POST',
