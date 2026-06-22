@@ -11,11 +11,11 @@ The catalogue exposes three lifetime/display metrics:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `liquiditySats` | `int64` | Legacy field name. Total face amount of currently resting orders across the market's order books, denominated in the market collateral's base subunits: sats for sat markets, cents for USD markets. |
+| `liquiditySats` | `int64` | Legacy field name. Total face amount of currently resting orders across the market's order books, denominated in the market collateral unit: msat for sat markets, milli-cent for USD markets. |
 | `traderCount` | `int32` | Number of distinct traders that have settled a trade in this market. |
 | `volumeLifetimeSats` | `int64` | Cumulative settled collateral face amount of all fills in the market's history. |
 
-The response also includes `volume24hSats` and `volume30dSats` for rolling-volume views and sort dimensions. The `*Sats` suffix is retained for wire compatibility; for non-sat markets these fields use the market collateral's base subunits. Clients should use `volumeLifetimeSats`, `liquiditySats`, and `traderCount` when rendering the visible Volume, Liquidity, and Traders metrics for a market.
+The response also includes `volume24hSats` and `volume30dSats` for rolling-volume views and sort dimensions. The `*Sats` suffix is retained for wire compatibility; these fields use the market collateral unit, not always literal sats. Clients should use `volumeLifetimeSats`, `liquiditySats`, and `traderCount` when rendering the visible Volume, Liquidity, and Traders metrics for a market.
 
 ## Real-time lifecycle updates
 

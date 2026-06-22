@@ -56,8 +56,14 @@ After creating a market, the creator can choose **No liquidity**, a preset
 funding tier, or a custom budget. Choosing **No liquidity** leaves the market
 open for human orders, but bitCaster will not post automated starting quotes.
 
-Funded sat markets use sats. Funded USD markets use US cents backed by the
-market mint's USD ecash. Other units may be added later.
+Binary-market presets use round amounts: **$15 / $150 / $300** for USD markets
+and **1500 / 15000 / 30000 sats** for sat markets. Categorical markets scale the
+paid tiers by `log2(outcome count)`.
+
+Funded sat markets are displayed in sats. Funded USD markets are displayed in
+dollars or cents backed by the market mint's USD ecash. Internally, collateral is
+accounted in msat for sat markets and milli-cent for USD markets. Other units may
+be added later.
 
 The funding deposit is committed to market-making for that market. It does not
 create a creator withdrawal claim, residual claim, or profit-share claim.

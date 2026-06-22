@@ -9,7 +9,7 @@ sidebar:
 
 When a market is created, the order book starts empty. To give early traders a counterparty, bitCaster can run an automated market maker (AMM) that posts initial bid and ask orders to the book.
 
-Funding is optional. After the market is created, the wizard shows a funding screen where you can choose **No liquidity**, **Minimal**, **Standard**, **Deep**, or a custom budget.
+Funding is optional. After the market is created, the wizard shows a funding screen where you can choose **No liquidity**, **Minimal**, **Standard**, **Deep**, or a custom budget. Binary-market presets use round amounts: **$15 / $150 / $300** for USD markets and **1500 / 15000 / 30000 sats** for sat markets. Categorical markets scale those paid tiers by `log2(outcome count)`.
 
 ## What You Fund
 
@@ -17,7 +17,7 @@ The deposit becomes the AMM budget for that market. The AMM currently uses an LM
 
 The deposit is **non-refundable**. It is committed to market-making until the market resolves. The maker's loss is bounded by the funded budget; there is no withdrawal, residual claim, or creator profit-share claim.
 
-Sat markets use sats. USD markets use US cents. Some API fields still use legacy names such as `amountSats`; in funding contexts those names mean base-asset subunits.
+Sat markets are shown to users in sats. USD markets are shown in dollars or cents. Internally, collateral precision is finer: sat-market collateral is accounted in **msat**, and USD-market collateral is accounted in **milli-cent**. Some API fields still use legacy names such as `amountSats`; in funding contexts those names mean the market collateral unit, not always literal sats.
 
 ## Funding Flow
 

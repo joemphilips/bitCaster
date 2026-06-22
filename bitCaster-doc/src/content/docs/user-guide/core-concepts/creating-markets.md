@@ -34,14 +34,13 @@ For non-sat markets, bitCaster verifies with the mint that the underlying condit
 
 ## Price Denominator
 
-Every market has a **price denominator** (D). It controls two things at once:
+Every market has a **price denominator** (D). Current user-facing markets use `D=10000`, which gives `0.01%` price precision and lets the app display prices with two decimal places, such as **53.27%**.
 
-- **Minimum stake per share.** Buying one whole share costs exactly D base-asset sub-units (for example, in a sat market D=100 means 1 share costs 100 sats; in a USD market D=100 means 1 share costs $1.00).
-- **Price granularity.** Prices are quoted as integers from 1 to D−1, so the smallest price move is 1/D. D=100 gives 1%-steps; D=1,000 gives 0.1%-steps; D=10,000 gives 0.01%-steps.
+- **Price granularity.** Prices are quoted as integers from 1 to D−1, so the smallest price move is 1/D.
+- **Share face value.** D controls price precision; the share face value is fixed by the market unit. One sat-market share pays **1000 sats** if it wins. One USD-market share pays **$1.00** if it wins.
+- **Settlement precision.** Sat-market collateral is accounted in **msat**. USD-market collateral is accounted in **milli-cent**. This keeps two-decimal percentage prices exact even when a single share costs a fractional cent or fractional sat amount at a given probability.
 
-Choose a lower D when you want low barriers to participation and are comfortable with coarser price resolution. Choose a higher D when fine-grained prices matter and participants can meet the larger minimum stake. The tradeoff cannot be changed after a market is registered.
-
-Supported values: 100, 1,000, 10,000.
+The denominator and share face value cannot be changed after a market is registered.
 
 ## Fund your market
 
@@ -49,11 +48,11 @@ After market creation succeeds, bitCaster shows an optional **Fund the market ma
 
 The funding deposit is sent with the creator's Nostr public key and a `fundAmm` flag so the service treats it as AMM quoting budget, not as a withdrawable user balance. The creator key on the deposit must match the Nostr identity that signs the request.
 
-Market-maker funding follows the market's base asset. Sat markets fund the bot in sats; USD markets fund it in US cents backed by the mint's BTC-collateralized USD ecash. JPY and other units are not available yet.
+Market-maker funding follows the market's base asset. Sat markets show funding in sats; USD markets show funding in dollars backed by the mint's BTC-collateralized USD ecash. Internally the collateral is tracked as msat for sat markets and milli-cent for USD markets. JPY and other units are not available yet.
 
-The funding step offers No liquidity, Minimal, Standard, Deep, and Custom budgets. Binary markets show 0, 10,000, 100,000, and 1,000,000 base sub-units for the preset tiers. Categorical markets multiply the paid tiers by `log2(outcome count)`.
+The funding step offers No liquidity, Minimal, Standard, Deep, and Custom budgets. Binary markets show round preset tiers of **$15 / $150 / $300** for USD markets and **1500 / 15000 / 30000 sats** for sat markets. Categorical markets multiply the paid tiers by `log2(outcome count)`.
 
-No liquidity, Minimal funding, and custom budgets below 10,000 base sub-units show a **WARNING** badge: **Very thin liquidity**. Choosing **No liquidity** leaves the market available without bot-provided quotes, so human makers must provide liquidity.
+Choosing **No liquidity** leaves the market available without bot-provided quotes, so human makers must provide liquidity. Very small custom budgets may show a thin-liquidity warning.
 
 AMM funding is meant to start trading, not replace human market makers forever. As a market matures, human and professional makers should ideally replace the initial AMM quotes with tighter, more informed liquidity.
 

@@ -13,7 +13,9 @@ Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell 
 
 Public trading books are primitive outcome books. A categorical market with outcomes `A`, `B`, and `C` exposes `A / Not A`, `B / Not B`, and `C / Not C` books; clients submit to `condition-A`, `condition-B`, or `condition-C` and choose the selected token or its one-vs-rest complement in the order body. Compound ids such as `B|C` remain internal settlement and mint keyset identifiers, not public market routes.
 
-The market-detail trade ticket is share-based. Users enter a whole number of shares, while the client converts that to the protocol face amount before submitting the order. If a market has divisibility `D`, one share has face value `D` base units and a price numerator `k` means `k / D` probability. Buying `n` shares at price `k` costs `n × k` base units before fees and pays `n × D` base units if the outcome wins. For example, in a `D=100` sats market, 50 shares at price 30 cost 1,500 sats before fee rows and pay 5,000 sats if they win.
+The market-detail trade ticket is share-based. Users enter a whole number of shares and the ticket shows the total cost before submission. The UI no longer shows separate payout or executable-share rows. Current markets use `D=10000` price precision, so a price numerator `k` means `k / 10000` probability and is displayed with two percentage decimals, for example **53.27%**. One sat-market share pays **1000 sats** if it wins; one USD-market share pays **$1.00** if it wins. Sat-market collateral is accounted in **msat** and USD-market collateral in **milli-cent**, so costs such as $0.5327 per USD share can be represented exactly.
+
+The market-detail order book combines price, cumulative depth, and visual thickness into one row per price level. Bar length represents cumulative liquidity available at that price or better, which makes the depth profile visible without a separate chart.
 
 ## Online Requirement
 

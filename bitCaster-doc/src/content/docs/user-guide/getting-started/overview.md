@@ -40,7 +40,9 @@ Any user can run their own Cashu mint to issue prediction market tokens. The min
 
 ## How it works
 
-Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. The trade ticket asks for shares, not sats: if a market's share value is `D` base units, buying `n` shares at price `k` costs `n × k` base units before the listed fee rows and pays `n × D` base units if that outcome wins. For example, in a market where one share is 100 sats, 50 shares at price 30 cost 1,500 sats before fees and pay 5,000 sats if they win.
+Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. Prices are shown as probabilities with two decimal places, such as **53.27%**.
+
+The trade ticket asks for whole shares and shows the total cost before you submit. It no longer asks you to calculate payout rows or executable-share estimates. One sat-market share pays **1000 sats** if it wins. One USD-market share pays **$1.00** if it wins. Internally, prices use `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% cost 15,000 sats in a sat market and pay 50,000 sats if they win.
 
 When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
 
@@ -59,6 +61,8 @@ When you start trading before completing setup, bitCaster can create a local wal
 ## Market detail pages
 
 The market chart shows recorded trades for each primitive outcome. If only one outcome has traded, only that line is shown; bitCaster does not invent prices for outcomes that have not traded.
+
+The order book combines price, cumulative depth, and visual thickness into one row per price level. Longer bars mean more cumulative liquidity available at that price or better. This makes the visible book easier to scan without switching between separate depth and price displays.
 
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
 

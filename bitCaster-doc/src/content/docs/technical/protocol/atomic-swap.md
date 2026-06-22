@@ -82,9 +82,10 @@ The engine matches Alice's sell order with Bob's buy order based on price and qu
 - Bob receives Alice's pubkey `A`
 
 The matched quantity is the conditional-token face amount. The settlement
-message also carries the quote payment separately. For example, a 1,000-face-sat
-YES fill at price 37 means Alice locks 1,000 face sats of YES and Bob locks 370
-regular sats. Implementations must not use one amount for both swap legs.
+message also carries the quote payment separately. Current markets use
+`D=10000`, so a 1,000-face-sat YES fill at 37.00% (`k=3700`) means Alice locks
+1,000 face sats of YES and Bob locks 370 regular sats. Implementations must not
+use one amount for both swap legs.
 
 For mint matches, the order book journals the trade start and then consumes the
 matched quantity. The public order status exposes the matched row with a
@@ -390,11 +391,12 @@ The privacy advantage is the key differentiator. With HTLCs, the mint sees the s
 
 ### Token Denomination Granularity
 
-Cashu uses integer sat amounts and power-of-2 proof denominations. The first
-bitCaster release requires limit-order face amounts to be divisible by 100 sats,
-so every integer-cent price maps to an exact quote payment. For example, 1,000
-face sats at price 37 maps to 370 quote sats. Implementations should reject
-orders that would require fractional quote sats instead of silently rounding.
+Cashu proofs use integer amounts and power-of-2 proof denominations. bitCaster
+accounts market collateral at finer precision than the display unit: msat for sat
+markets and milli-cent for USD markets. With `D=10000`, a 1,000-sat share at
+37.00% maps to 370,000 msat. Implementations should compute quote payments in the
+market collateral unit and reject orders that would require fractional collateral
+units instead of silently rounding.
 
 ### Front-Running
 
