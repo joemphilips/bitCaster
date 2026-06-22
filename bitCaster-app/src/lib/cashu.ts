@@ -43,6 +43,7 @@ import {
 } from "@/stores/proof-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
+  defaultCollateralUnit,
   normalizeMarketBaseAsset,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -69,7 +70,7 @@ export const FEE_BUFFER_SATS = 10;
 
 let _wallet: CashuWallet | null = null;
 let _mintUrl: string = DEFAULT_MINT_URL;
-let _walletUnit: MarketBaseAsset = "sat";
+let _walletUnit = defaultCollateralUnit("sat");
 
 /** Return the shared CashuWallet, initialising it lazily. */
 export async function getWallet(
@@ -78,7 +79,7 @@ export async function getWallet(
 ): Promise<CashuWallet> {
   // If the wallet store has a mnemonic, delegate to it for deterministic secrets
   const store = useWalletStore.getState();
-  const unit = normalizeMarketBaseAsset(baseAsset);
+  const unit = defaultCollateralUnit(baseAsset);
   if (store.mnemonic) {
     return store.getWallet(mintUrl, unit);
   }

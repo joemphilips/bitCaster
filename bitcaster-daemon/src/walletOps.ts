@@ -36,7 +36,10 @@ import {
   amountToNumber,
   computeInputFeeSatsForProofs,
 } from '@bitcaster-market/client-sdk/proofSelection'
-import { normalizeMarketBaseAsset } from '@bitcaster-market/client-sdk/marketUnits'
+import {
+  defaultCollateralUnit,
+  normalizeMarketBaseAsset,
+} from '@bitcaster-market/client-sdk/marketUnits'
 import {
   addAvailableProofs,
   completeReservedSatSend,
@@ -511,14 +514,15 @@ export async function resolveCtfConsolidationOutputKeysets(
     return deps.resolveOutputKeysetByCollection(mintUrl, conditionId)
   }
   const keysets = await listMintAndConditionalKeysets(mintUrl)
+  const collateralUnit = defaultCollateralUnit(undefined)
   const activeCollateral = keysets.find(
     (keyset) =>
       keyset.active &&
-      keyset.unit === 'sat' &&
+      keyset.unit === collateralUnit &&
       keyset.condition_id === undefined,
   )
   if (!activeCollateral) {
-    throw new Error('mint did not return an active sat collateral keyset')
+    throw new Error(`mint did not return an active ${collateralUnit} collateral keyset`)
   }
   const entries: Array<[string, string]> = [[COLLATERAL_COLLECTION, activeCollateral.id]]
   for (const keyset of keysets) {
@@ -915,13 +919,15 @@ function walletSendResult(
   mintUrl: string,
   amountSats: number,
   sendProofs: Proof[],
+  baseAsset?: string | null,
 ): WalletSendResult {
+  const unit = defaultCollateralUnit(baseAsset)
   return {
     operationId,
     mintUrl,
     amountSats,
     proofCount: sendProofs.length,
-    token: getEncodedToken({ mint: mintUrl, unit: 'sat', proofs: sendProofs }),
+    token: getEncodedToken({ mint: mintUrl, unit, proofs: sendProofs }),
   }
 }
 
@@ -931,7 +937,7 @@ function createWallet(
   deps: WalletOpsDependencies,
   baseAsset?: string | null,
 ): CashuWalletLike {
-  const unit = normalizeMarketBaseAsset(baseAsset)
+  const unit = defaultCollateralUnit(baseAsset)
   if (deps.createCashuWallet) return deps.createCashuWallet(mintUrl, unit)
   return new CashuWallet(new CashuMint(mintUrl), {
     unit,

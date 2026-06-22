@@ -8,6 +8,7 @@ import { db, getBaseProofs, isCtfProof, type StoredProof } from './proof-db'
 import type { MintConnectionTestStatus } from '@/types/wallet-setup'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 import {
+  defaultCollateralUnit,
   normalizeMarketBaseAsset,
   type MarketBaseAsset,
 } from '@bitcaster/client-sdk/marketUnits'
@@ -71,7 +72,7 @@ export const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? 'h
 let _walletCache: Map<string, CashuWallet> = new Map()
 
 function walletCacheKey(mintUrl: string, baseAsset?: MarketBaseAsset | string | null): string {
-  return `${mintUrl}::${normalizeMarketBaseAsset(baseAsset)}`
+  return `${mintUrl}::${defaultCollateralUnit(baseAsset)}`
 }
 
 function getSeedBytes(mnemonic: string): Uint8Array | undefined {
@@ -304,7 +305,7 @@ export const useWalletStore = create<WalletState>()(
         baseAsset?: MarketBaseAsset | string | null,
       ): Promise<CashuWallet> => {
         const url = normalizeUrl(mintUrl ?? get().activeMintUrl)
-        const unit = normalizeMarketBaseAsset(baseAsset)
+        const unit = defaultCollateralUnit(baseAsset)
         const cacheKey = walletCacheKey(url, unit)
         const cached = _walletCache.get(cacheKey)
         if (cached) return cached

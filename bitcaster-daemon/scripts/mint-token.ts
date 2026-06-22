@@ -34,8 +34,11 @@ if (!Number.isInteger(amountSats) || amountSats <= 0) {
 }
 
 if (mode === 'sats') {
-  const sats = await mintRegularProofs(mintUrl, amountSats)
-  printToken(mintUrl, sats)
+  const sats = await mintRegularProofs(mintUrl, 'sat', amountSats)
+  printToken(mintUrl, 'sat', sats)
+} else if (mode === 'msats') {
+  const msats = await mintRegularProofs(mintUrl, 'msat', amountSats)
+  printToken(mintUrl, 'msat', msats)
 } else if (mode === 'outcome') {
   if (!conditionId || !outcomeSetId) usage()
   const sats = await mintRegularProofsForCtfSplit(mintUrl, amountSats)
@@ -54,18 +57,19 @@ if (mode === 'sats') {
   if (!selected?.length) {
     throw new Error(`CTF split did not return outcome set ${outcomeSetId}`)
   }
-  printToken(mintUrl, selected)
+  printToken(mintUrl, 'sat', selected)
 } else {
   usage()
 }
 
 async function mintRegularProofs(
   mintUrl: string,
+  unit: 'sat' | 'msat',
   faceAmountSats: number,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl)
-  const keyset = await getActiveSatCollateralKeyset(mint)
-  const wallet = new CashuWallet(mint, { unit: 'sat' })
+  const keyset = await getActiveCollateralKeyset(mint, unit)
+  const wallet = new CashuWallet(mint, { unit })
   await wallet.loadMint()
   const grossAmountSats = computeGrossCtfInputAmountSats({
     faceAmountSats,
@@ -85,7 +89,7 @@ async function mintRegularProofsForCtfSplit(
   faceAmountSats: number,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl)
-  const keyset = await getActiveSatCollateralKeyset(mint)
+  const keyset = await getActiveCollateralKeyset(mint, 'sat')
   const wallet = new CashuWallet(mint, { unit: 'sat' })
   await wallet.loadMint()
   const grossAmountSats = computeGrossCtfInputAmountSats({
@@ -101,12 +105,12 @@ async function mintRegularProofsForCtfSplit(
   return wallet.mintProofs(grossAmountSats, quote.quote)
 }
 
-async function getActiveSatCollateralKeyset(mint: CashuMint): Promise<MintKeys> {
+async function getActiveCollateralKeyset(mint: CashuMint, unit: 'sat' | 'msat'): Promise<MintKeys> {
   const active = (await mint.getKeySets()).keysets.find(
-    (keyset) => keyset.active && keyset.unit === 'sat',
+    (keyset) => keyset.active && keyset.unit === unit,
   )
   if (!active) {
-    throw new Error('mint did not return an active sat collateral keyset')
+    throw new Error(`mint did not return an active ${unit} collateral keyset`)
   }
   const response = await mint.getKeys(active.id)
   const keyset = response.keysets.find((candidate) => candidate.id === active.id)
@@ -184,8 +188,8 @@ async function waitForPaidQuote(
   throw new Error(`mint quote was not paid by fakewallet; last state=${last?.state ?? 'unknown'}`)
 }
 
-function printToken(mintUrl: string, proofs: Proof[]): void {
-  const token = getEncodedToken({ mint: mintUrl, unit: 'sat', proofs })
+function printToken(mintUrl: string, unit: 'sat' | 'msat', proofs: Proof[]): void {
+  const token = getEncodedToken({ mint: mintUrl, unit, proofs })
   process.stdout.write(
     jsonOutput
       ? `${JSON.stringify({ mintUrl, token, proofs })}\n`
@@ -196,6 +200,7 @@ function printToken(mintUrl: string, proofs: Proof[]): void {
 function usage(): never {
   process.stderr.write(
     'Usage: mint-token.ts sats <mint-url> <amount-sats> [--json]\n' +
+      '       mint-token.ts msats <mint-url> <amount-msats> [--json]\n' +
       '       mint-token.ts outcome <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n',
   )
   process.exit(1)
