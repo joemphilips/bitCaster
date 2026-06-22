@@ -18,7 +18,6 @@ import {
 import {
   sumProofs,
 } from '../../bitcaster-client-sdk/src/proofSelection.ts'
-import { computeGrossCtfInputAmountSats } from '../../bitcaster-client-sdk/src/ctfSplit.ts'
 
 type RegistrationOutputData = OutputDataLike & {
   blindedMessage: SerializedBlindedMessage
@@ -83,17 +82,12 @@ async function mintRegularProofs(
   const keyset = await getActiveCollateralKeyset(mint, unit)
   const wallet = new CashuWallet(mint, { unit })
   await wallet.loadMint()
-  const grossAmountSubunits = computeGrossCtfInputAmountSats({
-    faceAmountSats: feeAmountSubunits,
-    keyset: {
-      id: keyset.id,
-      keys: keyset.keys,
-      input_fee_ppk: keyset.input_fee_ppk ?? 0,
-    },
-  })
-  const quote = await wallet.createMintQuote(grossAmountSubunits)
+  // For regular (non-CTF) mint proofs, the face amount IS the gross amount.
+  // The mint handles input fee deduction during swap internally.
+  // computeGrossCtfInputAmountSats is only for CTF split inputs.
+  const quote = await wallet.createMintQuote(feeAmountSubunits)
   await waitForPaidQuote(wallet, quote.quote)
-  return wallet.mintProofs(grossAmountSubunits, quote.quote)
+  return wallet.mintProofs(feeAmountSubunits, quote.quote)
 }
 
 async function prepareRegularBlankOutputs(
