@@ -38,7 +38,7 @@ Every market has a **price denominator** (D). Current user-facing markets use `D
 
 - **Price granularity.** Prices are quoted as integers from 1 to D−1, so the smallest price move is 1/D.
 - **Share face value.** D controls price precision; the share face value is fixed by the market unit. One sat-market share pays **1000 sats** if it wins. One USD-market share pays **$1.00** if it wins.
-- **Settlement precision.** Sat-market collateral is accounted in **msat**. USD-market collateral is accounted in **milli-cent**. This keeps two-decimal percentage prices exact even when a single share costs a fractional cent or fractional sat amount at a given probability.
+- **Settlement precision.** Sat-market collateral is accounted in **msat** with D=10000 (10-sat shares). USD-market collateral is accounted in standard **usd** cents with D=1000 ($10 shares).
 
 The denominator and share face value cannot be changed after a market is registered.
 
@@ -48,7 +48,7 @@ After market creation succeeds, bitCaster shows an optional **Fund the market ma
 
 The funding deposit is sent with the creator's Nostr public key and a `fundAmm` flag so the service treats it as AMM quoting budget, not as a withdrawable user balance. The creator key on the deposit must match the Nostr identity that signs the request.
 
-Market-maker funding follows the market's base asset. Sat markets show funding in sats; USD markets show funding in dollars backed by the mint's BTC-collateralized USD ecash. Internally the collateral is tracked as msat for sat markets and milli-cent for USD markets. JPY and other units are not available yet.
+Market-maker funding follows the market's base asset. Sat markets show funding in sats; USD markets show funding in dollars backed by the mint's BTC-collateralized USD ecash. Internally the collateral is tracked as msat for sat markets and cents (`usd`) for USD markets. JPY and other units are not available yet.
 
 The funding step offers No liquidity, Minimal, Standard, Deep, and Custom budgets. Binary markets show round preset tiers of **$15 / $150 / $300** for USD markets and **1500 / 15000 / 30000 sats** for sat markets. Categorical markets multiply the paid tiers by `log2(outcome count)`.
 

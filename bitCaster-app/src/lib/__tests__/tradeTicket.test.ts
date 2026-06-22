@@ -110,7 +110,7 @@ describe("buildTradeTicket", () => {
         limitPrice: 500,
         orderBook: market.orderBook,
       }),
-    ).toThrow("Enter an amount in 1000000 sub-unit increments.");
+    ).toThrow("Enter an amount in 10000 sub-unit increments.");
   });
 
   it("builds sell orders after same-outcome CTF swaps are supported", () => {
@@ -282,7 +282,7 @@ describe("buildTradeTicket", () => {
       feePercent: 2,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
     });
 
     expect(ticket.request.amountSats).toBe(faceAmountSats);
@@ -291,23 +291,23 @@ describe("buildTradeTicket", () => {
     expect(preview.totalCost).not.toBe(ticket.request.amountSats);
     expect(preview.amount).toBe(displayShares);
     // amountSats stays a multiple of the market divisibility.
-    expect(ticket.request.amountSats % 1_000).toBe(0);
+    expect(ticket.request.amountSats % 10_000).toBe(0);
   });
 
   it("converts share input to face amount in the order payload", () => {
     const displayShares = 50;
-    const divisibility = 1_000;
+    const divisibility = 10_000;
     const ticket = buildTradeTicket({
       market: { ...market, divisibility },
       selection: { side: "yes" },
-      amountSats: displaySharesToFaceSats(displayShares, "sat"),
+      amountSats: displaySharesToFaceSats(displayShares, "sat", divisibility),
       side: "buy",
       orderType: "limit",
       limitPrice: 300,
       orderBook: market.orderBook,
     });
 
-    expect(ticket.request.amountSats).toBe(50_000_000);
+    expect(ticket.request.amountSats).toBe(500_000);
     expect(ticket.request.price).toBe(300);
   });
 

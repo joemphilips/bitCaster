@@ -52,7 +52,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
   amountSats: number;
   reservationId: string;
 }): Promise<PreparedPreflightSplit> {
-  const divisibility = normalizeMarketDivisibility(input.market.divisibility);
+  const divisibility = normalizeMarketDivisibility(input.market.divisibility, input.market.baseAsset);
   if (input.amountSats % divisibility !== 0) {
     throw new Error(
       `Pre-flight split requires ${divisibility} sub-unit order increments.`,

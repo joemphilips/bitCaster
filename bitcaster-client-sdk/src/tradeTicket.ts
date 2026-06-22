@@ -8,7 +8,6 @@ import type {
 } from './types.ts'
 import {
   normalizeMarketDivisibility,
-  shareFaceSubunits,
   validatePriceNumerator,
   validateWholeShareFaceAmount,
 } from './marketUnits.ts'
@@ -104,8 +103,8 @@ export function buildTradeTicket(params: {
       'Enter an amount greater than zero.',
     )
   }
-  const divisibility = normalizeMarketDivisibility(market.divisibility)
-  const shareFace = shareFaceSubunits(market.baseAsset)
+  const divisibility = normalizeMarketDivisibility(market.divisibility, market.baseAsset)
+  const shareFace = divisibility
   if (!validateWholeShareFaceAmount(amountSats, shareFace)) {
     throw new TradeTicketError(
       'invalid-amount',

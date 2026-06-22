@@ -78,7 +78,6 @@ import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   formatMarketSubunits,
-  DEFAULT_MARKET_DIVISIBILITY,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -166,7 +165,7 @@ export async function resolvePreflightSplitBuyCollateralRequirement(input: {
   const tradeBooks = resolveTradeOrderBooks(input.market, input.tradeSelection);
   if (!tradeBooks) return null;
 
-  const divisibility = normalizeMarketDivisibility(input.market.divisibility);
+  const divisibility = normalizeMarketDivisibility(input.market.divisibility, input.market.baseAsset);
   const { outcomeSets, selectedBook, complementBook } = tradeBooks;
   const directCross =
     selectedBook?.asks[0] != null &&
@@ -184,7 +183,7 @@ export async function resolvePreflightSplitBuyCollateralRequirement(input: {
     mintUrl: input.activeMintUrl,
     baseAsset: normalizeMarketBaseAsset(input.market.baseAsset),
     conditionId: input.market.id,
-    amountSats: displaySharesToFaceSats(input.tradeAmount, input.market.baseAsset),
+    amountSats: displaySharesToFaceSats(input.tradeAmount, input.market.baseAsset, divisibility),
     keepOutcomeSetId: outcomeSets.selectedOutcomeSetId,
     lockOutcomeSetId: outcomeSets.complementOutcomeSetId,
   });
@@ -209,8 +208,8 @@ export function decideTradeCollateralGate(input: {
   return { kind: "proceed", balance: input.balance, required };
 }
 
-export function defaultLimitPriceForDivisibility(divisibility = DEFAULT_MARKET_DIVISIBILITY): number {
-  return Math.max(1, Math.floor(normalizeMarketDivisibility(divisibility) / 2));
+export function defaultLimitPriceForDivisibility(divisibility?: number | null, baseAsset?: string | null): number {
+  return Math.max(1, Math.floor(normalizeMarketDivisibility(divisibility, baseAsset) / 2));
 }
 
 export function resolveTradeOrderBooks(
@@ -520,7 +519,7 @@ export function liveTradeChartUpdate(
   outcomeSetId: string,
   trade: { timestamp: string; executionPrice: number; amountSats: number },
 ): { outcomeSetId: string; point: PricePoint } {
-  const divisibility = normalizeMarketDivisibility(market.divisibility);
+  const divisibility = normalizeMarketDivisibility(market.divisibility, market.baseAsset);
   const pricePercent = priceNumeratorToPercent(
     trade.executionPrice,
     divisibility,
@@ -1243,7 +1242,7 @@ export function MarketDetailPage() {
     };
   }, [walletReady]);
 
-  const marketDivisibility = normalizeMarketDivisibility(market?.divisibility);
+  const marketDivisibility = normalizeMarketDivisibility(market?.divisibility, marketBaseAsset);
   useEffect(() => {
     setLimitPrice(defaultLimitPriceForDivisibility(marketDivisibility));
   }, [market?.id, marketDivisibility]);
@@ -1254,6 +1253,7 @@ export function MarketDetailPage() {
   const tradeFaceAmount = displaySharesToFaceSats(
     tradeAmount,
     marketBaseAsset,
+    marketDivisibility,
   );
 
   // Computed trade preview (market orders). `tradeAmount` is the user-entered
@@ -1472,6 +1472,7 @@ export function MarketDetailPage() {
           amountSats: displaySharesToFaceSats(
             tradeAmount,
             latestMarket.baseAsset,
+            normalizeMarketDivisibility(latestMarket.divisibility, latestMarket.baseAsset),
           ),
           side: tradeSide,
           orderType,
@@ -1503,7 +1504,7 @@ export function MarketDetailPage() {
         const complementaryCross =
           complementBook?.bids[0] != null &&
           complementBook.bids[0].price + ticket.request.price >=
-            normalizeMarketDivisibility(latestMarket.divisibility);
+            normalizeMarketDivisibility(latestMarket.divisibility, latestMarket.baseAsset);
         const shouldPreflightSplit =
           preflightSplit &&
           tradeSide === "buy" &&
@@ -1554,6 +1555,7 @@ export function MarketDetailPage() {
         );
         const acceptedDivisibility = normalizeMarketDivisibility(
           response.divisibility ?? latestMarket.divisibility,
+          acceptedBaseAsset,
         );
         // Only persist the privkey once the engine has accepted the order.
         // Otherwise we accumulate orphaned keys on every failed submission.

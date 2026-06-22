@@ -126,7 +126,7 @@ test('buildTradeTicket applies market divisibility to price and amount validatio
   const ticket = buildTradeTicket({
     market: { ...yesNoMarket, divisibility: 1_000 },
     selection: { side: 'yes' },
-    amountSats: 2_000_000,
+    amountSats: 2_000,
     side: 'buy',
     orderType: 'market',
     limitPrice: 50,
@@ -139,40 +139,40 @@ test('buildTradeTicket applies market divisibility to price and amount validatio
       buildTradeTicket({
         market: { ...yesNoMarket, divisibility: 1_000 },
         selection: { side: 'yes' },
-        amountSats: 1_500_000,
+        amountSats: 1_501,
         side: 'buy',
         orderType: 'limit',
         limitPrice: 50,
         orderBook: liquidBook,
       }),
-    /1000000 sub-unit increments/,
+    /1000 sub-unit increments/,
   )
 })
 
-test('buildTradeTicket validates amount by base asset share face, not divisibility', () => {
+test('buildTradeTicket validates amount by market divisibility share face', () => {
   const ticket = buildTradeTicket({
-    market: { ...yesNoMarket, baseAsset: 'usd', divisibility: 10_000 },
+    market: { ...yesNoMarket, baseAsset: 'usd', divisibility: 1_000 },
     selection: { side: 'yes' },
-    amountSats: 100_000,
+    amountSats: 1_000,
     side: 'buy',
     orderType: 'limit',
-    limitPrice: 5_000,
+    limitPrice: 500,
     orderBook: liquidBook,
   })
-  assert.equal(ticket.request.amountSats, 100_000)
+  assert.equal(ticket.request.amountSats, 1_000)
 
   assert.throws(
     () =>
       buildTradeTicket({
-        market: { ...yesNoMarket, baseAsset: 'usd', divisibility: 10_000 },
+        market: { ...yesNoMarket, baseAsset: 'usd', divisibility: 1_000 },
         selection: { side: 'yes' },
-        amountSats: 10_000,
+        amountSats: 1_001,
         side: 'buy',
         orderType: 'limit',
-        limitPrice: 5_000,
+        limitPrice: 500,
         orderBook: liquidBook,
       }),
-    /100000 sub-unit increments/,
+    /1000 sub-unit increments/,
   )
 })
 

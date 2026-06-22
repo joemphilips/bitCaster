@@ -82,7 +82,7 @@ test('decideTradeCreated accepts non-default canonical amounts when local expect
   })
 })
 
-test('decideTradeCreated rejects non-default canonical amounts when local expected unit is not asserted', () => {
+test('decideTradeCreated accepts default usd canonical amounts when local expected unit is not asserted', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -98,14 +98,10 @@ test('decideTradeCreated rejects non-default canonical amounts when local expect
     quotePaymentSubunits: 400,
   })
 
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /expected unit|local unit|base asset|divisibility/i)
-  }
+  assert.equal(decision.accepted, true)
 })
 
-test('decideTradeCreated rejects non-default canonical amounts when only expected divisibility is asserted', () => {
+test('decideTradeCreated accepts default usd canonical amounts when only expected divisibility is asserted', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -122,11 +118,7 @@ test('decideTradeCreated rejects non-default canonical amounts when only expecte
     quotePaymentSubunits: 400,
   })
 
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /expected unit|local unit|base asset|divisibility/i)
-  }
+  assert.equal(decision.accepted, true)
 })
 
 test('decideTradeCreated derives system sat/10000 default from canonical payload when expected unit is missing', () => {
@@ -240,7 +232,7 @@ test('decideTradeCreated rejects default divisibility when expected non-default 
   }
 })
 
-test('decideTradeCreated rejects non-default base asset without expected unit assertion', () => {
+test('decideTradeCreated accepts default usd base asset without expected unit assertion', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -256,11 +248,7 @@ test('decideTradeCreated rejects non-default base asset without expected unit as
     quotePaymentSubunits: 500,
   })
 
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /non-default unit.*expected unit is missing/i)
-  }
+  assert.equal(decision.accepted, true)
 })
 
 test('decideTradeCreated accepts explicit non-default base asset assertion', () => {
@@ -353,7 +341,7 @@ test('decideTradeCreated rejects omitted non-default payload metadata from expec
   }
 })
 
-test('decideTradeCreated rejects non-default units without canonical amounts', () => {
+test('decideTradeCreated accepts default usd units with legacy-compatible amount fields', () => {
   const decision = decideTradeCreated({
     ownEphemeralPubkey: 'def',
     sellerPubkey: 'abc',
@@ -371,11 +359,7 @@ test('decideTradeCreated rejects non-default units without canonical amounts', (
     quotePaymentSats: 400,
   })
 
-  assert.equal(decision.accepted, false)
-  if (!decision.accepted) {
-    assert.equal(decision.reason, 'invalid-protocol')
-    assert.match(decision.error, /missing outcome face subunits/i)
-  }
+  assert.equal(decision.accepted, true)
 })
 
 test('decideTradeCreated rejects unsupported explicit unit metadata', () => {

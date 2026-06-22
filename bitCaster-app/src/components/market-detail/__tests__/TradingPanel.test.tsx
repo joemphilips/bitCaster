@@ -73,7 +73,7 @@ describe('TradingPanel', () => {
     )
 
     expect(screen.getByText('Shares')).toBeInTheDocument()
-    expect(screen.getByText('1 share = $1.00')).toBeInTheDocument()
+    expect(screen.getByText('1 share = $10.00')).toBeInTheDocument()
     expect(screen.getByText('Price per share')).toBeInTheDocument()
     expect(screen.getByTestId('trade-total-cost')).toHaveTextContent('$1.50')
     expect(

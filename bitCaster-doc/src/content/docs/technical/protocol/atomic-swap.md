@@ -393,7 +393,7 @@ The privacy advantage is the key differentiator. With HTLCs, the mint sees the s
 
 Cashu proofs use integer amounts and power-of-2 proof denominations. bitCaster
 accounts market collateral at finer precision than the display unit: msat for sat
-markets and milli-cent for USD markets. With `D=10000`, a 1,000-sat share at
+markets and standard cents for USD markets. Sat markets use `D=10000` (10-sat shares), and USD markets use `D=1000` ($10 shares). With `D=10000`, a 10-sat share at
 37.00% maps to 370,000 msat. Implementations should compute quote payments in the
 market collateral unit and reject orders that would require fractional collateral
 units instead of silently rounding.

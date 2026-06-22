@@ -62,7 +62,7 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
   const fundingUnit = baseAsset === 'usd' ? 'usd' : 'sat'
   const customBudgetSats =
     baseAsset === 'usd'
-      ? Math.round(customBudgetInput * 100_000)
+      ? Math.round(customBudgetInput * 100)
       : Math.max(0, Math.floor(customBudgetInput))
 
   useEffect(() => {

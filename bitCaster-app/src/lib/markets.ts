@@ -19,7 +19,6 @@ import {
 } from "@bitcaster/client-sdk/engineClient";
 import {
   marketUnitLabel,
-  DEFAULT_MARKET_DIVISIBILITY,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -233,7 +232,7 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const title = entry.title ?? "Untitled Market";
   const imageUrl = entry.thumbnailUrl ?? "";
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
-  const divisibility = normalizeMarketDivisibility(entry.divisibility);
+  const divisibility = normalizeMarketDivisibility(entry.divisibility, baseAsset);
 
   const base = {
     id: entry.conditionId,
@@ -368,7 +367,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const resolutionDate = entry.closedAt ?? entry.deadline ?? createdAt;
   const isYesNo = isYesNoUniverse(outcomes);
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
-  const divisibility = normalizeMarketDivisibility(entry.divisibility);
+  const divisibility = normalizeMarketDivisibility(entry.divisibility, baseAsset);
 
   const base = {
     id: entry.conditionId,
@@ -667,7 +666,7 @@ export function applyMarketPriceHistory(
   ): PriceHistory =>
     windowPriceHistory({
       timeframe: response.timeframe as PriceHistory["timeframe"],
-      data: data.map((point) => normalizePricePoint(point, market.divisibility ?? DEFAULT_MARKET_DIVISIBILITY)),
+      data: data.map((point) => normalizePricePoint(point, normalizeMarketDivisibility(market.divisibility, market.baseAsset))),
     });
   const histories = Object.fromEntries(
     response.outcomes.map((outcome) => {

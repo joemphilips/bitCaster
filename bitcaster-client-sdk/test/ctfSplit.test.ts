@@ -272,18 +272,18 @@ test("splitCompleteSetWithOperation accepts msat collateral keysets for sat mark
   assert.equal(transport.posted.length, 1);
 });
 
-test("splitCompleteSetWithOperation accepts milli-cent collateral keysets for usd markets", async () => {
+test("splitCompleteSetWithOperation accepts usd collateral keysets for usd markets", async () => {
   const transport = new FakeSplitTransport({
-    "input-keyset": "milli-cent",
-    "keyset-yes": "milli-cent",
-    "keyset-no": "milli-cent",
+    "input-keyset": "usd",
+    "keyset-yes": "usd",
+    "keyset-no": "usd",
   });
   const store = new MemoryProofOperationStore();
 
   await splitCompleteSetWithOperation({
     mintUrl: "https://mint.example",
     baseAsset: "usd",
-    operationId: "op-milli-cent-collateral",
+    operationId: "op-usd-collateral",
     transport,
     conditionId: CONDITION_ID,
     collateralProofs: [proof("input-keyset", 100, "input-secret")],

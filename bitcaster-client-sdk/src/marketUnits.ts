@@ -1,8 +1,8 @@
 export type MarketBaseAsset = 'sat' | 'usd' | 'jpy'
 
 export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
-export const SYSTEM_DIVISIBILITY = 10_000
-export const DEFAULT_MARKET_DIVISIBILITY = SYSTEM_DIVISIBILITY
+export const DEFAULT_SAT_MARKET_DIVISIBILITY = 10_000
+export const DEFAULT_USD_MARKET_DIVISIBILITY = 1_000
 
 export interface CollateralUnitInfo {
   baseAsset: MarketBaseAsset
@@ -15,7 +15,6 @@ export const COLLATERAL_UNIT_REGISTRY: Readonly<Record<string, CollateralUnitInf
   msat: { baseAsset: 'sat', scale: 1_000 },
   // NUT-01 USD amounts are already denominated in cents, so usd scale is 1.
   usd: { baseAsset: 'usd', scale: 1 },
-  'milli-cent': { baseAsset: 'usd', scale: 1_000 },
   jpy: { baseAsset: 'jpy', scale: 1 },
 }
 
@@ -57,9 +56,20 @@ export function isCollateralUnitOf(
   return unitInfo != null && expectedBaseAsset !== null && unitInfo.baseAsset === expectedBaseAsset
 }
 
-export function normalizeMarketDivisibility(value: number | null | undefined): number {
-  if (typeof value !== 'number') return DEFAULT_MARKET_DIVISIBILITY
-  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MARKET_DIVISIBILITY
+export function defaultMarketDivisibility(
+  baseAsset: MarketBaseAsset | string | null | undefined,
+): number {
+  const asset = normalizeMarketBaseAsset(baseAsset)
+  if (asset === 'usd') return DEFAULT_USD_MARKET_DIVISIBILITY
+  return DEFAULT_SAT_MARKET_DIVISIBILITY
+}
+
+export function normalizeMarketDivisibility(
+  value: number | null | undefined,
+  baseAsset?: MarketBaseAsset | string | null,
+): number {
+  if (typeof value !== 'number') return defaultMarketDivisibility(baseAsset)
+  return Number.isSafeInteger(value) && value > 0 ? value : defaultMarketDivisibility(baseAsset)
 }
 
 export function parseMarketDivisibility(value: number | null | undefined): number | null {
@@ -76,21 +86,15 @@ export function marketUnitLabel(value: MarketBaseAsset | string | null | undefin
 
 export function marketSubunitLabel(value: MarketBaseAsset | string | null | undefined): string {
   const baseAsset = normalizeMarketBaseAsset(value)
-  if (baseAsset === 'usd') return 'milli-cents'
+  if (baseAsset === 'usd') return 'cents'
   if (baseAsset === 'jpy') return 'yen'
-  return 'msat'
+  return 'sats'
 }
 
 export function defaultCollateralUnit(value: MarketBaseAsset | string | null | undefined): string {
   const asset = normalizeMarketBaseAsset(value)
-  if (asset === 'usd') return 'milli-cent'
+  if (asset === 'usd') return 'usd'
   return 'msat'
-}
-
-export function shareFaceSubunits(baseAsset: string | null | undefined): number {
-  const asset = normalizeMarketBaseAsset(baseAsset)
-  if (asset === 'usd') return 100_000
-  return 1_000_000
 }
 
 export function formatMarketSubunits(
@@ -104,7 +108,8 @@ export function formatMarketSubunits(
   const sign = amountSubunits < 0 ? '-' : ''
   const absoluteAmount = Math.abs(amountSubunits)
   if (normalized === 'usd') {
-    return `${sign}$${(absoluteAmount / 100_000).toLocaleString(undefined, {
+    // NUT-01: USD amounts are in cents. 1 USD = 100 cents.
+    return `${sign}$${(absoluteAmount / 100).toLocaleString(undefined, {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`
@@ -112,10 +117,8 @@ export function formatMarketSubunits(
   if (normalized === 'jpy') {
     return `${sign}¥${Math.trunc(absoluteAmount).toLocaleString()}`
   }
-  return `${sign}${(absoluteAmount / 1_000).toLocaleString(undefined, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 3,
-  })} sats`
+  // NUT-01: sat amounts are in sats.
+  return `${sign}${Math.trunc(absoluteAmount).toLocaleString()} sats`
 }
 
 export function formatAmount(
@@ -128,7 +131,7 @@ export function formatAmount(
 export function formatWholeShareFaceValue(
   spec: MarketUnitSpec,
 ): string {
-  return formatShareFace(spec.baseAsset)
+  return formatShareFace(spec.baseAsset, normalizeMarketDivisibility(spec.divisibility, spec.baseAsset))
 }
 
 export function formatPricePercentage(
@@ -144,10 +147,17 @@ export function formatPricePercentage(
 
 export function formatShareFace(
   baseAsset: MarketBaseAsset | string | null | undefined,
+  divisibility?: number | null,
 ): string {
   const asset = normalizeMarketBaseAsset(baseAsset)
-  if (asset === 'usd') return '$1.00'
-  return '1000 sats'
+  const shareFace = normalizeMarketDivisibility(divisibility, asset)
+  if (asset === 'usd') {
+    return `$${(shareFace / 100).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`
+  }
+  return `${Math.trunc(shareFace / collateralScaleForUnit(defaultCollateralUnit(asset))).toLocaleString()} sats`
 }
 
 export function formatPricePercent(
@@ -178,10 +188,9 @@ export function quotePaymentSubunits(params: {
   faceAmountSubunits: number
   priceNumerator: number
   divisibility: number
-  shareFaceSubunits?: number
 }): number {
   const { faceAmountSubunits, priceNumerator, divisibility } = params
-  const shareFace = params.shareFaceSubunits ?? divisibility
+  const shareFace = divisibility
   if (!validateWholeShareFaceAmount(faceAmountSubunits, shareFace)) {
     throw new Error('faceAmountSubunits must be a positive whole-share amount')
   }

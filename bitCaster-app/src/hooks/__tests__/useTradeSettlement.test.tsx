@@ -270,7 +270,7 @@ describe("useTradeSettlement", () => {
       side: "Buy",
       tokenSide: "Outcome",
       divisibility: 2_000,
-      priceSubunits: 1_000,
+      priceSubunits: 500,
       amountSubunits: 2_000,
       submittedAt: Date.now(),
     });
@@ -669,10 +669,10 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "usd",
-      divisibility: 1_000,
+      divisibility: 2_000,
       side: "Buy",
       tokenSide: "Outcome",
-      priceSubunits: 1_000,
+      priceSubunits: 500,
       amountSubunits: 2_000,
       submittedAt: Date.now(),
     });
@@ -713,7 +713,7 @@ describe("useTradeSettlement", () => {
         outcomeFaceAmountSats: 1_000_000,
         quotePaymentSats: 500_000,
         baseAsset: "usd",
-        divisibility: 1_000,
+        divisibility: 2_000,
       });
     });
 
@@ -1780,7 +1780,7 @@ describe("useTradeSettlement", () => {
         outcomeFaceAmountSubunits: 100_000,
         quotePaymentSubunits: 50_000,
         baseAsset: "usd",
-        divisibility: 1_000,
+        divisibility: 2_000,
       });
     });
 

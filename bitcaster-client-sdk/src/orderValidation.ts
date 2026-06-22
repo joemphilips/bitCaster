@@ -1,6 +1,5 @@
 import {
   normalizeMarketDivisibility,
-  shareFaceSubunits,
   validatePriceNumerator,
   validateWholeShareFaceAmount,
 } from './marketUnits.ts'
@@ -76,8 +75,8 @@ export function validateOrderIntent(
   const price = intent.price
   const divisibility =
     typeof intent.divisibility === 'number'
-      ? normalizeMarketDivisibility(intent.divisibility)
-      : normalizeMarketDivisibility(undefined)
+      ? normalizeMarketDivisibility(intent.divisibility, typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined)
+      : normalizeMarketDivisibility(undefined, typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined)
   if (typeof price !== 'number' || !validatePriceNumerator(price, divisibility)) {
     return {
       valid: false,
@@ -85,9 +84,7 @@ export function validateOrderIntent(
     }
   }
   const amountSats = intent.amountSats
-  const shareFace = shareFaceSubunits(
-    typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined,
-  )
+  const shareFace = divisibility
   if (
     typeof amountSats !== 'number' ||
     !validateWholeShareFaceAmount(amountSats, shareFace)

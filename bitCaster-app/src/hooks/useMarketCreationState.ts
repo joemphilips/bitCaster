@@ -643,7 +643,7 @@ export function useMarketCreationState() {
             thumbnailUrl: createResponse.thumbnailUrl ?? null,
             createdAt: new Date().toISOString(),
             baseAsset,
-            divisibility: normalizeMarketDivisibility(createResponse.divisibility),
+            divisibility: normalizeMarketDivisibility(createResponse.divisibility, baseAsset),
             creatorFeePercent: DEFAULT_CREATOR_FEE_PERCENT,
             oracle: creatorOracle,
         })

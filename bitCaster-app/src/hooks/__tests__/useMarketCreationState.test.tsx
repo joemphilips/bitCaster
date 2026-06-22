@@ -240,7 +240,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
         request: expect.objectContaining({
-          collateral: 'milli-cent',
+          collateral: 'usd',
         }),
       }),
     )
@@ -293,7 +293,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
       expect.objectContaining({
         requiredFeeSats: 14,
         request: expect.objectContaining({
-          collateral: 'milli-cent',
+          collateral: 'usd',
         }),
       }),
     )

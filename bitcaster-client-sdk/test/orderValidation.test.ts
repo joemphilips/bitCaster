@@ -39,11 +39,11 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
     [{ ...validOrder, price: 42.5 }, /price must be an integer from 1 to 9999/],
     [
       { ...validOrder, amountSats: 0 },
-      /amountSats must be a positive integer in 1000000 sub-unit increments/,
+      /amountSats must be a positive integer in 10000 sub-unit increments/,
     ],
     [
-      { ...validOrder, amountSats: 10_000 },
-      /amountSats must be a positive integer in 1000000 sub-unit increments/,
+      { ...validOrder, amountSats: 10_001 },
+      /amountSats must be a positive integer in 10000 sub-unit increments/,
     ],
     [
       { ...validOrder, timeInForce: 'IOC' },
@@ -58,7 +58,7 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
 
 test('validateOrderIntent applies supplied market divisibility', () => {
   assert.deepEqual(
-    validateOrderIntent({ ...validOrder, divisibility: 1_000, price: 999, amountSats: 2_000_000 }),
+    validateOrderIntent({ ...validOrder, divisibility: 1_000, price: 999, amountSats: 2_000 }),
     { valid: true },
   )
 
@@ -66,18 +66,18 @@ test('validateOrderIntent applies supplied market divisibility', () => {
   assert.equal(priceResult.valid, false)
   assert.match(priceResult.valid ? '' : priceResult.message, /from 1 to 999/)
 
-  const amountResult = validateOrderIntent({ ...validOrder, divisibility: 1_000, price: 500, amountSats: 1_500_000 })
+  const amountResult = validateOrderIntent({ ...validOrder, divisibility: 1_000, price: 500, amountSats: 1_501 })
   assert.equal(amountResult.valid, false)
-  assert.match(amountResult.valid ? '' : amountResult.message, /1000000 sub-unit increments/)
+  assert.match(amountResult.valid ? '' : amountResult.message, /1000 sub-unit increments/)
 })
 
 test('validateOrderIntent validates whole-share amounts by base asset share face', () => {
   assert.deepEqual(
-    validateOrderIntent({ ...validOrder, baseAsset: 'usd', amountSats: 100_000 }),
+    validateOrderIntent({ ...validOrder, baseAsset: 'usd', price: 500, amountSats: 1_000 }),
     { valid: true },
   )
 
-  const usdAmountResult = validateOrderIntent({ ...validOrder, baseAsset: 'usd', amountSats: 10_000 })
+  const usdAmountResult = validateOrderIntent({ ...validOrder, baseAsset: 'usd', price: 500, amountSats: 1_001 })
   assert.equal(usdAmountResult.valid, false)
-  assert.match(usdAmountResult.valid ? '' : usdAmountResult.message, /100000 sub-unit increments/)
+  assert.match(usdAmountResult.valid ? '' : usdAmountResult.message, /1000 sub-unit increments/)
 })

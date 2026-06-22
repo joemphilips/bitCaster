@@ -1,20 +1,20 @@
 import type { LimitOrderPreview, OrderBook, TradeSide } from '@/types/market-detail'
-import { normalizeMarketDivisibility, shareFaceSubunits } from '@bitcaster/client-sdk/marketUnits'
-
-export { shareFaceSubunits } from '@bitcaster/client-sdk/marketUnits'
+import { normalizeMarketDivisibility } from '@bitcaster/client-sdk/marketUnits'
 
 export function displaySharesToFaceSats(
   displayShares: number,
   baseAsset: string | null | undefined = 'sat',
+  divisibility?: number | null,
 ): number {
-  return displayShares * shareFaceSubunits(baseAsset)
+  return displayShares * normalizeMarketDivisibility(divisibility, baseAsset)
 }
 
 export function faceSatsToDisplayShares(
   faceSats: number,
   baseAsset: string | null | undefined = 'sat',
+  divisibility?: number | null,
 ): number {
-  return Math.floor(faceSats / shareFaceSubunits(baseAsset))
+  return Math.floor(faceSats / normalizeMarketDivisibility(divisibility, baseAsset))
 }
 
 /**
@@ -29,7 +29,7 @@ export function faceSatsToDisplayShares(
  * Quote sats = display shares * price. This is equivalent to the engine's
  * exact settlement formula because:
  *
- *   faceSats   = displayShares * shareFaceSubunits(baseAsset)
+  *   faceSats   = displayShares * divisibility
  *   quoteSats  = faceSats * price / divisibility
  *
  * On top of the quote the user pays the creator fee (a percentage of the
@@ -61,8 +61,8 @@ export function computeTradeCost(params: {
   divisibility?: number | null
 }): TradeCostBreakdown {
   const { displayShares, price, feePercent, mintInputFeePpk, baseAsset = 'sat' } = params
-  const divisibility = normalizeMarketDivisibility(params.divisibility)
-  const quoteSats = (displaySharesToFaceSats(displayShares, baseAsset) * price) / divisibility
+  const divisibility = normalizeMarketDivisibility(params.divisibility, baseAsset)
+  const quoteSats = (displaySharesToFaceSats(displayShares, baseAsset, divisibility) * price) / divisibility
   const creatorFee = Math.round((quoteSats * feePercent) / 100)
   const mintFee = Math.ceil((quoteSats * mintInputFeePpk) / 1000)
   return {
@@ -110,7 +110,7 @@ export function computeLimitOrderPreview(params: {
     creatorFee: cost.creatorFee,
     mintFee: cost.mintFee,
     engineScoreFeeSats,
-    potentialPayout: displaySharesToFaceSats(displayShares, baseAsset),
+    potentialPayout: displaySharesToFaceSats(displayShares, baseAsset, params.divisibility),
     totalCost: cost.totalCost,
   }
 }
@@ -137,11 +137,11 @@ export function computeMarketOrderQuotePreview(params: {
     complementaryOrderBook,
     baseAsset = 'sat',
   } = params
-  const divisibility = normalizeMarketDivisibility(params.divisibility)
-  const faceSubunitsPerDisplayShare = shareFaceSubunits(baseAsset)
+  const divisibility = normalizeMarketDivisibility(params.divisibility, baseAsset)
+  const faceSubunitsPerDisplayShare = divisibility
   if ((!orderBook && !complementaryOrderBook) || displayShares <= 0 || divisibility <= 0) return null
 
-  const remainingFaceTarget = displaySharesToFaceSats(displayShares, baseAsset)
+  const remainingFaceTarget = displaySharesToFaceSats(displayShares, baseAsset, divisibility)
   let remainingFace = remainingFaceTarget
   let quoteSats = 0
   let filledFaceSats = 0

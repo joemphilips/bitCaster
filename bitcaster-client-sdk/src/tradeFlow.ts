@@ -1,11 +1,11 @@
 import { validateTradeCreatedProtocol } from './tradeSession.ts'
 import {
+  DEFAULT_SAT_MARKET_DIVISIBILITY,
   DEFAULT_MARKET_BASE_ASSET,
-  DEFAULT_MARKET_DIVISIBILITY,
+  defaultMarketDivisibility,
   parseMarketBaseAsset,
   parseMarketDivisibility,
   quotePaymentSubunits,
-  shareFaceSubunits,
   validateWholeShareFaceAmount,
   type MarketBaseAsset,
 } from './marketUnits.ts'
@@ -212,10 +212,10 @@ function validateTradeCreatedSettlementAmounts(
 }
 
 function isDefaultSettlementUnit(baseAsset: MarketBaseAsset, divisibility: number): boolean {
-  return (
-    baseAsset === DEFAULT_MARKET_BASE_ASSET &&
-    (divisibility === DEFAULT_MARKET_DIVISIBILITY || divisibility === 1_000)
-  )
+  if (baseAsset === DEFAULT_MARKET_BASE_ASSET && (divisibility === 100 || divisibility === 1_000)) {
+    return true
+  }
+  return divisibility === defaultMarketDivisibility(baseAsset)
 }
 
 function resolveSettlementUnit(input: TradeCreatedDecisionInput): {
@@ -258,7 +258,7 @@ function defaultResolvedUnit(): {
 } {
   return {
     baseAsset: DEFAULT_MARKET_BASE_ASSET,
-    divisibility: DEFAULT_MARKET_DIVISIBILITY,
+    divisibility: DEFAULT_SAT_MARKET_DIVISIBILITY,
     expectedBaseAsset: null,
     expectedDivisibility: null,
   }
@@ -291,11 +291,11 @@ function parseOptionalDivisibility(
   value: number | null | undefined,
   label: string,
 ): { value: number; error: string | null } {
-  if (value == null) return { value: DEFAULT_MARKET_DIVISIBILITY, error: null }
+  if (value == null) return { value: DEFAULT_SAT_MARKET_DIVISIBILITY, error: null }
   const parsed = parseMarketDivisibility(value)
   return parsed
     ? { value: parsed, error: null }
-    : { value: DEFAULT_MARKET_DIVISIBILITY, error: `${label} is unsupported.` }
+    : { value: DEFAULT_SAT_MARKET_DIVISIBILITY, error: `${label} is unsupported.` }
 }
 
 function parseExpectedDivisibility(
@@ -327,7 +327,7 @@ function validateExpectedOrderEconomics(input: {
   if (!isPositiveInteger(order.priceSubunits) || order.priceSubunits >= input.divisibility) {
     return 'Expected order price is out of range.'
   }
-  const shareFace = shareFaceSubunits(input.baseAsset)
+  const shareFace = input.divisibility
   if (!validateWholeShareFaceAmount(order.amountSubunits, shareFace)) {
     return 'Expected order amount is not a positive whole-share amount.'
   }
@@ -349,7 +349,6 @@ function validateExpectedOrderEconomics(input: {
       faceAmountSubunits: faceAmount,
       priceNumerator: order.priceSubunits,
       divisibility: input.divisibility,
-      shareFaceSubunits: shareFace,
     })
     if (order.quotePolicy === 'exact' ? quotePayment !== maxQuote : quotePayment > maxQuote) {
       return 'Trade quote payment exceeds the submitted order price.'
@@ -373,7 +372,6 @@ function validateExpectedOrderEconomics(input: {
     faceAmountSubunits: faceAmount,
     priceNumerator: effectiveSellerPrice,
     divisibility: input.divisibility,
-    shareFaceSubunits: shareFace,
   })
   if (order.quotePolicy === 'exact' ? quotePayment !== minQuote : quotePayment < minQuote) {
     return 'Trade quote payment does not satisfy the submitted order price.'

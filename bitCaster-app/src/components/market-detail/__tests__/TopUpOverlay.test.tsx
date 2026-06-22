@@ -46,12 +46,12 @@ describe('TopUpOverlay', () => {
     ensureImplicitWallet.mockResolvedValue(undefined)
   })
 
-  it('shows USD top-up inputs in dollars while requesting milli-cent subunits', async () => {
+  it('shows USD top-up inputs in dollars while requesting cent subunits', async () => {
     const user = userEvent.setup()
 
     render(
       <TopUpOverlay
-        deficit={1_500_000}
+        deficit={1_500}
         baseAsset="usd"
         onCancel={vi.fn()}
         onSuccess={vi.fn()}
@@ -67,7 +67,7 @@ describe('TopUpOverlay', () => {
     await user.click(screen.getByTestId('top-up-continue'))
 
     await waitFor(() => {
-      expect(createMintQuote).toHaveBeenCalledWith(15_000_000, 'https://mint.example', 'usd')
+      expect(createMintQuote).toHaveBeenCalledWith(15_000, 'https://mint.example', 'usd')
     })
     expect(await screen.findByTestId('bolt11-display')).toBeInTheDocument()
     expect(screen.getByText('$150.00')).toBeInTheDocument()

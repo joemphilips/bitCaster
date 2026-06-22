@@ -41,7 +41,7 @@ import {
 } from '@bitcaster-market/client-sdk/ctfSplit'
 import { prepareSwapInputsForTrade } from '@bitcaster-market/client-sdk/tradePreparation'
 import {
-  DEFAULT_MARKET_DIVISIBILITY,
+  DEFAULT_SAT_MARKET_DIVISIBILITY,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from '@bitcaster-market/client-sdk/marketUnits'
@@ -1111,7 +1111,7 @@ function shouldRetryOrderValidationWithMarketUnit(
     return false
   }
 
-  return price >= DEFAULT_MARKET_DIVISIBILITY || amountSats >= DEFAULT_MARKET_DIVISIBILITY
+  return price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSats >= DEFAULT_SAT_MARKET_DIVISIBILITY
 }
 
 async function maybePreparePreflightSplitForOrder(input: {
@@ -1294,14 +1294,14 @@ async function loadMarketUnit(
   if (!client.getMarket) {
     return {
       baseAsset: normalizeMarketBaseAsset(undefined),
-      divisibility: DEFAULT_MARKET_DIVISIBILITY,
+      divisibility: DEFAULT_SAT_MARKET_DIVISIBILITY,
     }
   }
   const market = await client.getMarket(conditionId)
   if (!market || typeof market !== 'object') {
     return {
       baseAsset: normalizeMarketBaseAsset(undefined),
-      divisibility: DEFAULT_MARKET_DIVISIBILITY,
+      divisibility: DEFAULT_SAT_MARKET_DIVISIBILITY,
     }
   }
   const record = market as {

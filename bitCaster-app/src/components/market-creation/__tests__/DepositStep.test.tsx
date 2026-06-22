@@ -159,7 +159,7 @@ describe('DepositStep', () => {
     expect(screen.getByText('Funding amount: $15.00')).toBeInTheDocument()
   })
 
-  it('converts USD custom funding dollars to milli-cent subunits at the request boundary', async () => {
+  it('converts USD custom funding dollars to cent subunits at the request boundary', async () => {
     const user = userEvent.setup()
     renderStep({ baseAsset: 'usd' })
 
@@ -171,13 +171,13 @@ describe('DepositStep', () => {
     await waitFor(() => {
       expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
-        1_500_000,
+        1_500,
         expect.objectContaining({ fundAmm: true }),
       )
     })
   })
 
-  it('renders USD funding tiers in dollars instead of milli-cent subunits', async () => {
+  it('renders USD funding tiers in dollars instead of cent subunits', async () => {
     const user = userEvent.setup()
     renderStep({ baseAsset: 'usd', outcomeCount: 4 })
 
@@ -186,8 +186,8 @@ describe('DepositStep', () => {
     expect(screen.getByTestId('amm-funding-tier-minimal')).toHaveTextContent('$15')
     expect(screen.getByTestId('amm-funding-tier-standard')).toHaveTextContent('$150')
     expect(screen.getByTestId('amm-funding-tier-deep')).toHaveTextContent('$300')
-    expect(screen.queryByText('1500000')).not.toBeInTheDocument()
-    expect(screen.queryByText('15000000')).not.toBeInTheDocument()
+    expect(screen.queryByText('1500')).not.toBeInTheDocument()
+    expect(screen.queryByText('15000')).not.toBeInTheDocument()
   })
 
   it('requests AMM funding and shows the shared invoice display', async () => {
@@ -200,7 +200,7 @@ describe('DepositStep', () => {
     await waitFor(() => {
       expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
-        15_000_000,
+        15_000,
         expect.objectContaining({ fundAmm: true }),
       )
     })
@@ -227,7 +227,7 @@ describe('DepositStep', () => {
     await waitFor(() => {
       expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
-        15_000_000,
+        15_000,
         expect.objectContaining({ fundAmm: true }),
       )
     })
@@ -381,7 +381,7 @@ describe('DepositStep', () => {
     await waitFor(() => {
       expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
-        15_000_000,
+        15_000,
         expect.objectContaining({ fundAmm: true }),
       )
     })

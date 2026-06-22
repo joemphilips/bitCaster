@@ -11,7 +11,7 @@ The catalogue exposes three lifetime/display metrics:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `liquiditySats` | `int64` | Legacy field name. Total face amount of currently resting orders across the market's order books, denominated in the market collateral unit: msat for sat markets, milli-cent for USD markets. |
+| `liquiditySats` | `int64` | Legacy field name. Total face amount of currently resting orders across the market's order books, denominated in the market collateral unit: msat for sat markets, cents (`usd`) for USD markets. |
 | `traderCount` | `int32` | Number of distinct traders that have settled a trade in this market. |
 | `volumeLifetimeSats` | `int64` | Cumulative settled collateral face amount of all fills in the market's history. |
 

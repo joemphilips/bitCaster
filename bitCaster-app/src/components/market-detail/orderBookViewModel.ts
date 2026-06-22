@@ -1,5 +1,4 @@
 import type { Order, OrderBook } from "@/types/market-detail";
-import { DEFAULT_MARKET_DIVISIBILITY } from "@bitcaster/client-sdk/marketUnits";
 
 export type OrderBookCompleteness = "direct" | "executable";
 
@@ -40,7 +39,7 @@ export function deriveExecutableOrderBook(input: {
       ...book.asks,
       ...ordersFromComplementBids(
         input.complementBook.bids,
-        input.divisibility ?? DEFAULT_MARKET_DIVISIBILITY,
+        input.divisibility ?? 10_000,
       ),
     ],
     "ask",
@@ -101,7 +100,7 @@ function ordersFromComplementBids(
   const denominator =
     Number.isFinite(divisibility) && divisibility > 0
       ? divisibility
-      : DEFAULT_MARKET_DIVISIBILITY;
+      : 10_000;
   return orders.map((order) => ({
     price: denominator - order.price,
     amount: order.amount,

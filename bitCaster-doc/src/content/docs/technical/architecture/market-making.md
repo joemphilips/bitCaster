@@ -62,7 +62,7 @@ paid tiers by `log2(outcome count)`.
 
 Funded sat markets are displayed in sats. Funded USD markets are displayed in
 dollars or cents backed by the market mint's USD ecash. Internally, collateral is
-accounted in msat for sat markets and milli-cent for USD markets. Other units may
+accounted in msat for sat markets and standard cents (`usd`) for USD markets. Other units may
 be added later.
 
 The funding deposit is committed to market-making for that market. It does not

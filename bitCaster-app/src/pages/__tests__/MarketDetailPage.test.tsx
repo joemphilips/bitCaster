@@ -613,7 +613,7 @@ describe("resolvePreflightSplitBuyCollateralRequirement", () => {
       mintUrl: "https://mint.example",
       baseAsset: "sat",
       conditionId: "condition-1",
-      amountSats: 1_000_000,
+      amountSats: 1_000,
       keepOutcomeSetId: "Alice",
       lockOutcomeSetId: "Bob|Carol",
     });
