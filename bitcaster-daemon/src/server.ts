@@ -1171,72 +1171,65 @@ async function maybePreparePreflightSplitForOrder(input: {
       outcomeProofsByCollection: {},
       regularProofs: [],
       splitRegularToOutcome: async () => {
-        const producedByCollection: Record<string, Proof[]> = {}
-        for (let offset = 0; offset < input.amountSats; offset += marketUnit.divisibility) {
-          const chunkAmountSats = Math.min(marketUnit.divisibility, input.amountSats - offset)
-          const preflightOutputAmountSats =
-            await resolveRootPreflightOutputAmountSats({
-              mintUrl: input.mintUrl,
-              baseAsset: marketUnit.baseAsset,
-              conditionId: market.conditionId,
-              amountSats: chunkAmountSats,
-              keepOutcomeSetId,
-              lockOutcomeSetId,
-            })
-          const secrets = await readSecrets()
-          if (!secrets) throw new Error('daemon secrets are not initialized')
-          const collateral = await splitAvailableSatProofsForCtfCollateral(
-            preflightOutputAmountSats,
-            input.mintUrl,
-            `${reservationId}:regular-split:${offset / marketUnit.divisibility}`,
-            secrets,
-            {},
-            marketUnit.baseAsset,
-          )
-          if (collateral.spent.length > 0) {
-            await replaceAvailableSatProofsWithPreparedCollateral({
-              mintUrl: input.mintUrl,
-              spentSecrets: collateral.spent.map((proof) => proof.secret),
-              keepProofs: collateral.keep,
-              inputProofs: collateral.inputs,
-              reservationId,
-              baseAsset: marketUnit.baseAsset,
-            })
-          } else {
-            await reserveSelectedSatProofs(
-              input.mintUrl,
-              collateral.inputs,
-              reservationId,
-              marketUnit.baseAsset,
-            )
-          }
-          const split = await splitRootCompleteSetForPreflightOrder({
+        const preflightOutputAmountSats =
+          await resolveRootPreflightOutputAmountSats({
             mintUrl: input.mintUrl,
             baseAsset: marketUnit.baseAsset,
             conditionId: market.conditionId,
-            collateralProofs: collateral.inputs,
-            amountSats: preflightOutputAmountSats,
+            amountSats: input.amountSats,
             keepOutcomeSetId,
             lockOutcomeSetId,
-            operationId: `${reservationId}:ctf-split:${offset / marketUnit.divisibility}`,
-            proofOperationStore: ctfProofOperationStore,
           })
-          resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId
-          resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId
-          for (const [collection, proofs] of Object.entries(split.proofsByCollection)) {
-            ;(producedByCollection[collection] ??= []).push(...proofs)
-          }
-          await replaceReservedSatProofsWithReservedOutcomes({
+        const secrets = await readSecrets()
+        if (!secrets) throw new Error('daemon secrets are not initialized')
+        const collateral = await splitAvailableSatProofsForCtfCollateral(
+          preflightOutputAmountSats,
+          input.mintUrl,
+          `${reservationId}:regular-split:0`,
+          secrets,
+          {},
+          marketUnit.baseAsset,
+        )
+        if (collateral.spent.length > 0) {
+          await replaceAvailableSatProofsWithPreparedCollateral({
             mintUrl: input.mintUrl,
+            spentSecrets: collateral.spent.map((proof) => proof.secret),
+            keepProofs: collateral.keep,
+            inputProofs: collateral.inputs,
             reservationId,
-            spentSecrets: split.spentSatProofs.map((proof) => proof.secret),
-            conditionId: market.conditionId,
-            proofsByCollection: split.proofsByCollection,
             baseAsset: marketUnit.baseAsset,
           })
+        } else {
+          await reserveSelectedSatProofs(
+            input.mintUrl,
+            collateral.inputs,
+            reservationId,
+            marketUnit.baseAsset,
+          )
         }
+        const split = await splitRootCompleteSetForPreflightOrder({
+          mintUrl: input.mintUrl,
+          baseAsset: marketUnit.baseAsset,
+          conditionId: market.conditionId,
+          collateralProofs: collateral.inputs,
+          amountSats: preflightOutputAmountSats,
+          keepOutcomeSetId,
+          lockOutcomeSetId,
+          operationId: `${reservationId}:ctf-split:0`,
+          proofOperationStore: ctfProofOperationStore,
+        })
+        resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId
+        resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId
+        await replaceReservedSatProofsWithReservedOutcomes({
+          mintUrl: input.mintUrl,
+          reservationId,
+          spentSecrets: split.spentSatProofs.map((proof) => proof.secret),
+          conditionId: market.conditionId,
+          proofsByCollection: split.proofsByCollection,
+          baseAsset: marketUnit.baseAsset,
+        })
         return {
-          proofsByCollection: producedByCollection,
+          proofsByCollection: split.proofsByCollection,
           spentRegularProofs: [],
           regularChangeProofs: [],
         }
