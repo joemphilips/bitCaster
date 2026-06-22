@@ -21,7 +21,7 @@ export function formatAmount(
 /** Display name for a funding unit ("sats" / "USD" / "JPY"). */
 export const formatUnitName = marketUnitLabel
 
-/** Display name for the subunit a raw amount is entered in ("sats" / "milli-cents" / "yen"). */
+/** Display name for the subunit a raw amount is entered in ("sats" / "cents" / "yen"). */
 export const formatUnitSubunitName = marketSubunitLabel
 
 export interface AmountByUnit {

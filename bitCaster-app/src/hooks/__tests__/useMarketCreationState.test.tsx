@@ -418,7 +418,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.submitError).toBe(
-      'This mint requires a 1.001 sats condition registration fee, which exceeds the 1 sats app limit.',
+      'This mint requires a 1,001 sats condition registration fee, which exceeds the 1,000 sats app limit.',
     )
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
     expect(mockCreateMarket).not.toHaveBeenCalled()

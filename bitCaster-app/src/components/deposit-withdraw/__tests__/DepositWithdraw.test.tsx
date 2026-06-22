@@ -108,7 +108,7 @@ describe('DepositWithdraw', () => {
     it('shows mint name and balance', () => {
       renderDepositWithdraw({ currentView: 'deposit-lightning' })
       expect(screen.getByText('Test Mint')).toBeInTheDocument()
-      expect(screen.getByText(/5 sats available/)).toBeInTheDocument()
+      expect(screen.getByText(/5,000 sats available/)).toBeInTheDocument()
     })
 
     it('calls onNumpadPress when numpad keys are clicked', async () => {

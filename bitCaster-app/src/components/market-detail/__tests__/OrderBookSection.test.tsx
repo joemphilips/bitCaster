@@ -9,8 +9,8 @@ describe('OrderBookSection', () => {
         baseAsset="usd"
         divisibility={1_000}
         orderBook={{
-          bids: [{ price: 50, amount: 100_000, total: 100_000 }],
-          asks: [{ price: 60, amount: 200_000, total: 200_000 }],
+          bids: [{ price: 50, amount: 100, total: 100 }],
+          asks: [{ price: 60, amount: 200, total: 200 }],
           spread: 10,
         }}
       />,
@@ -82,13 +82,13 @@ describe('OrderBookSection', () => {
     expect(bidRows[0]).toHaveAttribute('data-depth-percent', '33')
     expect(bidRows[0]).toHaveAttribute('data-depth-side', 'bid')
     expect(bidRows[0]).toHaveTextContent('52.00%')
-    expect(bidRows[0]).toHaveTextContent('0.1 sats')
+    expect(bidRows[0]).toHaveTextContent('100 sats')
     expect(screen.getAllByTestId('order-book-bid-depth-fill')[0]).toHaveStyle({ width: '33%' })
 
     expect(askRows[0]).toHaveAttribute('data-depth-percent', '33')
     expect(askRows[0]).toHaveAttribute('data-depth-side', 'ask')
     expect(askRows[0]).toHaveTextContent('53.00%')
-    expect(askRows[0]).toHaveTextContent('0.03 sats')
+    expect(askRows[0]).toHaveTextContent('30 sats')
     expect(screen.getAllByTestId('order-book-ask-depth-fill')[0]).toHaveStyle({ width: '33%' })
   })
 })

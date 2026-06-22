@@ -52,12 +52,12 @@ describe('TradingPanel', () => {
       averageExecutionPrice: 30,
       executableShares: 25,
       hasExecutableLiquidity: true,
-      quoteSats: 150_000,
+      quoteSats: 150,
       mintFee: 0,
       potentialPayout: 500,
       creatorFee: 1,
       engineScoreFeeSats: 0,
-      totalCost: 150_001,
+      totalCost: 150,
     }
 
     render(
@@ -96,12 +96,12 @@ describe('TradingPanel', () => {
       averageExecutionPrice: 30,
       executableShares: 25,
       hasExecutableLiquidity: true,
-      quoteSats: 150_000,
-      mintFee: 100_000,
+      quoteSats: 150,
+      mintFee: 100,
       potentialPayout: 500,
       creatorFee: 1,
       engineScoreFeeSats: 0,
-      totalCost: 250_000,
+      totalCost: 250,
     }
 
     render(
@@ -149,7 +149,7 @@ describe('TradingPanel', () => {
     expect(screen.getByText('Price per share')).toBeInTheDocument()
     expect(screen.getByText('30 (30.00%)')).toBeInTheDocument()
     expect(screen.getByText('Total expected cost')).toBeInTheDocument()
-    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1.5 sats')
+    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1,500 sats')
     expect(screen.queryByText('Shares you receive if order fills')).not.toBeInTheDocument()
     expect(screen.queryByText('Market Creator fee (1%)')).not.toBeInTheDocument()
     expect(screen.queryByText('Mint fee')).not.toBeInTheDocument()
@@ -224,7 +224,7 @@ describe('TradingPanel', () => {
       />,
     )
 
-    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('2.25 sats')
+    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('2,250 sats')
   })
 
   it('keeps the share input as an integer of at least one when editing', () => {
