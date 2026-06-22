@@ -6,6 +6,7 @@ import {
   SYSTEM_DIVISIBILITY,
   defaultCollateralUnit,
   formatPricePercentage,
+  formatAmount,
   formatMarketSubunits,
   formatPricePercent,
   formatShareFace,
@@ -62,6 +63,10 @@ test('normalizes initial AMM liquidity to sat markets only', () => {
 })
 
 test('formats market subunits without confusing cents for dollars', () => {
+  assert.equal(formatAmount(50_000, 'sat'), '50 sats')
+  assert.equal(formatAmount(50_000, 'usd'), '$0.50')
+  assert.equal(formatAmount(15_000_000, 'usd'), '$150.00')
+  assert.equal(formatAmount(1_234, 'sat'), '1.234 sats')
   assert.equal(formatMarketSubunits(50_000, 'sat'), '50 sats')
   assert.equal(formatMarketSubunits(-50_000, 'sat'), '-50 sats')
   assert.equal(formatMarketSubunits(50_000, 'usd'), '$0.50')

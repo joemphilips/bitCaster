@@ -13,7 +13,7 @@ import type {
 } from '@/types/market-detail'
 import { useTranslation } from 'react-i18next'
 import {
-  formatMarketSubunits,
+  formatAmount as formatCollateralAmount,
   formatPricePercentage,
   formatShareFace,
   marketSubunitLabel,
@@ -509,7 +509,7 @@ export function TradingPanel({
   const divisibility = normalizeMarketDivisibility(market.divisibility)
   const subunitLabel = marketSubunitLabel(baseAsset)
   const wholeShareLabel = formatShareFace(baseAsset)
-  const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
+  const formatAmount = (amount: number) => formatCollateralAmount(amount, baseAsset)
   const shareCountLabel = (shares: number) =>
     t('trade.shareCount', { count: shares.toLocaleString() })
   const userHoldingShares =

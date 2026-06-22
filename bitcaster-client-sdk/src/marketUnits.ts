@@ -86,6 +86,13 @@ export function formatMarketSubunits(
   })} sats`
 }
 
+export function formatAmount(
+  amountSubunits: number,
+  baseAsset: MarketBaseAsset | string | null | undefined,
+): string {
+  return formatMarketSubunits(amountSubunits, baseAsset)
+}
+
 export function formatWholeShareFaceValue(
   spec: MarketUnitSpec,
 ): string {

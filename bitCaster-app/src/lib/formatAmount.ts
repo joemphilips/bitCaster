@@ -1,5 +1,5 @@
 import {
-  formatMarketSubunits,
+  formatAmount as formatSdkAmount,
   marketSubunitLabel,
   marketUnitLabel,
   normalizeMarketBaseAsset,
@@ -15,7 +15,7 @@ export function formatAmount(
   amountSubunits: number,
   baseAsset: MarketBaseAsset | string | null | undefined = 'sat',
 ): string {
-  return formatMarketSubunits(amountSubunits, baseAsset)
+  return formatSdkAmount(amountSubunits, baseAsset)
 }
 
 /** Display name for a funding unit ("sats" / "USD" / "JPY"). */

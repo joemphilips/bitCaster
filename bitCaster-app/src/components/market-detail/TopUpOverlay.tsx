@@ -13,13 +13,29 @@ import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
 import type { MintQuoteResponse } from '@cashu/cashu-ts'
 import {
-  formatMarketSubunits,
-  marketSubunitLabel,
+  formatAmount,
+  marketUnitLabel,
   normalizeMarketBaseAsset,
 } from '@bitcaster/client-sdk/marketUnits'
 
 type View = 'amount' | 'invoice'
 type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
+
+function displayInputAmount(amountSubunits: number, baseAsset: string): number {
+  if (baseAsset === 'usd') return amountSubunits / 100_000
+  return amountSubunits
+}
+
+function displayInputStep(baseAsset: string): number {
+  if (baseAsset === 'usd') return 0.01
+  return 1
+}
+
+function inputAmountToSubunits(displayAmount: number, baseAsset: string): number {
+  if (!Number.isFinite(displayAmount)) return 0
+  if (baseAsset === 'usd') return Math.round(displayAmount * 100_000)
+  return Math.round(displayAmount)
+}
 
 function assertNeverWaitResult(r: never): never {
   throw new Error(`unhandled MintQuoteWaitResult: ${JSON.stringify(r)}`)
@@ -54,9 +70,11 @@ export function TopUpOverlay({
   const { t } = useTranslation()
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
-  const subunitLabel = marketSubunitLabel(baseAsset)
-  const bufferSubunits = baseAsset === 'sat' ? FEE_BUFFER_SATS : 1
+  const unitLabel = marketUnitLabel(baseAsset)
+  const bufferSubunits = baseAsset === 'sat' ? FEE_BUFFER_SATS : 0
   const prefill = Math.max(deficit + bufferSubunits, 1)
+  const displayMin = displayInputAmount(deficit, baseAsset)
+  const inputStep = displayInputStep(baseAsset)
 
   const [view, setView] = useState<View>('amount')
   const [amount, setAmount] = useState(prefill)
@@ -144,7 +162,7 @@ export function TopUpOverlay({
     if (amount < deficit) {
       setError(
         minimumErrorDescription ??
-          `Amount must be at least ${formatMarketSubunits(deficit, baseAsset)} to cover this trade.`,
+          `Amount must be at least ${formatAmount(deficit, baseAsset)} to cover this trade.`,
       )
       return
     }
@@ -202,7 +220,7 @@ export function TopUpOverlay({
       <InvoiceDisplay
         bolt11={bolt11}
         amountSats={amount}
-        amountLabel={formatMarketSubunits(amount, baseAsset)}
+        amountLabel={formatAmount(amount, baseAsset)}
         status={status}
         expiresAtSec={expiresAtSec}
         errorMessage={error}
@@ -233,21 +251,22 @@ export function TopUpOverlay({
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
           {minimumDescription ??
             t('topUp.minimumDesc', {
-              sats: formatMarketSubunits(deficit, baseAsset),
+              sats: formatAmount(deficit, baseAsset),
             })}
         </p>
 
         <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">
-          {baseAsset === 'sat' ? t('topUp.amountSats') : `${t('topUp.amount')} (${subunitLabel})`}
+          {baseAsset === 'sat' ? t('topUp.amountSats') : `${t('topUp.amount')} (${unitLabel})`}
         </label>
         <input
           data-testid="top-up-amount-input"
           type="number"
-          min={deficit}
-          value={amount}
+          min={displayMin}
+          step={inputStep}
+          value={displayInputAmount(amount, baseAsset)}
           onChange={(e) => {
             const next = Number(e.target.value)
-            if (Number.isFinite(next)) setAmount(next)
+            if (Number.isFinite(next)) setAmount(inputAmountToSubunits(next, baseAsset))
           }}
           className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-[#f7931a]"
         />

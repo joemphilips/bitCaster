@@ -159,6 +159,19 @@ describe('DepositStep', () => {
     expect(screen.getByText('Funding amount: $0.20')).toBeInTheDocument()
   })
 
+  it('renders USD funding tiers in dollars instead of milli-cent subunits', async () => {
+    const user = userEvent.setup()
+    renderStep({ baseAsset: 'usd', outcomeCount: 4 })
+
+    await openFunding(user)
+
+    expect(screen.getByTestId('amm-funding-tier-minimal')).toHaveTextContent('$15')
+    expect(screen.getByTestId('amm-funding-tier-standard')).toHaveTextContent('$150')
+    expect(screen.getByTestId('amm-funding-tier-deep')).toHaveTextContent('$300')
+    expect(screen.queryByText('1500000')).not.toBeInTheDocument()
+    expect(screen.queryByText('15000000')).not.toBeInTheDocument()
+  })
+
   it('requests AMM funding and shows the shared invoice display', async () => {
     const user = userEvent.setup()
     renderStep()

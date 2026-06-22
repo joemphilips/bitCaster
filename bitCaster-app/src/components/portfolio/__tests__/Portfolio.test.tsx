@@ -210,6 +210,25 @@ describe('Portfolio', () => {
       expect(screen.getByText('Predictions')).toBeInTheDocument()
     })
 
+    it('shows multi-unit totals without summing Score fees into market collateral', () => {
+      renderPortfolio({
+        stats: {
+          ...mockStats,
+          positionsValueByUnit: [
+            { unit: 'usd', amount: 15_000_000 },
+          ],
+          totalValueByUnit: [
+            { unit: 'sat', amount: 125_000 },
+            { unit: 'usd', amount: 15_000_000 },
+          ],
+        },
+      })
+
+      expect(screen.getByText('125 sats / $150.00')).toBeInTheDocument()
+      expect(screen.getByText('$150.00')).toBeInTheDocument()
+      expect(screen.queryByText('15,125 sats')).not.toBeInTheDocument()
+    })
+
     it('renders deposit and withdraw buttons', () => {
       renderPortfolio()
       expect(screen.getByRole('button', { name: /deposit/i })).toBeInTheDocument()
