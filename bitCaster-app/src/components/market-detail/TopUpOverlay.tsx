@@ -23,7 +23,7 @@ type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
 
 function displayInputAmount(amountSubunits: number, baseAsset: string): number {
   if (baseAsset === 'usd') return amountSubunits / 100_000
-  return amountSubunits
+  return amountSubunits / 1_000
 }
 
 function displayInputStep(baseAsset: string): number {
@@ -34,7 +34,7 @@ function displayInputStep(baseAsset: string): number {
 function inputAmountToSubunits(displayAmount: number, baseAsset: string): number {
   if (!Number.isFinite(displayAmount)) return 0
   if (baseAsset === 'usd') return Math.round(displayAmount * 100_000)
-  return Math.round(displayAmount)
+  return Math.round(displayAmount * 1_000)
 }
 
 function assertNeverWaitResult(r: never): never {

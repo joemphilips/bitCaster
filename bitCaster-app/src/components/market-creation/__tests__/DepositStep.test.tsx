@@ -200,7 +200,7 @@ describe('DepositStep', () => {
     await waitFor(() => {
       expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
-        15_000,
+        15_000_000,
         expect.objectContaining({ fundAmm: true }),
       )
     })
@@ -227,7 +227,7 @@ describe('DepositStep', () => {
     await waitFor(() => {
       expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
-        15_000,
+        15_000_000,
         expect.objectContaining({ fundAmm: true }),
       )
     })

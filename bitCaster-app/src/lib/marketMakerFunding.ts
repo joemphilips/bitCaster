@@ -1,8 +1,8 @@
 export const BINARY_AMM_FUNDING_TIERS = [
   { id: 'none', budgetSats: 0, budgetUsdSubunits: 0, warning: true },
-  { id: 'minimal', budgetSats: 1_500, budgetUsdSubunits: 1_500_000, warning: false },
-  { id: 'standard', budgetSats: 15_000, budgetUsdSubunits: 15_000_000, warning: false },
-  { id: 'deep', budgetSats: 30_000, budgetUsdSubunits: 30_000_000, warning: false },
+  { id: 'minimal', budgetSats: 1_500_000, budgetUsdSubunits: 1_500_000, warning: false },
+  { id: 'standard', budgetSats: 15_000_000, budgetUsdSubunits: 15_000_000, warning: false },
+  { id: 'deep', budgetSats: 30_000_000, budgetUsdSubunits: 30_000_000, warning: false },
 ] as const
 
 export type AmmFundingTierId = typeof BINARY_AMM_FUNDING_TIERS[number]['id'] | 'custom'
@@ -28,7 +28,7 @@ export function formatFundingBudget(
       maximumFractionDigits: options.wholeUsd ? 0 : 2,
     })}`
   }
-  return `${Math.max(0, amount).toLocaleString()} sats`
+  return `${Math.max(0, Math.round(amount / 1_000)).toLocaleString()} sats`
 }
 
 export function outcomeFundingScale(outcomeCount: number): number {
