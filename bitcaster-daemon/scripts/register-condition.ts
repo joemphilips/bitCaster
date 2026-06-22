@@ -82,12 +82,16 @@ async function mintRegularProofs(
   const keyset = await getActiveCollateralKeyset(mint, unit)
   const wallet = new CashuWallet(mint, { unit })
   await wallet.loadMint()
-  // For regular (non-CTF) mint proofs, the face amount IS the gross amount.
-  // The mint handles input fee deduction during swap internally.
-  // computeGrossCtfInputAmountSats is only for CTF split inputs.
-  const quote = await wallet.createMintQuote(feeAmountSubunits)
+  // Mint enough to cover both the required fee and the mint's input fee.
+  // The mint deducts input_fee_ppk per proof during minting, so we need to
+  // over-mint by the estimated fee and return change outputs.
+  const inputFeePpk = keyset.input_fee_ppk ?? 0
+  const estimatedProofCount = Math.ceil(Math.log2(feeAmountSubunits + 1)) + 1
+  const estimatedInputFee = Math.ceil((estimatedProofCount * inputFeePpk) / 1000)
+  const grossAmount = feeAmountSubunits + estimatedInputFee
+  const quote = await wallet.createMintQuote(grossAmount)
   await waitForPaidQuote(wallet, quote.quote)
-  return wallet.mintProofs(feeAmountSubunits, quote.quote)
+  return wallet.mintProofs(grossAmount, quote.quote)
 }
 
 async function prepareRegularBlankOutputs(
