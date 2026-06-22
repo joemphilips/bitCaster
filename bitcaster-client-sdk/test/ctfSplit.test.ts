@@ -247,6 +247,57 @@ test("splitCompleteSetWithOperation prepares outputs before posting and complete
   });
 });
 
+test("splitCompleteSetWithOperation accepts msat collateral keysets for sat markets", async () => {
+  const transport = new FakeSplitTransport({
+    "keyset-yes": "msat",
+    "keyset-no": "msat",
+  });
+  const store = new MemoryProofOperationStore();
+
+  await splitCompleteSetWithOperation({
+    mintUrl: "https://mint.example",
+    baseAsset: "sat",
+    operationId: "op-msat-collateral",
+    transport,
+    conditionId: CONDITION_ID,
+    collateralProofs: [proof("input-keyset", 100, "input-secret")],
+    outcomeCollectionKeysets: { YES: "keyset-yes", NO: "keyset-no" },
+    amountSats: 100,
+    proofOperationStore: store,
+    makeOutputs: ({ collection, amountSats, keyset }) => [
+      output(collection, amountSats, keyset.id),
+    ],
+  });
+
+  assert.equal(transport.posted.length, 1);
+});
+
+test("splitCompleteSetWithOperation accepts milli-cent collateral keysets for usd markets", async () => {
+  const transport = new FakeSplitTransport({
+    "input-keyset": "milli-cent",
+    "keyset-yes": "milli-cent",
+    "keyset-no": "milli-cent",
+  });
+  const store = new MemoryProofOperationStore();
+
+  await splitCompleteSetWithOperation({
+    mintUrl: "https://mint.example",
+    baseAsset: "usd",
+    operationId: "op-milli-cent-collateral",
+    transport,
+    conditionId: CONDITION_ID,
+    collateralProofs: [proof("input-keyset", 100, "input-secret")],
+    outcomeCollectionKeysets: { YES: "keyset-yes", NO: "keyset-no" },
+    amountSats: 100,
+    proofOperationStore: store,
+    makeOutputs: ({ collection, amountSats, keyset }) => [
+      output(collection, amountSats, keyset.id),
+    ],
+  });
+
+  assert.equal(transport.posted.length, 1);
+});
+
 test("splitCompleteSetWithOperation normalizes structured Cashu Amount inputs before mint calls", async () => {
   const transport = new FakeSplitTransport();
   const store = new MemoryProofOperationStore();
@@ -595,15 +646,21 @@ test("computeGrossCtfInputAmountSats handles F greater than 1 for many proofs", 
 const CONDITION_ID = "a".repeat(64);
 
 class FakeSplitTransport implements CtfSplitTransport {
+  private readonly unitByKeysetId: Record<string, string>;
+
   readonly posted: Array<Parameters<CtfSplitTransport["postSplit"]>[0]> = [];
   readonly converted: Array<
     Parameters<NonNullable<CtfSplitTransport["postConvert"]>>[0]
   > = [];
 
+  constructor(unitByKeysetId: Record<string, string> = {}) {
+    this.unitByKeysetId = unitByKeysetId;
+  }
+
   async getKeys(keysetId: string): Promise<MintKeys> {
     return {
       id: keysetId,
-      unit: "sat",
+      unit: this.unitByKeysetId[keysetId] ?? "sat",
       keys: {},
       input_fee_ppk: 0,
     } as MintKeys;

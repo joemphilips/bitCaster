@@ -4,6 +4,21 @@ export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
 export const SYSTEM_DIVISIBILITY = 10_000
 export const DEFAULT_MARKET_DIVISIBILITY = SYSTEM_DIVISIBILITY
 
+export interface CollateralUnitInfo {
+  baseAsset: MarketBaseAsset
+  /** How many collateral units equal one NUT-01 minor unit of the base asset. */
+  scale: number
+}
+
+export const COLLATERAL_UNIT_REGISTRY: Readonly<Record<string, CollateralUnitInfo>> = {
+  sat: { baseAsset: 'sat', scale: 1 },
+  msat: { baseAsset: 'sat', scale: 1_000 },
+  // NUT-01 USD amounts are already denominated in cents, so usd scale is 1.
+  usd: { baseAsset: 'usd', scale: 1 },
+  'milli-cent': { baseAsset: 'usd', scale: 1_000 },
+  jpy: { baseAsset: 'jpy', scale: 1 },
+}
+
 export interface MarketUnitSpec {
   baseAsset?: MarketBaseAsset | null
   divisibility?: number | null
@@ -19,10 +34,25 @@ export function parseMarketBaseAsset(
   value: MarketBaseAsset | string | null | undefined,
 ): MarketBaseAsset | null {
   const normalized = value?.trim().toLowerCase()
-  if (normalized === 'usd' || normalized === 'jpy' || normalized === 'sat') {
-    return normalized
-  }
-  return null
+  if (!normalized) return null
+  return COLLATERAL_UNIT_REGISTRY[normalized]?.baseAsset ?? null
+}
+
+export function collateralScaleForUnit(
+  unit: string | null | undefined,
+): number {
+  const normalized = unit?.trim().toLowerCase()
+  if (!normalized) return 1
+  return COLLATERAL_UNIT_REGISTRY[normalized]?.scale ?? 1
+}
+
+export function isCollateralUnitOf(
+  unit: string | null | undefined,
+  baseAsset: string | null | undefined,
+): boolean {
+  const unitInfo = COLLATERAL_UNIT_REGISTRY[unit?.trim().toLowerCase() ?? '']
+  const expectedBaseAsset = parseMarketBaseAsset(baseAsset)
+  return unitInfo != null && expectedBaseAsset !== null && unitInfo.baseAsset === expectedBaseAsset
 }
 
 export function normalizeMarketDivisibility(value: number | null | undefined): number {

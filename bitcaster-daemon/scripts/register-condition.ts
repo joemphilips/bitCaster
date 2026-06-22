@@ -18,6 +18,7 @@ import {
 import {
   sumProofs,
 } from '../../bitcaster-client-sdk/src/proofSelection.ts'
+import { collateralScaleForUnit } from '../../bitcaster-client-sdk/src/marketUnits.ts'
 
 type RegistrationOutputData = OutputDataLike & {
   blindedMessage: SerializedBlindedMessage
@@ -35,7 +36,7 @@ const baseFeeSubunits = registrationFeeForPolicy(outcomes, info)
 // The CDK mint scales the registration fee to the collateral unit internally.
 // We just need to mint proofs worth the base fee in the collateral unit.
 // The collateral scale converts the base-asset fee to collateral subunits.
-const collateralScale = collateral === 'msat' ? 1000 : collateral === 'milli-cent' ? 100_000 : 1
+const collateralScale = collateralScaleForUnit(collateral)
 const requiredFeeSubunits = baseFeeSubunits * collateralScale
 const feeProofs =
   requiredFeeSubunits > 0

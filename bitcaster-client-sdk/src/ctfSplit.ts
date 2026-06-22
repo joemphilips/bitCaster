@@ -22,6 +22,7 @@ import {
   takeProofsForLock,
 } from "./proofSelection.ts";
 import {
+  isCollateralUnitOf,
   parseMarketBaseAsset,
   type MarketBaseAsset,
 } from "./marketUnits.ts";
@@ -1617,8 +1618,10 @@ function conditionalKeysetMatchesUnit(
   keyset: CtfConditionalKeysetInfo,
   baseAsset: MarketBaseAsset,
 ): boolean {
+  // Legacy mint keysets without unit metadata predate multi-collateral support
+  // and are treated as sat-only.
   if (keyset.unit == null) return baseAsset === "sat";
-  return parseMarketBaseAsset(keyset.unit) === baseAsset;
+  return isCollateralUnitOf(keyset.unit, baseAsset);
 }
 
 function requireMarketBaseAsset(
@@ -1642,11 +1645,11 @@ function validateKeysetUnit(
     if (expectedBaseAsset === "sat") return;
     throw new Error(`${context} is missing unit metadata for ${expectedBaseAsset}`);
   }
-  const parsed = parseMarketBaseAsset(keyset.unit);
-  if (!parsed) {
-    throw new Error(`${context} has unsupported unit ${keyset.unit}`);
-  }
-  if (parsed !== expectedBaseAsset) {
+  if (!isCollateralUnitOf(keyset.unit, expectedBaseAsset)) {
+    const parsed = parseMarketBaseAsset(keyset.unit);
+    if (!parsed) {
+      throw new Error(`${context} has unsupported unit ${keyset.unit}`);
+    }
     throw new Error(`${context} unit mismatch: expected ${expectedBaseAsset}, got ${parsed}`);
   }
 }

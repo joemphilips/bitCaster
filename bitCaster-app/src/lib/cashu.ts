@@ -43,6 +43,7 @@ import {
 } from "@/stores/proof-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
+  DEFAULT_MARKET_BASE_ASSET,
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
   type MarketBaseAsset,
@@ -305,7 +306,8 @@ export async function recoverKeysetCountersForMint(
   const requestedUnit = opts.baseAsset === undefined || opts.baseAsset === null
     ? null
     : normalizeMarketBaseAsset(opts.baseAsset);
-  const discoveryWallet = await getWallet(url, requestedUnit);
+  const discoveryUnit = requestedUnit ?? DEFAULT_MARKET_BASE_ASSET;
+  const discoveryWallet = await store.getWallet(url, discoveryUnit) as CashuWallet;
   // Use the wallet's freshly-loaded keysets via the underlying mint, not the
   // possibly-stale `store.mints[].keysets`. After mint key rotation the
   // store can be days behind; the duplicate-error path needs to scan
@@ -318,9 +320,9 @@ export async function recoverKeysetCountersForMint(
     : Array.from(new Set(keysets.map(keysetBaseAsset)));
   const scanned: string[] = [];
   for (const unit of units) {
-    const wallet = requestedUnit === unit || (requestedUnit === null && unit === "sat")
+    const wallet = unit === discoveryUnit
       ? discoveryWallet
-      : await getWallet(url, unit);
+      : await store.getWallet(url, unit) as CashuWallet;
     for (const keyset of keysets.filter((k) => keysetBaseAsset(k) === unit)) {
       const recovered =
         useWalletStore.getState().keysetCountersRecovered[keyset.id];

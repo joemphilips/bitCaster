@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   DEFAULT_MARKET_DIVISIBILITY,
   SYSTEM_DIVISIBILITY,
+  collateralScaleForUnit,
   defaultCollateralUnit,
   formatPricePercentage,
   formatAmount,
@@ -16,6 +17,8 @@ import {
   normalizeMarketBaseAsset,
   normalizeMarketCreationLiquiditySats,
   normalizeMarketDivisibility,
+  isCollateralUnitOf,
+  parseMarketBaseAsset,
   quotePaymentSubunits,
   shareFaceSubunits,
   validatePriceNumerator,
@@ -39,6 +42,27 @@ test('normalizes market unit defaults', () => {
   assert.equal(normalizeMarketDivisibility(1.5), DEFAULT_MARKET_DIVISIBILITY)
   assert.equal(marketUnitLabel('usd'), 'USD')
   assert.equal(marketUnitLabel('sat'), 'sats')
+})
+
+test('parses collateral units as market base assets', () => {
+  assert.equal(parseMarketBaseAsset('msat'), 'sat')
+  assert.equal(parseMarketBaseAsset('milli-cent'), 'usd')
+  assert.equal(parseMarketBaseAsset('MSAT'), 'sat')
+  assert.equal(parseMarketBaseAsset('Milli-Cent'), 'usd')
+  assert.equal(parseMarketBaseAsset('btc'), null)
+})
+
+test('checks collateral unit compatibility and scale', () => {
+  assert.equal(isCollateralUnitOf('msat', 'sat'), true)
+  assert.equal(isCollateralUnitOf('milli-cent', 'usd'), true)
+  assert.equal(isCollateralUnitOf('sat', 'usd'), false)
+  assert.equal(isCollateralUnitOf(null, 'sat'), false)
+
+  assert.equal(collateralScaleForUnit('msat'), 1000)
+  assert.equal(collateralScaleForUnit('milli-cent'), 1000)
+  assert.equal(collateralScaleForUnit('sat'), 1)
+  assert.equal(collateralScaleForUnit('usd'), 1)
+  assert.equal(collateralScaleForUnit('unknown'), 1)
 })
 
 test('formats system market display units', () => {
