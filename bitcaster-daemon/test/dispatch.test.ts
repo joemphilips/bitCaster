@@ -18,7 +18,10 @@ import {
   writeState,
   type DaemonState,
 } from '../src/state.ts'
-import { recoverPreparedWalletSends } from '../src/walletOps.ts'
+import {
+  recoverPreparedWalletSends,
+  splitAvailableSatProofsForCtfCollateral,
+} from '../src/walletOps.ts'
 
 test('daemon dispatch persists wallet, order, and swap state', async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-test-'))
@@ -71,6 +74,51 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         ],
       })
+    })
+
+    await t.test('preflight collateral preparation opens sat markets with msat wallet unit', async () => {
+      const priorState = await readState()
+      const state = emptyDaemonState()
+      state.wallet.proofs.push(
+        proofRecord('mint-a', 1_000, 'available', { kind: 'sats', baseAsset: 'sat' }, 'msat-proof'),
+      )
+      await writeState(state)
+
+      const requestedUnits: Array<string | null | undefined> = []
+      try {
+        await assert.rejects(
+          () => splitAvailableSatProofsForCtfCollateral(
+            1_000,
+            'mint-a',
+            'preflight-msat-unit',
+            secrets,
+            {
+              createCashuWallet(_mintUrl, unit) {
+                requestedUnits.push(unit)
+                return {
+                  async loadMint() {},
+                  async receive() {
+                    throw new Error('receive unused')
+                  },
+                  async send() {
+                    throw new Error('send unused')
+                  },
+                }
+              },
+            },
+            'sat',
+          ),
+          /cashu wallet does not support fee-aware proof selection/,
+        )
+
+        assert.deepEqual(requestedUnits, ['msat'])
+      } finally {
+        if (priorState) {
+          await writeState(priorState)
+        } else {
+          await writeState(emptyDaemonState())
+        }
+      }
     })
 
     await t.test('daemon.status returns redacted profile and state summary', async () => {

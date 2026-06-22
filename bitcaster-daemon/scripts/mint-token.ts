@@ -39,11 +39,12 @@ if (mode === 'sats') {
 } else if (mode === 'msats') {
   const msats = await mintRegularProofs(mintUrl, 'msat', amountSats)
   printToken(mintUrl, 'msat', msats)
-} else if (mode === 'outcome') {
+} else if (mode === 'outcome' || mode === 'outcome-msats') {
   if (!conditionId || !outcomeSetId) usage()
-  const sats = await mintRegularProofsForCtfSplit(mintUrl, amountSats)
+  const unit = mode === 'outcome-msats' ? 'msat' : 'sat'
+  const sats = await mintRegularProofsForCtfSplit(mintUrl, unit, amountSats)
   const condition = await getCtfCondition(mintUrl, conditionId)
-  const selection = selectMintRootPartitionForOutcome(condition, outcomeSetId)
+  const selection = selectMintRootPartitionForOutcome(condition, outcomeSetId, unit)
   const split = await splitRootCompleteSet(
     new CashuMintCtfSplitTransport(mintUrl),
     conditionId,
@@ -57,7 +58,7 @@ if (mode === 'sats') {
   if (!selected?.length) {
     throw new Error(`CTF split did not return outcome set ${outcomeSetId}`)
   }
-  printToken(mintUrl, 'sat', selected)
+  printToken(mintUrl, unit, selected)
 } else {
   usage()
 }
@@ -86,11 +87,12 @@ async function mintRegularProofs(
 
 async function mintRegularProofsForCtfSplit(
   mintUrl: string,
+  unit: 'sat' | 'msat',
   faceAmountSats: number,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl)
-  const keyset = await getActiveCollateralKeyset(mint, 'sat')
-  const wallet = new CashuWallet(mint, { unit: 'sat' })
+  const keyset = await getActiveCollateralKeyset(mint, unit)
+  const wallet = new CashuWallet(mint, { unit })
   await wallet.loadMint()
   const grossAmountSats = computeGrossCtfInputAmountSats({
     faceAmountSats,
@@ -133,6 +135,7 @@ async function getCtfCondition(
 function selectMintRootPartitionForOutcome(
   condition: CtfConditionInfo,
   outcomeSetId: string,
+  unit: 'sat' | 'msat',
 ): CtfRootPartitionSelection {
   const target = canonicalizeOutcomeSet(parseOutcomeSetId(outcomeSetId))
   const keysetCollections = Object.keys(condition.keysets)
@@ -143,7 +146,7 @@ function selectMintRootPartitionForOutcome(
 
   if (matches.length !== 1) {
     throw new Error(
-      `Expected exactly one root sat CTF keyset for condition ${condition.condition_id} containing outcome set ${outcomeSetId}, found ${matches.length}`,
+      `Expected exactly one root CTF keyset for condition ${condition.condition_id} containing outcome set ${outcomeSetId}, found ${matches.length}`,
     )
   }
 
@@ -158,6 +161,7 @@ function selectMintRootPartitionForOutcome(
   return {
     keepOutcomeSetId: outcomeSetId,
     lockOutcomeSetId: complement,
+    baseAsset: unit === 'msat' ? 'sat' : undefined,
   }
 }
 
@@ -201,7 +205,8 @@ function usage(): never {
   process.stderr.write(
     'Usage: mint-token.ts sats <mint-url> <amount-sats> [--json]\n' +
       '       mint-token.ts msats <mint-url> <amount-msats> [--json]\n' +
-      '       mint-token.ts outcome <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n',
+      '       mint-token.ts outcome <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n' +
+      '       mint-token.ts outcome-msats <mint-url> <amount-msats> <condition-id> <outcome-set-id> [--json]\n',
   )
   process.exit(1)
 }
