@@ -57,7 +57,7 @@ describe('OrderBookSection', () => {
     expect(screen.queryAllByTestId('order-book-ask-placeholder')).toHaveLength(0)
   })
 
-  it('combines price, amount, and proportional depth into each compact row', () => {
+  it('combines price, amount, and cumulative proportional depth into each compact row', () => {
     render(
       <OrderBookSection
         divisibility={100}
@@ -79,16 +79,16 @@ describe('OrderBookSection', () => {
     const bidRows = screen.getAllByTestId('order-book-bid-row')
     const askRows = screen.getAllByTestId('order-book-ask-row')
 
-    expect(bidRows[0]).toHaveAttribute('data-depth-percent', '50')
+    expect(bidRows[0]).toHaveAttribute('data-depth-percent', '33')
     expect(bidRows[0]).toHaveAttribute('data-depth-side', 'bid')
     expect(bidRows[0]).toHaveTextContent('52.00%')
     expect(bidRows[0]).toHaveTextContent('0.1 sats')
-    expect(screen.getAllByTestId('order-book-bid-depth-fill')[0]).toHaveStyle({ width: '50%' })
+    expect(screen.getAllByTestId('order-book-bid-depth-fill')[0]).toHaveStyle({ width: '33%' })
 
-    expect(askRows[0]).toHaveAttribute('data-depth-percent', '50')
+    expect(askRows[0]).toHaveAttribute('data-depth-percent', '33')
     expect(askRows[0]).toHaveAttribute('data-depth-side', 'ask')
     expect(askRows[0]).toHaveTextContent('53.00%')
     expect(askRows[0]).toHaveTextContent('0.03 sats')
-    expect(screen.getAllByTestId('order-book-ask-depth-fill')[0]).toHaveStyle({ width: '50%' })
+    expect(screen.getAllByTestId('order-book-ask-depth-fill')[0]).toHaveStyle({ width: '33%' })
   })
 })

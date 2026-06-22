@@ -148,15 +148,33 @@ describe('DepositStep', () => {
     expect(screen.getByText('Very thin liquidity')).toBeInTheDocument()
   })
 
-  it('previews custom funding in the market collateral unit', async () => {
+  it('previews USD custom funding as entered dollars', async () => {
     const user = userEvent.setup()
     renderStep({ baseAsset: 'usd' })
 
     await openFunding(user)
     await user.clear(screen.getByRole('spinbutton'))
-    await user.type(screen.getByRole('spinbutton'), '20000')
+    await user.type(screen.getByRole('spinbutton'), '15')
 
-    expect(screen.getByText('Funding amount: $0.20')).toBeInTheDocument()
+    expect(screen.getByText('Funding amount: $15.00')).toBeInTheDocument()
+  })
+
+  it('converts USD custom funding dollars to milli-cent subunits at the request boundary', async () => {
+    const user = userEvent.setup()
+    renderStep({ baseAsset: 'usd' })
+
+    await openFunding(user)
+    await user.clear(screen.getByRole('spinbutton'))
+    await user.type(screen.getByRole('spinbutton'), '15')
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+
+    await waitFor(() => {
+      expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
+        'cond-test-abc123',
+        1_500_000,
+        expect.objectContaining({ fundAmm: true }),
+      )
+    })
   })
 
   it('renders USD funding tiers in dollars instead of milli-cent subunits', async () => {

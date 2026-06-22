@@ -469,7 +469,7 @@ function LimitOrderPreviewSection({
       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
         <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalExpectedCost')}</span>
         <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-total-cost">
-          {formatAmount(preview.quoteSats)}
+          {formatAmount(preview.totalCost)}
         </span>
       </div>
     </div>
@@ -709,7 +709,7 @@ export function TradingPanel({
                     {t('trade.totalExpectedCost')}
                   </span>
                   <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="trade-total-cost">
-                    {formatAmount(tradePreview.quoteSats)}
+                    {formatAmount(tradePreview.totalCost)}
                   </span>
                 </div>
               )}

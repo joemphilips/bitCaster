@@ -52,7 +52,7 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [selectedTier, setSelectedTier] = useState<AmmFundingTierId>('standard')
-  const [customBudgetSats, setCustomBudgetSats] = useState(0)
+  const [customBudgetInput, setCustomBudgetInput] = useState(0)
   const [stage, setStage] = useState<'created' | 'funding'>('created')
   const [invoice, setInvoice] = useState<RequestLnInvoiceDepositResponse | null>(null)
   const [invoiceStatus, setInvoiceStatus] = useState<'pending' | 'paid' | 'expired' | 'error'>('pending')
@@ -60,6 +60,10 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
   const [isRequesting, setIsRequesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fundingUnit = baseAsset === 'usd' ? 'usd' : 'sat'
+  const customBudgetSats =
+    baseAsset === 'usd'
+      ? Math.round(customBudgetInput * 100_000)
+      : Math.max(0, Math.floor(customBudgetInput))
 
   useEffect(() => {
     const timer = window.setTimeout(() => setStage('funding'), 5_000)
@@ -250,12 +254,13 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
           data-testid="amm-funding-custom-budget"
           type="number"
           min={0}
-          inputMode="numeric"
+          step={baseAsset === 'usd' ? '0.01' : '1'}
+          inputMode={baseAsset === 'usd' ? 'decimal' : 'numeric'}
           aria-describedby="amm-funding-custom-preview"
-          value={customBudgetSats}
+          value={customBudgetInput}
           onChange={(event) => {
             setSelectedTier('custom')
-            setCustomBudgetSats(Math.max(0, Number(event.target.value) || 0))
+            setCustomBudgetInput(Math.max(0, Number(event.target.value) || 0))
           }}
           className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-blue-400"
         />

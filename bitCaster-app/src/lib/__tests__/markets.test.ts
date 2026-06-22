@@ -112,17 +112,36 @@ describe("mapCatalogueEntryToMarket", () => {
     }
   });
 
-  it("falls back to creator probability metadata when a yes/no market has no traded price", () => {
+  it("derives yes/no odds from lastTradedPrice when it is emitted as a price numerator", () => {
     const market = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      lastTradedPrice: null,
-      outcomeProbabilities: { YES: 72, NO: 28 },
-    } as MarketCatalogueEntry & { outcomeProbabilities: Record<string, number> });
+      divisibility: 1_000,
+      lastTradedPrice: 620,
+    });
 
     expect(market.type).toBe("yesno");
     if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 72, no: 28 });
+      expect(market.currentOdds).toEqual({ yes: 62, no: 38 });
     }
+  });
+
+  it("falls back to 50/50 when a yes/no market has no traded price", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const market = mapCatalogueEntryToMarket({
+      ...yesNoEntry,
+      lastTradedPrice: null,
+    });
+
+    expect(market.type).toBe("yesno");
+    if (market.type === "yesno") {
+      expect(market.currentOdds).toEqual({ yes: 50, no: 50 });
+    }
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Falling back to 50/50"),
+      expect.objectContaining({ conditionId: "abc123" }),
+    );
+    warn.mockRestore();
   });
 
   it("maps a >2 outcome entry to a categorical market", () => {

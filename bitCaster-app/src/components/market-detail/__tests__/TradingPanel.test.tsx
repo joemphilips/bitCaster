@@ -88,6 +88,37 @@ describe('TradingPanel', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('uses market preview totalCost for expected cost when fees are non-zero', () => {
+    const tradePreview: TradePreview = {
+      amount: 50,
+      predictedOdds: 50,
+      priceImpact: 0,
+      averageExecutionPrice: 30,
+      executableShares: 25,
+      hasExecutableLiquidity: true,
+      quoteSats: 150_000,
+      mintFee: 100_000,
+      potentialPayout: 500,
+      creatorFee: 1,
+      engineScoreFeeSats: 0,
+      totalCost: 250_000,
+    }
+
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={50}
+        tradePreview={tradePreview}
+        tradeSide="buy"
+        orderType="market"
+        onTradeConfirm={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('trade-total-cost')).toHaveTextContent('$2.50')
+  })
+
   it('formats sat-denominated limit preview as price plus expected cost only', () => {
     const preview: LimitOrderPreview = {
       limitPrice: 30,
@@ -164,6 +195,36 @@ describe('TradingPanel', () => {
     expect(
       screen.queryByTitle('Charged by the matching engine for order execution'),
     ).not.toBeInTheDocument()
+  })
+
+  it('uses limit preview totalCost for expected cost when fees are non-zero', () => {
+    const preview: LimitOrderPreview = {
+      limitPrice: 30,
+      amount: 50,
+      sharesIfFilled: 50,
+      quoteSats: 1_500,
+      creatorFee: 500,
+      mintFee: 250,
+      engineScoreFeeSats: 0,
+      potentialPayout: 500,
+      totalCost: 2_250,
+    }
+
+    render(
+      <TradingPanel
+        market={makeMarket({ baseAsset: 'sat', baseUnit: 'sats', divisibility: 100 })}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={50}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={30}
+        limitOrderPreview={preview}
+        onTradeConfirm={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('2.25 sats')
   })
 
   it('keeps the share input as an integer of at least one when editing', () => {
