@@ -32,7 +32,10 @@ if (!mintUrl || !title || !description || !collateral || !announcementsJson || !
 const announcements = parseStringArray(announcementsJson, 'announcements-json')
 const outcomes = parseStringArray(outcomesJson, 'outcomes-json')
 const info = await fetchMintInfo(mintUrl)
-const requiredFeeSubunits = registrationFeeForPolicy(outcomes, info)
+const baseFeeSubunits = registrationFeeForPolicy(outcomes, info)
+// Scale fee to the collateral unit (sat=1, msat=1000, milli-cent=100000)
+const collateralScale = collateral === 'msat' ? 1000 : collateral === 'milli-cent' ? 100_000 : 1
+const requiredFeeSubunits = baseFeeSubunits * collateralScale
 const feeProofs =
   requiredFeeSubunits > 0
     ? await mintRegularProofs(mintUrl, collateral, requiredFeeSubunits)
