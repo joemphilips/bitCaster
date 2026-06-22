@@ -42,8 +42,10 @@ export function collateralScaleForUnit(
   unit: string | null | undefined,
 ): number {
   const normalized = unit?.trim().toLowerCase()
-  if (!normalized) return 1
-  return COLLATERAL_UNIT_REGISTRY[normalized]?.scale ?? 1
+  if (!normalized) throw new Error('collateralScaleForUnit: unit is required')
+  const info = COLLATERAL_UNIT_REGISTRY[normalized]
+  if (!info) throw new Error(`collateralScaleForUnit: unknown unit '${unit}'`)
+  return info.scale
 }
 
 export function isCollateralUnitOf(

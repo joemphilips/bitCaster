@@ -62,7 +62,9 @@ test('checks collateral unit compatibility and scale', () => {
   assert.equal(collateralScaleForUnit('milli-cent'), 1000)
   assert.equal(collateralScaleForUnit('sat'), 1)
   assert.equal(collateralScaleForUnit('usd'), 1)
-  assert.equal(collateralScaleForUnit('unknown'), 1)
+  assert.throws(() => collateralScaleForUnit('unknown'))
+  assert.throws(() => collateralScaleForUnit(null))
+  assert.throws(() => collateralScaleForUnit(undefined))
 })
 
 test('formats system market display units', () => {
