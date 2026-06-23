@@ -220,7 +220,7 @@ export interface ParticipationScoreResponse {
 export interface PayParticipationScoreEcashResponse {
   paymentId: string
   status: 'credited'
-  amountSubunits: number
+  amountSats: number
   creditedScore: number
   creditedAt: string
 }
@@ -349,12 +349,12 @@ export class BitcasterEngineClient {
   }
 
   async payParticipationScoreEcash(
-    amountSubunits: number,
+    amountSats: number,
     proofsToken: string,
     paymentId?: string,
   ): Promise<PayParticipationScoreEcashResponse> {
     const bodyText = JSON.stringify({
-      amountSubunits,
+      amountSats,
       proofsToken,
       ...(paymentId ? { paymentId } : {}),
     })

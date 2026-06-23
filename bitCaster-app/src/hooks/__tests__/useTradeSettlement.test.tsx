@@ -452,8 +452,7 @@ describe("useTradeSettlement", () => {
         quotePaymentSubunits: 500_000,
         baseAsset: "sat",
         divisibility: 1_000,
-        outcomeFaceAmountSats: 1_000_000,
-        quotePaymentSats: 500_000,
+
       });
     });
 
@@ -503,7 +502,6 @@ describe("useTradeSettlement", () => {
         quotePaymentSubunits?: number;
         baseAsset?: string;
         divisibility?: number;
-        quotePaymentSubunits?: number;
       }) => void;
     };
 
@@ -522,7 +520,6 @@ describe("useTradeSettlement", () => {
         quotePaymentSubunits: 500_000,
         baseAsset: "sat",
         divisibility: 1_000,
-        quotePaymentSubunits: 500_000,
       });
     });
 
@@ -582,7 +579,7 @@ describe("useTradeSettlement", () => {
         marketId: "cond-YES",
         settlementKind: "DirectSwap",
         outcomeFaceAmountSubunits: 1_000_000,
-        quotePaymentSubunits: 300_000,
+        quotePaymentSubunits: 999_999,
         baseAsset: "sat",
         divisibility: 1_000,
       });
@@ -692,8 +689,6 @@ describe("useTradeSettlement", () => {
         quotePaymentSubunits?: number;
         baseAsset?: string;
         divisibility?: number;
-        outcomeFaceAmountSubunits?: number;
-        quotePaymentSubunits?: number;
       }) => void;
     };
 
@@ -759,8 +754,6 @@ describe("useTradeSettlement", () => {
         quotePaymentSubunits?: number;
         baseAsset?: string;
         divisibility?: number;
-        outcomeFaceAmountSubunits?: number;
-        quotePaymentSubunits?: number;
       }) => void;
     };
 
@@ -787,8 +780,6 @@ describe("useTradeSettlement", () => {
     );
     const swap = useActiveSwapsStore.getState().byTradeId["trade-canonical-only"];
     expect(swap.role).toBe("buyer");
-    expect(swap.outcomeFaceAmountSats).toBeNull();
-    expect(swap.quotePaymentSats).toBeNull();
     expect(swap.outcomeFaceAmountSubunits).toBe(100_000);
     expect(swap.quotePaymentSubunits).toBe(40_000);
     expect(mockSendSwapMessage).not.toHaveBeenCalled();
@@ -1034,8 +1025,7 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId?: string;
         outcomeFaceAmountSubunits?: number;
         quotePaymentSubunits?: number;
-        outcomeFaceAmountSubunits?: number;
-        quotePaymentSubunits?: number;
+        baseAsset?: string;
         divisibility?: number;
       }) => void;
     };
@@ -1122,9 +1112,8 @@ describe("useTradeSettlement", () => {
         marketId?: string;
         outcomeFaceAmountSubunits?: number;
         quotePaymentSubunits?: number;
+        baseAsset?: string;
         divisibility?: number;
-        outcomeFaceAmountSubunits?: number;
-        quotePaymentSubunits?: number;
       }) => void;
       onSwapMessageReceived: (msg: {
         tradeId: string;
@@ -1238,9 +1227,8 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId?: string;
         outcomeFaceAmountSubunits?: number;
         quotePaymentSubunits?: number;
+        baseAsset?: string;
         divisibility?: number;
-        outcomeFaceAmountSubunits?: number;
-        quotePaymentSubunits?: number;
       }) => void;
     };
 
@@ -1258,8 +1246,6 @@ describe("useTradeSettlement", () => {
         outcomeFaceAmountSubunits: 1_000_000,
         quotePaymentSubunits: 500_000,
         divisibility: 1_000,
-        outcomeFaceAmountSubunits: 1_000_000,
-        quotePaymentSubunits: 500_000,
       });
     });
     await waitFor(() =>
@@ -1631,8 +1617,6 @@ describe("useTradeSettlement", () => {
         settlementKind?: string;
         outcomeFaceAmountSubunits?: number;
         quotePaymentSubunits?: number;
-        outcomeFaceAmountSubunits?: number;
-        quotePaymentSubunits?: number;
         baseAsset?: string;
         divisibility?: number;
       }) => void;
@@ -1648,8 +1632,6 @@ describe("useTradeSettlement", () => {
         marketId: "cond-YES",
         settlementKind: "DirectSwap",
         outcomeFaceAmountSubunits: 1_000_000,
-        quotePaymentSubunits: 500_000,
-        outcomeFaceAmountSubunits: 101,
         quotePaymentSubunits: 500_000,
         baseAsset: "sat",
         divisibility: 1_000,
@@ -1699,7 +1681,6 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId?: string;
         outcomeFaceAmountSubunits?: number;
         quotePaymentSubunits?: number;
-        quotePaymentSubunits?: number;
         baseAsset?: string;
         divisibility?: number;
       }) => void;
@@ -1717,8 +1698,7 @@ describe("useTradeSettlement", () => {
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
         outcomeFaceAmountSubunits: 100_000,
-        quotePaymentSubunits: 40_000,
-        quotePaymentSubunits: 40_100,
+        quotePaymentSubunits: 99_999,
         baseAsset: "usd",
         divisibility: 1_000,
       });
@@ -1765,8 +1745,6 @@ describe("useTradeSettlement", () => {
         sellerLockOutcomeSetId?: string;
         outcomeFaceAmountSubunits?: number;
         quotePaymentSubunits?: number;
-        outcomeFaceAmountSubunits?: number;
-        quotePaymentSubunits?: number;
         baseAsset?: string;
         divisibility?: number;
       }) => void;
@@ -1783,8 +1761,6 @@ describe("useTradeSettlement", () => {
         settlementKind: "Mint",
         sellerKeepOutcomeSetId: "YES",
         sellerLockOutcomeSetId: "NO",
-        outcomeFaceAmountSubunits: 100_000,
-        quotePaymentSubunits: 50_000,
         outcomeFaceAmountSubunits: 100_000,
         quotePaymentSubunits: 50_000,
         baseAsset: "usd",

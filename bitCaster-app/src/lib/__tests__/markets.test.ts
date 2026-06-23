@@ -459,7 +459,7 @@ describe("submitOrder", () => {
       tokenSide: "Outcome",
       side: "Buy",
       price: 50,
-      amountSats: 100,
+      amountSubunits: 100,
       timeInForce: "GTC",
       ephemeralPubkey: "02".padEnd(66, "a"),
     });

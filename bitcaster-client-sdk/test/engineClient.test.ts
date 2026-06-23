@@ -171,7 +171,7 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
       assert.equal(url, 'https://engine.example/api/v1/participation-score/ecash')
       assert.equal(method, 'POST')
       assert.equal(bodyText, JSON.stringify({
-        amountSubunits: 2,
+        amountSats: 2,
         proofsToken: 'cashuB-token',
         paymentId: 'client-payment-id',
       }))

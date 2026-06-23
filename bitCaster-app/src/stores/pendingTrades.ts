@@ -45,7 +45,7 @@ export interface PendingPreflightSplit {
   conditionId: string
   keepOutcomeSetId: string
   lockOutcomeSetId: string
-  amountSats: number
+  amountSubunits: number
 }
 
 interface PendingTradeState {

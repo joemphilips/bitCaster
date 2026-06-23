@@ -35,7 +35,7 @@ export interface PreparedPreflightSplit {
   conditionId: string;
   keepOutcomeSetId: string;
   lockOutcomeSetId: string;
-  amountSats: number;
+  amountSubunits: number;
 }
 
 interface PreparedCollateralLot {
@@ -49,11 +49,11 @@ export async function preparePreflightSplitForLimitBuy(input: {
   market: MarketDetailType;
   selectedOutcomeSetId: string;
   complementOutcomeSetId: string;
-  amountSats: number;
+  amountSubunits: number;
   reservationId: string;
 }): Promise<PreparedPreflightSplit> {
   const divisibility = normalizeMarketDivisibility(input.market.divisibility, input.market.baseAsset);
-  if (input.amountSats % divisibility !== 0) {
+  if (input.amountSubunits % divisibility !== 0) {
     throw new Error(
       `Pre-flight split requires ${divisibility} sub-unit order increments.`,
     );
@@ -68,7 +68,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
     const prepared = await prepareSwapInputsForTrade({
       role: "seller",
       lockOutcomeSetId: input.complementOutcomeSetId,
-      amountSats: input.amountSats,
+      amountSubunits: input.amountSubunits,
       outcomeProofsByCollection: {},
       regularProofs: available,
       splitRegularToOutcome: async () => {
@@ -78,7 +78,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
             mintUrl: input.mintUrl,
             baseAsset,
             conditionId: input.market.id,
-            amountSats: input.amountSats,
+            amountSubunits: input.amountSubunits,
             keepOutcomeSetId: input.selectedOutcomeSetId,
             lockOutcomeSetId: input.complementOutcomeSetId,
           });
@@ -106,7 +106,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
           baseAsset,
           conditionId: input.market.id,
           collateralProofs: collateral.inputs,
-          amountSats: preflightOutputAmountSats,
+          amountSubunits: preflightOutputAmountSats,
           keepOutcomeSetId: input.selectedOutcomeSetId,
           lockOutcomeSetId: input.complementOutcomeSetId,
           operationId,
@@ -145,7 +145,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
     conditionId: input.market.id,
     keepOutcomeSetId: resolvedKeepOutcomeSetId,
     lockOutcomeSetId: resolvedLockOutcomeSetId,
-    amountSats: input.amountSats,
+    amountSubunits: input.amountSubunits,
   };
 }
 
@@ -175,7 +175,7 @@ export async function prepareCollateralLotForCtfSplit(input: {
       operationId,
       wallet,
       proofs: [],
-      amountSats: grossCtfInputSats,
+      amountSubunits: grossCtfInputSats,
       proofOperationStore: ctfProofOperationStore,
     });
     const exact = await selectCollateralForCtfSplit(
@@ -292,7 +292,7 @@ export async function prepareCollateralLotForCtfSplit(input: {
     operationId,
     wallet,
     proofs: selected.send,
-    amountSats: grossCtfInputSats,
+    amountSubunits: grossCtfInputSats,
     proofOperationStore: ctfProofOperationStore,
   });
   const exact = await selectCollateralForCtfSplit(

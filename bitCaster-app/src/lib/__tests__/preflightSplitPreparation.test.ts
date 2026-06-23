@@ -82,7 +82,7 @@ describe("preflight split preparation", () => {
       ({ faceAmountSats }: { faceAmountSats: number }) => faceAmountSats + 1,
     );
     mocks.resolveRootPreflightOutputAmountSats.mockImplementation(
-      ({ amountSats }: { amountSats: number }) => amountSats,
+      ({ amountSubunits }: { amountSubunits: number }) => amountSubunits,
     );
     mocks.diagnoseProofStates.mockResolvedValue(undefined);
     mocks.replaceProofs.mockResolvedValue(undefined);
@@ -118,15 +118,15 @@ describe("preflight split preparation", () => {
     );
     mocks.splitRegularProofsWithOperation.mockImplementation(
       async ({
-        amountSats,
+        amountSubunits,
         proofs,
       }: {
-        amountSats: number;
+        amountSubunits: number;
         proofs: Proof[];
       }) => {
         const spent = proofs[0];
         return {
-          send: [proof("regular-child", amountSats)],
+          send: [proof("regular-child", amountSubunits)],
           keep: [proof("regular-keep", 49)],
           spent: [spent],
         };
@@ -159,13 +159,13 @@ describe("preflight split preparation", () => {
       market: { id: "condition", divisibility: 100 } as MarketDetail,
       selectedOutcomeSetId: "YES",
       complementOutcomeSetId: "NO",
-      amountSats: 200,
+      amountSubunits: 200,
       reservationId: "order-preflight:test",
     });
 
     expect(mocks.splitRegularProofsWithOperation).toHaveBeenCalledTimes(1);
     expect(mocks.splitRegularProofsWithOperation).toHaveBeenCalledWith(
-      expect.objectContaining({ amountSats: 201, proofs: [originals[0]] }),
+      expect.objectContaining({ amountSubunits: 201, proofs: [originals[0]] }),
     );
     expect(mocks.computeGrossCtfInputAmountSats).toHaveBeenCalledWith({
       faceAmountSats: 200,
@@ -177,7 +177,7 @@ describe("preflight split preparation", () => {
     });
     expect(mocks.splitRootCompleteSetForPreflightOrder).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountSats: 200,
+      amountSubunits: 200,
         collateralProofs: [expect.objectContaining({ amount: 201 })],
         keepOutcomeSetId: "YES",
         lockOutcomeSetId: "NO",

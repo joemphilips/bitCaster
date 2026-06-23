@@ -178,7 +178,7 @@ async function resumePreparedPreflightOperation(
       conditionId: metadata.conditionId ?? "",
       collateralProofs: [],
       outcomeCollectionKeysets: metadata.outcomeCollectionKeysets ?? {},
-      amountSats: metadata.amountSats ?? 1,
+      amountSubunits: metadata.amountSats ?? 1,
       proofOperationStore: ctfProofOperationStore,
       makeOutputs: () => [],
     });
