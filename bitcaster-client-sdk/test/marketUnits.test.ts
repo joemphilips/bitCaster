@@ -79,6 +79,7 @@ test('formats system market display units', () => {
   assert.equal(formatPricePercentage(532, 1_000), '53.20%')
   assert.equal(formatPricePercentage(1, 1_000), '0.10%')
   assert.equal(formatShareFace('sat', 10_000), '10 sats')
+  assert.equal(formatShareFace('sat', 100), '0.1 sats')
   assert.equal(formatShareFace('usd', 1_000), '$10.00')
 })
 

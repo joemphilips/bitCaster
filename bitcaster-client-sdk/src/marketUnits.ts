@@ -158,7 +158,7 @@ export function formatShareFace(
       maximumFractionDigits: 2,
     })}`
   }
-  return `${Math.trunc(shareFace / collateralScaleForUnit(defaultCollateralUnit(asset))).toLocaleString()} sats`
+  return formatMarketSubunits(shareFace, asset)
 }
 
 export function formatPricePercent(

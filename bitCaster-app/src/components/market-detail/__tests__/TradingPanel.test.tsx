@@ -159,6 +159,69 @@ describe('TradingPanel', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('formats P40 sat-market subunit totals as display sats', () => {
+    const preview: LimitOrderPreview = {
+      limitPrice: 100,
+      amount: 1,
+      sharesIfFilled: 1,
+      quoteSats: 100,
+      creatorFee: 0,
+      mintFee: 1,
+      engineScoreFeeSats: 0,
+      potentialPayout: 10_000,
+      totalCost: 101,
+    }
+
+    render(
+      <TradingPanel
+        market={makeMarket({ baseAsset: 'sat', baseUnit: 'sats', divisibility: 10_000 })}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={100}
+        limitOrderPreview={preview}
+        onTradeConfirm={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('1 share = 10 sats')).toBeInTheDocument()
+    expect(screen.getByText('100 (1.00%)')).toBeInTheDocument()
+    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent(/^0\.101 sats$/)
+    expect(screen.getByTestId('limit-total-cost')).not.toHaveTextContent(/^101 sats$/)
+  })
+
+  it('uses market divisibility when displaying one-share face value', () => {
+    const preview: LimitOrderPreview = {
+      limitPrice: 30,
+      amount: 1,
+      sharesIfFilled: 1,
+      quoteSats: 30,
+      creatorFee: 0,
+      mintFee: 0,
+      engineScoreFeeSats: 0,
+      potentialPayout: 100,
+      totalCost: 30,
+    }
+
+    render(
+      <TradingPanel
+        market={makeMarket({ baseAsset: 'sat', baseUnit: 'sats', divisibility: 100 })}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={30}
+        limitOrderPreview={preview}
+        onTradeConfirm={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('1 share = 0.1 sats')).toBeInTheDocument()
+  })
+
   it('does not show fee rows in the simplified limit preview', () => {
     const preview: LimitOrderPreview = {
       limitPrice: 30,
