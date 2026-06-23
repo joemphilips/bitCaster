@@ -1469,7 +1469,7 @@ export function MarketDetailPage() {
         ticket = buildTradeTicket({
           market: latestMarket,
           selection: tradeSelection,
-          amountSats: displaySharesToFaceSats(
+          amountSubunits: displaySharesToFaceSats(
             tradeAmount,
             latestMarket.baseAsset,
             normalizeMarketDivisibility(latestMarket.divisibility, latestMarket.baseAsset),
@@ -1535,7 +1535,7 @@ export function MarketDetailPage() {
                 market: latestMarket,
                 selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
                 complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
-                amountSats: ticket.request.amountSats,
+                amountSubunits: ticket.request.amountSubunits,
                 reservationId: `order-preflight:${ephemeral.pubkey}`,
               });
             },
@@ -1569,7 +1569,7 @@ export function MarketDetailPage() {
           side: ticket.request.side,
           tokenSide: ticket.request.tokenSide,
           priceSubunits: ticket.request.price,
-          amountSubunits: ticket.request.amountSats,
+          amountSubunits: ticket.request.amountSubunits,
           submittedAt: Date.now(),
           preflightSplit: preparedPreflightSplit,
         });
@@ -1583,14 +1583,14 @@ export function MarketDetailPage() {
           side: ticket.request.side,
           tokenSide: ticket.request.tokenSide,
           priceSubunits: ticket.request.price,
-          amountSubunits: ticket.request.amountSats,
+          amountSubunits: ticket.request.amountSubunits,
         });
         addOrderSubmitNotifications({
           add: useNotificationsStore.getState().add,
           orderId: response.orderId,
           marketId: ticket.marketId,
-          requestedAmountSats: ticket.request.amountSats,
-          remainingAmountSats: response.remainingAmountSats,
+          requestedAmountSubunits: ticket.request.amountSubunits,
+          remainingAmountSubunits: response.remainingAmountSubunits,
           fillCount: response.fills?.length ?? 0,
           status: response.status,
         });

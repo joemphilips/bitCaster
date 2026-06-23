@@ -45,16 +45,14 @@ export interface TradeCreatedDecisionInput {
   settlementKind?: string | null
   sellerKeepOutcomeSetId?: string | null
   sellerLockOutcomeSetId?: string | null
-  outcomeFaceAmountSats?: number | null
-  quotePaymentSats?: number | null
+  outcomeFaceAmountSubunits?: number | null
+  quotePaymentSubunits?: number | null
   baseAsset?: string | null
   divisibility?: number | null
   expectedBaseAsset?: string | null
   expectedDivisibility?: number | null
   expectedOrder?: TradeCreatedExpectedOrder | null
   requireExpectedOrder?: boolean
-  outcomeFaceAmountSubunits?: number | null
-  quotePaymentSubunits?: number | null
   minLocktimeDeltaSecs?: number
 }
 
@@ -126,9 +124,8 @@ export function decideTradeCreated(
       settlementKind: input.settlementKind,
       sellerKeepOutcomeSetId: input.sellerKeepOutcomeSetId,
       sellerLockOutcomeSetId: input.sellerLockOutcomeSetId,
-      outcomeFaceAmountSats:
-        input.outcomeFaceAmountSubunits ?? input.outcomeFaceAmountSats,
-      quotePaymentSats: input.quotePaymentSubunits ?? input.quotePaymentSats,
+      outcomeFaceAmountSubunits: input.outcomeFaceAmountSubunits,
+      quotePaymentSubunits: input.quotePaymentSubunits,
     },
     input.minLocktimeDeltaSecs,
   )
@@ -185,15 +182,15 @@ function validateTradeCreatedSettlementAmounts(
   }
   if (
     input.outcomeFaceAmountSubunits != null &&
-    input.outcomeFaceAmountSats != null &&
-    input.outcomeFaceAmountSubunits !== input.outcomeFaceAmountSats
+    input.outcomeFaceAmountSubunits != null &&
+    input.outcomeFaceAmountSubunits !== input.outcomeFaceAmountSubunits
   ) {
     return 'Trade settlement metadata has inconsistent outcome face amounts.'
   }
   if (
     input.quotePaymentSubunits != null &&
-    input.quotePaymentSats != null &&
-    input.quotePaymentSubunits !== input.quotePaymentSats
+    input.quotePaymentSubunits != null &&
+    input.quotePaymentSubunits !== input.quotePaymentSubunits
   ) {
     return 'Trade settlement metadata has inconsistent quote payment amounts.'
   }
@@ -204,8 +201,8 @@ function validateTradeCreatedSettlementAmounts(
     required: input.requireExpectedOrder,
     baseAsset: canonicalBaseAsset,
     divisibility: canonicalDivisibility,
-    outcomeFaceAmountSubunits: input.outcomeFaceAmountSubunits ?? input.outcomeFaceAmountSats,
-    quotePaymentSubunits: input.quotePaymentSubunits ?? input.quotePaymentSats,
+    outcomeFaceAmountSubunits: input.outcomeFaceAmountSubunits ?? input.outcomeFaceAmountSubunits,
+    quotePaymentSubunits: input.quotePaymentSubunits ?? input.quotePaymentSubunits,
   })
   if (orderError) return orderError
   return null
@@ -231,7 +228,7 @@ function resolveSettlementUnit(input: TradeCreatedDecisionInput): {
     input.divisibility == null &&
     input.outcomeFaceAmountSubunits == null &&
     input.quotePaymentSubunits == null &&
-    (input.outcomeFaceAmountSats != null || input.quotePaymentSats != null)
+    (input.outcomeFaceAmountSubunits != null || input.quotePaymentSubunits != null)
       ? 1_000
       : input.divisibility
   const divisibility = parseOptionalDivisibility(legacyDefaultDivisibility, 'Trade divisibility')

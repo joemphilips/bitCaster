@@ -23,8 +23,8 @@ public static class DepositEndpoints
             string conditionId,
             RequestLnInvoiceDepositRequest req) =>
         {
-            if (req.AmountSats < 1)
-                return Results.BadRequest(new { error = "amountSats must be >= 1" });
+            if (req.AmountSubunits < 1)
+                return Results.BadRequest(new { error = "amountSubunits must be >= 1" });
 
             var depositId = Guid.NewGuid();
             var now = DateTimeOffset.UtcNow;
@@ -34,7 +34,7 @@ public static class DepositEndpoints
                 conditionId,
                 DepositState.Requested,
                 DepositMethod.LightningInvoice,
-                req.AmountSats,
+                req.AmountSubunits,
                 req.CreatorPubkey,
                 req.FundAmm ?? false,
                 now,
@@ -43,7 +43,7 @@ public static class DepositEndpoints
                 FailureReason: null);
             // Plausible-but-fake bolt11 — long enough to look real to UI components,
             // never actually decodes.
-            var fakeBolt11 = $"lnbcrt{req.AmountSats}n1pq{depositId:N}stub";
+            var fakeBolt11 = $"lnbcrt{req.AmountSubunits}n1pq{depositId:N}stub";
             return Results.Ok(new RequestLnInvoiceDepositResponse(fakeBolt11, depositId, expiresAt));
         });
 
@@ -51,8 +51,8 @@ public static class DepositEndpoints
             string conditionId,
             RequestEcashDepositRequest req) =>
         {
-            if (req.AmountSats < 1)
-                return Results.BadRequest(new { error = "amountSats must be >= 1" });
+            if (req.AmountSubunits < 1)
+                return Results.BadRequest(new { error = "amountSubunits must be >= 1" });
             if (string.IsNullOrWhiteSpace(req.ProofsToken))
                 return Results.BadRequest(new { error = "proofsToken is required" });
 
@@ -65,7 +65,7 @@ public static class DepositEndpoints
                 conditionId,
                 DepositState.Paid,
                 DepositMethod.Ecash,
-                req.AmountSats,
+                req.AmountSubunits,
                 req.CreatorPubkey,
                 req.FundAmm ?? false,
                 now,
@@ -102,7 +102,7 @@ public static class DepositEndpoints
             }
 
             return Results.Ok(new GetDepositResponseDto(
-                advanced.AmountSats,
+                advanced.AmountSubunits,
                 advanced.ConditionId,
                 advanced.DepositId,
                 advanced.ExpiresAt,
@@ -119,7 +119,7 @@ public static class DepositEndpoints
         string ConditionId,
         DepositState State,
         DepositMethod Method,
-        long AmountSats,
+        long AmountSubunits,
         string? CreatorPubkey,
         bool FundAmm,
         DateTimeOffset RequestedAt,

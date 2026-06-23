@@ -33,7 +33,7 @@ describe('shared trade-session protocol validation', () => {
         settlementKind: SETTLEMENT_KINDS.mint,
         sellerKeepOutcomeSetId: 'YES',
         sellerLockOutcomeSetId: 'NO',
-        outcomeFaceAmountSats: 100,
+        outcomeFaceAmountSubunits: 100,
       }),
     ).toContain('positive quote payment')
   })

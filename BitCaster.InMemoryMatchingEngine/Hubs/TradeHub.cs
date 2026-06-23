@@ -54,16 +54,14 @@ public class TradeHub : Hub<ITradeHubClient>
             record.SellerLocktime,
             record.BuyerLocktime,
             record.MarketId,
-            record.FillAmountSats,
-            record.OutcomeFaceAmountSats,
-            record.QuotePaymentSats,
+            record.FillAmountSubunits,
+            record.OutcomeFaceAmountSubunits,
+            record.QuotePaymentSubunits,
             record.SettlementKind,
             record.SellerKeepOutcomeSetId,
             record.SellerLockOutcomeSetId,
             record.BaseAsset,
             record.Divisibility,
-            record.QuotePaymentSubunits,
-            record.OutcomeFaceAmountSubunits,
             record.TokenSide);
 
         foreach (var message in _trades.GetSwapMessages(tradeId))
@@ -106,16 +104,15 @@ public class TradeHub : Hub<ITradeHubClient>
                 record.SellerLocktime,
                 record.BuyerLocktime,
                 record.MarketId,
-                record.FillAmountSats,
-                record.OutcomeFaceAmountSats,
-                record.QuotePaymentSats,
+                record.FillAmountSubunits,
+                record.OutcomeFaceAmountSubunits,
+                record.QuotePaymentSubunits,
                 record.SettlementKind,
                 record.SellerKeepOutcomeSetId,
                 record.SellerLockOutcomeSetId,
                 record.BaseAsset,
                 record.Divisibility,
-                record.QuotePaymentSubunits,
-                record.OutcomeFaceAmountSubunits);
+                record.TokenSide);
         }
     }
 

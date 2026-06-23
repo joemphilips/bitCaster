@@ -13,7 +13,7 @@ export interface OrderIntentForValidation {
   tokenSide?: unknown
   side?: unknown
   price?: unknown
-  amountSats?: unknown
+  amountSubunits?: unknown
   baseAsset?: unknown
   divisibility?: unknown
   timeInForce?: unknown
@@ -83,16 +83,16 @@ export function validateOrderIntent(
       message: `Order rejected: price must be an integer from 1 to ${divisibility - 1}.`,
     }
   }
-  const amountSats = intent.amountSats
+  const amountSubunits = intent.amountSubunits
   const shareFace = divisibility
   if (
-    typeof amountSats !== 'number' ||
-    !validateWholeShareFaceAmount(amountSats, shareFace)
+    typeof amountSubunits !== 'number' ||
+    !validateWholeShareFaceAmount(amountSubunits, shareFace)
   ) {
     return {
       valid: false,
       message:
-        `Order rejected: amountSats must be a positive integer in ${shareFace} sub-unit increments.`,
+        `Order rejected: amountSubunits must be a positive integer in ${shareFace} sub-unit increments.`,
     }
   }
   if (

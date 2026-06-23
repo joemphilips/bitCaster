@@ -149,7 +149,7 @@ describe('TradingPanel', () => {
     expect(screen.getByText('Price per share')).toBeInTheDocument()
     expect(screen.getByText('30 (30.00%)')).toBeInTheDocument()
     expect(screen.getByText('Total expected cost')).toBeInTheDocument()
-    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1,500 sats')
+    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1.5 sats')
     expect(screen.queryByText('Shares you receive if order fills')).not.toBeInTheDocument()
     expect(screen.queryByText('Market Creator fee (1%)')).not.toBeInTheDocument()
     expect(screen.queryByText('Mint fee')).not.toBeInTheDocument()
@@ -224,7 +224,7 @@ describe('TradingPanel', () => {
       />,
     )
 
-    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('2,250 sats')
+    expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('2.25 sats')
   })
 
   it('keeps the share input as an integer of at least one when editing', () => {

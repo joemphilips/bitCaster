@@ -224,9 +224,9 @@ describe('Portfolio', () => {
         },
       })
 
-      expect(screen.getByText('125,000 sats / $150.00')).toBeInTheDocument()
+      expect(screen.getByText('125 sats / $150.00')).toBeInTheDocument()
       expect(screen.getByText('$150.00')).toBeInTheDocument()
-      expect(screen.queryByText('15,125 sats')).not.toBeInTheDocument()
+      expect(screen.queryByText('15.125 sats')).not.toBeInTheDocument()
     })
 
     it('renders deposit and withdraw buttons', () => {

@@ -70,8 +70,8 @@ export interface TradeCreatedProtocolFields {
   settlementKind?: string | null
   sellerKeepOutcomeSetId?: string | null
   sellerLockOutcomeSetId?: string | null
-  outcomeFaceAmountSats?: number | null
-  quotePaymentSats?: number | null
+  outcomeFaceAmountSubunits?: number | null
+  quotePaymentSubunits?: number | null
 }
 
 export function validateTradeCreatedProtocol(
@@ -103,10 +103,10 @@ export function validateTradeCreatedProtocol(
   if (fields.sellerKeepOutcomeSetId === fields.sellerLockOutcomeSetId) {
     return 'Trade rejected: mint split keep and lock outcome sets are identical.'
   }
-  if (!isPositiveFiniteAmount(fields.outcomeFaceAmountSats)) {
+  if (!isPositiveFiniteAmount(fields.outcomeFaceAmountSubunits)) {
     return 'Trade rejected: mint split is missing a positive outcome face amount.'
   }
-  if (!isPositiveFiniteAmount(fields.quotePaymentSats)) {
+  if (!isPositiveFiniteAmount(fields.quotePaymentSubunits)) {
     return 'Trade rejected: mint split is missing a positive quote payment.'
   }
   return null

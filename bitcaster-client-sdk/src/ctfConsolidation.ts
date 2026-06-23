@@ -27,7 +27,7 @@ export type CtfConsolidationNoopReason =
 
 export interface CtfConsolidationOutputFactoryInput {
   collection: string;
-  amountSats: number;
+  amountSubunits: number;
   keysetId: string;
 }
 
@@ -73,7 +73,7 @@ interface NormalizedMarket {
 
 interface OutputAmount {
   collection: string;
-  amountSats: number;
+  amountSubunits: number;
 }
 
 interface CandidateOutput {
@@ -200,7 +200,7 @@ function planT1(
     market.outcomes.filter((outcome) => outcome !== missingOutcome),
   );
   return buildPlan(params, market, inputProofsByCollection, feeSats, [
-    { collection: complementCollection, amountSats: singletonAmount },
+    { collection: complementCollection, amountSubunits: singletonAmount },
   ]);
 }
 
@@ -285,7 +285,7 @@ function planCollateralExtraction(
   return buildPlan(params, market, inputProofsByCollection, feeSats, [
     {
       collection: COLLATERAL_COLLECTION,
-      amountSats: collateralOutputSats,
+      amountSubunits: collateralOutputSats,
     },
     ...residualOutputs,
   ]);
@@ -300,7 +300,7 @@ function buildPlan(
 ): CtfConsolidationResult {
   const requestOutputs: Record<string, SerializedBlindedMessage[]> = {};
   for (const output of outputs) {
-    if (output.amountSats <= 0) continue;
+    if (output.amountSubunits <= 0) continue;
     const keysetId = params.outputKeysetByCollection[output.collection];
     if (!keysetId) {
       return noop(params.strategy, "missing-output-keyset", {
@@ -310,7 +310,7 @@ function buildPlan(
     }
     const messages = params.makeOutputs({
       collection: output.collection,
-      amountSats: output.amountSats,
+      amountSubunits: output.amountSubunits,
       keysetId,
     });
     validateOutputMessages(output, keysetId, messages);
@@ -354,7 +354,7 @@ function decomposeResidual(
       if (!solution) continue;
       return subset.map((candidate, index) => ({
         collection: candidate.collection,
-        amountSats: solution[index],
+        amountSubunits: solution[index],
       }));
     }
   }
@@ -575,7 +575,7 @@ function payoffVectorFromOutputAmounts(
       [
         {
           id: "",
-          amount: output.amountSats,
+          amount: output.amountSubunits,
           secret: "",
           C: "",
         } as unknown as Proof,
@@ -613,9 +613,9 @@ function validateOutputMessages(
     (sum, message) => sum + amountToNumber(message.amount),
     0,
   );
-  if (amount !== output.amountSats) {
+  if (amount !== output.amountSubunits) {
     throw new Error(
-      `Blinded outputs for ${output.collection} total ${amount}, expected ${output.amountSats}`,
+      `Blinded outputs for ${output.collection} total ${amount}, expected ${output.amountSubunits}`,
     );
   }
   if (messages.some((message) => message.id !== keysetId)) {
@@ -644,7 +644,7 @@ function sumOutputAmount(
 ): number {
   return outputs
     .filter((output) => output.collection === collection)
-    .reduce((sum, output) => sum + output.amountSats, 0);
+    .reduce((sum, output) => sum + output.amountSubunits, 0);
 }
 
 function noop(

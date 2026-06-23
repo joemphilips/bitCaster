@@ -365,19 +365,19 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// One leg of a match: the taker's incoming order crossing a single maker. Canonical settlement amounts are carried by `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`. Consumers should prefer those fields when present and fall back to legacy `amountSats` / sat / 100 interpretations only for unambiguous legacy rows. `quotePaymentSubunits + baseAsset + divisibility` is the authoritative quote payment; `amountSats` and inferred sat values are retained for backward compatibility.
+    /// One leg of a match: the taker's incoming order crossing a single maker. Canonical settlement amounts are carried by `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`. `amountSubunits` is the conditional-token face amount in market collateral subunits (msat for sat markets, cents for USD markets). `quotePaymentSubunits + baseAsset + divisibility` is the authoritative quote payment.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSats, BaseAsset? @baseAsset, int? @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, long? @outcomeFaceAmountSubunits, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, TokenSide? @tokenSide, System.Guid? @tradeId)
+        public Fill(long @amountSubunits, BaseAsset? @baseAsset, int? @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, long? @outcomeFaceAmountSubunits, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, TokenSide? @tokenSide, System.Guid? @tradeId)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
             this.MakerOrderId = @makerOrderId;
-            this.AmountSats = @amountSats;
+            this.AmountSubunits = @amountSubunits;
             this.ExecutionPrice = @executionPrice;
             this.Path = @path;
             this.Status = @status;
@@ -410,11 +410,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid MakerOrderId { get; }
 
         /// <summary>
-        /// Legacy conditional-token face amount matched for settlement. Prefer `outcomeFaceAmountSubunits` when present; for rows where only `amountSats` is available, consumers may infer a sat/100 face amount for backward compatibility.
+        /// Conditional-token face amount matched for settlement in market collateral subunits (msat for sat markets, cents for USD markets).
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
+        public long AmountSubunits { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("executionPrice")]
         public int ExecutionPrice { get; }
@@ -499,13 +499,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(long @amountSats, NostrKind1Event @comment, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce, TokenSide @tokenSide)
+        public SubmitOrderRequest(long @amountSubunits, NostrKind1Event @comment, string @ephemeralPubkey, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce, TokenSide @tokenSide)
         {
             this.OutcomeId = @outcomeId;
             this.TokenSide = @tokenSide;
             this.Side = @side;
             this.Price = @price;
-            this.AmountSats = @amountSats;
+            this.AmountSubunits = @amountSubunits;
             this.TimeInForce = @timeInForce;
             this.EphemeralPubkey = @ephemeralPubkey;
             this.Comment = @comment;
@@ -533,8 +533,8 @@ namespace BitCaster.MatchingEngine.Contracts
         /// Limit-order size as conditional-token face amount. Must be divisible by the market's whole-share face value, independent of `divisibility`. Sat markets use D=10000 (10000 msat = 10 sats); USD markets use D=1000 (1000 cents = $10.00). The whole-share face value is D.
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
+        public long AmountSubunits { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TimeInForce>))]
@@ -619,13 +619,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(BaseAsset @baseAsset, int @divisibility, long @filledAmountSats, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSats, string @status, TokenSide @tokenSide)
+        public OrderStatusResponse(BaseAsset @baseAsset, int @divisibility, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, string @status, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
             this.Status = @status;
-            this.RemainingAmountSats = @remainingAmountSats;
-            this.FilledAmountSats = @filledAmountSats;
+            this.RemainingAmountSubunits = @remainingAmountSubunits;
+            this.FilledAmountSubunits = @filledAmountSubunits;
             this.Fills = @fills;
             this.TokenSide = @tokenSide;
             this.BaseAsset = @baseAsset;
@@ -651,15 +651,15 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("status")]
         public string Status { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSats")]
-        public long RemainingAmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSubunits")]
+        public long RemainingAmountSubunits { get; }
 
         /// <summary>
         /// Conditional-token face amount already consumed by committed fills or currently matched atomic-swap sessions. A provisional mint match is exposed here before final settlement so clients can notify makers and start the atomic-swap handshake.
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("filledAmountSats")]
-        public long FilledAmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("filledAmountSubunits")]
+        public long FilledAmountSubunits { get; }
 
         /// <summary>
         /// All fills and active or terminal atomic-swap sessions produced against this order so far.
@@ -701,7 +701,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RestingOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RestingOrderResponse(long @amountSats, BaseAsset @baseAsset, int @divisibility, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSats, OrderSide @side, TimeInForce @timeInForce, TokenSide @tokenSide)
+        public RestingOrderResponse(long @amountSubunits, BaseAsset @baseAsset, int @divisibility, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, TimeInForce @timeInForce, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -709,8 +709,8 @@ namespace BitCaster.MatchingEngine.Contracts
             this.TokenSide = @tokenSide;
             this.Side = @side;
             this.Price = @price;
-            this.RemainingAmountSats = @remainingAmountSats;
-            this.AmountSats = @amountSats;
+            this.RemainingAmountSubunits = @remainingAmountSubunits;
+            this.AmountSubunits = @amountSubunits;
             this.TimeInForce = @timeInForce;
             this.PlacedAt = @placedAt;
             this.ExpiresAt = @expiresAt;
@@ -748,11 +748,11 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("price")]
         public int Price { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSats")]
-        public long RemainingAmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSubunits")]
+        public long RemainingAmountSubunits { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
+        public long AmountSubunits { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TimeInForce>))]
@@ -822,11 +822,11 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderResponse(BaseAsset @baseAsset, int @divisibility, string @ephemeralPubkey, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSats, string @status)
+        public SubmitOrderResponse(BaseAsset @baseAsset, int @divisibility, string @ephemeralPubkey, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSubunits, string @status)
         {
             this.OrderId = @orderId;
             this.Status = @status;
-            this.RemainingAmountSats = @remainingAmountSats;
+            this.RemainingAmountSubunits = @remainingAmountSubunits;
             this.Fills = @fills;
             this.EphemeralPubkey = @ephemeralPubkey;
             this.BaseAsset = @baseAsset;
@@ -846,8 +846,8 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("status")]
         public string Status { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSats")]
-        public long RemainingAmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSubunits")]
+        public long RemainingAmountSubunits { get; }
 
         /// <summary>
         /// List of fills produced by this order. Empty if no matches.
@@ -914,7 +914,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class BatchSubmitOrderRequestItem
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderRequestItem(long @amountSats, string @clientOrderId, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce, TokenSide @tokenSide)
+        public BatchSubmitOrderRequestItem(long @amountSubunits, string @clientOrderId, string @ephemeralPubkey, System.DateTimeOffset? @expiresAt, string @marketId, string @outcomeId, int @price, OrderSide @side, TimeInForce? @timeInForce, TokenSide @tokenSide)
         {
             this.ClientOrderId = @clientOrderId;
             this.MarketId = @marketId;
@@ -922,7 +922,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.TokenSide = @tokenSide;
             this.Side = @side;
             this.Price = @price;
-            this.AmountSats = @amountSats;
+            this.AmountSubunits = @amountSubunits;
             this.TimeInForce = @timeInForce;
             this.ExpiresAt = @expiresAt;
             this.EphemeralPubkey = @ephemeralPubkey;
@@ -957,8 +957,8 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("price")]
         public int Price { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
+        public long AmountSubunits { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TimeInForce>))]
@@ -1008,7 +1008,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class BatchSubmitOrderResult
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderResult(BaseAsset @baseAsset, string @clientOrderId, int @divisibility, string @ephemeralPubkey, BatchSubmitOrderErrorCode? @errorCode, string @errorMessage, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid? @orderId, long @remainingAmountSats, int @requestIndex, string @status, bool @success)
+        public BatchSubmitOrderResult(BaseAsset @baseAsset, string @clientOrderId, int @divisibility, string @ephemeralPubkey, BatchSubmitOrderErrorCode? @errorCode, string @errorMessage, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid? @orderId, long @remainingAmountSubunits, int @requestIndex, string @status, bool @success)
         {
             this.RequestIndex = @requestIndex;
             this.ClientOrderId = @clientOrderId;
@@ -1016,7 +1016,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.MarketId = @marketId;
             this.OrderId = @orderId;
             this.Status = @status;
-            this.RemainingAmountSats = @remainingAmountSats;
+            this.RemainingAmountSubunits = @remainingAmountSubunits;
             this.Fills = @fills;
             this.EphemeralPubkey = @ephemeralPubkey;
             this.BaseAsset = @baseAsset;
@@ -1043,8 +1043,8 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("status")]
         public string Status { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSats")]
-        public long RemainingAmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSubunits")]
+        public long RemainingAmountSubunits { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("fills")]
         public System.Collections.Generic.List<Fill> Fills { get; }
@@ -2035,19 +2035,19 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RequestLnInvoiceDepositRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RequestLnInvoiceDepositRequest(long @amountSats, string @creatorPubkey, bool? @fundAmm)
+        public RequestLnInvoiceDepositRequest(long @amountSubunits, string @creatorPubkey, bool? @fundAmm)
         {
-            this.AmountSats = @amountSats;
+            this.AmountSubunits = @amountSubunits;
             this.CreatorPubkey = @creatorPubkey;
             this.FundAmm = @fundAmm;
         }
 
         /// <summary>
-        /// Legacy field name. Amount of market-collateral base subunits the funder intends to deposit. The engine derives the unit from the registered market: msat for sat markets, cents (`usd`) for USD markets.
+        /// Amount of market-collateral base subunits the funder intends to deposit. The engine derives the unit from the registered market: msat for sat markets, cents (`usd`) for USD markets.
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
+        public long AmountSubunits { get; }
 
         /// <summary>
         /// Nostr public key (hex) of the market creator
@@ -2117,20 +2117,20 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RequestEcashDepositRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RequestEcashDepositRequest(long @amountSats, string @creatorPubkey, bool? @fundAmm, string @proofsToken)
+        public RequestEcashDepositRequest(long @amountSubunits, string @creatorPubkey, bool? @fundAmm, string @proofsToken)
         {
-            this.AmountSats = @amountSats;
+            this.AmountSubunits = @amountSubunits;
             this.ProofsToken = @proofsToken;
             this.CreatorPubkey = @creatorPubkey;
             this.FundAmm = @fundAmm;
         }
 
         /// <summary>
-        /// Legacy field name. Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market.
+        /// Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market.
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
+        public long AmountSubunits { get; }
 
         /// <summary>
         /// Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting.
@@ -2360,13 +2360,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class GetDepositResponseDto
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public GetDepositResponseDto(long @amountSats, string @conditionId, System.Guid @depositId, System.DateTimeOffset? @expiresAt, string @failureReason, DepositMethod @method, System.DateTimeOffset @requestedAt, DepositState @state, System.DateTimeOffset @updatedAt)
+        public GetDepositResponseDto(long @amountSubunits, string @conditionId, System.Guid @depositId, System.DateTimeOffset? @expiresAt, string @failureReason, DepositMethod @method, System.DateTimeOffset @requestedAt, DepositState @state, System.DateTimeOffset @updatedAt)
         {
             this.DepositId = @depositId;
             this.ConditionId = @conditionId;
             this.State = @state;
             this.Method = @method;
-            this.AmountSats = @amountSats;
+            this.AmountSubunits = @amountSubunits;
             this.RequestedAt = @requestedAt;
             this.UpdatedAt = @updatedAt;
             this.ExpiresAt = @expiresAt;
@@ -2390,8 +2390,8 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositMethod>))]
         public DepositMethod Method { get; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
+        public long AmountSubunits { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("requestedAt")]
         public System.DateTimeOffset RequestedAt { get; }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  computeGrossCtfInputAmountSats,
+  computeGrossCtfInputAmountSubunits,
   resolveComplementaryOutcomeLegs,
   resolveMintOutcomeSetKey,
   selectRootPartitionKeysets,
@@ -221,10 +221,10 @@ test("splitCompleteSetWithOperation prepares outputs before posting and complete
     conditionId: CONDITION_ID,
     collateralProofs: [proof("input-keyset", 100, "input-secret")],
     outcomeCollectionKeysets: { YES: "keyset-yes", NO: "keyset-no" },
-    amountSats: 100,
+    amountSubunits: 100,
     proofOperationStore: store,
-    makeOutputs: ({ collection, amountSats, keyset }) => [
-      output(collection, amountSats, keyset.id),
+    makeOutputs: ({ collection, amountSubunits, keyset }) => [
+      output(collection, amountSubunits, keyset.id),
     ],
   });
 
@@ -239,7 +239,7 @@ test("splitCompleteSetWithOperation prepares outputs before posting and complete
   const record = await store.getProofOperation("op-1");
   assert.equal(record?.state, "completed");
   assert.equal(record?.metadata.conditionId, CONDITION_ID);
-  assert.equal(record?.metadata.amountSats, 100);
+  assert.equal(record?.metadata.amountSubunits, 100);
   assert.equal(record?.metadata.baseAsset, "sat");
   assert.deepEqual(record?.metadata.outcomeCollectionKeysets, {
     YES: "keyset-yes",
@@ -262,10 +262,10 @@ test("splitCompleteSetWithOperation accepts msat collateral keysets for sat mark
     conditionId: CONDITION_ID,
     collateralProofs: [proof("input-keyset", 100, "input-secret")],
     outcomeCollectionKeysets: { YES: "keyset-yes", NO: "keyset-no" },
-    amountSats: 100,
+    amountSubunits: 100,
     proofOperationStore: store,
-    makeOutputs: ({ collection, amountSats, keyset }) => [
-      output(collection, amountSats, keyset.id),
+    makeOutputs: ({ collection, amountSubunits, keyset }) => [
+      output(collection, amountSubunits, keyset.id),
     ],
   });
 
@@ -288,10 +288,10 @@ test("splitCompleteSetWithOperation accepts usd collateral keysets for usd marke
     conditionId: CONDITION_ID,
     collateralProofs: [proof("input-keyset", 100, "input-secret")],
     outcomeCollectionKeysets: { YES: "keyset-yes", NO: "keyset-no" },
-    amountSats: 100,
+    amountSubunits: 100,
     proofOperationStore: store,
-    makeOutputs: ({ collection, amountSats, keyset }) => [
-      output(collection, amountSats, keyset.id),
+    makeOutputs: ({ collection, amountSubunits, keyset }) => [
+      output(collection, amountSubunits, keyset.id),
     ],
   });
 
@@ -314,10 +314,10 @@ test("splitCompleteSetWithOperation normalizes structured Cashu Amount inputs be
       } as unknown as Proof,
     ],
     outcomeCollectionKeysets: { YES: "keyset-yes", NO: "keyset-no" },
-    amountSats: 100,
+    amountSubunits: 100,
     proofOperationStore: store,
-    makeOutputs: ({ collection, amountSats, keyset }) => [
-      output(collection, amountSats, keyset.id),
+    makeOutputs: ({ collection, amountSubunits, keyset }) => [
+      output(collection, amountSubunits, keyset.id),
     ],
   });
 
@@ -354,10 +354,10 @@ test("splitCompleteSetWithOperation replays completed operations without mint ca
     conditionId: CONDITION_ID,
     collateralProofs: [proof("input-keyset", 100, "input-secret")],
     outcomeCollectionKeysets: { YES: "keyset-yes", NO: "keyset-no" },
-    amountSats: 100,
+    amountSubunits: 100,
     proofOperationStore: completed,
-    makeOutputs: ({ collection, amountSats, keyset }) => [
-      output(collection, amountSats, keyset.id),
+    makeOutputs: ({ collection, amountSubunits, keyset }) => [
+      output(collection, amountSubunits, keyset.id),
     ],
   });
 
@@ -397,10 +397,10 @@ test("splitCompleteSetWithOperation fails closed for failed existing operations"
         conditionId: CONDITION_ID,
         collateralProofs: [proof("input-keyset", 100, "input-secret")],
         outcomeCollectionKeysets: { YES: "keyset-yes", NO: "keyset-no" },
-        amountSats: 100,
+        amountSubunits: 100,
         proofOperationStore: failed,
-        makeOutputs: ({ collection, amountSats, keyset }) => [
-          output(collection, amountSats, keyset.id),
+        makeOutputs: ({ collection, amountSubunits, keyset }) => [
+          output(collection, amountSubunits, keyset.id),
         ],
       }),
     /previously failed: mint refused split/,
@@ -423,11 +423,11 @@ test("mergeCompleteSetToRegularWithOperation prepares conditional inputs and reg
       Beta: [proof("keyset-beta", 10, "beta")],
       Gamma: [proof("keyset-gamma", 10, "gamma")],
     },
-    outputAmountSats: 9,
+    outputAmountSubunits: 9,
     regularKeyset: feePlanningKeyset(0, { 1: "regular" }) as MintKeys,
     proofOperationStore: store,
-    makeRegularOutputs: ({ amountSats, keyset }) => [
-      output("*", amountSats, keyset.id),
+    makeRegularOutputs: ({ amountSubunits, keyset }) => [
+      output("*", amountSubunits, keyset.id),
     ],
   });
 
@@ -437,7 +437,7 @@ test("mergeCompleteSetToRegularWithOperation prepares conditional inputs and reg
     "Beta",
     "Gamma",
   ]);
-  assert.equal(result.outputAmountSats, 9);
+  assert.equal(result.outputAmountSubunits, 9);
   assert.equal(transport.converted.length, 1);
   assert.deepEqual(Object.keys(transport.converted[0].inputs).sort(), [
     "Alpha",
@@ -479,7 +479,7 @@ test("mergeCompleteSetToRegularWithOperation replays completed operations withou
     conditionalProofsByCollection: {
       Beta: [proof("keyset-beta", 10, "beta-not-recorded")],
     },
-    outputAmountSats: 9,
+    outputAmountSubunits: 9,
     regularKeyset: feePlanningKeyset(0, { 1: "regular" }) as MintKeys,
     proofOperationStore: store,
   });
@@ -515,7 +515,7 @@ test("selectCompleteSetMergeInputs selects equal gross inputs across a complete 
   ]);
   assert.equal(selection?.grossInputSats, 11);
   assert.equal(selection?.convertFeeSats, 3);
-  assert.equal(selection?.outputAmountSats, 8);
+  assert.equal(selection?.outputAmountSubunits, 8);
 });
 
 test("selectCompleteSetMergeInputs fails closed for uneven complete-set buckets", () => {
@@ -573,7 +573,7 @@ test("splitRegularProofsWithOperation turns a larger regular proof into an exact
     operationId: "regular-op-210",
     wallet,
     proofs: [proof("regular-keyset", 210, "input-210")],
-    amountSats: 100,
+    amountSubunits: 100,
     proofOperationStore: store,
   });
 
@@ -610,7 +610,7 @@ test("splitRegularProofsWithOperation replays completed regular splits without m
     operationId: "regular-op-completed",
     wallet,
     proofs: [],
-    amountSats: 100,
+    amountSubunits: 100,
     proofOperationStore: store,
   });
 
@@ -619,24 +619,24 @@ test("splitRegularProofsWithOperation replays completed regular splits without m
   assert.equal(wallet.completeCalls, 0);
 });
 
-test("computeGrossCtfInputAmountSats funds the convert fee from the output proof count", () => {
+test("computeGrossCtfInputAmountSubunits funds the convert fee from the output proof count", () => {
   const keyset = feePlanningKeyset(1, { 1: "k1", 2: "k2", 4: "k4" });
 
   assert.equal(
-    computeGrossCtfInputAmountSats({
-      faceAmountSats: 2,
+    computeGrossCtfInputAmountSubunits({
+      faceAmountSubunits: 2,
       keyset,
     }),
     3,
   );
 });
 
-test("computeGrossCtfInputAmountSats handles F greater than 1 for many proofs", () => {
+test("computeGrossCtfInputAmountSubunits handles F greater than 1 for many proofs", () => {
   const keyset = feePlanningKeyset(1, { 1: "k1" });
 
   assert.equal(
-    computeGrossCtfInputAmountSats({
-      faceAmountSats: 1001,
+    computeGrossCtfInputAmountSubunits({
+      faceAmountSubunits: 1001,
       keyset,
     }),
     1003,

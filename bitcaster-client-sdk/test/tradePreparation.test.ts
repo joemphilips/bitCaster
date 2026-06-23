@@ -11,7 +11,7 @@ test("prepareSellerSwapInputs uses existing outcome tokens before splitting regu
   let splitCalled = false;
   const result = await prepareSellerSwapInputs({
     lockOutcomeSetId: "Beta",
-    amountSats: 10,
+    amountSubunits: 10,
     outcomeProofsByCollection: {
       Beta: [proof("keyset-beta", 12, "beta")],
     },
@@ -31,12 +31,12 @@ test("prepareSellerSwapInputs uses existing outcome tokens before splitting regu
 test("prepareSellerSwapInputs falls back to regular-to-outcome pre-flight split", async () => {
   const result = await prepareSellerSwapInputs({
     lockOutcomeSetId: "Gamma",
-    amountSats: 10,
+    amountSubunits: 10,
     outcomeProofsByCollection: {},
     regularProofs: [proof("regular-keyset", 20, "regular")],
     splitRegularToOutcome: async (input) => {
       assert.equal(input.lockOutcomeSetId, "Gamma");
-      assert.equal(input.amountSats, 10);
+      assert.equal(input.amountSubunits, 10);
       return {
         proofsByCollection: {
           Gamma: [proof("keyset-gamma", 10, "gamma")],
@@ -59,7 +59,7 @@ test("prepareBuyerSwapInputs uses existing regular collateral before merging com
   let mergeCalled = false;
   let feeLookupCalled = false;
   const result = await prepareBuyerSwapInputs({
-    quotePaymentSats: 8,
+    quotePaymentSubunits: 8,
     regularProofs: [proof("regular-keyset", 9, "regular")],
     completeSetProofsByCollection: {
       Alpha: [proof("keyset-alpha", 20, "alpha")],
@@ -85,7 +85,7 @@ test("prepareBuyerSwapInputs uses existing regular collateral before merging com
 
 test("prepareBuyerSwapInputs falls back to complete-set-to-regular pre-flight merge", async () => {
   const result = await prepareBuyerSwapInputs({
-    quotePaymentSats: 8,
+    quotePaymentSubunits: 8,
     regularProofs: [],
     completeSetProofsByCollection: {
       Alpha: [proof("keyset-alpha", 11, "alpha")],
@@ -97,11 +97,11 @@ test("prepareBuyerSwapInputs falls back to complete-set-to-regular pre-flight me
       "keyset-beta": 1_000,
       "keyset-gamma": 1_000,
     },
-    mergeCompleteSetToRegular: async ({ selection, outputAmountSats }) => {
+    mergeCompleteSetToRegular: async ({ selection, outputAmountSubunits }) => {
       assert.equal(selection.grossInputSats, 11);
-      assert.equal(outputAmountSats, 8);
+      assert.equal(outputAmountSubunits, 8);
       return {
-        regularProofs: [proof("regular-keyset", outputAmountSats, "regular")],
+        regularProofs: [proof("regular-keyset", outputAmountSubunits, "regular")],
         spentOutcomeProofsByCollection: selection.selectedProofsByCollection,
       };
     },
@@ -119,7 +119,7 @@ test("prepareBuyerSwapInputs falls back to complete-set-to-regular pre-flight me
 
 test("prepareBuyerSwapInputs fails closed when complete-set selection is impossible", async () => {
   const result = await prepareBuyerSwapInputs({
-    quotePaymentSats: 8,
+    quotePaymentSubunits: 8,
     regularProofs: [],
     maxMergeScanExtraSats: 2,
     completeSetProofsByCollection: {
@@ -147,7 +147,7 @@ test("prepareSwapInputsForTrade dispatches seller intent through shared policy",
   const result = await prepareSwapInputsForTrade({
     role: "seller",
     lockOutcomeSetId: "Alpha",
-    amountSats: 5,
+    amountSubunits: 5,
     outcomeProofsByCollection: {
       Alpha: [proof("keyset-alpha", 5, "alpha")],
     },
@@ -163,7 +163,7 @@ test("prepareSwapInputsForTrade dispatches seller intent through shared policy",
 test("prepareSwapInputsForTrade dispatches buyer intent through shared policy", async () => {
   const result = await prepareSwapInputsForTrade({
     role: "buyer",
-    quotePaymentSats: 5,
+    quotePaymentSubunits: 5,
     regularProofs: [proof("regular-keyset", 6, "regular")],
     completeSetProofsByCollection: {},
     conditionalInputFeePpkByKeyset: {},

@@ -19,19 +19,17 @@ public interface ITradeHubClient
     /// amounts when the engine supports TradeCreatedV2 semantics. The
     /// canonical settlement amount is `quotePaymentSubunits + baseAsset +
     /// divisibility`; consumers should prefer those fields when present and
-    /// treat `quotePaymentSats` as legacy sat/100 compatibility only.
+    /// treat `quotePaymentSubunits` as legacy sat/100 compatibility only.
     /// </summary>
     Task TradeCreated(Guid tradeId, string sellerPubkey, string buyerPubkey,
         DateTimeOffset sellerLocktime, DateTimeOffset buyerLocktime,
-        string marketId, long fillAmountSats,
-        long? outcomeFaceAmountSats = null,
-        long? quotePaymentSats = null,
+        string marketId, long fillAmountSubunits,
+        long? outcomeFaceAmountSubunits = null,
+        long? quotePaymentSubunits = null,
         string? settlementKind = null,
         string? sellerKeepOutcomeSetId = null,
         string? sellerLockOutcomeSetId = null,
         string? baseAsset = null,
         int? divisibility = null,
-        long? quotePaymentSubunits = null,
-        long? outcomeFaceAmountSubunits = null,
         string? tokenSide = null);
 }

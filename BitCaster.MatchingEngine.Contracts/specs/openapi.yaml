@@ -1012,16 +1012,15 @@ components:
         One leg of a match: the taker's incoming order crossing a single maker.
         Canonical settlement amounts are carried by `quotePaymentSubunits`,
         `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`.
-        Consumers should prefer those fields when present and fall back to
-        legacy `amountSats` / sat / 100 interpretations only for unambiguous
-        legacy rows. `quotePaymentSubunits + baseAsset + divisibility` is the
-        authoritative quote payment; `amountSats` and inferred sat values are
-        retained for backward compatibility.
+        `amountSubunits` is the conditional-token face amount in market
+        collateral subunits (msat for sat markets, cents for USD markets).
+        `quotePaymentSubunits + baseAsset + divisibility` is the authoritative
+        quote payment.
       required:
         - id
         - takerOrderId
         - makerOrderId
-        - amountSats
+        - amountSubunits
         - executionPrice
         - path
         - filledAt
@@ -1039,14 +1038,12 @@ components:
           type: string
           format: uuid
           description: The resting order that was matched against.
-        amountSats:
+        amountSubunits:
           allOf:
             - $ref: '#/components/schemas/Sats'
           description: >
-            Legacy conditional-token face amount matched for settlement.
-            Prefer `outcomeFaceAmountSubunits` when present; for rows where
-            only `amountSats` is available, consumers may infer a sat/100 face
-            amount for backward compatibility.
+             Conditional-token face amount matched for settlement in market
+             collateral subunits (msat for sat markets, cents for USD markets).
         executionPrice:
           $ref: '#/components/schemas/Probability'
         path:
@@ -1126,7 +1123,7 @@ components:
         - tokenSide
         - side
         - price
-        - amountSats
+        - amountSubunits
         - ephemeralPubkey
       properties:
         outcomeId:
@@ -1140,7 +1137,7 @@ components:
           $ref: '#/components/schemas/OrderSide'
         price:
           $ref: '#/components/schemas/Probability'
-        amountSats:
+        amountSubunits:
           allOf:
             - $ref: '#/components/schemas/Sats'
           description: >
@@ -1216,8 +1213,8 @@ components:
         - orderId
         - marketId
         - status
-        - remainingAmountSats
-        - filledAmountSats
+        - remainingAmountSubunits
+        - filledAmountSubunits
         - fills
         - tokenSide
         - baseAsset
@@ -1236,9 +1233,9 @@ components:
             One of: "resting" (on book, unmatched), "matched" (reserved for
             atomic-swap settlement), "partially_filled", "filled",
             "cancelled", "failed".
-        remainingAmountSats:
+        remainingAmountSubunits:
           $ref: '#/components/schemas/Sats'
-        filledAmountSats:
+        filledAmountSubunits:
           $ref: '#/components/schemas/Sats'
           description: >
             Conditional-token face amount already consumed by committed fills
@@ -1278,8 +1275,8 @@ components:
         - outcomeId
         - side
         - price
-        - remainingAmountSats
-        - amountSats
+        - remainingAmountSubunits
+        - amountSubunits
         - timeInForce
         - placedAt
         - tokenSide
@@ -1302,9 +1299,9 @@ components:
           $ref: '#/components/schemas/OrderSide'
         price:
           $ref: '#/components/schemas/Probability'
-        remainingAmountSats:
+        remainingAmountSubunits:
           $ref: '#/components/schemas/Sats'
-        amountSats:
+        amountSubunits:
           $ref: '#/components/schemas/Sats'
         timeInForce:
           $ref: '#/components/schemas/TimeInForce'
@@ -1351,7 +1348,7 @@ components:
       required:
         - orderId
         - status
-        - remainingAmountSats
+        - remainingAmountSubunits
         - fills
         - ephemeralPubkey
         - baseAsset
@@ -1367,7 +1364,7 @@ components:
             One of: "filled", "matched" (reserved for atomic-swap
             settlement), "partially_filled", "resting", "cancelled",
             "failed".
-        remainingAmountSats:
+        remainingAmountSubunits:
           $ref: '#/components/schemas/Sats'
         fills:
           type: array
@@ -1416,7 +1413,7 @@ components:
         - tokenSide
         - side
         - price
-        - amountSats
+        - amountSubunits
         - ephemeralPubkey
       properties:
         clientOrderId:
@@ -1436,7 +1433,7 @@ components:
           $ref: '#/components/schemas/OrderSide'
         price:
           $ref: '#/components/schemas/Probability'
-        amountSats:
+        amountSubunits:
           $ref: '#/components/schemas/Sats'
         timeInForce:
           $ref: '#/components/schemas/TimeInForce'
@@ -1467,7 +1464,7 @@ components:
         - success
         - marketId
         - status
-        - remainingAmountSats
+        - remainingAmountSubunits
         - fills
         - baseAsset
         - divisibility
@@ -1491,7 +1488,7 @@ components:
           format: uuid
         status:
           type: string
-        remainingAmountSats:
+        remainingAmountSubunits:
           $ref: '#/components/schemas/Sats'
         fills:
           type: array
@@ -2070,14 +2067,14 @@ components:
     RequestLnInvoiceDepositRequest:
       type: object
       required:
-        - amountSats
+        - amountSubunits
       properties:
-        amountSats:
+        amountSubunits:
           type: integer
           format: int64
           minimum: 1
           description: >
-            Legacy field name. Amount of market-collateral base subunits the
+            Amount of market-collateral base subunits the
             funder intends to deposit. The engine derives the unit from the
             registered market: msat for sat markets, cents (`usd`) for USD markets.
         creatorPubkey:
@@ -2113,15 +2110,15 @@ components:
     RequestEcashDepositRequest:
       type: object
       required:
-        - amountSats
+        - amountSubunits
         - proofsToken
       properties:
-        amountSats:
+        amountSubunits:
           type: integer
           format: int64
           minimum: 1
           description: >
-            Legacy field name. Asserted value of the supplied ecash proofs in
+            Asserted value of the supplied ecash proofs in
             market-collateral base subunits. The engine derives the unit from
             the registered market.
         proofsToken:
@@ -2253,7 +2250,7 @@ components:
         - conditionId
         - state
         - method
-        - amountSats
+        - amountSubunits
         - requestedAt
         - updatedAt
       properties:
@@ -2267,7 +2264,7 @@ components:
           $ref: '#/components/schemas/DepositState'
         method:
           $ref: '#/components/schemas/DepositMethod'
-        amountSats:
+        amountSubunits:
           type: integer
           format: int64
         requestedAt:

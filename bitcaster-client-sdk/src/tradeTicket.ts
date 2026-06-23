@@ -73,7 +73,8 @@ function marketPriceFor(
 export function buildTradeTicket(params: {
   market: SdkMarketForTrading
   selection: SdkTradeSelection | null
-  amountSats: number
+  amountSubunits?: number
+  amountSats?: number
   side: SdkTradeSide
   orderType: SdkOrderType
   limitPrice: number
@@ -83,13 +84,13 @@ export function buildTradeTicket(params: {
   const {
     market,
     selection,
-    amountSats,
     side,
     orderType,
     limitPrice,
     orderBook,
     complementaryOrderBook,
   } = params
+  const amountSubunits = params.amountSubunits ?? params.amountSats
 
   if (!selection) {
     throw new TradeTicketError(
@@ -97,7 +98,7 @@ export function buildTradeTicket(params: {
       'Choose an outcome before placing an order.',
     )
   }
-  if (!Number.isFinite(amountSats) || amountSats <= 0) {
+  if (!Number.isFinite(amountSubunits) || amountSubunits <= 0) {
     throw new TradeTicketError(
       'invalid-amount',
       'Enter an amount greater than zero.',
@@ -105,7 +106,7 @@ export function buildTradeTicket(params: {
   }
   const divisibility = normalizeMarketDivisibility(market.divisibility, market.baseAsset)
   const shareFace = divisibility
-  if (!validateWholeShareFaceAmount(amountSats, shareFace)) {
+  if (!validateWholeShareFaceAmount(amountSubunits, shareFace)) {
     throw new TradeTicketError(
       'invalid-amount',
       `Enter an amount in ${shareFace} sub-unit increments.`,
@@ -143,7 +144,7 @@ export function buildTradeTicket(params: {
     tokenSide: resolvedOutcome.tokenSide,
     side: requestSide,
     price,
-    amountSats,
+    amountSubunits,
     timeInForce: orderType === 'market' ? 'FAK' : 'GTC',
   }
 

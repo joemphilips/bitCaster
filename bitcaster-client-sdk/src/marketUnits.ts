@@ -117,8 +117,9 @@ export function formatMarketSubunits(
   if (normalized === 'jpy') {
     return `${sign}¥${Math.trunc(absoluteAmount).toLocaleString()}`
   }
-  // NUT-01: sat amounts are in sats.
-  return `${sign}${Math.trunc(absoluteAmount).toLocaleString()} sats`
+  return `${sign}${(absoluteAmount / 1000).toLocaleString(undefined, {
+    maximumFractionDigits: 3,
+  })} sats`
 }
 
 export function formatAmount(

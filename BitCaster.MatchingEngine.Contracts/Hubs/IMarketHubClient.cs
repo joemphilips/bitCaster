@@ -29,7 +29,7 @@ public sealed record OrderAcceptedDelta(
     string OutcomeId,
     OrderSide Side,
     int Price,
-    long RemainingAmountSats);
+    long RemainingAmountSubunits);
 
 public sealed record OrderCancelledDelta(
     string MarketId,
@@ -41,7 +41,7 @@ public sealed record MatchedDelta(
     Guid MakerOrderId,
     Guid TakerOrderId,
     int ExecutionPrice,
-    long AmountSats,
+    long AmountSubunits,
     MatchPath Path,
     DateTimeOffset MatchedAt);
 

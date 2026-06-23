@@ -13,8 +13,8 @@ test('decideTradeCreated uses shared trade-session protocol validation', () => {
     settlementKind: 'Mint',
     sellerKeepOutcomeSetId: 'YES',
     sellerLockOutcomeSetId: 'YES',
-    outcomeFaceAmountSats: 100,
-    quotePaymentSats: 99,
+    outcomeFaceAmountSubunits: 100,
+    quotePaymentSubunits: 99,
   }
 
   const sharedError = validateTradeCreatedProtocol(payload)
@@ -355,8 +355,8 @@ test('decideTradeCreated accepts default usd units with legacy-compatible amount
     divisibility: 1_000,
     expectedBaseAsset: 'usd',
     expectedDivisibility: 1_000,
-    outcomeFaceAmountSats: 1_000,
-    quotePaymentSats: 400,
+    outcomeFaceAmountSubunits: 1_000,
+    quotePaymentSubunits: 400,
   })
 
   assert.equal(decision.accepted, true)

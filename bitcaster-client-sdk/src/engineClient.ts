@@ -21,7 +21,7 @@ export interface SubmitOrderRequest {
   tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
-  amountSats: number
+  amountSubunits: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
   ephemeralPubkey: string
   comment?: NostrKind1Event | null
@@ -42,7 +42,7 @@ export interface Fill {
   makerOrderId: string
   takerOrderId: string
   outcomeId: string
-  amountSats: number
+  amountSubunits: number
   executionPrice: number
   path: 'Complementary' | 'Mint'
   status: 'Matched' | 'Filled' | 'Failed'
@@ -59,7 +59,7 @@ export interface Fill {
 export interface SubmitOrderResponse {
   orderId: string
   status: string
-  remainingAmountSats: number
+  remainingAmountSubunits: number
   fills: Fill[]
   ephemeralPubkey: string
   baseAsset: MarketBaseAsset
@@ -88,7 +88,7 @@ export interface BatchSubmitOrderResult {
   marketId: string
   orderId?: string | null
   status: string
-  remainingAmountSats: number
+  remainingAmountSubunits: number
   fills: Fill[]
   ephemeralPubkey?: string | null
   baseAsset: MarketBaseAsset
@@ -139,8 +139,8 @@ export interface OrderStatusResponse {
   orderId: string
   marketId: string
   status: string
-  remainingAmountSats: number
-  filledAmountSats: number
+  remainingAmountSubunits: number
+  filledAmountSubunits: number
   fills: Fill[]
   tokenSide: 'Outcome' | 'Complement'
   baseAsset: MarketBaseAsset
@@ -220,7 +220,7 @@ export interface ParticipationScoreResponse {
 export interface PayParticipationScoreEcashResponse {
   paymentId: string
   status: 'credited'
-  amountSats: number
+  amountSubunits: number
   creditedScore: number
   creditedAt: string
 }
@@ -349,12 +349,12 @@ export class BitcasterEngineClient {
   }
 
   async payParticipationScoreEcash(
-    amountSats: number,
+    amountSubunits: number,
     proofsToken: string,
     paymentId?: string,
   ): Promise<PayParticipationScoreEcashResponse> {
     const bodyText = JSON.stringify({
-      amountSats,
+      amountSubunits,
       proofsToken,
       ...(paymentId ? { paymentId } : {}),
     })

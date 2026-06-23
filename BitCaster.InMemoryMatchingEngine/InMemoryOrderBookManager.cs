@@ -47,7 +47,7 @@ public class InMemoryOrderBookManager
         string outcomeId,
         OrderSide side,
         int priceValue,
-        long amountSats,
+        long amountSubunits,
         string userId,
         TimeInForce? timeInForce,
         string? ephemeralPubkey)
@@ -56,14 +56,14 @@ public class InMemoryOrderBookManager
         var unit = UnitForMarket(marketId);
         if (priceValue < 1 || priceValue >= unit.Divisibility)
             throw new ArgumentOutOfRangeException(nameof(priceValue), $"Price must be between 1 and {unit.Divisibility - 1}.");
-        if (amountSats <= 0 || amountSats % unit.ShareFaceSubunits != 0)
-            throw new ArgumentException($"AmountSats must be a positive whole-share amount divisible by {unit.ShareFaceSubunits}.", nameof(amountSats));
+        if (amountSubunits <= 0 || amountSubunits % unit.ShareFaceSubunits != 0)
+            throw new ArgumentException($"AmountSubunits must be a positive whole-share amount divisible by {unit.ShareFaceSubunits}.", nameof(amountSubunits));
 
         var book = _books.GetOrAdd(marketId, _ => new OrderBook(marketId, unit.Divisibility));
 
         var orderId = Guid.NewGuid();
         var incoming = new RestingOrder(
-            orderId, outcomeId, side, priceValue, amountSats,
+            orderId, outcomeId, side, priceValue, amountSubunits,
             userId, ephemeralPubkey, DateTimeOffset.UtcNow);
 
         List<Fill> fills;
@@ -72,7 +72,7 @@ public class InMemoryOrderBookManager
         {
             lock (book)
             {
-                if (tif == TimeInForce.FOK && FillableSats(marketId, book, incoming) < incoming.AmountSats)
+                if (tif == TimeInForce.FOK && FillableSats(marketId, book, incoming) < incoming.AmountSubunits)
                 {
                     fills = [];
                     remaining = incoming.RemainingSats;
@@ -104,11 +104,11 @@ public class InMemoryOrderBookManager
         }
         _orderMarketIndex[orderId] = marketId;
 
-        var status = DeriveStatus(amountSats, remaining, tif, fills.Count > 0);
+        var status = DeriveStatus(amountSubunits, remaining, tif, fills.Count > 0);
         return new SubmitResult(
             OrderId: orderId,
             Status: status,
-            RemainingAmountSats: remaining,
+            RemainingAmountSubunits: remaining,
             Fills: fills,
             EphemeralPubkey: ephemeralPubkey ?? string.Empty);
     }
@@ -118,19 +118,19 @@ public class InMemoryOrderBookManager
         string outcomeId,
         OrderSide side,
         int priceValue,
-        long amountSats,
+        long amountSubunits,
         string userId,
         TimeInForce? timeInForce,
         string? ephemeralPubkey)
     {
         if (string.IsNullOrWhiteSpace(ephemeralPubkey))
             return new SubmitOrderOutcome(
-                SubmitOrder(marketId, outcomeId, side, priceValue, amountSats, userId, timeInForce, ephemeralPubkey),
+                SubmitOrder(marketId, outcomeId, side, priceValue, amountSubunits, userId, timeInForce, ephemeralPubkey),
                 Replayed: false);
 
         var tif = timeInForce ?? TimeInForce.GTC;
         var fingerprint = $"{userId}\n{ephemeralPubkey}";
-        var normalized = string.Join('\n', marketId, outcomeId, side, priceValue, amountSats, tif);
+        var normalized = string.Join('\n', marketId, outcomeId, side, priceValue, amountSubunits, tif);
         if (_acceptedSubmits.TryGetValue(fingerprint, out var existing))
         {
             if (existing.NormalizedRequest == normalized)
@@ -139,7 +139,7 @@ public class InMemoryOrderBookManager
             throw new ArgumentException("Duplicate EphemeralPubkey for a different order request.", nameof(ephemeralPubkey));
         }
 
-        var result = SubmitOrder(marketId, outcomeId, side, priceValue, amountSats, userId, tif, ephemeralPubkey);
+        var result = SubmitOrder(marketId, outcomeId, side, priceValue, amountSubunits, userId, tif, ephemeralPubkey);
         _acceptedSubmits[fingerprint] = new AcceptedSubmit(normalized, result);
         return new SubmitOrderOutcome(result, Replayed: false);
     }
@@ -276,20 +276,20 @@ public class InMemoryOrderBookManager
 
     private long FillableSats(string marketId, OrderBook currentBook, RestingOrder incoming)
     {
-        var fillable = FillableAgainstBook(currentBook, incoming, incoming.AmountSats);
-        if (fillable >= incoming.AmountSats || incoming.Side != OrderSide.Buy) return fillable;
+        var fillable = FillableAgainstBook(currentBook, incoming, incoming.AmountSubunits);
+        if (fillable >= incoming.AmountSubunits || incoming.Side != OrderSide.Buy) return fillable;
 
         var parsed = MarketParts.TryParse(marketId);
         if (parsed is null) return fillable;
         foreach (var candidate in MintBooks(parsed))
         {
-            if (fillable >= incoming.AmountSats) break;
+            if (fillable >= incoming.AmountSubunits) break;
             lock (candidate.Book)
             {
                 foreach (var maker in candidate.Book.MintBuyMakers(incoming, candidate.OutcomeSetId))
                 {
-                    fillable += Math.Min(maker.RemainingSats, incoming.AmountSats - fillable);
-                    if (fillable >= incoming.AmountSats) break;
+                    fillable += Math.Min(maker.RemainingSats, incoming.AmountSubunits - fillable);
+                    if (fillable >= incoming.AmountSubunits) break;
                 }
             }
         }
@@ -365,7 +365,7 @@ public class InMemoryOrderBookManager
         var unit = UnitForMarket(marketId);
         var quotePaymentSubunits = QuotePaymentSubunits(amount, maker.Price, unit.Divisibility);
         var fill = new Fill(
-            amountSats: amount,
+            amountSubunits: amount,
             baseAsset: unit.BaseAsset,
             divisibility: unit.Divisibility,
             executionPrice: maker.Price,
@@ -382,9 +382,9 @@ public class InMemoryOrderBookManager
             tradeId: tradeId);
         fill.AdditionalProperties["settlementMarketId"] = marketId;
         fill.AdditionalProperties["settlementKind"] = "DirectSwap";
-        fill.AdditionalProperties["outcomeFaceAmountSats"] = amount;
         fill.AdditionalProperties["outcomeFaceAmountSubunits"] = amount;
-        fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSubunits;
+        fill.AdditionalProperties["outcomeFaceAmountSubunits"] = amount;
+        fill.AdditionalProperties["quotePaymentSubunits"] = quotePaymentSubunits;
         fill.AdditionalProperties["baseAsset"] = BaseAssetWireValue(unit.BaseAsset);
         fill.AdditionalProperties["divisibility"] = unit.Divisibility;
         fill.AdditionalProperties["quotePaymentSubunits"] = quotePaymentSubunits;
@@ -403,7 +403,7 @@ public class InMemoryOrderBookManager
         var tradeId = Guid.NewGuid();
         var quotePaymentSubunits = QuotePaymentSubunits(amount, taker.Price, unit.Divisibility);
         var fill = new Fill(
-            amountSats: amount,
+            amountSubunits: amount,
             baseAsset: unit.BaseAsset,
             divisibility: unit.Divisibility,
             executionPrice: taker.Price,
@@ -420,9 +420,9 @@ public class InMemoryOrderBookManager
             tradeId: tradeId);
         fill.AdditionalProperties["settlementMarketId"] = settlementMarketId;
         fill.AdditionalProperties["settlementKind"] = "Mint";
-        fill.AdditionalProperties["outcomeFaceAmountSats"] = amount;
         fill.AdditionalProperties["outcomeFaceAmountSubunits"] = amount;
-        fill.AdditionalProperties["quotePaymentSats"] = quotePaymentSubunits;
+        fill.AdditionalProperties["outcomeFaceAmountSubunits"] = amount;
+        fill.AdditionalProperties["quotePaymentSubunits"] = quotePaymentSubunits;
         fill.AdditionalProperties["baseAsset"] = BaseAssetWireValue(unit.BaseAsset);
         fill.AdditionalProperties["divisibility"] = unit.Divisibility;
         fill.AdditionalProperties["quotePaymentSubunits"] = quotePaymentSubunits;
@@ -592,13 +592,13 @@ internal sealed class OrderBook
         foreach (var o in _resting)
         {
             if (o.Id != orderId) continue;
-            var filled = o.AmountSats - o.RemainingSats;
+            var filled = o.AmountSubunits - o.RemainingSats;
             var status = filled == 0 ? "resting" : "partially_filled";
             return new OrderStatusView(orderId, marketId, status, o.RemainingSats, filled, fills);
         }
         if (_completed.TryGetValue(orderId, out var c))
         {
-            var filled = c.Order.AmountSats - c.Order.RemainingSats;
+            var filled = c.Order.AmountSubunits - c.Order.RemainingSats;
             return new OrderStatusView(orderId, marketId, c.Status, c.Order.RemainingSats, filled, fills);
         }
         return null;
@@ -672,15 +672,15 @@ internal sealed class OrderBook
 internal sealed class RestingOrder
 {
     public RestingOrder(
-        Guid id, string outcomeId, OrderSide side, int price, long amountSats,
+        Guid id, string outcomeId, OrderSide side, int price, long amountSubunits,
         string userId, string? ephemeralPubkey, DateTimeOffset placedAt)
     {
         Id = id;
         OutcomeId = outcomeId;
         Side = side;
         Price = price;
-        AmountSats = amountSats;
-        RemainingSats = amountSats;
+        AmountSubunits = amountSubunits;
+        RemainingSats = amountSubunits;
         UserId = userId;
         EphemeralPubkey = ephemeralPubkey;
         PlacedAt = placedAt;
@@ -690,7 +690,7 @@ internal sealed class RestingOrder
     public string OutcomeId { get; }
     public OrderSide Side { get; }
     public int Price { get; }
-    public long AmountSats { get; }
+    public long AmountSubunits { get; }
     public long RemainingSats { get; set; }
     public string UserId { get; }
     public string? EphemeralPubkey { get; }
@@ -743,7 +743,7 @@ internal static class OutcomeSetComplement
 public record SubmitResult(
     Guid OrderId,
     string Status,
-    long RemainingAmountSats,
+    long RemainingAmountSubunits,
     List<Fill> Fills,
     string EphemeralPubkey);
 
@@ -751,6 +751,6 @@ public record OrderStatusView(
     Guid OrderId,
     string MarketId,
     string Status,
-    long RemainingAmountSats,
-    long FilledAmountSats,
+    long RemainingAmountSubunits,
+    long FilledAmountSubunits,
     List<Fill> Fills);

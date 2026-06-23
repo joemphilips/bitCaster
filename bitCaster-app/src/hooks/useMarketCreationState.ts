@@ -35,7 +35,6 @@ import {
   normalizeMarketCreationLiquiditySats,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
-  formatMarketSubunits,
   defaultCollateralUnit,
 } from '@bitcaster/client-sdk/marketUnits'
 import { effectiveRelayUrls } from '@/lib/relayDefaults'
@@ -516,8 +515,8 @@ export function useMarketCreationState() {
       const ctfSettings = ctfCapabilities.ctfSettings
       const requiredRegistrationFee = registrationFeeForPolicy(outcomes, ctfSettings)
       if (requiredRegistrationFee > MAX_CONDITION_REGISTRATION_FEE_SATS) {
-        const requiredFee = formatMarketSubunits(requiredRegistrationFee, baseAsset)
-        const maxFee = formatMarketSubunits(MAX_CONDITION_REGISTRATION_FEE_SATS, baseAsset)
+        const requiredFee = `${requiredRegistrationFee.toLocaleString()} sats`
+        const maxFee = `${MAX_CONDITION_REGISTRATION_FEE_SATS.toLocaleString()} sats`
         throw new Error(
           `This mint requires a ${requiredFee} condition registration fee, ` +
             `which exceeds the ${maxFee} app limit.`,

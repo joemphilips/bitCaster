@@ -174,7 +174,9 @@ export interface CtfSplitTransport {
 
 export interface CtfSplitMakeOutputsInput {
   collection: string;
-  amountSats: number;
+  amountSubunits: number;
+  /** @deprecated Use amountSubunits. Kept for pre-rename callback adapters. */
+  amountSats?: number;
   keyset: MintKeys;
 }
 
@@ -216,14 +218,14 @@ export interface RegularProofSplitResult {
 export interface MergeCompleteSetToRegularResult {
   regularProofs: Proof[];
   spentConditionalProofsByCollection: Record<string, Proof[]>;
-  outputAmountSats: number;
+  outputAmountSubunits: number;
 }
 
 export interface CompleteSetMergeInputSelection {
   selectedProofsByCollection: Record<string, Proof[]>;
   grossInputSats: number;
   convertFeeSats: number;
-  outputAmountSats: number;
+  outputAmountSubunits: number;
 }
 
 export async function splitRegularProofsWithOperation(params: {
@@ -232,11 +234,13 @@ export async function splitRegularProofsWithOperation(params: {
   operationId: string;
   wallet: RegularSplitWallet;
   proofs: Proof[];
-  amountSats: number;
+  amountSubunits?: number;
+  amountSats?: number;
   proofOperationStore: CtfProofOperationStore;
 }): Promise<RegularProofSplitResult> {
-  if (!Number.isSafeInteger(params.amountSats) || params.amountSats <= 0) {
-    throw new Error("amountSats must be a positive safe integer");
+  const amountSubunits = params.amountSubunits ?? params.amountSats;
+  if (!Number.isSafeInteger(amountSubunits) || amountSubunits <= 0) {
+    throw new Error("amountSubunits must be a positive safe integer");
   }
 
   const normalizedProofs = params.proofs.map(normalizeProof);
@@ -259,7 +263,7 @@ export async function splitRegularProofsWithOperation(params: {
   }
 
   const preview = await params.wallet.prepareSwapToSend(
-    params.amountSats,
+    amountSubunits,
     normalizedProofs,
     undefined,
     { send: { type: "random" }, keep: { type: "random" } },
@@ -297,11 +301,11 @@ export async function splitRegularProofsWithOperation(params: {
 export async function selectCollateralForCtfSplit(
   mintUrl: string,
   availableProofs: Proof[],
-  faceAmountSats: number,
+  faceAmountSubunits: number,
   baseAsset?: CtfCollateralBaseAsset,
 ): Promise<SplitCollateralSelection> {
-  if (!Number.isSafeInteger(faceAmountSats) || faceAmountSats <= 0) {
-    throw new Error("faceAmountSats must be a positive safe integer");
+  if (!Number.isSafeInteger(faceAmountSubunits) || faceAmountSubunits <= 0) {
+    throw new Error("faceAmountSubunits must be a positive safe integer");
   }
 
   const mint = new CashuMint(mintUrl);
@@ -317,7 +321,7 @@ export async function selectCollateralForCtfSplit(
 
   const selected = wallet.selectProofsToSend(
     availableProofs.map(normalizeProof),
-    faceAmountSats,
+    faceAmountSubunits,
     true,
     true,
   );
@@ -336,9 +340,9 @@ export async function selectCollateralForCtfSplit(
     0,
   );
   const netInputSats = grossInputSats - inputFeeSats;
-  if (netInputSats !== faceAmountSats) {
+  if (netInputSats !== faceAmountSubunits) {
     throw new Error(
-      `Selected collateral nets ${netInputSats} sats after ${inputFeeSats} sats input fee, expected ${faceAmountSats}`,
+      `Selected collateral nets ${netInputSats} sats after ${inputFeeSats} sats input fee, expected ${faceAmountSubunits}`,
     );
   }
 
@@ -350,13 +354,13 @@ export async function selectCollateralForCtfSplit(
   };
 }
 
-export function computeGrossCtfInputAmountSats(params: {
-  faceAmountSats: number;
+export function computeGrossCtfInputAmountSubunits(params: {
+  faceAmountSubunits: number;
   keyset: CtfGrossInputPlanningKeyset;
 }): number {
-  const { faceAmountSats, keyset } = params;
-  if (!Number.isSafeInteger(faceAmountSats) || faceAmountSats <= 0) {
-    throw new Error("faceAmountSats must be a positive safe integer");
+  const { faceAmountSubunits, keyset } = params;
+  if (!Number.isSafeInteger(faceAmountSubunits) || faceAmountSubunits <= 0) {
+    throw new Error("faceAmountSubunits must be a positive safe integer");
   }
   if (!keyset?.id || !keyset.keys || Object.keys(keyset.keys).length === 0) {
     throw new Error(
@@ -367,28 +371,28 @@ export function computeGrossCtfInputAmountSats(params: {
     throw new Error(`Cashu keyset ${keyset.id} has invalid input_fee_ppk`);
   }
 
-  let grossAmountSats = faceAmountSats;
+  let grossAmountSubunits = faceAmountSubunits;
   for (let attempt = 0; attempt < 32; attempt += 1) {
-    const feeSats = ctfInputFeeForGrossAmount(keyset, grossAmountSats);
-    const nextGrossAmountSats = faceAmountSats + feeSats;
-    if (nextGrossAmountSats === grossAmountSats) return grossAmountSats;
-    grossAmountSats = nextGrossAmountSats;
+    const feeSats = ctfInputFeeForGrossAmount(keyset, grossAmountSubunits);
+    const nextGrossAmountSubunits = faceAmountSubunits + feeSats;
+    if (nextGrossAmountSubunits === grossAmountSubunits) return grossAmountSubunits;
+    grossAmountSubunits = nextGrossAmountSubunits;
   }
 
-  const scanLimit = faceAmountSats + Math.max(faceAmountSats, 10_000);
+  const scanLimit = faceAmountSubunits + Math.max(faceAmountSubunits, 10_000);
   for (
-    grossAmountSats = faceAmountSats;
-    grossAmountSats <= scanLimit;
-    grossAmountSats += 1
+    grossAmountSubunits = faceAmountSubunits;
+    grossAmountSubunits <= scanLimit;
+    grossAmountSubunits += 1
   ) {
-    const feeSats = ctfInputFeeForGrossAmount(keyset, grossAmountSats);
-    if (grossAmountSats - feeSats === faceAmountSats) {
-      return grossAmountSats;
+    const feeSats = ctfInputFeeForGrossAmount(keyset, grossAmountSubunits);
+    if (grossAmountSubunits - feeSats === faceAmountSubunits) {
+      return grossAmountSubunits;
     }
   }
 
   throw new Error(
-    `Could not find gross CTF input amount that nets ${faceAmountSats} sats after input fees`,
+    `Could not find gross CTF input amount that nets ${faceAmountSubunits} sats after input fees`,
   );
 }
 
@@ -397,13 +401,15 @@ export async function splitRootCompleteSetForSwap(params: {
   baseAsset?: CtfCollateralBaseAsset;
   conditionId: string;
   collateralProofs: Proof[];
-  amountSats: number;
+  amountSubunits?: number;
+  amountSats?: number;
   lockOutcomeSetId: string;
   keepOutcomeSetId: string;
   p2pk: P2PKOptions;
   operationId: string;
   proofOperationStore: CtfProofOperationStore;
 }): Promise<MintSplitForSwapResult> {
+  const amountSubunits = params.amountSubunits ?? params.amountSats;
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
@@ -428,20 +434,20 @@ export async function splitRootCompleteSetForSwap(params: {
     conditionId: params.conditionId,
     collateralProofs: normalizedCollateral,
     outcomeCollectionKeysets,
-    amountSats: params.amountSats,
+    amountSubunits,
     baseAsset: params.baseAsset,
     proofOperationStore: params.proofOperationStore,
-    makeOutputs: ({ collection, amountSats, keyset }) => {
+    makeOutputs: ({ collection, amountSubunits, keyset }) => {
       if (lockCollections.has(collection)) {
         return RegularOutputData.createP2PKData(
           params.p2pk,
-          Amount.from(amountSats),
+          Amount.from(amountSubunits),
           keyset,
         );
       }
       if (keepCollections.has(collection)) {
         return RegularOutputData.createRandomData(
-          Amount.from(amountSats),
+          Amount.from(amountSubunits),
           keyset,
         );
       }
@@ -476,12 +482,14 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
   baseAsset?: CtfCollateralBaseAsset;
   conditionId: string;
   collateralProofs: Proof[];
-  amountSats: number;
+  amountSubunits?: number;
+  amountSats?: number;
   lockOutcomeSetId: string;
   keepOutcomeSetId: string;
   operationId: string;
   proofOperationStore: CtfProofOperationStore;
 }): Promise<PreflightCompleteSetSplitResult> {
+  const amountSubunits = params.amountSubunits ?? params.amountSats;
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
@@ -504,11 +512,11 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
     conditionId: params.conditionId,
     collateralProofs: normalizedCollateral,
     outcomeCollectionKeysets,
-    amountSats: params.amountSats,
+    amountSubunits,
     baseAsset: params.baseAsset,
     proofOperationStore: params.proofOperationStore,
-    makeOutputs: ({ amountSats, keyset }) =>
-      RegularOutputData.createRandomData(Amount.from(amountSats), keyset),
+    makeOutputs: ({ amountSubunits, keyset }) =>
+      RegularOutputData.createRandomData(Amount.from(amountSubunits), keyset),
   });
 
   return {
@@ -531,14 +539,16 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
   };
 }
 
-export async function resolveRootPreflightOutputAmountSats(params: {
+export async function resolveRootPreflightOutputAmountSubunits(params: {
   mintUrl: string;
   baseAsset?: CtfCollateralBaseAsset;
   conditionId: string;
-  amountSats: number;
+  amountSubunits?: number;
+  amountSats?: number;
   lockOutcomeSetId: string;
   keepOutcomeSetId: string;
 }): Promise<number> {
+  const amountSubunits = params.amountSubunits ?? params.amountSats;
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
@@ -549,7 +559,7 @@ export async function resolveRootPreflightOutputAmountSats(params: {
     },
   );
 
-  let preflightOutputAmountSats = params.amountSats;
+  let preflightOutputAmountSubunits = amountSubunits;
   for (const keysetId of Object.values(outcomeCollectionKeysets)) {
     const keyset = await transport.getKeys(keysetId);
     const planningKeyset = {
@@ -557,29 +567,33 @@ export async function resolveRootPreflightOutputAmountSats(params: {
       keys: keyset.keys,
       input_fee_ppk: keyset.input_fee_ppk ?? 0,
     };
-    const claimInputAmountSats = computeGrossCtfInputAmountSats({
-      faceAmountSats: params.amountSats,
+    const claimInputAmountSubunits = computeGrossCtfInputAmountSubunits({
+      faceAmountSubunits: amountSubunits,
       keyset: planningKeyset,
     });
-    preflightOutputAmountSats = Math.max(
-      preflightOutputAmountSats,
-      computeGrossCtfInputAmountSats({
-        faceAmountSats: claimInputAmountSats,
+    preflightOutputAmountSubunits = Math.max(
+      preflightOutputAmountSubunits,
+      computeGrossCtfInputAmountSubunits({
+        faceAmountSubunits: claimInputAmountSubunits,
         keyset: planningKeyset,
       }),
     );
   }
-  return preflightOutputAmountSats;
+  return preflightOutputAmountSubunits;
 }
 
-export async function resolveRootDirectLockOutputAmountSats(params: {
+export const resolveRootPreflightOutputAmountSats = resolveRootPreflightOutputAmountSubunits;
+
+export async function resolveRootDirectLockOutputAmountSubunits(params: {
   mintUrl: string;
   baseAsset?: CtfCollateralBaseAsset;
   conditionId: string;
-  amountSats: number;
+  amountSubunits?: number;
+  amountSats?: number;
   lockOutcomeSetId: string;
   keepOutcomeSetId: string;
 }): Promise<number> {
+  const amountSubunits = params.amountSubunits ?? params.amountSats;
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
@@ -595,7 +609,7 @@ export async function resolveRootDirectLockOutputAmountSats(params: {
     outcomeCollectionKeysets,
   );
 
-  let outputAmountSats = params.amountSats;
+  let outputAmountSubunits = amountSubunits;
   for (const collection of outcomeLegs.lockCollections) {
     const keysetId = outcomeCollectionKeysets[collection];
     if (!keysetId) {
@@ -604,10 +618,10 @@ export async function resolveRootDirectLockOutputAmountSats(params: {
       );
     }
     const keyset = await transport.getKeys(keysetId);
-    outputAmountSats = Math.max(
-      outputAmountSats,
-      computeGrossCtfInputAmountSats({
-        faceAmountSats: params.amountSats,
+    outputAmountSubunits = Math.max(
+      outputAmountSubunits,
+      computeGrossCtfInputAmountSubunits({
+        faceAmountSubunits: amountSubunits,
         keyset: {
           id: keyset.id,
           keys: keyset.keys,
@@ -616,14 +630,14 @@ export async function resolveRootDirectLockOutputAmountSats(params: {
       }),
     );
   }
-  return outputAmountSats;
+  return outputAmountSubunits;
 }
 
 export async function splitRootCompleteSet(
   transport: CtfSplitTransport,
   conditionId: string,
   inputs: Proof[],
-  amountSats: number,
+  amountSubunits: number,
   options: CtfSplitOptions = {},
   selection?: CtfRootPartitionSelection,
 ): Promise<Record<string, Proof[]>> {
@@ -639,7 +653,7 @@ export async function splitRootCompleteSet(
     conditionId,
     inputs,
     splitKeysets,
-    amountSats,
+    amountSubunits,
     { ...options, baseAsset: selection?.baseAsset ?? options.baseAsset },
   );
 }
@@ -649,7 +663,7 @@ export async function splitCompleteSet(
   conditionId: string,
   inputs: Proof[],
   outcomeCollectionKeysets: Record<string, string>,
-  amountSats: number,
+  amountSubunits: number,
   options: CtfSplitOptions = {},
 ): Promise<Record<string, Proof[]>> {
   const normalizedInputs = inputs.map(normalizeProof);
@@ -660,7 +674,7 @@ export async function splitCompleteSet(
     conditionId,
     normalizedInputs,
     outcomeCollectionKeysets,
-    amountSats,
+    amountSubunits,
   );
 
   const makeOutputs = options.makeOutputs ?? defaultMakeOutputs;
@@ -675,7 +689,7 @@ export async function splitCompleteSet(
 
   await validateInputBalance(
     normalizedInputs,
-    amountSats,
+    amountSubunits,
     getCachedKeys,
     expectedBaseAsset,
   );
@@ -696,8 +710,13 @@ export async function splitCompleteSet(
       );
     }
     keysetsByCollection.set(collection, keyset);
-    const outputs = makeOutputs({ collection, amountSats, keyset });
-    validateOutputs(collection, keysetId, amountSats, outputs);
+    const outputs = makeOutputs({
+      collection,
+      amountSubunits,
+      amountSats: amountSubunits,
+      keyset,
+    });
+    validateOutputs(collection, keysetId, amountSubunits, outputs);
     outputsByCollection[collection] = outputs;
     requestOutputs[collection] = outputs.map((output) =>
       toWireBlindedMessage(output.blindedMessage),
@@ -837,11 +856,11 @@ export async function splitCompleteSetWithOperation(params: {
   conditionId: string;
   collateralProofs: Proof[];
   outcomeCollectionKeysets: Record<string, string>;
-  amountSats: number;
+  amountSubunits: number;
   proofOperationStore: CtfProofOperationStore;
   makeOutputs: (input: {
     collection: string;
-    amountSats: number;
+    amountSubunits: number;
     keyset: MintKeys;
   }) => CtfSplitOutputData[];
 }): Promise<Record<string, Proof[]>> {
@@ -862,7 +881,7 @@ export async function splitCompleteSetWithOperation(params: {
     params.conditionId,
     params.collateralProofs,
     params.outcomeCollectionKeysets,
-    params.amountSats,
+    params.amountSubunits,
     {
       baseAsset: params.baseAsset,
       makeOutputs: params.makeOutputs,
@@ -883,7 +902,7 @@ export async function splitCompleteSetWithOperation(params: {
           outputs: preparedOutputs,
           metadata: {
             conditionId: params.conditionId,
-            amountSats: params.amountSats,
+            amountSubunits: params.amountSubunits,
             baseAsset: requireMarketBaseAsset(params.baseAsset, "CTF split baseAsset"),
             outcomeCollectionKeysets: params.outcomeCollectionKeysets,
           },
@@ -906,16 +925,16 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
   transport: CtfSplitTransport;
   conditionId: string;
   conditionalProofsByCollection: Record<string, Proof[]>;
-  outputAmountSats: number;
+  outputAmountSubunits: number;
   regularKeyset: MintKeys;
   proofOperationStore: CtfProofOperationStore;
   makeRegularOutputs?: (input: {
-    amountSats: number;
+    amountSubunits: number;
     keyset: MintKeys;
   }) => CtfSplitOutputData[];
 }): Promise<MergeCompleteSetToRegularResult> {
-  if (!Number.isSafeInteger(params.outputAmountSats) || params.outputAmountSats <= 0) {
-    throw new Error("outputAmountSats must be a positive safe integer");
+  if (!Number.isSafeInteger(params.outputAmountSubunits) || params.outputAmountSubunits <= 0) {
+    throw new Error("outputAmountSubunits must be a positive safe integer");
   }
   if (!params.transport.postConvert) {
     throw new Error("CTF transport does not support conditional merge convert");
@@ -941,17 +960,17 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     return {
       regularProofs,
       spentConditionalProofsByCollection,
-      outputAmountSats: sumProofs(regularProofs),
+      outputAmountSubunits: sumProofs(regularProofs),
     };
   }
 
   const outputData =
     params.makeRegularOutputs?.({
-      amountSats: params.outputAmountSats,
+      amountSubunits: params.outputAmountSubunits,
       keyset: params.regularKeyset,
     }) ??
     RegularOutputData.createRandomData(
-      Amount.from(params.outputAmountSats),
+      Amount.from(params.outputAmountSubunits),
       params.regularKeyset,
     );
   await params.proofOperationStore.prepareProofOperation({
@@ -962,7 +981,7 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     outputs: { "*": serializeOutputDataArray(outputData) },
     metadata: {
       conditionId: params.conditionId,
-      outputAmountSats: params.outputAmountSats,
+      outputAmountSubunits: params.outputAmountSubunits,
       baseAsset: requireMarketBaseAsset(params.baseAsset, "CTF merge baseAsset"),
       inputsByCollection: normalizedInputsByCollection,
     },
@@ -982,7 +1001,7 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
   return {
     regularProofs,
     spentConditionalProofsByCollection: normalizedInputsByCollection,
-    outputAmountSats: sumProofs(regularProofs),
+    outputAmountSubunits: sumProofs(regularProofs),
   };
 }
 
@@ -1031,13 +1050,13 @@ export function selectCompleteSetMergeInputs(params: {
       flattenProofs(selected),
       params.inputFeePpkByKeyset,
     );
-    const outputAmountSats = grossInputSats - convertFeeSats;
-    if (outputAmountSats >= params.desiredOutputSats) {
+    const outputAmountSubunits = grossInputSats - convertFeeSats;
+    if (outputAmountSubunits >= params.desiredOutputSats) {
       return {
         selectedProofsByCollection: selected,
         grossInputSats,
         convertFeeSats,
-        outputAmountSats,
+        outputAmountSubunits,
       };
     }
   }
@@ -1206,13 +1225,13 @@ async function resumeCtfSplit(
   if (allStates(states, CheckStateEnum.UNSPENT)) {
     const metadata = entry.metadata as {
       conditionId?: string;
-      amountSats?: number;
+      amountSubunits?: number;
       baseAsset?: string | null;
       outcomeCollectionKeysets?: Record<string, string>;
     };
     if (
       !metadata.conditionId ||
-      !metadata.amountSats ||
+      !metadata.amountSubunits ||
       !metadata.outcomeCollectionKeysets
     ) {
       throw new Error(
@@ -1225,7 +1244,7 @@ async function resumeCtfSplit(
       metadata.conditionId,
       entry.inputs,
       metadata.outcomeCollectionKeysets,
-      metadata.amountSats,
+      metadata.amountSubunits,
       {
         makeOutputs: ({ collection }) =>
           outputDataByCollection[collection] ?? [],
@@ -1666,15 +1685,15 @@ function validateSplitInput(
   conditionId: string,
   inputs: Proof[],
   outcomeCollectionKeysets: Record<string, string>,
-  amountSats: number,
+  amountSubunits: number,
 ): void {
   if (!/^[0-9a-fA-F]{64}$/.test(conditionId)) {
     throw new Error(
       "conditionId must be a 64-character hex string for CTF split",
     );
   }
-  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
-    throw new Error("amountSats must be a positive safe integer");
+  if (!Number.isSafeInteger(amountSubunits) || amountSubunits <= 0) {
+    throw new Error("amountSubunits must be a positive safe integer");
   }
   if (inputs.length === 0)
     throw new Error("CTF split requires collateral proofs");
@@ -1697,7 +1716,7 @@ function validateSplitInput(
 
 async function validateInputBalance(
   inputs: Proof[],
-  amountSats: number,
+  amountSubunits: number,
   getKeys: (keysetId: string) => Promise<MintKeys>,
   expectedBaseAsset: MarketBaseAsset | null = null,
 ): Promise<void> {
@@ -1718,15 +1737,15 @@ async function validateInputBalance(
     inputs,
     inputFeePpkByKeyset,
   );
-  const inputAmountSats = inputs.reduce(
+  const inputAmountSubunits = inputs.reduce(
     (acc, proof) => acc + amountToNumber(proof.amount),
     0,
   );
-  const netInputSats = inputAmountSats - inputFeeSats;
+  const netInputSats = inputAmountSubunits - inputFeeSats;
 
-  if (netInputSats !== amountSats) {
+  if (netInputSats !== amountSubunits) {
     throw new Error(
-      `CTF split inputs net ${netInputSats} sats after ${inputFeeSats} sats input fee, expected ${amountSats}`,
+      `CTF split inputs net ${netInputSats} sats after ${inputFeeSats} sats input fee, expected ${amountSubunits}`,
     );
   }
 }
@@ -1752,10 +1771,10 @@ async function resolveInputFeePpkByProofKeyset(
 
 function ctfInputFeeForGrossAmount(
   keyset: CtfGrossInputPlanningKeyset,
-  grossAmountSats: number,
+  grossAmountSubunits: number,
 ): number {
   const outputProofCount = splitAmount(
-    Amount.from(grossAmountSats),
+    Amount.from(grossAmountSubunits),
     keyset.keys,
   ).length;
   return Math.ceil((outputProofCount * keyset.input_fee_ppk) / 1_000);
@@ -1764,7 +1783,7 @@ function ctfInputFeeForGrossAmount(
 function validateOutputs(
   collection: string,
   keysetId: string,
-  amountSats: number,
+  amountSubunits: number,
   outputs: CtfSplitOutputData[],
 ): void {
   if (outputs.length === 0) {
@@ -1776,9 +1795,9 @@ function validateOutputs(
     (acc, output) => acc + amountToNumber(output.blindedMessage.amount),
     0,
   );
-  if (total !== amountSats) {
+  if (total !== amountSubunits) {
     throw new Error(
-      `CTF split outputs for outcome collection ${collection} total ${total}, expected ${amountSats}`,
+      `CTF split outputs for outcome collection ${collection} total ${total}, expected ${amountSubunits}`,
     );
   }
   const mismatched = outputs.find(
@@ -1936,11 +1955,11 @@ function readUnselectedProofs(entry: CtfProofOperationRecord): Proof[] {
 }
 
 function defaultMakeOutputs(input: {
-  amountSats: number;
+  amountSubunits: number;
   keyset: MintKeys;
 }): CtfSplitOutputData[] {
   return RegularOutputData.createRandomData(
-    Amount.from(input.amountSats),
+    Amount.from(input.amountSubunits),
     input.keyset,
   );
 }

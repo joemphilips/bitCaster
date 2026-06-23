@@ -81,12 +81,13 @@ export type PrepareSwapInputsForTradeParams =
 
 export interface PrepareSellerSwapInputsParams {
   lockOutcomeSetId: string;
-  amountSats: number;
+  amountSubunits?: number;
+  amountSats?: number;
   outcomeProofsByCollection: Record<string, Proof[]>;
   regularProofs: Proof[];
   regularInputFeePpkByKeyset?: Record<string, number>;
   splitRegularToOutcome?: (input: {
-    amountSats: number;
+    amountSubunits: number;
     lockOutcomeSetId: string;
     regularProofs: Proof[];
   }) => Promise<{
@@ -97,7 +98,8 @@ export interface PrepareSellerSwapInputsParams {
 }
 
 export interface PrepareBuyerSwapInputsParams {
-  quotePaymentSats: number;
+  quotePaymentSubunits?: number;
+  quotePaymentSats?: number;
   regularProofs: Proof[];
   completeSetProofsByCollection: Record<string, Proof[]>;
   conditionalInputFeePpkByKeyset:
@@ -110,7 +112,7 @@ export interface PrepareBuyerSwapInputsParams {
   maxMergeScanExtraSats?: number;
   mergeCompleteSetToRegular?: (input: {
     selection: CompleteSetMergeInputSelection;
-    outputAmountSats: number;
+    outputAmountSubunits: number;
   }) => Promise<{
     regularProofs: Proof[];
     spentOutcomeProofsByCollection: Record<string, Proof[]>;
@@ -120,11 +122,12 @@ export interface PrepareBuyerSwapInputsParams {
 export async function prepareSellerSwapInputs(
   params: PrepareSellerSwapInputsParams,
 ): Promise<PreparedSellerSwapInputs> {
-  assertPositiveSafeInteger(params.amountSats, "amountSats");
+  const amountSubunits = params.amountSubunits ?? params.amountSats;
+  assertPositiveSafeInteger(amountSubunits, "amountSubunits");
 
   const existingOutcome = takeProofsForLock(
     params.outcomeProofsByCollection[params.lockOutcomeSetId] ?? [],
-    params.amountSats,
+    amountSubunits,
   );
   if (existingOutcome) {
     return {
@@ -143,13 +146,13 @@ export async function prepareSellerSwapInputs(
   }
 
   const split = await params.splitRegularToOutcome({
-    amountSats: params.amountSats,
+    amountSubunits,
     lockOutcomeSetId: params.lockOutcomeSetId,
     regularProofs: params.regularProofs,
   });
   const splitOutcome = takeProofsForLock(
     split.proofsByCollection[params.lockOutcomeSetId] ?? [],
-    params.amountSats,
+    amountSubunits,
   );
   if (!splitOutcome) {
     return { status: "unavailable", reason: "missing-outcome-proofs" };
@@ -196,7 +199,8 @@ export async function prepareSwapInputsForTrade(
 export async function prepareBuyerSwapInputs(
   params: PrepareBuyerSwapInputsParams,
 ): Promise<PreparedBuyerSwapInputs> {
-  assertPositiveSafeInteger(params.quotePaymentSats, "quotePaymentSats");
+  const quotePaymentSubunits = params.quotePaymentSubunits ?? params.quotePaymentSats;
+  assertPositiveSafeInteger(quotePaymentSubunits, "quotePaymentSubunits");
   const regularInputFeePpkForAvailable = await resolveInputFeePpkByKeyset(
     params.regularInputFeePpkByKeyset,
     params.regularProofs,
@@ -204,7 +208,7 @@ export async function prepareBuyerSwapInputs(
 
   const existingRegular = takeProofsForLock(
     params.regularProofs,
-    params.quotePaymentSats,
+    quotePaymentSubunits,
     regularInputFeePpkForAvailable,
   );
   if (existingRegular) {
@@ -223,7 +227,7 @@ export async function prepareBuyerSwapInputs(
   }
 
   const desiredRegularOutputSats =
-    params.quotePaymentSats + (params.buyerLockFeeReserveSats ?? 0);
+    quotePaymentSubunits + (params.buyerLockFeeReserveSats ?? 0);
   const conditionalInputFeePpkByKeyset =
     typeof params.conditionalInputFeePpkByKeyset === "function"
       ? await params.conditionalInputFeePpkByKeyset()
@@ -240,7 +244,7 @@ export async function prepareBuyerSwapInputs(
 
   const merged = await params.mergeCompleteSetToRegular({
     selection,
-    outputAmountSats: selection.outputAmountSats,
+    outputAmountSubunits: selection.outputAmountSubunits,
   });
   const regularInputFeePpkForMerged = await resolveInputFeePpkByKeyset(
     params.regularInputFeePpkByKeyset,
@@ -248,7 +252,7 @@ export async function prepareBuyerSwapInputs(
   );
   const selectedRegular = takeProofsForLock(
     merged.regularProofs,
-    params.quotePaymentSats,
+    quotePaymentSubunits,
     regularInputFeePpkForMerged,
   );
   if (!selectedRegular) {

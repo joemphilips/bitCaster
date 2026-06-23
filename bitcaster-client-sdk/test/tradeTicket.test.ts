@@ -32,7 +32,7 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
   const ticket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'yes' },
-    amountSats: 1_000_000,
+    amountSubunits: 1_000_000,
     side: 'buy',
     orderType: 'limit',
     limitPrice: 500,
@@ -45,7 +45,7 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
     tokenSide: 'Outcome',
     side: 'Buy',
     price: 500,
-    amountSats: 1_000_000,
+    amountSubunits: 1_000_000,
     timeInForce: 'GTC',
   })
 })
@@ -54,7 +54,7 @@ test('buildTradeTicket builds categorical NO tickets on primitive route with com
   const ticket = buildTradeTicket({
     market: categoricalMarket,
     selection: { side: 'no', outcomeId: 'alice' },
-    amountSats: 1_000_000,
+    amountSubunits: 1_000_000,
     side: 'buy',
     orderType: 'limit',
     limitPrice: 4_500,
@@ -76,7 +76,7 @@ test('buildTradeTicket builds two-outcome categorical NO tickets against a primi
       ],
     },
     selection: { side: 'no', outcomeId: 'alice' },
-    amountSats: 1_000_000,
+    amountSubunits: 1_000_000,
     side: 'buy',
     orderType: 'limit',
     limitPrice: 4_500,
@@ -92,7 +92,7 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
   const directTicket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'no' },
-    amountSats: 1_000_000,
+    amountSubunits: 1_000_000,
     side: 'buy',
     orderType: 'market',
     limitPrice: 500,
@@ -108,7 +108,7 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
   const complementaryTicket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'no' },
-    amountSats: 1_000_000,
+    amountSubunits: 1_000_000,
     side: 'buy',
     orderType: 'market',
     limitPrice: 500,
@@ -126,7 +126,7 @@ test('buildTradeTicket applies market divisibility to price and amount validatio
   const ticket = buildTradeTicket({
     market: { ...yesNoMarket, divisibility: 1_000 },
     selection: { side: 'yes' },
-    amountSats: 2_000,
+    amountSubunits: 2_000,
     side: 'buy',
     orderType: 'market',
     limitPrice: 50,
@@ -139,7 +139,7 @@ test('buildTradeTicket applies market divisibility to price and amount validatio
       buildTradeTicket({
         market: { ...yesNoMarket, divisibility: 1_000 },
         selection: { side: 'yes' },
-        amountSats: 1_501,
+        amountSubunits: 1_501,
         side: 'buy',
         orderType: 'limit',
         limitPrice: 50,
@@ -153,20 +153,20 @@ test('buildTradeTicket validates amount by market divisibility share face', () =
   const ticket = buildTradeTicket({
     market: { ...yesNoMarket, baseAsset: 'usd', divisibility: 1_000 },
     selection: { side: 'yes' },
-    amountSats: 1_000,
+    amountSubunits: 1_000,
     side: 'buy',
     orderType: 'limit',
     limitPrice: 500,
     orderBook: liquidBook,
   })
-  assert.equal(ticket.request.amountSats, 1_000)
+  assert.equal(ticket.request.amountSubunits, 1_000)
 
   assert.throws(
     () =>
       buildTradeTicket({
         market: { ...yesNoMarket, baseAsset: 'usd', divisibility: 1_000 },
         selection: { side: 'yes' },
-        amountSats: 1_001,
+        amountSubunits: 1_001,
         side: 'buy',
         orderType: 'limit',
         limitPrice: 500,
@@ -182,7 +182,7 @@ test('buildTradeTicket rejects market orders with no liquidity instead of price 
       buildTradeTicket({
         market: yesNoMarket,
         selection: { side: 'yes' },
-        amountSats: 1_000_000,
+        amountSubunits: 1_000_000,
         side: 'buy',
         orderType: 'market',
         limitPrice: 500,
@@ -198,7 +198,7 @@ test('buildTradeTicket builds direct sell orders after same-outcome CTF swaps ar
   const ticket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'yes' },
-    amountSats: 1_000_000,
+    amountSubunits: 1_000_000,
     side: 'sell',
     orderType: 'limit',
     limitPrice: 500,
@@ -211,7 +211,7 @@ test('buildTradeTicket builds direct sell orders after same-outcome CTF swaps ar
     tokenSide: 'Outcome',
     side: 'Sell',
     price: 500,
-    amountSats: 1_000_000,
+    amountSubunits: 1_000_000,
     timeInForce: 'GTC',
   })
 })

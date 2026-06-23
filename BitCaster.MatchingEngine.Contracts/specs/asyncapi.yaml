@@ -353,7 +353,7 @@ components:
         - outcomeId
         - side
         - price
-        - remainingAmountSats
+        - remainingAmountSubunits
       properties:
         marketId:
           type: string
@@ -366,7 +366,7 @@ components:
           $ref: '#/components/schemas/OrderSide'
         price:
           $ref: '#/components/schemas/Probability'
-        remainingAmountSats:
+        remainingAmountSubunits:
           $ref: '#/components/schemas/Sats'
 
     OrderCancelledDelta:
@@ -394,7 +394,7 @@ components:
         - makerOrderId
         - takerOrderId
         - executionPrice
-        - amountSats
+        - amountSubunits
         - path
         - matchedAt
       properties:
@@ -411,7 +411,7 @@ components:
           format: uuid
         executionPrice:
           $ref: '#/components/schemas/Probability'
-        amountSats:
+        amountSubunits:
           $ref: '#/components/schemas/Sats'
         path:
           $ref: '#/components/schemas/MatchPath'
@@ -497,8 +497,7 @@ components:
         authoritative canonical settlement amount is
         `quotePaymentSubunits + baseAsset + divisibility`; consumers should
         prefer `quotePaymentSubunits` and `outcomeFaceAmountSubunits` when
-        present. `quotePaymentSats` is legacy compatibility only for
-        unambiguous `sat / 100` rows.
+        present.
       minItems: 7
       maxItems: 17
       prefixItems:
@@ -519,17 +518,17 @@ components:
           description: marketId
         - type: integer
           format: int64
-          description: fillAmountSats
+          description: fillAmountSubunits
         - type:
             - integer
             - 'null'
           format: int64
-          description: outcomeFaceAmountSats
+          description: outcomeFaceAmountSubunits
         - type:
             - integer
             - 'null'
           format: int64
-          description: quotePaymentSats
+          description: quotePaymentSubunits
         - type:
             - string
             - 'null'

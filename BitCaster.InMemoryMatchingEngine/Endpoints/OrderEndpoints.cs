@@ -23,8 +23,8 @@ public static class OrderEndpoints
         {
             if (marketId.Contains('|', StringComparison.Ordinal))
                 return Results.BadRequest("Invalid market ID format. Expected: {conditionId}-{outcomeName}");
-            if (req.AmountSats <= 0)
-                return Results.BadRequest("AmountSats must be positive.");
+            if (req.AmountSubunits <= 0)
+                return Results.BadRequest("AmountSubunits must be positive.");
 
             if (!IsValidCompressedPubkey(req.EphemeralPubkey))
                 return Results.BadRequest("EphemeralPubkey must be a 66-char hex string (33-byte compressed secp256k1 pubkey).");
@@ -60,7 +60,7 @@ public static class OrderEndpoints
                     resolvedRoute.InternalOutcomeSetId,
                     req.Side,
                     req.Price,
-                    req.AmountSats,
+                    req.AmountSubunits,
                     userId: takerUserId,
                     timeInForce: req.TimeInForce,
                     ephemeralPubkey: req.EphemeralPubkey);
@@ -100,7 +100,7 @@ public static class OrderEndpoints
                 ephemeralPubkey: req.EphemeralPubkey,
                 fills: result.Fills,
                 orderId: result.OrderId,
-                remainingAmountSats: result.RemainingAmountSats,
+                remainingAmountSubunits: result.RemainingAmountSubunits,
                 status: result.Status));
         });
 
@@ -145,23 +145,23 @@ public static class OrderEndpoints
                         "Duplicate EphemeralPubkey in batch."));
                     continue;
                 }
-                if (item.AmountSats <= 0 || !IsValidCompressedPubkey(item.EphemeralPubkey))
+                if (item.AmountSubunits <= 0 || !IsValidCompressedPubkey(item.EphemeralPubkey))
                 {
                     results.Add(BatchSubmitFailure(
                         index,
                         item,
                         unit,
-                        item.AmountSats <= 0
+                        item.AmountSubunits <= 0
                             ? BatchSubmitOrderErrorCode.InvalidAmount
                             : BatchSubmitOrderErrorCode.InvalidEphemeralPubkey,
-                        item.AmountSats <= 0
-                            ? "AmountSats must be positive."
+                        item.AmountSubunits <= 0
+                            ? "AmountSubunits must be positive."
                             : "EphemeralPubkey must be a 66-char hex string (33-byte compressed secp256k1 pubkey)."));
                     continue;
                 }
 
                 var single = new SubmitOrderRequest(
-                    amountSats: item.AmountSats,
+                    amountSubunits: item.AmountSubunits,
                     comment: null,
                     ephemeralPubkey: item.EphemeralPubkey,
                     outcomeId: item.OutcomeId,
@@ -189,7 +189,7 @@ public static class OrderEndpoints
                         resolvedRoute.InternalOutcomeSetId,
                         item.Side,
                         item.Price,
-                        item.AmountSats,
+                        item.AmountSubunits,
                         userId: takerUserId,
                         timeInForce: item.TimeInForce ?? TimeInForce.GTC,
                         ephemeralPubkey: item.EphemeralPubkey);
@@ -236,7 +236,7 @@ public static class OrderEndpoints
                     fills: result.Fills,
                     marketId: item.MarketId,
                     orderId: result.OrderId,
-                    remainingAmountSats: result.RemainingAmountSats,
+                    remainingAmountSubunits: result.RemainingAmountSubunits,
                     requestIndex: index,
                     status: result.Status,
                     success: true));
@@ -308,11 +308,11 @@ public static class OrderEndpoints
             return Results.Ok(new OrderStatusResponse(
                 baseAsset: unit.BaseAsset,
                 divisibility: unit.Divisibility,
-                filledAmountSats: status.FilledAmountSats,
+                filledAmountSubunits: status.FilledAmountSubunits,
                 fills: status.Fills,
                 marketId: marketId,
                 orderId: status.OrderId,
-                remainingAmountSats: status.RemainingAmountSats,
+                remainingAmountSubunits: status.RemainingAmountSubunits,
                 status: status.Status,
                 tokenSide: PublicTokenSideForInternalMarket(marketId, status.MarketId)));
         });
@@ -353,7 +353,7 @@ public static class OrderEndpoints
             fills: [],
             marketId: item.MarketId,
             orderId: null,
-            remainingAmountSats: 0,
+            remainingAmountSubunits: 0,
             requestIndex: requestIndex,
             status: "rejected",
             success: false);
@@ -464,48 +464,42 @@ public static class OrderEndpoints
                 continue;
 
             var settlementMarketId = ReadString(fill, "settlementMarketId") ?? marketId;
-            var outcomeFaceAmountSats = ReadLong(fill, "outcomeFaceAmountSats");
-            var quotePaymentSats = ReadLong(fill, "quotePaymentSats");
+            var outcomeFaceAmountSubunits = ReadLong(fill, "outcomeFaceAmountSubunits");
+            var quotePaymentSubunits = ReadLong(fill, "quotePaymentSubunits");
             var settlementKind = ReadString(fill, "settlementKind");
             var sellerKeepOutcomeSetId = ReadString(fill, "sellerKeepOutcomeSetId");
             var sellerLockOutcomeSetId = ReadString(fill, "sellerLockOutcomeSetId");
             var baseAsset = ReadString(fill, "baseAsset");
             var divisibility = ReadInt(fill, "divisibility");
-            var quotePaymentSubunits = ReadLong(fill, "quotePaymentSubunits");
-            var outcomeFaceAmountSubunits = ReadLong(fill, "outcomeFaceAmountSubunits");
             var record = trades.Register(
                 tradeId.Value,
                 sellerPubkey,
                 buyerPubkey,
                 settlementMarketId,
-                fill.AmountSats,
-                outcomeFaceAmountSats,
-                quotePaymentSats,
+                fill.AmountSubunits,
+                outcomeFaceAmountSubunits,
+                quotePaymentSubunits,
                 settlementKind,
                 sellerKeepOutcomeSetId,
                 sellerLockOutcomeSetId,
                 baseAsset,
                 divisibility,
-                quotePaymentSubunits,
-                outcomeFaceAmountSubunits,
                 fill.TokenSide is null ? null : TokenSideWireValue(fill.TokenSide.Value));
             await tradeHub.Clients.Group(TradeHub.GroupName(tradeId.Value))
                 .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
-                    record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
-                    record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
+                    record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSubunits,
+                    record.OutcomeFaceAmountSubunits, record.QuotePaymentSubunits, record.SettlementKind,
                     record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId,
-                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits,
-                    record.OutcomeFaceAmountSubunits, record.TokenSide);
+                    record.BaseAsset, record.Divisibility, record.TokenSide);
             await tradeHub.Clients.Groups([
                     TradeHub.OrderGroupName(fill.MakerOrderId),
                     TradeHub.OrderGroupName(fill.TakerOrderId)
                 ])
                 .TradeCreated(tradeId.Value, record.SellerPubkey, record.BuyerPubkey,
-                    record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSats,
-                    record.OutcomeFaceAmountSats, record.QuotePaymentSats, record.SettlementKind,
+                    record.SellerLocktime, record.BuyerLocktime, record.MarketId, record.FillAmountSubunits,
+                    record.OutcomeFaceAmountSubunits, record.QuotePaymentSubunits, record.SettlementKind,
                     record.SellerKeepOutcomeSetId, record.SellerLockOutcomeSetId,
-                    record.BaseAsset, record.Divisibility, record.QuotePaymentSubunits,
-                    record.OutcomeFaceAmountSubunits, record.TokenSide);
+                    record.BaseAsset, record.Divisibility, record.TokenSide);
         }
     }
 

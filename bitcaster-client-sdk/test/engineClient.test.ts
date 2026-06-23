@@ -171,7 +171,7 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
       assert.equal(url, 'https://engine.example/api/v1/participation-score/ecash')
       assert.equal(method, 'POST')
       assert.equal(bodyText, JSON.stringify({
-        amountSats: 2,
+        amountSubunits: 2,
         proofsToken: 'cashuB-token',
         paymentId: 'client-payment-id',
       }))
@@ -188,7 +188,7 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
         JSON.stringify({
           paymentId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
           status: 'credited',
-          amountSats: 2,
+          amountSubunits: 2,
           creditedScore: 2,
           creditedAt: '2026-06-09T00:00:00Z',
         }),
@@ -212,7 +212,7 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
       url: 'https://engine.example/api/v1/participation-score/ecash',
       method: 'POST',
       body: JSON.stringify({
-        amountSats: 2,
+        amountSubunits: 2,
         proofsToken: 'cashuB-token',
         paymentId: 'client-payment-id',
       }),
@@ -279,7 +279,7 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
         tokenSide: 'Outcome',
         side: 'Buy',
         price: 42,
-        amountSats: 100,
+        amountSubunits: 100,
         timeInForce: 'GTC',
         ephemeralPubkey: `02${'22'.repeat(32)}`,
       }),

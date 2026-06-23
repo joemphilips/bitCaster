@@ -48,8 +48,8 @@ public sealed class InMemoryPriceHistoryStore
                 price: fill.ExecutionPrice,
                 source: MarketPriceHistoryPointSource.Fill,
                 timestamp: fill.FilledAt,
-                volumeSats: fill.AmountSats,
-                volumeSubunits: fill.AmountSats));
+                volumeSats: fill.AmountSubunits,
+                volumeSubunits: fill.AmountSubunits));
             if (points.Count > 1000)
             {
                 points.RemoveRange(0, points.Count - 1000);

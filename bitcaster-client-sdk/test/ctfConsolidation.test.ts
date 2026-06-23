@@ -215,8 +215,8 @@ function params(
       "B|C": "ks-B|C",
       [COLLATERAL_COLLECTION]: "ks-base",
     },
-    makeOutputs: ({ collection, amountSats, keysetId }) => [
-      output(keysetId, amountSats, collection),
+    makeOutputs: ({ collection, amountSubunits, keysetId }) => [
+      output(keysetId, amountSubunits, collection),
     ],
   };
 }

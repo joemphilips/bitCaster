@@ -37,6 +37,6 @@ export interface SdkSubmitOrderRequest {
   tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
-  amountSats: number
+  amountSubunits: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
 }
