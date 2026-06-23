@@ -96,6 +96,8 @@ test('formats market subunits without confusing cents for dollars', () => {
   assert.equal(formatAmount(1_234, 'sat'), '1,234 sats')
   assert.equal(formatMarketSubunits(50_000, 'sat'), '50,000 sats')
   assert.equal(formatMarketSubunits(-50_000, 'sat'), '-50,000 sats')
+  assert.equal(formatMarketSubunits(10_000, 'sat'), '10 sats')
+  assert.equal(formatMarketSubunits(1_500, 'usd'), '$15.00')
   assert.equal(formatMarketSubunits(50, 'usd'), '$0.50')
   assert.equal(formatMarketSubunits(-50, 'usd'), '-$0.50')
   assert.equal(formatMarketSubunits(100, 'usd'), '$1.00')
