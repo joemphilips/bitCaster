@@ -42,16 +42,15 @@ export interface TradeCreatedPayload {
   sellerLocktime: string // ISO-8601 from DateTimeOffset
   buyerLocktime: string
   marketId?: string
-  fillAmountSats?: number
-  outcomeFaceAmountSats?: number
-  quotePaymentSats?: number
+  fillAmountSubunits?: number
+  outcomeFaceAmountSubunits?: number | null
+  quotePaymentSubunits?: number | null
   settlementKind?: string | null
   sellerKeepOutcomeSetId?: string | null
   sellerLockOutcomeSetId?: string | null
   baseAsset?: string | null
   divisibility?: number | null
-  quotePaymentSubunits?: number | null
-  outcomeFaceAmountSubunits?: number | null
+  tokenSide?: string | null
 }
 
 export interface TradeHubCallbacks {
@@ -167,16 +166,15 @@ export function useTradeHub(
         sellerLocktime: string,
         buyerLocktime: string,
         marketId?: string,
-        fillAmountSats?: number,
-        outcomeFaceAmountSats?: number,
-        quotePaymentSats?: number,
+        fillAmountSubunits?: number,
+        outcomeFaceAmountSubunits?: number | null,
+        quotePaymentSubunits?: number | null,
         settlementKind?: string | null,
         sellerKeepOutcomeSetId?: string | null,
         sellerLockOutcomeSetId?: string | null,
         baseAsset?: string | null,
         divisibility?: number | null,
-        quotePaymentSubunits?: number | null,
-        outcomeFaceAmountSubunits?: number | null,
+        tokenSide?: string | null,
       ) => {
         callbacksRef.current.onTradeCreated?.({
           tradeId,
@@ -185,16 +183,15 @@ export function useTradeHub(
           sellerLocktime,
           buyerLocktime,
           marketId,
-          fillAmountSats,
-          outcomeFaceAmountSats,
-          quotePaymentSats,
+          fillAmountSubunits,
+          outcomeFaceAmountSubunits,
+          quotePaymentSubunits,
           settlementKind,
           sellerKeepOutcomeSetId,
           sellerLockOutcomeSetId,
           baseAsset,
           divisibility,
-          quotePaymentSubunits,
-          outcomeFaceAmountSubunits,
+          tokenSide,
         })
       },
     )

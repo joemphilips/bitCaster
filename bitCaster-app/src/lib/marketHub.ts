@@ -25,9 +25,51 @@ export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
 export type MarketStatusChanged = components['schemas']['MarketStatusChanged']
 export interface TradeExecuted {
   executionPrice: number
-  amountSats: number
+  amountSubunits: number
   side: string
   timestamp: string
+}
+
+export function parseTradeExecuted(
+  payload: unknown,
+): { marketId: string; trade: TradeExecuted } | null {
+  const raw = payload as Record<string, unknown>
+  const marketId =
+    typeof raw.marketId === 'string'
+      ? raw.marketId
+      : typeof raw.MarketId === 'string'
+        ? raw.MarketId
+        : null
+  const executionPrice =
+    typeof raw.executionPrice === 'number'
+      ? raw.executionPrice
+      : typeof raw.ExecutionPrice === 'number'
+        ? raw.ExecutionPrice
+        : null
+  const amountSubunits =
+    typeof raw.amountSubunits === 'number'
+      ? raw.amountSubunits
+      : typeof raw.AmountSubunits === 'number'
+        ? raw.AmountSubunits
+        : null
+  const side =
+    typeof raw.side === 'string'
+      ? raw.side
+      : typeof raw.Side === 'string'
+        ? raw.Side
+        : ''
+  const timestamp =
+    typeof raw.timestamp === 'string'
+      ? raw.timestamp
+      : typeof raw.Timestamp === 'string'
+        ? raw.Timestamp
+        : new Date().toISOString()
+
+  if (!marketId || executionPrice == null || amountSubunits == null) return null
+  return {
+    marketId,
+    trade: { executionPrice, amountSubunits, side, timestamp },
+  }
 }
 
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void
@@ -76,45 +118,14 @@ function buildConnection(): HubConnection {
   })
 
   conn.on('TradeExecuted', (payload: unknown) => {
-    const raw = payload as Record<string, unknown>
-    const marketId =
-      typeof raw.marketId === 'string'
-        ? raw.marketId
-        : typeof raw.MarketId === 'string'
-          ? raw.MarketId
-          : null
-    const executionPrice =
-      typeof raw.executionPrice === 'number'
-        ? raw.executionPrice
-        : typeof raw.ExecutionPrice === 'number'
-          ? raw.ExecutionPrice
-          : null
-    const amountSats =
-      typeof raw.amountSats === 'number'
-        ? raw.amountSats
-        : typeof raw.AmountSats === 'number'
-          ? raw.AmountSats
-          : null
-    const side =
-      typeof raw.side === 'string'
-        ? raw.side
-        : typeof raw.Side === 'string'
-          ? raw.Side
-          : ''
-    const timestamp =
-      typeof raw.timestamp === 'string'
-        ? raw.timestamp
-        : typeof raw.Timestamp === 'string'
-          ? raw.Timestamp
-          : new Date().toISOString()
+    const parsed = parseTradeExecuted(payload)
+    if (!parsed) return
 
-    if (!marketId || executionPrice == null || amountSats == null) return
-
-    const handlers = _tradeExecutedHandlers.get(marketId)
+    const handlers = _tradeExecutedHandlers.get(parsed.marketId)
     if (!handlers) return
     for (const handler of handlers) {
       try {
-        handler({ executionPrice, amountSats, side, timestamp })
+        handler(parsed.trade)
       } catch (err) {
         console.warn('[marketHub] TradeExecuted handler threw:', err)
       }

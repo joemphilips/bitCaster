@@ -521,7 +521,7 @@ describe("marketDetailDataReducer", () => {
       {
         timestamp: "2026-01-03T00:00:00Z",
         executionPrice: 200,
-        amountSats: 1_000_000,
+        amountSubunits: 1_000_000,
       },
     );
 

@@ -498,8 +498,8 @@ components:
         `quotePaymentSubunits + baseAsset + divisibility`; consumers should
         prefer `quotePaymentSubunits` and `outcomeFaceAmountSubunits` when
         present.
-      minItems: 7
-      maxItems: 17
+      minItems: 15
+      maxItems: 15
       prefixItems:
         - type: string
           format: uuid
@@ -554,16 +554,6 @@ components:
             use per-market D: sat markets use D=10000 (0.01% price precision,
             one whole share = 10000 msat = 10 sats); USD markets use D=1000
             (0.1% price precision, one whole share = 1000 cents = $10.00).
-        - type:
-            - integer
-            - 'null'
-          format: int64
-          description: quotePaymentSubunits
-        - type:
-            - integer
-            - 'null'
-          format: int64
-          description: outcomeFaceAmountSubunits
         - oneOf:
             - $ref: '#/components/schemas/TokenSide'
             - type: 'null'

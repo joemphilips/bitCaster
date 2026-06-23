@@ -191,8 +191,8 @@ beforeEach(() => {
     orderId: "order-pending",
     marketId: "cond-YES",
     status: "resting",
-    remainingAmountSats: 100,
-    filledAmountSats: 0,
+    remainingAmountSubunits: 100,
+    filledAmountSubunits: 0,
     fills: [],
   });
   mockUseTradeHub.mockReturnValue({
@@ -312,8 +312,8 @@ describe("useTradeSettlement", () => {
       orderId: "order-pending",
       marketId: "cond-YES",
       status: "matched",
-      remainingAmountSats: 0,
-      filledAmountSats: 100,
+      remainingAmountSubunits: 0,
+      filledAmountSubunits: 100,
       fills: [{ tradeId: "trade-status-retry" }],
     });
     mockJoinTrade
@@ -380,8 +380,8 @@ describe("useTradeSettlement", () => {
       orderId: "order-pending",
       marketId: "cond-YES",
       status: "resting",
-      remainingAmountSats: 100,
-      filledAmountSats: 0,
+      remainingAmountSubunits: 100,
+      filledAmountSubunits: 0,
       fills: [],
     });
     usePendingTradesStore.getState().add({
@@ -430,12 +430,10 @@ describe("useTradeSettlement", () => {
         settlementKind?: string;
         sellerKeepOutcomeSetId?: string;
         sellerLockOutcomeSetId?: string;
-        outcomeFaceAmountSats?: number;
-        quotePaymentSats?: number;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
         baseAsset?: string;
         divisibility?: number;
-        outcomeFaceAmountSats?: number;
-        quotePaymentSats?: number;
       }) => void;
     };
 
@@ -502,7 +500,7 @@ describe("useTradeSettlement", () => {
         sellerKeepOutcomeSetId?: string;
         sellerLockOutcomeSetId?: string;
         outcomeFaceAmountSubunits?: number;
-        quotePaymentSats?: number;
+        quotePaymentSubunits?: number;
         baseAsset?: string;
         divisibility?: number;
         quotePaymentSubunits?: number;

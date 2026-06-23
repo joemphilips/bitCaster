@@ -98,8 +98,8 @@ describe('buildOrderStatusNotifications', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
       status: 'matched',
-      remainingAmountSats: 100,
-      filledAmountSats: 100,
+      remainingAmountSubunits: 100,
+      filledAmountSubunits: 100,
     } as OrderStatusResponse
 
     const notifications = buildOrderStatusNotifications(
@@ -113,8 +113,8 @@ describe('buildOrderStatusNotifications', () => {
     expect(notifications[0]).toMatchObject({
       id: 'order-1-matched-1',
       kind: 'matched',
-      filledAmountSats: 100,
-      remainingAmountSats: 100,
+      filledAmountSubunits: 100,
+      remainingAmountSubunits: 100,
       occurredAt: 123,
     })
   })
@@ -122,7 +122,7 @@ describe('buildOrderStatusNotifications', () => {
   it('does not notify again for the same fill snapshot', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
-      filledAmountSats: 100,
+      filledAmountSubunits: 100,
     } as OrderStatusResponse
 
     const notifications = buildOrderStatusNotifications(
@@ -139,8 +139,8 @@ describe('buildOrderStatusNotifications', () => {
     const status = {
       ...orderStatusWithTradeFills(),
       status: 'cancelled',
-      remainingAmountSats: 100,
-      filledAmountSats: 0,
+      remainingAmountSubunits: 100,
+      filledAmountSubunits: 0,
     } as OrderStatusResponse
 
     const notifications = buildOrderStatusNotifications(
@@ -154,7 +154,7 @@ describe('buildOrderStatusNotifications', () => {
     expect(notifications[0]).toMatchObject({
       id: 'order-1-cancelled',
       kind: 'cancelled',
-      remainingAmountSats: 100,
+      remainingAmountSubunits: 100,
       occurredAt: 123,
     })
   })
@@ -163,8 +163,8 @@ describe('buildOrderStatusNotifications', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
       status: 'failed',
-      remainingAmountSats: 0,
-      filledAmountSats: 0,
+      remainingAmountSubunits: 0,
+      filledAmountSubunits: 0,
     } as OrderStatusResponse
 
     const notifications = buildOrderStatusNotifications(
@@ -178,8 +178,8 @@ describe('buildOrderStatusNotifications', () => {
     expect(notifications[0]).toMatchObject({
       id: 'order-1-failed',
       kind: 'failed',
-      filledAmountSats: 0,
-      remainingAmountSats: 0,
+      filledAmountSubunits: 0,
+      remainingAmountSubunits: 0,
       occurredAt: 123,
     })
   })
@@ -188,8 +188,8 @@ describe('buildOrderStatusNotifications', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
       status: 'filled',
-      filledAmountSats: 50,
-      remainingAmountSats: 0,
+      filledAmountSubunits: 50,
+      remainingAmountSubunits: 0,
     } as OrderStatusResponse
 
     const notifications = buildOrderStatusNotifications(
@@ -210,8 +210,8 @@ describe('buildOrderStatusNotifications', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
       status: 'filled',
-      filledAmountSats: 1000,
-      remainingAmountSats: 0,
+      filledAmountSubunits: 1000,
+      remainingAmountSubunits: 0,
     } as OrderStatusResponse
 
     const notifications = buildOrderStatusNotifications(
@@ -241,8 +241,8 @@ function orderStatusWithTradeFills(
     orderId: 'order-1',
     marketId: 'market-1',
     status: 'partially_filled',
-    remainingAmountSats: 100,
-    filledAmountSats: tradeIds.length * 10,
+    remainingAmountSubunits: 100,
+    filledAmountSubunits: tradeIds.length * 10,
     fills: tradeIds.map((tradeId) => ({ tradeId })),
   } as unknown as OrderStatusResponse
 }

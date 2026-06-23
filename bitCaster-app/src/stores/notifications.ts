@@ -47,10 +47,14 @@ export interface Notification {
    */
   orderId: string
   marketId: string
-  /** Absolute sats filled at the moment this notification was generated. */
-  filledAmountSats: number
-  /** Sats remaining on the order at the moment this notification was generated. */
-  remainingAmountSats: number
+  /** Absolute market subunits filled at the moment this notification was generated. */
+  filledAmountSubunits: number
+  /** Market subunits remaining on the order at the moment this notification was generated. */
+  remainingAmountSubunits: number
+  /** Legacy persisted field; new notifications use filledAmountSubunits. */
+  filledAmountSats?: number
+  /** Legacy persisted field; new notifications use remainingAmountSubunits. */
+  remainingAmountSats?: number
   /**
    * Base asset of the order (e.g. 'sat', 'usd'). Used by the notification
    * bell to format amounts correctly. Absent on old persisted notifications;

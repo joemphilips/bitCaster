@@ -10,8 +10,8 @@ describe('addOrderSubmitNotifications', () => {
       add,
       orderId: 'order-1',
       marketId: 'cond-YES',
-      requestedAmountSats: 100,
-      remainingAmountSats: 0,
+      requestedAmountSubunits: 100,
+      remainingAmountSubunits: 0,
       fillCount: 1,
       now: 123,
     })
@@ -22,8 +22,8 @@ describe('addOrderSubmitNotifications', () => {
     ])
     expect(add.mock.calls[1][0]).toMatchObject({
       id: 'order-1-filled',
-      filledAmountSats: 100,
-      remainingAmountSats: 0,
+      filledAmountSubunits: 100,
+      remainingAmountSubunits: 0,
     })
   })
 
@@ -34,8 +34,8 @@ describe('addOrderSubmitNotifications', () => {
       add,
       orderId: 'order-1',
       marketId: 'cond-YES',
-      requestedAmountSats: 200,
-      remainingAmountSats: 100,
+      requestedAmountSubunits: 200,
+      remainingAmountSubunits: 100,
       fillCount: 1,
       now: 123,
     })
@@ -46,8 +46,8 @@ describe('addOrderSubmitNotifications', () => {
     ])
     expect(add.mock.calls[1][0]).toMatchObject({
       id: 'order-1-partially_filled-1',
-      filledAmountSats: 100,
-      remainingAmountSats: 100,
+      filledAmountSubunits: 100,
+      remainingAmountSubunits: 100,
     })
   })
 
@@ -58,8 +58,8 @@ describe('addOrderSubmitNotifications', () => {
       add,
       orderId: 'order-1',
       marketId: 'cond-YES',
-      requestedAmountSats: 100,
-      remainingAmountSats: 0,
+      requestedAmountSubunits: 100,
+      remainingAmountSubunits: 0,
       fillCount: 1,
       status: 'matched',
       now: 123,
@@ -71,8 +71,8 @@ describe('addOrderSubmitNotifications', () => {
     ])
     expect(add.mock.calls[1][0]).toMatchObject({
       id: 'order-1-matched-1',
-      filledAmountSats: 100,
-      remainingAmountSats: 0,
+      filledAmountSubunits: 100,
+      remainingAmountSubunits: 0,
     })
   })
 
@@ -83,8 +83,8 @@ describe('addOrderSubmitNotifications', () => {
       add,
       orderId: 'order-1',
       marketId: 'cond-YES',
-      requestedAmountSats: 200,
-      remainingAmountSats: 200,
+      requestedAmountSubunits: 200,
+      remainingAmountSubunits: 200,
       fillCount: 0,
       now: 123,
     })

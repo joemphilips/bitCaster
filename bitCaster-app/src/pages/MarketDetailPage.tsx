@@ -517,7 +517,7 @@ function applyLatestHistoryOdds(
 export function liveTradeChartUpdate(
   market: MarketDetailType,
   outcomeSetId: string,
-  trade: { timestamp: string; executionPrice: number; amountSats: number },
+  trade: { timestamp: string; executionPrice: number; amountSubunits: number },
 ): { outcomeSetId: string; point: PricePoint } {
   const divisibility = normalizeMarketDivisibility(market.divisibility, market.baseAsset);
   const pricePercent = priceNumeratorToPercent(
@@ -536,7 +536,7 @@ export function liveTradeChartUpdate(
     point: {
       timestamp: trade.timestamp,
       price: chartPrice,
-      volume: trade.amountSats,
+      volume: trade.amountSubunits,
     },
   };
 }

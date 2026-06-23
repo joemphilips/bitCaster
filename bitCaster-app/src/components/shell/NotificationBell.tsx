@@ -177,21 +177,23 @@ function NotificationIcon({ kind }: { kind: Notification['kind'] }) {
 function formatNotification(n: Notification, t: (key: string, opts?: Record<string, unknown>) => string): string {
   const parts = splitMarketId(n.marketId)
   const marketLabel = parts ? parts.outcomeName : n.marketId
+  const filled = n.filledAmountSubunits ?? n.filledAmountSats ?? 0
+  const remaining = n.remainingAmountSubunits ?? n.remainingAmountSats ?? 0
   if (n.kind === 'accepted') {
     return t('notification.accepted', { market: marketLabel })
   }
   if (n.kind === 'filled') {
-    return t('notification.filled', { amount: formatAmount(n.filledAmountSats, n.unit), market: marketLabel })
+    return t('notification.filled', { amount: formatAmount(filled, n.unit), market: marketLabel })
   }
   if (n.kind === 'partially_filled') {
     return t('notification.partiallyFilled', {
-      amount: formatAmount(n.filledAmountSats, n.unit),
-      remaining: formatAmount(n.remainingAmountSats, n.unit),
+      amount: formatAmount(filled, n.unit),
+      remaining: formatAmount(remaining, n.unit),
       market: marketLabel,
     })
   }
   if (n.kind === 'matched') {
-    return t('notification.matched', { amount: formatAmount(n.filledAmountSats, n.unit), market: marketLabel })
+    return t('notification.matched', { amount: formatAmount(filled, n.unit), market: marketLabel })
   }
   if (n.kind === 'market_closed') {
     return t('notification.marketClosed', { market: n.finalOutcome ?? marketLabel })

@@ -120,4 +120,59 @@ describe('useTradeHub', () => {
       'order-1',
     )
   })
+
+  it('maps the canonical 15-argument TradeCreated payload including tokenSide', async () => {
+    const connection = makeConnection()
+    connections.push(connection)
+    const onTradeCreated = vi.fn()
+
+    renderHook(() => useTradeHub(true, { onTradeCreated }))
+
+    await waitFor(() => expect(connection.on).toHaveBeenCalledWith(
+      'TradeCreated',
+      expect.any(Function),
+    ))
+
+    const handler = connection.on.mock.calls.find(([event]) => event === 'TradeCreated')?.[1] as
+      | ((...args: unknown[]) => void)
+      | undefined
+    expect(handler).toBeTypeOf('function')
+    if (!handler) throw new Error('TradeCreated handler was not registered')
+
+    handler(
+      'trade-1',
+      'seller-pubkey',
+      'buyer-pubkey',
+      '2026-06-01T00:00:10Z',
+      '2026-06-01T00:00:00Z',
+      'cond-YES',
+      5_000,
+      5_000,
+      3_500,
+      'Mint',
+      'NO',
+      'YES',
+      'usd',
+      1_000,
+      'Complement',
+    )
+
+    expect(onTradeCreated).toHaveBeenCalledWith({
+      tradeId: 'trade-1',
+      sellerPubkey: 'seller-pubkey',
+      buyerPubkey: 'buyer-pubkey',
+      sellerLocktime: '2026-06-01T00:00:10Z',
+      buyerLocktime: '2026-06-01T00:00:00Z',
+      marketId: 'cond-YES',
+      fillAmountSubunits: 5_000,
+      outcomeFaceAmountSubunits: 5_000,
+      quotePaymentSubunits: 3_500,
+      settlementKind: 'Mint',
+      sellerKeepOutcomeSetId: 'NO',
+      sellerLockOutcomeSetId: 'YES',
+      baseAsset: 'usd',
+      divisibility: 1_000,
+      tokenSide: 'Complement',
+    })
+  })
 })

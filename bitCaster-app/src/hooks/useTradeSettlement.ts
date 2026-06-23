@@ -622,8 +622,6 @@ async function handleTradeCreatedOnce(
           }
         : null,
     requireExpectedOrder: true,
-    outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
-    quotePaymentSats: payload.quotePaymentSats,
     outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits,
     quotePaymentSubunits: payload.quotePaymentSubunits,
   });
@@ -658,9 +656,9 @@ async function handleTradeCreatedOnce(
       buyerLocktime: decision.buyerLocktime,
     },
     {
-      outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
+      outcomeFaceAmountSats: undefined,
       outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits ?? undefined,
-      quotePaymentSats: payload.quotePaymentSats,
+      quotePaymentSats: undefined,
       baseAsset: payload.baseAsset,
       divisibility: payload.divisibility,
       quotePaymentSubunits: payload.quotePaymentSubunits,
@@ -686,12 +684,11 @@ function tradeCreatedFingerprint(payload: TradeCreatedPayload): string {
     settlementKind: payload.settlementKind ?? null,
     sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId ?? null,
     sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId ?? null,
-    outcomeFaceAmountSats: payload.outcomeFaceAmountSats ?? null,
     outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits ?? null,
-    quotePaymentSats: payload.quotePaymentSats ?? null,
     quotePaymentSubunits: payload.quotePaymentSubunits ?? null,
     baseAsset: normalizeMarketBaseAsset(payload.baseAsset),
     divisibility: normalizeMarketDivisibility(payload.divisibility),
+    tokenSide: payload.tokenSide ?? null,
   });
 }
 

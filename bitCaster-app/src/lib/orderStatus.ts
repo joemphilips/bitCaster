@@ -146,7 +146,7 @@ export function buildOrderStatusNotifications(
     !isTerminal &&
     (current === 'matched' || current === 'partially_filled') &&
     hasNewFills &&
-    status.filledAmountSats > 0
+    status.filledAmountSubunits > 0
   ) {
     const kind = current === 'matched' ? 'matched' : 'partially_filled'
     return [
@@ -155,8 +155,8 @@ export function buildOrderStatusNotifications(
         kind,
         orderId: trade.orderId,
         marketId: trade.marketId,
-        filledAmountSats: status.filledAmountSats,
-        remainingAmountSats: status.remainingAmountSats,
+        filledAmountSubunits: status.filledAmountSubunits,
+        remainingAmountSubunits: status.remainingAmountSubunits,
         unit,
         occurredAt: now,
         read: false,
@@ -172,8 +172,8 @@ export function buildOrderStatusNotifications(
         kind,
         orderId: trade.orderId,
         marketId: trade.marketId,
-        filledAmountSats: status.filledAmountSats,
-        remainingAmountSats: status.remainingAmountSats,
+        filledAmountSubunits: status.filledAmountSubunits,
+        remainingAmountSubunits: status.remainingAmountSubunits,
         unit,
         occurredAt: now,
         read: false,
