@@ -188,7 +188,7 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
         JSON.stringify({
           paymentId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
           status: 'credited',
-          amountSubunits: 2,
+          amountSats: 2,
           creditedScore: 2,
           creditedAt: '2026-06-09T00:00:00Z',
         }),
@@ -212,7 +212,7 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
       url: 'https://engine.example/api/v1/participation-score/ecash',
       method: 'POST',
       body: JSON.stringify({
-        amountSubunits: 2,
+        amountSats: 2,
         proofsToken: 'cashuB-token',
         paymentId: 'client-payment-id',
       }),

@@ -543,7 +543,7 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
       side: "Sell",
       tokenSide: "Outcome",
       priceSubunits: 400,
@@ -579,9 +579,9 @@ describe("useTradeSettlement", () => {
         marketId: "cond-YES",
         settlementKind: "DirectSwap",
         outcomeFaceAmountSubunits: 1_000_000,
-        quotePaymentSubunits: 999_999,
+        quotePaymentSubunits: 30_000,
         baseAsset: "sat",
-        divisibility: 1_000,
+        divisibility: 10_000,
       });
     });
 
@@ -606,7 +606,7 @@ describe("useTradeSettlement", () => {
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
       baseAsset: "sat",
-      divisibility: 1_000,
+      divisibility: 10_000,
       submittedAt: Date.now(),
     });
 
@@ -637,10 +637,10 @@ describe("useTradeSettlement", () => {
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-YES",
         settlementKind: "DirectSwap",
-        outcomeFaceAmountSubunits: 1_000_000,
-        quotePaymentSubunits: 400_000,
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 5_000,
         baseAsset: "sat",
-        divisibility: 1_000,
+        divisibility: 10_000,
       });
     });
 
@@ -1591,16 +1591,18 @@ describe("useTradeSettlement", () => {
     expect(swap.step).toBe("completed");
     expect(swap.error).toBeNull();
   });
-  it("fails before locking proofs when TradeCreated legacy and canonical amounts disagree for sat/10000", async () => {
+  it("fails before locking proofs when TradeCreated outcome face is not a whole market share for sat/10000", async () => {
     usePendingTradesStore.getState().add({
       orderId: "order-ambiguous-sat100",
       marketId: "cond-YES",
       ephemeralPrivkey: "11".repeat(32),
       ephemeralPubkey: "02" + "22".repeat(32),
+      baseAsset: "sat",
+      divisibility: 10_000,
       side: "Buy",
       tokenSide: "Outcome",
       priceSubunits: 500,
-      amountSubunits: 1_000_000,
+      amountSubunits: 20_000,
       submittedAt: Date.now(),
     });
 
@@ -1631,10 +1633,10 @@ describe("useTradeSettlement", () => {
         buyerLocktime: "2026-05-07T12:00:00Z",
         marketId: "cond-YES",
         settlementKind: "DirectSwap",
-        outcomeFaceAmountSubunits: 1_000_000,
-        quotePaymentSubunits: 500_000,
+        outcomeFaceAmountSubunits: 15_000,
+        quotePaymentSubunits: 7_500,
         baseAsset: "sat",
-        divisibility: 1_000,
+        divisibility: 10_000,
       });
     });
 
