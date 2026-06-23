@@ -24,32 +24,38 @@ import {
 
 const [, , mode, mintUrl, rawAmount, conditionId, outcomeSetId] = process.argv
 const jsonOutput = process.argv.includes('--json')
+const msatsPerSat = 1_000
 if (!mode || !mintUrl || !rawAmount) {
   usage()
 }
 
-const amountSats = Number(rawAmount)
-if (!Number.isInteger(amountSats) || amountSats <= 0) {
+const amountMinorUnits = Number(rawAmount)
+if (!Number.isInteger(amountMinorUnits) || amountMinorUnits <= 0) {
   throw new Error(`amount must be a positive integer: ${rawAmount}`)
 }
 
 if (mode === 'sats') {
-  const sats = await mintRegularProofs(mintUrl, 'sat', amountSats)
+  const sats = await mintRegularProofs(mintUrl, 'sat', amountMinorUnits)
   printToken(mintUrl, 'sat', sats)
 } else if (mode === 'msats') {
-  const msats = await mintRegularProofs(mintUrl, 'msat', amountSats)
+  const msats = await mintRegularProofs(
+    mintUrl,
+    'msat',
+    collateralAmountForUnit('msat', amountMinorUnits),
+  )
   printToken(mintUrl, 'msat', msats)
 } else if (mode === 'outcome' || mode === 'outcome-msats') {
   if (!conditionId || !outcomeSetId) usage()
   const unit = mode === 'outcome-msats' ? 'msat' : 'sat'
-  const sats = await mintRegularProofsForCtfSplit(mintUrl, unit, amountSats)
+  const collateralAmount = collateralAmountForUnit(unit, amountMinorUnits)
+  const sats = await mintRegularProofsForCtfSplit(mintUrl, unit, collateralAmount)
   const condition = await getCtfCondition(mintUrl, conditionId)
   const selection = selectMintRootPartitionForOutcome(condition, outcomeSetId, unit)
   const split = await splitRootCompleteSet(
     new CashuMintCtfSplitTransport(mintUrl),
     conditionId,
     sats,
-    amountSats,
+    collateralAmount,
     {},
     selection,
   )
@@ -61,6 +67,15 @@ if (mode === 'sats') {
   printToken(mintUrl, unit, selected)
 } else {
   usage()
+}
+
+function collateralAmountForUnit(unit: 'sat' | 'msat', amountMinorUnits: number): number {
+  if (unit === 'sat') return amountMinorUnits
+  const amountMsats = amountMinorUnits * msatsPerSat
+  if (!Number.isSafeInteger(amountMsats)) {
+    throw new Error(`amount is too large to scale from sats to msat: ${amountMinorUnits}`)
+  }
+  return amountMsats
 }
 
 async function mintRegularProofs(
@@ -204,9 +219,9 @@ function printToken(mintUrl: string, unit: 'sat' | 'msat', proofs: Proof[]): voi
 function usage(): never {
   process.stderr.write(
     'Usage: mint-token.ts sats <mint-url> <amount-sats> [--json]\n' +
-      '       mint-token.ts msats <mint-url> <amount-msats> [--json]\n' +
+      '       mint-token.ts msats <mint-url> <amount-sats> [--json]\n' +
       '       mint-token.ts outcome <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n' +
-      '       mint-token.ts outcome-msats <mint-url> <amount-msats> <condition-id> <outcome-set-id> [--json]\n',
+      '       mint-token.ts outcome-msats <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n',
   )
   process.exit(1)
 }
