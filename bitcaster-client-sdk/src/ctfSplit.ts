@@ -238,10 +238,10 @@ export async function splitRegularProofsWithOperation(params: {
   amountSats?: number;
   proofOperationStore: CtfProofOperationStore;
 }): Promise<RegularProofSplitResult> {
-  const amountSubunits = params.amountSubunits ?? params.amountSats;
-  if (!Number.isSafeInteger(amountSubunits) || amountSubunits <= 0) {
-    throw new Error("amountSubunits must be a positive safe integer");
-  }
+  const amountSubunits = requirePositiveSafeInteger(
+    params.amountSubunits ?? params.amountSats,
+    "amountSubunits",
+  );
 
   const normalizedProofs = params.proofs.map(normalizeProof);
   const existing = await params.proofOperationStore.getProofOperation(
@@ -396,6 +396,16 @@ export function computeGrossCtfInputAmountSubunits(params: {
   );
 }
 
+export function computeGrossCtfInputAmountSats(params: {
+  faceAmountSats: number;
+  keyset: CtfGrossInputPlanningKeyset;
+}): number {
+  return computeGrossCtfInputAmountSubunits({
+    faceAmountSubunits: params.faceAmountSats,
+    keyset: params.keyset,
+  });
+}
+
 export async function splitRootCompleteSetForSwap(params: {
   mintUrl: string;
   baseAsset?: CtfCollateralBaseAsset;
@@ -409,7 +419,10 @@ export async function splitRootCompleteSetForSwap(params: {
   operationId: string;
   proofOperationStore: CtfProofOperationStore;
 }): Promise<MintSplitForSwapResult> {
-  const amountSubunits = params.amountSubunits ?? params.amountSats;
+  const amountSubunits = requirePositiveSafeInteger(
+    params.amountSubunits ?? params.amountSats,
+    "amountSubunits",
+  );
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
@@ -489,7 +502,10 @@ export async function splitRootCompleteSetForPreflightOrder(params: {
   operationId: string;
   proofOperationStore: CtfProofOperationStore;
 }): Promise<PreflightCompleteSetSplitResult> {
-  const amountSubunits = params.amountSubunits ?? params.amountSats;
+  const amountSubunits = requirePositiveSafeInteger(
+    params.amountSubunits ?? params.amountSats,
+    "amountSubunits",
+  );
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
@@ -548,7 +564,10 @@ export async function resolveRootPreflightOutputAmountSubunits(params: {
   lockOutcomeSetId: string;
   keepOutcomeSetId: string;
 }): Promise<number> {
-  const amountSubunits = params.amountSubunits ?? params.amountSats;
+  const amountSubunits = requirePositiveSafeInteger(
+    params.amountSubunits ?? params.amountSats,
+    "amountSubunits",
+  );
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
@@ -593,7 +612,10 @@ export async function resolveRootDirectLockOutputAmountSubunits(params: {
   lockOutcomeSetId: string;
   keepOutcomeSetId: string;
 }): Promise<number> {
-  const amountSubunits = params.amountSubunits ?? params.amountSats;
+  const amountSubunits = requirePositiveSafeInteger(
+    params.amountSubunits ?? params.amountSats,
+    "amountSubunits",
+  );
   const transport = new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
@@ -632,6 +654,8 @@ export async function resolveRootDirectLockOutputAmountSubunits(params: {
   }
   return outputAmountSubunits;
 }
+
+export const resolveRootDirectLockOutputAmountSats = resolveRootDirectLockOutputAmountSubunits;
 
 export async function splitRootCompleteSet(
   transport: CtfSplitTransport,
@@ -1653,6 +1677,13 @@ function requireMarketBaseAsset(
     throw new Error(`${context} must be one of: sat, usd, jpy`);
   }
   return parsed;
+}
+
+function requirePositiveSafeInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive safe integer`);
+  }
+  return value;
 }
 
 function validateKeysetUnit(

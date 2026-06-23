@@ -165,10 +165,10 @@ async function splitWalletCompleteSet(input: {
     conditionId: input.conditionId,
     collateralProofs: collateral.inputs,
     outcomeCollectionKeysets,
-    amountSats: input.amountSats,
+    amountSubunits: input.amountSats,
     proofOperationStore: ctfProofOperationStore,
-    makeOutputs: ({ amountSats, keyset }) =>
-      OutputData.createRandomData(Amount.from(amountSats), keyset),
+    makeOutputs: ({ amountSubunits, keyset }) =>
+      OutputData.createRandomData(Amount.from(amountSubunits), keyset),
   })
   await updateState((state, now) => {
     removeProofsBySecretFromState(state, input.mintUrl, [
@@ -559,6 +559,14 @@ export async function dispatch(
         tokenSide: 'Outcome' as const,
         ...command.params,
       }
+      const amountSubunits = orderParams.amountSubunits ?? orderParams.amountSats
+      const orderIntent = {
+        ...orderParams,
+        amountSubunits,
+        ...(orderParams.amountSubunits === undefined && orderParams.amountSats !== undefined
+          ? { divisibility: 100 }
+          : {}),
+      }
       let profile: Awaited<ReturnType<typeof readProfile>> | null = null
       let secrets: Awaited<ReturnType<typeof readSecrets>> | null = null
       let client: EngineClientLike | null = null
@@ -581,10 +589,10 @@ export async function dispatch(
         return { ok: true, profile, secrets, client }
       }
 
-      let requestValidation = validateOrderIntent(orderParams)
+      let requestValidation = validateOrderIntent(orderIntent)
       if (
         !requestValidation.valid &&
-        shouldRetryOrderValidationWithMarketUnit(orderParams, requestValidation.message)
+        shouldRetryOrderValidationWithMarketUnit(orderIntent, requestValidation.message)
       ) {
         const context = await ensureOrderContext()
         if (!context.ok) return context
@@ -593,12 +601,18 @@ export async function dispatch(
           conditionIdFromMarketId(orderParams.marketId),
         )
         requestValidation = validateOrderIntent({
-          ...orderParams,
+          ...orderIntent,
           divisibility: marketUnit.divisibility,
         })
       }
       if (!requestValidation.valid) {
         return { ok: false, error: requestValidation.message }
+      }
+      if (typeof amountSubunits !== 'number') {
+        return {
+          ok: false,
+          error: 'Order rejected: amountSubunits must be a positive integer in 100 sub-unit increments.',
+        }
       }
       const context = await ensureOrderContext()
       if (!context.ok) return context
@@ -618,7 +632,7 @@ export async function dispatch(
         side: orderParams.side,
         tokenSide: orderParams.tokenSide,
         price: orderParams.price,
-        amountSats: orderParams.amountSats,
+        amountSats: amountSubunits,
         timeInForce: orderParams.timeInForce,
         preflightSplit: orderParams.preflightSplit,
         ephemeralPubkey: ephemeral.publicKeyHex,
@@ -644,7 +658,7 @@ export async function dispatch(
           tokenSide: orderParams.tokenSide,
           side: orderParams.side,
           price: orderParams.price,
-          amountSats: orderParams.amountSats,
+          amountSubunits,
           timeInForce: orderParams.timeInForce,
           ephemeralPubkey: ephemeral.publicKeyHex,
         })
@@ -669,7 +683,7 @@ export async function dispatch(
         orderParams.tokenSide,
         orderParams.side,
         orderParams.price,
-        orderParams.amountSats,
+        amountSubunits,
       )
       await updateSecrets((current, now) => {
         current.orderEphemeralKeys[submitted.orderId] = {
@@ -938,10 +952,10 @@ async function consolidateMarket(input: {
     proofsByCollection,
     inputFeePpkByKeyset,
     outputKeysetByCollection,
-    makeOutputs: ({ collection, amountSats, keysetId }) => {
+    makeOutputs: ({ collection, amountSubunits, keysetId }) => {
       const keyset = outputKeysets[keysetId]
       if (!keyset) throw new Error(`missing mint keys for output keyset ${keysetId}`)
-      const outputs = OutputData.createRandomData(Amount.from(amountSats), keyset)
+      const outputs = OutputData.createRandomData(Amount.from(amountSubunits), keyset)
       outputsByCollection[collection] = [
         ...(outputsByCollection[collection] ?? []),
         ...outputs,
@@ -1091,27 +1105,31 @@ function shouldRetryOrderValidationWithMarketUnit(
   validationMessage: string,
 ): boolean {
   if (!validationMessage.includes('price must be an integer') &&
-      !validationMessage.includes('amountSats must be a positive integer')) {
+      !validationMessage.includes('amountSubunits must be a positive integer')) {
     return false
   }
   if (typeof request !== 'object' || request === null || Array.isArray(request)) {
     return false
   }
 
-  const intent = request as { price?: unknown; amountSats?: unknown }
+  const intent = request as { price?: unknown; amountSubunits?: unknown; amountSats?: unknown }
   const price = intent.price
-  const amountSats = intent.amountSats
-  if (typeof price !== 'number' || typeof amountSats !== 'number') {
+  const amountSubunits = intent.amountSubunits ?? intent.amountSats
+  if (typeof price !== 'number' || typeof amountSubunits !== 'number') {
     return false
   }
-  if (!Number.isInteger(price) || !Number.isInteger(amountSats)) {
+  if (!Number.isInteger(price) || !Number.isInteger(amountSubunits)) {
     return false
   }
-  if (price <= 0 || amountSats <= 0) {
+  if (price <= 0 || amountSubunits <= 0) {
     return false
+  }
+  if (intent.amountSubunits !== undefined && intent.amountSats === undefined &&
+      validationMessage.includes('amountSubunits must be a positive integer')) {
+    return true
   }
 
-  return price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSats >= DEFAULT_SAT_MARKET_DIVISIBILITY
+  return price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSubunits >= DEFAULT_SAT_MARKET_DIVISIBILITY
 }
 
 async function maybePreparePreflightSplitForOrder(input: {

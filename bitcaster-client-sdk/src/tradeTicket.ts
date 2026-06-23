@@ -98,7 +98,7 @@ export function buildTradeTicket(params: {
       'Choose an outcome before placing an order.',
     )
   }
-  if (!Number.isFinite(amountSubunits) || amountSubunits <= 0) {
+  if (typeof amountSubunits !== 'number' || !Number.isFinite(amountSubunits) || amountSubunits <= 0) {
     throw new TradeTicketError(
       'invalid-amount',
       'Enter an amount greater than zero.',

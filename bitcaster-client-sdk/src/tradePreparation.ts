@@ -272,8 +272,8 @@ export async function prepareBuyerSwapInputs(
   };
 }
 
-function assertPositiveSafeInteger(value: number, name: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
+function assertPositiveSafeInteger(value: unknown, name: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive safe integer`);
   }
 }
