@@ -419,6 +419,7 @@ export class DaemonSwapExecutor {
       const amount = requiredAmount(
         swap.outcomeFaceAmountSubunits ??
         swap.outcomeFaceAmountSats ??
+        swap.fillAmountSubunits ??
         swap.fillAmountSats,
       )
       const mint = resolveMintSellerSplit(swap)
@@ -1069,7 +1070,7 @@ export class DaemonSwapExecutor {
     }
 
     try {
-      const amount = requiredAmount(swap.quotePaymentSubunits ?? swap.quotePaymentSats ?? swap.fillAmountSats)
+      const amount = requiredAmount(swap.quotePaymentSubunits ?? swap.quotePaymentSats ?? swap.fillAmountSubunits ?? swap.fillAmountSats)
       const baseAsset = normalizeMarketBaseAsset(swap.baseAsset)
       const selected = await selectProofs(
         await readState(),

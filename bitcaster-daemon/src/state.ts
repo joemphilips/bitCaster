@@ -152,6 +152,7 @@ export interface LocalSwapRecord {
   sellerLocktime?: number
   buyerLocktime?: number
   fillAmountSats?: number
+  fillAmountSubunits?: number
   outcomeFaceAmountSats?: number
   outcomeFaceAmountSubunits?: number
   quotePaymentSats?: number
@@ -196,6 +197,7 @@ export interface DaemonTradeCreatedPayload {
   buyerLocktime: string
   marketId: string
   fillAmountSats?: number
+  fillAmountSubunits?: number
   outcomeFaceAmountSats?: number
   outcomeFaceAmountSubunits?: number
   quotePaymentSats?: number
@@ -746,6 +748,7 @@ function upsertOrderFromEngine(
         sellerLocktime: swap?.sellerLocktime,
         buyerLocktime: swap?.buyerLocktime,
         fillAmountSats: swap?.fillAmountSats,
+        fillAmountSubunits: swap?.fillAmountSubunits,
         outcomeFaceAmountSats: swap?.outcomeFaceAmountSats,
         outcomeFaceAmountSubunits: swap?.outcomeFaceAmountSubunits,
         quotePaymentSats: swap?.quotePaymentSats,
@@ -781,6 +784,18 @@ export async function recordTradeCreated(
 
     const existing = state.swaps[payload.tradeId]
     const order = state.orders[match.orderId]
+    const legacyOrderAmountScale =
+      order?.divisibility == null && typeof payload.divisibility === 'number'
+        ? payload.divisibility / 100
+        : 1
+    const expectedDivisibility =
+      order?.divisibility ?? payload.divisibility ?? (order?.amountSubunits != null ? 100 : undefined)
+    const legacyOutcomeAmountScale =
+      payload.outcomeFaceAmountSubunits == null &&
+      payload.outcomeFaceAmountSats != null &&
+      typeof expectedDivisibility === 'number'
+        ? expectedDivisibility / 100
+        : 1
     if (order && !order.tradeIds.includes(payload.tradeId)) {
       order.tradeIds = [...order.tradeIds, payload.tradeId]
       order.updatedAt = now
@@ -794,24 +809,23 @@ export async function recordTradeCreated(
       settlementKind: payload.settlementKind,
       sellerKeepOutcomeSetId: payload.sellerKeepOutcomeSetId,
       sellerLockOutcomeSetId: payload.sellerLockOutcomeSetId,
-      baseAsset: payload.baseAsset,
-      divisibility: payload.divisibility,
+      baseAsset: payload.baseAsset ?? order?.baseAsset ?? null,
+      divisibility: payload.divisibility ?? expectedDivisibility,
       expectedBaseAsset: order?.baseAsset,
-      expectedDivisibility: order?.divisibility,
+      expectedDivisibility,
       expectedOrder:
         order?.side && order.priceSubunits != null && order.amountSubunits != null
           ? {
               side: order.side,
               tokenSide: order.tokenSide,
               priceSubunits: order.priceSubunits,
-              amountSubunits: order.amountSubunits,
+              amountSubunits: order.amountSubunits * legacyOrderAmountScale,
             }
           : null,
       requireExpectedOrder: true,
-      outcomeFaceAmountSats: payload.outcomeFaceAmountSats,
-      quotePaymentSats: payload.quotePaymentSats,
-      outcomeFaceAmountSubunits: payload.outcomeFaceAmountSubunits,
-      quotePaymentSubunits: payload.quotePaymentSubunits,
+      outcomeFaceAmountSubunits:
+        payload.outcomeFaceAmountSubunits ?? payload.outcomeFaceAmountSats,
+      quotePaymentSubunits: payload.quotePaymentSubunits ?? payload.quotePaymentSats,
     })
     const protocolError = decision.accepted ? null : decision.error
     const accepted = decision.accepted
@@ -825,15 +839,20 @@ export async function recordTradeCreated(
       sellerLocktime: decision.sellerLocktime,
       buyerLocktime: decision.buyerLocktime,
       fillAmountSats: payload.fillAmountSats ?? existing?.fillAmountSats,
+      fillAmountSubunits:
+        payload.fillAmountSubunits ?? payload.fillAmountSats ?? existing?.fillAmountSubunits,
       outcomeFaceAmountSats:
         payload.outcomeFaceAmountSats ?? existing?.outcomeFaceAmountSats,
       outcomeFaceAmountSubunits:
-        payload.outcomeFaceAmountSubunits ?? existing?.outcomeFaceAmountSubunits,
+        payload.outcomeFaceAmountSubunits ??
+        (payload.outcomeFaceAmountSats != null
+          ? payload.outcomeFaceAmountSats * legacyOutcomeAmountScale
+          : existing?.outcomeFaceAmountSubunits),
       quotePaymentSats: payload.quotePaymentSats ?? existing?.quotePaymentSats,
       baseAsset: payload.baseAsset ?? order?.baseAsset ?? existing?.baseAsset ?? null,
-      divisibility: payload.divisibility ?? order?.divisibility ?? existing?.divisibility,
+      divisibility: expectedDivisibility ?? existing?.divisibility,
       quotePaymentSubunits:
-        payload.quotePaymentSubunits ?? existing?.quotePaymentSubunits,
+        payload.quotePaymentSubunits ?? payload.quotePaymentSats ?? existing?.quotePaymentSubunits,
       settlementKind: payload.settlementKind ?? existing?.settlementKind ?? null,
       sellerKeepOutcomeSetId:
         payload.sellerKeepOutcomeSetId ?? existing?.sellerKeepOutcomeSetId ?? null,

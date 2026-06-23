@@ -45,16 +45,14 @@ export function parseTradeCreatedPayload(
   sellerLocktime: unknown,
   buyerLocktime: unknown,
   marketId: unknown,
-  fillAmountSats?: unknown,
-  outcomeFaceAmountSats?: unknown,
-  quotePaymentSats?: unknown,
+  fillAmountSubunits?: unknown,
+  outcomeFaceAmountSubunits?: unknown,
+  quotePaymentSubunits?: unknown,
   settlementKind?: unknown,
   sellerKeepOutcomeSetId?: unknown,
   sellerLockOutcomeSetId?: unknown,
   baseAsset?: unknown,
   divisibility?: unknown,
-  quotePaymentSubunits?: unknown,
-  outcomeFaceAmountSubunits?: unknown,
 ): DaemonTradeCreatedPayload {
   const tradeIdText = stringFromSignalR(tradeId)
   const sellerPubkeyText = stringFromSignalR(sellerPubkey)
@@ -80,9 +78,9 @@ export function parseTradeCreatedPayload(
     sellerLocktime: sellerLocktimeText,
     buyerLocktime: buyerLocktimeText,
     marketId,
-    fillAmountSats: numberOrUndefined(fillAmountSats),
-    outcomeFaceAmountSats: numberOrUndefined(outcomeFaceAmountSats),
-    quotePaymentSats: numberOrUndefined(quotePaymentSats),
+    fillAmountSubunits: numberOrUndefined(fillAmountSubunits),
+    outcomeFaceAmountSubunits: numberOrUndefined(outcomeFaceAmountSubunits),
+    quotePaymentSubunits: numberOrUndefined(quotePaymentSubunits),
     settlementKind:
       typeof settlementKind === 'string' ? settlementKind : null,
     sellerKeepOutcomeSetId:
@@ -95,8 +93,6 @@ export function parseTradeCreatedPayload(
         : null,
     baseAsset: typeof baseAsset === 'string' ? baseAsset : null,
     divisibility: numberOrUndefined(divisibility),
-    quotePaymentSubunits: numberOrUndefined(quotePaymentSubunits),
-    outcomeFaceAmountSubunits: numberOrUndefined(outcomeFaceAmountSubunits),
   }
 }
 
@@ -176,16 +172,14 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
         sellerLocktime: unknown,
         buyerLocktime: unknown,
         marketId?: unknown,
-        fillAmountSats?: unknown,
-        outcomeFaceAmountSats?: unknown,
-        quotePaymentSats?: unknown,
+        fillAmountSubunits?: unknown,
+        outcomeFaceAmountSubunits?: unknown,
+        quotePaymentSubunits?: unknown,
         settlementKind?: unknown,
         sellerKeepOutcomeSetId?: unknown,
         sellerLockOutcomeSetId?: unknown,
         baseAsset?: unknown,
         divisibility?: unknown,
-        quotePaymentSubunits?: unknown,
-        outcomeFaceAmountSubunits?: unknown,
       ) => {
         void this.invokeCallback(async () => {
           await this.callbacks.onTradeCreated?.(
@@ -196,16 +190,14 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
               sellerLocktime,
               buyerLocktime,
               marketId,
-              fillAmountSats,
-              outcomeFaceAmountSats,
-              quotePaymentSats,
+              fillAmountSubunits,
+              outcomeFaceAmountSubunits,
+              quotePaymentSubunits,
               settlementKind,
               sellerKeepOutcomeSetId,
               sellerLockOutcomeSetId,
               baseAsset,
               divisibility,
-              quotePaymentSubunits,
-              outcomeFaceAmountSubunits,
             ),
           )
         })

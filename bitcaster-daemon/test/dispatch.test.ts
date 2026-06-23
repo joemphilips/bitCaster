@@ -1028,7 +1028,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           return {
             orderId: 'order-1',
             status: 'matched',
-            remainingAmountSats: 0,
+            remainingAmountSubunits: 0,
             ephemeralPubkey: request.ephemeralPubkey,
             fills: [
               {
@@ -1036,7 +1036,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 makerOrderId: 'maker-1',
                 takerOrderId: 'order-1',
                 outcomeId: request.outcomeId,
-                amountSats: request.amountSats,
+                amountSubunits: request.amountSubunits,
                 executionPrice: request.price,
                 path: 'Complementary',
                 status: 'Matched',
@@ -1101,7 +1101,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         tokenSide: 'Outcome',
         side: 'Buy',
         price: 42,
-        amountSats: 100,
+        amountSubunits: 100,
         timeInForce: 'GTC',
         ephemeralPubkey: `02${'22'.repeat(32)}`,
       })
@@ -1131,7 +1131,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           return {
             orderId: 'order-d1000',
             status: 'resting',
-            remainingAmountSats: request.amountSats,
+            remainingAmountSubunits: request.amountSubunits,
             ephemeralPubkey: request.ephemeralPubkey,
             fills: [],
           }
@@ -1161,7 +1161,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             outcomeId: 'YES',
             side: 'Buy',
             price: 500,
-            amountSats: 1_000,
+            amountSubunits: 1_000,
             timeInForce: 'GTC',
           },
         },
@@ -1188,7 +1188,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         tokenSide: 'Outcome',
         side: 'Buy',
         price: 500,
-        amountSats: 1_000,
+        amountSubunits: 1_000,
         timeInForce: 'GTC',
         ephemeralPubkey: `02${'66'.repeat(32)}`,
       })
@@ -1204,7 +1204,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             return {
               orderId: 'order-complement',
               status: 'resting',
-              remainingAmountSats: request.amountSats,
+              remainingAmountSubunits: request.amountSubunits,
               fills: [],
               ephemeralPubkey: request.ephemeralPubkey,
             }
@@ -1364,7 +1364,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             return {
               orderId: 'order-score',
               status: 'resting',
-              remainingAmountSats: request.amountSats,
+              remainingAmountSubunits: request.amountSubunits,
               ephemeralPubkey: request.ephemeralPubkey,
               fills: [],
             }
@@ -1548,6 +1548,21 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     })
 
     await t.test('trade.watch reads persisted swap state', async () => {
+      const state = emptyDaemonState()
+      state.swaps['trade-1'] = {
+        tradeId: 'trade-1',
+        marketId: 'cond-YES',
+        orderId: 'order-1',
+        fillAmountSubunits: 100,
+        outcomeFaceAmountSubunits: 100,
+        quotePaymentSubunits: 42,
+        messages: {},
+        step: 'awaiting-trade-created',
+        createdAt: '2026-05-21T00:00:00.000Z',
+        updatedAt: '2026-05-21T00:00:00.000Z',
+      }
+      await writeState(state)
+
       const response = await dispatch({
         method: 'trade.watch',
         params: { tradeId: 'trade-1' },
@@ -1806,7 +1821,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           return {
             orderId: 'order-runtime-fail',
             status: 'resting',
-            remainingAmountSats: request.amountSats,
+            remainingAmountSubunits: request.amountSubunits,
             ephemeralPubkey: request.ephemeralPubkey,
             fills: [],
           }
@@ -1889,7 +1904,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 return {
                   orderId: 'order-direct-sell',
                   status: 'resting',
-                  remainingAmountSats: request.amountSats,
+                  remainingAmountSubunits: request.amountSubunits,
                   ephemeralPubkey: request.ephemeralPubkey,
                   fills: [],
                 }
@@ -1927,7 +1942,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         tokenSide: 'Outcome',
         side: 'Sell',
         price: 42,
-        amountSats: 100,
+        amountSubunits: 100,
         timeInForce: 'GTC',
         ephemeralPubkey: `02${'44'.repeat(32)}`,
       })
