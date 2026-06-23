@@ -44,6 +44,7 @@ import {
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   DEFAULT_MARKET_BASE_ASSET,
+  collateralScaleForUnit,
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
   type MarketBaseAsset,
@@ -110,7 +111,7 @@ export async function createMintQuote(
   baseAsset?: MarketBaseAsset | string | null,
 ): Promise<MintQuoteResponse> {
   const wallet = await getWallet(mintUrl, baseAsset);
-  return wallet.createMintQuote(amountSats);
+  return wallet.createMintQuote(collateralSubunitsFromBaseAmount(amountSats, baseAsset));
 }
 
 /** Mint proofs after the invoice in `quote` has been paid.
@@ -140,9 +141,10 @@ export async function mintProofs(
   baseAsset?: MarketBaseAsset | string | null,
 ): Promise<Proof[]> {
   const wallet = await getWallet(mintUrl, baseAsset);
+  const amountSubunits = collateralSubunitsFromBaseAmount(amountSats, baseAsset);
   const mintOnce = async (): Promise<Proof[]> => {
     const beforeCounters = snapshotCountersForSuccessfulMintRepair();
-    const proofs = await wallet.mintProofs(amountSats, quote.quote);
+    const proofs = await wallet.mintProofs(amountSubunits, quote.quote);
     repairCountersAfterSuccessfulMint(proofs, beforeCounters);
     return proofs;
   };
@@ -173,6 +175,18 @@ export async function mintProofs(
     // the recovered counter on the retry without rebuilding the wallet.
     return await mintOnce();
   }
+}
+
+function collateralSubunitsFromBaseAmount(
+  amountSats: number,
+  baseAsset?: MarketBaseAsset | string | null,
+): number {
+  const unit = defaultCollateralUnit(baseAsset);
+  const subunits = amountSats * collateralScaleForUnit(unit);
+  if (!Number.isSafeInteger(subunits)) {
+    throw new Error(`Amount exceeds safe integer range for ${unit}: ${amountSats}`);
+  }
+  return subunits;
 }
 
 function snapshotCountersForSuccessfulMintRepair(): Record<string, number> | null {
