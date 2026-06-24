@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
+  assertMarketAcceptsOrders,
   booksByOutcomeSetFromDetail,
   composeMarketDetail,
   createMarketDetailDataState,
@@ -11,7 +13,9 @@ import {
   resolvePreflightSplitBuyCollateralRequirement,
   resolveTradeOrderBooks,
 } from "@/pages/MarketDetailPage";
-import { fetchMarketDetail, fetchOrderBook } from "@/lib/markets";
+import { MarketDetailPage } from "@/pages/MarketDetailPage";
+import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
+import type { MarketStatusChanged } from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -21,12 +25,36 @@ import type {
 
 const mocks = vi.hoisted(() => ({
   resolveRootPreflightOutputAmountSats: vi.fn(),
+  navigate: vi.fn(),
+  routeParams: { id: "condition-yesno" } as { id?: string },
+  liveStatusHandlers: [] as Array<(status: MarketStatusChanged) => void>,
   windowPriceHistory: vi.fn(
     (history: { timeframe: string; data: Array<unknown> }) => ({
       ...history,
       data: history.data.slice(-1000),
     }),
   ),
+}));
+
+vi.mock("react-router", () => ({
+  useNavigate: () => mocks.navigate,
+  useParams: () => mocks.routeParams,
+}));
+
+vi.mock("@/hooks/useMarketStatusLive", () => ({
+  useMarketStatusLive: (
+    _conditionId: string | null | undefined,
+    handler: (status: MarketStatusChanged) => void,
+  ) => {
+    mocks.liveStatusHandlers.push(handler);
+  },
+}));
+
+vi.mock("@/lib/marketHub", () => ({
+  joinMarket: vi.fn().mockResolvedValue(undefined),
+  leaveMarket: vi.fn().mockResolvedValue(undefined),
+  onOrderBookUpdated: vi.fn(() => () => {}),
+  onTradeExecuted: vi.fn(() => () => {}),
 }));
 
 vi.mock("@/lib/markets", () => ({
@@ -172,8 +200,11 @@ describe("fetchMarketDetailWithBooks", () => {
   beforeEach(() => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
+    vi.mocked(submitOrder).mockReset();
     mocks.resolveRootPreflightOutputAmountSats.mockReset();
     mocks.windowPriceHistory.mockClear();
+    mocks.liveStatusHandlers.length = 0;
+    mocks.routeParams.id = "condition-yesno";
   });
 
   it("fetches singleton outcome-set books for categorical markets", async () => {
@@ -190,6 +221,56 @@ describe("fetchMarketDetailWithBooks", () => {
     ).toEqual(["condition-1-Alice", "condition-1-Bob", "condition-1-Carol"]);
     expect(detail.outcomeOrderBooks).toHaveProperty("Alice");
     expect(detail.outcomeOrderBooks).not.toHaveProperty("Bob|Carol");
+  });
+});
+
+describe("MarketDetailPage live market status", () => {
+  beforeEach(() => {
+    vi.mocked(fetchMarketDetail).mockReset();
+    vi.mocked(fetchOrderBook).mockReset();
+    vi.mocked(submitOrder).mockReset();
+    mocks.liveStatusHandlers.length = 0;
+    mocks.routeParams.id = "condition-yesno";
+  });
+
+  it("applies a MarketStatusChanged close push to the detail page and disables trading", async () => {
+    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+
+    await waitFor(() => expect(mocks.liveStatusHandlers.length).toBeGreaterThan(0));
+    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "closed" }));
+    act(() => {
+      mocks.liveStatusHandlers.at(-1)?.({
+        conditionId: "condition-yesno",
+        state: "closed",
+        closedAt: "2026-06-24T00:00:00Z",
+      });
+    });
+
+    expect(await screen.findByText("Market Closed")).toBeInTheDocument();
+    for (const input of screen.getAllByTestId("trade-amount-input")) {
+      expect(input).toBeDisabled();
+    }
+    for (const button of screen.getAllByTestId("trade-confirm")) {
+      expect(button).toBeDisabled();
+    }
+
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+    expect(submitOrder).not.toHaveBeenCalled();
+  });
+
+  it("throws from the submit guard when the market is closed", () => {
+    expect(() =>
+      assertMarketAcceptsOrders(yesNoMarket({ state: "closed" })),
+    ).toThrow("This market is closed and no longer accepts orders.");
   });
 });
 

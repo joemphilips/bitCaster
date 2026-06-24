@@ -48,6 +48,7 @@ interface TradingPanelProps {
   onLimitPriceChange?: (price: number) => void
   walletReady?: boolean
   onWalletRequired?: (comment?: string) => void
+  disabled?: boolean
 }
 
 // Buy quick-presets are user-facing display shares. Boundary code maps each
@@ -134,11 +135,13 @@ function YesNoOutcomes({
   tradeSelection,
   tradeSide,
   onTradeSelect,
+  disabled = false,
 }: {
   market: YesNoMarketDetail
   tradeSelection: TradeSelection | null
   tradeSide: TradeSide
   onTradeSelect?: (selection: TradeSelection) => void
+  disabled?: boolean
 }) {
   const { t } = useTranslation()
   const isSell = tradeSide === 'sell'
@@ -146,6 +149,7 @@ function YesNoOutcomes({
     <div className="grid grid-cols-2 gap-3">
       <button
         data-testid="trade-outcome-yes"
+        disabled={disabled}
         onClick={() => onTradeSelect?.({ side: 'yes' })}
         className={`relative p-4 rounded-xl border-2 transition-all ${
           tradeSelection?.side === 'yes'
@@ -163,6 +167,7 @@ function YesNoOutcomes({
 
       <button
         data-testid="trade-outcome-no"
+        disabled={disabled}
         onClick={() => onTradeSelect?.({ side: 'no' })}
         className={`relative p-4 rounded-xl border-2 transition-all ${
           tradeSelection?.side === 'no'
@@ -186,11 +191,13 @@ function CategoricalOutcomes({
   tradeSelection,
   tradeSide,
   onTradeSelect,
+  disabled = false,
 }: {
   market: CategoricalMarketDetail
   tradeSelection: TradeSelection | null
   tradeSide: TradeSide
   onTradeSelect?: (selection: TradeSelection) => void
+  disabled?: boolean
 }) {
   const { t } = useTranslation()
   const isSell = tradeSide === 'sell'
@@ -218,6 +225,7 @@ function CategoricalOutcomes({
             <div className="grid grid-cols-2 gap-2">
               <button
                 data-testid={`buy-yes-${outcome.label}`}
+                disabled={disabled}
                 onClick={() => onTradeSelect?.({ side: 'yes', outcomeId: outcome.id })}
                 className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-colors ${
                   isSelected && tradeSelection?.side === 'yes'
@@ -229,6 +237,7 @@ function CategoricalOutcomes({
               </button>
               <button
                 data-testid={`buy-no-${outcome.label}`}
+                disabled={disabled}
                 onClick={() => onTradeSelect?.({ side: 'no', outcomeId: outcome.id })}
                 className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-colors ${
                   isSelected && tradeSelection?.side === 'no'
@@ -251,11 +260,13 @@ function NumericOutcomes({
   tradeSelection,
   tradeSide,
   onTradeSelect,
+  disabled = false,
 }: {
   market: NumericMarketDetail
   tradeSelection: TradeSelection | null
   tradeSide: TradeSide
   onTradeSelect?: (selection: TradeSelection) => void
+  disabled?: boolean
 }) {
   const { t } = useTranslation()
   const isSell = tradeSide === 'sell'
@@ -299,6 +310,7 @@ function NumericOutcomes({
       <div className="grid grid-cols-2 gap-3">
         <button
           onClick={() => onTradeSelect?.({ side: 'hi' })}
+          disabled={disabled}
           className={`relative p-4 rounded-xl border-2 transition-all ${
             tradeSelection?.side === 'hi'
               ? 'border-emerald-500 bg-emerald-500/10'
@@ -315,6 +327,7 @@ function NumericOutcomes({
 
         <button
           onClick={() => onTradeSelect?.({ side: 'lo' })}
+          disabled={disabled}
           className={`relative p-4 rounded-xl border-2 transition-all ${
             tradeSelection?.side === 'lo'
               ? 'border-red-500 bg-red-500/10'
@@ -336,15 +349,18 @@ function NumericOutcomes({
 function BuySellToggle({
   tradeSide,
   onTradeSideChange,
+  disabled = false,
 }: {
   tradeSide: TradeSide
   onTradeSideChange?: (side: TradeSide) => void
+  disabled?: boolean
 }) {
   const { t } = useTranslation()
   return (
     <div className="grid grid-cols-2 mb-3">
       <button
         onClick={() => onTradeSideChange?.('buy')}
+        disabled={disabled}
         className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
           tradeSide === 'buy'
             ? 'text-slate-900 dark:text-white border-slate-900 dark:border-white'
@@ -355,6 +371,7 @@ function BuySellToggle({
       </button>
       <button
         onClick={() => onTradeSideChange?.('sell')}
+        disabled={disabled}
         className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
           tradeSide === 'sell'
             ? 'text-slate-900 dark:text-white border-slate-900 dark:border-white'
@@ -370,15 +387,18 @@ function BuySellToggle({
 function MarketLimitToggle({
   orderType,
   onOrderTypeChange,
+  disabled = false,
 }: {
   orderType: OrderType
   onOrderTypeChange?: (type: OrderType) => void
+  disabled?: boolean
 }) {
   const { t } = useTranslation()
   return (
     <div className="flex bg-slate-100 dark:bg-slate-700/50 rounded-lg p-1 mb-4">
       <button
         onClick={() => onOrderTypeChange?.('market')}
+        disabled={disabled}
         className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
           orderType === 'market'
             ? 'bg-blue-600 text-white shadow-sm'
@@ -389,6 +409,7 @@ function MarketLimitToggle({
       </button>
       <button
         onClick={() => onOrderTypeChange?.('limit')}
+        disabled={disabled}
         className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
           orderType === 'limit'
             ? 'bg-blue-600 text-white shadow-sm'
@@ -406,11 +427,13 @@ function LimitPriceInput({
   baseUnit,
   divisibility,
   onLimitPriceChange,
+  disabled = false,
 }: {
   limitPrice: number
   baseUnit: string
   divisibility: number
   onLimitPriceChange?: (price: number) => void
+  disabled?: boolean
 }) {
   const { t } = useTranslation()
   return (
@@ -422,6 +445,7 @@ function LimitPriceInput({
         <input
           data-testid="limit-price-input"
           type="number"
+          disabled={disabled}
           value={limitPrice}
           onChange={(e) => {
             const val = Math.min(divisibility - 1, Math.max(1, Number(e.target.value)))
@@ -500,6 +524,7 @@ export function TradingPanel({
   onLimitPriceChange,
   walletReady = true,
   onWalletRequired,
+  disabled = false,
 }: TradingPanelProps) {
   const { t } = useTranslation()
   const [tradeComment, setTradeComment] = useState('')
@@ -514,6 +539,7 @@ export function TradingPanel({
     t('trade.shareCount', { count: shares.toLocaleString() })
   const userHoldingShares =
     userHoldings == null ? null : Math.floor(userHoldings / divisibility)
+  const tradingDisabled = disabled
   const marketOrderHasNoLiquidity =
     !isLimit &&
     !!tradeSelection &&
@@ -556,10 +582,10 @@ export function TradingPanel({
       </h3>
 
       {/* Buy/Sell Toggle */}
-      <BuySellToggle tradeSide={tradeSide} onTradeSideChange={onTradeSideChange} />
+      <BuySellToggle tradeSide={tradeSide} onTradeSideChange={onTradeSideChange} disabled={tradingDisabled} />
 
       {/* Market/Limit Sub-tabs */}
-      <MarketLimitToggle orderType={orderType} onOrderTypeChange={onOrderTypeChange} />
+      <MarketLimitToggle orderType={orderType} onOrderTypeChange={onOrderTypeChange} disabled={tradingDisabled} />
 
       {/* Outcomes based on market type */}
       {market.type === 'yesno' && (
@@ -568,6 +594,7 @@ export function TradingPanel({
           tradeSelection={tradeSelection}
           tradeSide={tradeSide}
           onTradeSelect={onTradeSelect}
+          disabled={tradingDisabled}
         />
       )}
       {market.type === 'categorical' && (
@@ -576,6 +603,7 @@ export function TradingPanel({
           tradeSelection={tradeSelection}
           tradeSide={tradeSide}
           onTradeSelect={onTradeSelect}
+          disabled={tradingDisabled}
         />
       )}
       {market.type === 'numeric' && (
@@ -584,6 +612,7 @@ export function TradingPanel({
           tradeSelection={tradeSelection}
           tradeSide={tradeSide}
           onTradeSelect={onTradeSelect}
+          disabled={tradingDisabled}
         />
       )}
 
@@ -596,6 +625,7 @@ export function TradingPanel({
             </span>
             <button
               onClick={onTradeClear}
+              disabled={tradingDisabled}
               className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
             >
               <X className="w-4 h-4" />
@@ -620,6 +650,7 @@ export function TradingPanel({
             <input
               data-testid="trade-amount-input"
               type="number"
+              disabled={tradingDisabled}
               value={tradeAmount || ''}
               onChange={(e) =>
                 handleShareAmountChange(Number(e.target.value))
@@ -640,6 +671,7 @@ export function TradingPanel({
                 return (
                   <button
                     key={pct}
+                    disabled={tradingDisabled}
                     onClick={() => onAmountChange?.(calculatedAmount)}
                     className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${
                       tradeAmount === calculatedAmount && calculatedAmount > 0
@@ -655,6 +687,7 @@ export function TradingPanel({
               QUICK_SHARE_PRESETS.map((shares) => (
                 <button
                   key={shares}
+                  disabled={tradingDisabled}
                   onClick={() => onAmountChange?.(Math.round(tradeAmount || 0) + shares)}
                   className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                 >
@@ -671,6 +704,7 @@ export function TradingPanel({
               baseUnit={subunitLabel}
               divisibility={divisibility}
               onLimitPriceChange={onLimitPriceChange}
+              disabled={tradingDisabled}
             />
           )}
 
@@ -678,6 +712,7 @@ export function TradingPanel({
             <label className="mb-4 flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
               <input
                 type="checkbox"
+                disabled={tradingDisabled}
                 checked={preflightSplit}
                 onChange={(event) => onPreflightSplitChange?.(event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
@@ -748,6 +783,7 @@ export function TradingPanel({
             </label>
             <textarea
               value={tradeComment}
+              disabled={tradingDisabled}
               onChange={(e) => setTradeComment(e.target.value.slice(0, 280))}
               placeholder={t('trade.commentPlaceholder')}
               rows={2}
@@ -762,6 +798,7 @@ export function TradingPanel({
           <button
             data-testid="trade-confirm"
             onClick={() => {
+              if (tradingDisabled) return
               if (!walletReady) {
                 onWalletRequired?.(tradeComment.trim() || undefined)
                 return
@@ -775,6 +812,7 @@ export function TradingPanel({
             }}
             disabled={
               isTradeSubmitting ||
+              tradingDisabled ||
               marketOrderHasNoLiquidity ||
               (walletReady && (!tradeAmount || tradeAmount <= 0))
             }

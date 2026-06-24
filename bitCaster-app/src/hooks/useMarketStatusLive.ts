@@ -27,8 +27,9 @@ import { assertNever } from '../lib/enumDiscipline'
  *   - `conditionId` must be joined to the MarketHub via `joinMarket` before
  *     status pushes are delivered. `MarketDetailPage` owns that subscription
  *     while the detail route is mounted.
- *   - Call `onRefresh` when a push arrives so the market state is refreshed in
- *     the parent component (e.g. `MarketDetailPage`).
+ *   - Call `onStatus` when a push arrives so the parent can apply the pushed
+ *     lifecycle state immediately, then refresh from the catalogue as the
+ *     correctness fallback.
  *   - Feed into the same notification + reconcile-state paths that
  *     `useLikedMarketCloseReconcile` uses, so the stored last-seen state stays
  *     consistent and the notification bell fires once regardless of which path
@@ -43,12 +44,12 @@ import { assertNever } from '../lib/enumDiscipline'
  *
  * @param conditionId  Bare condition ID (no outcome suffix).  Pass `null` /
  *   `undefined` while loading — the effect is a no-op until it resolves.
- * @param onRefresh  Callback invoked when a status push arrives; the caller
- *   should trigger a background market detail refresh.
+ * @param onStatus  Callback invoked when a status push arrives; the caller
+ *   should update local state and trigger a background market detail refresh.
  */
 export function useMarketStatusLive(
   conditionId: string | null | undefined,
-  onRefresh: () => void,
+  onStatus: (status: MarketStatusChanged) => void,
 ): void {
   const { t } = useTranslation()
 
@@ -56,8 +57,9 @@ export function useMarketStatusLive(
     if (!conditionId) return
 
     const handleStatus = (status: MarketStatusChanged) => {
-      // Always ask the parent to refresh so the UI reflects the new state.
-      onRefresh()
+      // Always notify the parent so the UI reflects the pushed state quickly;
+      // the parent still reconciles from the catalogue for correctness.
+      onStatus(status)
 
       switch (status.state) {
         case 'open':
@@ -124,5 +126,5 @@ export function useMarketStatusLive(
 
     const unsubscribe = onMarketStatusChanged(conditionId, handleStatus)
     return unsubscribe
-  }, [conditionId, onRefresh, t])
+  }, [conditionId, onStatus, t])
 }

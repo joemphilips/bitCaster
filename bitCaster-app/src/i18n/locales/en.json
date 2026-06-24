@@ -141,6 +141,8 @@
     "activeSince": "Active Since",
     "timeLeft": "Time Left",
     "closed": "Closed",
+    "closedBannerTitle": "Market Closed",
+    "closedBannerDescription": "This market is no longer accepting orders.",
     "relatedMarkets": "Related Markets",
     "resolution": "Resolution",
     "resolutionCriteria": "Resolution Criteria",

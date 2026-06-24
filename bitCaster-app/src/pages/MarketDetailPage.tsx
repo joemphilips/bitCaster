@@ -64,6 +64,7 @@ import {
   leaveMarket,
   onOrderBookUpdated,
   onTradeExecuted,
+  type MarketStatusChanged,
 } from "@/lib/marketHub";
 import { getOutcomeProofs, releaseProofReservation } from "@/stores/proof-db";
 import {
@@ -141,6 +142,11 @@ function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
 
 function isClosedForTrading(market: MarketDetailType): boolean {
   return isEngineMarketClosed(market.state);
+}
+
+export function assertMarketAcceptsOrders(market: MarketDetailType): void {
+  if (!isClosedForTrading(market)) return;
+  throw new Error("This market is closed and no longer accepts orders.");
 }
 
 export async function resolvePreflightSplitBuyCollateralRequirement(input: {
@@ -379,6 +385,7 @@ export type MarketDetailDataAction =
       timeframe: ChartTimeframe;
       point: PricePoint;
     }
+  | { type: "marketStatusChanged"; status: MarketStatusChanged }
   | { type: "commentsLoaded"; marketId: string; comments: Comment[] };
 
 const emptyMarketDetailDataState: MarketDetailDataState = {
@@ -842,6 +849,23 @@ export function marketDetailDataReducer(
         },
       };
     }
+    case "marketStatusChanged": {
+      const core = state.core;
+      if (!core || core.id !== action.status.conditionId) return state;
+      return {
+        ...state,
+        core: {
+          ...core,
+          state: action.status.state,
+          resolution: {
+            ...core.resolution,
+            ...(action.status.finalOutcome
+              ? { finalOutcome: action.status.finalOutcome }
+              : {}),
+          },
+        } as MarketDetailCore,
+      };
+    }
     case "commentsLoaded":
       if (state.marketId !== action.marketId) return state;
       {
@@ -1052,11 +1076,15 @@ export function MarketDetailPage() {
   );
 
   // Secondary live close-detection: subscribe to MarketStatusChanged pushes
-  // while this detail page is mounted. Best-effort — fires only when this page
-  // is joined to at least one singleton market hub group. Feeds the same
-  // notification + reconcile-state path as the primary boot reconcile.
+  // while this detail page is mounted and joined to at least one per-outcome
+  // market hub group. This is best-effort detail-page UX only: apply the pushed
+  // state immediately, then reconcile via the catalogue as the correctness
+  // fallback. Do not add list-page joins or polling for lifecycle changes.
   const handleLiveStatus = useCallback(
-    () => loadMarket({ showLoading: false }),
+    (status: MarketStatusChanged) => {
+      dispatchMarketData({ type: "marketStatusChanged", status });
+      loadMarket({ showLoading: false });
+    },
     [loadMarket],
   );
   useMarketStatusLive(market?.id ?? null, handleLiveStatus);
@@ -1402,6 +1430,18 @@ export function MarketDetailPage() {
   const placeOrder = useCallback(
     async (comment?: string) => {
       if (!market || !tradeSelection || !tradeAmount) return;
+      try {
+        assertMarketAcceptsOrders(market);
+      } catch (error) {
+        setTradeSubmitStatus({
+          kind: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "This market is closed and no longer accepts orders.",
+        });
+        return;
+      }
       if (tradeSubmitInFlightRef.current) return;
       tradeSubmitInFlightRef.current = true;
       setIsTradeSubmitting(true);
@@ -1650,6 +1690,18 @@ export function MarketDetailPage() {
   const handleTradeConfirm = useCallback(
     async (comment?: string) => {
       if (!market || !tradeSelection || !tradeAmount) return;
+      try {
+        assertMarketAcceptsOrders(market);
+      } catch (error) {
+        setTradeSubmitStatus({
+          kind: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "This market is closed and no longer accepts orders.",
+        });
+        return;
+      }
       if (tradeSubmitInFlightRef.current) return;
       tradeSubmitInFlightRef.current = true;
       setIsTradeSubmitting(true);
@@ -1742,6 +1794,20 @@ export function MarketDetailPage() {
 
   const handleWalletRequired = useCallback(
     async (comment?: string) => {
+      if (market) {
+        try {
+          assertMarketAcceptsOrders(market);
+        } catch (error) {
+          setTradeSubmitStatus({
+            kind: "error",
+            message:
+              error instanceof Error
+                ? error.message
+                : "This market is closed and no longer accepts orders.",
+          });
+          return;
+        }
+      }
       setLazySetupError(null);
       if (nostrSignerMode === "none") {
         setLazySetupComment(comment?.trim() || undefined);
@@ -1758,7 +1824,7 @@ export function MarketDetailPage() {
       }
       await handleTradeConfirm(comment);
     },
-    [handleTradeConfirm, nostrSignerMode],
+    [handleTradeConfirm, market, nostrSignerMode],
   );
 
   const handleCreateImplicitAccount = useCallback(async () => {

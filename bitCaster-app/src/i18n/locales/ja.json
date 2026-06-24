@@ -141,6 +141,8 @@
     "activeSince": "アクティブ開始",
     "timeLeft": "残り時間",
     "closed": "クローズ済み",
+    "closedBannerTitle": "マーケットはクローズ済みです",
+    "closedBannerDescription": "このマーケットは注文を受け付けていません。",
     "relatedMarkets": "関連マーケット",
     "resolution": "決済",
     "resolutionCriteria": "決済基準",

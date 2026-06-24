@@ -111,7 +111,7 @@ export function MarketDetail({
   // (which outcome the oracle attested, when, whether the announcement
   // window expired). `isResolved` keeps the existing semantics for the
   // resolution-info badge — surfaced when mintd reports a resolved outcome,
-  // independent of the engine's lifecycle state. `isTradingEnabled` is the
+  // independent of the engine's lifecycle state. `isTradingDisabled` is the
   // single closed-state gate consulted across the trade and deposit
   // affordances. The engine state is authoritative for routine rendering; a
   // stale or backfilled deadline must not hide the trade pane while the engine
@@ -119,14 +119,14 @@ export function MarketDetail({
   const isResolved = market.resolution.status === "resolved";
   const marketState = useMarketState(market.state);
   const isEffectivelyClosed = marketState === "Closed";
-  const isTradingEnabled = !isEffectivelyClosed;
+  const isTradingDisabled = isEffectivelyClosed;
 
   return (
     <div className="min-h-screen bg-slate-50 pb-[calc(9rem+env(safe-area-inset-bottom))] dark:bg-slate-900 lg:pb-0">
       {/* Desktop Layout: Two Columns (single column when resolved) */}
       <div className="max-w-7xl mx-auto">
         <div
-          className={`${isTradingEnabled ? "lg:grid lg:grid-cols-[1fr_380px] lg:gap-6" : ""} p-4 lg:p-6`}
+          className="p-4 lg:grid lg:grid-cols-[1fr_380px] lg:gap-6 lg:p-6"
         >
           {/* Left Column - Main Content */}
           <div className="space-y-6">
@@ -138,36 +138,46 @@ export function MarketDetail({
             {/* Resolution Info (shown immediately after header for resolved markets) */}
             {isResolved && <ResolutionInfo resolution={market.resolution} />}
 
-            {/* Mobile: Trading Panel (shown at top on mobile, only for open markets) */}
-            {isTradingEnabled && (
-              <div className="lg:hidden">
-                <TradingPanel
-                  market={market}
-                  tradeSelection={tradeSelection}
-                  tradeAmount={tradeAmount}
-                  tradePreview={tradePreview}
-                  tradeSide={tradeSide}
-                  orderType={orderType}
-                  limitOrderPreview={limitOrderPreview}
-                  limitPrice={limitPrice}
-                  onTradeSelect={onTradeSelect}
-                  onTradeClear={onTradeClear}
-                  onAmountChange={onAmountChange}
-                  onTradeConfirm={onTradeConfirm}
-                  tradeSubmitStatus={tradeSubmitStatus}
-                  isTradeSubmitting={isTradeSubmitting}
-                  onCommentPost={onCommentPost}
-                  onTradeSideChange={onTradeSideChange}
-                  onOrderTypeChange={onOrderTypeChange}
-                  preflightSplit={preflightSplit}
-                  onPreflightSplitChange={onPreflightSplitChange}
-                  onLimitPriceChange={onLimitPriceChange}
-                  userHoldings={userHoldings}
-                  walletReady={walletReady}
-                  onWalletRequired={onWalletRequired}
-                />
+            {isEffectivelyClosed && (
+              <div
+                role="status"
+                data-testid="market-closed-banner"
+                className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"
+              >
+                <p className="font-semibold">{t("market.closedBannerTitle")}</p>
+                <p>{t("market.closedBannerDescription")}</p>
               </div>
             )}
+
+            {/* Mobile: Trading Panel (disabled, not hidden, after close). */}
+            <div className="lg:hidden">
+              <TradingPanel
+                market={market}
+                tradeSelection={tradeSelection}
+                tradeAmount={tradeAmount}
+                tradePreview={tradePreview}
+                tradeSide={tradeSide}
+                orderType={orderType}
+                limitOrderPreview={limitOrderPreview}
+                limitPrice={limitPrice}
+                onTradeSelect={onTradeSelect}
+                onTradeClear={onTradeClear}
+                onAmountChange={onAmountChange}
+                onTradeConfirm={onTradeConfirm}
+                tradeSubmitStatus={tradeSubmitStatus}
+                isTradeSubmitting={isTradeSubmitting}
+                onCommentPost={onCommentPost}
+                onTradeSideChange={onTradeSideChange}
+                onOrderTypeChange={onOrderTypeChange}
+                preflightSplit={preflightSplit}
+                onPreflightSplitChange={onPreflightSplitChange}
+                onLimitPriceChange={onLimitPriceChange}
+                userHoldings={userHoldings}
+                walletReady={walletReady}
+                onWalletRequired={onWalletRequired}
+                disabled={isTradingDisabled}
+              />
+            </div>
 
             {/* Price Chart */}
             <PriceChart
@@ -268,43 +278,42 @@ export function MarketDetail({
             />
           </div>
 
-          {/* Right Column - Trading Panel (sticky on desktop, only for open markets) */}
-          {isTradingEnabled && (
-            <div className="hidden lg:block">
-              <div className="sticky top-6">
-                <TradingPanel
-                  market={market}
-                  tradeSelection={tradeSelection}
-                  tradeAmount={tradeAmount}
-                  tradePreview={tradePreview}
-                  tradeSide={tradeSide}
-                  orderType={orderType}
-                  limitOrderPreview={limitOrderPreview}
-                  limitPrice={limitPrice}
-                  onTradeSelect={onTradeSelect}
-                  onTradeClear={onTradeClear}
-                  onAmountChange={onAmountChange}
-                  onTradeConfirm={onTradeConfirm}
-                  tradeSubmitStatus={tradeSubmitStatus}
-                  isTradeSubmitting={isTradeSubmitting}
-                  onCommentPost={onCommentPost}
-                  onTradeSideChange={onTradeSideChange}
-                  onOrderTypeChange={onOrderTypeChange}
-                  preflightSplit={preflightSplit}
-                  onPreflightSplitChange={onPreflightSplitChange}
-                  onLimitPriceChange={onLimitPriceChange}
-                  userHoldings={userHoldings}
-                  walletReady={walletReady}
-                  onWalletRequired={onWalletRequired}
-                />
-              </div>
+          {/* Right Column - Trading Panel (disabled, not hidden, after close). */}
+          <div className="hidden lg:block">
+            <div className="sticky top-6">
+              <TradingPanel
+                market={market}
+                tradeSelection={tradeSelection}
+                tradeAmount={tradeAmount}
+                tradePreview={tradePreview}
+                tradeSide={tradeSide}
+                orderType={orderType}
+                limitOrderPreview={limitOrderPreview}
+                limitPrice={limitPrice}
+                onTradeSelect={onTradeSelect}
+                onTradeClear={onTradeClear}
+                onAmountChange={onAmountChange}
+                onTradeConfirm={onTradeConfirm}
+                tradeSubmitStatus={tradeSubmitStatus}
+                isTradeSubmitting={isTradeSubmitting}
+                onCommentPost={onCommentPost}
+                onTradeSideChange={onTradeSideChange}
+                onOrderTypeChange={onOrderTypeChange}
+                preflightSplit={preflightSplit}
+                onPreflightSplitChange={onPreflightSplitChange}
+                onLimitPriceChange={onLimitPriceChange}
+                userHoldings={userHoldings}
+                walletReady={walletReady}
+                onWalletRequired={onWalletRequired}
+                disabled={isTradingDisabled}
+              />
             </div>
-          )}
+          </div>
         </div>
       </div>
 
       {/* Mobile: Sticky Bottom Trade Bar (only for open markets) */}
-      {isTradingEnabled && (
+      {!isTradingDisabled && (
         <div className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden">
           {tradeSelection ? (
             <div className="flex items-center gap-3">
