@@ -92,7 +92,9 @@ describe('shared trade-flow event planner', () => {
     })
 
     expect(decision).toMatchObject({ accepted: false })
-    expect(decision.error).toMatch(/whole market share|exceeds the submitted order amount/)
+    if (!decision.accepted) {
+      expect(decision.error).toMatch(/whole market share|exceeds the submitted order amount/)
+    }
   })
 
   it('rejects unsafe TradeCreated subunit amounts as invalid protocol metadata', () => {
@@ -121,7 +123,9 @@ describe('shared trade-flow event planner', () => {
       accepted: false,
       reason: 'invalid-protocol',
     })
-    expect(decision.error).toMatch(/safe integer/)
+    if (!decision.accepted) {
+      expect(decision.error).toMatch(/safe integer/)
+    }
   })
 
   it('plans buyer response once both seller ciphertexts are present', () => {
