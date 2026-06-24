@@ -5,6 +5,8 @@ namespace BitCaster.E2ETest;
 
 public sealed class InMemoryMatchingEngineContractTests
 {
+    private const long SatShareFaceSubunits = 1_000_000;
+
     [Fact]
     public void PriceHistory_SeedsInitialPointsWithMarketDivisibilityAndTimeframeAnchor()
     {
@@ -77,7 +79,7 @@ public sealed class InMemoryMatchingEngineContractTests
                 "YES",
                 OrderSide.Buy,
                 priceValue: 10 + i,
-                amountSats: 100,
+                amountSubunits: SatShareFaceSubunits,
                 userId: $"buyer-{i}",
                 timeInForce: TimeInForce.GTC,
                 ephemeralPubkey: null);
@@ -86,7 +88,7 @@ public sealed class InMemoryMatchingEngineContractTests
                 "YES",
                 OrderSide.Sell,
                 priceValue: 80 + i,
-                amountSats: 100,
+                amountSubunits: SatShareFaceSubunits,
                 userId: $"seller-{i}",
                 timeInForce: TimeInForce.GTC,
                 ephemeralPubkey: null);
@@ -103,7 +105,7 @@ public sealed class InMemoryMatchingEngineContractTests
 
     private static Fill FillAt(DateTimeOffset timestamp, int price) =>
         new(
-            amountSats: 100,
+            amountSubunits: 100,
             baseAsset: BaseAsset.Sat,
             divisibility: 100,
             executionPrice: price,

@@ -93,7 +93,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var statusEngine = status.RootElement.GetProperty("result").GetProperty("engine");
         Assert.Equal(orderId, statusEngine.GetProperty("orderId").GetString());
         Assert.Equal("resting", statusEngine.GetProperty("status").GetString());
-        Assert.Equal(100, statusEngine.GetProperty("remainingAmountSats").GetInt32());
+        Assert.Equal(100, statusEngine.GetProperty("remainingAmountSubunits").GetInt32());
 
         using var book = await RunCliJsonAsync(daemon, [
             "order",
@@ -187,7 +187,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         Assert.Equal(50, fill.GetProperty("quotePaymentSats").GetInt32());
         Assert.Equal(condition.NoOutcomeSetId, fill.GetProperty("sellerKeepOutcomeSetId").GetString());
         Assert.Equal(condition.YesOutcomeSetId, fill.GetProperty("sellerLockOutcomeSetId").GetString());
-        Assert.Equal(0, takerEngine.GetProperty("remainingAmountSats").GetInt32());
+        Assert.Equal(0, takerEngine.GetProperty("remainingAmountSubunits").GetInt32());
 
         using var makerTrade = await WaitForTradeRecordAsync(
             maker,
@@ -280,7 +280,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         Assert.Equal(45, fill.GetProperty("quotePaymentSats").GetInt32());
         Assert.Equal(makerOutcomeSetId, fill.GetProperty("sellerKeepOutcomeSetId").GetString());
         Assert.Equal(takerOutcomeSetId, fill.GetProperty("sellerLockOutcomeSetId").GetString());
-        Assert.Equal(0, takerEngine.GetProperty("remainingAmountSats").GetInt32());
+        Assert.Equal(0, takerEngine.GetProperty("remainingAmountSubunits").GetInt32());
 
         using var makerTrade = await WaitForTradeRecordAsync(
             maker,
@@ -371,7 +371,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             .GetProperty("engine");
         Assert.Empty(takerEngine.GetProperty("fills").EnumerateArray());
         Assert.Equal("cancelled", takerEngine.GetProperty("status").GetString());
-        Assert.Equal(100, takerEngine.GetProperty("remainingAmountSats").GetInt32());
+        Assert.Equal(100, takerEngine.GetProperty("remainingAmountSubunits").GetInt32());
 
         using var makerStatus = await RunCliJsonAsync(maker, [
             "order",
@@ -384,7 +384,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             .GetProperty("result")
             .GetProperty("engine");
         Assert.Equal("resting", makerEngine.GetProperty("status").GetString());
-        Assert.Equal(100, makerEngine.GetProperty("remainingAmountSats").GetInt32());
+        Assert.Equal(100, makerEngine.GetProperty("remainingAmountSubunits").GetInt32());
         Assert.Empty(makerEngine.GetProperty("fills").EnumerateArray());
     }
 

@@ -50,7 +50,7 @@ public class DepositContractTests
         var lowerStatus = JsonSerializer.Deserialize<GetDepositResponseDto>(
             """
             {
-              "amountSats": 1000,
+              "amountSubunits": 1000,
               "conditionId": "deadbeef",
               "depositId": "11111111-1111-1111-1111-111111111111",
               "expiresAt": "2026-05-17T06:20:06.200Z",
@@ -68,7 +68,7 @@ public class DepositContractTests
         var legacyStatus = JsonSerializer.Deserialize<GetDepositResponseDto>(
             """
             {
-              "amountSats": 1000,
+              "amountSubunits": 1000,
               "conditionId": "deadbeef",
               "depositId": "22222222-2222-2222-2222-222222222222",
               "expiresAt": null,
@@ -95,7 +95,7 @@ public class DepositContractTests
 
         using var lnResponse = await httpClient.PostAsJsonAsync(
             $"{TestPorts.ServerUrl}/api/v1/markets/{conditionId}/deposit/ln-invoice",
-            new { amountSats = 1_000, creatorPubkey, fundAmm = false });
+            new { amountSubunits = 1_000, creatorPubkey, fundAmm = false });
         Assert.Equal(HttpStatusCode.OK, lnResponse.StatusCode);
 
         var lnBody = await lnResponse.Content.ReadAsStringAsync();
@@ -115,7 +115,7 @@ public class DepositContractTests
             $"{TestPorts.ServerUrl}/api/v1/markets/{conditionId}/deposit/ecash",
             new
             {
-                amountSats = 1_000,
+                amountSubunits = 1_000,
                 creatorPubkey,
                 fundAmm = false,
                 proofsToken = "cashuBo2FteG9jawo=",

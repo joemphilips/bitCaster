@@ -317,7 +317,7 @@ public class TradingFlowTests : IAsyncLifetime
                     {
                         orderId = Guid.NewGuid().ToString(),
                         status = "resting",
-                        remainingAmountSats = 10 * SatShareFaceSubunits,
+                        remainingAmountSubunits = 10 * SatShareFaceSubunits,
                         fills = Array.Empty<object>(),
                         ephemeralPubkey = ExtractEphemeralPubkey(route.Request.PostData),
                     }),
@@ -423,7 +423,7 @@ public class TradingFlowTests : IAsyncLifetime
                     {
                         orderId = Guid.NewGuid().ToString(),
                         status = "filled",
-                        remainingAmountSats = 0,
+                        remainingAmountSubunits = 0,
                         fills = Array.Empty<object>(),
                         ephemeralPubkey = ExtractEphemeralPubkey(route.Request.PostData),
                         baseAsset = "sat",
@@ -483,7 +483,7 @@ public class TradingFlowTests : IAsyncLifetime
         Assert.Equal("Buy", orderDoc.RootElement.GetProperty("side").GetString());
         Assert.Equal("FAK", orderDoc.RootElement.GetProperty("timeInForce").GetString());
         Assert.Equal(99, orderDoc.RootElement.GetProperty("price").GetInt32());
-        Assert.Equal(SatShareFaceSubunits, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
+        Assert.Equal(SatShareFaceSubunits, orderDoc.RootElement.GetProperty("amountSubunits").GetInt32());
     }
 
     [Fact]
@@ -580,7 +580,7 @@ public class TradingFlowTests : IAsyncLifetime
                     {
                         orderId = Guid.NewGuid().ToString(),
                         status = "resting",
-                        remainingAmountSats = 10 * SatShareFaceSubunits,
+                        remainingAmountSubunits = 10 * SatShareFaceSubunits,
                         fills = Array.Empty<object>(),
                         ephemeralPubkey = ExtractEphemeralPubkey(route.Request.PostData),
                         baseAsset = "sat",
@@ -654,7 +654,7 @@ public class TradingFlowTests : IAsyncLifetime
         using var orderDoc = JsonDocument.Parse(capturedOrderBody);
         // Trade tickets are share-denominated: 10 displayed shares map to
         // 10 whole sat-share faces at the protocol boundary.
-        Assert.Equal(10 * SatShareFaceSubunits, orderDoc.RootElement.GetProperty("amountSats").GetInt32());
+        Assert.Equal(10 * SatShareFaceSubunits, orderDoc.RootElement.GetProperty("amountSubunits").GetInt32());
         Assert.Equal("Outcome", orderDoc.RootElement.GetProperty("tokenSide").GetString());
         Assert.Matches(
             @"^(02|03)[0-9a-f]{64}$",
@@ -849,7 +849,7 @@ public class TradingFlowTests : IAsyncLifetime
             tokenSide = "Outcome",
             side,
             price,
-            amountSats = SatShareFaceSubunits,
+            amountSubunits = SatShareFaceSubunits,
             timeInForce = "GTC",
             ephemeralPubkey = NewCompressedPubkey(),
             comment = (object?)null,

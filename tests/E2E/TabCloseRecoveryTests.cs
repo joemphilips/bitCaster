@@ -479,7 +479,7 @@ public class TabCloseRecoveryTests : IAsyncLifetime
             outcomeId = outcome,
             side,
             price,
-            amountSats,
+            amountSubunits = amountSats,
             timeInForce = "GTC",
             ephemeralPubkey = signer.Pubkey,
         });

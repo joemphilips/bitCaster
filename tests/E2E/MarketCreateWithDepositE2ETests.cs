@@ -376,7 +376,7 @@ public class MarketCreateWithDepositE2ETests : IAsyncLifetime
                 ContentType = "application/json",
                 Body = JsonSerializer.Serialize(new
                 {
-                    amountSats = 1_000,
+                    amountSubunits = 1_000,
                     conditionId,
                     depositId,
                     expiresAt = now.AddMinutes(5),

@@ -58,7 +58,7 @@ public sealed class ContractSerializationTests
 
     private static Fill SampleFill() =>
         new(
-            amountSats: 1000,
+            amountSubunits: 1000,
             baseAsset: BaseAsset.Usd,
             divisibility: 1000,
             executionPrice: 500,
