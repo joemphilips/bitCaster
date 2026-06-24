@@ -52,6 +52,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "js-yaml": "^4.2.0",
     "jsdom": "^28.1.0",
     "openapi-typescript": "^7.13.0",
     "postcss": "^8.4.49",
@@ -60,8 +61,5 @@
     "vite": "^6.0.5",
     "vite-plugin-pwa": "^0.21.1",
     "vitest": "^4.0.18"
-  },
-  "overrides": {
-    "js-yaml": "4.2.0"
   }
 }
