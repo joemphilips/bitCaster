@@ -129,18 +129,23 @@ describe('mintProofs — CDK duplicate-output recovery', () => {
     const quote = { quote: 'q-msat', request: 'lnbc1...', unit: 'msat' }
     mocks.wallet.createMintQuote.mockResolvedValueOnce(quote)
 
-    const result = await cashu.createMintQuote(13, 'https://mint.test', 'sat')
+    const satAmount = 13
+    const result = await cashu.createMintQuote(satAmount, 'https://mint.test', 'sat')
 
     expect(result).toBe(quote)
-    expect(mocks.wallet.createMintQuote).toHaveBeenCalledWith(13_000)
+    // Physical invariant: 1 sat = 1000 msat. The mint quote amount must be
+    // in collateral subunits (msat), not base sats.
+    expect(mocks.wallet.createMintQuote).toHaveBeenCalledWith(satAmount * 1_000)
   })
 
   it('scales sat-market mintProofs requests into msat collateral subunits', async () => {
     mocks.wallet.mintProofs.mockResolvedValueOnce(PROOFS)
 
-    await cashu.mintProofs(13, QUOTE, 'https://mint.test', 'sat')
+    const satAmount = 13
+    await cashu.mintProofs(satAmount, QUOTE, 'https://mint.test', 'sat')
 
-    expect(mocks.wallet.mintProofs).toHaveBeenCalledWith(13_000, 'q1')
+    // Physical invariant: 1 sat = 1000 msat.
+    expect(mocks.wallet.mintProofs).toHaveBeenCalledWith(satAmount * 1_000, 'q1')
   })
 
   it('advances persisted counters after a successful deterministic mint even when the wallet adapter did not persist the reservation', async () => {

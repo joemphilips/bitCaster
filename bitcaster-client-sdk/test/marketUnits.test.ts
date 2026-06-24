@@ -70,6 +70,17 @@ test('checks collateral unit compatibility and scale', () => {
   assert.throws(() => collateralScaleForUnit(undefined))
 })
 
+test('collateralScaleForUnit produces physically correct conversions', () => {
+  // 1 sat base amount converted to msat collateral subunits must be 1000
+  assert.equal(1 * collateralScaleForUnit('msat'), 1_000)
+  // 1 sat base amount in sat collateral unit stays 1
+  assert.equal(1 * collateralScaleForUnit('sat'), 1)
+  // 100 sats → 100000 msat
+  assert.equal(100 * collateralScaleForUnit('msat'), 100_000)
+  // 1 USD base amount in cents stays 1
+  assert.equal(1 * collateralScaleForUnit('usd'), 1)
+})
+
 test('formats system market display units', () => {
   assert.equal(defaultCollateralUnit('sat'), 'msat')
   assert.equal(defaultCollateralUnit('usd'), 'usd')
