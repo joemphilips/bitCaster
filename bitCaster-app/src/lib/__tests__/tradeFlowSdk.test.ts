@@ -6,6 +6,8 @@ import {
 } from '@bitcaster/client-sdk/tradeFlow'
 import { TRADE_MESSAGE_TYPES } from '@bitcaster/client-sdk/tradeSession'
 
+const SAT_MARKET_ORDER_CAP_SUBUNITS = 100_000_000_000_000
+
 describe('shared trade-flow event planner', () => {
   it('accepts own TradeCreated payloads and resolves local role', () => {
     const decision = decideTradeCreated({
@@ -40,6 +42,86 @@ describe('shared trade-flow event planner', () => {
       accepted: false,
       reason: 'invalid-protocol',
     })
+  })
+
+  it('accepts safe TradeCreated subunit amounts at the sat-market order cap', () => {
+    const decision = decideTradeCreated({
+      ownEphemeralPubkey: 'buyer',
+      sellerPubkey: 'seller',
+      buyerPubkey: 'buyer',
+      sellerLocktime: 120,
+      buyerLocktime: 60,
+      settlementKind: 'DirectSwap',
+      baseAsset: 'sat',
+      divisibility: 1_000,
+      expectedBaseAsset: 'sat',
+      expectedDivisibility: 1_000,
+      expectedOrder: {
+        side: 'Buy',
+        priceSubunits: 500,
+        amountSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS,
+      },
+      requireExpectedOrder: true,
+      outcomeFaceAmountSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS,
+      quotePaymentSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS / 2,
+    })
+
+    expect(decision).toMatchObject({ accepted: true, role: 'buyer' })
+  })
+
+  it('rejects TradeCreated subunit amounts above the submitted order cap', () => {
+    const decision = decideTradeCreated({
+      ownEphemeralPubkey: 'buyer',
+      sellerPubkey: 'seller',
+      buyerPubkey: 'buyer',
+      sellerLocktime: 120,
+      buyerLocktime: 60,
+      settlementKind: 'DirectSwap',
+      baseAsset: 'sat',
+      divisibility: 1_000,
+      expectedBaseAsset: 'sat',
+      expectedDivisibility: 1_000,
+      expectedOrder: {
+        side: 'Buy',
+        priceSubunits: 500,
+        amountSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS,
+      },
+      requireExpectedOrder: true,
+      outcomeFaceAmountSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS + 1,
+      quotePaymentSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS / 2,
+    })
+
+    expect(decision).toMatchObject({ accepted: false })
+    expect(decision.error).toMatch(/whole market share|exceeds the submitted order amount/)
+  })
+
+  it('rejects unsafe TradeCreated subunit amounts as invalid protocol metadata', () => {
+    const decision = decideTradeCreated({
+      ownEphemeralPubkey: 'buyer',
+      sellerPubkey: 'seller',
+      buyerPubkey: 'buyer',
+      sellerLocktime: 120,
+      buyerLocktime: 60,
+      settlementKind: 'DirectSwap',
+      baseAsset: 'sat',
+      divisibility: 1_000,
+      expectedBaseAsset: 'sat',
+      expectedDivisibility: 1_000,
+      expectedOrder: {
+        side: 'Buy',
+        priceSubunits: 500,
+        amountSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS,
+      },
+      requireExpectedOrder: true,
+      outcomeFaceAmountSubunits: 2 ** 53,
+      quotePaymentSubunits: SAT_MARKET_ORDER_CAP_SUBUNITS / 2,
+    })
+
+    expect(decision).toMatchObject({
+      accepted: false,
+      reason: 'invalid-protocol',
+    })
+    expect(decision.error).toMatch(/safe integer/)
   })
 
   it('plans buyer response once both seller ciphertexts are present', () => {

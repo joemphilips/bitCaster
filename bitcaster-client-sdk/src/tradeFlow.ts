@@ -173,11 +173,17 @@ function validateTradeCreatedSettlementAmounts(
   const canonicalDivisibility = expectedDivisibility ?? divisibility
   const isDefault = isDefaultSettlementUnit(canonicalBaseAsset, canonicalDivisibility)
   if (!isDefault) {
-    if (!isPositiveInteger(input.outcomeFaceAmountSubunits)) {
+    if (input.outcomeFaceAmountSubunits == null) {
       return 'Trade settlement metadata is missing outcome face subunits.'
     }
-    if (!isPositiveInteger(input.quotePaymentSubunits)) {
+    if (!isPositiveSafeInteger(input.outcomeFaceAmountSubunits)) {
+      return 'Trade settlement metadata outcome face subunits must be a positive safe integer.'
+    }
+    if (input.quotePaymentSubunits == null) {
       return 'Trade settlement metadata is missing quote payment subunits.'
+    }
+    if (!isPositiveSafeInteger(input.quotePaymentSubunits)) {
+      return 'Trade settlement metadata quote payment subunits must be a positive safe integer.'
     }
   }
   if (
@@ -325,13 +331,22 @@ function validateExpectedOrderEconomics(input: {
     return 'Expected order price is out of range.'
   }
   const shareFace = input.divisibility
+  if (!isPositiveSafeInteger(order.amountSubunits)) {
+    return 'Expected order amount must be a positive safe integer.'
+  }
   if (!validateWholeShareFaceAmount(order.amountSubunits, shareFace)) {
     return 'Expected order amount is not a positive whole-share amount.'
   }
   const faceAmount = input.outcomeFaceAmountSubunits
   const quotePayment = input.quotePaymentSubunits
-  if (!isPositiveInteger(faceAmount)) return 'Trade settlement metadata is missing outcome face subunits.'
-  if (!isPositiveInteger(quotePayment)) return 'Trade settlement metadata is missing quote payment subunits.'
+  if (faceAmount == null) return 'Trade settlement metadata is missing outcome face subunits.'
+  if (quotePayment == null) return 'Trade settlement metadata is missing quote payment subunits.'
+  if (!isPositiveSafeInteger(faceAmount)) {
+    return 'Trade settlement metadata outcome face subunits must be a positive safe integer.'
+  }
+  if (!isPositiveSafeInteger(quotePayment)) {
+    return 'Trade settlement metadata quote payment subunits must be a positive safe integer.'
+  }
   if (!validateWholeShareFaceAmount(faceAmount, shareFace)) {
     return 'Trade outcome face amount is not a whole market share.'
   }
@@ -382,6 +397,10 @@ function normalizeOrderSide(side: TradeCreatedExpectedOrder['side']): 'buy' | 's
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 export type SwapMessageAction = 'none' | 'buyer-respond' | 'settlement-claim'
