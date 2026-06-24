@@ -30,8 +30,11 @@ export function formatFundingBudget(
       maximumFractionDigits: options.wholeUsd ? 0 : 2,
     })}`
   }
-  const sats = Math.max(0, amountSubunits) / 1_000
-  return `${sats.toLocaleString()} sats`
+  if (baseAsset === 'sat') {
+    const sats = Math.max(0, amountSubunits) / 1_000
+    return `${sats.toLocaleString()} sats`
+  }
+  throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
 export function outcomeFundingScale(outcomeCount: number): number {

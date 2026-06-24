@@ -47,7 +47,7 @@ function renderStep(
     conditionId: string
     defaultAmountSats: number
     outcomeCount: number
-    baseAsset: 'sat' | 'usd'
+    baseAsset: 'sat' | 'usd' | 'jpy'
   }>,
 ) {
   const conditionId = props?.conditionId ?? 'cond-test-abc123'
@@ -231,6 +231,10 @@ describe('DepositStep', () => {
         expect.objectContaining({ fundAmm: true }),
       )
     })
+  })
+
+  it('fails fast for unsupported AMM funding base assets', () => {
+    expect(() => renderStep({ baseAsset: 'jpy' })).toThrow(/unsupported base asset: jpy/)
   })
 
   it('marks the funding invoice paid once the Lightning payment is confirmed', async () => {

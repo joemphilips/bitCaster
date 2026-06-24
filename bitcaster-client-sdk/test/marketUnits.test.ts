@@ -85,13 +85,20 @@ test('formats system market display units', () => {
   assert.equal(defaultCollateralUnit('sat'), 'msat')
   assert.equal(defaultCollateralUnit('usd'), 'usd')
   assert.equal(defaultCollateralUnit(null), 'msat')
-  assert.equal(defaultCollateralUnit('jpy'), 'msat')
   assert.equal(formatPricePercentage(500, 1_000), '50.00%')
   assert.equal(formatPricePercentage(532, 1_000), '53.20%')
   assert.equal(formatPricePercentage(1, 1_000), '0.10%')
   assert.equal(formatShareFace('sat', 10_000), '10 sats')
   assert.equal(formatShareFace('sat', 100), '0.1 sats')
   assert.equal(formatShareFace('usd', 1_000), '$10.00')
+})
+
+test('fails fast for unsupported unit conversion base assets', () => {
+  assert.throws(() => defaultMarketDivisibility('jpy'), /unsupported base asset: jpy/)
+  assert.throws(() => defaultCollateralUnit('jpy'), /unsupported base asset: jpy/)
+  assert.throws(() => marketUnitLabel('bogus'), /unsupported base asset: bogus/)
+  assert.throws(() => marketSubunitLabel('bogus'), /unsupported base asset: bogus/)
+  assert.throws(() => formatMarketSubunits(1_000, 'bogus'), /unsupported base asset: bogus/)
 })
 
 test('normalizes initial AMM liquidity to sat markets only', () => {

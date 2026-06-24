@@ -23,18 +23,33 @@ type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
 
 function displayInputAmount(amountSubunits: number, baseAsset: string): number {
   if (baseAsset === 'usd') return amountSubunits / 100
-  return amountSubunits
+  if (baseAsset === 'sat') return amountSubunits / 1000
+  throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
 function displayInputStep(baseAsset: string): number {
   if (baseAsset === 'usd') return 0.01
-  return 1
+  if (baseAsset === 'sat') return 1
+  throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
 function inputAmountToSubunits(displayAmount: number, baseAsset: string): number {
   if (!Number.isFinite(displayAmount)) return 0
   if (baseAsset === 'usd') return Math.round(displayAmount * 100)
-  return Math.round(displayAmount)
+  if (baseAsset === 'sat') return Math.round(displayAmount * 1000)
+  throw new Error(`unsupported base asset: ${baseAsset}`)
+}
+
+function feeBufferSubunits(baseAsset: string): number {
+  if (baseAsset === 'usd') return 0
+  if (baseAsset === 'sat') return FEE_BUFFER_SATS
+  throw new Error(`unsupported base asset: ${baseAsset}`)
+}
+
+function topUpAmountLabel(baseAsset: string, unitLabel: string, t: (key: string) => string): string {
+  if (baseAsset === 'usd') return `${t('topUp.amount')} (${unitLabel})`
+  if (baseAsset === 'sat') return t('topUp.amountSats')
+  throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
 function assertNeverWaitResult(r: never): never {
@@ -71,7 +86,7 @@ export function TopUpOverlay({
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
   const unitLabel = marketUnitLabel(baseAsset)
-  const bufferSubunits = baseAsset === 'sat' ? FEE_BUFFER_SATS : 0
+  const bufferSubunits = feeBufferSubunits(baseAsset)
   const prefill = Math.max(deficit + bufferSubunits, 1)
   const displayMin = displayInputAmount(deficit, baseAsset)
   const inputStep = displayInputStep(baseAsset)
@@ -256,7 +271,7 @@ export function TopUpOverlay({
         </p>
 
         <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">
-          {baseAsset === 'sat' ? t('topUp.amountSats') : `${t('topUp.amount')} (${unitLabel})`}
+          {topUpAmountLabel(baseAsset, unitLabel, t)}
         </label>
         <input
           data-testid="top-up-amount-input"

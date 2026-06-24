@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   BINARY_AMM_FUNDING_TIERS,
   calculateAmmFundingPreview,
+  formatFundingBudget,
   fundingTierBudget,
 } from '../marketMakerFunding'
 
@@ -30,6 +31,10 @@ describe('market-maker funding math', () => {
 
     // Unknown base asset must fail fast.
     expect(() => fundingTierBudget(minimal, 'jpy')).toThrow()
+  })
+
+  it('fails fast when formatting an unsupported funding base asset', () => {
+    expect(() => formatFundingBudget(1_500, 'jpy')).toThrow(/unsupported base asset: jpy/)
   })
 })
 

@@ -40,6 +40,15 @@ export function parseMarketBaseAsset(
   return COLLATERAL_UNIT_REGISTRY[normalized]?.baseAsset ?? null
 }
 
+function requireMarketBaseAsset(
+  value: MarketBaseAsset | string | null | undefined,
+): MarketBaseAsset {
+  const parsed = parseMarketBaseAsset(value)
+  if (parsed !== null) return parsed
+  if (value == null || value.trim() === '') return DEFAULT_MARKET_BASE_ASSET
+  throw new Error(`unsupported base asset: ${value}`)
+}
+
 export function collateralScaleForUnit(
   unit: string | null | undefined,
 ): number {
@@ -62,9 +71,10 @@ export function isCollateralUnitOf(
 export function defaultMarketDivisibility(
   baseAsset: MarketBaseAsset | string | null | undefined,
 ): number {
-  const asset = normalizeMarketBaseAsset(baseAsset)
+  const asset = requireMarketBaseAsset(baseAsset)
   if (asset === 'usd') return DEFAULT_USD_MARKET_DIVISIBILITY
-  return DEFAULT_SAT_MARKET_DIVISIBILITY
+  if (asset === 'sat') return DEFAULT_SAT_MARKET_DIVISIBILITY
+  throw new Error(`unsupported base asset: ${asset}`)
 }
 
 export function normalizeMarketDivisibility(
@@ -81,32 +91,38 @@ export function parseMarketDivisibility(value: number | null | undefined): numbe
 }
 
 export function marketUnitLabel(value: MarketBaseAsset | string | null | undefined): string {
-  const baseAsset = normalizeMarketBaseAsset(value)
+  const baseAsset = requireMarketBaseAsset(value)
   if (baseAsset === 'usd') return 'USD'
   if (baseAsset === 'jpy') return 'JPY'
-  return 'sats'
+  if (baseAsset === 'sat') return 'sats'
+  throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
 export function marketSubunitLabel(value: MarketBaseAsset | string | null | undefined): string {
-  const baseAsset = normalizeMarketBaseAsset(value)
+  const baseAsset = requireMarketBaseAsset(value)
   if (baseAsset === 'usd') return 'cents'
   if (baseAsset === 'jpy') return 'yen'
-  return 'sats'
+  if (baseAsset === 'sat') return 'sats'
+  throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
 export function defaultCollateralUnit(value: MarketBaseAsset | string | null | undefined): string {
-  const asset = normalizeMarketBaseAsset(value)
+  const asset = requireMarketBaseAsset(value)
   if (asset === 'usd') return 'usd'
-  return 'msat'
+  if (asset === 'sat') return 'msat'
+  throw new Error(`unsupported base asset: ${asset}`)
 }
 
 export function formatMarketSubunits(
   amountSubunits: number,
   baseAsset: MarketBaseAsset | string | null | undefined,
 ): string {
-  const normalized = normalizeMarketBaseAsset(baseAsset)
+  const normalized = requireMarketBaseAsset(baseAsset)
   if (!Number.isFinite(amountSubunits)) {
-    return normalized === 'usd' ? '$0.00' : `0 ${marketSubunitLabel(normalized)}`
+    if (normalized === 'usd') return '$0.00'
+    if (normalized === 'sat') return `0 ${marketSubunitLabel(normalized)}`
+    if (normalized === 'jpy') return `0 ${marketSubunitLabel(normalized)}`
+    throw new Error(`unsupported base asset: ${normalized}`)
   }
   const sign = amountSubunits < 0 ? '-' : ''
   const absoluteAmount = Math.abs(amountSubunits)
@@ -120,9 +136,10 @@ export function formatMarketSubunits(
   if (normalized === 'jpy') {
     return `${sign}¥${Math.trunc(absoluteAmount).toLocaleString()}`
   }
-  return `${sign}${(absoluteAmount / 1000).toLocaleString(undefined, {
+  if (normalized === 'sat') return `${sign}${(absoluteAmount / 1000).toLocaleString(undefined, {
     maximumFractionDigits: 3,
   })} sats`
+  throw new Error(`unsupported base asset: ${normalized}`)
 }
 
 export function formatAmount(

@@ -37,6 +37,30 @@ function assertNeverDepositState(state: never): never {
   throw new Error(`Unhandled deposit state: ${String(state)}`)
 }
 
+function fundingUnitForBaseAsset(baseAsset: MarketBaseAsset): 'sat' | 'usd' {
+  if (baseAsset === 'usd') return 'usd'
+  if (baseAsset === 'sat') return 'sat'
+  throw new Error(`unsupported base asset: ${baseAsset}`)
+}
+
+function customBudgetInputToSubunits(customBudgetInput: number, baseAsset: MarketBaseAsset): number {
+  if (baseAsset === 'usd') return Math.round(customBudgetInput * 100)
+  if (baseAsset === 'sat') return Math.max(0, Math.floor(customBudgetInput * 1000))
+  throw new Error(`unsupported base asset: ${baseAsset}`)
+}
+
+function customBudgetInputStep(baseAsset: MarketBaseAsset): string {
+  if (baseAsset === 'usd') return '0.01'
+  if (baseAsset === 'sat') return '1'
+  throw new Error(`unsupported base asset: ${baseAsset}`)
+}
+
+function customBudgetInputMode(baseAsset: MarketBaseAsset): 'decimal' | 'numeric' {
+  if (baseAsset === 'usd') return 'decimal'
+  if (baseAsset === 'sat') return 'numeric'
+  throw new Error(`unsupported base asset: ${baseAsset}`)
+}
+
 interface DepositStepProps {
   /** The just-created market's condition id, returned by `createMarket`. */
   conditionId: string
@@ -59,13 +83,8 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
   const [invoiceError, setInvoiceError] = useState<string | null>(null)
   const [isRequesting, setIsRequesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const fundingUnit = baseAsset === 'usd' ? 'usd' : 'sat'
-  const customBudgetSubunits =
-    baseAsset === 'usd'
-      ? Math.round(customBudgetInput * 100)
-      : baseAsset === 'sat'
-        ? Math.max(0, Math.floor(customBudgetInput * 1000))
-        : (() => { throw new Error(`Unsupported base asset for funding: ${baseAsset}`) })()
+  const fundingUnit = fundingUnitForBaseAsset(baseAsset)
+  const customBudgetSubunits = customBudgetInputToSubunits(customBudgetInput, baseAsset)
 
   useEffect(() => {
     const timer = window.setTimeout(() => setStage('funding'), 5_000)
@@ -256,8 +275,8 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
           data-testid="amm-funding-custom-budget"
           type="number"
           min={0}
-          step={baseAsset === 'usd' ? '0.01' : '1'}
-          inputMode={baseAsset === 'usd' ? 'decimal' : 'numeric'}
+          step={customBudgetInputStep(baseAsset)}
+          inputMode={customBudgetInputMode(baseAsset)}
           aria-describedby="amm-funding-custom-preview"
           value={customBudgetInput}
           onChange={(event) => {

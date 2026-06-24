@@ -72,4 +72,15 @@ describe('TopUpOverlay', () => {
     expect(await screen.findByTestId('bolt11-display')).toBeInTheDocument()
     expect(screen.getByText('$150.00')).toBeInTheDocument()
   })
+
+  it('fails fast for unsupported top-up base assets', () => {
+    expect(() => render(
+      <TopUpOverlay
+        deficit={1_500}
+        baseAsset="jpy"
+        onCancel={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    )).toThrow(/unsupported base asset: jpy/)
+  })
 })
