@@ -60,5 +60,8 @@
     "vite": "^6.0.5",
     "vite-plugin-pwa": "^0.21.1",
     "vitest": "^4.0.18"
+  },
+  "overrides": {
+    "js-yaml": "4.2.0"
   }
 }
