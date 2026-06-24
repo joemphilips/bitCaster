@@ -181,8 +181,9 @@ function collateralSubunitsFromBaseAmount(
   amountSats: number,
   baseAsset?: MarketBaseAsset | string | null,
 ): number {
-  const unit = defaultCollateralUnit(baseAsset);
-  const subunits = amountSats * collateralScaleForUnit(unit);
+  const base = normalizeMarketBaseAsset(baseAsset);
+  const unit = defaultCollateralUnit(base);
+  const subunits = amountSats * collateralScaleForUnit(base);
   if (!Number.isSafeInteger(subunits)) {
     throw new Error(`Amount exceeds safe integer range for ${unit}: ${amountSats}`);
   }

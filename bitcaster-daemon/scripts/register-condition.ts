@@ -18,7 +18,7 @@ import {
 import {
   sumProofs,
 } from '../../bitcaster-client-sdk/src/proofSelection.ts'
-import { collateralScaleForUnit } from '../../bitcaster-client-sdk/src/marketUnits.ts'
+import { collateralScaleForUnit, parseMarketBaseAsset } from '../../bitcaster-client-sdk/src/marketUnits.ts'
 
 type RegistrationOutputData = OutputDataLike & {
   blindedMessage: SerializedBlindedMessage
@@ -33,10 +33,14 @@ const announcements = parseStringArray(announcementsJson, 'announcements-json')
 const outcomes = parseStringArray(outcomesJson, 'outcomes-json')
 const info = await fetchMintInfo(mintUrl)
 const baseFeeSubunits = registrationFeeForPolicy(outcomes, info)
-// The CDK mint scales the registration fee to the collateral unit internally.
-// We just need to mint proofs worth the base fee in the collateral unit.
-// The collateral scale converts the base-asset fee to collateral subunits.
-const collateralScale = collateralScaleForUnit(collateral)
+// Mint fee settings are expressed in the market base unit (sats for sat markets),
+// while regular proofs must be minted in the active collateral keyset unit
+// (msat for sat markets). Convert the fee to native collateral subunits here.
+const collateralBaseAsset = parseMarketBaseAsset(collateral)
+if (!collateralBaseAsset) {
+  throw new Error(`unknown collateral unit '${collateral}'`)
+}
+const collateralScale = collateralScaleForUnit(collateralBaseAsset)
 const requiredFeeSubunits = baseFeeSubunits * collateralScale
 const feeProofs =
   requiredFeeSubunits > 0

@@ -6,13 +6,15 @@ export const DEFAULT_USD_MARKET_DIVISIBILITY = 1_000
 
 export interface CollateralUnitInfo {
   baseAsset: MarketBaseAsset
-  /** How many collateral units equal one NUT-01 minor unit of the base asset. */
+  /** Multiplier from a user-facing base amount into native collateral subunits. */
   scale: number
 }
 
 export const COLLATERAL_UNIT_REGISTRY: Readonly<Record<string, CollateralUnitInfo>> = {
-  sat: { baseAsset: 'sat', scale: 1 },
-  msat: { baseAsset: 'sat', scale: 1_000 },
+  // Sat-denominated user inputs are base sats; sat-market collateral is stored as msat.
+  sat: { baseAsset: 'sat', scale: 1_000 },
+  // msat values are already native collateral subunits.
+  msat: { baseAsset: 'sat', scale: 1 },
   // NUT-01 USD amounts are already denominated in cents, so usd scale is 1.
   usd: { baseAsset: 'usd', scale: 1 },
   jpy: { baseAsset: 'jpy', scale: 1 },

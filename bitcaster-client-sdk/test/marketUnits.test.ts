@@ -61,8 +61,8 @@ test('checks collateral unit compatibility and scale', () => {
   assert.equal(isCollateralUnitOf('sat', 'usd'), false)
   assert.equal(isCollateralUnitOf(null, 'sat'), false)
 
-  assert.equal(collateralScaleForUnit('msat'), 1000)
-  assert.equal(collateralScaleForUnit('sat'), 1)
+  assert.equal(collateralScaleForUnit('msat'), 1)
+  assert.equal(collateralScaleForUnit('sat'), 1000)
   assert.equal(collateralScaleForUnit('usd'), 1)
   assert.throws(() => collateralScaleForUnit('milli-cent'))
   assert.throws(() => collateralScaleForUnit('unknown'))
