@@ -253,13 +253,24 @@ components:
       minimum: 0
       description: A non-negative amount of satoshis.
 
+    CollateralSubunits:
+      type: integer
+      format: int64
+      minimum: 1
+      description: >
+        Collateral subunits — msat (1/1000 sat) for sat-denominated markets,
+        cents for USD-denominated markets. Wire amount = collateral subunits
+        per ADR-025.
+
     Probability:
       type: integer
       minimum: 1
       description: >
         Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
-        `D` is the market's immutable `divisibility`. Current markets use
-        `D = 10000`.
+        `D` is the market's immutable `divisibility`. Immutable price
+        denominator D is per-market: sat markets use D=10000 (0.01%
+        precision), USD markets use D=1000 (0.1% precision), numeric sat
+        markets use D=1000000 (0.0001% precision).
 
     OrderSide:
       type: string
@@ -303,7 +314,7 @@ components:
         price:
           $ref: '#/components/schemas/Probability'
         amount:
-          $ref: '#/components/schemas/Sats'
+          $ref: '#/components/schemas/CollateralSubunits'
 
     OrderBookSnapshot:
       type: object
@@ -367,7 +378,7 @@ components:
         price:
           $ref: '#/components/schemas/Probability'
         remainingAmountSubunits:
-          $ref: '#/components/schemas/Sats'
+          $ref: '#/components/schemas/CollateralSubunits'
 
     OrderCancelledDelta:
       type: object
@@ -412,7 +423,7 @@ components:
         executionPrice:
           $ref: '#/components/schemas/Probability'
         amountSubunits:
-          $ref: '#/components/schemas/Sats'
+          $ref: '#/components/schemas/CollateralSubunits'
         path:
           $ref: '#/components/schemas/MatchPath'
         matchedAt:
