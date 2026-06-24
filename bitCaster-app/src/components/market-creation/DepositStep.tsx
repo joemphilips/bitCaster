@@ -60,10 +60,12 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
   const [isRequesting, setIsRequesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fundingUnit = baseAsset === 'usd' ? 'usd' : 'sat'
-  const customBudgetSats =
+  const customBudgetSubunits =
     baseAsset === 'usd'
       ? Math.round(customBudgetInput * 100)
-      : Math.max(0, Math.floor(customBudgetInput))
+      : baseAsset === 'sat'
+        ? Math.max(0, Math.floor(customBudgetInput * 1000))
+        : (() => { throw new Error(`Unsupported base asset for funding: ${baseAsset}`) })()
 
   useEffect(() => {
     const timer = window.setTimeout(() => setStage('funding'), 5_000)
@@ -79,9 +81,9 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
     [baseAsset],
   )
   const selectedTierBudget =
-    tiers.find((tier) => tier.id === selectedTier)?.budgetSats ?? customBudgetSats
-  const budgetSats = selectedTier === 'custom' ? customBudgetSats : selectedTierBudget
-  const customBudgetPreview = formatFundingBudget(customBudgetSats, fundingUnit)
+    tiers.find((tier) => tier.id === selectedTier)?.budgetSats ?? customBudgetSubunits
+  const budgetSats = selectedTier === 'custom' ? customBudgetSubunits : selectedTierBudget
+  const customBudgetPreview = formatFundingBudget(customBudgetSubunits, fundingUnit)
   const budgetLabel = formatFundingBudget(budgetSats, fundingUnit, {
     wholeUsd: selectedTier !== 'custom',
   })

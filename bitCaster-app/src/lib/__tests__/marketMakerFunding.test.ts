@@ -13,18 +13,23 @@ describe('market-maker funding math', () => {
     })
   })
 
-  it('keeps categorical tiers as hardcoded round SAT and USD amounts', () => {
+  it('returns sat tiers in msat subunits and USD tiers in cent subunits', () => {
     const [none, minimal, standard, deep] = BINARY_AMM_FUNDING_TIERS
 
+    // Sat tiers are defined in sats; fundingTierBudget returns msat subunits.
     expect(fundingTierBudget(none, 'sat')).toBe(0)
-    expect(fundingTierBudget(minimal, 'sat')).toBe(1_500)
-    expect(fundingTierBudget(standard, 'sat')).toBe(15_000)
-    expect(fundingTierBudget(deep, 'sat')).toBe(30_000)
+    expect(fundingTierBudget(minimal, 'sat')).toBe(1_500_000)
+    expect(fundingTierBudget(standard, 'sat')).toBe(15_000_000)
+    expect(fundingTierBudget(deep, 'sat')).toBe(30_000_000)
 
+    // USD tiers are already in cent subunits.
     expect(fundingTierBudget(none, 'usd')).toBe(0)
     expect(fundingTierBudget(minimal, 'usd')).toBe(1_500)
     expect(fundingTierBudget(standard, 'usd')).toBe(15_000)
     expect(fundingTierBudget(deep, 'usd')).toBe(30_000)
+
+    // Unknown base asset must fail fast.
+    expect(() => fundingTierBudget(minimal, 'jpy')).toThrow()
   })
 })
 

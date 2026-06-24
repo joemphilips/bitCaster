@@ -13,22 +13,25 @@ export function fundingTierBudget(
   tier: typeof BINARY_AMM_FUNDING_TIERS[number],
   baseAsset: string | null | undefined,
 ): number {
-  return baseAsset === 'usd' ? tier.budgetUsdSubunits : tier.budgetSats
+  if (baseAsset === 'usd') return tier.budgetUsdSubunits
+  if (baseAsset === 'sat') return tier.budgetSats * 1_000
+  throw new Error(`fundingTierBudget: unsupported base asset '${baseAsset}'`)
 }
 
 export function formatFundingBudget(
-  amount: number,
+  amountSubunits: number,
   baseAsset: string | null | undefined,
   options: { wholeUsd?: boolean } = {},
 ): string {
   if (baseAsset === 'usd') {
-    const dollars = Math.max(0, amount) / 100
+    const dollars = Math.max(0, amountSubunits) / 100
     return `$${dollars.toLocaleString(undefined, {
       minimumFractionDigits: options.wholeUsd ? 0 : 2,
       maximumFractionDigits: options.wholeUsd ? 0 : 2,
     })}`
   }
-  return `${Math.max(0, amount).toLocaleString()} sats`
+  const sats = Math.max(0, amountSubunits) / 1_000
+  return `${sats.toLocaleString()} sats`
 }
 
 export function outcomeFundingScale(outcomeCount: number): number {
