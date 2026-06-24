@@ -18,7 +18,7 @@ import {
 import {
   sumProofs,
 } from '../../bitcaster-client-sdk/src/proofSelection.ts'
-import { collateralScaleForUnit, parseMarketBaseAsset } from '../../bitcaster-client-sdk/src/marketUnits.ts'
+import { collateralScaleForUnit } from '../../bitcaster-client-sdk/src/marketUnits.ts'
 
 type RegistrationOutputData = OutputDataLike & {
   blindedMessage: SerializedBlindedMessage
@@ -36,11 +36,7 @@ const baseFeeSubunits = registrationFeeForPolicy(outcomes, info)
 // Mint fee settings are expressed in the market base unit (sats for sat markets),
 // while regular proofs must be minted in the active collateral keyset unit
 // (msat for sat markets). Convert the fee to native collateral subunits here.
-const collateralBaseAsset = parseMarketBaseAsset(collateral)
-if (!collateralBaseAsset) {
-  throw new Error(`unknown collateral unit '${collateral}'`)
-}
-const collateralScale = collateralScaleForUnit(collateralBaseAsset)
+const collateralScale = collateralScaleForUnit(collateral)
 const requiredFeeSubunits = baseFeeSubunits * collateralScale
 const feeProofs =
   requiredFeeSubunits > 0
