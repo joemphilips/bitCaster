@@ -11,10 +11,11 @@ export interface CollateralUnitInfo {
 }
 
 export const COLLATERAL_UNIT_REGISTRY: Readonly<Record<string, CollateralUnitInfo>> = {
-  // Sat-denominated user inputs are base sats; sat-market collateral is stored as msat.
-  sat: { baseAsset: 'sat', scale: 1_000 },
-  // msat values are already native collateral subunits.
-  msat: { baseAsset: 'sat', scale: 1 },
+  // 'sat' collateral unit: mint fee settings are in sats, proofs are in sats.
+  sat: { baseAsset: 'sat', scale: 1 },
+  // 'msat' collateral unit: mint fee settings are in sats, proofs are in msat.
+  // Scale converts base-asset sats to collateral msat subunits.
+  msat: { baseAsset: 'sat', scale: 1_000 },
   // NUT-01 USD amounts are already denominated in cents, so usd scale is 1.
   usd: { baseAsset: 'usd', scale: 1 },
   jpy: { baseAsset: 'jpy', scale: 1 },
