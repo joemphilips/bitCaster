@@ -814,11 +814,13 @@ components:
     CollateralSubunits:
       type: integer
       format: int64
-      minimum: 1
+      minimum: 0
       description: >
         Collateral subunits — msat (1/1000 sat) for sat-denominated markets,
         cents for USD-denominated markets. Wire amount = collateral subunits
-        per ADR-025.
+        per ADR-025. Request fields enforce minimum 1 at validation;
+        response fields (remainingAmountSubunits, filledAmountSubunits)
+        may be 0 for filled/cancelled orders.
 
     Probability:
       type: integer

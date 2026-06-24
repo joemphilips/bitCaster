@@ -416,7 +416,7 @@ export interface components {
         Sats: number;
         /**
          * Format: int64
-         * @description Collateral subunits — msat (1/1000 sat) for sat-denominated markets, cents for USD-denominated markets. Wire amount = collateral subunits per ADR-025.
+         * @description Collateral subunits — msat (1/1000 sat) for sat-denominated markets, cents for USD-denominated markets. Wire amount = collateral subunits per ADR-025. Request fields enforce minimum 1 at validation; response fields (remainingAmountSubunits, filledAmountSubunits) may be 0 for filled/cancelled orders.
          */
         CollateralSubunits: number;
         /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Immutable price denominator D is per-market: sat markets use D=10000 (0.01% precision), USD markets use D=1000 (0.1% precision), numeric sat markets use D=1000000 (0.0001% precision). */
