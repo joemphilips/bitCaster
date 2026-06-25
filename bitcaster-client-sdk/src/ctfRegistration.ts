@@ -45,6 +45,7 @@ export function parseCtfSettingsFromMintInfo(
     throw new Error('mint CTF registration_fees is missing or invalid')
   }
 
+  const seenUnits = new Set<string>()
   const registrationFees: CtfRegistrationFeeSetting[] = feesRaw.map(
     (entry, i) => {
       if (entry == null || typeof entry !== 'object') {
@@ -54,6 +55,12 @@ export function parseCtfSettingsFromMintInfo(
       if (typeof feeRaw.unit !== 'string' || feeRaw.unit.length === 0) {
         throw new Error(`mint CTF registration_fees[${i}] is missing unit`)
       }
+      if (seenUnits.has(feeRaw.unit)) {
+        throw new Error(
+          `mint CTF registration_fees[${i}] has duplicate unit '${feeRaw.unit}'`,
+        )
+      }
+      seenUnits.add(feeRaw.unit)
       const registrationFeeBase = toNonNegativeInteger(
         feeRaw.registration_fee_base,
         'registration_fee_base',

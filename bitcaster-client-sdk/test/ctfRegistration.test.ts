@@ -75,6 +75,35 @@ test('parseCtfSettingsFromMintInfo rejects negative values', () => {
   )
 })
 
+test('parseCtfSettingsFromMintInfo rejects non-safe-integer fee values', () => {
+  assert.throws(
+    () => parseCtfSettingsFromMintInfo(mintInfoWithFee({
+      unit: 'msat',
+      registration_fee_base: Number.MAX_SAFE_INTEGER + 1,
+      registration_fee_per_keyset: 1,
+    })),
+    /registration_fee_base is missing or invalid/,
+  )
+})
+
+test('parseCtfSettingsFromMintInfo rejects duplicate registration fee units', () => {
+  assert.throws(
+    () => parseCtfSettingsFromMintInfo(mintInfoWithFees([
+      {
+        unit: 'msat',
+        registration_fee_base: 1,
+        registration_fee_per_keyset: 1,
+      },
+      {
+        unit: 'msat',
+        registration_fee_base: 2,
+        registration_fee_per_keyset: 2,
+      },
+    ])),
+    /duplicate unit 'msat'/,
+  )
+})
+
 test('parseCtfSettingsFromMintInfo rejects non-array registration_fees', () => {
   assert.throws(
     () => parseCtfSettingsFromMintInfo({
@@ -163,11 +192,15 @@ test('registrationFeeForPolicy rejects unsupported collateral units', () => {
 })
 
 function mintInfoWithFee(fee: Record<string, unknown>): Record<string, unknown> {
+  return mintInfoWithFees([fee])
+}
+
+function mintInfoWithFees(fees: Record<string, unknown>[]): Record<string, unknown> {
   return {
     nuts: {
       CTF: {
         default_keyset_creation: 'one-vs-rest',
-        registration_fees: [fee],
+        registration_fees: fees,
       },
     },
   }
