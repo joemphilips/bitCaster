@@ -76,9 +76,24 @@ function walletCacheKey(mintUrl: string, baseAsset?: MarketBaseAsset | string | 
   return `${mintUrl}::${defaultCollateralUnit(baseAsset)}`
 }
 
+function walletUnitCacheKey(mintUrl: string, unit: string): string {
+  return `${mintUrl}::unit:${unit}`
+}
+
 function getSeedBytes(mnemonic: string): Uint8Array | undefined {
   if (!mnemonic) return undefined
   return bip39.toSeed(mnemonic.split(' '))
+}
+
+async function createWallet(url: string, unit: string, mnemonic: string): Promise<CashuWallet> {
+  const seedBytes = getSeedBytes(mnemonic)
+  const mint = new CashuMint(url)
+  const wallet = new CashuWallet(mint, {
+    unit,
+    ...(seedBytes ? { bip39seed: seedBytes, counterSource: _counterSource } : {}),
+  })
+  await wallet.loadMint()
+  return wallet
 }
 
 /**
@@ -305,8 +320,15 @@ export const useWalletStore = create<WalletState>()(
         mintUrl?: string,
         baseAsset?: MarketBaseAsset | string | null,
       ): Promise<CashuWallet> => {
+        const url = normalizeUrl(mintUrl ?? get().activeMintUrl)
+        const cacheKey = walletCacheKey(url, baseAsset)
+        const cached = _walletCache.get(cacheKey)
+        if (cached) return cached
+
         const unit = defaultCollateralUnit(baseAsset)
-        return get().getWalletForUnit(mintUrl, unit)
+        const wallet = await createWallet(url, unit, get().mnemonic)
+        _walletCache.set(cacheKey, wallet)
+        return wallet
       },
 
       getWalletForUnit: async (
@@ -314,17 +336,11 @@ export const useWalletStore = create<WalletState>()(
         unit: string,
       ): Promise<CashuWallet> => {
         const url = normalizeUrl(mintUrl ?? get().activeMintUrl)
-        const cacheKey = walletCacheKey(url, unit)
+        const cacheKey = walletUnitCacheKey(url, unit)
         const cached = _walletCache.get(cacheKey)
         if (cached) return cached
 
-        const seedBytes = getSeedBytes(get().mnemonic)
-        const mint = new CashuMint(url)
-        const wallet = new CashuWallet(mint, {
-          unit,
-          ...(seedBytes ? { bip39seed: seedBytes, counterSource: _counterSource } : {}),
-        })
-        await wallet.loadMint()
+        const wallet = await createWallet(url, unit, get().mnemonic)
         _walletCache.set(cacheKey, wallet)
         return wallet
       },

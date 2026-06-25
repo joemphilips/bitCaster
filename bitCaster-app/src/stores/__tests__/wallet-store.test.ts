@@ -2,11 +2,55 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useWalletStore } from '../wallet'
 import * as bip39 from '@/lib/bip39'
 
+const cashuMocks = vi.hoisted(() => ({
+  loadMint: vi.fn().mockResolvedValue(undefined),
+  walletConstructor: vi.fn(),
+}))
+
+vi.mock('@cashu/cashu-ts', () => {
+  class MockMint {
+    constructor(public readonly url: string) {}
+
+    async getInfo() {
+      return {
+        name: 'test mint',
+        pubkey: 'abc',
+        version: 'test',
+        nuts: {
+          4: { methods: [] },
+          5: { methods: [] },
+        },
+      }
+    }
+
+    async getKeySets() {
+      return { keysets: [] }
+    }
+
+    async getKeys() {
+      return { keysets: [{ id: 'k', unit: 'sat', keys: {} }] }
+    }
+  }
+
+  const MockWallet = vi.fn(function MockWallet(
+    this: unknown,
+    mint: MockMint,
+    options?: { unit?: string },
+  ) {
+    const wallet = { mint, options, loadMint: cashuMocks.loadMint }
+    cashuMocks.walletConstructor(mint, options, wallet)
+    return wallet
+  })
+
+  return { Mint: MockMint, Wallet: MockWallet }
+})
+
 const initialAddMint = useWalletStore.getState()._addMint
 const initialAddMintWithoutActivating = useWalletStore.getState()._addMintWithoutActivating
 
 // Reset store state before each test
 beforeEach(() => {
+  vi.clearAllMocks()
   useWalletStore.setState({
     mnemonic: '',
     setupComplete: false,
@@ -108,6 +152,22 @@ describe('useWalletStore', () => {
       expect(status).toBe('failed')
       expect(useWalletStore.getState().mintConnectionStatuses['http://bad:1234']).toBe('failed')
       vi.restoreAllMocks()
+    })
+  })
+
+  describe('getWallet cache units', () => {
+    it('does not reuse a base-asset sat msat wallet for a raw-unit sat wallet', async () => {
+      useWalletStore.getState().generateMnemonic()
+
+      const msatWallet = await useWalletStore.getState().getWallet('http://localhost:8085', 'sat')
+      const satWallet = await useWalletStore.getState().getWalletForUnit('http://localhost:8085', 'sat')
+
+      expect(satWallet).not.toBe(msatWallet)
+      expect(cashuMocks.walletConstructor).toHaveBeenCalledTimes(2)
+      expect(cashuMocks.walletConstructor.mock.calls.map(([, options]) => options?.unit)).toEqual([
+        'msat',
+        'sat',
+      ])
     })
   })
 
