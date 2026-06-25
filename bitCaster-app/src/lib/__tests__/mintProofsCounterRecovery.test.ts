@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => {
   const wallet = {
     createMintQuote: vi.fn(),
     mintProofs: vi.fn(),
+    send: vi.fn(),
     batchRestore: vi.fn(),
     groupProofsByState: vi.fn(),
     mint: { getKeySets: vi.fn() },
@@ -96,6 +97,7 @@ function cdkDuplicateError(
 beforeEach(() => {
   mocks.wallet.createMintQuote.mockReset()
   mocks.wallet.mintProofs.mockReset()
+  mocks.wallet.send.mockReset()
   mocks.wallet.batchRestore.mockReset()
   mocks.wallet.groupProofsByState.mockReset()
   mocks.wallet.getKeyset.mockReset()
@@ -146,6 +148,20 @@ describe('mintProofs — CDK duplicate-output recovery', () => {
 
     // Physical invariant: 1 sat = 1000 msat.
     expect(mocks.wallet.mintProofs).toHaveBeenCalledWith(satAmount * 1_000, 'q1')
+  })
+
+  it('scales sat-market sendProofs requests into msat collateral subunits', async () => {
+    const proofs = [{ id: 'k1', amount: 20_000, secret: 's1', C: 'C1' }] as never
+    const split = { keep: [], send: proofs }
+    mocks.wallet.send.mockResolvedValueOnce(split)
+
+    const result = await cashu.sendProofs(13, proofs, {
+      mintUrl: 'https://mint.test',
+      baseAsset: 'sat',
+    })
+
+    expect(result).toBe(split)
+    expect(mocks.wallet.send).toHaveBeenCalledWith(13_000, proofs)
   })
 
   it('advances persisted counters after a successful deterministic mint even when the wallet adapter did not persist the reservation', async () => {

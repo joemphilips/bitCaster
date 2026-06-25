@@ -4,7 +4,22 @@ const mocks = vi.hoisted(() => ({
   getParticipationScore: vi.fn(),
   payParticipationScoreEcash: vi.fn(),
   spendRegularSatsAsToken: vi.fn(),
-  getBalance: vi.fn(),
+  getWalletForUnit: vi.fn(),
+  getBaseProofs: vi.fn(),
+  addProofs: vi.fn(),
+  removeProofs: vi.fn(),
+  encodeToken: vi.fn(),
+  walletState: {
+    mints: [
+      {
+        url: "https://mint.example",
+        keysets: [
+          { id: "sat-keyset", unit: "sat" },
+          { id: "msat-keyset", unit: "msat" },
+        ],
+      },
+    ],
+  },
 }));
 
 vi.mock("@/lib/markets", () => ({
@@ -14,10 +29,20 @@ vi.mock("@/lib/markets", () => ({
 
 vi.mock("@/lib/cashu", () => ({
   spendRegularSatsAsToken: mocks.spendRegularSatsAsToken,
+  getWalletForUnit: mocks.getWalletForUnit,
+  encodeToken: mocks.encodeToken,
+}));
+
+vi.mock("@/stores/proof-db", () => ({
+  getBaseProofs: mocks.getBaseProofs,
+  addProofs: mocks.addProofs,
+  removeProofs: mocks.removeProofs,
 }));
 
 vi.mock("@/stores/wallet", () => ({
-  getBalance: mocks.getBalance,
+  useWalletStore: {
+    getState: () => mocks.walletState,
+  },
 }));
 
 const { ensureParticipationScoreForNextMatch } = await import(
@@ -38,8 +63,25 @@ describe("ensureParticipationScoreForNextMatch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getParticipationScore.mockResolvedValue(baseScore);
-    mocks.getBalance.mockResolvedValue(10);
     mocks.spendRegularSatsAsToken.mockResolvedValue("cashuB-token");
+    mocks.getWalletForUnit.mockResolvedValue({
+      send: vi.fn().mockResolvedValue({ keep: [], send: [{ secret: "sat-send" }] }),
+    });
+    mocks.getBaseProofs.mockResolvedValue([
+      { id: "sat-keyset", amount: 10, secret: "sat-proof", C: "sat-C" },
+    ]);
+    mocks.walletState.mints = [
+      {
+        url: "https://mint.example",
+        keysets: [
+          { id: "sat-keyset", unit: "sat" },
+          { id: "msat-keyset", unit: "msat" },
+        ],
+      },
+    ];
+    mocks.addProofs.mockResolvedValue(undefined);
+    mocks.removeProofs.mockResolvedValue(undefined);
+    mocks.encodeToken.mockReturnValue("cashuB-token");
     mocks.payParticipationScoreEcash.mockResolvedValue({
       paymentId: "payment-id",
       status: "credited",
@@ -60,7 +102,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     expect(result.kind).toBe("disabled");
-    expect(mocks.getBalance).not.toHaveBeenCalled();
+    expect(mocks.getBaseProofs).not.toHaveBeenCalled();
     expect(mocks.payParticipationScoreEcash).not.toHaveBeenCalled();
   });
 
@@ -76,7 +118,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     expect(result.kind).toBe("sufficient");
-    expect(mocks.getBalance).not.toHaveBeenCalled();
+    expect(mocks.getBaseProofs).not.toHaveBeenCalled();
     expect(mocks.payParticipationScoreEcash).not.toHaveBeenCalled();
   });
 
@@ -86,7 +128,10 @@ describe("ensureParticipationScoreForNextMatch", () => {
       balance: -2,
       matchDebitScore: 1,
     });
-    mocks.getBalance.mockResolvedValue(1);
+    mocks.getBaseProofs.mockResolvedValue([
+      { id: "sat-keyset", amount: 1, secret: "sat-proof", C: "sat-C" },
+      { id: "msat-keyset", amount: 10_000, secret: "msat-proof", C: "msat-C" },
+    ]);
 
     const result = await ensureParticipationScoreForNextMatch({
       mintUrl: "https://mint.example",
@@ -101,12 +146,29 @@ describe("ensureParticipationScoreForNextMatch", () => {
     expect(mocks.payParticipationScoreEcash).not.toHaveBeenCalled();
   });
 
-  it("spends exact regular sats and pays Score with a caller supplied id", async () => {
+  it("spends exact sat-keyset proofs unchanged and pays Score with a caller supplied id", async () => {
+    const satProofs = [
+      { id: "sat-keyset", amount: 10, secret: "sat-proof", C: "sat-C" },
+    ];
+    const msatProof = {
+      id: "msat-keyset",
+      amount: 10_000,
+      secret: "msat-proof",
+      C: "msat-C",
+    };
+    const wallet = {
+      send: vi.fn().mockResolvedValue({
+        keep: [],
+        send: [{ id: "sat-keyset", amount: 2, secret: "sat-send", C: "sat-send-C" }],
+      }),
+    };
     mocks.getParticipationScore.mockResolvedValue({
       ...baseScore,
       balance: -1,
       matchDebitScore: 1,
     });
+    mocks.getWalletForUnit.mockResolvedValue(wallet);
+    mocks.getBaseProofs.mockResolvedValue([...satProofs, msatProof]);
 
     const result = await ensureParticipationScoreForNextMatch({
       mintUrl: "https://mint.example",
@@ -114,8 +176,18 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     expect(result.kind).toBe("paid");
-    expect(mocks.spendRegularSatsAsToken).toHaveBeenCalledWith(
-      2,
+    expect(mocks.getBaseProofs).toHaveBeenCalledWith("https://mint.example", {
+      baseAsset: "sat",
+    });
+    expect(mocks.getWalletForUnit).toHaveBeenCalledWith(
+      "https://mint.example",
+      "sat",
+    );
+    expect(wallet.send).toHaveBeenCalledWith(2, satProofs);
+    expect(wallet.send).not.toHaveBeenCalledWith(2_000, satProofs);
+    expect(mocks.spendRegularSatsAsToken).not.toHaveBeenCalled();
+    expect(mocks.encodeToken).toHaveBeenCalledWith(
+      [{ id: "sat-keyset", amount: 2, secret: "sat-send", C: "sat-send-C" }],
       "https://mint.example",
     );
     expect(mocks.payParticipationScoreEcash).toHaveBeenCalledWith(
@@ -142,7 +214,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     expect(result.kind).toBe("paid");
-    expect(mocks.spendRegularSatsAsToken).toHaveBeenCalledTimes(1);
+    expect(mocks.spendRegularSatsAsToken).not.toHaveBeenCalled();
     expect(mocks.payParticipationScoreEcash).toHaveBeenNthCalledWith(
       1,
       1,

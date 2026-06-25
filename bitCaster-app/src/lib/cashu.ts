@@ -100,6 +100,31 @@ export async function getWallet(
   return _wallet;
 }
 
+/** Return a wallet for an explicit Cashu unit (for non-CTF regular units). */
+export async function getWalletForUnit(
+  mintUrl: string | undefined,
+  unit: string,
+): Promise<CashuWallet> {
+  const normalizedUnit = unit.trim().toLowerCase();
+  if (!normalizedUnit) throw new Error("Cashu unit is required.");
+
+  const store = useWalletStore.getState();
+  if (store.mnemonic) {
+    return store.getWalletForUnit(mintUrl, normalizedUnit);
+  }
+
+  const url = mintUrl ?? _mintUrl;
+  if (!_wallet || url !== _mintUrl || normalizedUnit !== _walletUnit) {
+    _mintUrl = url;
+    _walletUnit = normalizedUnit;
+    const mint = new CashuMint(url);
+    _wallet = new CashuWallet(mint, { unit: normalizedUnit });
+    await _wallet.loadMint();
+  }
+
+  return _wallet;
+}
+
 // ---------------------------------------------------------------------------
 // Basic wallet operations
 // ---------------------------------------------------------------------------
@@ -536,10 +561,14 @@ export async function receiveToken(
 export async function sendProofs(
   amountSats: number,
   proofs: Proof[],
-  mintUrl?: string,
+  options: { mintUrl?: string; baseAsset?: MarketBaseAsset | string | null } = {},
 ): Promise<{ keep: Proof[]; send: Proof[] }> {
-  const wallet = await getWallet(mintUrl);
-  return wallet.send(amountSats, proofs);
+  const wallet = await getWallet(options.mintUrl, options.baseAsset);
+  const amountSubunits = collateralSubunitsFromBaseAmount(
+    amountSats,
+    options.baseAsset,
+  );
+  return wallet.send(amountSubunits, proofs);
 }
 
 /** Spend regular sat proofs into a Cashu token and persist local change. */
@@ -551,7 +580,10 @@ export async function spendRegularSatsAsToken(
     throw new Error("Amount must be a positive integer number of sats.");
   }
   const proofs = await getBaseProofs(mintUrl, { baseAsset: "sat" });
-  const { keep, send } = await sendProofs(amountSats, proofs, mintUrl);
+  const { keep, send } = await sendProofs(amountSats, proofs, {
+    mintUrl,
+    baseAsset: "sat",
+  });
   await removeProofs(proofs.map((proof) => proof.secret));
   if (keep.length > 0) {
     await addProofs(

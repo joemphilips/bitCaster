@@ -65,6 +65,7 @@ interface WalletState {
   _setActiveMint: (url: string) => void
   completeSetup: () => Promise<void>
   getWallet: (mintUrl?: string, baseAsset?: MarketBaseAsset | string | null) => Promise<CashuWallet>
+  getWalletForUnit: (mintUrl: string | undefined, unit: string) => Promise<CashuWallet>
 }
 
 export const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085')
@@ -304,8 +305,15 @@ export const useWalletStore = create<WalletState>()(
         mintUrl?: string,
         baseAsset?: MarketBaseAsset | string | null,
       ): Promise<CashuWallet> => {
-        const url = normalizeUrl(mintUrl ?? get().activeMintUrl)
         const unit = defaultCollateralUnit(baseAsset)
+        return get().getWalletForUnit(mintUrl, unit)
+      },
+
+      getWalletForUnit: async (
+        mintUrl: string | undefined,
+        unit: string,
+      ): Promise<CashuWallet> => {
+        const url = normalizeUrl(mintUrl ?? get().activeMintUrl)
         const cacheKey = walletCacheKey(url, unit)
         const cached = _walletCache.get(cacheKey)
         if (cached) return cached
