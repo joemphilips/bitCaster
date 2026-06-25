@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { User, LogOut, ChevronDown, Wallet, Sparkles, Settings, BookOpen, ExternalLink, Languages, Check } from 'lucide-react'
-import { formatBalance } from '@/lib/format'
+import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 import { useTranslation } from 'react-i18next'
 import { LANGUAGES } from '@/i18n'
 
@@ -34,7 +34,7 @@ export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenu
         {/* User Info */}
         <div className="text-left">
           <div className="text-sm font-medium text-slate-900 dark:text-slate-100">{user.name}</div>
-          <div className="text-xs text-amber-400 font-mono">{formatBalance(user.balance)}</div>
+          <div className="text-xs text-amber-400 font-mono">{formatMarketSubunits(user.balance ?? 0, 'sat')}</div>
         </div>
 
         <ChevronDown className="w-4 h-4 text-slate-500" />

@@ -6,7 +6,7 @@ import { MainNav } from './MainNav'
 import { UserMenu } from './UserMenu'
 import { NotificationBell } from './NotificationBell'
 import { BitCasterLogo } from './BitCasterLogo'
-import { formatBalance } from '@/lib/format'
+import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 
 export interface AppShellProps {
   children: React.ReactNode
@@ -192,7 +192,7 @@ export function AppShell({
                   {user.name}
                 </div>
                 <div className="text-sm text-amber-400 font-mono">
-                  {formatBalance(user.balance)}
+                  {formatMarketSubunits(user.balance ?? 0, 'sat')}
                 </div>
               </div>
             </div>
