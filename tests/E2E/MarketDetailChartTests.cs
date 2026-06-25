@@ -149,11 +149,11 @@ public class MarketDetailChartTests : IAsyncLifetime
                             deadline = "2026-12-31T00:00:00Z",
                             state = "open",
                             createdAt = "2026-06-01T00:00:00Z",
-                            volume24hSats = 0,
-                            volume30dSats = 0,
-                            liquiditySats = 30_000L,
+                            volume24hSubunits = 0,
+                            volume30dSubunits = 0,
+                            liquiditySubunits = 30_000L,
                             traderCount = 3,
-                            volumeLifetimeSats = 30_000L,
+                            volumeLifetimeSubunits = 30_000L,
                             lastTradedPrice = 0.05m,
                             baseAsset = "sat",
                             divisibility = 10_000,
@@ -230,8 +230,8 @@ public class MarketDetailChartTests : IAsyncLifetime
         outcomeId,
         data = new[]
         {
-            new { timestamp = "2026-06-01T00:00:00Z", price, volumeSats = 10_000L, volumeSubunits = 10_000L, source = "initial" },
-            new { timestamp = "2026-06-02T00:00:00Z", price, volumeSats = 10_000L, volumeSubunits = 10_000L, source = "fill" },
+            new { timestamp = "2026-06-01T00:00:00Z", price, volumeSubunits = 10_000L, volumeSubunits = 10_000L, source = "initial" },
+            new { timestamp = "2026-06-02T00:00:00Z", price, volumeSubunits = 10_000L, volumeSubunits = 10_000L, source = "fill" },
         },
     };
 

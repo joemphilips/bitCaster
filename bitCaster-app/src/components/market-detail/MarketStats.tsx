@@ -66,13 +66,13 @@ export function MarketStats({ market }: MarketStatsProps) {
     {
       icon: TrendingUp,
       label: t('market.volume'),
-      value: formatMarketSubunits(market.volumeLifetimeSats, baseAsset),
+      value: formatMarketSubunits(market.volumeLifetimeSubunits, baseAsset),
       color: 'text-blue-500',
     },
     {
       icon: Droplets,
       label: t('market.liquidity'),
-      value: formatMarketSubunits(market.liquiditySats, baseAsset),
+      value: formatMarketSubunits(market.liquiditySubunits, baseAsset),
       color: 'text-cyan-500',
     },
     {

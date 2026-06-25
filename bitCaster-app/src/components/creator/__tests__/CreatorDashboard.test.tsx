@@ -61,7 +61,7 @@ function emptyStats(): DashboardStats {
     activeMarketsCount: 0,
     resolvedMarketsCount: 0,
     refundedMarketsCount: 0,
-    totalVolumeSats: 0,
+    totalVolumeSubunits: 0,
     totalFeesEarnedSats: 0,
     totalFeesClaimedSats: 0,
     totalFeesUnclaimedSats: 0,
@@ -155,7 +155,7 @@ describe('CreatorDashboard', () => {
     ]
     mockUseCreatorDashboardState.mockReturnValue({
       pubkey: 'a'.repeat(64),
-      stats: { ...emptyStats(), activeMarketsCount: 1, totalVolumeSats: 100_000 },
+      stats: { ...emptyStats(), activeMarketsCount: 1, totalVolumeSubunits: 100_000 },
       markets,
       isLoading: false,
       error: null,

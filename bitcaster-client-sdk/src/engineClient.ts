@@ -181,7 +181,7 @@ export type PriceHistoryTimeframe = '1h' | '24h' | '7d' | '30d' | 'all'
 export interface MarketPriceHistoryPoint {
   timestamp: string
   price: number
-  volumeSats: number
+  volumeSubunits: number
 }
 
 export interface MarketOutcomePriceHistory {

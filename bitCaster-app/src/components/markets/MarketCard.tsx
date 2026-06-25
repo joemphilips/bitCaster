@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Droplet, TrendingUp, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { formatBtc } from '@/lib/format'
 import { getMarketThumbnail } from '@/lib/markets'
 import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import { useBookmarkStore } from '@/stores/bookmarks'
-import { formatPricePercentage } from '@bitcaster/client-sdk/marketUnits'
+import { formatMarketSubunits, formatPricePercentage } from '@bitcaster/client-sdk/marketUnits'
 import type {
   Market,
   YesNoMarket,
@@ -583,7 +582,7 @@ export function MarketCard({
             aria-label={t('market.volume')}
           >
             <TrendingUp className="w-3.5 h-3.5 flex-shrink-0" />
-            <span className="truncate">{formatBtc(market.volumeLifetimeSats)}</span>
+            <span className="truncate">{formatMarketSubunits(market.volumeLifetimeSubunits, market.baseAsset ?? 'sat')}</span>
           </div>
           <div
             className="flex items-center gap-1"
@@ -591,7 +590,7 @@ export function MarketCard({
             aria-label={t('market.liquidity')}
           >
             <Droplet className="w-3.5 h-3.5" />
-            <span className="font-mono font-medium">{formatBtc(market.liquiditySats)}</span>
+            <span className="font-mono font-medium">{formatMarketSubunits(market.liquiditySubunits, market.baseAsset ?? 'sat')}</span>
           </div>
           <button
             onClick={handleBookmark}

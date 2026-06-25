@@ -55,8 +55,8 @@ interface BaseMarket {
   metaTags: string[]
   volume: number
   liquidity: number
-  liquiditySats: number
-  volumeLifetimeSats: number
+  liquiditySubunits: number
+  volumeLifetimeSubunits: number
   closingDate: string
   createdDate: string
   activeSince: string

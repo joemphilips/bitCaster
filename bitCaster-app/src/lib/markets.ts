@@ -241,10 +241,10 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     imageUrl,
     categoryTags: entry.categoryTags ?? [],
     metaTags: [],
-    volume: entry.volumeLifetimeSats ?? 0,
-    liquidity: entry.liquiditySats ?? 0,
-    liquiditySats: entry.liquiditySats ?? 0,
-    volumeLifetimeSats: entry.volumeLifetimeSats ?? 0,
+    volume: entry.volumeLifetimeSubunits ?? 0,
+    liquidity: entry.liquiditySubunits ?? 0,
+    liquiditySubunits: entry.liquiditySubunits ?? 0,
+    volumeLifetimeSubunits: entry.volumeLifetimeSubunits ?? 0,
     closingDate,
     createdDate: entry.createdAt,
     activeSince: entry.createdAt,
@@ -379,10 +379,10 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
       label: id,
       marketCount: 0,
     })),
-    volume: entry.volumeLifetimeSats ?? 0,
-    liquidity: entry.liquiditySats ?? 0,
-    liquiditySats: entry.liquiditySats ?? 0,
-    volumeLifetimeSats: entry.volumeLifetimeSats ?? 0,
+    volume: entry.volumeLifetimeSubunits ?? 0,
+    liquidity: entry.liquiditySubunits ?? 0,
+    liquiditySubunits: entry.liquiditySubunits ?? 0,
+    volumeLifetimeSubunits: entry.volumeLifetimeSubunits ?? 0,
     closingDate: entry.deadline ?? null,
     createdDate: createdAt,
     activeSince: createdAt,
@@ -440,7 +440,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
 /**
  * Resolve the engine catalogue entry for a single `conditionId`. Used by the
  * detail page to read engine-authoritative fields (`outcomes`, `state`,
- * `thumbnailUrl`, `volumeLifetimeSats`, `liquiditySats`).
+ * `thumbnailUrl`, `volumeLifetimeSubunits`, `liquiditySubunits`).
  * Creator-defined outcome order comes from engine registration metadata, not
  * mintd's one-vs-rest keysets.
  * Returns `null` when the engine has no record of the market or the request
@@ -633,7 +633,7 @@ function normalizePricePoint(
   return {
     timestamp: point.timestamp,
     price: priceNumeratorToPercent(point.price, divisibility),
-    volume: point.volumeSubunits ?? point.volumeSats,
+    volume: point.volumeSubunits,
     source: point.source,
   };
 }

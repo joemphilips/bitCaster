@@ -69,7 +69,7 @@ function buildCreatedMarket(
     createdDate: stored.createdAt,
     baseAsset: normalizeMarketBaseAsset(stored.baseAsset),
     divisibility: normalizeMarketDivisibility(stored.divisibility),
-    volume: backend?.totalVolumeSats ?? 0,
+    volume: backend?.totalVolumeSubunits ?? 0,
     creatorFeesEarned: 0,
     creatorFeePercent: stored.creatorFeePercent,
     oracle: stored.oracle,
@@ -81,7 +81,7 @@ function emptyStats(): DashboardStats {
     activeMarketsCount: 0,
     resolvedMarketsCount: 0,
     refundedMarketsCount: 0,
-    totalVolumeSats: 0,
+    totalVolumeSubunits: 0,
     totalFeesEarnedSats: 0,
     totalFeesClaimedSats: 0,
     totalFeesUnclaimedSats: 0,
@@ -175,7 +175,7 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
           base.refundedMarketsCount += 1
           break
       }
-      base.totalVolumeSats += market.volume
+      base.totalVolumeSubunits += market.volume
       base.totalFeesEarnedSats += market.creatorFeesEarned
     }
     return base

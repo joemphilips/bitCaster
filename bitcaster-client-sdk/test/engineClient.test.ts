@@ -60,7 +60,7 @@ test('BitcasterEngineClient.getMarketPriceHistory reads primitive series', async
                 {
                   timestamp: '2026-05-25T10:00:00Z',
                   price: 42,
-                  volumeSats: 100,
+                  volumeSubunits: 100,
                 },
               ],
             },

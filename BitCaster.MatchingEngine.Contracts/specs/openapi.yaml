@@ -1789,7 +1789,6 @@ components:
       required:
         - timestamp
         - price
-        - volumeSats
         - volumeSubunits
         - source
       properties:
@@ -1803,14 +1802,6 @@ components:
             Market price numerator `k`. Valid range is `1 <= k <= D - 1`,
             where `D` is the market's immutable `divisibility`. Current markets
             use D=10000 (0.01% price precision).
-        volumeSats:
-          type: integer
-          format: int64
-          minimum: 0
-          description: >
-            Legacy volume field. For non-sat markets this is market
-            collateral/share subunits, not literal sats. Prefer
-            `volumeSubunits` for new clients.
         volumeSubunits:
           type: integer
           format: int64
@@ -1936,7 +1927,6 @@ components:
         - reserveA
         - reserveB
         - impliedProbability
-        - totalLiquiditySats
         - baseAsset
         - divisibility
         - restingOrderLiquiditySubunits
@@ -1956,10 +1946,6 @@ components:
           type: integer
           minimum: 1
           maximum: 99
-        totalLiquiditySats:
-          type: integer
-          format: int64
-          description: Legacy field. For non-sat markets this is market-base subunits, not satoshis.
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
         divisibility:
@@ -1989,42 +1975,42 @@ components:
       type: object
       required:
         - marketId
-        - totalVolumeSats
+        - totalVolumeSubunits
         - totalTrades
-        - totalLiquiditySats
+        - totalLiquiditySubunits
       properties:
         marketId:
           type: string
           description: The market ID.
-        totalVolumeSats:
+        totalVolumeSubunits:
           type: integer
           format: int64
-          description: Total trading volume in satoshis across all fills.
+          description: Total trading volume in market collateral subunits across all fills.
         totalTrades:
           type: integer
           description: Total number of fills (trades) executed.
-        totalLiquiditySats:
+        totalLiquiditySubunits:
           type: integer
           format: int64
-          description: Total liquidity deposited in satoshis.
+          description: Total liquidity deposited in market collateral subunits.
 
     CreatorMarketEntry:
       type: object
       required:
         - conditionId
-        - totalVolumeSats
+        - totalVolumeSubunits
         - createdAt
         - state
       properties:
         conditionId:
           type: string
           description: The condition ID this market was registered under.
-        totalVolumeSats:
+        totalVolumeSubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
-            Aggregated trading volume in satoshis across every per-outcome
+            Aggregated trading volume in market collateral subunits across every per-outcome
             market belonging to this condition.
         createdAt:
           type: string
@@ -2301,10 +2287,10 @@ components:
         - outcomes
         - state
         - createdAt
-        - volume24hSats
-        - volume30dSats
-        - liquiditySats
-        - volumeLifetimeSats
+        - volume24hSubunits
+        - volume30dSubunits
+        - liquiditySubunits
+        - volumeLifetimeSubunits
         - categoryTags
         - lastSuccessfulRefreshAt
         - baseAsset
@@ -2385,34 +2371,31 @@ components:
           format: date-time
           description: >
             When the market was registered with the matching engine.
-        volume24hSats:
+        volume24hSubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Trading volume over the last 24 hours in the market collateral's
-            base subunits: msat for sat markets, cents (`usd`) for USD markets. The
-            `Sats` suffix is retained for wire compatibility. Drives the
-            `Trending` sort dimension.
-        volume30dSats:
+            base subunits: msat for sat markets, cents (`usd`) for USD markets.
+            Drives the `Trending` sort dimension.
+        volume30dSubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Trading volume over the last 30 days in the market collateral's
-            base subunits: msat for sat markets, cents (`usd`) for USD markets. The
-            `Sats` suffix is retained for wire compatibility. Drives the
-            `Popular` sort dimension.
-        liquiditySats:
+            base subunits: msat for sat markets, cents (`usd`) for USD markets.
+            Drives the `Popular` sort dimension.
+        liquiditySubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Total face amount of currently-resting orders across the market's
             order books, denominated in the market collateral's base subunits:
-            msat for sat markets, cents (`usd`) for USD markets. The `Sats` suffix is
-            retained for wire compatibility.
-        volumeLifetimeSats:
+            msat for sat markets, cents (`usd`) for USD markets.
+        volumeLifetimeSubunits:
           type: integer
           format: int64
           minimum: 0

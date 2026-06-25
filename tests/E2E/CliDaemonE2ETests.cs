@@ -183,7 +183,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         Assert.False(string.IsNullOrWhiteSpace(tradeId));
         Assert.Equal("Mint", fill.GetProperty("path").GetString());
         Assert.Equal("Mint", fill.GetProperty("settlementKind").GetString());
-        Assert.Equal(100, fill.GetProperty("outcomeFaceAmountSats").GetInt32());
+        Assert.Equal(100, fill.GetProperty("outcomeFaceAmountSubunits").GetInt32());
         Assert.Equal(50, fill.GetProperty("quotePaymentSats").GetInt32());
         Assert.Equal(condition.NoOutcomeSetId, fill.GetProperty("sellerKeepOutcomeSetId").GetString());
         Assert.Equal(condition.YesOutcomeSetId, fill.GetProperty("sellerLockOutcomeSetId").GetString());
@@ -198,7 +198,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 expectedRole: "seller",
                 sellerKeepOutcomeSetId: condition.NoOutcomeSetId,
                 sellerLockOutcomeSetId: condition.YesOutcomeSetId,
-                outcomeFaceAmountSats: 100,
+                outcomeFaceAmountSubunits: 100,
                 quotePaymentSats: 50),
             "resting maker mint TradeCreated");
         using var takerTrade = await WaitForTradeRecordAsync(
@@ -210,7 +210,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 expectedRole: "buyer",
                 sellerKeepOutcomeSetId: condition.NoOutcomeSetId,
                 sellerLockOutcomeSetId: condition.YesOutcomeSetId,
-                outcomeFaceAmountSats: 100,
+                outcomeFaceAmountSubunits: 100,
                 quotePaymentSats: 50),
             "incoming taker mint TradeCreated");
 
@@ -276,7 +276,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         Assert.False(string.IsNullOrWhiteSpace(tradeId));
         Assert.Equal("Mint", fill.GetProperty("path").GetString());
         Assert.Equal("Mint", fill.GetProperty("settlementKind").GetString());
-        Assert.Equal(100, fill.GetProperty("outcomeFaceAmountSats").GetInt32());
+        Assert.Equal(100, fill.GetProperty("outcomeFaceAmountSubunits").GetInt32());
         Assert.Equal(45, fill.GetProperty("quotePaymentSats").GetInt32());
         Assert.Equal(makerOutcomeSetId, fill.GetProperty("sellerKeepOutcomeSetId").GetString());
         Assert.Equal(takerOutcomeSetId, fill.GetProperty("sellerLockOutcomeSetId").GetString());
@@ -291,7 +291,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 expectedRole: "seller",
                 sellerKeepOutcomeSetId: makerOutcomeSetId,
                 sellerLockOutcomeSetId: takerOutcomeSetId,
-                outcomeFaceAmountSats: 100,
+                outcomeFaceAmountSubunits: 100,
                 quotePaymentSats: 45),
             "categorical resting maker mint TradeCreated");
         using var takerTrade = await WaitForTradeRecordAsync(
@@ -303,7 +303,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 expectedRole: "buyer",
                 sellerKeepOutcomeSetId: makerOutcomeSetId,
                 sellerLockOutcomeSetId: takerOutcomeSetId,
-                outcomeFaceAmountSats: 100,
+                outcomeFaceAmountSubunits: 100,
                 quotePaymentSats: 45),
             "categorical incoming taker mint TradeCreated");
 
@@ -407,11 +407,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var takerOutcomeSetId = condition.NoOutcomeSetId;
         var makerMarketId = $"{condition.ConditionId}-{makerOutcomeSetId}";
         var takerMarketId = $"{condition.ConditionId}-{takerOutcomeSetId}";
-        const int faceAmountSats = 100;
+        const int faceAmountSubunits = 100;
         const int makerFundingSats = 210;
         const int makerPrice = 1;
         const int takerPrice = 99;
-        var expectedSpendableOutcomeSats = SpendableCtfSats(faceAmountSats);
+        var expectedSpendableOutcomeSats = SpendableCtfSats(faceAmountSubunits);
 
         var playwright = makerKind == TradingClientKind.Gui || takerKind == TradingClientKind.Gui
             ? await Playwright.CreateAsync()
@@ -438,16 +438,16 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 "77".PadRight(64, '7'));
 
             await maker.FundSatsAsync(makerFundingSats);
-            await taker.FundSatsAsync(faceAmountSats);
+            await taker.FundSatsAsync(faceAmountSubunits);
 
             var makerOrderId = await maker.SubmitRestingComplementaryMakerBuyAsync(
                 condition.ConditionId,
                 makerOutcomeSetId,
                 makerMarketId,
                 makerPrice,
-                faceAmountSats,
+                faceAmountSubunits,
                 makerPreflightSplit);
-            await WaitForEngineBidAsync(makerMarketId, faceAmountSats);
+            await WaitForEngineBidAsync(makerMarketId, faceAmountSubunits);
             if (makerPreflightSplit)
             {
                 await maker.AssertReservedOutcomeProofsAsync(
@@ -465,7 +465,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 takerOutcomeSetId,
                 takerMarketId,
                 takerPrice,
-                faceAmountSats);
+                faceAmountSubunits);
 
             await maker.RefreshMatchedOrderAsync(makerMarketId, makerOrderId, tradeId);
             await maker.WaitConfirmedAsync(tradeId);
@@ -498,11 +498,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var makerOutcomeSetId = CanonicalOutcomeSet(condition.PrimitiveOutcomeSetIds.Skip(1));
         var makerMarketId = $"{condition.ConditionId}-{takerOutcomeSetId}";
         var takerMarketId = $"{condition.ConditionId}-{takerOutcomeSetId}";
-        const int faceAmountSats = 100;
+        const int faceAmountSubunits = 100;
         const int makerFundingSats = 210;
         const int makerPrice = 1;
         const int takerPrice = 99;
-        var expectedSpendableOutcomeSats = SpendableCtfSats(faceAmountSats);
+        var expectedSpendableOutcomeSats = SpendableCtfSats(faceAmountSubunits);
 
         var playwright = await Playwright.CreateAsync();
         IBrowser? browser = null;
@@ -523,17 +523,17 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 "99".PadRight(64, '9'));
 
             await maker.FundSatsAsync(makerFundingSats);
-            await taker.FundSatsAsync(faceAmountSats);
+            await taker.FundSatsAsync(faceAmountSubunits);
 
             var makerOrderId = await maker.SubmitRestingComplementaryMakerBuyAsync(
                 condition.ConditionId,
                 makerOutcomeSetId,
                 makerMarketId,
                 makerPrice,
-                faceAmountSats,
+                faceAmountSubunits,
                 preflightSplit: true,
                 displayedOutcomeSetId: takerOutcomeSetId);
-            await WaitForEngineAskAsync(makerMarketId, faceAmountSats);
+            await WaitForEngineAskAsync(makerMarketId, faceAmountSubunits);
 
             await maker.AssertReservedOutcomeProofsAsync(
                 condition.ConditionId,
@@ -549,7 +549,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 takerOutcomeSetId,
                 takerMarketId,
                 takerPrice,
-                faceAmountSats);
+                faceAmountSubunits);
 
             try
             {
@@ -589,7 +589,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             titlePrefix: "P28 boundary under face");
         var outcomeSetId = condition.PrimitiveOutcomeSetIds[0];
         var marketId = $"{condition.ConditionId}-{outcomeSetId}";
-        const int faceAmountSats = 100;
+        const int faceAmountSubunits = 100;
         const int limitPrice = 40;
         const int makerFundingSats = 50;
 
@@ -617,7 +617,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 condition.ConditionId,
                 outcomeSetId,
                 limitPrice,
-                faceAmountSats,
+                faceAmountSubunits,
                 consoleMessages);
             AssertNoForbiddenBrowserConsole(consoleMessages);
         }
@@ -637,7 +637,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             titlePrefix: "P28 boundary funded");
         var outcomeSetId = condition.PrimitiveOutcomeSetIds[0];
         var marketId = $"{condition.ConditionId}-{outcomeSetId}";
-        const int faceAmountSats = 100;
+        const int faceAmountSubunits = 100;
         const int limitPrice = 40;
         const int makerFundingSats = 210;
 
@@ -666,10 +666,10 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                 outcomeSetId,
                 marketId,
                 limitPrice,
-                faceAmountSats,
+                faceAmountSubunits,
                 preflight: true,
                 consoleMessages);
-            await WaitForEngineBidAsync(marketId, faceAmountSats);
+            await WaitForEngineBidAsync(marketId, faceAmountSubunits);
             AssertNoForbiddenBrowserConsole(consoleMessages);
         }
         finally
@@ -918,7 +918,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var condition = await FindBinaryConditionAsync();
         var makerMarketId = $"{condition.ConditionId}-{condition.NoOutcomeSetId}";
         var takerMarketId = $"{condition.ConditionId}-{condition.YesOutcomeSetId}";
-        const int faceAmountSats = 100;
+        const int faceAmountSubunits = 100;
         const int quoteAmountSats = 50;
         const int makerFundingSats = 210;
         var takerFundingSats = GrossCtfFaceAmountForSpendableSats(quoteAmountSats);
@@ -946,7 +946,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             condition.NoOutcomeSetId,
             "Buy",
             "50",
-            faceAmountSats.ToString(),
+            faceAmountSubunits.ToString(),
             "GTC",
         ]);
         Assert.True(makerSubmit.RootElement.GetProperty("ok").GetBoolean());
@@ -958,7 +958,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             condition.YesOutcomeSetId,
             "Buy",
             "50",
-            faceAmountSats.ToString(),
+            faceAmountSubunits.ToString(),
             "FAK",
         ]);
         Assert.True(takerSubmit.RootElement.GetProperty("ok").GetBoolean());
@@ -984,7 +984,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var condition = await FindBinaryConditionAsync();
         var makerMarketId = $"{condition.ConditionId}-{condition.NoOutcomeSetId}";
         var takerMarketId = $"{condition.ConditionId}-{condition.YesOutcomeSetId}";
-        const int faceAmountSats = 100;
+        const int faceAmountSubunits = 100;
         const int quoteAmountSats = 50;
         const int makerFundingSats = 210;
         var takerFundingSats = GrossCtfFaceAmountForSpendableSats(quoteAmountSats);
@@ -1012,7 +1012,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             condition.NoOutcomeSetId,
             "Buy",
             "50",
-            faceAmountSats.ToString(),
+            faceAmountSubunits.ToString(),
             "GTC",
         ]);
         Assert.True(makerSubmit.RootElement.GetProperty("ok").GetBoolean());
@@ -1024,7 +1024,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             condition.YesOutcomeSetId,
             "Buy",
             "50",
-            faceAmountSats.ToString(),
+            faceAmountSubunits.ToString(),
             "FAK",
         ]);
         Assert.True(takerSubmit.RootElement.GetProperty("ok").GetBoolean());
@@ -1051,12 +1051,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var condition = await FindFundableOutcomeAsync();
         var marketId = $"{condition.ConditionId}-{condition.OutcomeSetId}";
         const int amountSats = 100;
-        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
+        var sellerOutcomeFaceAmountSubunits = GrossCtfFaceAmountForSpendableSats(amountSats);
         const string price = "50";
 
         var sellerOutcomeToken = await MintTokenAsync(
             "outcome",
-            sellerOutcomeFaceAmountSats,
+            sellerOutcomeFaceAmountSubunits,
             condition.ConditionId,
             condition.OutcomeSetId);
         using var sellerReceive = await RunCliJsonAsync(seller, [
@@ -1135,12 +1135,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
-        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
+        var sellerOutcomeFaceAmountSubunits = GrossCtfFaceAmountForSpendableSats(amountSats);
         const string price = "50";
 
         var sellerOutcomeToken = await MintTokenAsync(
             "outcome",
-            sellerOutcomeFaceAmountSats,
+            sellerOutcomeFaceAmountSubunits,
             condition.ConditionId,
             tradingOutcomeSetId);
         using var sellerReceive = await RunCliJsonAsync(seller, [
@@ -1184,12 +1184,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
-        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
+        var sellerOutcomeFaceAmountSubunits = GrossCtfFaceAmountForSpendableSats(amountSats);
         const string price = "50";
 
         var sellerOutcomeToken = await MintTokenAsync(
             "outcome",
-            sellerOutcomeFaceAmountSats,
+            sellerOutcomeFaceAmountSubunits,
             condition.ConditionId,
             tradingOutcomeSetId);
         using var sellerReceive = await RunCliJsonAsync(seller, [
@@ -1235,12 +1235,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
-        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
+        var sellerOutcomeFaceAmountSubunits = GrossCtfFaceAmountForSpendableSats(amountSats);
         const string price = "50";
 
         var sellerOutcomeToken = await MintTokenAsync(
             "outcome",
-            sellerOutcomeFaceAmountSats,
+            sellerOutcomeFaceAmountSubunits,
             condition.ConditionId,
             tradingOutcomeSetId);
         using var sellerReceive = await RunCliJsonAsync(seller, [
@@ -1335,12 +1335,12 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
-        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
+        var sellerOutcomeFaceAmountSubunits = GrossCtfFaceAmountForSpendableSats(amountSats);
         const int price = 50;
         var expectedSellerSpendableSats = SpendableCtfSats(amountSats * price / 100);
         var sellerOutcomeProofs = await MintProofsJsonAsync(
             "outcome",
-            sellerOutcomeFaceAmountSats,
+            sellerOutcomeFaceAmountSubunits,
             condition.ConditionId,
             tradingOutcomeSetId);
 
@@ -1436,11 +1436,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
-        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
+        var sellerOutcomeFaceAmountSubunits = GrossCtfFaceAmountForSpendableSats(amountSats);
         const int price = 50;
         var sellerOutcomeProofs = await MintProofsJsonAsync(
             "outcome",
-            sellerOutcomeFaceAmountSats,
+            sellerOutcomeFaceAmountSubunits,
             condition.ConditionId,
             tradingOutcomeSetId);
 
@@ -1530,11 +1530,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
-        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
+        var sellerOutcomeFaceAmountSubunits = GrossCtfFaceAmountForSpendableSats(amountSats);
         const int price = 50;
         var sellerOutcomeProofs = await MintProofsJsonAsync(
             "outcome",
-            sellerOutcomeFaceAmountSats,
+            sellerOutcomeFaceAmountSubunits,
             condition.ConditionId,
             tradingOutcomeSetId);
 
@@ -1626,11 +1626,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         var tradingOutcomeSetId = condition.YesOutcomeSetId;
         var marketId = $"{condition.ConditionId}-{tradingOutcomeSetId}";
         const int amountSats = 100;
-        var sellerOutcomeFaceAmountSats = GrossCtfFaceAmountForSpendableSats(amountSats);
+        var sellerOutcomeFaceAmountSubunits = GrossCtfFaceAmountForSpendableSats(amountSats);
         const int price = 50;
         var sellerOutcomeProofs = await MintProofsJsonAsync(
             "outcome",
-            sellerOutcomeFaceAmountSats,
+            sellerOutcomeFaceAmountSubunits,
             condition.ConditionId,
             tradingOutcomeSetId);
 
@@ -3244,13 +3244,13 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     // is intentionally decoupled from market divisibility; sat markets use
     // 1,000,000 msat subunits per displayed share. Convert the wire face amount
     // the assertions expect into the share count the UI wants.
-    private static int ToDisplayShares(int faceAmountSats)
+    private static int ToDisplayShares(int faceAmountSubunits)
     {
         Assert.True(
-            faceAmountSats > 0 && faceAmountSats % SatShareFaceSubunits == 0,
-            $"faceAmountSats={faceAmountSats} is not a positive multiple of {SatShareFaceSubunits}; " +
+            faceAmountSubunits > 0 && faceAmountSubunits % SatShareFaceSubunits == 0,
+            $"faceAmountSubunits={faceAmountSubunits} is not a positive multiple of {SatShareFaceSubunits}; " +
             "the browser trade ticket can only express whole display shares.");
-        return faceAmountSats / SatShareFaceSubunits;
+        return faceAmountSubunits / SatShareFaceSubunits;
     }
 
     private static async Task FillNumberInputAsync(ILocator input, int value)
@@ -3782,7 +3782,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         string expectedRole,
         string sellerKeepOutcomeSetId,
         string sellerLockOutcomeSetId,
-        int outcomeFaceAmountSats,
+        int outcomeFaceAmountSubunits,
         int quotePaymentSats)
     {
         return record.TryGetProperty("marketId", out var marketId)
@@ -3795,8 +3795,8 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                && keep.GetString() == sellerKeepOutcomeSetId
                && record.TryGetProperty("sellerLockOutcomeSetId", out var locked)
                && locked.GetString() == sellerLockOutcomeSetId
-               && record.TryGetProperty("outcomeFaceAmountSats", out var face)
-               && face.GetInt32() == outcomeFaceAmountSats
+               && record.TryGetProperty("outcomeFaceAmountSubunits", out var face)
+               && face.GetInt32() == outcomeFaceAmountSubunits
                && record.TryGetProperty("quotePaymentSats", out var quote)
                && quote.GetInt32() == quotePaymentSats;
     }
@@ -3844,17 +3844,17 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         return doc.RootElement.GetProperty("condition_id").GetString();
     }
 
-    private static int SpendableCtfSats(int faceAmountSats) =>
-        faceAmountSats - InputFeeSats(faceAmountSats);
+    private static int SpendableCtfSats(int faceAmountSubunits) =>
+        faceAmountSubunits - InputFeeSats(faceAmountSubunits);
 
     private static int GrossCtfFaceAmountForSpendableSats(int spendableAmountSats)
     {
-        var faceAmountSats = spendableAmountSats;
-        while (SpendableCtfSats(SpendableCtfSats(faceAmountSats)) < spendableAmountSats)
+        var faceAmountSubunits = spendableAmountSats;
+        while (SpendableCtfSats(SpendableCtfSats(faceAmountSubunits)) < spendableAmountSats)
         {
-            faceAmountSats++;
+            faceAmountSubunits++;
         }
-        return faceAmountSats;
+        return faceAmountSubunits;
     }
 
     private static int InputFeeSats(int amountSats) =>
@@ -4081,7 +4081,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             description,
             outcomes = EqualProbabilityOutcomes(outcomes),
             outcomeType = "categorical",
-            liquiditySats = 0,
+            liquiditySubunits = 0,
             categoryTags = new[] { "qa" },
             oracleAnnouncementHex = announcementHex,
         };
@@ -4139,7 +4139,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             description,
             outcomes = EqualProbabilityOutcomes(outcomes),
             outcomeType = "yesno",
-            liquiditySats = 0,
+            liquiditySubunits = 0,
             categoryTags = new[] { "qa" },
             oracleAnnouncementHex = announcementHex,
         };
@@ -4658,13 +4658,13 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                                 createdAt = now.AddMinutes(-5),
                                 lastSuccessfulRefreshAt = now,
                                 lastTradedPrice = (double?)null,
-                                liquiditySats = 0,
+                                liquiditySubunits = 0,
                                 categoryTags = Array.Empty<string>(),
                                 thumbnailUrl = "",
                                 traderCount = 0,
-                                volume24hSats = 0,
-                                volume30dSats = 0,
-                                volumeLifetimeSats = 0,
+                                volume24hSubunits = 0,
+                                volume30dSubunits = 0,
+                                volumeLifetimeSubunits = 0,
                             },
                         },
                         nextCursor = (string?)null,

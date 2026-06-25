@@ -120,6 +120,7 @@ export interface RelatedMarket {
   imageUrl?: string
   currentOdds?: CurrentOdds
   volume: number
+  baseAsset?: 'sat' | 'usd' | 'jpy'
   closingDate: string
 }
 
@@ -134,8 +135,8 @@ interface BaseMarketDetail {
   categoryTags: CategoryTag[]
   volume: number
   liquidity: number
-  liquiditySats: number
-  volumeLifetimeSats: number
+  liquiditySubunits: number
+  volumeLifetimeSubunits: number
   closingDate: string | null
   createdDate: string
   activeSince: string

@@ -1532,11 +1532,10 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketPriceHistoryPoint
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketPriceHistoryPoint(int @price, MarketPriceHistoryPointSource @source, System.DateTimeOffset @timestamp, long @volumeSats, long @volumeSubunits)
+        public MarketPriceHistoryPoint(int @price, MarketPriceHistoryPointSource @source, System.DateTimeOffset @timestamp, long @volumeSubunits)
         {
             this.Timestamp = @timestamp;
             this.Price = @price;
-            this.VolumeSats = @volumeSats;
             this.VolumeSubunits = @volumeSubunits;
             this.Source = @source;
         }
@@ -1550,13 +1549,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("price")]
         public int Price { get; }
-
-        /// <summary>
-        /// Legacy volume field. For non-sat markets this is market collateral/share subunits, not literal sats. Prefer `volumeSubunits` for new clients.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("volumeSats")]
-        public long VolumeSats { get; }
 
         /// <summary>
         /// Volume represented in the market's collateral/share subunits. Initial anchor points always carry zero volume.
@@ -1784,13 +1776,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class LiquidityStateResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public LiquidityStateResponse(int @activeOrders, BaseAsset @baseAsset, long @completeSetLiquiditySubunits, int @divisibility, int @impliedProbability, string @marketId, long @reserveA, long @reserveB, long @restingOrderLiquiditySubunits, long @totalLiquiditySats, long @totalLiquiditySubunits)
+        public LiquidityStateResponse(int @activeOrders, BaseAsset @baseAsset, long @completeSetLiquiditySubunits, int @divisibility, int @impliedProbability, string @marketId, long @reserveA, long @reserveB, long @restingOrderLiquiditySubunits, long @totalLiquiditySubunits)
         {
             this.MarketId = @marketId;
             this.ReserveA = @reserveA;
             this.ReserveB = @reserveB;
             this.ImpliedProbability = @impliedProbability;
-            this.TotalLiquiditySats = @totalLiquiditySats;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
             this.RestingOrderLiquiditySubunits = @restingOrderLiquiditySubunits;
@@ -1810,12 +1801,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("impliedProbability")]
         public int ImpliedProbability { get; }
-
-        /// <summary>
-        /// Legacy field. For non-sat markets this is market-base subunits, not satoshis.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySats")]
-        public long TotalLiquiditySats { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
@@ -1867,12 +1852,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketMetadataSnapshot
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketMetadataSnapshot(string @marketId, long @totalLiquiditySats, int @totalTrades, long @totalVolumeSats)
+        public MarketMetadataSnapshot(string @marketId, long @totalLiquiditySubunits, int @totalTrades, long @totalVolumeSubunits)
         {
             this.MarketId = @marketId;
-            this.TotalVolumeSats = @totalVolumeSats;
+            this.TotalVolumeSubunits = @totalVolumeSubunits;
             this.TotalTrades = @totalTrades;
-            this.TotalLiquiditySats = @totalLiquiditySats;
+            this.TotalLiquiditySubunits = @totalLiquiditySubunits;
         }
 
         /// <summary>
@@ -1882,10 +1867,10 @@ namespace BitCaster.MatchingEngine.Contracts
         public string MarketId { get; }
 
         /// <summary>
-        /// Total trading volume in satoshis across all fills.
+        /// Total trading volume in market collateral subunits across all fills.
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("totalVolumeSats")]
-        public long TotalVolumeSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("totalVolumeSubunits")]
+        public long TotalVolumeSubunits { get; }
 
         /// <summary>
         /// Total number of fills (trades) executed.
@@ -1894,10 +1879,10 @@ namespace BitCaster.MatchingEngine.Contracts
         public int TotalTrades { get; }
 
         /// <summary>
-        /// Total liquidity deposited in satoshis.
+        /// Total liquidity deposited in market collateral subunits.
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySats")]
-        public long TotalLiquiditySats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySubunits")]
+        public long TotalLiquiditySubunits { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 
@@ -1914,10 +1899,10 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreatorMarketEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreatorMarketEntry(string @conditionId, System.DateTimeOffset @createdAt, CreatorMarketEntryState @state, long @totalVolumeSats)
+        public CreatorMarketEntry(string @conditionId, System.DateTimeOffset @createdAt, CreatorMarketEntryState @state, long @totalVolumeSubunits)
         {
             this.ConditionId = @conditionId;
-            this.TotalVolumeSats = @totalVolumeSats;
+            this.TotalVolumeSubunits = @totalVolumeSubunits;
             this.CreatedAt = @createdAt;
             this.State = @state;
         }
@@ -1929,11 +1914,11 @@ namespace BitCaster.MatchingEngine.Contracts
         public string ConditionId { get; }
 
         /// <summary>
-        /// Aggregated trading volume in satoshis across every per-outcome market belonging to this condition.
+        /// Aggregated trading volume in market collateral subunits across every per-outcome market belonging to this condition.
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("totalVolumeSats")]
-        public long TotalVolumeSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("totalVolumeSubunits")]
+        public long TotalVolumeSubunits { get; }
 
         /// <summary>
         /// When this market was registered with the matching engine.
@@ -2429,7 +2414,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySats, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSats, long @volume30dSats, long @volumeLifetimeSats)
+        public MarketCatalogueEntry(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -2442,10 +2427,10 @@ namespace BitCaster.MatchingEngine.Contracts
             this.FinalOutcome = @finalOutcome;
             this.State = @state;
             this.CreatedAt = @createdAt;
-            this.Volume24hSats = @volume24hSats;
-            this.Volume30dSats = @volume30dSats;
-            this.LiquiditySats = @liquiditySats;
-            this.VolumeLifetimeSats = @volumeLifetimeSats;
+            this.Volume24hSubunits = @volume24hSubunits;
+            this.Volume30dSubunits = @volume30dSubunits;
+            this.LiquiditySubunits = @liquiditySubunits;
+            this.VolumeLifetimeSubunits = @volumeLifetimeSubunits;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
             this.LastTradedPrice = @lastTradedPrice;
@@ -2532,32 +2517,32 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset CreatedAt { get; }
 
         /// <summary>
-        /// Trading volume over the last 24 hours in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Trending` sort dimension.
+        /// Trading volume over the last 24 hours in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. Drives the `Trending` sort dimension.
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("volume24hSats")]
-        public long Volume24hSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("volume24hSubunits")]
+        public long Volume24hSubunits { get; }
 
         /// <summary>
-        /// Trading volume over the last 30 days in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Popular` sort dimension.
+        /// Trading volume over the last 30 days in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. Drives the `Popular` sort dimension.
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("volume30dSats")]
-        public long Volume30dSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("volume30dSubunits")]
+        public long Volume30dSubunits { get; }
 
         /// <summary>
-        /// Total face amount of currently-resting orders across the market's order books, denominated in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. The `Sats` suffix is retained for wire compatibility.
+        /// Total face amount of currently-resting orders across the market's order books, denominated in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets.
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
-        public long LiquiditySats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("liquiditySubunits")]
+        public long LiquiditySubunits { get; }
 
         /// <summary>
         /// Cumulative settled collateral face amount of all fills in the market's history.
         /// <br/>
         /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("volumeLifetimeSats")]
-        public long VolumeLifetimeSats { get; }
+        [System.Text.Json.Serialization.JsonPropertyName("volumeLifetimeSubunits")]
+        public long VolumeLifetimeSubunits { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]

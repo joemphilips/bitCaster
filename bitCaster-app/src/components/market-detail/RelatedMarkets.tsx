@@ -1,7 +1,7 @@
 import { ChevronRight, TrendingUp } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { RelatedMarket } from '@/types/market-detail'
-import { formatBtc } from '@/lib/format'
+import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 
 interface RelatedMarketsProps {
   markets: RelatedMarket[]
@@ -60,7 +60,7 @@ function RelatedMarketCard({
       <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
         <div className="flex items-center gap-1">
           <TrendingUp className="w-3.5 h-3.5" />
-          <span>{formatBtc(market.volume)}</span>
+          <span>{formatMarketSubunits(market.volume, market.baseAsset ?? 'sat')}</span>
         </div>
         <span>{formatClosingDate(market.closingDate, t, i18n.language)}</span>
       </div>

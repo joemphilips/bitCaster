@@ -68,11 +68,11 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
                             deadline = (string?)null,
                             state = "open",
                             createdAt = "2026-01-01T00:00:00Z",
-                            volume24hSats = 50_000L,
-                            volume30dSats = 200_000L,
-                            liquiditySats = 150_000L,
+                            volume24hSubunits = 50_000L,
+                            volume30dSubunits = 200_000L,
+                            liquiditySubunits = 150_000L,
                             traderCount = 100,
-                            volumeLifetimeSats = 750_000L,
+                            volumeLifetimeSubunits = 750_000L,
                             lastTradedPrice = (double?)null,
                             categoryTags = new[] { "crypto" },
                             lastSuccessfulRefreshAt = "2026-05-02T09:58:00Z",
@@ -142,9 +142,9 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
                 Body = JsonSerializer.Serialize(new
                 {
                     marketId = "test",
-                    totalVolumeSats = 75000,
+                    totalVolumeSubunits = 75000,
                     totalTrades = 25,
-                    totalLiquiditySats = 200000,
+                    totalLiquiditySubunits = 200000,
                 }),
             });
         });

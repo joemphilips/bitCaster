@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from 'lucide-react'
 import { formatBtc } from '@/lib/format'
+import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 import { buildOracleAttestationEvent } from '@/lib/oracleAttestation'
 import { getOracleAnnouncementEventId, signEnumAttestation } from '@/lib/kormir'
 import { submitOracleAttestation } from '@/lib/markets'
@@ -197,7 +198,7 @@ export function CreatorDashboard() {
               />
               <StatCard
                 label={t('creator.statTotalVolume')}
-                value={formatBtc(stats.totalVolumeSats)}
+                value={formatMarketSubunits(stats.totalVolumeSubunits, 'sat')}
                 subValue={t('creator.statTotalVolumeSub')}
                 icon={<BarChart3 className="h-5 w-5" />}
               />

@@ -15,8 +15,8 @@ const yesNoMarket: YesNoMarket = {
   currentOdds: { yes: 65.0, no: 35.0 },
   volume: 100000,
   liquidity: 50000,
-  liquiditySats: 50000,
-  volumeLifetimeSats: 100000,
+  liquiditySubunits: 50_000,
+  volumeLifetimeSubunits: 100_000,
   closingDate: '2026-12-31T00:00:00Z',
   createdDate: '2026-01-01T00:00:00Z',
   activeSince: '2026-01-01T00:00:00Z',
@@ -39,8 +39,8 @@ const categoricalMarket: CategoricalMarket = {
   ],
   volume: 50000,
   liquidity: 20000,
-  liquiditySats: 20000,
-  volumeLifetimeSats: 50000,
+  liquiditySubunits: 20_000,
+  volumeLifetimeSubunits: 50_000,
   closingDate: '2026-06-30T00:00:00Z',
   createdDate: '2026-01-01T00:00:00Z',
   activeSince: '2026-01-01T00:00:00Z',
@@ -56,6 +56,13 @@ describe('MarketCard', () => {
     expect(screen.getByText('65.00%')).toBeInTheDocument()
     expect(screen.getByText('Buy YES')).toBeInTheDocument()
     expect(screen.getByText('Buy NO')).toBeInTheDocument()
+  })
+
+  it('formats sat-market volume and liquidity from msat subunits', () => {
+    render(<MarketCard market={yesNoMarket} />)
+
+    expect(screen.getByText('100 sats')).toBeInTheDocument()
+    expect(screen.getByText('50 sats')).toBeInTheDocument()
   })
 
   it('renders categorical market with outcome list', () => {

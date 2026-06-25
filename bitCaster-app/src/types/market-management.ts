@@ -6,7 +6,7 @@ export interface DashboardStats {
   activeMarketsCount: number
   resolvedMarketsCount: number
   refundedMarketsCount: number
-  totalVolumeSats: number
+  totalVolumeSubunits: number
   totalFeesEarnedSats: number
   totalFeesClaimedSats: number
   totalFeesUnclaimedSats: number
@@ -77,19 +77,19 @@ export type CreatorMarket = YesNoCreatorMarket | CategoricalCreatorMarket
 
 export interface DailyVolumeDataPoint {
   date: string
-  volumeSats: number
+  volumeSubunits: number
   feesSats: number
 }
 
 export interface WeeklyVolumeDataPoint {
   weekStart: string
-  volumeSats: number
+  volumeSubunits: number
   feesSats: number
 }
 
 export interface MonthlyVolumeDataPoint {
   month: string
-  volumeSats: number
+  volumeSubunits: number
   feesSats: number
 }
 
@@ -102,7 +102,7 @@ export interface VolumeChartData {
 export interface MarketVolumeData {
   marketId: string
   marketTitle: string
-  daily: { date: string; volumeSats: number }[]
+  daily: { date: string; volumeSubunits: number }[]
 }
 
 export type TimeScale = 'daily' | 'weekly' | 'monthly'
@@ -136,7 +136,7 @@ export interface WizardStep2Data {
 }
 
 export interface WizardStep3Data {
-  liquiditySats: number
+  liquiditySubunits: number
   buyFeePercent: number
   sellFeePercent: number
   winFeePercent: number

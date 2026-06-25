@@ -147,21 +147,21 @@ public static class MarketQueryEndpoint
             finalOutcome: null!,
             lastSuccessfulRefreshAt: refreshedAt,
             lastTradedPrice: null,
-            liquiditySats: StubLiquiditySats(c),
+            liquiditySubunits: StubLiquiditySubunits(c),
             outcomes: c.Outcomes,
             state: open ? MarketCatalogueEntryState.Open : MarketCatalogueEntryState.Closed,
             thumbnailUrl: null!,
             title: c.Title,
-            volume24hSats: 0,
-            volume30dSats: 0,
-            volumeLifetimeSats: StubVolumeLifetimeSats(c));
+            volume24hSubunits: 0,
+            volume30dSubunits: 0,
+            volumeLifetimeSubunits: StubVolumeLifetimeSubunits(c));
     }
 
-    private static long StubLiquiditySats(MintdConditionDto c) =>
+    private static long StubLiquiditySubunits(MintdConditionDto c) =>
         25_000L + (StableBucket(c.ConditionId, modulo: 12) * 5_000L);
 
-    private static long StubVolumeLifetimeSats(MintdConditionDto c) =>
-        StubLiquiditySats(c) * (2 + StableBucket(c.ConditionId, modulo: 4));
+    private static long StubVolumeLifetimeSubunits(MintdConditionDto c) =>
+        StubLiquiditySubunits(c) * (2 + StableBucket(c.ConditionId, modulo: 4));
 
     private static int StableBucket(string value, int modulo)
     {

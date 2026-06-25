@@ -366,7 +366,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
             aria-label={t("market.volume")}
           >
             <TrendingUp className="w-3.5 h-3.5" />
-            <span>{formatMarketSubunits(market.volumeLifetimeSats, baseAsset)}</span>
+            <span>{formatMarketSubunits(market.volumeLifetimeSubunits, baseAsset)}</span>
           </div>
           <div
             className="flex items-center gap-1"
@@ -375,7 +375,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           >
             <Droplet className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
-              {formatMarketSubunits(market.liquiditySats, baseAsset)}
+              {formatMarketSubunits(market.liquiditySubunits, baseAsset)}
             </span>
           </div>
           <button

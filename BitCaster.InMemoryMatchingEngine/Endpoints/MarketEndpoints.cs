@@ -130,7 +130,7 @@ public static partial class MarketEndpoints
 
             // Build per-outcome market IDs and mock liquidity pools.
             var marketsCreated = new List<string>();
-            var liquidityPerOutcome = (metadata.LiquiditySats ?? 0) / metadata.Outcomes.Count;
+            var liquidityPerOutcome = (metadata.LiquiditySubunits ?? 0) / metadata.Outcomes.Count;
             var poolEntries = new List<(string MarketId, LiquidityStateResponse Pool)>();
             foreach (var outcome in metadata.Outcomes)
             {
@@ -150,7 +150,7 @@ public static partial class MarketEndpoints
                     reserveA: reserveA,
                     reserveB: reserveB,
                     restingOrderLiquiditySubunits: 0,
-                    totalLiquiditySats: liquidityPerOutcome,
+                    totalLiquiditySubunits: liquidityPerOutcome,
                     totalLiquiditySubunits: liquidityPerOutcome)));
             }
 
@@ -204,7 +204,7 @@ public static partial class MarketEndpoints
                     entries.Add(new CreatorMarketEntry(
                         conditionId: conditionId,
                         createdAt: record.CreatedAt,
-                        totalVolumeSats: 0,
+                        totalVolumeSubunits: 0,
                         state: CreatorMarketEntryState.Open));
                 }
             }

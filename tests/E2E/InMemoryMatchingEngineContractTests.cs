@@ -33,7 +33,7 @@ public sealed class InMemoryMatchingEngineContractTests
         Assert.Equal(800, point.Price);
         Assert.Equal(MarketPriceHistoryPointSource.Initial, point.Source);
         Assert.Equal(now.AddHours(-1), point.Timestamp);
-        Assert.Equal(0, point.VolumeSats);
+        Assert.Equal(0, point.VolumeSubunits);
         Assert.Equal(0, point.VolumeSubunits);
     }
 

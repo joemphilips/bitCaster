@@ -10,9 +10,9 @@ public static class MetadataEndpoints
         {
             return Results.Ok(new MarketMetadataSnapshot(
                 marketId: marketId,
-                totalVolumeSats: 0,
+                totalVolumeSubunits: 0,
                 totalTrades: 0,
-                totalLiquiditySats: 0));
+                totalLiquiditySubunits: 0));
         });
     }
 }

@@ -838,11 +838,6 @@ export interface components {
             price: number;
             /**
              * Format: int64
-             * @description Legacy volume field. For non-sat markets this is market collateral/share subunits, not literal sats. Prefer `volumeSubunits` for new clients.
-             */
-            volumeSats: number;
-            /**
-             * Format: int64
              * @description Volume represented in the market's collateral/share subunits. Initial anchor points always carry zero volume.
              */
             volumeSubunits: number;
@@ -903,11 +898,6 @@ export interface components {
             /** Format: int64 */
             reserveB: number;
             impliedProbability: number;
-            /**
-             * Format: int64
-             * @description Legacy field. For non-sat markets this is market-base subunits, not satoshis.
-             */
-            totalLiquiditySats: number;
             baseAsset: components["schemas"]["BaseAsset"];
             /** @description Immutable price denominator `D`, server-determined. Enum markets use per-market D: sat markets use D=10000 (0.01% price precision, one whole share = 10000 msat = 10 sats); USD markets use D=1000 (0.1% price precision, one whole share = 1000 cents = $10.00). */
             divisibility: number;
@@ -934,25 +924,25 @@ export interface components {
             marketId: string;
             /**
              * Format: int64
-             * @description Total trading volume in satoshis across all fills.
+             * @description Total trading volume in market collateral subunits across all fills.
              */
-            totalVolumeSats: number;
+            totalVolumeSubunits: number;
             /** @description Total number of fills (trades) executed. */
             totalTrades: number;
             /**
              * Format: int64
-             * @description Total liquidity deposited in satoshis.
+             * @description Total liquidity deposited in market collateral subunits.
              */
-            totalLiquiditySats: number;
+            totalLiquiditySubunits: number;
         };
         CreatorMarketEntry: {
             /** @description The condition ID this market was registered under. */
             conditionId: string;
             /**
              * Format: int64
-             * @description Aggregated trading volume in satoshis across every per-outcome market belonging to this condition.
+             * @description Aggregated trading volume in market collateral subunits across every per-outcome market belonging to this condition.
              */
-            totalVolumeSats: number;
+            totalVolumeSubunits: number;
             /**
              * Format: date-time
              * @description When this market was registered with the matching engine.
@@ -1152,24 +1142,24 @@ export interface components {
             createdAt: string;
             /**
              * Format: int64
-             * @description Trading volume over the last 24 hours in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Trending` sort dimension.
+             * @description Trading volume over the last 24 hours in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. Drives the `Trending` sort dimension.
              */
-            volume24hSats: number;
+            volume24hSubunits: number;
             /**
              * Format: int64
-             * @description Trading volume over the last 30 days in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. The `Sats` suffix is retained for wire compatibility. Drives the `Popular` sort dimension.
+             * @description Trading volume over the last 30 days in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. Drives the `Popular` sort dimension.
              */
-            volume30dSats: number;
+            volume30dSubunits: number;
             /**
              * Format: int64
-             * @description Total face amount of currently-resting orders across the market's order books, denominated in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets. The `Sats` suffix is retained for wire compatibility.
+             * @description Total face amount of currently-resting orders across the market's order books, denominated in the market collateral's base subunits: msat for sat markets, cents (`usd`) for USD markets.
              */
-            liquiditySats: number;
+            liquiditySubunits: number;
             /**
              * Format: int64
              * @description Cumulative settled collateral face amount of all fills in the market's history.
              */
-            volumeLifetimeSats: number;
+            volumeLifetimeSubunits: number;
             baseAsset: components["schemas"]["BaseAsset"];
             /**
              * Format: int32

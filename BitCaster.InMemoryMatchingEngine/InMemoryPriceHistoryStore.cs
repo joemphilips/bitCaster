@@ -27,7 +27,7 @@ public sealed class InMemoryPriceHistoryStore
                 price: price,
                 source: MarketPriceHistoryPointSource.Initial,
                 timestamp: timestamp,
-                volumeSats: 0,
+                volumeSubunits: 0,
                 volumeSubunits: 0);
         }
     }
@@ -48,7 +48,7 @@ public sealed class InMemoryPriceHistoryStore
                 price: fill.ExecutionPrice,
                 source: MarketPriceHistoryPointSource.Fill,
                 timestamp: fill.FilledAt,
-                volumeSats: fill.AmountSubunits,
+                volumeSubunits: fill.AmountSubunits,
                 volumeSubunits: fill.AmountSubunits));
             if (points.Count > 1000)
             {
@@ -97,7 +97,7 @@ public sealed class InMemoryPriceHistoryStore
                             price: initial.Price,
                             source: initial.Source,
                             timestamp: since.Value,
-                            volumeSats: initial.VolumeSats,
+                            volumeSubunits: initial.VolumeSubunits,
                             volumeSubunits: initial.VolumeSubunits)
                         : initial);
                 }

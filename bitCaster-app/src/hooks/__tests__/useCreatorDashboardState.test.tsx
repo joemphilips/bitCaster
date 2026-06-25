@@ -84,7 +84,7 @@ describe('useCreatorDashboardState', () => {
       markets: [
         {
           conditionId: CONDITION_A,
-          totalVolumeSats: 50_000,
+          totalVolumeSubunits: 50_000,
           createdAt: '2026-04-10T00:00:00.000Z',
           state: 'open',
         },
@@ -106,7 +106,7 @@ describe('useCreatorDashboardState', () => {
     expect(b.volume).toBe(0)
 
     expect(result.current.stats.activeMarketsCount).toBe(2)
-    expect(result.current.stats.totalVolumeSats).toBe(50_000)
+    expect(result.current.stats.totalVolumeSubunits).toBe(50_000)
     expect(result.current.stats.totalFeesEarnedSats).toBe(0)
   })
 
@@ -141,7 +141,7 @@ describe('useCreatorDashboardState', () => {
       markets: [
         {
           conditionId: CONDITION_A,
-          totalVolumeSats: 75_000,
+          totalVolumeSubunits: 75_000,
           createdAt: '2026-04-10T00:00:00.000Z',
           state: 'closed',
         },
@@ -184,7 +184,7 @@ describe('useCreatorDashboardState', () => {
     expect(result.current.error).toBe('engine unreachable')
     expect(result.current.markets).toHaveLength(1)
     expect(result.current.markets[0].volume).toBe(0)
-    expect(result.current.stats.totalVolumeSats).toBe(0)
+    expect(result.current.stats.totalVolumeSubunits).toBe(0)
   })
 
   it('fetches creator markets under the resolved signer pubkey', async () => {
