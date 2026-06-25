@@ -13,6 +13,7 @@ import { usePartialLockFailuresStore } from '@/stores/partialLockFailures'
 import { usePendingTradesStore } from '@/stores/pendingTrades'
 import { useWalletStore } from '@/stores/wallet'
 import type { PartialLockHeldRecord } from '@bitcaster/client-sdk/swapFailure'
+import { parseCashuProofUnit, type CashuProofUnit } from '@bitcaster/client-sdk/marketUnits'
 
 const PARTIAL_LOCK_REFUND_MARGIN_SECS = 60
 
@@ -50,6 +51,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
     usePartialLockFailuresStore.getState().remove(tradeId)
     return
   }
+  const unit = unitForLockedProofs(locked)
 
   const operationId = `${tradeId}:partial-lock-refund`
   await prepareProofOperation({
@@ -62,6 +64,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
       tradeId,
       refundLocktime: record.refundLocktime,
       affectedKeysets: record.affectedKeysets,
+      unit,
     },
   })
 
@@ -78,7 +81,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
     const fresh = await wallet.receive(
       getEncodedToken({
         mint: mintUrl,
-        unit: 'sat',
+        unit,
         proofs: witnessed as Proof[],
       }),
     )
@@ -87,6 +90,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
       fresh.map((proof) => ({
         ...proof,
         mintUrl,
+        unit,
         ...metadataForRefundedProof(proof, record),
       })),
     )
@@ -98,6 +102,25 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
     await markProofOperationCompleted(operationId, { alreadySpent: [] })
     usePartialLockFailuresStore.getState().remove(tradeId)
   }
+}
+
+function unitForLockedProofs(proofs: Array<Proof & { unit?: unknown }>): CashuProofUnit {
+  const units = new Set<CashuProofUnit>()
+  for (const proof of proofs) {
+    const unit = typeof proof.unit === 'string' ? parseCashuProofUnit(proof.unit) : null
+    if (!unit) {
+      throw new Error(
+        `Cannot refund partial lock without exact Cashu unit for keyset ${proof.id ?? '<missing>'}`,
+      )
+    }
+    units.add(unit)
+  }
+  if (units.size !== 1) {
+    throw new Error(`Cannot refund partial lock with mixed Cashu units: ${[...units].join(',')}`)
+  }
+  const unit = [...units][0]
+  if (!unit) throw new Error('Cannot refund partial lock without locked proofs')
+  return unit
 }
 
 function isAlreadySpentError(error: unknown): boolean {

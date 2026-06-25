@@ -6,7 +6,7 @@ import { normalizeUrl } from '@/lib/url'
 import { useSettingsStore } from '@/stores/settings'
 import { useWalletStore, type StoredMint } from '@/stores/wallet'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
-import { normalizeMarketBaseAsset, type MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
+import { parseCashuProofUnit, type CashuProofUnit } from '@bitcaster/client-sdk/marketUnits'
 import { effectiveRelayUrls, isAllowedNostrRelayUrl, isKnownPublicNostrRelayUrl } from '@/lib/relayDefaults'
 
 export type WalletIngressSource = 'paste' | 'scan' | 'nip17'
@@ -19,7 +19,7 @@ export interface IngressMintRegistrationResult {
 
 export interface IngressReceiveCashuTokenResult extends IngressMintRegistrationResult {
   amountSats: number
-  unit: MarketBaseAsset
+  unit: CashuProofUnit
   proofs: Proof[]
 }
 
@@ -129,7 +129,7 @@ export async function ingressReceiveCashuToken(
   const mintUrl = options?.mintUrl
     ? normalizeUrl(options.mintUrl)
     : normalizeUrl(decoded.mint)
-  const unit = normalizeMarketBaseAsset(decoded.unit ?? null)
+  const unit = parseCashuProofUnit(decoded.unit) ?? 'sat'
   const registration = await ingressRegisterMint(mintUrl, source)
   const receivedProofs = await receiveToken(token, mintUrl, unit)
   const proofs = await proofsWithOptionalConditionalMetadata({

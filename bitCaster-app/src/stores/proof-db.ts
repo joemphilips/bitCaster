@@ -360,6 +360,8 @@ function normalizeStoredProof(proof: StoredProof): StoredProof {
 }
 
 function normalizeStoredProofBaseAsset(proof: StoredProof): string {
+  const unit = parseCashuProofUnit(proof.unit);
+  if (unit && !proof.baseAsset) return COLLATERAL_UNIT_REGISTRY[unit].baseAsset;
   return normalizeMarketBaseAsset(proof.baseAsset);
 }
 
@@ -368,11 +370,13 @@ export function normalizeStoredProofUnit(proof: StoredProof): CashuProofUnit | u
 }
 
 function validateStoredProofUnitInvariant(proof: StoredProof): StoredProof {
-  if (!proof.baseAsset || !proof.unit) return proof;
+  if (!proof.unit) return proof;
   const unit = parseCashuProofUnit(proof.unit);
   if (!unit) throw new Error(`Unsupported Cashu proof unit '${proof.unit}'`);
   const unitInfo = COLLATERAL_UNIT_REGISTRY[unit];
-  const baseAsset = normalizeMarketBaseAsset(proof.baseAsset);
+  const baseAsset = proof.baseAsset
+    ? normalizeMarketBaseAsset(proof.baseAsset)
+    : unitInfo.baseAsset;
   if (unitInfo.baseAsset !== baseAsset) {
     throw new Error(
       `Stored proof unit '${proof.unit}' is not compatible with base asset '${proof.baseAsset}'`,

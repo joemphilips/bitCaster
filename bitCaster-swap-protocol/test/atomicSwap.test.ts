@@ -146,6 +146,7 @@ test("conditional keyset swap stays resumable when completion aborts before sign
     const prepared = await store.getProofOperation(operationId);
     assert.equal(prepared?.state, "prepared");
     assert.equal(prepared?.resultProofs, undefined);
+    assert.equal(prepared?.metadata.unit, "sat");
 
     const resumed = await conditionalKeysetSwap(
       "https://mint.example",
@@ -167,6 +168,7 @@ test("conditional keyset swap stays resumable when completion aborts before sign
     const completed = await store.getProofOperation(operationId);
     assert.equal(completed?.state, "completed");
     assert.deepEqual(completed?.resultProofs, resumed);
+    assert.equal(completed?.metadata.unit, "sat");
   } finally {
     CashuWallet.prototype.prepareConditionalSwap = originalPrepare;
     CashuWallet.prototype.completeConditionalSwap = originalComplete;

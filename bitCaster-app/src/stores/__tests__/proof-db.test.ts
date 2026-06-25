@@ -269,6 +269,20 @@ describe('proof-db normalization', () => {
     ])).rejects.toThrow("Stored proof unit 'usd' is not compatible with base asset 'sat'")
   })
 
+  it('derives base asset from explicit unit before validating on write', async () => {
+    await addProofs([
+      { secret: 'usd-without-base', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m', unit: 'usd' },
+    ])
+
+    const rows = await getProofs('http://m')
+
+    expect(rows[0]).toMatchObject({
+      secret: 'usd-without-base',
+      baseAsset: 'usd',
+      unit: 'usd',
+    })
+  })
+
   it('getOutcomeProofs returns only the requested condition outcome', async () => {
     await addProofs([
       {

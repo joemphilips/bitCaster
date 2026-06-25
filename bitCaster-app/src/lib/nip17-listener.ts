@@ -64,11 +64,12 @@ async function handleIncomingDM(content: string): Promise<void> {
     const received = await ingressReceiveCashuToken(token, 'nip17', {
       mintUrl: normalizedMint,
     })
+    const unit = received.unit ?? 'sat'
     const stored: StoredProof[] = received.proofs.map((p) => ({
       ...p,
       mintUrl: normalizedMint,
-      baseAsset: normalizeMarketBaseAsset(received.unit),
-      unit: received.unit,
+      baseAsset: normalizeMarketBaseAsset(unit),
+      unit,
     }))
     await addProofs(stored)
 

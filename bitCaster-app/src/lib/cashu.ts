@@ -47,6 +47,8 @@ import {
   collateralScaleForUnit,
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
+  parseCashuProofUnit,
+  type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 
@@ -105,8 +107,7 @@ export async function getWalletForUnit(
   mintUrl: string | undefined,
   unit: string,
 ): Promise<CashuWallet> {
-  const normalizedUnit = unit.trim().toLowerCase();
-  if (!normalizedUnit) throw new Error("Cashu unit is required.");
+  const normalizedUnit = requireCashuProofUnit(unit);
 
   const store = useWalletStore.getState();
   if (store.mnemonic) {
@@ -403,7 +404,7 @@ export async function recoverKeysetCountersForMint(
               ...p,
               mintUrl: url,
               baseAsset: normalizeMarketBaseAsset(unit),
-              unit,
+              unit: requireCashuProofUnit(unit),
             }));
             await addProofs(stored);
           }
@@ -1255,7 +1256,7 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
     unit?: string | null;
   };
   const baseAsset = normalizeMarketBaseAsset(metadata.baseAsset);
-  const unit = metadata.unit ?? defaultCollateralUnit(baseAsset);
+  const unit = requireCashuProofUnit(metadata.unit ?? defaultCollateralUnit(baseAsset));
   const wallet = await getWallet(entry.mintUrl, baseAsset);
   if (!wallet.checkProofsStates) {
     throw new Error(
@@ -1367,11 +1368,17 @@ async function completeCtfRedeem(
   inputs: Proof[],
   regularProofs: Proof[],
   baseAsset: MarketBaseAsset,
-  unit = defaultCollateralUnit(baseAsset),
+  unit: CashuProofUnit = defaultCollateralUnit(baseAsset),
 ): Promise<void> {
   await addProofs(regularProofs.map((proof) => ({ ...proof, mintUrl, baseAsset, unit })));
   await removeProofs(inputs.map((proof) => proof.secret));
   await markProofOperationCompleted(operationId, { regular: regularProofs });
+}
+
+function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit {
+  const unit = parseCashuProofUnit(value);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ""}'`);
+  return unit;
 }
 
 function serializeOutputDataArray(

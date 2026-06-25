@@ -1,3 +1,4 @@
+import { getEncodedToken } from '@cashu/cashu-ts'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => {
@@ -103,6 +104,7 @@ describe('partial-lock recovery', () => {
         C: '02'.padEnd(66, '0'),
         mintUrl: 'https://mint.example',
         reservedBy: 'trade-1',
+        unit: 'msat',
       },
       {
         id: 'keyset-C',
@@ -111,6 +113,7 @@ describe('partial-lock recovery', () => {
         C: '03'.padEnd(66, '0'),
         mintUrl: 'https://mint.example',
         reservedBy: 'trade-1',
+        unit: 'msat',
       },
     ])
     mocks.walletState.getWallet.mockResolvedValue({
@@ -130,6 +133,12 @@ describe('partial-lock recovery', () => {
 
     await sweepElapsedPartialLockFailures()
 
+    expect(mocks.prepareProofOperation).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ unit: 'msat' }),
+    }))
+    expect(getEncodedToken).toHaveBeenCalledWith(expect.objectContaining({
+      unit: 'msat',
+    }))
     expect(mocks.replaceProofs).toHaveBeenCalledOnce()
     expect(mocks.replaceProofs.mock.calls[0][0]).toEqual([
       'locked-B',
@@ -138,12 +147,14 @@ describe('partial-lock recovery', () => {
     expect(mocks.replaceProofs.mock.calls[0][1]).toEqual([
       expect.objectContaining({
         id: 'keyset-B',
+        unit: 'msat',
         conditionId: 'condition-1',
         outcomeCollection: 'B',
         marketId: 'condition-1-B',
       }),
       expect.objectContaining({
         id: 'keyset-C',
+        unit: 'msat',
         conditionId: 'condition-1',
         outcomeCollection: 'C',
         marketId: 'condition-1-C',
@@ -152,6 +163,28 @@ describe('partial-lock recovery', () => {
     expect(mocks.removeProofs).not.toHaveBeenCalled()
     expect(mocks.markProofOperationCompleted).toHaveBeenCalledOnce()
     expect(mocks.partialState.remove).toHaveBeenCalledWith('trade-1')
+  })
+
+  it('PartialLockRefund_WhenUnitUnavailable_FailsClosedWithoutMintReceive', async () => {
+    mocks.getReservedProofs.mockResolvedValue([
+      {
+        id: 'keyset-B',
+        amount: 100,
+        secret: 'locked-B',
+        C: '02'.padEnd(66, '0'),
+        mintUrl: 'https://mint.example',
+        reservedBy: 'trade-1',
+      },
+    ])
+    const wallet = { receive: vi.fn() }
+    mocks.walletState.getWallet.mockResolvedValue(wallet)
+    const { sweepElapsedPartialLockFailures } = await import('../partialLockRecovery')
+
+    await sweepElapsedPartialLockFailures()
+
+    expect(mocks.prepareProofOperation).not.toHaveBeenCalled()
+    expect(wallet.receive).not.toHaveBeenCalled()
+    expect(mocks.replaceProofs).not.toHaveBeenCalled()
   })
 
   it('PartialLockRefund_WhenMintAlreadySpent_RemovesStaleProofsAndCompletesOperation', async () => {

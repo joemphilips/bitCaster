@@ -440,7 +440,7 @@ export async function splitProofsForExactSend(params: {
   }
 
   const mint = new CashuMint(params.mintUrl);
-  const { wallet, sendConfig } = await walletForSourceProofs(
+  const { wallet, sendConfig, unit } = await walletForSourceProofs(
     mint,
     params.sourceProofs,
   );
@@ -458,6 +458,7 @@ export async function splitProofsForExactSend(params: {
       params.sourceProofs,
       sendConfig,
       outputConfig,
+      unit,
       requiredProofOperationStore(
         params.operationId,
         params.proofOperationStore,
@@ -562,7 +563,7 @@ export async function conditionalKeysetSwap(
       mintUrl,
       inputs: normalizeProofArray(preview.inputs),
       outputs: serializeOutputDataArrayByLabel(preview.outputDataByLabel),
-      metadata: { keysetId: preview.keysetId },
+      metadata: { keysetId: preview.keysetId, unit },
     });
     const result = await completeConditionalKeysetSwapPreview(wallet, preview);
     await proofOperationStore.markProofOperationCompleted(
@@ -1050,6 +1051,11 @@ export function buildReceiveToken(
   return { mint: mintUrl, unit, proofs };
 }
 
+function readTokenUnit(token: Token): string {
+  if (typeof token.unit === "string" && token.unit.trim()) return token.unit;
+  throw new Error("Atomic swap token is missing exact Cashu unit");
+}
+
 async function lockProofsForSwap(
   ctx: SwapContext,
   sourceProofs: Proof[],
@@ -1059,7 +1065,7 @@ async function lockProofsForSwap(
   proofOperationStore?: ProofOperationStore,
 ): Promise<LockedProofResult> {
   const mint = new CashuMint(ctx.mintUrl);
-  const { wallet, sendConfig, inputFeeSats } = await walletForSourceProofs(
+  const { wallet, sendConfig, inputFeeSats, unit } = await walletForSourceProofs(
     mint,
     sourceProofs,
   );
@@ -1099,6 +1105,7 @@ async function lockProofsForSwap(
       sourceProofs,
       sendConfig,
       outputConfig,
+      unit,
       requiredProofOperationStore(operationId, proofOperationStore),
     );
   }
@@ -1178,6 +1185,7 @@ async function lockProofsWithOperation(
   sourceProofs: Proof[],
   sendConfig: SendConfig | undefined,
   outputConfig: OutputConfig,
+  unit: string,
   proofOperationStore: ProofOperationStore,
 ): Promise<LockedProofResult> {
   const existing = await proofOperationStore.getProofOperation(operationId);
@@ -1209,7 +1217,7 @@ async function lockProofsWithOperation(
       send: serializeOutputDataArray(preview.sendOutputs ?? []),
       keep: serializeOutputDataArray(preview.keepOutputs ?? []),
     },
-    metadata: swapPreviewMetadata(preview),
+    metadata: swapPreviewMetadata(preview, unit),
   });
 
   const result = await wallet.completeSwap(preview);
@@ -1226,6 +1234,7 @@ async function splitProofsForExactSendWithOperation(
   sourceProofs: Proof[],
   sendConfig: SendConfig | undefined,
   outputConfig: OutputConfig,
+  unit: string,
   proofOperationStore: ProofOperationStore,
 ): Promise<{ send: Proof[]; keep: Proof[] }> {
   const existing = await proofOperationStore.getProofOperation(operationId);
@@ -1257,7 +1266,7 @@ async function splitProofsForExactSendWithOperation(
       send: serializeOutputDataArray(preview.sendOutputs ?? []),
       keep: serializeOutputDataArray(preview.keepOutputs ?? []),
     },
-    metadata: swapPreviewMetadata(preview),
+    metadata: swapPreviewMetadata(preview, unit),
   });
 
   const result = await wallet.completeSwap(preview);
@@ -1289,6 +1298,7 @@ async function receiveProofsWithOperation(
     { proofsWeHave: [] },
     { type: "random" },
   );
+  const unit = readTokenUnit(token);
   await proofOperationStore.prepareProofOperation({
     operationId,
     kind: "swap-claim",
@@ -1297,7 +1307,7 @@ async function receiveProofsWithOperation(
     outputs: {
       keep: serializeOutputDataArray(preview.keepOutputs ?? []),
     },
-    metadata: swapPreviewMetadata(preview),
+    metadata: swapPreviewMetadata(preview, unit),
   });
 
   const result = await wallet.completeSwap(preview);
@@ -1707,11 +1717,12 @@ function allStates(states: ProofState[], expected: string): boolean {
   return states.length > 0 && states.every((state) => state.state === expected);
 }
 
-function swapPreviewMetadata(preview: SwapPreview): Record<string, unknown> {
+function swapPreviewMetadata(preview: SwapPreview, unit: string): Record<string, unknown> {
   return {
     amount: amountToNumber(preview.amount),
     fees: amountToNumber(preview.fees),
     keysetId: preview.keysetId,
+    unit,
     unselectedProofs: normalizeProofArray(preview.unselectedProofs ?? []),
   };
 }
@@ -1721,6 +1732,7 @@ function entryToSwapPreview(entry: ProofOperationRecord): SwapPreview {
     amount: readNumberMetadata(entry, "amount"),
     fees: readNumberMetadata(entry, "fees"),
     keysetId: readStringMetadata(entry, "keysetId"),
+    unit: readStringMetadata(entry, "unit"),
     inputs: entry.inputs,
     sendOutputs:
       deserializeOutputGroups({ send: entry.outputs.send ?? [] }).send ?? [],

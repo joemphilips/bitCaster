@@ -19,7 +19,7 @@ import {
   registrationFeeForPolicy,
   requiredMarketCreationOutcomeCollections,
 } from "@bitcaster/client-sdk/ctfRegistration";
-import { defaultCollateralUnit, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { defaultCollateralUnit, normalizeMarketBaseAsset, parseCashuProofUnit, type CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import {
   MintError,
   registerCondition,
@@ -273,16 +273,23 @@ async function completeRegistrationFeeOperation(
   changeProofs: Proof[],
   unit: string,
 ): Promise<void> {
+  const proofUnit = requireCashuProofUnit(unit);
   if (changeProofs.length > 0) {
     await addProofs(changeProofs.map((proof) => ({
       ...proof,
       mintUrl,
-      baseAsset: normalizeMarketBaseAsset(unit),
-      unit,
+      baseAsset: normalizeMarketBaseAsset(proofUnit),
+      unit: proofUnit,
     })));
   }
   await removeProofs(inputs.map((proof) => proof.secret));
   await markProofOperationCompleted(operationId, { change: changeProofs });
+}
+
+function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit {
+  const unit = parseCashuProofUnit(value);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ""}'`);
+  return unit;
 }
 
 async function prepareRegularOutputs(

@@ -39,6 +39,8 @@ import {
   collateralScaleForUnit,
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
+  parseCashuProofUnit,
+  type CashuProofUnit,
   type MarketBaseAsset,
 } from '@bitcaster/client-sdk/marketUnits'
 import { diagnoseProofStates } from '@/lib/proofDiagnostics'
@@ -461,22 +463,24 @@ export function useDepositWithdrawState(
         setIsLoading(true)
         const received = await ingressReceiveCashuToken(text, 'paste')
         toastNewMintIfAdded(received)
+        const receivedUnit = requireCashuProofUnit(received.unit)
+        const receivedBaseAsset = normalizeMarketBaseAsset(receivedUnit)
         const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
           mintUrl: received.mintUrl,
-          baseAsset: normalizeMarketBaseAsset(received.unit),
-          unit: received.unit,
+          baseAsset: receivedBaseAsset,
+          unit: receivedUnit,
         }))
         await addProofs(stored)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
-          baseAsset: received.unit,
+          baseAsset: receivedBaseAsset,
           amountSats: received.amountSats,
           status: 'completed',
         })
         setIsLoading(false)
         setSuccessAmount(received.amountSats)
-        setSuccessUnit(received.unit)
+        setSuccessUnit(receivedBaseAsset)
         setCurrentView('success')
       } else if (currentView === 'pay-lightning') {
         setLightningInput(text)
@@ -586,21 +590,23 @@ export function useDepositWithdrawState(
       try {
         const received = await ingressReceiveCashuToken(trimmed, 'scan')
         toastNewMintIfAdded(received)
+        const receivedUnit = requireCashuProofUnit(received.unit)
+        const receivedBaseAsset = normalizeMarketBaseAsset(receivedUnit)
         const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
           mintUrl: received.mintUrl,
-          baseAsset: normalizeMarketBaseAsset(received.unit),
-          unit: received.unit,
+          baseAsset: receivedBaseAsset,
+          unit: receivedUnit,
         }))
         await addProofs(stored)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
-          baseAsset: received.unit,
+          baseAsset: receivedBaseAsset,
           amountSats: received.amountSats,
           status: 'completed',
         })
         setSuccessAmount(received.amountSats)
-        setSuccessUnit(received.unit)
+        setSuccessUnit(receivedBaseAsset)
         setCurrentView('success')
       } catch (e) {
         setError((e as Error).message)
@@ -721,4 +727,10 @@ export function useDepositWithdrawState(
     onBack,
     onClose,
   }
+}
+
+function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit {
+  const unit = parseCashuProofUnit(value)
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ''}'`)
+  return unit
 }
