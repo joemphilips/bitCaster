@@ -4,23 +4,23 @@ import type { MarketBaseAsset } from '@/types/market-creation'
 import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 
 interface RegistrationFeeConfirmationModalProps {
-  feeSats: number
-  balanceSats: number
+  feeSubunits: number
+  balanceSubunits: number
   baseAsset: MarketBaseAsset
   onCancel: () => void
   onConfirm: () => void
 }
 
 export function RegistrationFeeConfirmationModal({
-  feeSats,
-  balanceSats,
+  feeSubunits,
+  balanceSubunits,
   baseAsset,
   onCancel,
   onConfirm,
 }: RegistrationFeeConfirmationModalProps) {
   const { t } = useTranslation()
-  const feeAmount = formatMarketSubunits(feeSats, baseAsset)
-  const balanceAmount = formatMarketSubunits(balanceSats, baseAsset)
+  const feeAmount = formatMarketSubunits(feeSubunits, baseAsset)
+  const balanceAmount = formatMarketSubunits(balanceSubunits, baseAsset)
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center">

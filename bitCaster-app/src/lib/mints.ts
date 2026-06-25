@@ -11,18 +11,15 @@
  * render the "Ecash only" badge solely from a `getInfo()` response shape.
  */
 
+import {
+  parseCtfSettingsFromMintInfo,
+  type CtfRegistrationFeeSettings as CtfMintSettings,
+} from "@bitcaster/client-sdk/ctfRegistration";
+
 export interface MintCapabilities {
   /** Mint advertises NUT-CTF support (the conditional-token framework). */
   ctf: boolean
   ctfSettings?: CtfMintSettings
-}
-
-export type CtfDefaultKeysetCreation = 'none' | 'one-vs-rest' | 'all'
-
-export interface CtfMintSettings {
-  defaultKeysetCreation: CtfDefaultKeysetCreation
-  registrationFeeBase: number
-  registrationFeePerKeyset: number
 }
 
 export function getMintIconUrl(
@@ -69,43 +66,9 @@ export function detectMintCapabilities(
 function parseCtfSettings(
   ctf: Record<string, unknown>,
 ): CtfMintSettings | undefined {
-  const defaultKeysetCreation = parseDefaultKeysetCreation(
-    ctf.default_keyset_creation,
-  )
-  const registrationFeeBase = parseNonNegativeNumber(ctf.registration_fee_base)
-  const registrationFeePerKeyset = parseNonNegativeNumber(
-    ctf.registration_fee_per_keyset,
-  )
-  if (
-    defaultKeysetCreation == null ||
-    registrationFeeBase == null ||
-    registrationFeePerKeyset == null
-  ) {
+  try {
+    return parseCtfSettingsFromMintInfo({ nuts: { CTF: ctf } })
+  } catch {
     return undefined
   }
-  return {
-    defaultKeysetCreation,
-    registrationFeeBase,
-    registrationFeePerKeyset,
-  }
-}
-
-function parseDefaultKeysetCreation(
-  value: unknown,
-): CtfDefaultKeysetCreation | undefined {
-  return value === 'none' || value === 'one-vs-rest' || value === 'all'
-    ? value
-    : undefined
-}
-
-function parseNonNegativeNumber(value: unknown): number | undefined {
-  const parsed =
-    typeof value === 'number'
-      ? value
-      : typeof value === 'string' || typeof value === 'bigint'
-        ? Number(value)
-        : undefined
-  return parsed != null && Number.isSafeInteger(parsed) && parsed >= 0
-    ? parsed
-    : undefined
 }

@@ -8,7 +8,7 @@ import { useMarketDraftStore, defaultDraft } from '@/stores/marketDraft'
 const {
   mockNavigate,
   mockRegisterConditionWithFee,
-  mockGetAvailableRegularBalanceSats,
+  mockGetAvailableRegularBalanceSubunits,
   mockCreateMarket,
   mockCreateEnumAnnouncement,
   mockEnsureKormirNsec,
@@ -18,7 +18,7 @@ const {
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockRegisterConditionWithFee: vi.fn(),
-  mockGetAvailableRegularBalanceSats: vi.fn(),
+  mockGetAvailableRegularBalanceSubunits: vi.fn(),
   mockCreateMarket: vi.fn(),
   mockCreateEnumAnnouncement: vi.fn(),
   mockEnsureKormirNsec: vi.fn(),
@@ -33,8 +33,7 @@ const {
           nuts: {
             CTF: {
               default_keyset_creation: 'one-vs-rest',
-              registration_fee_base: 0,
-              registration_fee_per_keyset: 0,
+              registration_fees: [{ unit: 'msat', registration_fee_base: 0, registration_fee_per_keyset: 0 }],
             },
           },
         },
@@ -60,24 +59,26 @@ vi.mock('@/lib/markets', () => ({
 }))
 
 vi.mock('@/lib/marketRegistrationFee', () => ({
-  MAX_CONDITION_REGISTRATION_FEE_SATS: 1000,
-  getAvailableRegularBalanceSats: (...args: unknown[]) =>
-    mockGetAvailableRegularBalanceSats(...args),
+  MAX_CONDITION_REGISTRATION_FEE_SUBUNITS: 1000000,
+  getAvailableRegularBalanceSubunits: (...args: unknown[]) =>
+    mockGetAvailableRegularBalanceSubunits(...args),
   registerConditionWithFee: (...args: unknown[]) =>
     mockRegisterConditionWithFee(...args),
   registrationFeeForPolicy: (
     outcomes: readonly string[],
     settings: {
       defaultKeysetCreation: 'none' | 'one-vs-rest' | 'all'
-      registrationFeeBase: number
-      registrationFeePerKeyset: number
+      registrationFees: { unit: string; registrationFeeBase: number; registrationFeePerKeyset: number }[]
     },
+    collateralUnit: string,
   ) => {
+    const fee = settings.registrationFees.find((entry) => entry.unit === collateralUnit)
+    if (!fee) throw new Error(`Active mint does not support CTF collateral unit '${collateralUnit}'.`)
     const numKeysets =
       settings.defaultKeysetCreation === 'all'
         ? Math.max(0, 2 ** outcomes.length - 2)
         : new Set(outcomes.map((outcome) => outcome.trim()).filter(Boolean)).size
-    return settings.registrationFeeBase + settings.registrationFeePerKeyset * numKeysets
+    return fee.registrationFeeBase + fee.registrationFeePerKeyset * numKeysets
   },
 }))
 
@@ -126,7 +127,7 @@ function wrapper({ children }: { children: ReactNode }) {
 beforeEach(() => {
   vi.clearAllMocks()
   mockRegisterConditionWithFee.mockResolvedValue({ condition_id: 'test-cond-id', keysets: { Yes: 'ks1', No: 'ks2' } })
-  mockGetAvailableRegularBalanceSats.mockResolvedValue(1000)
+  mockGetAvailableRegularBalanceSubunits.mockResolvedValue(1000)
   mockCreateMarket.mockResolvedValue({ conditionId: 'test-cond-id', marketsCreated: ['test-cond-id-Yes', 'test-cond-id-No'], thumbnailUrl: null })
   mockCreateEnumAnnouncement.mockResolvedValue('announcement-hex')
   mockEnsureKormirNsec.mockResolvedValue(undefined)
@@ -140,8 +141,10 @@ beforeEach(() => {
         nuts: {
           CTF: {
             default_keyset_creation: 'one-vs-rest',
-            registration_fee_base: 0,
-            registration_fee_per_keyset: 0,
+            registration_fees: [
+              { unit: 'msat', registration_fee_base: 0, registration_fee_per_keyset: 0 },
+              { unit: 'usd', registration_fee_base: 0, registration_fee_per_keyset: 0 },
+            ],
           },
         },
       },
@@ -198,7 +201,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     expect(mockRegisterConditionWithFee).toHaveBeenCalledOnce()
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith({
       mintUrl: 'https://mint.example.test',
-      requiredFeeSats: 0,
+      requiredFeeSubunits: 0,
       request: {
         tags: [
           ['title', 'Test Market'],
@@ -253,9 +256,11 @@ describe('useMarketCreationState – onCreateMarket', () => {
   })
 
   it('uses regular USD balance for a USD market registration fee top-up', async () => {
-    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 10
-    mockWalletState.mints[0].info.nuts.CTF.registration_fee_per_keyset = 2
-    mockGetAvailableRegularBalanceSats
+    mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
+      { unit: 'msat', registration_fee_base: 0, registration_fee_per_keyset: 0 },
+      { unit: 'usd', registration_fee_base: 10, registration_fee_per_keyset: 2 },
+    ]
+    mockGetAvailableRegularBalanceSubunits
       .mockResolvedValueOnce(3)
       .mockResolvedValueOnce(1000)
     const result = await setupDraftForSubmission()
@@ -263,27 +268,27 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { result.current.onBaseAssetChange('usd') })
     await act(async () => { await result.current.onCreateMarket() })
 
-    expect(mockGetAvailableRegularBalanceSats).toHaveBeenLastCalledWith(
+    expect(mockGetAvailableRegularBalanceSubunits).toHaveBeenLastCalledWith(
       'https://mint.example.test',
       'usd',
     )
     expect(result.current.registrationFeeTopUpStage).toBe('modal')
     expect(result.current.registrationFeeTopUp).toEqual({
-      feeSats: 14,
-      balanceSats: 3,
+      feeSubunits: 14,
+      balanceSubunits: 3,
       baseAsset: 'usd',
     })
 
     await act(async () => { await result.current.onRegistrationFeeTopUpSuccess() })
 
-    expect(mockGetAvailableRegularBalanceSats).toHaveBeenLastCalledWith(
+    expect(mockGetAvailableRegularBalanceSubunits).toHaveBeenLastCalledWith(
       'https://mint.example.test',
       'usd',
     )
     expect(result.current.registrationFeeTopUpStage).toBe('closed')
     expect(result.current.registrationFeePrompt).toEqual({
-      feeSats: 14,
-      balanceSats: 1000,
+      feeSubunits: 14,
+      balanceSubunits: 1000,
       baseAsset: 'usd',
     })
 
@@ -291,7 +296,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
       expect.objectContaining({
-        requiredFeeSats: 14,
+        requiredFeeSubunits: 14,
         request: expect.objectContaining({
           collateral: 'usd',
         }),
@@ -313,8 +318,9 @@ describe('useMarketCreationState – onCreateMarket', () => {
             nuts: {
               CTF: {
                 default_keyset_creation: 'one-vs-rest',
-                registration_fee_base: 1,
-                registration_fee_per_keyset: 1,
+                registration_fees: [
+                  { unit: 'msat', registration_fee_base: 1, registration_fee_per_keyset: 1 },
+                ],
               },
             },
           },
@@ -327,8 +333,8 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     expect(mockRefreshMintInfoWithoutActivating).toHaveBeenCalledWith('http://localhost:8086')
     expect(result.current.registrationFeePrompt).toEqual({
-      feeSats: 3,
-      balanceSats: 1000,
+      feeSubunits: 3,
+      balanceSubunits: 1000,
       baseAsset: 'sat',
     })
     expect(result.current.submitError).toBeNull()
@@ -352,15 +358,17 @@ describe('useMarketCreationState – onCreateMarket', () => {
   })
 
   it('prompts before paying a non-zero registration fee', async () => {
-    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 10
-    mockWalletState.mints[0].info.nuts.CTF.registration_fee_per_keyset = 2
+    mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
+      { unit: 'msat', registration_fee_base: 10, registration_fee_per_keyset: 2 },
+      { unit: 'usd', registration_fee_base: 0, registration_fee_per_keyset: 0 },
+    ]
     const result = await setupDraftForSubmission()
 
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.registrationFeePrompt).toEqual({
-      feeSats: 14,
-      balanceSats: 1000,
+      feeSubunits: 14,
+      balanceSubunits: 1000,
       baseAsset: 'sat',
     })
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
@@ -369,32 +377,36 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onConfirmRegistrationFee() })
 
     expect(mockRegisterConditionWithFee).toHaveBeenCalledWith(
-      expect.objectContaining({ requiredFeeSats: 14 }),
+      expect.objectContaining({ requiredFeeSubunits: 14 }),
     )
     expect(mockCreateMarket).toHaveBeenCalledOnce()
   })
 
   it('shows the top-up gate when the registration fee exceeds available regular balance', async () => {
-    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 10
-    mockWalletState.mints[0].info.nuts.CTF.registration_fee_per_keyset = 2
-    mockGetAvailableRegularBalanceSats.mockResolvedValueOnce(3)
+    mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
+      { unit: 'msat', registration_fee_base: 10, registration_fee_per_keyset: 2 },
+      { unit: 'usd', registration_fee_base: 0, registration_fee_per_keyset: 0 },
+    ]
+    mockGetAvailableRegularBalanceSubunits.mockResolvedValueOnce(3)
     const result = await setupDraftForSubmission()
 
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.registrationFeeTopUpStage).toBe('modal')
     expect(result.current.registrationFeeTopUp).toEqual({
-      feeSats: 14,
-      balanceSats: 3,
+      feeSubunits: 14,
+      balanceSubunits: 3,
       baseAsset: 'sat',
     })
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
   })
 
   it('rechecks the registration fee after top-up success', async () => {
-    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 10
-    mockWalletState.mints[0].info.nuts.CTF.registration_fee_per_keyset = 2
-    mockGetAvailableRegularBalanceSats
+    mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
+      { unit: 'msat', registration_fee_base: 10, registration_fee_per_keyset: 2 },
+      { unit: 'usd', registration_fee_base: 0, registration_fee_per_keyset: 0 },
+    ]
+    mockGetAvailableRegularBalanceSubunits
       .mockResolvedValueOnce(3)
       .mockResolvedValueOnce(1000)
     const result = await setupDraftForSubmission()
@@ -404,21 +416,23 @@ describe('useMarketCreationState – onCreateMarket', () => {
 
     expect(result.current.registrationFeeTopUpStage).toBe('closed')
     expect(result.current.registrationFeePrompt).toEqual({
-      feeSats: 14,
-      balanceSats: 1000,
+      feeSubunits: 14,
+      balanceSubunits: 1000,
       baseAsset: 'sat',
     })
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
   })
 
   it('blocks market creation when the registration fee exceeds the app cap', async () => {
-    mockWalletState.mints[0].info.nuts.CTF.registration_fee_base = 1001
+    mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
+      { unit: 'msat', registration_fee_base: 1000001, registration_fee_per_keyset: 0 },
+    ]
     const result = await setupDraftForSubmission()
 
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.submitError).toBe(
-      'This mint requires a 1,001 sats condition registration fee, which exceeds the 1,000 sats app limit.',
+      'This mint requires a 1,000,001 subunits condition registration fee, which exceeds the 1,000,000 subunits app limit.',
     )
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()
     expect(mockCreateMarket).not.toHaveBeenCalled()
@@ -434,7 +448,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     await act(async () => { await result.current.onCreateMarket() })
 
     expect(result.current.submitError).toBe('You must register a nostr key to become an oracle')
-    expect(mockGetAvailableRegularBalanceSats).not.toHaveBeenCalled()
+    expect(mockGetAvailableRegularBalanceSubunits).not.toHaveBeenCalled()
     expect(mockEnsureKormirNsec).not.toHaveBeenCalled()
     expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled()
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled()

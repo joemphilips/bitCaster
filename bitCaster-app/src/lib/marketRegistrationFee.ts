@@ -42,7 +42,7 @@ import {
   type StoredOutputData,
 } from "@/stores/proof-db";
 
-export const MAX_CONDITION_REGISTRATION_FEE_SATS = 1_000;
+export const MAX_CONDITION_REGISTRATION_FEE_SUBUNITS = 1_000_000;
 
 export interface ConditionRegistrationRequest {
   tags: string[][];
@@ -63,7 +63,7 @@ type RegistrationOutputData = OutputDataLike & {
 
 export { registrationFeeForPolicy, requiredMarketCreationOutcomeCollections };
 
-export async function getAvailableRegularBalanceSats(
+export async function getAvailableRegularBalanceSubunits(
   mintUrl: string,
   baseAsset?: string | null,
 ): Promise<number> {
@@ -74,23 +74,23 @@ export async function getAvailableRegularBalanceSats(
 export async function registerConditionWithFee(input: {
   mintUrl: string;
   request: ConditionRegistrationRequest;
-  requiredFeeSats: number;
+  requiredFeeSubunits: number;
 }): Promise<ConditionRegistrationResult> {
-  if (input.requiredFeeSats <= 0) {
+  if (input.requiredFeeSubunits <= 0) {
     return registerCondition(input.request);
   }
   if (
-    !Number.isSafeInteger(input.requiredFeeSats) ||
-    input.requiredFeeSats > MAX_CONDITION_REGISTRATION_FEE_SATS
+    !Number.isSafeInteger(input.requiredFeeSubunits) ||
+    input.requiredFeeSubunits > MAX_CONDITION_REGISTRATION_FEE_SUBUNITS
   ) {
     throw new Error(
-      `Condition registration fee must be between 1 and ${MAX_CONDITION_REGISTRATION_FEE_SATS} sats.`,
+      `Condition registration fee must be between 1 and ${MAX_CONDITION_REGISTRATION_FEE_SUBUNITS} subunits.`,
     );
   }
 
   const operationId = await buildOperationId(
     input.request,
-    input.requiredFeeSats,
+    input.requiredFeeSubunits,
   );
   const feeBaseAsset = registrationFeeBaseAsset(input.request);
   const existing = await getProofOperation(operationId);
@@ -103,16 +103,16 @@ export async function registerConditionWithFee(input: {
   });
   const selected = takeProofsForLock(
     available,
-    input.requiredFeeSats,
+    input.requiredFeeSubunits,
   );
   if (!selected) {
     throw new Error(
-      `Not enough regular ${feeBaseAsset} proofs are available for the ${input.requiredFeeSats} ${feeBaseAsset} condition registration fee.`,
+      `Not enough regular ${feeBaseAsset} proofs are available for the ${input.requiredFeeSubunits} ${feeBaseAsset} condition registration fee.`,
     );
   }
 
   const selectedTotal = sumProofs(selected);
-  const changeAmount = selectedTotal - input.requiredFeeSats;
+  const changeAmount = selectedTotal - input.requiredFeeSubunits;
   const changeOutputs =
     changeAmount > 0
       ? await prepareRegularOutputs(input.mintUrl, changeAmount, feeBaseAsset)
@@ -125,9 +125,9 @@ export async function registerConditionWithFee(input: {
     inputs: selected,
     outputs: { change: serializeOutputDataArray(changeOutputs) },
     metadata: {
-      requiredFeeSats: input.requiredFeeSats,
+      requiredFeeSubunits: input.requiredFeeSubunits,
       feeBaseAsset,
-      selectedTotalSats: selectedTotal,
+      selectedTotalSubunits: selectedTotal,
       request: stableRegistrationRequest(input.request),
     },
   });
@@ -282,13 +282,13 @@ async function completeRegistrationFeeOperation(
 
 async function prepareRegularOutputs(
   mintUrl: string,
-  amountSats: number,
+  amountSubunits: number,
   baseAsset?: string | null,
 ): Promise<RegistrationOutputData[]> {
   const wallet = await getWallet(mintUrl, baseAsset);
   const keyset = await getActiveRegularKeyset(wallet, baseAsset);
   const positiveOutputs = OutputData.createRandomData(
-    Amount.from(amountSats),
+    Amount.from(amountSubunits),
     keyset,
   ) as RegistrationOutputData[];
   return positiveOutputs.map(
@@ -417,12 +417,12 @@ function deserializeOutputDataArray(
 
 async function buildOperationId(
   request: ConditionRegistrationRequest,
-  requiredFeeSats: number,
+  requiredFeeSubunits: number,
 ): Promise<string> {
   const bytes = new TextEncoder().encode(
     JSON.stringify({
       request: stableRegistrationRequest(request),
-      requiredFeeSats,
+      requiredFeeSubunits,
       feeBaseAsset: registrationFeeBaseAsset(request),
     }),
   );

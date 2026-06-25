@@ -11,14 +11,13 @@ import {
   type SerializedBlindedMessage,
 } from '@cashu/cashu-ts'
 import {
-  registrationFeeForPolicy as registrationFeeForSettings,
+  parseCtfSettingsFromMintInfo,
+  registrationFeeForPolicy,
   toWireAmountBearing,
-  type CtfDefaultKeysetCreation,
 } from '../../bitcaster-client-sdk/src/ctfRegistration.ts'
 import {
   sumProofs,
 } from '../../bitcaster-client-sdk/src/proofSelection.ts'
-import { collateralScaleForUnit } from '../../bitcaster-client-sdk/src/marketUnits.ts'
 
 type RegistrationOutputData = OutputDataLike & {
   blindedMessage: SerializedBlindedMessage
@@ -32,12 +31,8 @@ if (!mintUrl || !title || !description || !collateral || !announcementsJson || !
 const announcements = parseStringArray(announcementsJson, 'announcements-json')
 const outcomes = parseStringArray(outcomesJson, 'outcomes-json')
 const info = await fetchMintInfo(mintUrl)
-const baseFeeSubunits = registrationFeeForPolicy(outcomes, info)
-// Mint fee settings are expressed in the market base unit (sats for sat markets),
-// while regular proofs must be minted in the active collateral keyset unit
-// (msat for sat markets). Convert the fee to native collateral subunits here.
-const collateralScale = collateralScaleForUnit(collateral)
-const requiredFeeSubunits = baseFeeSubunits * collateralScale
+const settings = parseCtfSettingsFromMintInfo(info)
+const requiredFeeSubunits = registrationFeeForPolicy(outcomes, settings, collateral)
 const feeProofs =
   requiredFeeSubunits > 0
     ? await mintRegularProofs(mintUrl, collateral, requiredFeeSubunits)
@@ -149,32 +144,6 @@ async function fetchMintInfo(mintUrl: string): Promise<Record<string, unknown>> 
   return response.json() as Promise<Record<string, unknown>>
 }
 
-function registrationFeeForPolicy(
-  outcomes: string[],
-  info: Record<string, unknown>,
-): number {
-  const ctf = ((info.nuts as Record<string, unknown> | undefined)?.CTF ??
-    {}) as Record<string, unknown>
-  const defaultKeysetCreation = ctf.default_keyset_creation
-  const base = toNonNegativeInteger(ctf.registration_fee_base, 'registration_fee_base')
-  const perKeyset = toNonNegativeInteger(
-    ctf.registration_fee_per_keyset,
-    'registration_fee_per_keyset',
-  )
-  if (
-    defaultKeysetCreation !== 'none' &&
-    defaultKeysetCreation !== 'one-vs-rest' &&
-    defaultKeysetCreation !== 'all'
-  ) {
-    throw new Error(`Unsupported mint CTF default_keyset_creation: ${String(defaultKeysetCreation)}`)
-  }
-  return registrationFeeForSettings(outcomes, {
-    defaultKeysetCreation: defaultKeysetCreation as CtfDefaultKeysetCreation,
-    registrationFeeBase: base,
-    registrationFeePerKeyset: perKeyset,
-  })
-}
-
 function toWireProof(proof: Proof): Omit<Proof, 'amount'> & { amount: number } {
   return toWireAmountBearing(proof)
 }
@@ -183,19 +152,6 @@ function toWireBlindedMessage(
   output: SerializedBlindedMessage,
 ): Omit<SerializedBlindedMessage, 'amount'> & { amount: number } {
   return toWireAmountBearing(output)
-}
-
-function toNonNegativeInteger(value: unknown, fieldName: string): number {
-  const parsed =
-    typeof value === 'number'
-      ? value
-      : typeof value === 'string' || typeof value === 'bigint'
-        ? Number(value)
-        : undefined
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new Error(`mint CTF ${fieldName} is missing or invalid`)
-  }
-  return parsed
 }
 
 function parseStringArray(raw: string, name: string): string[] {

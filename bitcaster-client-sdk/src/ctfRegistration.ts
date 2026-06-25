@@ -5,6 +5,11 @@ export type CtfDefaultKeysetCreation = 'none' | 'one-vs-rest' | 'all'
 
 export interface CtfRegistrationFeeSettings {
   defaultKeysetCreation: CtfDefaultKeysetCreation
+  registrationFees: CtfRegistrationFeeSetting[]
+}
+
+export interface CtfRegistrationFeeSetting {
+  unit: string
   registrationFeeBase: number
   registrationFeePerKeyset: number
 }
@@ -13,17 +18,75 @@ export interface AmountBearing {
   amount: unknown
 }
 
+export function parseCtfSettingsFromMintInfo(
+  info: Record<string, unknown>,
+): CtfRegistrationFeeSettings {
+  const nuts = info.nuts as Record<string, unknown> | undefined
+  if (!nuts) throw new Error('mint info missing nuts')
+  const ctf = nuts.CTF
+  if (ctf == null || typeof ctf !== 'object') {
+    throw new Error('mint info missing CTF settings')
+  }
+  const raw = ctf as Record<string, unknown>
+
+  const defaultKeysetCreation = raw.default_keyset_creation
+  if (
+    defaultKeysetCreation !== 'none' &&
+    defaultKeysetCreation !== 'one-vs-rest' &&
+    defaultKeysetCreation !== 'all'
+  ) {
+    throw new Error(
+      `Unsupported mint CTF default_keyset_creation: ${String(defaultKeysetCreation)}`,
+    )
+  }
+
+  const feesRaw = raw.registration_fees
+  if (!Array.isArray(feesRaw)) {
+    throw new Error('mint CTF registration_fees is missing or invalid')
+  }
+
+  const registrationFees: CtfRegistrationFeeSetting[] = feesRaw.map(
+    (entry, i) => {
+      if (entry == null || typeof entry !== 'object') {
+        throw new Error(`mint CTF registration_fees[${i}] is invalid`)
+      }
+      const feeRaw = entry as Record<string, unknown>
+      if (typeof feeRaw.unit !== 'string' || feeRaw.unit.length === 0) {
+        throw new Error(`mint CTF registration_fees[${i}] is missing unit`)
+      }
+      const registrationFeeBase = toNonNegativeInteger(
+        feeRaw.registration_fee_base,
+        'registration_fee_base',
+      )
+      const registrationFeePerKeyset = toNonNegativeInteger(
+        feeRaw.registration_fee_per_keyset,
+        'registration_fee_per_keyset',
+      )
+      return { unit: feeRaw.unit, registrationFeeBase, registrationFeePerKeyset }
+    },
+  )
+
+  return { defaultKeysetCreation, registrationFees }
+}
+
 export function registrationFeeForPolicy(
   outcomes: readonly string[],
   settings: CtfRegistrationFeeSettings,
+  collateralUnit: string,
 ): number {
+  const feeSetting = settings.registrationFees.find(
+    (candidate) => candidate.unit === collateralUnit,
+  )
+  if (!feeSetting) {
+    throw new Error(`Active mint does not support CTF collateral unit '${collateralUnit}'.`)
+  }
   const numKeysets =
     settings.defaultKeysetCreation === 'all'
       ? Math.max(0, 2 ** outcomes.length - 2)
       : requiredMarketCreationOutcomeCollections(outcomes).length
   const fee =
-    settings.registrationFeeBase +
-    settings.registrationFeePerKeyset * numKeysets
+    feeSetting.registrationFeeBase +
+    feeSetting.registrationFeePerKeyset * numKeysets
   if (!Number.isSafeInteger(fee) || fee < 0) {
     throw new Error('Active mint registration fee settings are invalid.')
   }
@@ -63,4 +126,17 @@ export function toWireAmountBearing<T extends AmountBearing>(
 
 function normalizePartitionMember(member: string): string {
   return parseOutcomeSetId(member).sort().join('|')
+}
+
+function toNonNegativeInteger(value: unknown, fieldName: string): number {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' || typeof value === 'bigint'
+        ? Number(value)
+        : undefined
+  if (parsed == null || !Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`mint CTF ${fieldName} is missing or invalid`)
+  }
+  return parsed
 }

@@ -91,7 +91,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     </>
   )
   const registrationFeeDeficit = registrationFeeTopUp
-    ? Math.max(registrationFeeTopUp.feeSats - registrationFeeTopUp.balanceSats, 0)
+    ? Math.max(registrationFeeTopUp.feeSubunits - registrationFeeTopUp.balanceSubunits, 0)
     : 0
   const formatRegistrationFeeAmount = registrationFeeTopUp
     ? (amount: number) => formatMarketSubunits(amount, registrationFeeTopUp.baseAsset)
@@ -100,8 +100,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     <>
       {registrationFeePrompt && (
         <RegistrationFeeConfirmationModal
-          feeSats={registrationFeePrompt.feeSats}
-          balanceSats={registrationFeePrompt.balanceSats}
+          feeSubunits={registrationFeePrompt.feeSubunits}
+          balanceSubunits={registrationFeePrompt.balanceSubunits}
           baseAsset={registrationFeePrompt.baseAsset}
           onCancel={onCancelRegistrationFee}
           onConfirm={onConfirmRegistrationFee}
@@ -109,8 +109,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
       )}
       {registrationFeeTopUpStage === 'modal' && registrationFeeTopUp && (
         <InsufficientBalanceModal
-          balance={registrationFeeTopUp.balanceSats}
-          required={registrationFeeTopUp.feeSats}
+          balance={registrationFeeTopUp.balanceSubunits}
+          required={registrationFeeTopUp.feeSubunits}
           title={t('marketCreation.registrationFeeTopUpTitle')}
           requiredDescription={t('marketCreation.registrationFeeTopUpRequiredDescription')}
           formatAmount={formatRegistrationFeeAmount}

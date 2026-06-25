@@ -38,8 +38,13 @@ describe('detectMintCapabilities', () => {
       nuts: {
         CTF: {
           default_keyset_creation: 'one-vs-rest',
-          registration_fee_base: '10',
-          registration_fee_per_keyset: 2,
+          registration_fees: [
+            {
+              unit: 'msat',
+              registration_fee_base: '10',
+              registration_fee_per_keyset: 2,
+            },
+          ],
         },
       },
     }
@@ -48,8 +53,13 @@ describe('detectMintCapabilities', () => {
       ctf: true,
       ctfSettings: {
         defaultKeysetCreation: 'one-vs-rest',
-        registrationFeeBase: 10,
-        registrationFeePerKeyset: 2,
+        registrationFees: [
+          {
+            unit: 'msat',
+            registrationFeeBase: 10,
+            registrationFeePerKeyset: 2,
+          },
+        ],
       },
     })
   })
@@ -63,8 +73,7 @@ describe('detectMintCapabilities', () => {
         nuts: {
           CTF: {
             default_keyset_creation: 'invalid',
-            registration_fee_base: 0,
-            registration_fee_per_keyset: 0,
+            registration_fees: [],
           },
         },
       }),

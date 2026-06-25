@@ -82,8 +82,8 @@ export interface MarketCreationWizardProps {
   /** Error message from submission */
   submitError: string | null
 
-  registrationFeePrompt: { feeSats: number; balanceSats: number; baseAsset: MarketBaseAsset } | null
-  registrationFeeTopUp: { feeSats: number; balanceSats: number; baseAsset: MarketBaseAsset } | null
+  registrationFeePrompt: { feeSubunits: number; balanceSubunits: number; baseAsset: MarketBaseAsset } | null
+  registrationFeeTopUp: { feeSubunits: number; balanceSubunits: number; baseAsset: MarketBaseAsset } | null
   registrationFeeTopUpStage: 'closed' | 'modal' | 'overlay'
 
   /**

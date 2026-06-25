@@ -164,9 +164,8 @@ describe('registerConditionWithFee', () => {
   it('charges one-vs-rest registration fees for every generated collection', () => {
     expect(registrationFeeForPolicy(['A', 'B', 'C'], {
       defaultKeysetCreation: 'one-vs-rest',
-      registrationFeeBase: 1,
-      registrationFeePerKeyset: 1,
-    })).toBe(7)
+      registrationFees: [{ unit: 'msat', registrationFeeBase: 10000, registrationFeePerKeyset: 10000 }],
+    }, 'msat')).toBe(70000)
   })
 
   it('accepts fewer registration-fee change signatures than prepared blank outputs', async () => {
@@ -178,7 +177,7 @@ describe('registerConditionWithFee', () => {
 
     const result = await registerConditionWithFee({
       mintUrl: 'https://mint.example.test',
-      requiredFeeSats: 3,
+      requiredFeeSubunits: 3,
       request: {
         tags: [['title', 'Fee change']],
         announcementHex: 'announcement',
@@ -237,7 +236,7 @@ describe('registerConditionWithFee', () => {
 
     const result = await registerConditionWithFee({
       mintUrl: 'https://mint.example.test',
-      requiredFeeSats: 3,
+      requiredFeeSubunits: 3,
       request: {
         tags: [['title', 'USD Fee']],
         announcementHex: 'announcement',
@@ -283,7 +282,7 @@ describe('registerConditionWithFee', () => {
 
     await expect(registerConditionWithFee({
       mintUrl: 'https://mint.example.test',
-      requiredFeeSats: 3,
+      requiredFeeSubunits: 3,
       request: {
         tags: [['title', 'Missing USD']],
         announcementHex: 'announcement',
@@ -307,7 +306,7 @@ describe('registerConditionWithFee', () => {
 
     await expect(registerConditionWithFee({
       mintUrl: 'https://mint.example.test',
-      requiredFeeSats: 3,
+      requiredFeeSubunits: 3,
       request: {
         tags: [['title', 'Fee change']],
         announcementHex: 'announcement',

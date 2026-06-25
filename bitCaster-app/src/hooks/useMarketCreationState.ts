@@ -25,8 +25,8 @@ import { detectMintCapabilities } from '@/lib/mints'
 import { useWalletStore } from '@/stores/wallet'
 import { refreshMintInfoWithoutActivating } from '@/lib/walletOps'
 import {
-  MAX_CONDITION_REGISTRATION_FEE_SATS,
-  getAvailableRegularBalanceSats,
+  MAX_CONDITION_REGISTRATION_FEE_SUBUNITS,
+  getAvailableRegularBalanceSubunits,
   registerConditionWithFee,
   registrationFeeForPolicy,
 } from '@/lib/marketRegistrationFee'
@@ -52,7 +52,7 @@ const DEFAULT_CREATOR_FEE_PERCENT = 0
 export const MAX_MARKET_OUTCOMES = 8
 
 const NSEC_ORACLE_REQUIRED_MESSAGE = 'You must register a nostr key to become an oracle'
-type RegistrationFeePrompt = { feeSats: number; balanceSats: number; baseAsset: MarketBaseAsset }
+type RegistrationFeePrompt = { feeSubunits: number; balanceSubunits: number; baseAsset: MarketBaseAsset }
 type RegistrationFeeTopUpStage = 'closed' | 'modal' | 'overlay'
 
 async function activeMintCapabilities() {
@@ -513,10 +513,15 @@ export function useMarketCreationState() {
         )
       }
       const ctfSettings = ctfCapabilities.ctfSettings
-      const requiredRegistrationFee = registrationFeeForPolicy(outcomes, ctfSettings)
-      if (requiredRegistrationFee > MAX_CONDITION_REGISTRATION_FEE_SATS) {
-        const requiredFee = `${requiredRegistrationFee.toLocaleString()} sats`
-        const maxFee = `${MAX_CONDITION_REGISTRATION_FEE_SATS.toLocaleString()} sats`
+      const collateralUnit = defaultCollateralUnit(baseAsset)
+      const requiredRegistrationFee = registrationFeeForPolicy(
+        outcomes,
+        ctfSettings,
+        collateralUnit,
+      )
+      if (requiredRegistrationFee > MAX_CONDITION_REGISTRATION_FEE_SUBUNITS) {
+        const requiredFee = `${requiredRegistrationFee.toLocaleString()} subunits`
+        const maxFee = `${MAX_CONDITION_REGISTRATION_FEE_SUBUNITS.toLocaleString()} subunits`
         throw new Error(
           `This mint requires a ${requiredFee} condition registration fee, ` +
             `which exceeds the ${maxFee} app limit.`,
@@ -529,19 +534,19 @@ export function useMarketCreationState() {
         throw new Error('No active mint is configured.')
       }
       if (requiredRegistrationFee > 0 && !options.registrationFeeConfirmed) {
-        const balance = await getAvailableRegularBalanceSats(activeMintUrl, baseAsset)
+        const balance = await getAvailableRegularBalanceSubunits(activeMintUrl, baseAsset)
         if (balance < requiredRegistrationFee) {
           setRegistrationFeeTopUp({
-            feeSats: requiredRegistrationFee,
-            balanceSats: balance,
+            feeSubunits: requiredRegistrationFee,
+            balanceSubunits: balance,
             baseAsset,
           })
           setRegistrationFeeTopUpStage('modal')
           return
         }
         setRegistrationFeePrompt({
-          feeSats: requiredRegistrationFee,
-          balanceSats: balance,
+          feeSubunits: requiredRegistrationFee,
+          balanceSubunits: balance,
           baseAsset,
         })
         return
@@ -596,11 +601,11 @@ export function useMarketCreationState() {
       // 1. Register condition on the mint
       const { condition_id } = await registerConditionWithFee({
         mintUrl: activeMintUrl,
-        requiredFeeSats: requiredRegistrationFee,
+        requiredFeeSubunits: requiredRegistrationFee,
         request: {
           tags,
           announcementHex,
-          collateral: defaultCollateralUnit(baseAsset),
+          collateral: collateralUnit,
           outcomeCollections,
         },
       })
