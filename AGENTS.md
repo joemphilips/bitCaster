@@ -26,6 +26,15 @@ CDK mintd
 
 ## Design Principle
 
+### Shared Logic Lives in the SDK
+
+Any logic used by more than one consumer (bitCaster-app, bitcaster-daemon,
+bitcaster-cli, or any future client) MUST be implemented in
+`bitcaster-client-sdk/` and imported from there. Do not duplicate parsing,
+validation, fee calculation, proof selection, or protocol-level logic across
+consumers. If you find yourself copy-pasting a function into a second
+consumer, move it to the SDK first.
+
 ### Open Protocol First
 
 Every communication should be defined as an open protocol:
