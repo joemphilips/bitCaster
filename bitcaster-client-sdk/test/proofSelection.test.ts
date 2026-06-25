@@ -1,6 +1,26 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { keysetToOutcomeCollection } from '../src/proofSelection.ts'
+import {
+  computeInputFeeSubunitsFromPpk,
+  takeProofsForLock,
+  keysetToOutcomeCollection,
+} from '../src/proofSelection.ts'
+
+test('computeInputFeeSubunitsFromPpk returns NUT-02 proof-count fee in keyset subunits', () => {
+  assert.equal(computeInputFeeSubunitsFromPpk(10 * 1), 1)
+})
+
+test('takeProofsForLock treats input fees as subunits when computing spendable proof amount', () => {
+  const proofs = Array.from({ length: 10 }, (_, index) => ({
+    amount: 1_000,
+    id: 'msat-keyset',
+    secret: `s-${index}`,
+    C: `C-${index}`,
+  }))
+
+  assert.equal(takeProofsForLock(proofs, 9_999, { 'msat-keyset': 1 })?.length, 10)
+  assert.equal(takeProofsForLock(proofs, 10_000, { 'msat-keyset': 1 }), null)
+})
 
 test('keysetToOutcomeCollection maps each keyset to exactly one outcome collection', () => {
   assert.deepEqual(

@@ -73,6 +73,28 @@ describe('TopUpOverlay', () => {
     expect(screen.getByText('$150.00')).toBeInTheDocument()
   })
 
+  it('converts sat-market deficit subunits to sats for the top-up invoice', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <TopUpOverlay
+        deficit={10_000}
+        baseAsset="sat"
+        onCancel={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Minimum 10 sats to cover the trade/)).toBeInTheDocument()
+    expect(screen.getByTestId('top-up-amount-input')).toHaveValue(1_010)
+
+    await user.click(screen.getByTestId('top-up-continue'))
+
+    await waitFor(() => {
+      expect(createMintQuote).toHaveBeenCalledWith(1_010, 'https://mint.example', 'sat')
+    })
+  })
+
   it('fails fast for unsupported top-up base assets', () => {
     expect(() => render(
       <TopUpOverlay

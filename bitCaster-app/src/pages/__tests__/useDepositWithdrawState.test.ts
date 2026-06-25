@@ -2,6 +2,7 @@ import { renderHook, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useDepositWithdrawState } from '../useDepositWithdrawState'
 import { useWalletStore } from '@/stores/wallet'
+import { useActivityLogStore } from '@/stores/activity-log'
 
 // Mock cashu.ts — we don't want real mint calls
 vi.mock('@/lib/cashu', () => ({
@@ -58,6 +59,7 @@ vi.mock('@/lib/nip17', () => ({
 }))
 
 beforeEach(() => {
+  useActivityLogStore.getState().clear()
   useWalletStore.setState({
     mnemonic: 'test words here abandon abandon abandon abandon abandon abandon abandon abandon abandon',
     setupComplete: true,
@@ -351,6 +353,40 @@ describe('useDepositWithdrawState', () => {
         label: '10 sat/cent',
         source: 'implied',
       })
+    })
+
+    it('stores paid sat deposits in activity-log subunits while the input label remains sats', async () => {
+      const cashu = await import('@/lib/cashu')
+      vi.mocked(cashu.createMintQuote).mockClear()
+      vi.mocked(cashu.waitForMintQuotePaid).mockClear()
+      vi.mocked(cashu.mintProofs).mockResolvedValueOnce([])
+      const quote = {
+        quote: 'q-sat',
+        request: 'lnbc1000n1example',
+        amount: 10_000,
+        state: 'UNPAID',
+        expiry: Math.floor(Date.now() / 1000) + 90,
+      }
+      vi.mocked(cashu.createMintQuote).mockResolvedValue(quote as never)
+      vi.mocked(cashu.waitForMintQuotePaid).mockResolvedValue(() => {})
+
+      const { result } = renderHook(() => useDepositWithdrawState('deposit', vi.fn()))
+      act(() => result.current.onSelectMethod('lightning'))
+      act(() => result.current.onNumpadPress('1'))
+      act(() => result.current.onNumpadPress('0'))
+
+      expect(result.current.amountLabel).toBe('₿10')
+      await act(async () => { await result.current.onCreateInvoice() })
+      const paidCallback = vi.mocked(cashu.waitForMintQuotePaid).mock.calls[0][1]
+      await act(async () => { paidCallback({ status: 'PAID' }) })
+
+      expect(useActivityLogStore.getState().items[0]).toEqual(expect.objectContaining({
+        type: 'deposit',
+        baseAsset: 'sat',
+        amountSats: 10_000,
+        status: 'completed',
+      }))
+      expect(result.current.successAmount).toBe(10_000)
     })
 
     it('regenerate discards the cached quote and one-click requests a fresh one', async () => {

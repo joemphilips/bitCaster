@@ -50,8 +50,8 @@ const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
   ALL: Infinity,
 }
 
-/** Build P/L chart data from activity history. */
-function buildPLChartData(items: ActivityItem[]): PLChartData {
+/** Build P/L chart data from activity history. Sat-market amounts are collateral subunits (msat). */
+export function buildPLChartData(items: ActivityItem[]): PLChartData {
   // Sort oldest-first
   const sorted = [...items]
     .filter((a) => a.status === 'completed' && normalizeMarketBaseAsset(a.baseAsset) === 'sat')
@@ -65,11 +65,11 @@ function buildPLChartData(items: ActivityItem[]): PLChartData {
   const points: PLChartDataPoint[] = []
   let cumulative = 0
   for (const item of sorted) {
-    const delta =
+    const deltaSubunits =
       item.type === 'deposit' || item.type === 'payout_claimed' || item.type === 'creator_fee_claimed'
         ? item.amountSats
         : -item.amountSats
-    cumulative += delta
+    cumulative += deltaSubunits
     points.push({ timestamp: item.date, cumulativePL: cumulative })
   }
 

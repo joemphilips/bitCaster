@@ -35,9 +35,15 @@ import {
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
 import { safeHostname } from '@/lib/url'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
-import { normalizeMarketBaseAsset, type MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
+import {
+  collateralScaleForUnit,
+  defaultCollateralUnit,
+  normalizeMarketBaseAsset,
+  type MarketBaseAsset,
+} from '@bitcaster/client-sdk/marketUnits'
 import { diagnoseProofStates } from '@/lib/proofDiagnostics'
 import { formatAmount } from '@/lib/formatAmount'
+import { formatBtc } from '@/lib/format'
 import { getMintQuoteRateInfo, type MintQuoteRateInfo } from '@/lib/mintQuoteRate'
 
 export type ExtendedView =
@@ -53,6 +59,18 @@ export type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
 
 function assertNeverWaitResult(r: never): never {
   throw new Error(`unhandled MintQuoteWaitResult: ${JSON.stringify(r)}`)
+}
+
+function depositInputAmountToActivitySubunits(
+  amount: number,
+  baseAsset: MarketBaseAsset,
+): number {
+  const unit = defaultCollateralUnit(baseAsset)
+  const amountSubunits = amount * collateralScaleForUnit(unit)
+  if (!Number.isSafeInteger(amountSubunits)) {
+    throw new Error(`Amount exceeds safe integer range for ${unit}: ${amount}`)
+  }
+  return amountSubunits
 }
 
 export interface DepositWithdrawState {
@@ -261,7 +279,7 @@ export function useDepositWithdrawState(
   }, [pendingRequestId, inboxEntry, onDismiss])
 
   const amountSats = parseInt(amountString || '0', 10)
-  const amountLabel = formatAmount(amountSats, selectedUnit)
+  const amountLabel = selectedUnit === 'sat' ? formatBtc(amountSats) : formatAmount(amountSats, selectedUnit)
   const unitOptions = unitsForMint(selectedMintId)
 
   const onSelectMethod = useCallback(
@@ -327,14 +345,15 @@ export function useDepositWithdrawState(
         const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl, baseAsset }))
         await addProofs(stored)
         setInvoiceStatus('paid')
+        const requestedSubunits = depositInputAmountToActivitySubunits(requested, baseAsset)
         useActivityLogStore.getState().addActivity({
           type: 'deposit',
           baseAsset,
-          amountSats: requested,
+          amountSats: requestedSubunits,
           status: 'completed',
           lightningInvoice: quote.request,
         })
-        setSuccessAmount(requested)
+        setSuccessAmount(requestedSubunits)
         setSuccessUnit(baseAsset)
         setCurrentView('success')
       } catch (e) {

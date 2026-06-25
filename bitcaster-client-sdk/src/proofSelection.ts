@@ -58,7 +58,7 @@ export function keysetToOutcomeCollection<T>(
   return result
 }
 
-export function computeInputFeeSatsFromPpk(inputFeePpk: number): number {
+export function computeInputFeeSubunitsFromPpk(inputFeePpk: number): number {
   if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
     throw new Error('input_fee_ppk total must be a non-negative safe integer')
   }
@@ -78,7 +78,7 @@ export function computeInputFeeSatsForProofs(
     }
     feePpk += inputFeePpk
   }
-  return computeInputFeeSatsFromPpk(feePpk)
+  return computeInputFeeSubunitsFromPpk(feePpk)
 }
 
 function takeProofsForLockFromSingleKeyset<T extends AmountProofLike>(

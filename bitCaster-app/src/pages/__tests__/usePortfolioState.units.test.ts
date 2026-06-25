@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { computeStats } from '../usePortfolioState'
-import type { Fund, Position } from '@/types/portfolio'
+import { buildPLChartData, computeStats } from '../usePortfolioState'
+import type { ActivityItem, Fund, Position } from '@/types/portfolio'
 
 const basePosition: Position = {
   id: 'p',
@@ -44,5 +44,26 @@ describe('computeStats', () => {
       { unit: 'usd', amount: 100 },
     ])
     expect(stats.totalValueSats).toBe(1500)
+  })
+
+  it('keeps PL chart cumulative and stats total in sat-market subunits', () => {
+    const activity: ActivityItem[] = [{
+      id: 'deposit-1',
+      type: 'deposit',
+      amountSats: 10_000,
+      baseAsset: 'sat',
+      date: new Date(0).toISOString(),
+      status: 'completed',
+      txId: null,
+      lightningInvoice: null,
+    }]
+    const stats = computeStats([], [
+      { id: 'sat-fund', unit: 'sats', amount: 10_000, mintUrl: 'https://mint.example' },
+    ])
+
+    expect(buildPLChartData(activity).ALL).toEqual([
+      { timestamp: new Date(0).toISOString(), cumulativePL: 10_000 },
+    ])
+    expect(stats.totalValueSats).toBe(10_000)
   })
 })

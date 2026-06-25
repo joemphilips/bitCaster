@@ -42,7 +42,13 @@ function inputAmountToSubunits(displayAmount: number, baseAsset: string): number
 
 function feeBufferSubunits(baseAsset: string): number {
   if (baseAsset === 'usd') return 0
-  if (baseAsset === 'sat') return FEE_BUFFER_SATS
+  if (baseAsset === 'sat') return FEE_BUFFER_SATS * 1000
+  throw new Error(`unsupported base asset: ${baseAsset}`)
+}
+
+function topUpRequestAmount(amountSubunits: number, baseAsset: string): number {
+  if (baseAsset === 'usd') return amountSubunits
+  if (baseAsset === 'sat') return Math.ceil(amountSubunits / 1000)
   throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
@@ -71,7 +77,7 @@ interface TopUpOverlayProps {
 /**
  * Self-contained Lightning top-up flow mirroring
  * `useDepositWithdrawState.onCreateInvoice` but scoped to the trade context:
- * user picks an amount (prefilled `deficit + FEE_BUFFER_SATS`, floor `deficit`),
+ * user picks an amount (prefilled with the deficit plus `FEE_BUFFER_SATS`, floor `deficit`),
  * sees a bolt11, and the overlay tears itself down once proofs are stored.
  */
 export function TopUpOverlay({
@@ -181,7 +187,7 @@ export function TopUpOverlay({
       )
       return
     }
-    const requested = amount
+    const requested = topUpRequestAmount(amount, baseAsset)
     inflightRef.current = true
     setError(null)
     setStatus('pending')
