@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   reserveProofs: vi.fn(),
   registerCondition: vi.fn(),
   getWallet: vi.fn(),
+  getWalletForUnit: vi.fn(),
   createdOutputs: [] as Array<{
     blindedMessage: { amount: number; id: string; B_: string }
     blindingFactor: bigint
@@ -34,6 +35,7 @@ vi.mock('@/stores/proof-db', () => ({
 
 vi.mock('@/lib/cashu', () => ({
   getWallet: mocks.getWallet,
+  getWalletForUnit: mocks.getWalletForUnit,
 }))
 
 vi.mock('@/lib/markets', () => ({
@@ -159,6 +161,7 @@ describe('registerConditionWithFee', () => {
         }),
       },
     })
+    mocks.getWalletForUnit.mockImplementation(mocks.getWallet)
   })
 
   it('charges one-vs-rest registration fees for every generated collection', () => {
@@ -249,7 +252,7 @@ describe('registerConditionWithFee', () => {
       'https://mint.example.test',
       { baseAsset: 'usd' },
     )
-    expect(mocks.getWallet).toHaveBeenCalledWith('https://mint.example.test', 'usd')
+    expect(mocks.getWalletForUnit).toHaveBeenCalledWith('https://mint.example.test', 'usd')
     expect(mocks.registerCondition).toHaveBeenCalledWith(
       expect.objectContaining({
         collateral: 'usd',
@@ -260,6 +263,85 @@ describe('registerConditionWithFee', () => {
       expect.objectContaining({
         mintUrl: 'https://mint.example.test',
         baseAsset: 'usd',
+        amount: 5,
+      }),
+    ])
+  })
+
+  it('preserves msat collateral unit for fee proofs and change outputs', async () => {
+    mocks.getBaseProofs.mockResolvedValueOnce([
+      {
+        id: 'sat-keyset',
+        amount: 8,
+        secret: 'sat-fee-proof-secret',
+        C: 'sat-fee-proof-C',
+      },
+      {
+        id: 'msat-keyset',
+        amount: 8,
+        secret: 'msat-fee-proof-secret',
+        C: 'msat-fee-proof-C',
+      },
+    ])
+    mocks.getWalletForUnit.mockResolvedValue({
+      mint: {
+        getKeys: async () => ({
+          keysets: [
+            {
+              id: 'sat-keyset',
+              unit: 'sat',
+              active: true,
+              input_fee_ppk: 0,
+              keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
+            },
+            {
+              id: 'msat-keyset',
+              unit: 'msat',
+              active: true,
+              input_fee_ppk: 0,
+              keys: { '1': 'k1', '2': 'k2', '4': 'k4', '5': 'k5' },
+            },
+          ],
+        }),
+      },
+    })
+    mocks.registerCondition.mockResolvedValue({
+      condition_id: 'cond-msat',
+      keysets: { Yes: 'ks-yes', No: 'ks-no' },
+      change: [{ id: 'msat-keyset', amount: 5, C_: 'blind-sig' }],
+    })
+
+    const result = await registerConditionWithFee({
+      mintUrl: 'https://mint.example.test',
+      requiredFeeSubunits: 3,
+      request: {
+        tags: [['title', 'msat Fee']],
+        announcementHex: 'announcement',
+        collateral: 'msat',
+      },
+    })
+
+    expect(result.condition_id).toBe('cond-msat')
+    expect(mocks.getBaseProofs).toHaveBeenCalledWith(
+      'https://mint.example.test',
+      { baseAsset: 'msat' },
+    )
+    expect(mocks.getWalletForUnit).toHaveBeenCalledWith('https://mint.example.test', 'msat')
+    expect(mocks.getWallet).not.toHaveBeenCalledWith('https://mint.example.test', 'msat')
+    expect(mocks.registerCondition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collateral: 'msat',
+        fee: [expect.objectContaining({ secret: 'msat-fee-proof-secret' })],
+        outputs: [
+          expect.objectContaining({ id: 'msat-keyset' }),
+          expect.objectContaining({ id: 'msat-keyset' }),
+        ],
+      }),
+    )
+    expect(mocks.addProofs).toHaveBeenCalledWith([
+      expect.objectContaining({
+        mintUrl: 'https://mint.example.test',
+        baseAsset: 'msat',
         amount: 5,
       }),
     ])
