@@ -175,7 +175,7 @@ describe("preflight proof recovery", () => {
         mintUrl: "https://mint.example",
         operationId: "order-preflight:epub:regular-split:0",
         proofs: [],
-        amountSats: 100,
+        amountSubunits: 100,
       }),
     );
     expect(mocks.replaceProofs).toHaveBeenCalledWith(

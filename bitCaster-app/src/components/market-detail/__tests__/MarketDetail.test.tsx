@@ -347,7 +347,7 @@ describe("MarketDetail", () => {
       priceImpact: 0,
       executableShares: 0,
       hasExecutableLiquidity: false,
-      quoteSats: 0,
+      quoteSubunits: 0,
       mintFee: 0,
       potentialPayout: 0,
       creatorFee: 0,

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import {
   computeLimitOrderPreview,
-  displaySharesToFaceSats,
+  displaySharesToFaceSubunits,
 } from "@/lib/tradeCostPreview";
 import type { MarketDetail } from "@/types/market-detail";
 
@@ -265,7 +265,7 @@ describe("buildTradeTicket", () => {
 
   it("sends protocol face amountSubunits, not the derived display cost", () => {
     const displayShares = 10;
-    const faceAmountSats = displaySharesToFaceSats(displayShares, "sat");
+    const faceAmountSats = displaySharesToFaceSubunits(displayShares, "sat");
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -300,7 +300,7 @@ describe("buildTradeTicket", () => {
     const ticket = buildTradeTicket({
       market: { ...market, divisibility },
       selection: { side: "yes" },
-      amountSats: displaySharesToFaceSats(displayShares, "sat", divisibility),
+      amountSats: displaySharesToFaceSubunits(displayShares, "sat", divisibility),
       side: "buy",
       orderType: "limit",
       limitPrice: 300,

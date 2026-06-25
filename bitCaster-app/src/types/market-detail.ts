@@ -229,13 +229,13 @@ export interface LimitOrderPreview {
   limitPrice: number        // price numerator 1..divisibility-1
   amount: number            // display shares
   sharesIfFilled?: number
-  quoteSats: number         // whole shares × price, the pre-fee quote
+  quoteSubunits: number     // whole shares × price, the pre-fee quote
   creatorFee: number
   mintFee: number           // read from the CTF keyset input_fee_ppk (0 in the first release)
   engineScoreFeeSats: number | null // sat-denominated Score fee; null means auth-gated until confirmation
   potentialPayout: number   // display shares × market divisibility
   // Display-only spend estimate used for the balance check. NEVER sent as the
-  // wire amountSats (which is `amount * divisibility`). Reactive:
+  // wire amountSubunits (which is `amount * divisibility`). Reactive:
   //   limitPrice * amount + creatorFee + mintFee
   totalCost: number
 }
@@ -260,7 +260,7 @@ export interface TradePreview {
   averageExecutionPrice?: number
   executableShares?: number
   hasExecutableLiquidity?: boolean
-  quoteSats: number
+  quoteSubunits: number
   mintFee: number
   potentialPayout: number
   creatorFee: number

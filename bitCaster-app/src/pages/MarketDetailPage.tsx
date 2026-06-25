@@ -37,7 +37,7 @@ import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
 import {
   computeTradeCost,
   computeMarketOrderQuotePreview,
-  displaySharesToFaceSats,
+  displaySharesToFaceSubunits,
 } from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
@@ -189,7 +189,7 @@ export async function resolvePreflightSplitBuyCollateralRequirement(input: {
     mintUrl: input.activeMintUrl,
     baseAsset: normalizeMarketBaseAsset(input.market.baseAsset),
     conditionId: input.market.id,
-    amountSats: displaySharesToFaceSats(input.tradeAmount, input.market.baseAsset, divisibility),
+    amountSats: displaySharesToFaceSubunits(input.tradeAmount, input.market.baseAsset, divisibility),
     keepOutcomeSetId: outcomeSets.selectedOutcomeSetId,
     lockOutcomeSetId: outcomeSets.complementOutcomeSetId,
   });
@@ -198,16 +198,16 @@ export async function resolvePreflightSplitBuyCollateralRequirement(input: {
 export function decideTradeCollateralGate(input: {
   balance: number;
   tradeSide: TradeSide;
-  tradeFaceAmount: number;
-  requiredBuyCost: number;
+  tradeFaceAmountSubunits: number;
+  requiredBuyCostSubunits: number;
   preflightSplitRequirement?: number | null;
 }):
   | { kind: "top-up"; balance: number; required: number }
   | { kind: "proceed"; balance: number; required: number } {
   const required =
     input.tradeSide === "sell"
-      ? input.tradeFaceAmount
-      : (input.preflightSplitRequirement ?? input.requiredBuyCost);
+      ? input.tradeFaceAmountSubunits
+      : (input.preflightSplitRequirement ?? input.requiredBuyCostSubunits);
   if (input.balance < required) {
     return { kind: "top-up", balance: input.balance, required };
   }
@@ -1278,7 +1278,7 @@ export function MarketDetailPage() {
   const marketBalanceGatePrice =
     tradeSide === "sell" ? 1 : marketDivisibility - 1;
 
-  const tradeFaceAmount = displaySharesToFaceSats(
+  const tradeFaceAmountSubunits = displaySharesToFaceSubunits(
     tradeAmount,
     marketBaseAsset,
     marketDivisibility,
@@ -1310,7 +1310,7 @@ export function MarketDetailPage() {
         averageExecutionPrice: undefined,
         executableShares: 0,
         hasExecutableLiquidity: false,
-        quoteSats: 0,
+        quoteSubunits: 0,
         mintFee: 0,
         potentialPayout: 0,
         creatorFee: 0,
@@ -1341,9 +1341,9 @@ export function MarketDetailPage() {
       averageExecutionPrice: quotePreview.averageExecutionPrice,
       executableShares: quotePreview.executableDisplayShares,
       hasExecutableLiquidity: true,
-      quoteSats: cost.quoteSats,
+      quoteSubunits: cost.quoteSubunits,
       mintFee: cost.mintFee,
-      potentialPayout: quotePreview.filledFaceSats,
+      potentialPayout: quotePreview.filledFaceSubunits,
       creatorFee: cost.creatorFee,
       engineScoreFeeSats,
       totalCost: cost.totalCost,
@@ -1357,7 +1357,7 @@ export function MarketDetailPage() {
     activeMintInputFeePpk,
     marketBaseAsset,
     marketDivisibility,
-    tradeFaceAmount,
+    tradeFaceAmountSubunits,
     engineScoreFeeSats,
   ]);
 
@@ -1381,11 +1381,11 @@ export function MarketDetailPage() {
       limitPrice,
       amount: tradeAmount,
       sharesIfFilled: tradeAmount,
-      quoteSats: cost.quoteSats,
+      quoteSubunits: cost.quoteSubunits,
       creatorFee: cost.creatorFee,
       mintFee: cost.mintFee,
       engineScoreFeeSats,
-      potentialPayout: tradeFaceAmount,
+      potentialPayout: tradeFaceAmountSubunits,
       totalCost: cost.totalCost,
     };
   }, [
@@ -1397,13 +1397,13 @@ export function MarketDetailPage() {
     activeMintInputFeePpk,
     marketBaseAsset,
     marketDivisibility,
-    tradeFaceAmount,
+    tradeFaceAmountSubunits,
     engineScoreFeeSats,
   ]);
 
   // Derived spend a BUY must cover, used by the pre-submit balance gate and the
   // top-up modal/overlay. Sells are gated on the position face amount.
-  const requiredBuyCost = useMemo(() => {
+  const requiredBuyCostSubunits = useMemo(() => {
     if (!market || !tradeAmount || tradeAmount <= 0) return 0;
     const price = orderType === "limit" ? limitPrice : marketBalanceGatePrice;
     return computeTradeCost({
@@ -1509,7 +1509,7 @@ export function MarketDetailPage() {
         ticket = buildTradeTicket({
           market: latestMarket,
           selection: tradeSelection,
-          amountSubunits: displaySharesToFaceSats(
+          amountSubunits: displaySharesToFaceSubunits(
             tradeAmount,
             latestMarket.baseAsset,
             normalizeMarketDivisibility(latestMarket.divisibility, latestMarket.baseAsset),
@@ -1726,8 +1726,8 @@ export function MarketDetailPage() {
         const collateralGate = decideTradeCollateralGate({
           balance: current,
           tradeSide,
-          tradeFaceAmount,
-          requiredBuyCost,
+          tradeFaceAmountSubunits,
+          requiredBuyCostSubunits,
           preflightSplitRequirement,
         });
         if (collateralGate.kind === "top-up") {
@@ -1781,9 +1781,9 @@ export function MarketDetailPage() {
       marketBaseAsset,
       tradeSelection,
       tradeAmount,
-      tradeFaceAmount,
+      tradeFaceAmountSubunits,
       tradeSide,
-      requiredBuyCost,
+      requiredBuyCostSubunits,
       activeMintUrl,
       preflightSplit,
       orderType,

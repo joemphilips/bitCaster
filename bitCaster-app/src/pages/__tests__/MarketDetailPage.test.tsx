@@ -733,8 +733,8 @@ describe("decideTradeCollateralGate", () => {
       decideTradeCollateralGate({
         balance: 50,
         tradeSide: "buy",
-        tradeFaceAmount: 100,
-        requiredBuyCost: 40,
+        tradeFaceAmountSubunits: 100,
+        requiredBuyCostSubunits: 40,
         preflightSplitRequirement: 100,
       }),
     ).toEqual({ kind: "top-up", balance: 50, required: 100 });
@@ -745,8 +745,8 @@ describe("decideTradeCollateralGate", () => {
       decideTradeCollateralGate({
         balance: 100,
         tradeSide: "buy",
-        tradeFaceAmount: 100,
-        requiredBuyCost: 40,
+        tradeFaceAmountSubunits: 100,
+        requiredBuyCostSubunits: 40,
         preflightSplitRequirement: 100,
       }),
     ).toEqual({ kind: "proceed", balance: 100, required: 100 });

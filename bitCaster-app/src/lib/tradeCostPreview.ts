@@ -1,7 +1,7 @@
 import type { LimitOrderPreview, OrderBook, TradeSide } from '@/types/market-detail'
 import { normalizeMarketDivisibility } from '@bitcaster/client-sdk/marketUnits'
 
-export function displaySharesToFaceSats(
+export function displaySharesToFaceSubunits(
   displayShares: number,
   baseAsset: string | null | undefined = 'sat',
   divisibility?: number | null,
@@ -9,12 +9,12 @@ export function displaySharesToFaceSats(
   return displayShares * normalizeMarketDivisibility(divisibility, baseAsset)
 }
 
-export function faceSatsToDisplayShares(
-  faceSats: number,
+export function faceSubunitsToDisplayShares(
+  faceSubunits: number,
   baseAsset: string | null | undefined = 'sat',
   divisibility?: number | null,
 ): number {
-  return Math.floor(faceSats / normalizeMarketDivisibility(divisibility, baseAsset))
+  return Math.floor(faceSubunits / normalizeMarketDivisibility(divisibility, baseAsset))
 }
 
 /**
@@ -22,31 +22,31 @@ export function faceSatsToDisplayShares(
  *
  * The trade input is user-facing display shares. One display share is a
  * market-divisibility-sized conditional-token face lot; boundary code converts to wire
- * `amountSats` via {@link displaySharesToFaceSats}. The figures here are NEVER
+ * `amountSubunits` via {@link displaySharesToFaceSubunits}. The figures here are NEVER
  * sent on the wire; they exist only to (a) populate the trade preview panels
  * and (b) drive the pre-submit balance check.
  *
- * Quote sats = display shares * price. This is equivalent to the engine's
+ * Quote subunits = display shares * price. This is equivalent to the engine's
  * exact settlement formula because:
  *
-  *   faceSats   = displayShares * divisibility
- *   quoteSats  = faceSats * price / divisibility
+  *   faceSubunits  = displayShares * divisibility
+ *   quoteSubunits = faceSubunits * price / divisibility
  *
  * On top of the quote the user pays the creator fee (a percentage of the
  * quote) and the mint fee. The creator fee is computed on the QUOTE/COST
  * basis, never on the face.
  *
- *   quoteSats  = displayShares * price
- *   creatorFee = round(quoteSats * feePercent / 100)
- *   mintFee    = ceil(quoteSats * mintInputFeePpk / 1000)
- *   totalCost  = quoteSats + creatorFee + mintFee
+ *   quoteSubunits = displayShares * price
+ *   creatorFee    = round(quoteSubunits * feePercent / 100)
+ *   mintFee       = ceil(quoteSubunits * mintInputFeePpk / 1000)
+ *   totalCost     = quoteSubunits + creatorFee + mintFee
  *
  * `mintInputFeePpk` is the per-input fee (`input_fee_ppk`, parts-per-thousand)
  * the active mint advertises on its keysets. For the first-release bitCaster
  * mint config it is `0`, so the mint fee resolves to `0 sats`.
  */
 export interface TradeCostBreakdown {
-  quoteSats: number
+  quoteSubunits: number
   creatorFee: number
   mintFee: number
   totalCost: number
@@ -62,14 +62,14 @@ export function computeTradeCost(params: {
 }): TradeCostBreakdown {
   const { displayShares, price, feePercent, mintInputFeePpk, baseAsset = 'sat' } = params
   const divisibility = normalizeMarketDivisibility(params.divisibility, baseAsset)
-  const quoteSats = (displaySharesToFaceSats(displayShares, baseAsset, divisibility) * price) / divisibility
-  const creatorFee = Math.round((quoteSats * feePercent) / 100)
-  const mintFee = Math.ceil((quoteSats * mintInputFeePpk) / 1000)
+  const quoteSubunits = (displaySharesToFaceSubunits(displayShares, baseAsset, divisibility) * price) / divisibility
+  const creatorFee = Math.round((quoteSubunits * feePercent) / 100)
+  const mintFee = Math.ceil((quoteSubunits * mintInputFeePpk) / 1000)
   return {
-    quoteSats,
+    quoteSubunits,
     creatorFee,
     mintFee,
-    totalCost: quoteSats + creatorFee + mintFee,
+    totalCost: quoteSubunits + creatorFee + mintFee,
   }
 }
 
@@ -106,11 +106,11 @@ export function computeLimitOrderPreview(params: {
     limitPrice,
     amount: displayShares,
     sharesIfFilled: displayShares,
-    quoteSats: cost.quoteSats,
+    quoteSubunits: cost.quoteSubunits,
     creatorFee: cost.creatorFee,
     mintFee: cost.mintFee,
     engineScoreFeeSats,
-    potentialPayout: displaySharesToFaceSats(displayShares, baseAsset, params.divisibility),
+    potentialPayout: displaySharesToFaceSubunits(displayShares, baseAsset, params.divisibility),
     totalCost: cost.totalCost,
   }
 }
@@ -118,8 +118,8 @@ export function computeLimitOrderPreview(params: {
 export interface MarketOrderQuotePreview {
   executableDisplayShares: number
   averageExecutionPrice: number
-  quoteSats: number
-  filledFaceSats: number
+  quoteSubunits: number
+  filledFaceSubunits: number
 }
 
 export function computeMarketOrderQuotePreview(params: {
@@ -141,10 +141,10 @@ export function computeMarketOrderQuotePreview(params: {
   const faceSubunitsPerDisplayShare = divisibility
   if ((!orderBook && !complementaryOrderBook) || displayShares <= 0 || divisibility <= 0) return null
 
-  const remainingFaceTarget = displaySharesToFaceSats(displayShares, baseAsset, divisibility)
+  const remainingFaceTarget = displaySharesToFaceSubunits(displayShares, baseAsset, divisibility)
   let remainingFace = remainingFaceTarget
-  let quoteSats = 0
-  let filledFaceSats = 0
+  let quoteSubunits = 0
+  let filledFaceSubunits = 0
 
   const consume = (
     levels: OrderBook['bids'],
@@ -154,8 +154,8 @@ export function computeMarketOrderQuotePreview(params: {
       if (remainingFace <= 0) break
       const fillFace = Math.min(remainingFace, level.amount)
       if (fillFace <= 0) continue
-      quoteSats += (fillFace * priceForLevel(level.price)) / divisibility
-      filledFaceSats += fillFace
+      quoteSubunits += (fillFace * priceForLevel(level.price)) / divisibility
+      filledFaceSubunits += fillFace
       remainingFace -= fillFace
     }
   }
@@ -168,13 +168,13 @@ export function computeMarketOrderQuotePreview(params: {
     consume(complementaryOrderBook?.bids ?? [], (price) => divisibility - price)
   }
 
-  if (filledFaceSats <= 0) return null
+  if (filledFaceSubunits <= 0) return null
 
-  const executableDisplayShares = filledFaceSats / faceSubunitsPerDisplayShare
+  const executableDisplayShares = filledFaceSubunits / faceSubunitsPerDisplayShare
   return {
     executableDisplayShares,
-    averageExecutionPrice: (quoteSats * divisibility) / filledFaceSats,
-    quoteSats,
-    filledFaceSats,
+    averageExecutionPrice: (quoteSubunits * divisibility) / filledFaceSubunits,
+    quoteSubunits,
+    filledFaceSubunits,
   }
 }

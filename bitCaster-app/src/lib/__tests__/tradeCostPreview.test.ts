@@ -3,8 +3,8 @@ import {
   computeLimitOrderPreview,
   computeMarketOrderQuotePreview,
   computeTradeCost,
-  displaySharesToFaceSats,
-  faceSatsToDisplayShares,
+  displaySharesToFaceSubunits,
+  faceSubunitsToDisplayShares,
 } from "@/lib/tradeCostPreview";
 
 describe("computeLimitOrderPreview", () => {
@@ -58,7 +58,7 @@ describe("computeLimitOrderPreview", () => {
       feePercent: 0,
       mintInputFeePpk: 0,
     });
-    expect(preview.quoteSats).toBe(150);
+    expect(preview.quoteSubunits).toBe(150);
   });
 
   it("pins share-ticket math for 50 sat shares at price 300 with D=1000", () => {
@@ -71,7 +71,7 @@ describe("computeLimitOrderPreview", () => {
       divisibility: 1_000,
     });
 
-    expect(preview.quoteSats).toBe(15_000);
+    expect(preview.quoteSubunits).toBe(15_000);
     expect(preview.totalCost).toBe(15_000);
     expect(preview.potentialPayout).toBe(50_000);
   });
@@ -108,7 +108,7 @@ describe("computeTradeCost", () => {
       feePercent: 0,
       mintInputFeePpk: 0,
     });
-    expect(cost.quoteSats).toBe(400);
+    expect(cost.quoteSubunits).toBe(400);
     expect(cost.totalCost).toBe(400);
     expect(cost.totalCost).toBeLessThan(1_000_000);
   });
@@ -123,7 +123,7 @@ describe("computeTradeCost", () => {
       feePercent: 10,
       mintInputFeePpk: 0,
     });
-    expect(cost.quoteSats).toBe(500);
+    expect(cost.quoteSubunits).toBe(500);
     expect(cost.creatorFee).toBe(50); // 10% of quote 500, not of face 100,000
     expect(cost.creatorFee).not.toBe(10_000); // would be the face-basis bug
     expect(cost.totalCost).toBe(550);
@@ -137,7 +137,7 @@ describe("computeTradeCost", () => {
       feePercent: 0,
       mintInputFeePpk: 0,
     });
-    expect(cost.quoteSats).toBe(990);
+    expect(cost.quoteSubunits).toBe(990);
     expect(cost.totalCost).toBe(990);
   });
 
@@ -145,7 +145,7 @@ describe("computeTradeCost", () => {
     // Regression for P22 C LOW: the pre-submit gate compares wallet balance
     // against `computeTradeCost(...).totalCost`, NOT the face amount. A wallet
     // holding 450 sats can afford 10 shares (100,000 face) @ price 40 (cost 400).
-    const face = displaySharesToFaceSats(10);
+    const face = displaySharesToFaceSubunits(10);
     const walletBalance = 450;
     const requiredSats = computeTradeCost({
       displayShares: 10,
@@ -181,10 +181,10 @@ describe("computeTradeCost", () => {
 
 describe("trade display-unit conversion", () => {
   it("maps display shares to the market divisibility share face", () => {
-    expect(displaySharesToFaceSats(3, "sat")).toBe(30_000);
-    expect(faceSatsToDisplayShares(30_000, "sat")).toBe(3);
-    expect(displaySharesToFaceSats(3, "usd")).toBe(3_000);
-    expect(faceSatsToDisplayShares(3_000, "usd")).toBe(3);
+    expect(displaySharesToFaceSubunits(3, "sat")).toBe(30_000);
+    expect(faceSubunitsToDisplayShares(30_000, "sat")).toBe(3);
+    expect(displaySharesToFaceSubunits(3, "usd")).toBe(3_000);
+    expect(faceSubunitsToDisplayShares(3_000, "usd")).toBe(3);
   });
 
   it("uses D=10000 as both price precision and share face", () => {
@@ -197,7 +197,7 @@ describe("trade display-unit conversion", () => {
       baseAsset: "sat",
     });
 
-    expect(preview.quoteSats).toBe(10_000);
+    expect(preview.quoteSubunits).toBe(10_000);
     expect(preview.potentialPayout).toBe(20_000);
   });
 });
@@ -219,7 +219,7 @@ describe("computeMarketOrderQuotePreview", () => {
     });
 
     expect(quote?.executableDisplayShares).toBe(3);
-    expect(quote?.quoteSats).toBe(140);
+    expect(quote?.quoteSubunits).toBe(140);
     expect(quote?.averageExecutionPrice).toBeCloseTo(46.67, 2);
   });
 
@@ -236,7 +236,7 @@ describe("computeMarketOrderQuotePreview", () => {
     });
 
     expect(quote?.executableDisplayShares).toBe(2);
-    expect(quote?.quoteSats).toBe(90);
+    expect(quote?.quoteSubunits).toBe(90);
     expect(quote?.averageExecutionPrice).toBe(45);
   });
 
@@ -255,7 +255,7 @@ describe("computeMarketOrderQuotePreview", () => {
 
     expect(quote?.executableDisplayShares).toBe(2);
     expect(quote?.averageExecutionPrice).toBe(58);
-    expect(quote?.quoteSats).toBe(116);
+    expect(quote?.quoteSubunits).toBe(116);
   });
 
   it("does not treat complementary-book asks as executable market-buy liquidity", () => {
@@ -288,7 +288,7 @@ describe("computeMarketOrderQuotePreview", () => {
     });
 
     expect(quote?.averageExecutionPrice).toBe(40);
-    expect(quote?.quoteSats).toBe(40);
+    expect(quote?.quoteSubunits).toBe(40);
   });
 
   it("uses direct asks before complementary bids for partial market buys", () => {
@@ -309,7 +309,7 @@ describe("computeMarketOrderQuotePreview", () => {
     });
 
     expect(quote?.executableDisplayShares).toBe(3);
-    expect(quote?.quoteSats).toBe(151);
+    expect(quote?.quoteSubunits).toBe(151);
     expect(quote?.averageExecutionPrice).toBeCloseTo(50.33, 2);
   });
 

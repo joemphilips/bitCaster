@@ -150,7 +150,7 @@ async function resumePreparedPreflightOperation(
       operationId: operation.operationId,
       wallet,
       proofs: [],
-      amountSats: preparedAmountSats(operation),
+      amountSubunits: preparedAmountSubunits(operation),
       proofOperationStore: ctfProofOperationStore,
     });
     return {
@@ -166,7 +166,7 @@ async function resumePreparedPreflightOperation(
   if (operation.kind === "ctf-split") {
     const metadata = operation.metadata as {
       conditionId?: string;
-      amountSats?: number;
+      amountSubunits?: number;
       baseAsset?: string | null;
       outcomeCollectionKeysets?: Record<string, string>;
     };
@@ -178,7 +178,7 @@ async function resumePreparedPreflightOperation(
       conditionId: metadata.conditionId ?? "",
       collateralProofs: [],
       outcomeCollectionKeysets: metadata.outcomeCollectionKeysets ?? {},
-      amountSubunits: metadata.amountSats ?? 1,
+      amountSubunits: metadata.amountSubunits ?? 1,
       proofOperationStore: ctfProofOperationStore,
       makeOutputs: () => [],
     });
@@ -200,7 +200,7 @@ function operationBaseAsset(operation: ProofOperationRecord): string {
   );
 }
 
-function preparedAmountSats(operation: ProofOperationRecord): number {
+function preparedAmountSubunits(operation: ProofOperationRecord): number {
   const amount = operation.metadata.amount;
   if (
     typeof amount === "number" &&
