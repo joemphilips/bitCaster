@@ -137,10 +137,7 @@ describe("mapCatalogueEntryToMarket", () => {
     if (market.type === "yesno") {
       expect(market.currentOdds).toEqual({ yes: 50, no: 50 });
     }
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Falling back to 50/50"),
-      expect.objectContaining({ conditionId: "abc123" }),
-    );
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 

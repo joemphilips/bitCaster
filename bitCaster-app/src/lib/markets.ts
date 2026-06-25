@@ -198,9 +198,6 @@ function resolveYesNoOdds(
     return { yes, no: 100 - yes };
   }
 
-  console.warn("Falling back to 50/50 odds for catalogue market without lastTradedPrice", {
-    conditionId: entry.conditionId,
-  });
   return { yes: 50, no: 50 };
 }
 
