@@ -1,5 +1,6 @@
 import { renderHook, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { Amount } from '@cashu/cashu-ts'
 import { useDepositWithdrawState } from '../useDepositWithdrawState'
 import { useWalletStore } from '@/stores/wallet'
 import { useActivityLogStore } from '@/stores/activity-log'
@@ -363,7 +364,8 @@ describe('useDepositWithdrawState', () => {
       const quote = {
         quote: 'q-sat',
         request: 'lnbc1000n1example',
-        amount: 10_000,
+        amount: Amount.from(10_000),
+        unit: 'sat',
         state: 'UNPAID',
         expiry: Math.floor(Date.now() / 1000) + 90,
       }
@@ -378,7 +380,7 @@ describe('useDepositWithdrawState', () => {
       expect(result.current.amountLabel).toBe('₿10')
       await act(async () => { await result.current.onCreateInvoice() })
       const paidCallback = vi.mocked(cashu.waitForMintQuotePaid).mock.calls[0][1]
-      await act(async () => { paidCallback({ status: 'PAID' }) })
+      await act(async () => { paidCallback({ status: 'PAID', quote: { ...quote, state: 'PAID' } }) })
 
       expect(useActivityLogStore.getState().items[0]).toEqual(expect.objectContaining({
         type: 'deposit',
