@@ -1,5 +1,9 @@
 import type { Proof } from "@cashu/cashu-ts";
-import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import {
+  defaultCollateralUnit,
+  normalizeMarketBaseAsset,
+  parseCashuProofUnit,
+} from "@bitcaster/client-sdk/marketUnits";
 import { normalizeUrl } from "@/lib/url";
 import type { StoredProof } from "@/stores/proof-db";
 
@@ -56,9 +60,12 @@ export async function storedConditionalProofsFromMintMetadata(input: {
   expectedConditionId?: string;
   reservedBy?: string;
   baseAsset?: string | null;
+  unit?: string | null;
 }): Promise<StoredProof[]> {
   const out: StoredProof[] = [];
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset);
+  const unit = parseCashuProofUnit(input.unit) ?? parseCashuProofUnit(defaultCollateralUnit(baseAsset));
+  if (!unit) throw new Error(`Unsupported Cashu unit for base asset '${baseAsset}'`);
   for (const proof of input.proofs) {
     const metadata = await resolveConditionalProofMetadata(
       input.mintUrl,
@@ -71,6 +78,7 @@ export async function storedConditionalProofsFromMintMetadata(input: {
       mintUrl: input.mintUrl,
       reservedBy: input.reservedBy,
       baseAsset,
+      unit,
     });
   }
   return out;

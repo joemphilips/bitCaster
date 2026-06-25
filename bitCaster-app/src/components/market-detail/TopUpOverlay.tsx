@@ -14,6 +14,7 @@ import { useWalletStore } from '@/stores/wallet'
 import type { MintQuoteResponse } from '@cashu/cashu-ts'
 import {
   formatAmount,
+  defaultCollateralUnit,
   marketUnitLabel,
   normalizeMarketBaseAsset,
 } from '@bitcaster/client-sdk/marketUnits'
@@ -145,6 +146,7 @@ export function TopUpOverlay({
         ...p,
         mintUrl: activeMintUrl,
         baseAsset,
+        unit: defaultCollateralUnit(baseAsset),
       }))
       await addProofs(stored)
       if (cancelledRef.current) return

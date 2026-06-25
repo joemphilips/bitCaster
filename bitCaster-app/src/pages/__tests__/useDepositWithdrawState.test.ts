@@ -37,7 +37,7 @@ vi.mock('@/lib/walletOps', () => ({
 vi.mock('@/stores/proof-db', () => ({
   db: { proofs: { toArray: vi.fn().mockResolvedValue([]), where: vi.fn().mockReturnThis(), equals: vi.fn().mockReturnThis() } },
   getProofs: vi.fn().mockResolvedValue([{ secret: 's1', amount: 100, mintUrl: 'http://localhost:8085', id: 'id1', C: 'C1' }]),
-  getBaseProofs: vi.fn().mockResolvedValue([{ secret: 's1', amount: 100, mintUrl: 'http://localhost:8085', id: 'id1', C: 'C1' }]),
+  getUnitProofs: vi.fn().mockResolvedValue([{ secret: 's1', amount: 100, mintUrl: 'http://localhost:8085', id: 'id1', C: 'C1' }]),
   isCtfProof: vi.fn().mockReturnValue(false),
   addProofs: vi.fn().mockResolvedValue(undefined),
   removeProofs: vi.fn().mockResolvedValue(undefined),
@@ -570,7 +570,7 @@ describe('useDepositWithdrawState', () => {
     it('selects sat base proofs when paying lightning', async () => {
       const proofDb = await import('@/stores/proof-db')
       const cashu = await import('@/lib/cashu')
-      vi.mocked(proofDb.getBaseProofs).mockClear()
+      vi.mocked(proofDb.getUnitProofs).mockClear()
       vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce({
         quote: 'q1',
         amount: 1000,
@@ -588,9 +588,9 @@ describe('useDepositWithdrawState', () => {
       })
       await act(async () => { await result.current.onConfirmMelt() })
 
-      expect(proofDb.getBaseProofs).toHaveBeenCalledWith(
+      expect(proofDb.getUnitProofs).toHaveBeenCalledWith(
         'http://localhost:8085',
-        { baseAsset: 'sat' },
+        { unit: 'sat' },
       )
       expect(cashu.meltProofs).toHaveBeenCalledWith(
         expect.any(Object),

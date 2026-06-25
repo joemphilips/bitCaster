@@ -4,7 +4,7 @@ import { Mint as CashuMint, Wallet as CashuWallet, type MintKeys, type MintKeyse
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
 import { normalizeUrl } from '@/lib/url'
-import { db, getBaseProofs, isCtfProof, type StoredProof } from './proof-db'
+import { db, getUnitProofs, isCtfProof, type StoredProof } from './proof-db'
 import type { MintConnectionTestStatus } from '@/types/wallet-setup'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 import {
@@ -385,7 +385,7 @@ export async function getBalance(
   mintUrl?: string,
   options: { baseAsset?: MarketBaseAsset | string | null } = {},
 ): Promise<number> {
-  const proofs = await getBaseProofs(mintUrl, { baseAsset: options.baseAsset })
+  const proofs = await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(options.baseAsset) })
   return proofs.reduce(
     (sum: number, p: StoredProof) => sum + amountToNumber(p.amount),
     0,

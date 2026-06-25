@@ -26,7 +26,7 @@ import {
 } from '@/lib/walletOps'
 import { useToastStore } from '@/stores/toast'
 import {
-  getBaseProofs,
+  getUnitProofs,
   addProofs,
   removeProofs,
   isCtfProof,
@@ -342,7 +342,12 @@ export function useDepositWithdrawState(
           proofs,
           extra: { requested, baseAsset },
         })
-        const stored: StoredProof[] = proofs.map((p) => ({ ...p, mintUrl, baseAsset }))
+        const stored: StoredProof[] = proofs.map((p) => ({
+          ...p,
+          mintUrl,
+          baseAsset,
+          unit: defaultCollateralUnit(baseAsset),
+        }))
         await addProofs(stored)
         setInvoiceStatus('paid')
         const requestedSubunits = depositInputAmountToActivitySubunits(requested, baseAsset)
@@ -459,7 +464,8 @@ export function useDepositWithdrawState(
         const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
           mintUrl: received.mintUrl,
-          baseAsset: received.unit,
+          baseAsset: normalizeMarketBaseAsset(received.unit),
+          unit: received.unit,
         }))
         await addProofs(stored)
         useActivityLogStore.getState().addActivity({
@@ -528,7 +534,7 @@ export function useDepositWithdrawState(
     setMeltIsPaying(true)
     setError(null)
     try {
-      const proofs = await getBaseProofs(selectedMintId, { baseAsset: 'sat' })
+      const proofs = await getUnitProofs(selectedMintId, { unit: 'sat' })
       const { paid, change } = await meltProofs(meltQuote, proofs, selectedMintId)
 
       if (!paid) {
@@ -543,6 +549,7 @@ export function useDepositWithdrawState(
           ...p,
           mintUrl: selectedMintId,
           baseAsset: 'sat',
+          unit: 'sat',
         }))
         await addProofs(changeStored)
       }
@@ -582,7 +589,8 @@ export function useDepositWithdrawState(
         const stored: StoredProof[] = received.proofs.map((p) => ({
           ...p,
           mintUrl: received.mintUrl,
-          baseAsset: received.unit,
+          baseAsset: normalizeMarketBaseAsset(received.unit),
+          unit: received.unit,
         }))
         await addProofs(stored)
         useActivityLogStore.getState().addActivity({

@@ -22,6 +22,7 @@ import {
   takeProofsForLock,
 } from "./proofSelection.ts";
 import {
+  defaultCollateralUnit,
   isCollateralUnitOf,
   parseMarketBaseAsset,
   type MarketBaseAsset,
@@ -282,6 +283,7 @@ export async function splitRegularProofsWithOperation(params: {
       fees: amountToNumber(preview.fees),
       keysetId: preview.keysetId,
       baseAsset: requireMarketBaseAsset(params.baseAsset, "regular split baseAsset"),
+      unit: defaultCollateralUnit(params.baseAsset),
       unselectedProofs: preview.unselectedProofs ?? [],
     },
   });
@@ -928,6 +930,7 @@ export async function splitCompleteSetWithOperation(params: {
             conditionId: params.conditionId,
             amountSubunits: params.amountSubunits,
             baseAsset: requireMarketBaseAsset(params.baseAsset, "CTF split baseAsset"),
+            unit: defaultCollateralUnit(params.baseAsset),
             outcomeCollectionKeysets: params.outcomeCollectionKeysets,
           },
         });
@@ -1007,6 +1010,7 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
       conditionId: params.conditionId,
       outputAmountSubunits: params.outputAmountSubunits,
       baseAsset: requireMarketBaseAsset(params.baseAsset, "CTF merge baseAsset"),
+      unit: defaultCollateralUnit(params.baseAsset),
       inputsByCollection: normalizedInputsByCollection,
     },
   });

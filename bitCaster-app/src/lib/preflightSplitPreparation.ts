@@ -10,7 +10,7 @@ import {
   type CtfProofOperationStore,
 } from "@/lib/ctfSplit";
 import {
-  getBaseProofs,
+  getUnitProofs,
   getProofOperation,
   markProofOperationCompleted,
   prepareProofOperation,
@@ -26,6 +26,7 @@ import { resolveGrossCtfInputPlanningKeyset } from "@/lib/ctfGrossInputPlanning"
 import {
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
+  defaultCollateralUnit,
 } from "@bitcaster/client-sdk/marketUnits";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { prepareSwapInputsForTrade } from "@bitcaster/client-sdk/tradePreparation";
@@ -60,7 +61,7 @@ export async function preparePreflightSplitForLimitBuy(input: {
   }
 
   const baseAsset = normalizeMarketBaseAsset(input.market.baseAsset);
-  const available: Proof[] = await getBaseProofs(input.mintUrl, { baseAsset });
+  const available: Proof[] = await getUnitProofs(input.mintUrl, { unit: defaultCollateralUnit(baseAsset) });
   let resolvedKeepOutcomeSetId = input.selectedOutcomeSetId;
   let resolvedLockOutcomeSetId = input.complementOutcomeSetId;
 

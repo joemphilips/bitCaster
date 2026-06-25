@@ -1,7 +1,12 @@
 import Dexie, { type Table } from "dexie";
 import type { Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
-import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import {
+  COLLATERAL_UNIT_REGISTRY,
+  normalizeMarketBaseAsset,
+  parseCashuProofUnit,
+  type CashuProofUnit,
+} from "@bitcaster/client-sdk/marketUnits";
 import { normalizeUrl } from "../lib/url";
 
 export interface StoredProof extends Proof {
@@ -16,6 +21,8 @@ export interface StoredProof extends Proof {
   marketId?: string;
   /** Base asset for this proof's amount sub-units. Missing legacy rows are sats. */
   baseAsset?: string;
+  /** Exact Cashu keyset unit. Missing legacy rows are excluded from spend operations. */
+  unit?: CashuProofUnit;
   /** Timestamp (ms since epoch) when this proof was added to the wallet */
   receivedAt?: number;
 }
@@ -50,7 +57,7 @@ export interface ProofOperationRecord {
   mintUrl: string;
   inputs: Proof[];
   outputs: Record<string, StoredOutputData[]>;
-  metadata: Record<string, unknown>;
+  metadata: Record<string, unknown> & { unit?: CashuProofUnit };
   resultProofs?: Record<string, Proof[]>;
   lastError?: string | null;
   /** Structured mint error code for failed operations, when available. */
@@ -130,6 +137,11 @@ export async function getProofs(
     : normalized.filter((p) => !p.reservedBy);
 }
 
+/**
+ * Return regular proofs grouped by base asset for UI display only.
+ * WARNING: this may combine different Cashu units (for example sat + msat)
+ * and is unsafe for spend/settlement operations. Use `getUnitProofs` there.
+ */
 export async function getBaseProofs(
   mintUrl?: string,
   options: { includeReserved?: boolean; baseAsset?: string | null } = {},
@@ -140,6 +152,24 @@ export async function getBaseProofs(
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
   return proofs.filter(
     (p) => !isCtfProof(p) && normalizeStoredProofBaseAsset(p) === baseAsset,
+  );
+}
+
+/**
+ * Return regular proofs by exact Cashu unit for spend/settlement operations.
+ * Legacy rows without an explicit `unit` are intentionally excluded fail-closed.
+ */
+export async function getUnitProofs(
+  mintUrl: string | undefined,
+  options: { includeReserved?: boolean; unit: CashuProofUnit | string },
+): Promise<StoredProof[]> {
+  const unit = parseCashuProofUnit(options.unit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
+  const proofs = await getProofs(mintUrl, {
+    includeReserved: options.includeReserved,
+  });
+  return proofs.filter(
+    (p) => !isCtfProof(p) && normalizeStoredProofUnit(p) === unit,
   );
 }
 
@@ -219,7 +249,7 @@ export async function addProofs(proofs: StoredProof[]): Promise<void> {
   const now = Date.now();
   const stamped = proofs.map((p) =>
     normalizeStoredProof({
-      ...p,
+      ...validateStoredProofUnitInvariant(p),
       receivedAt: p.receivedAt ?? now,
     }),
   );
@@ -238,7 +268,7 @@ export async function replaceProofs(
   const now = Date.now();
   const stamped = freshProofs.map((p) =>
     normalizeStoredProof({
-      ...p,
+      ...validateStoredProofUnitInvariant(p),
       receivedAt: p.receivedAt ?? now,
     }),
   );
@@ -325,11 +355,30 @@ function normalizeStoredProof(proof: StoredProof): StoredProof {
     amount: amountToNumber(proof.amount) as never,
     mintUrl: normalizeUrl(proof.mintUrl),
     baseAsset: normalizeStoredProofBaseAsset(proof),
+    unit: normalizeStoredProofUnit(proof),
   };
 }
 
 function normalizeStoredProofBaseAsset(proof: StoredProof): string {
   return normalizeMarketBaseAsset(proof.baseAsset);
+}
+
+export function normalizeStoredProofUnit(proof: StoredProof): CashuProofUnit | undefined {
+  return parseCashuProofUnit(proof.unit) ?? undefined;
+}
+
+function validateStoredProofUnitInvariant(proof: StoredProof): StoredProof {
+  if (!proof.baseAsset || !proof.unit) return proof;
+  const unit = parseCashuProofUnit(proof.unit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${proof.unit}'`);
+  const unitInfo = COLLATERAL_UNIT_REGISTRY[unit];
+  const baseAsset = normalizeMarketBaseAsset(proof.baseAsset);
+  if (unitInfo.baseAsset !== baseAsset) {
+    throw new Error(
+      `Stored proof unit '${proof.unit}' is not compatible with base asset '${proof.baseAsset}'`,
+    );
+  }
+  return proof;
 }
 
 export async function getProofOperation(

@@ -16,6 +16,8 @@ type AnyProof = {
   condition_id?: string
   outcomeCollection?: string
   outcome_collection?: string
+  baseAsset?: string
+  unit?: string
 }
 
 const store = new Map<string, AnyProof>()
@@ -105,6 +107,7 @@ import {
   getConditionCtfProofs,
   getOutcomeProofs,
   getProofs,
+  getUnitProofs,
   getReservedProofs,
   normalizeStoredMintUrls,
   releaseProofReservation,
@@ -224,6 +227,46 @@ describe('proof-db normalization', () => {
     expect((await getBaseProofs('http://m', { baseAsset: 'usd' })).map((r) => r.secret)).toEqual([
       'usd',
     ])
+  })
+
+  it('getUnitProofs filters exact sat and msat units while getBaseProofs groups both for display', async () => {
+    await addProofs([
+      { secret: 'sat-proof', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m', baseAsset: 'sat', unit: 'sat' },
+      { secret: 'msat-proof', amount: Amount.from(200), id: 'id2', C: 'C2', mintUrl: 'http://m', baseAsset: 'sat', unit: 'msat' },
+    ])
+
+    expect((await getUnitProofs('http://m', { unit: 'msat' })).map((r) => r.secret)).toEqual([
+      'msat-proof',
+    ])
+    expect((await getUnitProofs('http://m', { unit: 'sat' })).map((r) => r.secret)).toEqual([
+      'sat-proof',
+    ])
+    expect((await getBaseProofs('http://m', { baseAsset: 'sat' })).map((r) => r.secret)).toEqual([
+      'sat-proof',
+      'msat-proof',
+    ])
+  })
+
+  it('getUnitProofs excludes legacy rows without an explicit unit', async () => {
+    await addProofs([
+      { secret: 'legacy-sat', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m', baseAsset: 'sat' },
+      { secret: 'msat-proof', amount: Amount.from(200), id: 'id2', C: 'C2', mintUrl: 'http://m', baseAsset: 'sat', unit: 'msat' },
+    ])
+
+    expect((await getUnitProofs('http://m', { unit: 'msat' })).map((r) => r.secret)).toEqual([
+      'msat-proof',
+    ])
+    expect((await getUnitProofs('http://m', { unit: 'sat' })).map((r) => r.secret)).toEqual([])
+    expect((await getBaseProofs('http://m', { baseAsset: 'sat' })).map((r) => r.secret)).toEqual([
+      'legacy-sat',
+      'msat-proof',
+    ])
+  })
+
+  it('rejects mismatched base asset and unit on write', async () => {
+    await expect(addProofs([
+      { secret: 'bad', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m', baseAsset: 'sat', unit: 'usd' },
+    ])).rejects.toThrow("Stored proof unit 'usd' is not compatible with base asset 'sat'")
   })
 
   it('getOutcomeProofs returns only the requested condition outcome', async () => {

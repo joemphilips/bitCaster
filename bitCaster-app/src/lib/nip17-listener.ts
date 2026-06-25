@@ -3,6 +3,7 @@ import { deriveNostrKeyPair, subscribeNip17DMs } from './nip17'
 import { encodeToken } from './cashu'
 import { ingressReceiveCashuToken } from './walletOps'
 import { normalizeUrl } from './url'
+import { normalizeMarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
 import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useActivityLogStore } from '@/stores/activity-log'
 import { usePaymentRequestInbox } from '@/stores/paymentRequestInbox'
@@ -66,6 +67,8 @@ async function handleIncomingDM(content: string): Promise<void> {
     const stored: StoredProof[] = received.proofs.map((p) => ({
       ...p,
       mintUrl: normalizedMint,
+      baseAsset: normalizeMarketBaseAsset(received.unit),
+      unit: received.unit,
     }))
     await addProofs(stored)
 

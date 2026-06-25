@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   addProofs: vi.fn(),
-  getBaseProofs: vi.fn(),
+  getUnitProofs: vi.fn(),
   getProofOperation: vi.fn(),
   markProofOperationCompleted: vi.fn(),
   markProofOperationFailed: vi.fn(),
@@ -23,7 +23,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/stores/proof-db', () => ({
   addProofs: mocks.addProofs,
-  getBaseProofs: mocks.getBaseProofs,
+  getUnitProofs: mocks.getUnitProofs,
   getProofOperation: mocks.getProofOperation,
   markProofOperationCompleted: mocks.markProofOperationCompleted,
   markProofOperationFailed: mocks.markProofOperationFailed,
@@ -134,7 +134,7 @@ describe('registerConditionWithFee', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.createdOutputs = []
-    mocks.getBaseProofs.mockResolvedValue([{
+    mocks.getUnitProofs.mockResolvedValue([{
       id: 'regular-keyset',
       amount: 8,
       secret: 'fee-proof-secret',
@@ -212,7 +212,7 @@ describe('registerConditionWithFee', () => {
   })
 
   it('pays a USD registration fee for USD market collateral', async () => {
-    mocks.getBaseProofs.mockResolvedValueOnce([{
+    mocks.getUnitProofs.mockResolvedValueOnce([{
       id: 'usd-keyset',
       amount: 8,
       secret: 'usd-fee-proof-secret',
@@ -248,9 +248,9 @@ describe('registerConditionWithFee', () => {
     })
 
     expect(result.condition_id).toBe('cond-usd')
-    expect(mocks.getBaseProofs).toHaveBeenCalledWith(
+    expect(mocks.getUnitProofs).toHaveBeenCalledWith(
       'https://mint.example.test',
-      { baseAsset: 'usd' },
+      { unit: 'usd' },
     )
     expect(mocks.getWalletForUnit).toHaveBeenCalledWith('https://mint.example.test', 'usd')
     expect(mocks.registerCondition).toHaveBeenCalledWith(
@@ -269,7 +269,7 @@ describe('registerConditionWithFee', () => {
   })
 
   it('preserves msat collateral unit for fee proofs and change outputs', async () => {
-    mocks.getBaseProofs.mockResolvedValueOnce([
+    mocks.getUnitProofs.mockResolvedValueOnce([
       {
         id: 'sat-keyset',
         amount: 8,
@@ -322,9 +322,9 @@ describe('registerConditionWithFee', () => {
     })
 
     expect(result.condition_id).toBe('cond-msat')
-    expect(mocks.getBaseProofs).toHaveBeenCalledWith(
+    expect(mocks.getUnitProofs).toHaveBeenCalledWith(
       'https://mint.example.test',
-      { baseAsset: 'msat' },
+      { unit: 'msat' },
     )
     expect(mocks.getWalletForUnit).toHaveBeenCalledWith('https://mint.example.test', 'msat')
     expect(mocks.getWallet).not.toHaveBeenCalledWith('https://mint.example.test', 'msat')
@@ -341,7 +341,8 @@ describe('registerConditionWithFee', () => {
     expect(mocks.addProofs).toHaveBeenCalledWith([
       expect.objectContaining({
         mintUrl: 'https://mint.example.test',
-        baseAsset: 'msat',
+        baseAsset: 'sat',
+        unit: 'msat',
         amount: 5,
       }),
     ])

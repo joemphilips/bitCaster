@@ -18,7 +18,7 @@ const { mockFetchOrderStatus } = vi.hoisted(() => ({
 
 const {
   mockAddProofs,
-  mockGetBaseProofs,
+  mockGetUnitProofs,
   mockGetOutcomeProofs,
   mockGetProofOperation,
   mockGetReservedProofs,
@@ -30,7 +30,7 @@ const {
   mockReserveProofs,
 } = vi.hoisted(() => ({
   mockAddProofs: vi.fn(),
-  mockGetBaseProofs: vi.fn(),
+  mockGetUnitProofs: vi.fn(),
   mockGetOutcomeProofs: vi.fn(),
   mockGetProofOperation: vi.fn(),
   mockGetReservedProofs: vi.fn(),
@@ -60,7 +60,7 @@ vi.mock("@/hooks/useTradeHub", () => ({
 
 vi.mock("@/stores/proof-db", () => ({
   addProofs: mockAddProofs,
-  getBaseProofs: mockGetBaseProofs,
+  getUnitProofs: mockGetUnitProofs,
   getOutcomeProofs: mockGetOutcomeProofs,
   getProofOperation: mockGetProofOperation,
   getReservedProofs: mockGetReservedProofs,
@@ -112,7 +112,7 @@ beforeEach(() => {
   mockJoinTrade.mockResolvedValue(undefined);
   mockSendSwapMessage.mockResolvedValue(undefined);
   mockAddProofs.mockResolvedValue(undefined);
-  mockGetBaseProofs.mockResolvedValue([]);
+  mockGetUnitProofs.mockResolvedValue([]);
   mockGetOutcomeProofs.mockResolvedValue([]);
   mockGetProofOperation.mockResolvedValue(null);
   mockGetReservedProofs.mockResolvedValue([]);
@@ -1082,7 +1082,7 @@ describe("useTradeSettlement", () => {
           }
         : null,
     );
-    mockGetBaseProofs.mockResolvedValue([
+    mockGetUnitProofs.mockResolvedValue([
       proof(32, "depleted-change-32", "base-keyset"),
       proof(4, "depleted-change-4", "base-keyset"),
     ]);
@@ -1156,7 +1156,7 @@ describe("useTradeSettlement", () => {
         "cipher-buyer",
       ),
     );
-    expect(mockGetBaseProofs).not.toHaveBeenCalled();
+    expect(mockGetUnitProofs).not.toHaveBeenCalled();
     expect(mockBuyerPrepareSwap).toHaveBeenCalledWith(
       expect.objectContaining({ tradeId: "trade-buyer-recover" }),
       "cipher-adaptor",

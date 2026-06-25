@@ -6,7 +6,7 @@ import {
   type ParticipationScoreResponse,
   type PayParticipationScoreEcashResponse,
 } from "@/lib/markets";
-import { addProofs, getBaseProofs, removeProofs } from "@/stores/proof-db";
+import { addProofs, getUnitProofs, removeProofs } from "@/stores/proof-db";
 import type { StoredProof } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
@@ -94,6 +94,7 @@ async function spendParticipationScoreSatsAsToken(
         ...proof,
         mintUrl,
         baseAsset: "sat",
+        unit: "sat",
       })),
     );
   }
@@ -102,7 +103,7 @@ async function spendParticipationScoreSatsAsToken(
 
 async function getSatKeysetProofs(mintUrl: string) {
   const normalizedMintUrl = normalizeUrl(mintUrl);
-  const proofs = await getBaseProofs(mintUrl, { baseAsset: "sat" });
+  const proofs = await getUnitProofs(mintUrl, { unit: "sat" });
   const satKeysetIds = new Set(
     useWalletStore
       .getState()

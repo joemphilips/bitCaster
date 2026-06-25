@@ -31,7 +31,7 @@ import { normalizeUrl } from "@/lib/url";
 import { hexToBytes } from "@/lib/ecdh";
 import {
   addProofs,
-  getBaseProofs,
+  getUnitProofs,
   getProofOperation,
   markProofOperationCompleted,
   markProofOperationFailed,
@@ -402,7 +402,8 @@ export async function recoverKeysetCountersForMint(
             const stored: StoredProof[] = safe.map((p) => ({
               ...p,
               mintUrl: url,
-              baseAsset: unit,
+              baseAsset: normalizeMarketBaseAsset(unit),
+              unit,
             }));
             await addProofs(stored);
           }
@@ -579,7 +580,8 @@ export async function spendRegularSatsAsToken(
   if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
     throw new Error("Amount must be a positive integer number of sats.");
   }
-  const proofs = await getBaseProofs(mintUrl, { baseAsset: "sat" });
+  const unit = defaultCollateralUnit("sat");
+  const proofs = await getUnitProofs(mintUrl, { unit });
   const { keep, send } = await sendProofs(amountSats, proofs, {
     mintUrl,
     baseAsset: "sat",
@@ -591,6 +593,7 @@ export async function spendRegularSatsAsToken(
         ...proof,
         mintUrl,
         baseAsset: "sat",
+        unit,
       })),
     );
   }
@@ -1028,6 +1031,7 @@ async function redeemKeysetLeg(
       keysetId,
       amountSats: legAmount,
       baseAsset,
+      unit: defaultCollateralUnit(baseAsset),
     },
   });
 
@@ -1248,8 +1252,10 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
     conditionId?: string;
     amountSats?: number;
     baseAsset?: string | null;
+    unit?: string | null;
   };
   const baseAsset = normalizeMarketBaseAsset(metadata.baseAsset);
+  const unit = metadata.unit ?? defaultCollateralUnit(baseAsset);
   const wallet = await getWallet(entry.mintUrl, baseAsset);
   if (!wallet.checkProofsStates) {
     throw new Error(
@@ -1273,6 +1279,7 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
       entry.inputs,
       restored,
       baseAsset,
+      unit,
     );
     return restored;
   }
@@ -1309,6 +1316,7 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
       entry.inputs,
       settled,
       baseAsset,
+      unit,
     );
     return settled;
   }
@@ -1359,8 +1367,9 @@ async function completeCtfRedeem(
   inputs: Proof[],
   regularProofs: Proof[],
   baseAsset: MarketBaseAsset,
+  unit = defaultCollateralUnit(baseAsset),
 ): Promise<void> {
-  await addProofs(regularProofs.map((proof) => ({ ...proof, mintUrl, baseAsset })));
+  await addProofs(regularProofs.map((proof) => ({ ...proof, mintUrl, baseAsset, unit })));
   await removeProofs(inputs.map((proof) => proof.secret));
   await markProofOperationCompleted(operationId, { regular: regularProofs });
 }

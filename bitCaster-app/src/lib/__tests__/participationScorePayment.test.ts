@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   payParticipationScoreEcash: vi.fn(),
   spendRegularSatsAsToken: vi.fn(),
   getWalletForUnit: vi.fn(),
-  getBaseProofs: vi.fn(),
+  getUnitProofs: vi.fn(),
   addProofs: vi.fn(),
   removeProofs: vi.fn(),
   encodeToken: vi.fn(),
@@ -34,7 +34,7 @@ vi.mock("@/lib/cashu", () => ({
 }));
 
 vi.mock("@/stores/proof-db", () => ({
-  getBaseProofs: mocks.getBaseProofs,
+  getUnitProofs: mocks.getUnitProofs,
   addProofs: mocks.addProofs,
   removeProofs: mocks.removeProofs,
 }));
@@ -67,7 +67,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     mocks.getWalletForUnit.mockResolvedValue({
       send: vi.fn().mockResolvedValue({ keep: [], send: [{ secret: "sat-send" }] }),
     });
-    mocks.getBaseProofs.mockResolvedValue([
+    mocks.getUnitProofs.mockResolvedValue([
       { id: "sat-keyset", amount: 10, secret: "sat-proof", C: "sat-C" },
     ]);
     mocks.walletState.mints = [
@@ -102,7 +102,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     expect(result.kind).toBe("disabled");
-    expect(mocks.getBaseProofs).not.toHaveBeenCalled();
+    expect(mocks.getUnitProofs).not.toHaveBeenCalled();
     expect(mocks.payParticipationScoreEcash).not.toHaveBeenCalled();
   });
 
@@ -118,7 +118,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     expect(result.kind).toBe("sufficient");
-    expect(mocks.getBaseProofs).not.toHaveBeenCalled();
+    expect(mocks.getUnitProofs).not.toHaveBeenCalled();
     expect(mocks.payParticipationScoreEcash).not.toHaveBeenCalled();
   });
 
@@ -128,7 +128,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
       balance: -2,
       matchDebitScore: 1,
     });
-    mocks.getBaseProofs.mockResolvedValue([
+    mocks.getUnitProofs.mockResolvedValue([
       { id: "sat-keyset", amount: 1, secret: "sat-proof", C: "sat-C" },
       { id: "msat-keyset", amount: 10_000, secret: "msat-proof", C: "msat-C" },
     ]);
@@ -168,7 +168,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
       matchDebitScore: 1,
     });
     mocks.getWalletForUnit.mockResolvedValue(wallet);
-    mocks.getBaseProofs.mockResolvedValue([...satProofs, msatProof]);
+    mocks.getUnitProofs.mockResolvedValue([...satProofs, msatProof]);
 
     const result = await ensureParticipationScoreForNextMatch({
       mintUrl: "https://mint.example",
@@ -176,8 +176,8 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     expect(result.kind).toBe("paid");
-    expect(mocks.getBaseProofs).toHaveBeenCalledWith("https://mint.example", {
-      baseAsset: "sat",
+    expect(mocks.getUnitProofs).toHaveBeenCalledWith("https://mint.example", {
+      unit: "sat",
     });
     expect(mocks.getWalletForUnit).toHaveBeenCalledWith(
       "https://mint.example",

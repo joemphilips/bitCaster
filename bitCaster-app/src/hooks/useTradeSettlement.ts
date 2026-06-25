@@ -54,7 +54,7 @@ import { useWalletStore } from "@/stores/wallet";
 import { Mint as CashuMint } from "@cashu/cashu-ts";
 import {
   addProofs,
-  getBaseProofs,
+  getUnitProofs,
   getOutcomeProofs,
   getProofOperation,
   getReservedProofs,
@@ -112,6 +112,7 @@ import {
   takeProofsForLock,
 } from "@bitcaster/client-sdk/proofSelection";
 import {
+  defaultCollateralUnit,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -159,6 +160,7 @@ async function prepareRegularCollateralForCtfSplit(input: {
   operationId: string;
 }): Promise<Proof[]> {
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset);
+  const unit = defaultCollateralUnit(baseAsset);
   const existingRegularSplit = await getProofOperation(input.operationId);
   if (existingRegularSplit) {
     const wallet = await useWalletStore
@@ -190,11 +192,13 @@ async function prepareRegularCollateralForCtfSplit(input: {
         ...proof,
         mintUrl: input.mintUrl,
         baseAsset,
+        unit,
       })),
       ...exact.inputs.map((proof) => ({
         ...proof,
         mintUrl: input.mintUrl,
         baseAsset,
+        unit,
         reservedBy: input.reservationId,
       })),
     ]);
@@ -266,11 +270,13 @@ async function prepareRegularCollateralForCtfSplit(input: {
       ...proof,
       mintUrl: input.mintUrl,
       baseAsset,
+      unit,
     })),
     ...exact.inputs.map((proof) => ({
       ...proof,
       mintUrl: input.mintUrl,
       baseAsset,
+      unit,
       reservedBy: input.reservationId,
     })),
   ]);
@@ -1041,7 +1047,7 @@ async function prepareMintSellerOpening(
     ? existingOperation.inputs
     : await prepareRegularCollateralForCtfSplit({
         mintUrl,
-        available: await getBaseProofs(mintUrl, { baseAsset: swap.baseAsset }),
+        available: await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(swap.baseAsset) }),
         faceAmountSats: splitOutputAmountSats,
         baseAsset: swap.baseAsset,
         reservationId: `trade-collateral:${swap.tradeId}`,
@@ -1368,6 +1374,7 @@ async function persistReservedPreflightExactProofs(input: {
       expectedConditionId: input.conditionId,
       reservedBy: input.reservedBy,
       baseAsset: input.baseAsset,
+      unit: defaultCollateralUnit(input.baseAsset),
     }),
   );
 }
@@ -1612,7 +1619,7 @@ async function runSettlementClaim(
         swap.baseAsset,
       );
     } else {
-      await persistFreshProofs(fresh, mintUrl);
+      await persistFreshProofs(fresh, mintUrl, null, swap.baseAsset);
     }
     useActiveSwapsStore.getState().setStep(tradeId, "awaiting-confirmation");
     await sendSwapMessage(tradeId, TRADE_MESSAGE_TYPES.settlementComplete, "");
@@ -1692,7 +1699,7 @@ async function loadProofsForLock(
         outcome.outcomeCollection,
         { baseAsset },
       )
-    : await getBaseProofs(mintUrl, { baseAsset });
+    : await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(baseAsset) });
   if (proofs.length === 0) {
     throw new Error(
       outcome
@@ -1740,12 +1747,16 @@ async function persistFreshProofs(
   proofs: Proof[],
   mintUrl: string,
   metadata?: OutcomeProofMetadata | null,
+  baseAsset?: string | null,
 ): Promise<void> {
   if (proofs.length === 0) return;
+  const normalizedBaseAsset = normalizeMarketBaseAsset(baseAsset);
   const fresh: StoredProof[] = proofs.map((p) => ({
     ...p,
     ...(metadata ?? {}),
     mintUrl,
+    baseAsset: normalizedBaseAsset,
+    unit: defaultCollateralUnit(normalizedBaseAsset),
   }));
   await addProofs(fresh);
 }
@@ -1783,6 +1794,7 @@ async function persistFreshConditionalProofs(
       proofs,
       expectedConditionId: conditionId,
       baseAsset,
+      unit: defaultCollateralUnit(baseAsset),
     }),
   );
 }

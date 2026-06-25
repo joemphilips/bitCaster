@@ -19,6 +19,7 @@ import {
   registrationFeeForPolicy,
   requiredMarketCreationOutcomeCollections,
 } from "@bitcaster/client-sdk/ctfRegistration";
+import { defaultCollateralUnit, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import {
   MintError,
   registerCondition,
@@ -27,7 +28,7 @@ import { getWalletForUnit } from "@/lib/cashu";
 import { hexToBytes } from "@/lib/ecdh";
 import {
   addProofs,
-  getBaseProofs,
+  getUnitProofs,
   getProofOperation,
   markProofOperationCompleted,
   markProofOperationFailed,
@@ -64,7 +65,7 @@ export async function getAvailableRegularBalanceSubunits(
   mintUrl: string,
   baseAsset?: string | null,
 ): Promise<number> {
-  const proofs = await getBaseProofs(mintUrl, { baseAsset });
+  const proofs = await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(baseAsset) });
   return sumProofs(proofs);
 }
 
@@ -97,8 +98,8 @@ export async function registerConditionWithFee(input: {
 
   const wallet = await getWalletForUnit(input.mintUrl, feeUnit);
   const regularKeysetIds = await getRegularKeysetIdsForUnit(wallet, feeUnit);
-  const available = await getBaseProofs(input.mintUrl, {
-    baseAsset: feeUnit,
+  const available = await getUnitProofs(input.mintUrl, {
+    unit: feeUnit,
   }).then((proofs) => proofs.filter((proof) => regularKeysetIds.has(proof.id)));
   const selected = takeProofsForLock(
     available,
@@ -126,6 +127,7 @@ export async function registerConditionWithFee(input: {
     metadata: {
       requiredFeeSubunits: input.requiredFeeSubunits,
       feeUnit,
+      unit: feeUnit,
       selectedTotalSubunits: selectedTotal,
       request: stableRegistrationRequest(input.request),
     },
@@ -272,7 +274,12 @@ async function completeRegistrationFeeOperation(
   unit: string,
 ): Promise<void> {
   if (changeProofs.length > 0) {
-    await addProofs(changeProofs.map((proof) => ({ ...proof, mintUrl, baseAsset: unit })));
+    await addProofs(changeProofs.map((proof) => ({
+      ...proof,
+      mintUrl,
+      baseAsset: normalizeMarketBaseAsset(unit),
+      unit,
+    })));
   }
   await removeProofs(inputs.map((proof) => proof.secret));
   await markProofOperationCompleted(operationId, { change: changeProofs });

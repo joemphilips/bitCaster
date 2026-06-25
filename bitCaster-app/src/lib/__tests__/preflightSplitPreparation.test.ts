@@ -4,7 +4,7 @@ import type { MarketDetail } from "@/types/market-detail";
 
 const mocks = vi.hoisted(() => ({
   diagnoseProofStates: vi.fn(),
-  getBaseProofs: vi.fn(),
+  getUnitProofs: vi.fn(),
   getProofOperation: vi.fn(),
   markProofOperationCompleted: vi.fn(),
   prepareProofOperation: vi.fn(),
@@ -32,7 +32,7 @@ vi.mock("@/lib/ctfSplit", () => ({
     mocks.resolveRootPreflightOutputAmountSats,
 }));
 vi.mock("@/stores/proof-db", () => ({
-  getBaseProofs: mocks.getBaseProofs,
+  getUnitProofs: mocks.getUnitProofs,
   getProofOperation: mocks.getProofOperation,
   markProofOperationCompleted: mocks.markProofOperationCompleted,
   prepareProofOperation: mocks.prepareProofOperation,
@@ -100,7 +100,7 @@ describe("preflight split preparation", () => {
       })),
       getFeesForProofs: vi.fn(() => 1),
     };
-    mocks.getBaseProofs.mockResolvedValue(originals);
+    mocks.getUnitProofs.mockResolvedValue(originals);
     mocks.getWallet.mockResolvedValue(wallet);
     mocks.selectCollateralForCtfSplit.mockImplementation(
       async (_mintUrl: string, available: Proof[], faceAmountSats: number) => {

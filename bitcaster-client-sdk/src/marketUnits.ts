@@ -1,4 +1,5 @@
 export type MarketBaseAsset = 'sat' | 'usd' | 'jpy'
+export type CashuProofUnit = 'sat' | 'msat' | 'usd'
 
 export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
 export const DEFAULT_SAT_MARKET_DIVISIBILITY = 10_000
@@ -38,6 +39,16 @@ export function parseMarketBaseAsset(
   const normalized = value?.trim().toLowerCase()
   if (!normalized) return null
   return COLLATERAL_UNIT_REGISTRY[normalized]?.baseAsset ?? null
+}
+
+export function parseCashuProofUnit(
+  value: CashuProofUnit | string | null | undefined,
+): CashuProofUnit | null {
+  const normalized = value?.trim().toLowerCase()
+  if (normalized === 'sat' || normalized === 'msat' || normalized === 'usd') {
+    return normalized
+  }
+  return null
 }
 
 function requireMarketBaseAsset(
@@ -106,7 +117,7 @@ export function marketSubunitLabel(value: MarketBaseAsset | string | null | unde
   throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
-export function defaultCollateralUnit(value: MarketBaseAsset | string | null | undefined): string {
+export function defaultCollateralUnit(value: MarketBaseAsset | string | null | undefined): CashuProofUnit {
   const asset = requireMarketBaseAsset(value)
   if (asset === 'usd') return 'usd'
   if (asset === 'sat') return 'msat'

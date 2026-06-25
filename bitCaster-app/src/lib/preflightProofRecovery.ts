@@ -127,6 +127,7 @@ async function recoveredProofsForOperation(
     expectedConditionId: conditionId,
     reservedBy,
     baseAsset: operationBaseAsset(operation),
+    unit: operationUnit(operation),
   });
 }
 
@@ -198,6 +199,12 @@ function operationBaseAsset(operation: ProofOperationRecord): string {
       ? operation.metadata.baseAsset
       : undefined,
   );
+}
+
+function operationUnit(operation: ProofOperationRecord): string | undefined {
+  return typeof operation.metadata.unit === "string"
+    ? operation.metadata.unit
+    : undefined;
 }
 
 function preparedAmountSubunits(operation: ProofOperationRecord): number {

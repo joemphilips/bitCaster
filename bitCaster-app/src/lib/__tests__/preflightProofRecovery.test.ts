@@ -136,6 +136,7 @@ describe("preflight proof recovery", () => {
           outcomeCollection: "YES",
           marketId: "cond-YES",
           baseAsset: "sat",
+          unit: "msat",
           reservedBy: "order-preflight:epub",
         },
         {
@@ -146,6 +147,7 @@ describe("preflight proof recovery", () => {
           outcomeCollection: "NO",
           marketId: "cond-NO",
           baseAsset: "sat",
+          unit: "msat",
           reservedBy: "order-preflight:epub",
         },
       ],
