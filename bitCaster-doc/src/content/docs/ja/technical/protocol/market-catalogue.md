@@ -11,11 +11,13 @@ sidebar:
 
 | フィールド | 型 | 意味 |
 | --- | --- | --- |
-| `liquiditySats` | `int64` | 互換性のための旧フィールド名。そのマーケットの注文板に現在残っている注文の額面合計。単位はマーケット担保単位で、satマーケットではmsat、USDマーケットではcents (`usd`)。 |
+| `liquiditySubunits` | `int64` | そのマーケットの注文板に現在残っている注文の額面合計。単位はマーケット担保サブユニットで、sat表示のマーケットではmsat、USDマーケットではcents (`usd`)。 |
 | `traderCount` | `int32` | そのマーケットで約定済み取引を決済した重複なしのトレーダー数。 |
-| `volumeLifetimeSats` | `int64` | そのマーケットの履歴全体における全約定の決済済み担保額面の累計。 |
+| `volumeLifetimeSubunits` | `int64` | そのマーケットの履歴全体における全約定の決済済み担保額面の累計。単位は担保サブユニット。 |
 
-レスポンスには、ローリング出来高やソート用の `volume24hSats` と `volume30dSats` も含まれます。`*Sats` サフィックスはワイヤ互換性のために残っていますが、これらのフィールドは必ずしも文字通りのsatsではなく、マーケット担保単位を使います。クライアントがマーケットの Volume、Liquidity、Traders 指標を表示する場合は、`volumeLifetimeSats`、`liquiditySats`、`traderCount` を使ってください。
+レスポンスには、ローリング出来高やソート用の `volume24hSubunits` と `volume30dSubunits` も含まれます。クライアントがマーケットの Volume、Liquidity、Traders 指標を表示する場合は、`volumeLifetimeSubunits`、`liquiditySubunits`、`traderCount` を使ってください。
+
+他の公開マーケットサマリも同じ命名規則を使います。価格履歴ポイントは `volumeSubunits`、マーケットメタデータスナップショットは `totalVolumeSubunits` と `totalLiquiditySubunits`、流動性スナップショットは `restingOrderLiquiditySubunits`、`completeSetLiquiditySubunits`、`totalLiquiditySubunits` を公開します。非推奨の `liquiditySats` 作成メタデータフィールドは互換性のため引き続き受け付けますが、マーケットメイカー資金は作成後のフローで集めるため、作成リクエストでは `0` を送ってください。
 
 ## ライフサイクルのリアルタイム更新
 

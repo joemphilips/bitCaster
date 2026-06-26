@@ -11,11 +11,13 @@ The catalogue exposes three lifetime/display metrics:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `liquiditySats` | `int64` | Legacy field name. Total face amount of currently resting orders across the market's order books, denominated in the market collateral unit: msat for sat markets, cents (`usd`) for USD markets. |
+| `liquiditySubunits` | `int64` | Total face amount of currently resting orders across the market's order books, denominated in the market collateral subunit: msat for sat-display markets, cents (`usd`) for USD markets. |
 | `traderCount` | `int32` | Number of distinct traders that have settled a trade in this market. |
-| `volumeLifetimeSats` | `int64` | Cumulative settled collateral face amount of all fills in the market's history. |
+| `volumeLifetimeSubunits` | `int64` | Cumulative settled collateral face amount of all fills in the market's history, in collateral subunits. |
 
-The response also includes `volume24hSats` and `volume30dSats` for rolling-volume views and sort dimensions. The `*Sats` suffix is retained for wire compatibility; these fields use the market collateral unit, not always literal sats. Clients should use `volumeLifetimeSats`, `liquiditySats`, and `traderCount` when rendering the visible Volume, Liquidity, and Traders metrics for a market.
+The response also includes `volume24hSubunits` and `volume30dSubunits` for rolling-volume views and sort dimensions. Clients should use `volumeLifetimeSubunits`, `liquiditySubunits`, and `traderCount` when rendering the visible Volume, Liquidity, and Traders metrics for a market.
+
+Other public market summaries use the same naming rule: price-history points expose `volumeSubunits`, market metadata snapshots expose `totalVolumeSubunits` and `totalLiquiditySubunits`, and liquidity snapshots expose `restingOrderLiquiditySubunits`, `completeSetLiquiditySubunits`, and `totalLiquiditySubunits`. The deprecated `liquiditySats` create-market metadata field is still accepted for compatibility, but market-maker funding is collected after creation and create requests should send `0`.
 
 ## Real-time lifecycle updates
 

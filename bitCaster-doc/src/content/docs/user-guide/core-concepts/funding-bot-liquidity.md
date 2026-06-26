@@ -17,7 +17,7 @@ The deposit becomes the AMM budget for that market. The AMM currently uses an LM
 
 The deposit is **non-refundable**. It is committed to market-making until the market resolves. The maker's loss is bounded by the funded budget; there is no withdrawal, residual claim, or creator profit-share claim.
 
-Sat markets are shown to users in sats. USD markets are shown in dollars or cents. Internally, sat-market collateral is accounted in **msat**, and USD-market collateral is accounted in standard **usd** cents. Some API fields still use legacy names such as `amountSats`; in funding contexts those names mean the market collateral unit, not always literal sats.
+Sat markets are shown to users in sats. USD markets are shown in dollars or cents. Internally and on public market-summary `*Subunits` wire fields, sat-market collateral is accounted in **msat**, and USD-market collateral is accounted in standard **usd** cents. Protocol fields that still explicitly use `amountSats`, such as participation-score ecash payment fields, keep their contract-specific meaning.
 
 ## Funding Flow
 

@@ -61,9 +61,9 @@ and **1500 / 15000 / 30000 sats** for sat markets. Categorical markets scale the
 paid tiers by `log2(outcome count)`.
 
 Funded sat markets are displayed in sats. Funded USD markets are displayed in
-dollars or cents backed by the market mint's USD ecash. Internally, collateral is
-accounted in msat for sat markets and standard cents (`usd`) for USD markets. Other units may
-be added later.
+dollars or cents backed by the market mint's USD ecash. Internally and on public
+`*Subunits` wire fields, collateral is accounted in msat for sat-display markets
+and standard cents (`usd`) for USD markets. Other units may be added later.
 
 The funding deposit is committed to market-making for that market. It does not
 create a creator withdrawal claim, residual claim, or profit-share claim.

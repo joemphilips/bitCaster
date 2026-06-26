@@ -42,7 +42,7 @@ Any user can run their own Cashu mint to issue prediction market tokens. The min
 
 Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. Prices are shown as probabilities with two decimal places, such as **53.27%**.
 
-The trade ticket asks for whole shares and shows the total cost before you submit. It no longer asks you to calculate payout rows or executable-share estimates. One sat-market share pays **1000 sats** if it wins. One USD-market share pays **$1.00** if it wins. Internally, prices use `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% cost 15,000 sats in a sat market and pay 50,000 sats if they win.
+The trade ticket asks for whole shares and shows the total cost before you submit. It no longer asks you to calculate payout rows or executable-share estimates. One sat-market share pays **10 sats** if it wins. One USD-market share pays **$10.00** if it wins. Internally, sat-display markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% cost 150 sats in a sat market and pay 500 sats if they win.
 
 When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
 

@@ -7,7 +7,7 @@ sidebar:
 
 # Atomic Swaps for Conditional Tokens
 
-This document specifies a peer-to-peer trading protocol for Cashu conditional tokens (NUT-CTF) using ECDH key agreement and Schnorr adaptor signatures. The protocol enables trustless atomic exchanges — for example, trading YES outcome tokens for sats — without requiring a custodial intermediary.
+This document specifies a peer-to-peer trading protocol for Cashu conditional tokens (NUT-CTF) using ECDH key agreement and Schnorr adaptor signatures. The protocol enables trustless atomic exchanges — for example, trading YES outcome tokens for regular collateral (displayed as sats in sat markets) — without requiring a custodial intermediary.
 
 ## Motivation
 
@@ -50,8 +50,8 @@ Two parties with keypairs `(a, A = a·G)` and `(b, B = b·G)` can compute a shar
 
 ### Participants
 
-- **Alice**: Sells YES tokens (holds conditional token proofs she wants to exchange for sats)
-- **Bob**: Buys YES tokens (holds sat proofs he wants to exchange for conditional tokens)
+- **Alice**: Sells YES tokens (holds conditional token proofs she wants to exchange for regular collateral)
+- **Bob**: Buys YES tokens (holds regular collateral proofs he wants to exchange for conditional tokens)
 - **Matching Engine (ME)**: Non-custodial relay that pairs orders and forwards encrypted messages
 - **Mint (M)**: Cashu mint that enforces P2PK spending conditions
 
@@ -59,7 +59,7 @@ Two parties with keypairs `(a, A = a·G)` and `(b, B = b·G)` can compute a shar
 
 - Both Alice and Bob hold Cashu proofs with valid DLEQ proofs (NUT-12)
 - The mint supports NUT-07 (token state check with witness retrieval), NUT-11 (P2PK), and NUT-12 (DLEQ)
-- Alice's YES token proofs and Bob's sat proofs have compatible denominations for the agreed trade
+- Alice's YES token proofs and Bob's regular collateral proofs have compatible denominations for the agreed trade
 
 ### Step 1: Order Placement
 
@@ -82,10 +82,10 @@ The engine matches Alice's sell order with Bob's buy order based on price and qu
 - Bob receives Alice's pubkey `A`
 
 The matched quantity is the conditional-token face amount. The settlement
-message also carries the quote payment separately. Current markets use
-`D=10000`, so a 1,000-face-sat YES fill at 37.00% (`k=3700`) means Alice locks
-1,000 face sats of YES and Bob locks 370 regular sats. Implementations must not
-use one amount for both swap legs.
+message also carries the quote payment separately. Sat-display markets use
+`D=10000`, so a 10-sat YES fill at 37.00% (`k=3700`) means Alice locks
+10,000 msat face value of YES and Bob locks 3,700 msat of regular collateral.
+Implementations must not use one amount for both swap legs.
 
 For mint matches, the order book journals the trade start and then consumes the
 matched quantity. The public order status exposes the matched row with a
@@ -98,10 +98,10 @@ plus a grace window; timing out at the buyer-side locktime can abort a swap that
 is still valid on the protocol timeline.
 
 For a resting buy that can become the mint maker, clients MAY offer an
-order-local pre-flight split before submission. The maker selects regular sats,
-submits a CTF split to the mint for the needed one-vs-rest collections, and
-stores the resulting outcome proofs in local wallet state. This is a reliability
-option, not a different wire protocol.
+order-local pre-flight split before submission. The maker selects regular
+collateral proofs in the market's subunit, submits a CTF split to the mint for
+the needed one-vs-rest collections, and stores the resulting outcome proofs in
+local wallet state. This is a reliability option, not a different wire protocol.
 
 Public categorical books are always primitive: a market route is
 `{conditionId}-{outcomeName}`, and the order request selects either
@@ -172,7 +172,7 @@ For each proof with secret x_i:
 
 Alice sends `{proofs, s'_A, T}` to Bob over the encrypted channel.
 
-### Step 6: Bob Locks Sat Proofs
+### Step 6: Bob Locks Collateral Proofs
 
 Bob receives Alice's locked proofs and verifies:
 
@@ -180,7 +180,7 @@ Bob receives Alice's locked proofs and verifies:
 2. **P2PK verification**: Confirms proofs are locked to his pubkey `B` with appropriate locktime and refund to `A`
 3. **PreVerify**: Confirms each `s'_A_i` is a valid adaptor pre-signature with adaptor point `T`
 
-If all checks pass, Bob creates his sat proofs locked to Alice's pubkey `A`:
+If all checks pass, Bob creates his regular collateral proofs locked to Alice's pubkey `A`:
 
 ```json
 [
@@ -225,16 +225,16 @@ POST /v1/swap
 
 ```json
 {
-  "inputs": [<Bob's sat proofs with witness s_B_j>],
+  "inputs": [<Bob's collateral proofs with witness s_B_j>],
   "outputs": [<Alice's blinded messages for fresh tokens>]
 }
 ```
 
-The mint verifies the P2PK signatures and processes the swap. Alice now holds fresh sat tokens.
+The mint verifies the P2PK signatures and processes the swap. Alice now holds fresh regular collateral tokens.
 
 ### Step 8: Bob Extracts Adaptor Secret
 
-Bob queries the mint's NUT-07 token state check endpoint for his spent sat proofs. Bob retains the proofs he constructed in step 6, so he can compute `Y_j = hash_to_curve(secret_j)` for each proof locally (see [NUT-00][nut-00] for `hash_to_curve`):
+Bob queries the mint's NUT-07 token state check endpoint for his spent collateral proofs. Bob retains the proofs he constructed in step 6, so he can compute `Y_j = hash_to_curve(secret_j)` for each proof locally (see [NUT-00][nut-00] for `hash_to_curve`):
 
 ```http
 POST /v1/checkstate
@@ -243,7 +243,7 @@ POST /v1/checkstate
 ```json
 {
   "Ys": [
-    "<Y_j = hash_to_curve(secret_j) for each sat proof Bob locked to Alice>"
+    "<Y_j = hash_to_curve(secret_j) for each collateral proof Bob locked to Alice>"
   ]
 }
 ```
@@ -319,6 +319,35 @@ The engine's cached witness is not a payout authority. A buggy or malicious
 engine response cannot make losing tokens redeemable because the mint verifies
 the oracle signature and condition keyset again during `redeem_outcome`.
 
+## Collateral subunits and CTF registration fees
+
+User-facing inputs use display units: sats for sat markets and dollars or cents
+for USD markets. Protocol amounts that sum Cashu proofs, quote collateral, or
+appear in public `*Subunits` REST fields use the market collateral subunit
+instead: msat for sat-display markets and cents (`usd`) for USD markets. In
+NUT-CTF, `sat` is therefore not a collateral proof unit; clients should convert
+display sats to msat before constructing condition-registration or settlement
+amounts.
+
+Mints advertise CTF condition-registration support with a `registration_fees`
+array in mint info. Each entry applies to one collateral unit and contains its
+fee components in that unit's smallest denomination:
+
+```json
+{
+  "unit": "msat",
+  "registration_fee_base": 0,
+  "registration_fee_per_keyset": 0
+}
+```
+
+The required fee is `registration_fee_base + registration_fee_per_keyset *
+num_keysets`, where `num_keysets` is the number of conditional keysets the
+registration creates. A mint that wants free registration for a unit must still
+advertise that unit with both fee components set to `0`; if the requested
+collateral unit is missing from `registration_fees`, clients should treat CTF
+registration as unsupported and the mint returns error `13048`.
+
 ## Security Analysis
 
 ### Atomicity
@@ -343,21 +372,21 @@ The locktime must be chosen carefully:
 
 Since this protocol involves only ecash swaps (no Lightning routing delays), locktimes can be very short — on the order of seconds rather than minutes. Both parties should agree on the locktime during the order matching phase.
 
-**Important — locktime ordering**: Alice's YES proof locktime (`T_YES`) MUST be later than Bob's sat proof locktime (`T_sat`):
+**Important — locktime ordering**: Alice's YES proof locktime (`T_YES`) MUST be later than Bob's collateral proof locktime (`T_pay`):
 
 ```
-T_YES  >  T_sat  +  Δ
+T_YES  >  T_pay  +  Δ
 ```
 
 where `Δ` is the time Bob needs to query NUT-07, extract `t`, and submit his own swap.
 
-Alice spends Bob's sat proofs first (step 7) and may wait until just before `T_sat` to do so. Bob must observe the spend, extract `t`, and spend Alice's YES proofs before `T_YES` expires. If the ordering were reversed (i.e. `T_YES < T_sat`), Alice could wait for her own YES refund window to open, refund her YES proofs, and still claim Bob's sats while `T_sat` is unexpired — stealing both sides of the trade. This is the core P03 (atomic-swap atomicity) invariant; implementations MUST validate the ordering before accepting a counterparty's pre-signatures.
+Alice spends Bob's collateral proofs first (step 7) and may wait until just before `T_pay` to do so. Bob must observe the spend, extract `t`, and spend Alice's YES proofs before `T_YES` expires. If the ordering were reversed (i.e. `T_YES < T_pay`), Alice could wait for her own YES refund window to open, refund her YES proofs, and still claim Bob's collateral while `T_pay` is unexpired — stealing both sides of the trade. This is the core P03 (atomic-swap atomicity) invariant; implementations MUST validate the ordering before accepting a counterparty's pre-signatures.
 
 ### NUT-07 Dependency
 
 This protocol requires the mint to support NUT-07 witness retrieval. This introduces several considerations:
 
-- **Availability**: If the mint goes offline between steps 7 and 8, Bob cannot retrieve the witness. The locktime refund protects Bob's original sat proofs, but he loses the opportunity to claim the YES proofs.
+- **Availability**: If the mint goes offline between steps 7 and 8, Bob cannot retrieve the witness. The locktime refund protects Bob's original collateral proofs, but he loses the opportunity to claim the YES proofs.
 - **Privacy**: Querying NUT-07 reveals to the mint that Bob is interested in specific spent proofs, which could help the mint correlate trading parties.
 - **Censorship**: A malicious mint could refuse to return witness data, preventing Bob from extracting `t`. The locktime refund protects Bob's funds but breaks atomicity.
 - **Race condition**: There is a window between Alice spending (step 7) and Bob querying (step 8) during which the mint could potentially go offline or become unresponsive.
