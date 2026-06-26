@@ -102,6 +102,16 @@ export function normalizeProbabilities(outcomes: WizardOutcome[]): WizardOutcome
   return outcomes.map((o, i) => ({ ...o, probability: floors[i] }))
 }
 
+function distributeProbabilitiesEqually(outcomes: WizardOutcome[]): WizardOutcome[] {
+  if (outcomes.length === 0) return outcomes
+  const base = Math.floor(100 / outcomes.length)
+  let remainder = 100 - base * outcomes.length
+  return outcomes.map((outcome) => ({
+    ...outcome,
+    probability: base + (remainder-- > 0 ? 1 : 0),
+  }))
+}
+
 function defaultYesNoOutcomes(): WizardOutcome[] {
   return [
     { id: 'yes', label: 'Yes', description: '', probability: 50 },
@@ -295,7 +305,9 @@ export function useMarketCreationState() {
       if (!prev.stepOutcomes?.outcomes) return prev
       const filtered = prev.stepOutcomes.outcomes.filter((o) => o.id !== outcomeId)
       // Auto-normalize so the remaining outcomes still sum to 100.
-      const normalized = normalizeProbabilities(filtered)
+      const normalized = filtered.every((outcome) => (outcome.probability ?? 0) === 0)
+        ? distributeProbabilitiesEqually(filtered)
+        : normalizeProbabilities(filtered)
       return {
         ...prev,
         stepOutcomes: {

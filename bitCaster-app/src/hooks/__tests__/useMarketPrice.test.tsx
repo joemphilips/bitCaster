@@ -118,6 +118,96 @@ describe('useMarketPrice', () => {
     expect(result.current.defaultOrderPrice).toBe(55)
   })
 
+  it('derives a yes/no No price by inverting the primary Yes history', () => {
+    const { result } = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          currentOdds: { yes: 60, no: 40 },
+          priceHistory: {
+            timeframe: '7d',
+            data: [{ timestamp: '2026-01-01T00:00:00Z', price: 60 }],
+          },
+        }),
+        marketId: 'condition-1-No',
+        outcomeSetId: 'No',
+        orderBook: emptyBook,
+      }),
+    )
+
+    expect(result.current.currentPrice).toBe(40)
+    expect(result.current.defaultOrderPrice).toBe(40)
+  })
+
+  it('derives a categorical complement price from the missing primary outcome history', () => {
+    const { result } = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          type: 'categorical',
+          outcomes: [
+            { id: 'alice', label: 'Alice', odds: 70 },
+            { id: 'bob', label: 'Bob', odds: 20 },
+            { id: 'carol', label: 'Carol', odds: 10 },
+          ],
+          outcomePriceHistories: {
+            Alice: {
+              timeframe: '7d',
+              data: [{ timestamp: '2026-01-01T00:00:00Z', price: 70 }],
+            },
+          },
+        } as Partial<MarketDetail>),
+        marketId: 'condition-1-Bob|Carol',
+        outcomeSetId: 'Bob|Carol',
+        orderBook: emptyBook,
+      }),
+    )
+
+    expect(result.current.currentPrice).toBe(30)
+  })
+
+  it('maps numeric currentPrice percentages onto the market divisibility range', () => {
+    const { result } = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          type: 'numeric',
+          divisibility: 10_000,
+          currentPrice: 12.5,
+          loBound: 0,
+          hiBound: 100,
+          precision: 0,
+          unit: 'USD',
+        } as Partial<MarketDetail>),
+        marketId: 'condition-1-HI',
+        outcomeSetId: 'HI',
+        orderBook: emptyBook,
+      }),
+    )
+
+    expect(result.current.currentPrice).toBe(1_250)
+  })
+
+  it('falls back to midpoint pricing for unsupported 2D selections', () => {
+    const { result } = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          type: 'twodimensional',
+          divisibility: 10_000,
+          baseMarketId: 'base',
+          baseMarketTitle: 'Base',
+          baseMarketType: 'yesno',
+          secondaryType: 'yesno',
+          secondaryQuestion: 'Secondary?',
+          cellPriceHistories: {},
+          cellOrderBooks: {},
+        } as Partial<MarketDetail>),
+        marketId: 'condition-1-Yes|No',
+        outcomeSetId: 'Yes|No',
+        orderBook: emptyBook,
+      }),
+    )
+
+    expect(result.current.currentPrice).toBe(5_000)
+  })
+
   it('uses current price as the order entry default when there is no spread', () => {
     const { result } = renderHook(() =>
       useMarketPrice({

@@ -244,6 +244,21 @@ describe('useMarketCreationState – categorical outcome probabilities', () => {
       useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
     ).toEqual([50, 50])
   })
+
+  it('redistributes remaining zero-probability outcomes equally when removing an outcome', async () => {
+    setCategoricalOutcomes([
+      makeOutcome('a', 100),
+      makeOutcome('b', 0),
+      makeOutcome('c', 0),
+    ])
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+
+    await act(async () => { result.current.onRemoveOutcome('a') })
+
+    expect(
+      useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
+    ).toEqual([50, 50])
+  })
 })
 
 describe('useMarketCreationState – onCreateMarket', () => {

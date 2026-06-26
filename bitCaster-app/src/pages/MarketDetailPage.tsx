@@ -1335,7 +1335,7 @@ export function MarketDetailPage() {
 
   useEffect(() => {
     setPriceManuallyEdited(false);
-  }, [market?.id]);
+  }, [market?.id, priceOutcomeSetId]);
 
   useEffect(() => {
     if (priceManuallyEdited) return;

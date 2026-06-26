@@ -3,6 +3,7 @@ import { computeSpreadMidpoint } from '@/components/market-detail/orderBookViewM
 import { onTradeExecuted } from '@/lib/marketHub'
 import type { MarketDetail, OrderBook, PriceHistory } from '@/types/market-detail'
 import { normalizeMarketDivisibility } from '@bitcaster/client-sdk/marketUnits'
+import { complementOutcomeSetId, parseOutcomeSetId } from '@bitcaster/client-sdk/outcomeSets'
 
 export interface UseMarketPriceInput {
   market: MarketDetail | null | undefined
@@ -69,11 +70,17 @@ function deriveInitialCurrentPrice(
 ): number {
   if (!market) return defaultLimitPriceForDivisibility(divisibility)
 
+  if (market.type === 'twodimensional') {
+    // 2D outcome-set pricing is not yet fully supported by the order ticket;
+    // use a neutral midpoint rather than borrowing an unrelated primary leg.
+    return defaultLimitPriceForDivisibility(divisibility, market.baseAsset)
+  }
+
   const historyPrice = latestHistoryNumerator(market, outcomeSetId, divisibility)
   if (historyPrice != null) return historyPrice
 
   const percent = marketOddsPercent(market, outcomeSetId)
-  if (percent != null && percent > 0) {
+  if (percent != null && (percent > 0 || market.type === 'numeric')) {
     return clampOrderPrice((percent / 100) * divisibility, divisibility)
   }
 
@@ -85,20 +92,85 @@ function latestHistoryNumerator(
   outcomeSetId: string | null | undefined,
   divisibility: number,
 ): number | null {
+  const percent = latestHistoryPercent(market, outcomeSetId)
+  if (percent == null) return null
+  return clampOrderPrice((percent / 100) * divisibility, divisibility)
+}
+
+function latestHistoryPercent(
+  market: MarketDetail,
+  outcomeSetId: string | null | undefined,
+): number | null {
   const history = historyForOutcome(market, outcomeSetId)
+  const latest = latestHistoryPointPercent(history)
+  if (latest != null) return latest
+
+  if (market.type === 'yesno' && isNoOutcomeSet(outcomeSetId)) {
+    const yes = latestHistoryPointPercent(market.priceHistory)
+    return yes == null ? null : 100 - yes
+  }
+
+  if (market.type === 'categorical' && outcomeSetId) {
+    const complementPercent = complementHistoryPercent(market, outcomeSetId)
+    if (complementPercent != null) return complementPercent
+  }
+
+  return null
+}
+
+function latestHistoryPointPercent(history: PriceHistory | null | undefined): number | null {
   const latest = history?.data.at(-1)?.price
   if (typeof latest !== 'number' || !Number.isFinite(latest)) return null
-  return clampOrderPrice((latest / 100) * divisibility, divisibility)
+  return Math.max(0, Math.min(100, latest))
 }
 
 function historyForOutcome(
   market: MarketDetail,
   outcomeSetId: string | null | undefined,
 ): PriceHistory | null {
+  if (market.type === 'yesno' && isNoOutcomeSet(outcomeSetId)) {
+    return null
+  }
+
   if (market.type === 'categorical' && outcomeSetId) {
-    return market.outcomePriceHistories[outcomeSetId] ?? null
+    return (
+      market.outcomePriceHistories[outcomeSetId] ??
+      market.outcomePriceHistories[outcomeLabelForSet(market, outcomeSetId) ?? ''] ??
+      null
+    )
   }
   return market.priceHistory
+}
+
+function complementHistoryPercent(
+  market: Extract<MarketDetail, { type: 'categorical' }>,
+  outcomeSetId: string,
+): number | null {
+  const universe = market.outcomes.map((outcome) => outcome.label)
+  if (universe.length < 2) return null
+  const members = parseOutcomeSetId(outcomeSetId)
+  if (members.length !== universe.length - 1) return null
+  const missing = complementOutcomeSetId(universe, outcomeSetId)
+  if (!missing) return null
+  const primary = latestHistoryPointPercent(
+    market.outcomePriceHistories[missing] ??
+      market.outcomePriceHistories[outcomeLabelForSet(market, missing) ?? ''] ??
+      (missing === universe[0] ? market.priceHistory : null),
+  )
+  return primary == null ? null : 100 - primary
+}
+
+function outcomeLabelForSet(
+  market: Extract<MarketDetail, { type: 'categorical' }>,
+  outcomeSetId: string,
+): string | null {
+  const members = parseOutcomeSetId(outcomeSetId)
+  if (members.length !== 1) return null
+  return (
+    market.outcomes.find(
+      (candidate) => candidate.id === members[0] || candidate.label === members[0],
+    )?.label ?? null
+  )
 }
 
 function marketOddsPercent(
@@ -106,17 +178,30 @@ function marketOddsPercent(
   outcomeSetId: string | null | undefined,
 ): number | null {
   if (market.type === 'yesno') {
-    if (outcomeSetId === 'No' || outcomeSetId === 'NO' || outcomeSetId === 'no') {
+    if (isNoOutcomeSet(outcomeSetId)) {
       return market.currentOdds.no
     }
     return market.currentOdds.yes
   }
 
   if (market.type === 'categorical' && outcomeSetId) {
-    const outcome = market.outcomes.find(
+    const directOutcome = market.outcomes.find(
       (candidate) => candidate.id === outcomeSetId || candidate.label === outcomeSetId,
     )
-    return typeof outcome?.odds === 'number' ? outcome.odds : null
+    if (typeof directOutcome?.odds === 'number') return directOutcome.odds
+
+    const members = parseOutcomeSetId(outcomeSetId)
+    if (members.length > 0) {
+      const total = members.reduce((sum, member) => {
+        const outcome = market.outcomes.find(
+          (candidate) => candidate.id === member || candidate.label === member,
+        )
+        return sum + (typeof outcome?.odds === 'number' ? outcome.odds : 0)
+      }, 0)
+      return total > 0 ? Math.max(0, Math.min(100, total)) : null
+    }
+
+    return null
   }
 
   if (market.type === 'numeric') {
@@ -124,4 +209,8 @@ function marketOddsPercent(
   }
 
   return null
+}
+
+function isNoOutcomeSet(outcomeSetId: string | null | undefined): boolean {
+  return typeof outcomeSetId === 'string' && outcomeSetId.trim().toLowerCase() === 'no'
 }

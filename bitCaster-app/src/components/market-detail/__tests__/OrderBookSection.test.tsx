@@ -92,6 +92,30 @@ describe('OrderBookSection', () => {
     ])
   })
 
+  it('renders ask rows above the spread and bid rows below it in DOM order', () => {
+    render(
+      <OrderBookSection
+        divisibility={100}
+        orderBook={{
+          bids: [{ price: 45, amount: 100, total: 100 }],
+          asks: [{ price: 55, amount: 100, total: 100 }],
+          spread: 10,
+        }}
+      />,
+    )
+
+    const askRow = screen.getByTestId('order-book-ask-row')
+    const spreadRow = screen.getByTestId('order-book-spread-row')
+    const bidRow = screen.getByTestId('order-book-bid-row')
+
+    expect(
+      askRow.compareDocumentPosition(spreadRow) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      spreadRow.compareDocumentPosition(bidRow) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
   it('combines price, amount, and cumulative proportional depth into each compact row', () => {
     render(
       <OrderBookSection

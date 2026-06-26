@@ -86,58 +86,6 @@ export function OrderBookSection({
         </div>
 
         <div className="min-h-[400px] space-y-1">
-          <div className="flex min-h-[165px] flex-col justify-end space-y-1">
-            <div className="flex items-center gap-1 px-3 pt-1">
-              <div className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                {t('orderBook.bids')}
-              </span>
-            </div>
-            {activeOrderBook.bids.length === 0 && (
-              <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noBids')}</p>
-            )}
-            {bidPlaceholders.map((_, i) => (
-              <div
-                key={`bid-row-placeholder-${i}`}
-                data-testid="order-book-bid-placeholder"
-                aria-hidden="true"
-                className="h-7"
-              />
-            ))}
-            {bidRows.map((row, i) => (
-              <div
-                key={`bid-row-${i}`}
-                data-testid="order-book-bid-row"
-                data-outcome-id={outcomeId}
-                data-depth-percent={row.depthPercent}
-                data-depth-side={row.side}
-                className="relative overflow-hidden rounded-lg px-3 py-1.5 text-xs"
-              >
-                <div
-                  data-testid="order-book-bid-depth-fill"
-                  aria-hidden="true"
-                  className="absolute inset-y-0 right-0 bg-emerald-500/10 dark:bg-emerald-500/20 transition-all"
-                  style={{ width: `${row.depthPercent}%` }}
-                />
-                <div className="relative grid grid-cols-[1fr_auto] items-center gap-3">
-                  <span className="font-mono font-medium text-emerald-600 dark:text-emerald-400">
-                    {formatPricePercent(row.order.price, divisibility)}
-                  </span>
-                  <span className="text-slate-600 dark:text-slate-300 font-mono">
-                    {formatMarketSubunits(row.order.amount, baseAsset)}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="flex items-center justify-center gap-2 rounded-lg bg-white/80 dark:bg-slate-800/70 px-3 py-2">
-            <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('orderBook.spread')}</span>
-            <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300">
-              {formatPricePercent(activeOrderBook.spread, divisibility)}
-            </span>
-          </div>
-
           <div className="flex min-h-[165px] flex-col space-y-1">
             <div className="flex items-center gap-1 px-3 pt-1">
               <div className="w-2 h-2 rounded-full bg-red-500" />
@@ -180,6 +128,58 @@ export function OrderBookSection({
                 aria-hidden="true"
                 className="h-7"
               />
+            ))}
+          </div>
+
+          <div data-testid="order-book-spread-row" className="flex items-center justify-center gap-2 rounded-lg bg-white/80 dark:bg-slate-800/70 px-3 py-2">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('orderBook.spread')}</span>
+            <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300">
+              {formatPricePercent(activeOrderBook.spread, divisibility)}
+            </span>
+          </div>
+
+          <div className="flex min-h-[165px] flex-col justify-end space-y-1">
+            <div className="flex items-center gap-1 px-3 pt-1">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                {t('orderBook.bids')}
+              </span>
+            </div>
+            {activeOrderBook.bids.length === 0 && (
+              <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noBids')}</p>
+            )}
+            {bidPlaceholders.map((_, i) => (
+              <div
+                key={`bid-row-placeholder-${i}`}
+                data-testid="order-book-bid-placeholder"
+                aria-hidden="true"
+                className="h-7"
+              />
+            ))}
+            {bidRows.map((row, i) => (
+              <div
+                key={`bid-row-${i}`}
+                data-testid="order-book-bid-row"
+                data-outcome-id={outcomeId}
+                data-depth-percent={row.depthPercent}
+                data-depth-side={row.side}
+                className="relative overflow-hidden rounded-lg px-3 py-1.5 text-xs"
+              >
+                <div
+                  data-testid="order-book-bid-depth-fill"
+                  aria-hidden="true"
+                  className="absolute inset-y-0 right-0 bg-emerald-500/10 dark:bg-emerald-500/20 transition-all"
+                  style={{ width: `${row.depthPercent}%` }}
+                />
+                <div className="relative grid grid-cols-[1fr_auto] items-center gap-3">
+                  <span className="font-mono font-medium text-emerald-600 dark:text-emerald-400">
+                    {formatPricePercent(row.order.price, divisibility)}
+                  </span>
+                  <span className="text-slate-600 dark:text-slate-300 font-mono">
+                    {formatMarketSubunits(row.order.amount, baseAsset)}
+                  </span>
+                </div>
+              </div>
             ))}
           </div>
         </div>
