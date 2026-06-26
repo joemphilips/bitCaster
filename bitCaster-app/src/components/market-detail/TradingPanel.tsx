@@ -437,11 +437,14 @@ function LimitPriceInput({
 }) {
   const { t } = useTranslation()
   const [priceText, setPriceText] = useState(String(limitPrice))
+  const [isFocused, setIsFocused] = useState(false)
   const maxPrice = Math.max(1, divisibility - 1)
 
   useEffect(() => {
-    setPriceText(String(limitPrice))
-  }, [limitPrice])
+    if (!isFocused) {
+      setPriceText(String(limitPrice))
+    }
+  }, [limitPrice, isFocused])
 
   const handlePriceBlur = () => {
     const trimmed = priceText.trim()
@@ -473,7 +476,11 @@ function LimitPriceInput({
           disabled={disabled}
           value={priceText}
           onChange={(e) => setPriceText(e.target.value)}
-          onBlur={handlePriceBlur}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => {
+            setIsFocused(false)
+            handlePriceBlur()
+          }}
           min={1}
           max={maxPrice}
           className="w-full pr-14 pl-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -561,6 +568,7 @@ export function TradingPanel({
   const shareCountLabel = (shares: number) =>
     t('trade.shareCount', { count: shares.toLocaleString() })
   const [tradeAmountText, setTradeAmountText] = useState(tradeAmount > 0 ? String(tradeAmount) : '')
+  const [isTradeAmountFocused, setIsTradeAmountFocused] = useState(false)
   const userHoldingShares =
     userHoldings == null ? null : Math.floor(userHoldings / divisibility)
   const tradingDisabled = disabled
@@ -571,8 +579,10 @@ export function TradingPanel({
     tradePreview?.hasExecutableLiquidity === false
 
   useEffect(() => {
-    setTradeAmountText(tradeAmount > 0 ? String(tradeAmount) : '')
-  }, [tradeAmount])
+    if (!isTradeAmountFocused) {
+      setTradeAmountText(tradeAmount > 0 ? String(tradeAmount) : '')
+    }
+  }, [tradeAmount, isTradeAmountFocused])
 
   const handleShareAmountBlur = () => {
     const trimmed = tradeAmountText.trim()
@@ -687,7 +697,11 @@ export function TradingPanel({
               disabled={tradingDisabled}
               value={tradeAmountText}
               onChange={(e) => setTradeAmountText(e.target.value)}
-              onBlur={handleShareAmountBlur}
+              onFocus={() => setIsTradeAmountFocused(true)}
+              onBlur={() => {
+                setIsTradeAmountFocused(false)
+                handleShareAmountBlur()
+              }}
               step={1}
               min={1}
               placeholder="1"

@@ -404,6 +404,76 @@ describe('TradingPanel', () => {
     expect(priceInput).toHaveValue(40)
   })
 
+  it('does not overwrite an in-progress limit price edit when live props refresh', async () => {
+    const user = userEvent.setup()
+
+    const { rerender } = render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={40}
+      />,
+    )
+
+    const priceInput = screen.getByTestId('limit-price-input') as HTMLInputElement
+    await user.click(priceInput)
+    await user.clear(priceInput)
+    await user.type(priceInput, '75')
+
+    rerender(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={60}
+      />,
+    )
+
+    expect(priceInput).toHaveValue(75)
+  })
+
+  it('does not overwrite an in-progress share amount edit when live props refresh', async () => {
+    const user = userEvent.setup()
+
+    const { rerender } = render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={2}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={40}
+      />,
+    )
+
+    const amountInput = screen.getByTestId('trade-amount-input') as HTMLInputElement
+    await user.click(amountInput)
+    await user.clear(amountInput)
+    await user.type(amountInput, '123')
+
+    rerender(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={9}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={40}
+      />,
+    )
+
+    expect(amountInput).toHaveValue(123)
+  })
+
   it('allows the share amount to be cleared and restores zero on empty blur', async () => {
     const onAmountChange = vi.fn()
     const user = userEvent.setup()

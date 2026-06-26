@@ -16,7 +16,7 @@ import {
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
 import { onOrderBookUpdated, onTradeExecuted } from "@/lib/marketHub";
-import type { MarketStatusChanged, OrderBookSnapshot, TradeExecuted } from "@/lib/marketHub";
+import type { MarketStatusChanged, Matched, OrderBookSnapshot, TradeExecuted } from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   routeParams: { id: "condition-yesno" } as { id?: string },
   liveStatusHandlers: [] as Array<(status: MarketStatusChanged) => void>,
   orderBookHandlers: new Map<string, (snapshot: OrderBookSnapshot) => void>(),
+  matchedHandlers: new Map<string, (match: Matched) => void>(),
   tradeExecutedHandlers: new Map<string, (trade: TradeExecuted) => void>(),
   windowPriceHistory: vi.fn(
     (history: { timeframe: string; data: Array<unknown> }) => ({
@@ -64,6 +65,10 @@ vi.mock("@/lib/marketHub", () => ({
   onOrderBookUpdated: vi.fn((marketId: string, handler: (snapshot: OrderBookSnapshot) => void) => {
     mocks.orderBookHandlers.set(marketId, handler);
     return () => mocks.orderBookHandlers.delete(marketId);
+  }),
+  onMatched: vi.fn((marketId: string, handler: (match: Matched) => void) => {
+    mocks.matchedHandlers.set(marketId, handler);
+    return () => mocks.matchedHandlers.delete(marketId);
   }),
   onTradeExecuted: vi.fn((marketId: string, handler: (trade: TradeExecuted) => void) => {
     mocks.tradeExecutedHandlers.set(marketId, handler);

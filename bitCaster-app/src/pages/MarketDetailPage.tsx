@@ -66,6 +66,7 @@ import {
 import {
   joinMarket,
   leaveMarket,
+  onMatched,
   onMarketRejoined,
   onOrderBookUpdated,
   onTradeExecuted,
@@ -1137,6 +1138,12 @@ export function MarketDetailPage() {
             outcomeSetId,
             orderBook: liveBook,
           });
+        }),
+      );
+      cleanups.push(
+        onMatched(liveMarketId, () => {
+          if (cancelled) return;
+          refreshLiveOrderBook();
         }),
       );
       cleanups.push(

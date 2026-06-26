@@ -26,11 +26,21 @@ import { refreshOrderBook } from '@/lib/orderBookRefresh'
 export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
 export type MarketStatusChanged = components['schemas']['MarketStatusChanged']
 export interface TradeExecuted {
-  tradeId?: string
+  tradeId: string
   executionPrice: number
   amountSubunits: number
   side: string
   timestamp: string
+}
+
+export interface Matched {
+  tradeId: string
+  makerOrderId: string
+  takerOrderId: string
+  executionPrice: number
+  amountSubunits: number
+  path: string
+  matchedAt: string
 }
 
 export function parseTradeExecuted(
@@ -82,17 +92,80 @@ export function parseTradeExecuted(
             ? raw.MatchedAt
             : new Date().toISOString()
 
-  if (!marketId || executionPrice == null || amountSubunits == null) return null
-  const trade = { executionPrice, amountSubunits, side, timestamp, ...(tradeId ? { tradeId } : {}) }
+  if (!marketId || !tradeId || executionPrice == null || amountSubunits == null) return null
+  const trade = { tradeId, executionPrice, amountSubunits, side, timestamp }
   return {
     marketId,
     trade,
   }
 }
 
+export function parseMatched(
+  payload: unknown,
+): { marketId: string; match: Matched } | null {
+  const raw = payload as Record<string, unknown>
+  const marketId =
+    typeof raw.marketId === 'string'
+      ? raw.marketId
+      : typeof raw.MarketId === 'string'
+        ? raw.MarketId
+        : null
+  const tradeId =
+    typeof raw.tradeId === 'string'
+      ? raw.tradeId
+      : typeof raw.TradeId === 'string'
+        ? raw.TradeId
+        : null
+  const makerOrderId =
+    typeof raw.makerOrderId === 'string'
+      ? raw.makerOrderId
+      : typeof raw.MakerOrderId === 'string'
+        ? raw.MakerOrderId
+        : null
+  const takerOrderId =
+    typeof raw.takerOrderId === 'string'
+      ? raw.takerOrderId
+      : typeof raw.TakerOrderId === 'string'
+        ? raw.TakerOrderId
+        : null
+  const executionPrice =
+    typeof raw.executionPrice === 'number'
+      ? raw.executionPrice
+      : typeof raw.ExecutionPrice === 'number'
+        ? raw.ExecutionPrice
+        : null
+  const amountSubunits =
+    typeof raw.amountSubunits === 'number'
+      ? raw.amountSubunits
+      : typeof raw.AmountSubunits === 'number'
+        ? raw.AmountSubunits
+        : null
+  const path =
+    typeof raw.path === 'string'
+      ? raw.path
+      : typeof raw.Path === 'string'
+        ? raw.Path
+        : ''
+  const matchedAt =
+    typeof raw.matchedAt === 'string'
+      ? raw.matchedAt
+      : typeof raw.MatchedAt === 'string'
+        ? raw.MatchedAt
+        : new Date().toISOString()
+
+  if (!marketId || !tradeId || !makerOrderId || !takerOrderId || executionPrice == null || amountSubunits == null) {
+    return null
+  }
+  return {
+    marketId,
+    match: { tradeId, makerOrderId, takerOrderId, executionPrice, amountSubunits, path, matchedAt },
+  }
+}
+
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void
 type MarketStatusHandler = (status: MarketStatusChanged) => void
 type TradeExecutedHandler = (trade: TradeExecuted) => void
+type MatchedHandler = (match: Matched) => void
 type MarketRejoinedHandler = () => void
 
 const SERVER_URL = resolveHubServerUrl()
@@ -110,6 +183,7 @@ let _startPromise: Promise<void> | null = null
 // can cleanly leave the server group.
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>()
 const _tradeExecutedHandlers = new Map<string, Set<TradeExecutedHandler>>()
+const _matchedHandlers = new Map<string, Set<MatchedHandler>>()
 const _marketJoinCounts = new Map<string, number>()
 const _desiredMarketJoins = new Set<string>()
 const _marketRejoinedHandlers = new Map<string, Set<MarketRejoinedHandler>>()
@@ -150,6 +224,21 @@ function buildConnection(): HubConnection {
         handler(parsed.trade)
       } catch (err) {
         console.warn('[marketHub] TradeExecuted handler threw:', err)
+      }
+    }
+  })
+
+  conn.on('Matched', (payload: unknown) => {
+    const parsed = parseMatched(payload)
+    if (!parsed) return
+
+    const handlers = _matchedHandlers.get(parsed.marketId)
+    if (!handlers) return
+    for (const handler of handlers) {
+      try {
+        handler(parsed.match)
+      } catch (err) {
+        console.warn('[marketHub] Matched handler threw:', err)
       }
     }
   })
@@ -329,6 +418,24 @@ export function onTradeExecuted(
   }
 }
 
+export function onMatched(
+  marketId: string,
+  handler: MatchedHandler,
+): () => void {
+  let set = _matchedHandlers.get(marketId)
+  if (!set) {
+    set = new Set()
+    _matchedHandlers.set(marketId, set)
+  }
+  set.add(handler)
+  return () => {
+    const s = _matchedHandlers.get(marketId)
+    if (!s) return
+    s.delete(handler)
+    if (s.size === 0) _matchedHandlers.delete(marketId)
+  }
+}
+
 export function onMarketRejoined(
   marketId: string,
   handler: MarketRejoinedHandler,
@@ -357,6 +464,7 @@ export async function disconnect(): Promise<void> {
   _startPromise = null
   _orderBookHandlers.clear()
   _tradeExecutedHandlers.clear()
+  _matchedHandlers.clear()
   _marketStatusHandlers.clear()
   _marketRejoinedHandlers.clear()
   for (const refresh of _rejoinRefreshers.values()) refresh.cancel()

@@ -33,7 +33,7 @@ vi.mock('@microsoft/signalr', () => ({
   },
 }))
 
-import { disconnect, joinMarket, parseTradeExecuted } from '../marketHub'
+import { disconnect, joinMarket, parseMatched, parseTradeExecuted } from '../marketHub'
 
 beforeEach(async () => {
   await disconnect()
@@ -49,6 +49,7 @@ beforeEach(async () => {
 describe('parseTradeExecuted', () => {
   it('accepts canonical AmountSubunits payloads from the engine', () => {
     expect(parseTradeExecuted({
+      TradeId: 'trade-1',
       MarketId: 'cond-YES',
       ExecutionPrice: 420,
       AmountSubunits: 5_000,
@@ -57,10 +58,47 @@ describe('parseTradeExecuted', () => {
     })).toEqual({
       marketId: 'cond-YES',
       trade: {
+        tradeId: 'trade-1',
         executionPrice: 420,
         amountSubunits: 5_000,
         side: 'Buy',
         timestamp: '2026-06-01T00:00:00Z',
+      },
+    })
+  })
+
+  it('rejects match-time payloads that lack a confirmed tradeId', () => {
+    expect(parseTradeExecuted({
+      MarketId: 'cond-YES',
+      ExecutionPrice: 420,
+      AmountSubunits: 5_000,
+      Side: 'Buy',
+      Timestamp: '2026-06-01T00:00:00Z',
+    })).toBeNull()
+  })
+})
+
+describe('parseMatched', () => {
+  it('accepts canonical matched payloads from the engine', () => {
+    expect(parseMatched({
+      MarketId: 'cond-YES',
+      TradeId: 'trade-1',
+      MakerOrderId: 'maker-1',
+      TakerOrderId: 'taker-1',
+      ExecutionPrice: 420,
+      AmountSubunits: 5_000,
+      Path: 'Complementary',
+      MatchedAt: '2026-06-01T00:00:00Z',
+    })).toEqual({
+      marketId: 'cond-YES',
+      match: {
+        tradeId: 'trade-1',
+        makerOrderId: 'maker-1',
+        takerOrderId: 'taker-1',
+        executionPrice: 420,
+        amountSubunits: 5_000,
+        path: 'Complementary',
+        matchedAt: '2026-06-01T00:00:00Z',
       },
     })
   })
