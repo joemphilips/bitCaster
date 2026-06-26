@@ -19,13 +19,16 @@ import {
   registrationFeeForPolicy,
   requiredMarketCreationOutcomeCollections,
 } from "@bitcaster/client-sdk/ctfRegistration";
+import {
+  deserializeOutputGroups,
+  serializeOutputDataArray,
+} from "@bitcaster/client-sdk/ctfSplit";
 import { defaultCollateralUnit, normalizeMarketBaseAsset, parseCashuProofUnit, type CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import {
   MintError,
   registerCondition,
 } from "@/lib/markets";
 import { getWalletForUnit } from "@/lib/cashu";
-import { hexToBytes } from "@/lib/ecdh";
 import {
   addProofs,
   getUnitProofs,
@@ -194,7 +197,9 @@ async function resumeOrRetryRegistration(
     states.length > 0 &&
     states.every((state) => state.state === CheckStateEnum.UNSPENT)
   ) {
-    const outputs = deserializeOutputDataArray(entry.outputs.change ?? []);
+    const outputs = (deserializeOutputGroups({
+      change: entry.outputs.change ?? [],
+    }).change ?? []) as RegistrationOutputData[];
     await reserveProofs(
       entry.inputs.map((proof) => proof.secret),
       entry.operationId,
@@ -386,7 +391,9 @@ async function restoreChangeOutputs(
   mintUrl: string,
   storedOutputs: StoredOutputData[],
 ): Promise<Proof[]> {
-  const outputData = deserializeOutputDataArray(storedOutputs);
+  const outputData = (
+    deserializeOutputGroups({ change: storedOutputs }).change ?? []
+  ) as RegistrationOutputData[];
   if (outputData.length === 0) return [];
   const mint = new CashuMint(mintUrl);
   const response = await mint.restore({
@@ -407,36 +414,6 @@ async function getKeyset(
   );
   if (!keyset) throw new Error(`Mint did not return keys for keyset ${keysetId}`);
   return keyset;
-}
-
-function serializeOutputDataArray(
-  outputs: RegistrationOutputData[],
-): StoredOutputData[] {
-  return outputs.map((output) => ({
-    blindedMessage: {
-      amount: amountToNumber(output.blindedMessage.amount),
-      id: output.blindedMessage.id,
-      B_: output.blindedMessage.B_,
-    },
-    blindingFactor: output.blindingFactor.toString(16),
-    secret: bytesToHex(output.secret),
-  }));
-}
-
-function deserializeOutputDataArray(
-  outputs: StoredOutputData[],
-): RegistrationOutputData[] {
-  return outputs.map(
-    (output) =>
-      new OutputData(
-        {
-          ...output.blindedMessage,
-          amount: Amount.from(output.blindedMessage.amount),
-        },
-        BigInt(`0x${output.blindingFactor}`),
-        hexToBytes(output.secret),
-      ) as RegistrationOutputData,
-  );
 }
 
 async function buildOperationId(

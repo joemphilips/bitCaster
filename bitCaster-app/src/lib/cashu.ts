@@ -28,7 +28,6 @@ import {
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 import { normalizeUrl } from "@/lib/url";
-import { hexToBytes } from "@/lib/ecdh";
 import {
   addProofs,
   getUnitProofs,
@@ -42,6 +41,10 @@ import {
   type StoredProof,
 } from "@/stores/proof-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import {
+  deserializeOutputGroups,
+  serializeOutputDataArray,
+} from "@bitcaster/client-sdk/ctfSplit";
 import {
   isLosingLegError,
   ORACLE_NOT_ATTESTED_OUTCOME_CODE,
@@ -1264,7 +1267,9 @@ async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
         `proof operation ${entry.operationId} is missing CTF redeem metadata`,
       );
     }
-    const outputData = deserializeOutputDataArray(entry.outputs.regular ?? []);
+    const outputData =
+      deserializeOutputGroups({ regular: entry.outputs.regular ?? [] })
+        .regular ?? [];
     const witness = await fetchConditionOracleWitness(metadata.conditionId);
     let settled: Proof[];
     try {
@@ -1302,7 +1307,8 @@ async function restoreRedeemOutputs(
   mintUrl: string,
   storedOutputs: StoredOutputData[],
 ): Promise<Proof[]> {
-  const outputData = deserializeOutputDataArray(storedOutputs);
+  const outputData =
+    deserializeOutputGroups({ regular: storedOutputs }).regular ?? [];
   if (outputData.length === 0) return [];
   const mint = new CashuMint(mintUrl);
   const response = await mint.restore({
@@ -1350,40 +1356,4 @@ function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit
   const unit = parseCashuProofUnit(value);
   if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ""}'`);
   return unit;
-}
-
-function serializeOutputDataArray(
-  outputs: RedeemOutputData[],
-): StoredOutputData[] {
-  return outputs.map((output) => ({
-    blindedMessage: {
-      amount: amountToNumber(output.blindedMessage.amount),
-      id: output.blindedMessage.id,
-      B_: output.blindedMessage.B_,
-    },
-    blindingFactor: output.blindingFactor.toString(16),
-    secret: bytesToHex(output.secret),
-  }));
-}
-
-function deserializeOutputDataArray(
-  outputs: StoredOutputData[],
-): RedeemOutputData[] {
-  return outputs.map(
-    (output) =>
-      new OutputData(
-        {
-          ...output.blindedMessage,
-          amount: Amount.from(output.blindedMessage.amount),
-        },
-        BigInt(`0x${output.blindingFactor}`),
-        hexToBytes(output.secret),
-      ),
-  );
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
 }

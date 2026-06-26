@@ -7,7 +7,7 @@
  * Spec reference: nuts/11.md (P2PK spending conditions)
  */
 
-import { schnorr } from '@noble/curves/secp256k1.js'
+export { createP2PKWitness } from '@bitcaster/swap-protocol/p2pk'
 
 // ---------------------------------------------------------------------------
 // NUT-11 secret structure
@@ -59,29 +59,6 @@ export function createP2PKSecret(params: P2PKSecretParams): string {
       ],
     },
   ])
-}
-
-// ---------------------------------------------------------------------------
-// NUT-11 witness
-// ---------------------------------------------------------------------------
-
-/**
- * Sign a 32-byte message with a secp256k1 private key and return a
- * JSON-encoded NUT-11 witness object.
- *
- * @param privateKey - 32-byte scalar
- * @param message    - 32-byte message hash (typically SHA-256 of the proof secret)
- * @returns JSON string `{"signatures": ["<hex sig>"]}`
- */
-export function createP2PKWitness(
-  privateKey: Uint8Array,
-  message: Uint8Array,
-): string {
-  if (message.length !== 32) throw new Error('message must be 32 bytes')
-  // NUT-11 requires BIP-340 Schnorr signatures (not ECDSA).
-  // schnorr.sign returns a 64-byte Uint8Array directly — no cast needed.
-  const sig = schnorr.sign(message, privateKey)
-  return JSON.stringify({ signatures: [bytesToHex(sig)] })
 }
 
 // ---------------------------------------------------------------------------
