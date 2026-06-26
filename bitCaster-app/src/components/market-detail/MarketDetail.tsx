@@ -365,7 +365,7 @@ export function MarketDetail({
                     ? t("trade.submittingOrder")
                     : walletReady
                       ? t("market.confirm")
-                      : t("wallet.createWallet")}
+                      : t("wallet.startTrading")}
                 </span>
               </button>
             </div>
@@ -385,7 +385,7 @@ export function MarketDetail({
                   : "bg-blue-600 hover:bg-blue-700 text-white"
               }`}
             >
-              {walletReady ? t("trade.title") : t("wallet.createWallet")}
+              {walletReady ? t("trade.title") : t("wallet.startTrading")}
             </button>
           )}
         </div>

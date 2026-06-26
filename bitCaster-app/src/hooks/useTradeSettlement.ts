@@ -2046,6 +2046,8 @@ function finishSwap(tradeId: string, outcome: "success" | "failed"): void {
   const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
   if (!swap) return;
   if (outcome === "failed" && swap.step === "completed") return;
+  const shouldNotify =
+    outcome === "success" || isLocalTradeParticipant(swap, tradeId);
   emitTradeTerminal({
     tradeId,
     marketId: swap.marketId,
@@ -2055,17 +2057,25 @@ function finishSwap(tradeId: string, outcome: "success" | "failed"): void {
     .getState()
     .setStep(tradeId, outcome === "success" ? "completed" : "failed");
   useActiveSwapsStore.getState().clearProtocolState(tradeId);
-  const toast = useToastStore.getState().addToast;
-  toast({
-    type: outcome === "success" ? "success" : "error",
-    message:
-      outcome === "success"
-        ? `Trade complete: ${swap.marketId}`
-        : `Trade failed: ${swap.error ?? "unknown error"}`,
-  });
+  if (shouldNotify) {
+    const toast = useToastStore.getState().addToast;
+    toast({
+      type: outcome === "success" ? "success" : "error",
+      message:
+        outcome === "success"
+          ? `Trade complete: ${swap.marketId}`
+          : `Trade failed: ${swap.error ?? "unknown error"}`,
+    });
+  }
   // Keep the entry around briefly so any UI subscriber gets a final
   // snapshot before the row vanishes.
   setTimeout(() => useActiveSwapsStore.getState().remove(tradeId), 5_000);
+}
+
+function isLocalTradeParticipant(swap: ActiveSwap, tradeId: string): boolean {
+  if (swap.tradeId !== tradeId) return false;
+  if (!swap.role || !swap.counterpartyPubkey) return false;
+  return Boolean(swap.ephemeralPubkeyHex);
 }
 
 function failSwap(tradeId: string, err: unknown): void {

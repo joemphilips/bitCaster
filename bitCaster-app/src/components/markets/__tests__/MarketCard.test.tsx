@@ -96,6 +96,24 @@ describe('MarketCard', () => {
     expect(onViewMarket).toHaveBeenCalledWith('mkt-1')
   })
 
+  it('does not open the legacy wallet wizard when a no-wallet user clicks Buy', async () => {
+    const user = userEvent.setup()
+    const onViewMarket = vi.fn()
+
+    render(
+      <MarketCard
+        market={yesNoMarket}
+        walletReady={false}
+        onViewMarket={onViewMarket}
+      />,
+    )
+
+    await user.click(screen.getByText('Buy YES'))
+
+    expect(screen.queryByTestId('wallet-required-modal')).not.toBeInTheDocument()
+    expect(onViewMarket).toHaveBeenCalledWith('mkt-1')
+  })
+
   it('calls onViewMarket when card body is clicked', async () => {
     const user = userEvent.setup()
     const onViewMarket = vi.fn()

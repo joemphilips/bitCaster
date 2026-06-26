@@ -65,7 +65,6 @@ vi.mock('@/pages/MarketCreationPage', () => ({ MarketCreationPage: () => <div>Cr
 vi.mock('@/pages/SettingsPage', () => ({ SettingsPage: () => <div>Settings</div> }))
 vi.mock('@/pages/MintDetailPage', () => ({ MintDetailPage: () => <div>Mint</div> }))
 vi.mock('@/pages/UserPage', () => ({ UserPage: () => <div>User</div> }))
-vi.mock('@/pages/WalletSetupPage', () => ({ WalletSetupPage: () => <div>Setup</div> }))
 
 vi.mock('@/stores/useBookmarkSync', () => ({ useBookmarkSync: vi.fn() }))
 vi.mock('@/stores/useCreatorSync', () => ({ useCreatorSync: vi.fn() }))
@@ -147,5 +146,14 @@ describe('App partial-lock recovery sweep', () => {
     await waitFor(() => {
       expect(mocks.sweepElapsedPartialLockFailures).toHaveBeenCalledOnce()
     })
+  })
+
+  it('does not expose the removed wallet setup wizard route', async () => {
+    window.history.replaceState({}, '', '/setup')
+    const { default: App } = await import('../App')
+
+    render(<App />)
+
+    expect(document.body).not.toHaveTextContent('Setup')
   })
 })

@@ -5,7 +5,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
 import { normalizeUrl } from '@/lib/url'
 import { db, getUnitProofs, isCtfProof, type StoredProof } from './proof-db'
-import type { MintConnectionTestStatus } from '@/types/wallet-setup'
+import type { MintConnectionTestStatus } from '@/types/wallet'
 import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 import {
   defaultCollateralUnit,

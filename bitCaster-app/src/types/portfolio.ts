@@ -213,7 +213,7 @@ export interface PortfolioProps {
   /** Currently selected positions sub-tab */
   positionsTab: 'active' | 'closed'
 
-  /** Called when user clicks "Get Started" (no-wallet state) → navigates to wallet-setup */
+  /** Called when user clicks "Get Started" (no-wallet state). */
   onGetStarted?: () => void
 
   /** Called when user uploads a new avatar image */

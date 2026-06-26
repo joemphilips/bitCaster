@@ -57,20 +57,8 @@
     "language": "言語"
   },
   "wallet": {
-    "title": "ウォレットのセットアップ",
-    "subtitle": "始める方法を選んでください",
-    "createNew": "新しいウォレットを作成",
-    "createNewDesc": "新しいシードフレーズで新規ウォレットを生成します",
-    "recover": "ウォレットを復元",
-    "recoverDesc": "12ワードのシードフレーズから既存のウォレットを復元します",
-    "required": "ウォレットが必要です",
-    "requiredDesc": "Bitcoinで予測市場のトレードを始めるには、ウォレットを作成してください。",
-    "createWallet": "ウォレットを作成してトレード",
     "getStarted": "はじめる",
-    "balance": "残高: {{count}} シェア"
-  },
-  "walletSetup": {
-    "closeWalletSetup": "ウォレットセットアップを閉じる"
+    "startTrading": "トレードを開始"
   },
   "auth": {
     "nostrRequiredTitle": "認証が必要です",

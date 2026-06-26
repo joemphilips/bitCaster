@@ -597,7 +597,7 @@ export function TradingPanel({
   // Build confirm button text
   const getConfirmText = () => {
     if (isTradeSubmitting) return t('trade.submittingOrder')
-    if (!walletReady) return t('wallet.createWallet')
+    if (!walletReady) return t('wallet.startTrading')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
     if (marketOrderHasNoLiquidity) return t('trade.noExecutableLiquidity')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''

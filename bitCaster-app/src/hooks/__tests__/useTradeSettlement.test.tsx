@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useActiveSwapsStore } from "@/stores/activeSwaps";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
+import { useToastStore } from "@/stores/toast";
 
 const { mockUseTradeHub, mockJoinOrder, mockJoinTrade, mockSendSwapMessage } =
   vi.hoisted(() => ({
@@ -108,6 +109,7 @@ beforeEach(() => {
   useActiveSwapsStore.setState({ byTradeId: {} });
   usePendingTradesStore.setState({ byOrderId: {} });
   usePartialLockFailuresStore.setState({ byTradeId: {} });
+  useToastStore.setState({ toasts: [] });
   mockJoinOrder.mockResolvedValue(undefined);
   mockJoinTrade.mockResolvedValue(undefined);
   mockSendSwapMessage.mockResolvedValue(undefined);
@@ -1591,6 +1593,35 @@ describe("useTradeSettlement", () => {
     expect(swap.step).toBe("completed");
     expect(swap.error).toBeNull();
   });
+
+  it("does not display raw trade failure errors for swaps without local participant pubkey confirmation", async () => {
+    renderHook(() => useTradeSettlement(true));
+
+    await act(async () => {
+      useActiveSwapsStore.getState().promote({
+        tradeId: "trade-nonparticipant-failure",
+        orderId: "order-nonparticipant-failure",
+        marketId: "market-1",
+        ephemeralPrivkeyHex: "11".repeat(32),
+        ephemeralPubkeyHex: "02" + "22".repeat(32),
+      });
+    });
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeStateChanged: (tradeId: string, newState: string) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeStateChanged("trade-nonparticipant-failure", "Failed");
+    });
+
+    expect(useToastStore.getState().toasts).toEqual([]);
+    expect(
+      useActiveSwapsStore.getState().byTradeId["trade-nonparticipant-failure"]
+        .step,
+    ).toBe("failed");
+  });
+
   it("fails before locking proofs when TradeCreated outcome face is not a whole market share for sat/10000", async () => {
     usePendingTradesStore.getState().add({
       orderId: "order-ambiguous-sat100",

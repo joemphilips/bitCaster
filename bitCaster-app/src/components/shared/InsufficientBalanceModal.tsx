@@ -15,9 +15,9 @@ interface InsufficientBalanceModalProps {
 
 /**
  * Gate shown when the user presses Confirm but the active mint's balance is
- * below the order's total cost. Mirrors `WalletRequiredModal` so the two feel
- * like variants of the same pattern. Actual top-up happens in the overlay the
- * caller mounts from `onTopUp`.
+ * below the order's total cost. This is the funded-action gate that appears
+ * after lazy wallet creation when local funds are not yet sufficient. Actual
+ * top-up happens in the overlay the caller mounts from `onTopUp`.
  */
 export function InsufficientBalanceModal({
   balance,

@@ -42,7 +42,7 @@ export function PortfolioPage() {
   const addActivity = useActivityLogStore((s) => s.addActivity);
 
   const handleGetStarted = useCallback(() => {
-    navigate("/setup", { state: { from: "/portfolio" } });
+    navigate("/markets");
   }, [navigate]);
 
   const handleAvatarUpload = useCallback(

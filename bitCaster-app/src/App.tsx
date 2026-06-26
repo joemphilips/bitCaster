@@ -15,7 +15,6 @@ import { MarketCreationPage } from "@/pages/MarketCreationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { MintDetailPage } from "@/pages/MintDetailPage";
 import { UserPage } from "@/pages/UserPage";
-import { WalletSetupPage } from "@/pages/WalletSetupPage";
 import { useEffect, useRef } from "react";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
@@ -45,7 +44,7 @@ installE2EDiagnostics();
  * this list in one place means the {@link WizardRoutes} route table and
  * the layout-selection check in {@link AppRoutes} can't drift apart.
  */
-const WIZARD_PATHS = ["/setup", "/creator/new"] as const;
+const WIZARD_PATHS = ["/creator/new"] as const;
 
 /**
  * Wizard routes render without the app shell.
@@ -57,7 +56,6 @@ const WIZARD_PATHS = ["/setup", "/creator/new"] as const;
 function WizardRoutes() {
   return (
     <Routes>
-      <Route path="/setup" element={<WalletSetupPage />} />
       <Route path="/creator/new" element={<MarketCreationPage />} />
     </Routes>
   );
@@ -126,7 +124,6 @@ function titleForPath(pathname: string): string {
   if (pathname === "/settings") return "bitCaster/Settings";
   if (pathname === "/mint-details") return "bitCaster/Mint Details";
   if (pathname.startsWith("/user/")) return "bitCaster/User";
-  if (pathname === "/setup") return "bitCaster/Setup";
   return "bitCaster";
 }
 
@@ -243,8 +240,8 @@ function AppRoutes() {
   // mint info; without the refresh those users see a stale "Ecash only"
   // badge despite the mint now advertising CTF (P6 P4.4).
   // Also seeds the default mint for first-run users who land directly on
-  // /settings or /mint-details without going through the wizard (P5 item 1);
-  // the wizard's own `completeSetup()` handles the in-wizard case.
+  // /settings or /mint-details (P5 item 1). Wallet creation is now lazy and
+  // origin-local; there is no setup wizard route to own mint configuration.
   //
   // Why defer to `onFinishHydration`: Zustand's persist middleware rehydrates
   // asynchronously. On the first render `useWalletStore.getState().mints` is
@@ -259,11 +256,8 @@ function AppRoutes() {
       mintRehydrateAttempted.current = true;
       const { mints } = useWalletStore.getState();
       if (mints.length === 0) {
-        // Skip seeding while the wallet-setup wizard is visible — the
-        // wizard owns mint configuration and `completeSetup()` adds the
-        // default mint itself. Seeding here races with in-wizard state
-        // seeding (tests, power users reloading mid-wizard) and can
-        // overwrite the mint info they just chose.
+        // Skip seeding while full-window creation flows are visible; those
+        // flows can own their setup state while mounted.
         const onWizard = (WIZARD_PATHS as readonly string[]).includes(
           window.location.pathname,
         );

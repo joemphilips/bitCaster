@@ -57,20 +57,8 @@
     "language": "Language"
   },
   "wallet": {
-    "title": "Set Up Your Wallet",
-    "subtitle": "Choose how you'd like to get started",
-    "createNew": "Create New Wallet",
-    "createNewDesc": "Generate a fresh wallet with a new seed phrase",
-    "recover": "Recover Wallet",
-    "recoverDesc": "Restore an existing wallet from your 12-word seed phrase",
-    "required": "Wallet Required",
-    "requiredDesc": "Create a wallet to start trading prediction markets with Bitcoin.",
-    "createWallet": "Create Wallet to Trade",
     "getStarted": "Get Started",
-    "balance": "Balance: {{count}} shares"
-  },
-  "walletSetup": {
-    "closeWalletSetup": "Close wallet setup"
+    "startTrading": "Start Trading"
   },
   "auth": {
     "nostrRequiredTitle": "Authentication required",

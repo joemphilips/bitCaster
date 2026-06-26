@@ -4,7 +4,7 @@ export * from './market-detail'
 export * from './portfolio'
 export type { SettingsCategory, ThemeOption, LanguageCode, MintConnectionStatus, MintConfig, CashuSettings, NostrSignerMode, NostrProfileFetchStatus, RelayConnectionStatus, NostrProfile, RelayConfig, NostrSettings, SettingsState, SettingsProps, GeneralSettings } from './settings'
 export { type BaseCurrency } from './settings'
-export * from './wallet-setup'
+export * from './wallet'
 export * from './market-creation'
 export {
   type DashboardStats,

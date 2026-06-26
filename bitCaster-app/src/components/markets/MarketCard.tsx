@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Droplet, TrendingUp, ChevronUp, ChevronDown, Heart, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getMarketThumbnail } from '@/lib/markets'
-import { WalletRequiredModal } from '@/components/shared/WalletRequiredModal'
 import { useBookmarkStore } from '@/stores/bookmarks'
 import { formatMarketSubunits, formatPricePercentage } from '@bitcaster/client-sdk/marketUnits'
 import type {
@@ -408,11 +407,9 @@ export function MarketCard({
   secondaryMarketInfos,
   onViewMarket,
   onViewSecondaryMarket,
-  walletReady = true,
 }: MarketCardProps) {
   const { t } = useTranslation()
   const [isSecondaryExpanded, setIsSecondaryExpanded] = useState(false)
-  const [showWalletModal, setShowWalletModal] = useState(false)
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id))
   const toggleBookmark = useBookmarkStore((s) => s.toggle)
 
@@ -424,10 +421,8 @@ export function MarketCard({
 
   const handleBuyClick = (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!walletReady) {
-      setShowWalletModal(true)
-      return
-    }
+    // No local wallet gate here: the detail-page trade flow lazily creates
+    // origin-local wallet material and prompts for backup before funding.
     onViewMarket?.(market.id)
   }
 
@@ -606,8 +601,6 @@ export function MarketCard({
           </button>
         </div>
       </div>
-
-      {showWalletModal && <WalletRequiredModal onClose={() => setShowWalletModal(false)} />}
     </div>
   )
 }
