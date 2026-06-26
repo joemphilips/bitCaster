@@ -29,11 +29,13 @@ CDK mintd
 ### Shared Logic Lives in the SDK
 
 Any logic used by more than one consumer (bitCaster-app, bitcaster-daemon,
-bitcaster-cli, or any future client) MUST be implemented in
-`bitcaster-client-sdk/` and imported from there. Do not duplicate parsing,
-validation, fee calculation, proof selection, or protocol-level logic across
-consumers. If you find yourself copy-pasting a function into a second
-consumer, move it to the SDK first.
+bitcaster-cli, bitcaster-wallet-service, or any future client) MUST be
+implemented in `bitcaster-client-sdk/` and imported from there. Do not
+duplicate parsing, validation, fee calculation, proof selection, keyset
+resolution, or protocol-level logic across consumers. If you find yourself
+copy-pasting a function into a second consumer, move it to the SDK first.
+This includes the wallet-service — its `CashuWalletService` must not
+reimplement SDK logic that the frontend and daemon already use.
 
 ### Open Protocol First
 
