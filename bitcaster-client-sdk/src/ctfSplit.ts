@@ -1362,7 +1362,7 @@ async function resumeRegularSplit(
   return { ...completed, spent: entry.inputs.map(normalizeProof) };
 }
 
-async function restoreOutputGroups(
+export async function restoreOutputGroups(
   mintUrl: string,
   outputs: Record<string, StoredOutputData[]>,
 ): Promise<Record<string, Proof[]>> {
@@ -1862,8 +1862,8 @@ function validateSignature(
   }
 }
 
-function serializeOutputDataArray(
-  outputs: CtfSplitOutputData[],
+export function serializeOutputDataArray(
+  outputs: Array<Pick<CtfSplitOutputData, "blindedMessage" | "blindingFactor" | "secret">>,
 ): StoredOutputData[] {
   return outputs.map((output) => ({
     blindedMessage: {
@@ -1885,14 +1885,18 @@ function toWireBlindedMessage(
   } as unknown as SerializedBlindedMessage;
 }
 
-function normalizeProof(proof: Proof): Proof {
+export function normalizeProof(proof: Proof): Proof {
   return {
     ...proof,
     amount: amountToNumber(proof.amount) as never,
   };
 }
 
-function normalizeProofGroups(
+export function normalizeProofArray(proofs: readonly Proof[]): Proof[] {
+  return proofs.map(normalizeProof);
+}
+
+export function normalizeProofGroups(
   groups: Record<string, Proof[]>,
 ): Record<string, Proof[]> {
   return Object.fromEntries(
@@ -1928,7 +1932,7 @@ function deserializeCtfOutputGroups(
   );
 }
 
-function deserializeOutputGroups(
+export function deserializeOutputGroups(
   groups: Record<string, StoredOutputData[]>,
 ): Record<string, RegularOutputData[]> {
   return Object.fromEntries(
@@ -1949,7 +1953,7 @@ function deserializeOutputGroups(
   );
 }
 
-function entryToSwapPreview(entry: CtfProofOperationRecord): SwapPreview {
+export function entryToSwapPreview(entry: CtfProofOperationRecord): SwapPreview {
   const metadata = entry.metadata as {
     amount?: unknown;
     fees?: unknown;
@@ -1982,7 +1986,7 @@ function entryToSwapPreview(entry: CtfProofOperationRecord): SwapPreview {
   };
 }
 
-function readUnselectedProofs(entry: CtfProofOperationRecord): Proof[] {
+export function readUnselectedProofs(entry: CtfProofOperationRecord): Proof[] {
   const metadata = entry.metadata as { unselectedProofs?: unknown };
   return Array.isArray(metadata.unselectedProofs)
     ? (metadata.unselectedProofs as Proof[]).map(normalizeProof)
@@ -2080,11 +2084,11 @@ function outcomeSetsEqual(left: Set<string>, right: Set<string>): boolean {
   return true;
 }
 
-function blindedMessageKey(output: SerializedBlindedMessage): string {
+export function blindedMessageKey(output: SerializedBlindedMessage): string {
   return `${output.id}:${output.B_}`;
 }
 
-function allStates(states: ProofState[], expected: string): boolean {
+export function allStates(states: ProofState[], expected: string): boolean {
   return states.length > 0 && states.every((state) => state.state === expected);
 }
 

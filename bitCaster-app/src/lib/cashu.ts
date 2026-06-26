@@ -43,6 +43,10 @@ import {
 } from "@/stores/proof-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
+  isLosingLegError,
+  ORACLE_NOT_ATTESTED_OUTCOME_CODE,
+} from "@bitcaster/client-sdk/ctfRedeem";
+import {
   DEFAULT_MARKET_BASE_ASSET,
   collateralScaleForUnit,
   defaultCollateralUnit,
@@ -939,39 +943,6 @@ function groupProofsByKeyset(proofs: Proof[]): Map<string, Proof[]> {
     byKeyset.set(proof.id, [...(byKeyset.get(proof.id) ?? []), proof]);
   }
   return byKeyset;
-}
-
-/**
- * The CDK NUT-CTF error code (`cdk-common/src/error.rs` `ErrorCode`) the mint
- * returns when a keyset's outcome collection does NOT include the attested
- * outcome — i.e. an authoritatively-established LOSING leg. This is the single
- * terminal signal that a proof is worthless; unlike the duplicate-output 20006
- * code (see `isCdkDuplicateOutputsError`), 13015 is unambiguous, so we key on
- * the structured numeric code directly rather than on a message substring.
- */
-const ORACLE_NOT_ATTESTED_OUTCOME_CODE = 13015;
-
-/**
- * Has the mint AUTHORITATIVELY rejected this leg as a non-winner?
- *
- * `true` ONLY when the mint adjudicated the leg and returned the terminal
- * `OracleNotAttestedOutcome` (13015) rejection. We deliberately do NOT decide
- * a leg's losing status from the proof's stored `outcomeCollection` label: a
- * mislabelled would-be-winning proof must never be destroyed on a stale label
- * alone (bearer-proof loss is irreversible). The mint is the only authority
- * that may condemn a proof.
- */
-function isLosingLegError(error: unknown): boolean {
-  if (error && typeof error === "object") {
-    const e = error as { code?: unknown };
-    if (
-      typeof e.code === "number" &&
-      e.code === ORACLE_NOT_ATTESTED_OUTCOME_CODE
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 interface RedeemKeysetLegInput {

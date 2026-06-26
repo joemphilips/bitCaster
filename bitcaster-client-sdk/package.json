@@ -19,6 +19,10 @@
       "types": "./dist/ctfConsolidation.d.ts",
       "import": "./dist/ctfConsolidation.js"
     },
+    "./ctfRedeem": {
+      "types": "./dist/ctfRedeem.d.ts",
+      "import": "./dist/ctfRedeem.js"
+    },
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"

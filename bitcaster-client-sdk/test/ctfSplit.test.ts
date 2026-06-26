@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   computeGrossCtfInputAmountSubunits,
+  computeGrossCtfInputAmountSats,
+  normalizeProof,
+  normalizeProofArray,
+  normalizeProofGroups,
   resolveComplementaryOutcomeLegs,
   resolveMintOutcomeSetKey,
   selectRootPartitionKeysets,
@@ -22,11 +26,35 @@ import type {
   SerializedBlindedSignature,
 } from "@cashu/cashu-ts";
 import {
+  Amount,
   CheckStateEnum,
   OutputData,
   type ProofState,
   type SwapPreview,
 } from "@cashu/cashu-ts";
+
+test("computeGrossCtfInputAmountSats is the exported sat alias for gross CTF planning", () => {
+  const keyset = {
+    id: "keyset-fee",
+    keys: { 1: "pubkey-1", 2: "pubkey-2", 4: "pubkey-4", 8: "pubkey-8" },
+    input_fee_ppk: 501,
+  };
+
+  assert.equal(
+    computeGrossCtfInputAmountSats({ faceAmountSats: 10, keyset }),
+    computeGrossCtfInputAmountSubunits({ faceAmountSubunits: 10, keyset }),
+  );
+});
+
+test("proof normalization helpers are exported for wallet-service sharing", () => {
+  const proof = { id: "k", amount: Amount.from(2), secret: "s", C: "c" } as unknown as Proof;
+
+  assert.deepEqual(normalizeProof(proof), { ...proof, amount: 2 });
+  assert.deepEqual(normalizeProofArray([proof]), [{ ...proof, amount: 2 }]);
+  assert.deepEqual(normalizeProofGroups({ outcome: [proof] }), {
+    outcome: [{ ...proof, amount: 2 }],
+  });
+});
 
 test("resolveMintOutcomeSetKey matches engine outcome sets to mint keyset-map keys", () => {
   const keysets = {
