@@ -62,10 +62,14 @@ import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
 import {
   joinMarket,
   leaveMarket,
+  onMarketRejoined,
   onOrderBookUpdated,
   onTradeExecuted,
   type MarketStatusChanged,
 } from "@/lib/marketHub";
+import { debounce } from "@/lib/debounce";
+import { refreshOrderBook } from "@/lib/orderBookRefresh";
+import { onTradeTerminal } from "@/lib/tradeTerminalEvents";
 import { getOutcomeProofs, releaseProofReservation } from "@/stores/proof-db";
 import {
   getBalance,
@@ -126,6 +130,8 @@ type MarketOrderBooksLoad = {
   outcomeOrderBooks: Record<string, OrderBook>;
   fetchedOutcomeSetIds: string[];
 };
+
+const TRADE_EXECUTED_ORDER_BOOK_FALLBACK_MS = 500;
 
 function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
   if (state == null) return false;
@@ -1096,12 +1102,31 @@ export function MarketDetailPage() {
 
     let cancelled = false;
     const cleanups: Array<() => void> = [];
+    const refreshers = new Map<string, () => void>();
 
     for (const outcomeSetId of outcomeSetIds) {
       const liveMarketId = outcomeSetMarketId(id, outcomeSetId);
+      const refreshLiveOrderBook = debounce(() => {
+        void refreshOrderBook(liveMarketId)
+          .then((orderBook) => {
+            if (cancelled) return;
+            dispatchMarketData({
+              type: "orderBookUpdated",
+              marketId: id,
+              outcomeSetId,
+              orderBook,
+            });
+          })
+          .catch((err) => {
+            console.warn("[MarketDetailPage] order-book refresh failed:", err);
+          });
+      }, TRADE_EXECUTED_ORDER_BOOK_FALLBACK_MS);
+      refreshers.set(liveMarketId, refreshLiveOrderBook);
+      cleanups.push(refreshLiveOrderBook.cancel);
       cleanups.push(
         onOrderBookUpdated(liveMarketId, (snapshot) => {
           if (cancelled) return;
+          refreshLiveOrderBook.cancel();
           const liveBook = mapSnapshotToOrderBook(snapshot);
           dispatchMarketData({
             type: "orderBookUpdated",
@@ -1122,12 +1147,21 @@ export function MarketDetailPage() {
             timeframe: chartTimeframe,
             point: chartUpdate.point,
           });
+          refreshLiveOrderBook();
         }),
       );
+      cleanups.push(onMarketRejoined(liveMarketId, refreshLiveOrderBook));
       void joinMarket(liveMarketId).catch((err) => {
         console.warn("[MarketDetailPage] joinMarket failed:", err);
       });
     }
+
+    cleanups.push(
+      onTradeTerminal((detail) => {
+        if (cancelled) return;
+        refreshers.get(detail.marketId)?.();
+      }),
+    );
 
     return () => {
       cancelled = true;

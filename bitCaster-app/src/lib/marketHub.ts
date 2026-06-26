@@ -19,11 +19,14 @@ import {
   type HubConnection,
 } from '@microsoft/signalr'
 import type { components } from '@/generated/api'
+import { debounce, type DebouncedFunction } from '@/lib/debounce'
 import { resolveHubServerUrl } from '@/lib/hubUrl'
+import { refreshOrderBook } from '@/lib/orderBookRefresh'
 
 export type OrderBookSnapshot = components['schemas']['OrderBookSnapshot']
 export type MarketStatusChanged = components['schemas']['MarketStatusChanged']
 export interface TradeExecuted {
+  tradeId?: string
   executionPrice: number
   amountSubunits: number
   side: string
@@ -51,7 +54,17 @@ export function parseTradeExecuted(
       ? raw.amountSubunits
       : typeof raw.AmountSubunits === 'number'
         ? raw.AmountSubunits
-        : null
+        : typeof raw.faceAmountSubunits === 'number'
+          ? raw.faceAmountSubunits
+          : typeof raw.FaceAmountSubunits === 'number'
+            ? raw.FaceAmountSubunits
+            : null
+  const tradeId =
+    typeof raw.tradeId === 'string'
+      ? raw.tradeId
+      : typeof raw.TradeId === 'string'
+        ? raw.TradeId
+        : undefined
   const side =
     typeof raw.side === 'string'
       ? raw.side
@@ -63,18 +76,24 @@ export function parseTradeExecuted(
       ? raw.timestamp
       : typeof raw.Timestamp === 'string'
         ? raw.Timestamp
-        : new Date().toISOString()
+        : typeof raw.matchedAt === 'string'
+          ? raw.matchedAt
+          : typeof raw.MatchedAt === 'string'
+            ? raw.MatchedAt
+            : new Date().toISOString()
 
   if (!marketId || executionPrice == null || amountSubunits == null) return null
+  const trade = { executionPrice, amountSubunits, side, timestamp, ...(tradeId ? { tradeId } : {}) }
   return {
     marketId,
-    trade: { executionPrice, amountSubunits, side, timestamp },
+    trade,
   }
 }
 
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void
 type MarketStatusHandler = (status: MarketStatusChanged) => void
 type TradeExecutedHandler = (trade: TradeExecuted) => void
+type MarketRejoinedHandler = () => void
 
 const SERVER_URL = resolveHubServerUrl()
 const HUB_URL = `${SERVER_URL}/hubs/market`
@@ -92,6 +111,9 @@ let _startPromise: Promise<void> | null = null
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>()
 const _tradeExecutedHandlers = new Map<string, Set<TradeExecutedHandler>>()
 const _marketJoinCounts = new Map<string, number>()
+const _desiredMarketJoins = new Set<string>()
+const _marketRejoinedHandlers = new Map<string, Set<MarketRejoinedHandler>>()
+const _rejoinRefreshers = new Map<string, DebouncedFunction<[]>>()
 
 // Per-condition lifecycle handlers. The server fans MarketStatusChanged out to
 // every per-outcome group of the condition, so a client joined to any one
@@ -144,7 +166,48 @@ function buildConnection(): HubConnection {
     }
   })
 
+  conn.onreconnected(() => {
+    void rejoinMarketsAfterReconnect(conn)
+  })
+
   return conn
+}
+
+async function rejoinMarketsAfterReconnect(conn: HubConnection): Promise<void> {
+  const markets = Array.from(_desiredMarketJoins)
+  await Promise.all(markets.map(async (marketId) => {
+    try {
+      await conn.invoke('JoinMarket', marketId)
+      requestRecoveryRefresh(marketId)
+    } catch (err) {
+      console.warn('[marketHub] JoinMarket after reconnect failed:', err)
+    }
+  }))
+}
+
+function requestRecoveryRefresh(marketId: string): void {
+  let refresh = _rejoinRefreshers.get(marketId)
+  if (!refresh) {
+    refresh = debounce(() => {
+      const handlers = _marketRejoinedHandlers.get(marketId)
+      if (handlers && handlers.size > 0) {
+        for (const handler of handlers) {
+          try {
+            handler()
+          } catch (err) {
+            console.warn('[marketHub] reconnect refresh handler threw:', err)
+          }
+        }
+        return
+      }
+
+      void refreshOrderBook(marketId).catch((err) => {
+        console.warn('[marketHub] reconnect order-book refresh failed:', err)
+      })
+    }, 200)
+    _rejoinRefreshers.set(marketId, refresh)
+  }
+  refresh()
 }
 
 function ensureConnection(): HubConnection {
@@ -171,14 +234,15 @@ async function ensureStarted(): Promise<HubConnection> {
 // ---------------------------------------------------------------------------
 
 export async function joinMarket(marketId: string): Promise<void> {
+  _desiredMarketJoins.add(marketId)
   const currentCount = _marketJoinCounts.get(marketId) ?? 0
   if (currentCount > 0) {
     _marketJoinCounts.set(marketId, currentCount + 1)
     return
   }
+  _marketJoinCounts.set(marketId, 1)
   const conn = await ensureStarted()
   await conn.invoke('JoinMarket', marketId)
-  _marketJoinCounts.set(marketId, 1)
 }
 
 export async function leaveMarket(marketId: string): Promise<void> {
@@ -188,6 +252,7 @@ export async function leaveMarket(marketId: string): Promise<void> {
     return
   }
   _marketJoinCounts.delete(marketId)
+  _desiredMarketJoins.delete(marketId)
   const conn = ensureConnection()
   if (conn.state !== HubConnectionState.Connected) return
   try {
@@ -264,6 +329,24 @@ export function onTradeExecuted(
   }
 }
 
+export function onMarketRejoined(
+  marketId: string,
+  handler: MarketRejoinedHandler,
+): () => void {
+  let set = _marketRejoinedHandlers.get(marketId)
+  if (!set) {
+    set = new Set()
+    _marketRejoinedHandlers.set(marketId, set)
+  }
+  set.add(handler)
+  return () => {
+    const s = _marketRejoinedHandlers.get(marketId)
+    if (!s) return
+    s.delete(handler)
+    if (s.size === 0) _marketRejoinedHandlers.delete(marketId)
+  }
+}
+
 /**
  * Tear down the singleton connection. Mostly for tests and hot-reload
  * scenarios; normal app runs never call this.
@@ -275,7 +358,11 @@ export async function disconnect(): Promise<void> {
   _orderBookHandlers.clear()
   _tradeExecutedHandlers.clear()
   _marketStatusHandlers.clear()
+  _marketRejoinedHandlers.clear()
+  for (const refresh of _rejoinRefreshers.values()) refresh.cancel()
+  _rejoinRefreshers.clear()
   _marketJoinCounts.clear()
+  _desiredMarketJoins.clear()
   if (conn) {
     try {
       await conn.stop()

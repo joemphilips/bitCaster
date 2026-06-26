@@ -1,4 +1,5 @@
 using BitCaster.MatchingEngine.Contracts.Hubs;
+using BitCaster.InMemoryMatchingEngine.Endpoints;
 using Microsoft.AspNetCore.SignalR;
 
 namespace BitCaster.InMemoryMatchingEngine.Hubs;
@@ -27,11 +28,19 @@ public class TradeHub : Hub<ITradeHubClient>
 {
     private readonly InMemoryTradeRegistry _trades;
     private readonly InMemoryOrderBookManager _orders;
+    private readonly IHubContext<MarketHub, IMarketHubClient> _marketHub;
+    private readonly IHubContext<MarketHub> _untypedMarketHub;
 
-    public TradeHub(InMemoryTradeRegistry trades, InMemoryOrderBookManager orders)
+    public TradeHub(
+        InMemoryTradeRegistry trades,
+        InMemoryOrderBookManager orders,
+        IHubContext<MarketHub, IMarketHubClient> marketHub,
+        IHubContext<MarketHub> untypedMarketHub)
     {
         _trades = trades;
         _orders = orders;
+        _marketHub = marketHub;
+        _untypedMarketHub = untypedMarketHub;
     }
 
     /// <summary>
@@ -152,7 +161,78 @@ public class TradeHub : Hub<ITradeHubClient>
         if (trade is null) return;
         var bothConfirmed = _trades.ConfirmAndMaybeFinalize(tradeId, caller);
         if (bothConfirmed)
+        {
             await Clients.Group(group).TradeStateChanged(tradeId, "Confirmed");
+            var affectedMarketIds = AffectedPublicMarketIds(trade);
+            foreach (var marketId in affectedMarketIds)
+            {
+                await _marketHub.Clients.Group(marketId)
+                    .OrderBookUpdated(_orders.GetSnapshot(marketId));
+            }
+
+            foreach (var marketId in affectedMarketIds)
+            {
+                await _untypedMarketHub.Clients.Group(marketId).SendAsync("TradeExecuted", new
+                {
+                    TradeId = trade.TradeId,
+                    MarketId = marketId,
+                    ExecutionPrice = ExecutionPriceFor(trade),
+                    AmountSubunits = trade.FillAmountSubunits,
+                    FaceAmountSubunits = trade.FillAmountSubunits,
+                    Side = string.Empty,
+                    MatchedAt = DateTimeOffset.UtcNow,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+            }
+        }
+    }
+
+    internal static IReadOnlyList<string> AffectedPublicMarketIds(InMemoryTradeRegistry.TradeRecord trade)
+    {
+        var marketIds = new HashSet<string>(StringComparer.Ordinal) { trade.MarketId };
+        var parts = MarketParts.TryParse(trade.MarketId);
+        if (parts is null) return marketIds.Order(StringComparer.Ordinal).ToArray();
+
+        var outcomes = MarketEndpoints.TryGetRegisteredOutcomes(parts.ConditionId) ?? [];
+        AddPublicMarketIds(marketIds, parts.ConditionId, trade.SellerKeepOutcomeSetId, outcomes);
+        AddPublicMarketIds(marketIds, parts.ConditionId, trade.SellerLockOutcomeSetId, outcomes);
+        return marketIds.Order(StringComparer.Ordinal).ToArray();
+    }
+
+    private static void AddPublicMarketIds(
+        HashSet<string> marketIds,
+        string conditionId,
+        string? outcomeSetId,
+        IReadOnlyList<string> outcomes)
+    {
+        if (string.IsNullOrWhiteSpace(outcomeSetId) || outcomes.Count == 0) return;
+
+        var normalizedUniverse = outcomes.Order(StringComparer.Ordinal).ToArray();
+        var selected = outcomeSetId
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Order(StringComparer.Ordinal)
+            .ToHashSet(StringComparer.Ordinal);
+        if (selected.Count == 1)
+            marketIds.Add($"{conditionId}-{selected.Single()}");
+
+        var complement = normalizedUniverse.Where(outcome => !selected.Contains(outcome)).ToArray();
+        if (complement.Length == 1)
+            marketIds.Add($"{conditionId}-{complement[0]}");
+    }
+
+    private static int ExecutionPriceFor(InMemoryTradeRegistry.TradeRecord trade)
+    {
+        if (trade.QuotePaymentSubunits is > 0 &&
+            trade.OutcomeFaceAmountSubunits is > 0 &&
+            trade.Divisibility is > 0)
+        {
+            return (int)Math.Round(
+                (decimal)trade.QuotePaymentSubunits.Value * trade.Divisibility.Value /
+                trade.OutcomeFaceAmountSubunits.Value,
+                MidpointRounding.AwayFromZero);
+        }
+
+        return 0;
     }
 
     private string NipPubkeyOrAnonymous()

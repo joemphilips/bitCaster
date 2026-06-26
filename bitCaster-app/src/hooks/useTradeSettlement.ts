@@ -50,6 +50,7 @@ import {
   usePendingTradesStore,
   type PendingTrade,
 } from "@/stores/pendingTrades";
+import { emitTradeTerminal } from "@/lib/tradeTerminalEvents";
 import { useWalletStore } from "@/stores/wallet";
 import { Mint as CashuMint } from "@cashu/cashu-ts";
 import {
@@ -2045,6 +2046,11 @@ function finishSwap(tradeId: string, outcome: "success" | "failed"): void {
   const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
   if (!swap) return;
   if (outcome === "failed" && swap.step === "completed") return;
+  emitTradeTerminal({
+    tradeId,
+    marketId: swap.marketId,
+    state: outcome === "success" ? "Confirmed" : "Failed",
+  });
   useActiveSwapsStore
     .getState()
     .setStep(tradeId, outcome === "success" ? "completed" : "failed");

@@ -15,7 +15,8 @@ import {
 } from "@/pages/MarketDetailPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
-import type { MarketStatusChanged } from "@/lib/marketHub";
+import { onOrderBookUpdated, onTradeExecuted } from "@/lib/marketHub";
+import type { MarketStatusChanged, OrderBookSnapshot, TradeExecuted } from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -28,6 +29,8 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   routeParams: { id: "condition-yesno" } as { id?: string },
   liveStatusHandlers: [] as Array<(status: MarketStatusChanged) => void>,
+  orderBookHandlers: new Map<string, (snapshot: OrderBookSnapshot) => void>(),
+  tradeExecutedHandlers: new Map<string, (trade: TradeExecuted) => void>(),
   windowPriceHistory: vi.fn(
     (history: { timeframe: string; data: Array<unknown> }) => ({
       ...history,
@@ -39,6 +42,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("react-router", () => ({
   useNavigate: () => mocks.navigate,
   useParams: () => mocks.routeParams,
+}));
+
+vi.mock("@/components/market-detail/PriceChart", () => ({
+  PriceChart: () => <div data-testid="price-chart" />,
 }));
 
 vi.mock("@/hooks/useMarketStatusLive", () => ({
@@ -53,8 +60,15 @@ vi.mock("@/hooks/useMarketStatusLive", () => ({
 vi.mock("@/lib/marketHub", () => ({
   joinMarket: vi.fn().mockResolvedValue(undefined),
   leaveMarket: vi.fn().mockResolvedValue(undefined),
-  onOrderBookUpdated: vi.fn(() => () => {}),
-  onTradeExecuted: vi.fn(() => () => {}),
+  onMarketRejoined: vi.fn(() => () => {}),
+  onOrderBookUpdated: vi.fn((marketId: string, handler: (snapshot: OrderBookSnapshot) => void) => {
+    mocks.orderBookHandlers.set(marketId, handler);
+    return () => mocks.orderBookHandlers.delete(marketId);
+  }),
+  onTradeExecuted: vi.fn((marketId: string, handler: (trade: TradeExecuted) => void) => {
+    mocks.tradeExecutedHandlers.set(marketId, handler);
+    return () => mocks.tradeExecutedHandlers.delete(marketId);
+  }),
 }));
 
 vi.mock("@/lib/markets", () => ({
@@ -67,6 +81,20 @@ vi.mock("@/lib/markets", () => ({
   }),
   fetchMarketDetail: vi.fn(),
   fetchOrderBook: vi.fn(),
+  mapSnapshotToOrderBook: (snapshot: OrderBookSnapshot) => ({
+    bids: snapshot.bids.map((level) => ({
+      price: level.price,
+      amount: level.amount,
+      total: level.amount,
+    })),
+    asks: snapshot.asks.map((level) => ({
+      price: level.price,
+      amount: level.amount,
+      total: level.amount,
+    })),
+    spread: snapshot.spread ?? 0,
+    depthLimit: snapshot.depthLimit,
+  }),
   priceNumeratorToPercent: (price: number, divisibility = 100) =>
     (price / divisibility) * 100,
   submitOrder: vi.fn(),
@@ -230,6 +258,8 @@ describe("MarketDetailPage live market status", () => {
     vi.mocked(fetchOrderBook).mockReset();
     vi.mocked(submitOrder).mockReset();
     mocks.liveStatusHandlers.length = 0;
+    mocks.orderBookHandlers.clear();
+    mocks.tradeExecutedHandlers.clear();
     mocks.routeParams.id = "condition-yesno";
   });
 
@@ -271,6 +301,47 @@ describe("MarketDetailPage live market status", () => {
     expect(() =>
       assertMarketAcceptsOrders(yesNoMarket({ state: "closed" })),
     ).toThrow("This market is closed and no longer accepts orders.");
+  });
+
+  it("cancels the TradeExecuted REST fallback when OrderBookUpdated arrives first", async () => {
+    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket());
+    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    await waitFor(() => {
+      expect(onTradeExecuted).toHaveBeenCalledWith("condition-yesno-Yes", expect.any(Function));
+      expect(onOrderBookUpdated).toHaveBeenCalledWith("condition-yesno-Yes", expect.any(Function));
+    });
+    vi.mocked(fetchOrderBook).mockClear();
+
+    act(() => {
+      mocks.tradeExecutedHandlers.get("condition-yesno-Yes")?.({
+        executionPrice: 501,
+        amountSubunits: 10,
+        side: "Buy",
+        timestamp: "2026-06-01T00:00:00Z",
+      });
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(fetchOrderBook).not.toHaveBeenCalled();
+
+    act(() => {
+      mocks.orderBookHandlers.get("condition-yesno-Yes")?.({
+        marketId: "condition-yesno-Yes",
+        bids: [{ price: 777, amount: 42 }],
+        asks: [],
+        spread: 0,
+        depthLimit: 5,
+      });
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    expect(fetchOrderBook).not.toHaveBeenCalled();
   });
 });
 
