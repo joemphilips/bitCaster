@@ -674,6 +674,9 @@
     "title": "Top Up Wallet",
     "minimumDesc": "Minimum {{sats}} to cover the trade. We've prefilled a small buffer for fees — you can raise it but not lower it.",
     "scoreMinimumDesc": "Top up at least {{sats}} to cover Engine Score before placing the order.",
+    "registrationFee": "Registration fee",
+    "yourBalance": "Your balance",
+    "topUpNeeded": "Top-up needed",
     "amount": "Amount",
     "amountSats": "Amount (sats)",
     "requesting": "Requesting invoice…"

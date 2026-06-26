@@ -121,6 +121,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
       {registrationFeeTopUpStage === 'overlay' && registrationFeeTopUp && (
         <TopUpOverlay
           deficit={registrationFeeDeficit}
+          feeSubunits={registrationFeeTopUp.feeSubunits}
+          balanceSubunits={registrationFeeTopUp.balanceSubunits}
           baseAsset={registrationFeeTopUp.baseAsset}
           minimumDescription={t('marketCreation.registrationFeeTopUpMinimumDescription', {
             amount: formatMarketSubunits(registrationFeeDeficit, registrationFeeTopUp.baseAsset),

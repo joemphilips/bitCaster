@@ -66,6 +66,10 @@ function assertNeverWaitResult(r: never): never {
 interface TopUpOverlayProps {
   /** Minimum base-asset subunits the user must top up — the trade deficit. */
   deficit: number
+  /** Full registration fee for market-creation top-ups. Omit for trade top-ups. */
+  feeSubunits?: number
+  /** Current user balance for market-creation top-ups. Omit for trade top-ups. */
+  balanceSubunits?: number
   baseAsset?: string | null
   minimumDescription?: string
   minimumErrorDescription?: string
@@ -83,6 +87,8 @@ interface TopUpOverlayProps {
  */
 export function TopUpOverlay({
   deficit,
+  feeSubunits,
+  balanceSubunits,
   baseAsset: baseAssetInput,
   minimumDescription,
   minimumErrorDescription,
@@ -97,6 +103,7 @@ export function TopUpOverlay({
   const prefill = Math.max(deficit + bufferSubunits, 1)
   const displayMin = displayInputAmount(deficit, baseAsset)
   const inputStep = displayInputStep(baseAsset)
+  const showFeeSummary = feeSubunits !== undefined && balanceSubunits !== undefined
 
   const [view, setView] = useState<View>('amount')
   const [amount, setAmount] = useState(prefill)
@@ -277,6 +284,29 @@ export function TopUpOverlay({
               sats: formatAmount(deficit, baseAsset),
             })}
         </p>
+
+        {showFeeSummary && (
+          <dl className="mb-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-3 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-slate-500 dark:text-slate-400">{t('topUp.registrationFee')}</dt>
+              <dd className="font-mono font-semibold text-slate-900 dark:text-white">
+                {formatAmount(feeSubunits, baseAsset)}
+              </dd>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <dt className="text-slate-500 dark:text-slate-400">{t('topUp.yourBalance')}</dt>
+              <dd className="font-mono text-slate-700 dark:text-slate-200">
+                {formatAmount(balanceSubunits, baseAsset)}
+              </dd>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-3 border-t border-slate-200 dark:border-slate-700 pt-2">
+              <dt className="font-medium text-slate-700 dark:text-slate-200">{t('topUp.topUpNeeded')}</dt>
+              <dd className="font-mono font-semibold text-[#f7931a]">
+                {formatAmount(deficit, baseAsset)}
+              </dd>
+            </div>
+          </dl>
+        )}
 
         <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">
           {topUpAmountLabel(baseAsset, unitLabel, t)}

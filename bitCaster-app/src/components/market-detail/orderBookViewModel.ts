@@ -13,13 +13,32 @@ export interface OrderBookDepthRow {
 export function buildOrderBookDepthRows(
   orders: Order[],
   side: OrderBookDepthSide,
+  comparisonOrders: Order[] = orders,
 ): OrderBookDepthRow[] {
-  const maxTotal = Math.max(...orders.map((order) => order.total), 0);
+  const maxTotal = Math.max(
+    ...orders.map((order) => order.total),
+    ...comparisonOrders.map((order) => order.total),
+    0,
+  );
   return orders.map((order) => ({
     side,
     order,
     depthPercent: maxTotal > 0 ? Math.round((order.total / maxTotal) * 100) : 0,
   }));
+}
+
+export function computeSpreadMidpoint(orderBook: OrderBook | null | undefined): number | null {
+  const bestBid = orderBook?.bids[0]?.price;
+  const bestAsk = orderBook?.asks[0]?.price;
+  if (
+    typeof bestBid !== "number" ||
+    typeof bestAsk !== "number" ||
+    !Number.isFinite(bestBid) ||
+    !Number.isFinite(bestAsk)
+  ) {
+    return null;
+  }
+  return (bestBid + bestAsk) / 2;
 }
 
 export function deriveExecutableOrderBook(input: {

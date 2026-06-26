@@ -674,6 +674,9 @@
     "title": "ウォレットをチャージ",
     "minimumDesc": "このトレードには最低 {{sats}} 必要です。手数料バッファーを先に入力しています。増やすことはできますが、減らすことはできません。",
     "scoreMinimumDesc": "注文前に Engine Score を補充するため、少なくとも {{sats}} をチャージしてください。",
+    "registrationFee": "登録手数料",
+    "yourBalance": "現在の残高",
+    "topUpNeeded": "必要なチャージ額",
     "amount": "数量",
     "amountSats": "数量 (sats)",
     "requesting": "インボイスをリクエスト中…"

@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { TradingPanel } from '../TradingPanel'
 import type { LimitOrderPreview, TradePreview, YesNoMarketDetail } from '@/types/market-detail'
+import { useState } from 'react'
 
 function makeMarket(
   overrides: Partial<YesNoMarketDetail> = {},
@@ -44,6 +46,41 @@ function makeMarket(
 }
 
 describe('TradingPanel', () => {
+  function StatefulLimitTradingPanel({
+    initialLimitPrice = 40,
+    initialTradeAmount = 2,
+    onLimitPriceChange,
+    onAmountChange,
+  }: {
+    initialLimitPrice?: number
+    initialTradeAmount?: number
+    onLimitPriceChange?: (price: number) => void
+    onAmountChange?: (amount: number) => void
+  }) {
+    const [limitPrice, setLimitPrice] = useState(initialLimitPrice)
+    const [tradeAmount, setTradeAmount] = useState(initialTradeAmount)
+
+    return (
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={tradeAmount}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={limitPrice}
+        onLimitPriceChange={(price) => {
+          setLimitPrice(price)
+          onLimitPriceChange?.(price)
+        }}
+        onAmountChange={(amount) => {
+          setTradeAmount(amount)
+          onAmountChange?.(amount)
+        }}
+      />
+    )
+  }
+
   it('uses a share input and only shows market price plus expected cost', () => {
     const tradePreview: TradePreview = {
       amount: 50,
@@ -290,27 +327,99 @@ describe('TradingPanel', () => {
     expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('2.25 sats')
   })
 
-  it('keeps the share input as an integer of at least one when editing', () => {
+  it('keeps the share input as an integer of at least one on blur', async () => {
     const onAmountChange = vi.fn()
+    const user = userEvent.setup()
 
     render(
-      <TradingPanel
-        market={makeMarket()}
-        tradeSelection={{ side: 'yes' }}
-        tradeAmount={1}
-        tradePreview={null}
-        tradeSide="buy"
-        orderType="limit"
+      <StatefulLimitTradingPanel
+        initialTradeAmount={1}
         onAmountChange={onAmountChange}
-        onTradeConfirm={vi.fn()}
       />,
     )
 
-    fireEvent.change(screen.getByTestId('trade-amount-input'), {
-      target: { value: '50.8' },
-    })
+    const amountInput = screen.getByTestId('trade-amount-input') as HTMLInputElement
+    await user.clear(amountInput)
+    await user.type(amountInput, '50.8')
 
-    expect(onAmountChange).toHaveBeenCalledWith(50)
+    expect(amountInput).toHaveValue(50.8)
+
+    fireEvent.blur(amountInput)
+
+    expect(onAmountChange).toHaveBeenCalledWith(51)
+    expect(amountInput).toHaveValue(51)
+  })
+
+  it('allows the limit price to be cleared and replaced before committing on blur', async () => {
+    const onLimitPriceChange = vi.fn()
+    const user = userEvent.setup()
+
+    render(<StatefulLimitTradingPanel initialLimitPrice={40} onLimitPriceChange={onLimitPriceChange} />)
+
+    const priceInput = screen.getByTestId('limit-price-input') as HTMLInputElement
+    await user.clear(priceInput)
+
+    expect(priceInput).toHaveValue(null)
+    expect(onLimitPriceChange).not.toHaveBeenCalled()
+
+    await user.type(priceInput, '75')
+    expect(priceInput).toHaveValue(75)
+    expect(onLimitPriceChange).not.toHaveBeenCalled()
+
+    fireEvent.blur(priceInput)
+
+    expect(onLimitPriceChange).toHaveBeenCalledWith(75)
+    expect(priceInput).toHaveValue(75)
+  })
+
+  it('clamps the limit price to the market tick range on blur', async () => {
+    const onLimitPriceChange = vi.fn()
+    const user = userEvent.setup()
+
+    render(<StatefulLimitTradingPanel initialLimitPrice={40} onLimitPriceChange={onLimitPriceChange} />)
+
+    const priceInput = screen.getByTestId('limit-price-input') as HTMLInputElement
+    await user.clear(priceInput)
+    await user.type(priceInput, '5000')
+    fireEvent.blur(priceInput)
+
+    expect(onLimitPriceChange).toHaveBeenCalledWith(999)
+    expect(priceInput).toHaveValue(999)
+  })
+
+  it('restores the previous valid limit price when the field is empty on blur', async () => {
+    const onLimitPriceChange = vi.fn()
+    const user = userEvent.setup()
+
+    render(<StatefulLimitTradingPanel initialLimitPrice={40} onLimitPriceChange={onLimitPriceChange} />)
+
+    const priceInput = screen.getByTestId('limit-price-input') as HTMLInputElement
+    await user.clear(priceInput)
+
+    expect(priceInput).toHaveValue(null)
+
+    fireEvent.blur(priceInput)
+
+    expect(onLimitPriceChange).not.toHaveBeenCalled()
+    expect(priceInput).toHaveValue(40)
+  })
+
+  it('allows the share amount to be cleared and restores zero on empty blur', async () => {
+    const onAmountChange = vi.fn()
+    const user = userEvent.setup()
+
+    render(<StatefulLimitTradingPanel initialTradeAmount={2} onAmountChange={onAmountChange} />)
+
+    const amountInput = screen.getByTestId('trade-amount-input') as HTMLInputElement
+    await user.clear(amountInput)
+
+    expect(amountInput).toHaveValue(null)
+    expect(onAmountChange).not.toHaveBeenCalled()
+
+    fireEvent.blur(amountInput)
+
+    expect(onAmountChange).toHaveBeenCalledWith(0)
+    expect(amountInput).toHaveValue(null)
   })
 
   it('respects price ticks for D=100 and D=1000', () => {

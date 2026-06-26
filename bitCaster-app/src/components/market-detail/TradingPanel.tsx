@@ -436,6 +436,31 @@ function LimitPriceInput({
   disabled?: boolean
 }) {
   const { t } = useTranslation()
+  const [priceText, setPriceText] = useState(String(limitPrice))
+  const maxPrice = Math.max(1, divisibility - 1)
+
+  useEffect(() => {
+    setPriceText(String(limitPrice))
+  }, [limitPrice])
+
+  const handlePriceBlur = () => {
+    const trimmed = priceText.trim()
+    if (trimmed === '') {
+      setPriceText(String(limitPrice))
+      return
+    }
+
+    const parsed = Number(trimmed)
+    if (!Number.isFinite(parsed)) {
+      setPriceText(String(limitPrice))
+      return
+    }
+
+    const clamped = Math.min(maxPrice, Math.max(1, Math.round(parsed)))
+    onLimitPriceChange?.(clamped)
+    setPriceText(String(clamped))
+  }
+
   return (
     <div className="mb-4">
       <label className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-2 block">
@@ -446,13 +471,11 @@ function LimitPriceInput({
           data-testid="limit-price-input"
           type="number"
           disabled={disabled}
-          value={limitPrice}
-          onChange={(e) => {
-            const val = Math.min(divisibility - 1, Math.max(1, Number(e.target.value)))
-            onLimitPriceChange?.(val)
-          }}
+          value={priceText}
+          onChange={(e) => setPriceText(e.target.value)}
+          onBlur={handlePriceBlur}
           min={1}
-          max={divisibility - 1}
+          max={maxPrice}
           className="w-full pr-14 pl-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-mono text-sm">
@@ -537,6 +560,7 @@ export function TradingPanel({
   const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
   const shareCountLabel = (shares: number) =>
     t('trade.shareCount', { count: shares.toLocaleString() })
+  const [tradeAmountText, setTradeAmountText] = useState(tradeAmount > 0 ? String(tradeAmount) : '')
   const userHoldingShares =
     userHoldings == null ? null : Math.floor(userHoldings / divisibility)
   const tradingDisabled = disabled
@@ -546,18 +570,28 @@ export function TradingPanel({
     tradeAmount > 0 &&
     tradePreview?.hasExecutableLiquidity === false
 
-  const handleShareAmountChange = (raw: number) => {
-    if (!Number.isFinite(raw) || raw <= 0) {
-      onAmountChange?.(0)
-      return
-    }
-    onAmountChange?.(Math.floor(raw))
-  }
+  useEffect(() => {
+    setTradeAmountText(tradeAmount > 0 ? String(tradeAmount) : '')
+  }, [tradeAmount])
 
   const handleShareAmountBlur = () => {
-    if (tradeAmount > 0) {
-      onAmountChange?.(Math.max(1, Math.round(tradeAmount)))
+    const trimmed = tradeAmountText.trim()
+    if (trimmed === '') {
+      onAmountChange?.(0)
+      setTradeAmountText('')
+      return
     }
+
+    const parsed = Number(trimmed)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      onAmountChange?.(0)
+      setTradeAmountText('')
+      return
+    }
+
+    const rounded = Math.max(1, Math.round(parsed))
+    onAmountChange?.(rounded)
+    setTradeAmountText(String(rounded))
   }
 
   // Build confirm button text
@@ -651,10 +685,8 @@ export function TradingPanel({
               data-testid="trade-amount-input"
               type="number"
               disabled={tradingDisabled}
-              value={tradeAmount || ''}
-              onChange={(e) =>
-                handleShareAmountChange(Number(e.target.value))
-              }
+              value={tradeAmountText}
+              onChange={(e) => setTradeAmountText(e.target.value)}
               onBlur={handleShareAmountBlur}
               step={1}
               min={1}

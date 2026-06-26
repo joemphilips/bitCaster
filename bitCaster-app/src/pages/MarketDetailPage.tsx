@@ -60,6 +60,10 @@ import {
 } from "@/lib/outcomeSets";
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
 import {
+  defaultLimitPriceForDivisibility,
+  useMarketPrice,
+} from "@/hooks/useMarketPrice";
+import {
   joinMarket,
   leaveMarket,
   onMarketRejoined,
@@ -101,6 +105,8 @@ import type {
   RelatedMarket,
   Trade,
 } from "@/types/market-detail";
+
+export { defaultLimitPriceForDivisibility };
 
 type TopUpStage = "closed" | "modal" | "overlay";
 type TopUpReason =
@@ -218,10 +224,6 @@ export function decideTradeCollateralGate(input: {
     return { kind: "top-up", balance: input.balance, required };
   }
   return { kind: "proceed", balance: input.balance, required };
-}
-
-export function defaultLimitPriceForDivisibility(divisibility?: number | null, baseAsset?: string | null): number {
-  return Math.max(1, Math.floor(normalizeMarketDivisibility(divisibility, baseAsset) / 2));
 }
 
 export function resolveTradeOrderBooks(
@@ -1011,6 +1013,7 @@ export function MarketDetailPage() {
   const [limitPrice, setLimitPrice] = useState(
     defaultLimitPriceForDivisibility,
   );
+  const [priceManuallyEdited, setPriceManuallyEdited] = useState(false);
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
     message: string;
@@ -1305,9 +1308,44 @@ export function MarketDetailPage() {
   }, [walletReady]);
 
   const marketDivisibility = normalizeMarketDivisibility(market?.divisibility, marketBaseAsset);
+  const priceOutcomeSetId = useMemo(() => {
+    if (!market) return null;
+    if (tradeSelection) {
+      return (
+        resolveOutcomeSets(market, tradeSelection)?.selectedOutcomeSetId ??
+        primaryOutcomeSetId(market)
+      );
+    }
+    return primaryOutcomeSetId(market);
+  }, [market, tradeSelection]);
+  const priceOrderBook = useMemo(() => {
+    if (!market || !priceOutcomeSetId) return null;
+    const primary = primaryOutcomeSetId(market);
+    return (
+      market.outcomeOrderBooks?.[priceOutcomeSetId] ??
+      (priceOutcomeSetId === primary ? market.orderBook : null)
+    );
+  }, [market, priceOutcomeSetId]);
+  const marketPrice = useMarketPrice({
+    market,
+    marketId: market && priceOutcomeSetId ? outcomeSetMarketId(market.id, priceOutcomeSetId) : null,
+    outcomeSetId: priceOutcomeSetId,
+    orderBook: priceOrderBook,
+  });
+
   useEffect(() => {
-    setLimitPrice(defaultLimitPriceForDivisibility(marketDivisibility));
-  }, [market?.id, marketDivisibility]);
+    setPriceManuallyEdited(false);
+  }, [market?.id]);
+
+  useEffect(() => {
+    if (priceManuallyEdited) return;
+    setLimitPrice(marketPrice.defaultOrderPrice);
+  }, [marketPrice.defaultOrderPrice, priceManuallyEdited]);
+
+  const handleLimitPriceChange = useCallback((price: number) => {
+    setPriceManuallyEdited(true);
+    setLimitPrice(price);
+  }, []);
 
   const marketBalanceGatePrice =
     tradeSide === "sell" ? 1 : marketDivisibility - 1;
@@ -1960,7 +1998,7 @@ export function MarketDetailPage() {
         onOrderTypeChange={setOrderType}
         preflightSplit={preflightSplit}
         onPreflightSplitChange={setPreflightSplit}
-        onLimitPriceChange={setLimitPrice}
+        onLimitPriceChange={handleLimitPriceChange}
         onRelatedMarketClick={handleRelatedMarketClick}
         walletReady={walletReady}
         onWalletRequired={handleWalletRequired}

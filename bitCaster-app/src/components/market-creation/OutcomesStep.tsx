@@ -126,7 +126,7 @@ export function OutcomesStep({
   onOutcomeLabelChange,
   onOutcomeProbabilityChange,
   // onNormalizeProbabilities kept in props interface for callers; not rendered
-  // because probabilities are now auto-normalized on every edit.
+  // because add/remove handlers perform the only automatic redistribution.
   onLoBoundChange,
   onHiBoundChange,
   onPrecisionChange,

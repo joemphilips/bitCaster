@@ -22,7 +22,7 @@ vi.mock('@/lib/nip17', () => ({
 }))
 
 // Must import after mocks are declared
-const { normalizeProbabilities, rebalanceAfterEdit } = await import('../useMarketCreationState')
+const { normalizeProbabilities } = await import('../useMarketCreationState')
 
 function makeOutcomes(probabilities: number[]): WizardOutcome[] {
   return probabilities.map((p, i) => ({
@@ -111,71 +111,5 @@ describe('normalizeProbabilities', () => {
     expect(result[0].id).toBe('yes')
     expect(result[0].label).toBe('Yes')
     expect(result[0].description).toBe('desc-yes')
-  })
-})
-
-describe('rebalanceAfterEdit', () => {
-  it('holds the edited outcome value and redistributes the remainder proportionally', () => {
-    // yes=70 (edited), no was 30 — no should become 30
-    const outcomes: WizardOutcome[] = [
-      { id: 'yes', label: 'Yes', description: '', probability: 70 },
-      { id: 'no', label: 'No', description: '', probability: 30 },
-    ]
-    const result = rebalanceAfterEdit(outcomes, 'yes')
-    expect(result.find((o) => o.id === 'yes')!.probability).toBe(70)
-    expect(result.find((o) => o.id === 'no')!.probability).toBe(30)
-    expect(result.reduce((s, o) => s + (o.probability ?? 0), 0)).toBe(100)
-  })
-
-  it('clamps edited value at 100 and zeroes the rest', () => {
-    const outcomes: WizardOutcome[] = [
-      { id: 'a', label: 'A', description: '', probability: 120 },
-      { id: 'b', label: 'B', description: '', probability: 40 },
-    ]
-    const result = rebalanceAfterEdit(outcomes, 'a')
-    expect(result.find((o) => o.id === 'a')!.probability).toBe(100)
-    expect(result.find((o) => o.id === 'b')!.probability).toBe(0)
-    expect(result.reduce((s, o) => s + (o.probability ?? 0), 0)).toBe(100)
-  })
-
-  it('spreads remainder equally when all other outcomes have zero weight', () => {
-    const outcomes: WizardOutcome[] = [
-      { id: 'a', label: 'A', description: '', probability: 40 },
-      { id: 'b', label: 'B', description: '', probability: 0 },
-      { id: 'c', label: 'C', description: '', probability: 0 },
-    ]
-    const result = rebalanceAfterEdit(outcomes, 'a')
-    expect(result.find((o) => o.id === 'a')!.probability).toBe(40)
-    const bVal = result.find((o) => o.id === 'b')!.probability!
-    const cVal = result.find((o) => o.id === 'c')!.probability!
-    expect(bVal + cVal).toBe(60)
-    expect(Math.abs(bVal - cVal)).toBeLessThanOrEqual(1)
-    expect(result.reduce((s, o) => s + (o.probability ?? 0), 0)).toBe(100)
-  })
-
-  it('distributes remainder across three outcomes proportionally', () => {
-    const outcomes: WizardOutcome[] = [
-      { id: 'a', label: 'A', description: '', probability: 50 },
-      { id: 'b', label: 'B', description: '', probability: 25 },
-      { id: 'c', label: 'C', description: '', probability: 25 },
-    ]
-    const result = rebalanceAfterEdit(outcomes, 'a')
-    expect(result.find((o) => o.id === 'a')!.probability).toBe(50)
-    expect(result.find((o) => o.id === 'b')!.probability).toBe(25)
-    expect(result.find((o) => o.id === 'c')!.probability).toBe(25)
-    expect(result.reduce((s, o) => s + (o.probability ?? 0), 0)).toBe(100)
-  })
-
-  it('sum is always exactly 100 after any edit', () => {
-    for (const editedValue of [0, 1, 33, 50, 66, 99, 100]) {
-      const outcomes: WizardOutcome[] = [
-        { id: 'a', label: 'A', description: '', probability: editedValue },
-        { id: 'b', label: 'B', description: '', probability: 50 },
-        { id: 'c', label: 'C', description: '', probability: 50 },
-      ]
-      const result = rebalanceAfterEdit(outcomes, 'a')
-      expect(result.reduce((s, o) => s + (o.probability ?? 0), 0)).toBe(100)
-      expect(result.find((o) => o.id === 'a')!.probability).toBe(Math.min(editedValue, 100))
-    }
   })
 })

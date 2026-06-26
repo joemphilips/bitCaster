@@ -143,4 +143,15 @@ describe('OutcomesStep auto-normalize — probability edit', () => {
     )
     expect(screen.queryByRole('button', { name: /normalize/i })).not.toBeInTheDocument()
   })
+
+  it('disables Next when categorical probabilities do not sum to 100', () => {
+    render(
+      <OutcomesStep
+        outcomeType="categorical"
+        outcomes={makeOutcomes([70, 50])}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: /next/i })).toBeDisabled()
+  })
 })

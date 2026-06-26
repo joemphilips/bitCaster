@@ -73,6 +73,26 @@ describe('TopUpOverlay', () => {
     expect(screen.getByText('$150.00')).toBeInTheDocument()
   })
 
+  it('shows the full registration fee separately from the top-up deficit', () => {
+    render(
+      <TopUpOverlay
+        deficit={1_500}
+        balanceSubunits={1_000}
+        feeSubunits={2_500}
+        baseAsset="usd"
+        onCancel={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Registration fee')).toBeInTheDocument()
+    expect(screen.getByText('$25.00')).toBeInTheDocument()
+    expect(screen.getByText('Your balance')).toBeInTheDocument()
+    expect(screen.getByText('$10.00')).toBeInTheDocument()
+    expect(screen.getByText('Top-up needed')).toBeInTheDocument()
+    expect(screen.getByText('$15.00')).toBeInTheDocument()
+  })
+
   it('converts sat-market deficit subunits to sats for the top-up invoice', async () => {
     const user = userEvent.setup()
 

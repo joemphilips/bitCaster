@@ -39,13 +39,16 @@ export function OrderBookSection({
   const activeOrderBook = selectedOutcomeId && outcomeOrderBooks
     ? outcomeOrderBooks[selectedOutcomeId] || orderBook
     : orderBook
-  const depthLimit = Number.isFinite(activeOrderBook.depthLimit) && activeOrderBook.depthLimit && activeOrderBook.depthLimit > 0
-    ? Math.floor(activeOrderBook.depthLimit)
-    : 5
-  const visibleBids = activeOrderBook.bids.slice(0, depthLimit)
-  const visibleAsks = activeOrderBook.asks.slice(0, depthLimit)
-  const bidRows = buildOrderBookDepthRows(visibleBids, 'bid')
-  const askRows = buildOrderBookDepthRows(visibleAsks, 'ask')
+  const depthLimit = 5
+  const visibleBids = [...activeOrderBook.bids]
+    .sort((a, b) => b.price - a.price)
+    .slice(0, depthLimit)
+    .reverse()
+  const visibleAsks = [...activeOrderBook.asks]
+    .sort((a, b) => a.price - b.price)
+    .slice(0, depthLimit)
+  const bidRows = buildOrderBookDepthRows(visibleBids, 'bid', visibleAsks)
+  const askRows = buildOrderBookDepthRows(visibleAsks, 'ask', visibleBids)
   const bidPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleBids.length) })
   const askPlaceholders = Array.from({ length: Math.max(0, depthLimit - visibleAsks.length) })
 
@@ -82,17 +85,25 @@ export function OrderBookSection({
           <span>{t('orderBook.amount')}</span>
         </div>
 
-        <div className="space-y-1">
-          <div className="flex items-center gap-1 px-3 pt-1">
-            <div className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-              {t('orderBook.bids')}
-            </span>
-          </div>
-          {activeOrderBook.bids.length === 0 ? (
-            <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noBids')}</p>
-          ) : (
-            <>
+        <div className="min-h-[400px] space-y-1">
+          <div className="flex min-h-[165px] flex-col justify-end space-y-1">
+            <div className="flex items-center gap-1 px-3 pt-1">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                {t('orderBook.bids')}
+              </span>
+            </div>
+            {activeOrderBook.bids.length === 0 && (
+              <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noBids')}</p>
+            )}
+            {bidPlaceholders.map((_, i) => (
+              <div
+                key={`bid-row-placeholder-${i}`}
+                data-testid="order-book-bid-placeholder"
+                aria-hidden="true"
+                className="h-7"
+              />
+            ))}
             {bidRows.map((row, i) => (
               <div
                 key={`bid-row-${i}`}
@@ -118,16 +129,7 @@ export function OrderBookSection({
                 </div>
               </div>
             ))}
-            {bidPlaceholders.map((_, i) => (
-              <div
-                key={`bid-row-placeholder-${i}`}
-                data-testid="order-book-bid-placeholder"
-                aria-hidden="true"
-                className="h-7"
-              />
-            ))}
-            </>
-          )}
+          </div>
 
           <div className="flex items-center justify-center gap-2 rounded-lg bg-white/80 dark:bg-slate-800/70 px-3 py-2">
             <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('orderBook.spread')}</span>
@@ -136,16 +138,16 @@ export function OrderBookSection({
             </span>
           </div>
 
-          <div className="flex items-center gap-1 px-3 pt-1">
-            <div className="w-2 h-2 rounded-full bg-red-500" />
-            <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-              {t('orderBook.asks')}
-            </span>
-          </div>
-          {activeOrderBook.asks.length === 0 ? (
-            <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noAsks')}</p>
-          ) : (
-            <>
+          <div className="flex min-h-[165px] flex-col space-y-1">
+            <div className="flex items-center gap-1 px-3 pt-1">
+              <div className="w-2 h-2 rounded-full bg-red-500" />
+              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                {t('orderBook.asks')}
+              </span>
+            </div>
+            {activeOrderBook.asks.length === 0 && (
+              <p className="text-xs text-slate-400 dark:text-slate-500 px-3 py-2">{t('orderBook.noAsks')}</p>
+            )}
             {askRows.map((row, i) => (
               <div
                 key={`ask-row-${i}`}
@@ -179,8 +181,7 @@ export function OrderBookSection({
                 className="h-7"
               />
             ))}
-            </>
-          )}
+          </div>
         </div>
       </div>
     </div>

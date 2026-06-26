@@ -24,7 +24,7 @@ describe('OrderBookSection', () => {
     expect(screen.queryByText(/sats/)).not.toBeInTheDocument()
   })
 
-  it('renders only the server depthLimit rows per side while preserving stable bounded sides', () => {
+  it('renders the fixed five-row display depth while preserving stable bounded sides', () => {
     render(
       <OrderBookSection
         divisibility={100}
@@ -47,14 +47,49 @@ describe('OrderBookSection', () => {
       />,
     )
 
-    expect(screen.getAllByTestId('order-book-bid-row')).toHaveLength(3)
-    expect(screen.getAllByTestId('order-book-ask-row')).toHaveLength(3)
+    expect(screen.getAllByTestId('order-book-bid-row')).toHaveLength(4)
+    expect(screen.getAllByTestId('order-book-ask-row')).toHaveLength(4)
     expect(screen.getByText('90.00%')).toBeInTheDocument()
     expect(screen.getByText('93.00%')).toBeInTheDocument()
-    expect(screen.queryByText('60.00%')).not.toBeInTheDocument()
-    expect(screen.queryByText('94.00%')).not.toBeInTheDocument()
-    expect(screen.queryAllByTestId('order-book-bid-placeholder')).toHaveLength(0)
-    expect(screen.queryAllByTestId('order-book-ask-placeholder')).toHaveLength(0)
+    expect(screen.getByText('60.00%')).toBeInTheDocument()
+    expect(screen.getByText('94.00%')).toBeInTheDocument()
+    expect(screen.queryAllByTestId('order-book-bid-placeholder')).toHaveLength(1)
+    expect(screen.queryAllByTestId('order-book-ask-placeholder')).toHaveLength(1)
+  })
+
+  it('renders bids bottom-up with the best bid closest to the spread and asks top-down', () => {
+    render(
+      <OrderBookSection
+        divisibility={100}
+        orderBook={{
+          bids: [
+            { price: 70, amount: 100, total: 100 },
+            { price: 90, amount: 100, total: 200 },
+            { price: 80, amount: 100, total: 300 },
+          ],
+          asks: [
+            { price: 95, amount: 100, total: 100 },
+            { price: 91, amount: 100, total: 200 },
+            { price: 93, amount: 100, total: 300 },
+          ],
+          spread: 1,
+        }}
+      />,
+    )
+
+    const bidRows = screen.getAllByTestId('order-book-bid-row')
+    expect(bidRows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining('70.00%'),
+      expect.stringContaining('80.00%'),
+      expect.stringContaining('90.00%'),
+    ])
+
+    const askRows = screen.getAllByTestId('order-book-ask-row')
+    expect(askRows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining('91.00%'),
+      expect.stringContaining('93.00%'),
+      expect.stringContaining('95.00%'),
+    ])
   })
 
   it('combines price, amount, and cumulative proportional depth into each compact row', () => {
@@ -79,16 +114,16 @@ describe('OrderBookSection', () => {
     const bidRows = screen.getAllByTestId('order-book-bid-row')
     const askRows = screen.getAllByTestId('order-book-ask-row')
 
-    expect(bidRows[0]).toHaveAttribute('data-depth-percent', '33')
-    expect(bidRows[0]).toHaveAttribute('data-depth-side', 'bid')
-    expect(bidRows[0]).toHaveTextContent('52.00%')
-    expect(bidRows[0]).toHaveTextContent('0.1 sats')
-    expect(screen.getAllByTestId('order-book-bid-depth-fill')[0]).toHaveStyle({ width: '33%' })
+    expect(bidRows[1]).toHaveAttribute('data-depth-percent', '33')
+    expect(bidRows[1]).toHaveAttribute('data-depth-side', 'bid')
+    expect(bidRows[1]).toHaveTextContent('52.00%')
+    expect(bidRows[1]).toHaveTextContent('0.1 sats')
+    expect(screen.getAllByTestId('order-book-bid-depth-fill')[1]).toHaveStyle({ width: '33%' })
 
-    expect(askRows[0]).toHaveAttribute('data-depth-percent', '33')
+    expect(askRows[0]).toHaveAttribute('data-depth-percent', '10')
     expect(askRows[0]).toHaveAttribute('data-depth-side', 'ask')
     expect(askRows[0]).toHaveTextContent('53.00%')
     expect(askRows[0]).toHaveTextContent('0.03 sats')
-    expect(screen.getAllByTestId('order-book-ask-depth-fill')[0]).toHaveStyle({ width: '33%' })
+    expect(screen.getAllByTestId('order-book-ask-depth-fill')[0]).toHaveStyle({ width: '10%' })
   })
 })

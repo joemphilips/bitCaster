@@ -107,6 +107,7 @@ vi.mock('@/stores/wallet', () => ({
 // "0% fee" assertion can read the persisted entry. Mocked separately from
 // the store under test so the assertion sees real reads/writes.
 import { useCreatorMarketsStore } from '@/stores/creatorMarkets'
+import type { WizardOutcome } from '@/types/market-creation'
 
 // Stub nip17 so the test does not pull in nostr-tools at module load time.
 // The real derivation is covered in `bitCaster-app/src/lib/__tests__`.
@@ -181,6 +182,69 @@ async function setupDraftForSubmission() {
 
   return result
 }
+
+function setCategoricalOutcomes(outcomes: WizardOutcome[]) {
+  useMarketDraftStore.setState({
+    draft: {
+      ...defaultDraft(),
+      currentStep: 3,
+      stepGetStarted: { outcomeType: 'categorical' },
+      stepOutcomes: {
+        outcomeType: 'categorical',
+        outcomes,
+        baseAsset: 'sat',
+      },
+    },
+    hasSavedDraft: true,
+  })
+}
+
+function makeOutcome(id: string, probability: number): WizardOutcome {
+  return { id, label: id.toUpperCase(), description: '', probability }
+}
+
+describe('useMarketCreationState – categorical outcome probabilities', () => {
+  it('edits one outcome probability without changing the other outcomes', async () => {
+    setCategoricalOutcomes([
+      makeOutcome('a', 60),
+      makeOutcome('b', 30),
+      makeOutcome('c', 10),
+    ])
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+
+    await act(async () => { result.current.onOutcomeProbabilityChange('a', 70) })
+
+    expect(
+      useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
+    ).toEqual([70, 30, 10])
+  })
+
+  it('still redistributes categorical outcomes equally when adding an outcome', async () => {
+    setCategoricalOutcomes([makeOutcome('a', 70), makeOutcome('b', 30)])
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+
+    await act(async () => { result.current.onAddOutcome() })
+
+    expect(
+      useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
+    ).toEqual([34, 33, 33])
+  })
+
+  it('still proportionally rescales categorical outcomes when removing an outcome', async () => {
+    setCategoricalOutcomes([
+      makeOutcome('a', 50),
+      makeOutcome('b', 25),
+      makeOutcome('c', 25),
+    ])
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper })
+
+    await act(async () => { result.current.onRemoveOutcome('a') })
+
+    expect(
+      useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
+    ).toEqual([50, 50])
+  })
+})
 
 describe('useMarketCreationState – onCreateMarket', () => {
   it('uses the mint default keyset policy when registering the condition', async () => {
