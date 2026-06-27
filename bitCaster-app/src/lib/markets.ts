@@ -191,7 +191,15 @@ function probabilityFromLastTradedPrice(
 
 function resolveYesNoCatalogueOdds(
   entry: MarketCatalogueEntry,
+  divisibility: number,
 ): CurrentOdds {
+  // Prefer last traded price (already in the paginated DTO — no N+1 calls)
+  if (Number.isFinite(entry.lastTradedPrice)) {
+    const yes = probabilityFromLastTradedPrice(entry.lastTradedPrice, divisibility) ?? 50;
+    return { yes, no: 100 - yes };
+  }
+
+  // Fall back to creator-specified initial probabilities
   const yesInitial = initialProbabilityForOutcome(entry.initialProbabilities, "Yes");
   const noInitial = initialProbabilityForOutcome(entry.initialProbabilities, "No");
   if (yesInitial != null) return { yes: yesInitial, no: 100 - yesInitial };
@@ -209,7 +217,7 @@ function resolveYesNoDetailOdds(
     return { yes, no: 100 - yes };
   }
 
-  return resolveYesNoCatalogueOdds(entry);
+  return resolveYesNoCatalogueOdds(entry, divisibility);
 }
 
 function initialProbabilityForOutcome(
@@ -280,7 +288,7 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     return {
       ...base,
       type: "yesno",
-      currentOdds: resolveYesNoCatalogueOdds(entry),
+      currentOdds: resolveYesNoCatalogueOdds(entry, divisibility),
     };
   }
 

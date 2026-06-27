@@ -114,17 +114,32 @@ describe("mapCatalogueEntryToMarket", () => {
     }
   });
 
-  it("uses creator initial probabilities for yes/no list odds instead of last traded price", () => {
-    const market = mapCatalogueEntryToMarket({
+  it("prefers last traded price for yes/no list odds, falling back to creator initial probabilities", () => {
+    // With lastTradedPrice present, list odds use it (not initial probabilities)
+    const marketWithTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
       divisibility: 1_000,
       lastTradedPrice: 620,
       initialProbabilities: { Yes: 77, No: 23 },
     });
 
-    expect(market.type).toBe("yesno");
-    if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 77, no: 23 });
+    expect(marketWithTrades.type).toBe("yesno");
+    if (marketWithTrades.type === "yesno") {
+      // lastTradedPrice=620 with D=1000 → 62%
+      expect(marketWithTrades.currentOdds.yes).toBe(62);
+    }
+
+    // Without lastTradedPrice, falls back to initial probabilities
+    const marketNoTrades = mapCatalogueEntryToMarket({
+      ...yesNoEntry,
+      divisibility: 1_000,
+      lastTradedPrice: null,
+      initialProbabilities: { Yes: 77, No: 23 },
+    });
+
+    expect(marketNoTrades.type).toBe("yesno");
+    if (marketNoTrades.type === "yesno") {
+      expect(marketNoTrades.currentOdds).toEqual({ yes: 77, no: 23 });
     }
   });
 
