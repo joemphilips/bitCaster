@@ -2295,6 +2295,7 @@ components:
         - lastSuccessfulRefreshAt
         - baseAsset
         - divisibility
+        - initialProbabilities
       properties:
         conditionId:
           type: string
@@ -2422,6 +2423,18 @@ components:
             price-history price fields use integer numerators against the
             market's `divisibility`; this catalogue summary keeps the legacy
             ratio form for sorting/display compatibility.
+        initialProbabilities:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 99
+          description: >
+            Creator-specified registration-time probability per atomic outcome,
+            expressed as integer percentages that sum to 100. Clients use this
+            as the default market price before any trade has established a live
+            last-traded price.
         categoryTags:
           type: array
           items:

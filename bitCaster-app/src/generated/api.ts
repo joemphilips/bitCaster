@@ -1168,6 +1168,10 @@ export interface components {
             divisibility: number;
             /** @description Most recent execution price as a decimal ratio in `[0, 1]`, null if the market has never traded. Runtime order, fill, orderbook, and price-history price fields use integer numerators against the market's `divisibility`; this catalogue summary keeps the legacy ratio form for sorting/display compatibility. */
             lastTradedPrice?: number | null;
+            /** @description Creator-specified registration-time probability per atomic outcome, expressed as integer percentages that sum to 100. Clients use this as the default market price before any trade has established a live last-traded price. */
+            initialProbabilities: {
+                [key: string]: number;
+            };
             /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
             categoryTags: string[];
             /**

@@ -2414,7 +2414,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
+        public MarketCatalogueEntry(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.Collections.Generic.Dictionary<string, int> @initialProbabilities, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -2434,6 +2434,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
             this.LastTradedPrice = @lastTradedPrice;
+            this.InitialProbabilities = @initialProbabilities;
             this.CategoryTags = @categoryTags;
             this.LastSuccessfulRefreshAt = @lastSuccessfulRefreshAt;
         }
@@ -2561,6 +2562,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("lastTradedPrice")]
         public double? LastTradedPrice { get; }
+
+        /// <summary>
+        /// Creator-specified registration-time probability per atomic outcome, expressed as integer percentages that sum to 100. Clients use this as the default market price before any trade has established a live last-traded price.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("initialProbabilities")]
+        public System.Collections.Generic.Dictionary<string, int> InitialProbabilities { get; }
 
         /// <summary>
         /// Category tags supplied at market registration. Filterable via the `tag` query parameter.

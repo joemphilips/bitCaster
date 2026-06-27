@@ -77,6 +77,23 @@ describe('useMarketPrice', () => {
     expect(result.current.defaultOrderPrice).toBe(50)
   })
 
+  it('uses creator initial probability before any trades exist', () => {
+    const { result } = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          currentOdds: { yes: 50, no: 50 },
+          initialProbabilities: { Yes: 70, No: 30 },
+        }),
+        marketId: 'condition-1-Yes',
+        outcomeSetId: 'Yes',
+        orderBook: emptyBook,
+      }),
+    )
+
+    expect(result.current.currentPrice).toBe(70)
+    expect(result.current.defaultOrderPrice).toBe(70)
+  })
+
   it('updates current price from the latest trade event', () => {
     const { result } = renderHook(() =>
       useMarketPrice({
