@@ -89,19 +89,6 @@ const DEFAULT_PROFILE: UserProfile = {
   registeredDate: new Date().toISOString(),
 }
 
-function detectWalletState(): WalletState {
-  try {
-    const stored = localStorage.getItem('bitcaster-wallet')
-    if (stored) {
-      const parsed = JSON.parse(stored)
-      if (parsed?.state?.setupComplete) return 'ready'
-    }
-  } catch {
-    // ignore parse errors
-  }
-  return 'none'
-}
-
 function loadProfile(): UserProfile {
   try {
     const stored = localStorage.getItem('bitcaster-profile')
@@ -180,7 +167,8 @@ export function usePortfolioState(): PortfolioState & {
   setPositionsTab: (tab: 'active' | 'closed') => void
   saveProfile: (profile: UserProfile) => void
 } {
-  const [walletState] = useState<WalletState>(detectWalletState)
+  const walletSetupComplete = useWalletStore((s) => s.setupComplete)
+  const walletState: WalletState = walletSetupComplete ? 'ready' : 'none'
   const [baseCurrency] = useState<BaseCurrency>('BTC')
   const [selectedTimeRange, setSelectedTimeRange] = useState<PLTimeSelector>('ALL')
   const [localProfile, setLocalProfile] = useState<UserProfile>(loadProfile)

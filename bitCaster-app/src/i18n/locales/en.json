@@ -58,7 +58,14 @@
   },
   "wallet": {
     "getStarted": "Get Started",
-    "startTrading": "Start Trading"
+    "startTrading": "Start Trading",
+    "setupTitle": "Wallet Setup",
+    "setupDesc": "Create a new local Cashu wallet or import an existing seed phrase.",
+    "setupFailed": "Could not set up wallet. Please try again.",
+    "createNewWallet": "Create New Wallet",
+    "importExistingWallet": "Import Existing Wallet",
+    "enterSeedPhrase": "Enter your seed phrase",
+    "restoreWallet": "Restore Wallet"
   },
   "auth": {
     "nostrRequiredTitle": "Authentication required",

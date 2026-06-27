@@ -58,7 +58,14 @@
   },
   "wallet": {
     "getStarted": "はじめる",
-    "startTrading": "トレードを開始"
+    "startTrading": "トレードを開始",
+    "setupTitle": "ウォレット設定",
+    "setupDesc": "新しいローカル Cashu ウォレットを作成するか、既存のシードフレーズをインポートします。",
+    "setupFailed": "ウォレットを設定できませんでした。もう一度お試しください。",
+    "createNewWallet": "新しいウォレットを作成",
+    "importExistingWallet": "既存のウォレットをインポート",
+    "enterSeedPhrase": "シードフレーズを入力",
+    "restoreWallet": "ウォレットを復元"
   },
   "auth": {
     "nostrRequiredTitle": "認証が必要です",

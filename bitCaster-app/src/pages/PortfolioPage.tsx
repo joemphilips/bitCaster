@@ -3,9 +3,11 @@ import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Portfolio } from "@/components/portfolio";
 import { DepositWithdrawOverlay } from "@/components/deposit-withdraw/DepositWithdrawOverlay";
+import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
 import { usePortfolioState } from "./usePortfolioState";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
+import { useWalletStore } from "@/stores/wallet";
 import {
   getConditionCtfProofs,
   getOutcomeProofs,
@@ -39,11 +41,53 @@ export function PortfolioPage() {
   const [claimingPositionId, setClaimingPositionId] = useState<string | null>(
     null,
   );
+  const [showWalletSetup, setShowWalletSetup] = useState(false);
+  const [walletSetupCreating, setWalletSetupCreating] = useState(false);
+  const [walletSetupError, setWalletSetupError] = useState<string | null>(null);
   const addActivity = useActivityLogStore((s) => s.addActivity);
 
   const handleGetStarted = useCallback(() => {
-    navigate("/markets");
-  }, [navigate]);
+    setWalletSetupError(null);
+    setShowWalletSetup(true);
+  }, []);
+
+  const handleCreateNewWallet = useCallback(async () => {
+    setWalletSetupCreating(true);
+    setWalletSetupError(null);
+    try {
+      await useWalletStore.getState().ensureImplicitWallet();
+      setShowWalletSetup(false);
+    } catch (error) {
+      setWalletSetupError(
+        error instanceof Error ? error.message : t("wallet.setupFailed"),
+      );
+    } finally {
+      setWalletSetupCreating(false);
+    }
+  }, [t]);
+
+  const handleImportSeed = useCallback(
+    async (words: string[]) => {
+      setWalletSetupCreating(true);
+      setWalletSetupError(null);
+      try {
+        const result = useWalletStore.getState().recoverFromMnemonic(words);
+        if (!result.valid) {
+          setWalletSetupError(result.error ?? t("seed.invalidMnemonic"));
+          return;
+        }
+        await useWalletStore.getState().ensureImplicitWallet();
+        setShowWalletSetup(false);
+      } catch (error) {
+        setWalletSetupError(
+          error instanceof Error ? error.message : t("wallet.setupFailed"),
+        );
+      } finally {
+        setWalletSetupCreating(false);
+      }
+    },
+    [t],
+  );
 
   const handleAvatarUpload = useCallback(
     (file: File) => {
@@ -280,6 +324,15 @@ export function PortfolioPage() {
         <DepositWithdrawOverlay
           mode={overlayMode}
           onClose={() => setOverlayMode(null)}
+        />
+      )}
+      {showWalletSetup && (
+        <WalletSetupModal
+          isCreating={walletSetupCreating}
+          error={walletSetupError}
+          onClose={() => setShowWalletSetup(false)}
+          onCreateNew={handleCreateNewWallet}
+          onImportSeed={handleImportSeed}
         />
       )}
     </>
