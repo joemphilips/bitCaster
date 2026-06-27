@@ -63,6 +63,7 @@ export interface StoredOutputData {
 export type CtfProofOperationKind =
   | "ctf-split"
   | "ctf-merge"
+  | "ctf-redeem"
   | "regular-split";
 export type ProofOperationState = "prepared" | "completed" | "failed";
 
@@ -76,6 +77,7 @@ export interface CtfProofOperationRecord {
   metadata: Record<string, unknown>;
   resultProofs?: Record<string, Proof[]>;
   lastError?: string | null;
+  failureCode?: number | undefined;
   createdAt: number;
   updatedAt: number;
 }
@@ -99,6 +101,11 @@ export interface CtfProofOperationStore {
   markProofOperationCompleted(
     operationId: string,
     resultProofs: Record<string, Proof[]>,
+  ): Promise<CtfProofOperationRecord>;
+  markProofOperationFailed?(
+    operationId: string,
+    message: string,
+    failureCode?: number,
   ): Promise<CtfProofOperationRecord>;
 }
 

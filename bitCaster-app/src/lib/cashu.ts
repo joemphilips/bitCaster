@@ -9,10 +9,7 @@
  */
 
 import {
-  Amount,
-  CheckStateEnum,
   Mint as CashuMint,
-  OutputData,
   Wallet as CashuWallet,
   getEncodedTokenV4,
   getDecodedToken,
@@ -21,9 +18,6 @@ import {
   type MintQuoteResponse,
   type MeltQuoteResponse,
   type PartialMintQuoteResponse,
-  type OutputDataLike,
-  type SerializedBlindedMessage,
-  type SerializedBlindedSignature,
   type Token,
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
@@ -36,18 +30,16 @@ import {
   markProofOperationFailed,
   prepareProofOperation,
   removeProofs,
-  type ProofOperationRecord,
-  type StoredOutputData,
   type StoredProof,
 } from "@/stores/proof-db";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
-  deserializeOutputGroups,
-  serializeOutputDataArray,
+  type CtfProofOperationRecord,
+  type CtfProofOperationStore,
 } from "@bitcaster/client-sdk/ctfSplit";
 import {
-  isLosingLegError,
-  ORACLE_NOT_ATTESTED_OUTCOME_CODE,
+  buildKeysetRedeemOperationId,
+  redeemOutcomeLegWithOperation,
 } from "@bitcaster/client-sdk/ctfRedeem";
 import {
   DEFAULT_MARKET_BASE_ASSET,
@@ -979,60 +971,77 @@ async function redeemKeysetLeg(
 ): Promise<Proof[]> {
   const { conditionId, keysetId, proofs, mintUrl, witnessJson, baseAsset } =
     input;
-
-  const legAmount = proofs.reduce(
-    (sum, proof) => sum + amountToNumber(proof.amount),
-    0,
-  );
   const operationId = buildKeysetRedeemOperationId(conditionId, keysetId, proofs);
-  const existing = await getProofOperation(operationId);
-  if (existing) {
-    return resumeCtfRedeem(existing);
-  }
-
-  const outputData = await prepareRegularRedeemOutputs(
+  const existing = (await getProofOperation(operationId)) as CtfProofOperationRecord | null;
+  const unit = defaultCollateralUnit(baseAsset);
+  const wallet = await getWallet(mintUrl, baseAsset);
+  const result = await redeemOutcomeLegWithOperation({
     mintUrl,
-    legAmount,
-    baseAsset,
-  );
-  await prepareProofOperation({
     operationId,
-    kind: "ctf-redeem",
-    mintUrl,
-    inputs: proofs,
-    outputs: { regular: serializeOutputDataArray(outputData) },
-    metadata: {
-      conditionId,
-      keysetId,
-      amountSats: legAmount,
-      baseAsset,
-      unit: defaultCollateralUnit(baseAsset),
+    wallet,
+    proofOperationStore: ctfRedeemProofOperationStore(),
+    conditionId,
+    outcome: keysetId,
+    outcomeKeysetId: keysetId,
+    unit,
+    oracleWitness: witnessJson,
+    proofs,
+    regularKeyset: await getFrontendRegularKeyset(wallet, baseAsset),
+    onLosingLeg: async (inputs) => {
+      await removeProofs(inputs.map((proof) => proof.secret));
     },
   });
 
-  try {
-    const settled = await redeemOutcomeProofsAtMint(
-      mintUrl,
-      withOracleWitness(proofs, witnessJson),
-      outputData,
-      baseAsset,
-    );
-    await completeCtfRedeem(operationId, mintUrl, proofs, settled, baseAsset);
-    return settled;
-  } catch (error) {
-    if (isLosingLegError(error)) {
-      // Composite-label storage hid this losing leg behind a winning-looking
-      // label. The mint resolved it terminally — discard locally, no retry,
-      // no user-facing error.
+  if (result.losing) {
+    if (existing?.state === "failed") {
       await removeProofs(proofs.map((proof) => proof.secret));
-      await markProofOperationFailed(operationId, error);
-      return [];
     }
-    // Transient failure on a winning leg — leave the op-id `prepared` (do NOT
-    // mark it failed: `resumeCtfRedeem` treats `failed` as terminal) so a
-    // re-run resumes from it; rethrow so the caller can surface/retry.
-    throw error;
+    return [];
   }
+  if (existing?.state !== "completed") {
+    await addProofs(
+      result.proofs.map((proof) => ({ ...proof, mintUrl, baseAsset, unit })),
+    );
+    await removeProofs(proofs.map((proof) => proof.secret));
+  }
+  return result.proofs;
+}
+
+async function getFrontendRegularKeyset(
+  wallet: CashuWallet,
+  baseAsset: MarketBaseAsset,
+): Promise<MintKeys> {
+  const response = await wallet.mint.getKeys();
+  const keyset =
+    response.keysets.find(
+      (candidate) => candidate.unit === baseAsset && candidate.active !== false,
+    ) ??
+    response.keysets.find((candidate) => candidate.unit === baseAsset) ??
+    response.keysets[0];
+  if (!keyset) throw new Error("Mint did not return a regular keyset");
+  return keyset;
+}
+
+function ctfRedeemProofOperationStore(): CtfProofOperationStore {
+  return {
+    getProofOperation: async (operationId) =>
+      (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
+    prepareProofOperation: async (input) =>
+      (await prepareProofOperation(input)) as CtfProofOperationRecord,
+    markProofOperationCompleted: async (operationId, resultProofs) =>
+      (await markProofOperationCompleted(
+        operationId,
+        resultProofs,
+      )) as CtfProofOperationRecord,
+    markProofOperationFailed: async (operationId, message, failureCode) => {
+      const error = new Error(message) as Error & { code?: number };
+      error.code = failureCode;
+      return (await markProofOperationFailed(
+        operationId,
+        error,
+      )) as CtfProofOperationRecord;
+    },
+  };
 }
 
 export async function discardCtfPosition(position: MarketPosition): Promise<number> {
@@ -1046,8 +1055,6 @@ interface ConditionAttestationResponse {
   attestedOutcome: string;
   oracleWitness: unknown;
 }
-
-type RedeemOutputData = OutputDataLike;
 
 function validateRedeemPosition(position: MarketPosition): void {
   if (!/^[0-9a-fA-F]{64}$/.test(position.conditionId)) {
@@ -1070,50 +1077,6 @@ function validateRedeemPosition(position: MarketPosition): void {
       `CTF redeem proof total ${proofTotal} sats does not match position amount ${position.amountSats}`,
     );
   }
-}
-
-/**
- * Deterministic restore-ledger op id for one keyset leg.
- *
- * Positions carry no tradeId, so we key on `(conditionId, keyset_id,
- * sorted-secrets)` — stable across re-runs so a transient winning-leg failure
- * resumes from the same op rather than minting fresh outputs.
- */
-function buildKeysetRedeemOperationId(
-  conditionId: string,
-  keysetId: string,
-  proofs: Proof[],
-): string {
-  const secrets = proofs
-    .map((proof) => proof.secret)
-    .sort()
-    .join("|");
-  return ["ctf-redeem", conditionId.toLowerCase(), keysetId, secrets].join(":");
-}
-
-async function prepareRegularRedeemOutputs(
-  mintUrl: string,
-  amountSats: number,
-  baseAsset: MarketBaseAsset,
-): Promise<RedeemOutputData[]> {
-  const wallet = await getWallet(mintUrl, baseAsset);
-  const keyset = await getActiveRegularKeyset(wallet, baseAsset);
-  return OutputData.createRandomData(Amount.from(amountSats), keyset);
-}
-
-async function getActiveRegularKeyset(
-  wallet: CashuWallet,
-  baseAsset: MarketBaseAsset,
-): Promise<MintKeys> {
-  const response = await wallet.mint.getKeys();
-  const keyset =
-    response.keysets.find(
-      (candidate) => candidate.unit === baseAsset && candidate.active !== false,
-    ) ??
-    response.keysets.find((candidate) => candidate.unit === baseAsset) ??
-    response.keysets[0];
-  if (!keyset) throw new Error("Mint did not return a regular keyset");
-  return keyset;
 }
 
 interface ResolvedConditionAttestation {
@@ -1151,205 +1114,6 @@ async function fetchConditionAttestation(
     witnessJson: JSON.stringify(body.oracleWitness),
     attestedOutcome: body.attestedOutcome ?? "",
   };
-}
-
-async function fetchConditionOracleWitness(
-  conditionId: string,
-): Promise<string> {
-  const { witnessJson } = await fetchConditionAttestation(conditionId);
-  return witnessJson;
-}
-
-async function redeemOutcomeProofsAtMint(
-  mintUrl: string,
-  inputs: Proof[],
-  outputs: RedeemOutputData[],
-  baseAsset: MarketBaseAsset,
-): Promise<Proof[]> {
-  const wallet = await getWallet(mintUrl, baseAsset);
-  return wallet.redeemOutcomeProofs({ inputs, outputs });
-}
-
-function withOracleWitness(proofs: Proof[], witnessJson: string): Proof[] {
-  return proofs.map((proof) => ({ ...proof, witness: witnessJson }));
-}
-
-function buildProofsFromRedeemResponse(
-  outputData: RedeemOutputData[],
-  signatures: SerializedBlindedSignature[],
-  keyset: MintKeys,
-): Proof[] {
-  if (signatures.length !== outputData.length) {
-    throw new Error(
-      `Mint returned ${signatures.length} redeem signatures, expected ${outputData.length}`,
-    );
-  }
-  return outputData.map((output, index) => {
-    const signature = signatures[index];
-    validateRedeemSignature(output.blindedMessage, signature);
-    return output.toProof(signature, keyset);
-  });
-}
-
-function validateRedeemSignature(
-  output: SerializedBlindedMessage,
-  signature: SerializedBlindedSignature,
-): void {
-  if (
-    signature.id !== output.id ||
-    amountToNumber(signature.amount) !== amountToNumber(output.amount)
-  ) {
-    throw new Error("Mint returned a redeem signature for the wrong output");
-  }
-}
-
-async function resumeCtfRedeem(entry: ProofOperationRecord): Promise<Proof[]> {
-  if (entry.kind !== "ctf-redeem") {
-    throw new Error(`proof operation ${entry.operationId} is not a CTF redeem`);
-  }
-  if (entry.state === "completed") {
-    return structuredClone(entry.resultProofs?.regular ?? []);
-  }
-  if (entry.state === "failed") {
-    if (
-      entry.failureCode !== undefined &&
-      entry.failureCode !== ORACLE_NOT_ATTESTED_OUTCOME_CODE
-    ) {
-      throw new Error(
-        `CTF redeem ${entry.operationId} failed with non-losing failure code ${entry.failureCode}; refusing to condemn proofs`,
-      );
-    }
-    await removeProofs(entry.inputs.map((proof) => proof.secret));
-    return [];
-  }
-
-  const metadata = entry.metadata as {
-    conditionId?: string;
-    amountSats?: number;
-    baseAsset?: string | null;
-    unit?: string | null;
-  };
-  const baseAsset = normalizeMarketBaseAsset(metadata.baseAsset);
-  const unit = requireCashuProofUnit(metadata.unit ?? defaultCollateralUnit(baseAsset));
-  const wallet = await getWallet(entry.mintUrl, baseAsset);
-  if (!wallet.checkProofsStates) {
-    throw new Error(
-      "Cashu wallet adapter does not support proof-state recovery checks",
-    );
-  }
-  const states = await wallet.checkProofsStates(
-    entry.inputs.map(({ id, secret }) => ({ id, secret })),
-  );
-  if (
-    states.length > 0 &&
-    states.every((state) => state.state === CheckStateEnum.SPENT)
-  ) {
-    const restored = await restoreRedeemOutputs(
-      entry.mintUrl,
-      entry.outputs.regular ?? [],
-    );
-    await completeCtfRedeem(
-      entry.operationId,
-      entry.mintUrl,
-      entry.inputs,
-      restored,
-      baseAsset,
-      unit,
-    );
-    return restored;
-  }
-  if (
-    states.length > 0 &&
-    states.every((state) => state.state === CheckStateEnum.UNSPENT)
-  ) {
-    if (!metadata.conditionId || !metadata.amountSats) {
-      throw new Error(
-        `proof operation ${entry.operationId} is missing CTF redeem metadata`,
-      );
-    }
-    const outputData =
-      deserializeOutputGroups({ regular: entry.outputs.regular ?? [] })
-        .regular ?? [];
-    const witness = await fetchConditionOracleWitness(metadata.conditionId);
-    let settled: Proof[];
-    try {
-      settled = await redeemOutcomeProofsAtMint(
-        entry.mintUrl,
-        withOracleWitness(entry.inputs, witness),
-        outputData,
-        baseAsset,
-      );
-    } catch (error) {
-      if (isLosingLegError(error)) {
-        await removeProofs(entry.inputs.map((proof) => proof.secret));
-        await markProofOperationFailed(entry.operationId, error);
-        return [];
-      }
-      throw error;
-    }
-    await completeCtfRedeem(
-      entry.operationId,
-      entry.mintUrl,
-      entry.inputs,
-      settled,
-      baseAsset,
-      unit,
-    );
-    return settled;
-  }
-
-  throw new Error(
-    `Proof operation ${entry.operationId} is still pending at the mint`,
-  );
-}
-
-async function restoreRedeemOutputs(
-  mintUrl: string,
-  storedOutputs: StoredOutputData[],
-): Promise<Proof[]> {
-  const outputData =
-    deserializeOutputGroups({ regular: storedOutputs }).regular ?? [];
-  if (outputData.length === 0) return [];
-  const mint = new CashuMint(mintUrl);
-  const response = await mint.restore({
-    outputs: outputData.map((output) => output.blindedMessage),
-  });
-  if (response.signatures.length !== outputData.length) {
-    throw new Error(
-      "Mint restore response had mismatched output/signature counts",
-    );
-  }
-  const keyset = await getKeyset(mintUrl, outputData[0].blindedMessage.id);
-  return buildProofsFromRedeemResponse(outputData, response.signatures, keyset);
-}
-
-async function getKeyset(
-  mintUrl: string,
-  keysetId?: string,
-): Promise<MintKeys> {
-  if (!keysetId)
-    throw new Error("Missing keyset id for restored redeem output");
-  const mint = new CashuMint(mintUrl);
-  const response = await mint.getKeys(keysetId);
-  const keyset = response.keysets.find(
-    (candidate) => candidate.id === keysetId,
-  );
-  if (!keyset)
-    throw new Error(`Mint did not return keys for keyset ${keysetId}`);
-  return keyset;
-}
-
-async function completeCtfRedeem(
-  operationId: string,
-  mintUrl: string,
-  inputs: Proof[],
-  regularProofs: Proof[],
-  baseAsset: MarketBaseAsset,
-  unit: CashuProofUnit = defaultCollateralUnit(baseAsset),
-): Promise<void> {
-  await addProofs(regularProofs.map((proof) => ({ ...proof, mintUrl, baseAsset, unit })));
-  await removeProofs(inputs.map((proof) => proof.secret));
-  await markProofOperationCompleted(operationId, { regular: regularProofs });
 }
 
 function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit {
