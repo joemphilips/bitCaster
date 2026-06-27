@@ -56,13 +56,13 @@ This means the server holds as little user information as possible. There is no 
 
 In return, like any other cryptocurrency wallet, you are responsible for managing your own keys. Back up your 12-word mnemonic and keep it safe.
 
-When you start trading before completing setup, bitCaster can create a local wallet and a Nostr signing key for you. These are separate secrets. Back up both the wallet recovery phrase and the Nostr secret key shown in the app. If you already use a Nostr account, connect it instead of generating a new one.
+When you first open the portfolio page or try to trade, bitCaster asks you to set up a wallet. You can create a new wallet (auto-generated locally in your browser) or import an existing wallet using your 12-word recovery phrase. A Nostr signing key is also created or connected at this point. These are separate secrets. Back up both the wallet recovery phrase and the Nostr secret key shown in the app. If you already use a Nostr account, connect it instead of generating a new one.
 
 ## Market detail pages
 
 The market chart shows recorded trades for each primitive outcome. If only one outcome has traded, only that line is shown; bitCaster does not invent prices for outcomes that have not traded.
 
-The order book combines price, cumulative depth, and visual thickness into one row per price level. Longer bars mean more cumulative liquidity available at that price or better. This makes the visible book easier to scan without switching between separate depth and price displays.
+The order book shows asks (sell orders) above the spread and bids (buy orders) below it, with the best prices closest to the spread. Each row combines price, cumulative depth, and visual thickness. Longer bars mean more cumulative liquidity available at that price or better, normalized across both sides so you can compare bid and ask depth at a glance.
 
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
 
