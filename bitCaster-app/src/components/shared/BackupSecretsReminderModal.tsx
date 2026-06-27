@@ -72,3 +72,51 @@ export function BackupSecretsReminderModal({
     </div>
   )
 }
+
+interface FundedActionBackupPromptModalProps {
+  onGoToBackup: () => void
+  onCancel: () => void
+}
+
+export function FundedActionBackupPromptModal({
+  onGoToBackup,
+  onCancel,
+}: FundedActionBackupPromptModalProps) {
+  const { t } = useTranslation()
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={onCancel} />
+      <div className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-800">
+        <div className="mb-5 flex items-start gap-3">
+          <div className="rounded-full bg-amber-100 p-2 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+            <Shield className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
+              {t('backupSecrets.fundedActionTitle')}
+            </h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {t('backupSecrets.fundedActionDescription')}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel}
+            className="flex-1 rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700"
+          >
+            {t('backupSecrets.cancel')}
+          </button>
+          <button
+            onClick={onGoToBackup}
+            className="flex-1 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+          >
+            {t('backupSecrets.goToBackup')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -106,6 +106,7 @@ describe('useMarketPrice', () => {
 
     act(() => {
       tradeHandlers.get('condition-1-Yes')?.({
+        tradeId: 'trade-1',
         executionPrice: 63,
         amountSubunits: 10,
         side: 'buy',
@@ -202,29 +203,6 @@ describe('useMarketPrice', () => {
     expect(result.current.currentPrice).toBe(1_250)
   })
 
-  it('falls back to midpoint pricing for unsupported 2D selections', () => {
-    const { result } = renderHook(() =>
-      useMarketPrice({
-        market: makeMarket({
-          type: 'twodimensional',
-          divisibility: 10_000,
-          baseMarketId: 'base',
-          baseMarketTitle: 'Base',
-          baseMarketType: 'yesno',
-          secondaryType: 'yesno',
-          secondaryQuestion: 'Secondary?',
-          cellPriceHistories: {},
-          cellOrderBooks: {},
-        } as Partial<MarketDetail>),
-        marketId: 'condition-1-Yes|No',
-        outcomeSetId: 'Yes|No',
-        orderBook: emptyBook,
-      }),
-    )
-
-    expect(result.current.currentPrice).toBe(5_000)
-  })
-
   it('uses current price as the order entry default when there is no spread', () => {
     const { result } = renderHook(() =>
       useMarketPrice({
@@ -243,12 +221,12 @@ describe('useMarketPrice', () => {
   })
 
   it("does not override the user's manual price edit in a page-style consumer", () => {
-    const bookWithoutSpread = {
+    const bookWithoutSpread: OrderBook = {
       bids: [{ price: 40, amount: 1, total: 1 }],
       asks: [],
       spread: 0,
     }
-    const bookWithSpread = {
+    const bookWithSpread: OrderBook = {
       bids: [{ price: 40, amount: 1, total: 1 }],
       asks: [{ price: 70, amount: 1, total: 1 }],
       spread: 30,

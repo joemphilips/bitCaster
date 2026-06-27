@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Loader2, X } from 'lucide-react'
 
+import { validateWord } from '@/lib/bip39'
+
 interface WalletSetupModalProps {
   isCreating?: boolean
   error?: string | null
@@ -21,7 +23,21 @@ export function WalletSetupModal({
   const [showImport, setShowImport] = useState(false)
   const [seedPhrase, setSeedPhrase] = useState('')
 
-  const words = seedPhrase.trim().split(/\s+/).filter(Boolean)
+  const words = seedPhrase
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.toLowerCase())
+  const hasSeedPhraseInput = words.length > 0
+  const wordCountIsValid = words.length === 12 || words.length === 24
+  const invalidWord = wordCountIsValid ? words.find((word) => !validateWord(word)) : undefined
+  const seedPhraseError =
+    hasSeedPhraseInput && !wordCountIsValid
+      ? t('wallet.seedphraseWordCountError')
+      : invalidWord
+        ? t('wallet.invalidSeedphraseWord', { word: invalidWord })
+        : null
+  const seedPhraseIsValid = hasSeedPhraseInput && !seedPhraseError
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
@@ -81,13 +97,24 @@ export function WalletSetupModal({
                 value={seedPhrase}
                 onChange={(event) => setSeedPhrase(event.target.value)}
                 rows={4}
-                className="w-full resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                aria-invalid={seedPhraseError ? 'true' : 'false'}
+                aria-describedby={seedPhraseError ? 'wallet-seed-phrase-error' : undefined}
+                className={`w-full resize-y rounded-lg border bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 dark:bg-slate-800 dark:text-white ${
+                  seedPhraseError
+                    ? 'border-rose-500 focus:border-rose-500 focus:ring-rose-500/20 dark:border-rose-500'
+                    : 'border-slate-300 focus:border-blue-500 focus:ring-blue-500/20 dark:border-slate-700'
+                }`}
                 placeholder={t('wallet.enterSeedPhrase')}
               />
+              {seedPhraseError && (
+                <p id="wallet-seed-phrase-error" className="text-sm text-rose-600 dark:text-rose-300">
+                  {seedPhraseError}
+                </p>
+              )}
               <button
                 type="button"
                 onClick={() => onImportSeed(words)}
-                disabled={isCreating || words.length === 0}
+                disabled={isCreating || !seedPhraseIsValid}
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isCreating && showImport && <Loader2 className="h-4 w-4 animate-spin" />}

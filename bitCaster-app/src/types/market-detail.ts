@@ -6,8 +6,6 @@
 import type {
   CurrentOdds,
   Outcome,
-  YesNoCompositeOdds,
-  CategoricalYesNoCompositeOdds,
   CategoryTag,
 } from './market'
 import type { MarketState } from '@/hooks/useMarketState'
@@ -93,7 +91,6 @@ export interface Trade {
   userDisplayName: string // Anonymized or partial name
   side: 'yes' | 'no'
   outcomeId?: string // For categorical markets
-  cellId?: string // For 2D markets (e.g., "yes-yes", "outcome1-no")
   amount: number // in sats
   price: number // 0-100
   timestamp: string
@@ -189,35 +186,7 @@ export interface NumericMarketDetail extends BaseMarketDetail {
   attestedValue?: number // Set when resolved — the oracle-attested value
 }
 
-export interface TwoDimensionalMarketDetail extends BaseMarketDetail {
-  type: 'twodimensional'
-  baseMarketId: string
-  baseMarketTitle: string
-  baseMarketType: 'yesno' | 'categorical'
-  secondaryType: 'yesno' | 'categorical'
-  secondaryQuestion: string
-  baseShortLabel?: string    // e.g. "BTC 100K"
-  secondaryShortLabel?: string  // e.g. "China-Taiwan"
-  compositeOdds?: YesNoCompositeOdds
-  categoricalCompositeOdds?: CategoricalYesNoCompositeOdds
-  baseOutcomes?: Outcome[]
-  secondaryOutcomes?: Outcome[]
-  // Price history and order book per cell
-  cellPriceHistories: Record<string, PriceHistory>
-  cellOrderBooks: Record<string, OrderBook>
-}
-
-export type MarketDetail = YesNoMarketDetail | CategoricalMarketDetail | NumericMarketDetail | TwoDimensionalMarketDetail
-
-// =============================================================================
-// Fixed Dimension Types (for 2D conditional probability chart)
-// =============================================================================
-
-export type FixedDimension = {
-  dimension: 'base' | 'secondary'
-  value: string
-  label: string
-}
+export type MarketDetail = YesNoMarketDetail | CategoricalMarketDetail | NumericMarketDetail
 
 // =============================================================================
 // Trade Side & Order Type
@@ -248,7 +217,6 @@ export interface LimitOrderPreview {
 export interface TradeSelection {
   side: 'yes' | 'no' | 'hi' | 'lo'
   outcomeId?: string // For categorical
-  cellId?: string // For 2D (e.g., "yes-yes", "outcome1-no")
   tradeSide?: TradeSide
   orderType?: OrderType
   limitPrice?: number
@@ -330,18 +298,6 @@ export interface MarketDetailProps {
 
   /** Called when user clicks on a related market */
   onRelatedMarketClick?: (marketId: string) => void
-
-  /** Called when user clicks back to base market (2D markets only) */
-  onBaseMarketClick?: (marketId: string) => void
-
-  /** Called when user selects cell for chart view (2D markets) */
-  onChartCellChange?: (cellId: string) => void
-
-  /** Called when user fixes a dimension for conditional probability view (2D markets) */
-  onFixDimension?: (dim: FixedDimension | null) => void
-
-  /** Currently fixed dimension for conditional probability chart */
-  fixedDimension?: FixedDimension | null
 
   /** Current buy/sell trade side */
   tradeSide: TradeSide

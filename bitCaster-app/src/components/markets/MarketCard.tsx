@@ -8,7 +8,6 @@ import type {
   Market,
   YesNoMarket,
   CategoricalMarket,
-  TwoDimensionalMarket,
   Outcome,
 } from '@/types/market'
 
@@ -165,198 +164,6 @@ function CategoricalOutcomes({
   )
 }
 
-function TwoDimensionalYesNoGrid({
-  market,
-  onCellClick,
-}: {
-  market: TwoDimensionalMarket
-  onCellClick: (baseOutcome: 'yes' | 'no', secondaryOutcome: 'yes' | 'no') => void
-}) {
-  if (!market.compositeOdds) return null
-
-  const cells = [
-    { base: 'yes' as const, secondary: 'yes' as const, label: 'Yes/Yes', odds: market.compositeOdds.yesYes },
-    { base: 'yes' as const, secondary: 'no' as const, label: 'Yes/No', odds: market.compositeOdds.yesNo },
-    { base: 'no' as const, secondary: 'yes' as const, label: 'No/Yes', odds: market.compositeOdds.noYes },
-    { base: 'no' as const, secondary: 'no' as const, label: 'No/No', odds: market.compositeOdds.noNo },
-  ]
-
-  const [hoveredCell, setHoveredCell] = useState<string | null>(null)
-
-  const getCellStyle = (base: 'yes' | 'no', secondary: 'yes' | 'no', isHovered: boolean) => {
-    const intensity = isHovered ? 0.35 : 0.2
-
-    if (base === 'yes' && secondary === 'yes') {
-      return {
-        className: 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/40',
-        style: {},
-      }
-    }
-    if (base === 'no' && secondary === 'no') {
-      return {
-        className: 'bg-rose-500/15 hover:bg-rose-500/25 border-rose-500/40',
-        style: {},
-      }
-    }
-    if (base === 'yes' && secondary === 'no') {
-      return {
-        className: 'border-slate-300 dark:border-slate-600',
-        style: {
-          background: `linear-gradient(135deg, rgba(16, 185, 129, ${intensity}) 50%, rgba(244, 63, 94, ${intensity}) 50%)`,
-        },
-      }
-    }
-    if (base === 'no' && secondary === 'yes') {
-      return {
-        className: 'border-slate-300 dark:border-slate-600',
-        style: {
-          background: `linear-gradient(135deg, rgba(244, 63, 94, ${intensity}) 50%, rgba(16, 185, 129, ${intensity}) 50%)`,
-        },
-      }
-    }
-    return { className: '', style: {} }
-  }
-
-  return (
-    <div className="flex-1 flex flex-col">
-      <div className="grid grid-cols-2 gap-1.5 flex-1">
-        {cells.map((cell) => {
-          const isHovered = hoveredCell === cell.label
-          const cellStyle = getCellStyle(cell.base, cell.secondary, isHovered)
-
-          return (
-            <button
-              key={cell.label}
-              onClick={(e) => {
-                e.stopPropagation()
-                onCellClick(cell.base, cell.secondary)
-              }}
-              onMouseEnter={() => setHoveredCell(cell.label)}
-              onMouseLeave={() => setHoveredCell(null)}
-              className={`flex flex-col items-center justify-center p-2 rounded-lg border transition-all hover:scale-[1.02] active:scale-[0.98] ${cellStyle.className}`}
-              style={cellStyle.style}
-            >
-              <span className="text-[10px] font-medium text-slate-600 dark:text-slate-400">
-                {cell.label}
-              </span>
-              <span className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                {formatPricePercentage(cell.odds, 100)}
-              </span>
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function TwoDimensionalCategoricalGrid({
-  market,
-  onCellClick,
-}: {
-  market: TwoDimensionalMarket
-  onCellClick: (baseOutcomeId: string, baseOutcomeLabel: string, secondaryOutcome: 'yes' | 'no') => void
-}) {
-  if (!market.categoricalCompositeOdds || !market.baseOutcomes) return null
-
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [canScrollUp, setCanScrollUp] = useState(false)
-  const [canScrollDown, setCanScrollDown] = useState(false)
-
-  const checkScroll = () => {
-    if (scrollRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
-      setCanScrollUp(scrollTop > 2)
-      setCanScrollDown(scrollTop < scrollHeight - clientHeight - 2)
-    }
-  }
-
-  useEffect(() => {
-    checkScroll()
-    const resizeObserver = new ResizeObserver(checkScroll)
-    if (scrollRef.current) {
-      resizeObserver.observe(scrollRef.current)
-    }
-    return () => resizeObserver.disconnect()
-  }, [market.baseOutcomes])
-
-  const scroll = (direction: 'up' | 'down', e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (scrollRef.current) {
-      const scrollAmount = 60
-      scrollRef.current.scrollBy({
-        top: direction === 'up' ? -scrollAmount : scrollAmount,
-        behavior: 'smooth',
-      })
-    }
-  }
-
-  return (
-    <div className="relative group/outcomes flex-1 flex flex-col min-h-0">
-      {canScrollUp && (
-        <button
-          onClick={(e) => scroll('up', e)}
-          className="absolute left-1/2 -translate-x-1/2 -top-2 z-10 w-7 h-7 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 opacity-0 group-hover/outcomes:opacity-100 transition-opacity border border-slate-200 dark:border-slate-700"
-        >
-          <ChevronUp className="w-4 h-4" />
-        </button>
-      )}
-
-      <div
-        ref={scrollRef}
-        onScroll={checkScroll}
-        className="flex flex-col gap-1 overflow-y-auto flex-1 scrollbar-hide -mx-1 px-1 py-1"
-        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-      >
-        {market.baseOutcomes.map((outcome) => {
-          const odds = market.categoricalCompositeOdds?.[outcome.id]
-          if (!odds) return null
-
-          return (
-            <div
-              key={outcome.id}
-              className="flex-shrink-0 bg-slate-50 dark:bg-slate-800/60 rounded-lg p-2 border border-slate-200 dark:border-slate-700"
-            >
-              <div className="flex items-center gap-2">
-                <div className="text-[10px] font-medium text-slate-600 dark:text-slate-400 truncate flex-1 min-w-0">
-                  {outcome.label}
-                </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onCellClick(outcome.id, outcome.label, 'yes')
-                  }}
-                  className="px-2 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 rounded text-emerald-600 dark:text-emerald-400 font-bold text-[10px] transition-all"
-                >
-                  Y {formatPricePercentage(odds.yes, 100)}
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onCellClick(outcome.id, outcome.label, 'no')
-                  }}
-                  className="px-2 py-1 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 rounded text-rose-600 dark:text-rose-400 font-bold text-[10px] transition-all"
-                >
-                  N {formatPricePercentage(odds.no, 100)}
-                </button>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      {canScrollDown && (
-        <button
-          onClick={(e) => scroll('down', e)}
-          className="absolute left-1/2 -translate-x-1/2 -bottom-2 z-10 w-7 h-7 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 opacity-0 group-hover/outcomes:opacity-100 transition-opacity border border-slate-200 dark:border-slate-700"
-        >
-          <ChevronDown className="w-4 h-4" />
-        </button>
-      )}
-    </div>
-  )
-}
-
 function SecondaryMarketsExpander({
   secondaryMarketInfos,
   isExpanded,
@@ -478,53 +285,11 @@ export function MarketCard({
           onNoClick={() => onViewMarket?.(market.id)}
         />
       )
-    } else if (market.type === 'twodimensional') {
-      const twoDMarket = market as TwoDimensionalMarket
-
-      if (twoDMarket.baseMarketType === 'yesno' && twoDMarket.secondaryType === 'yesno') {
-        return (
-          <TwoDimensionalYesNoGrid
-            market={twoDMarket}
-            onCellClick={() => onViewMarket?.(market.id)}
-          />
-        )
-      }
-
-      if (twoDMarket.baseMarketType === 'categorical' && twoDMarket.secondaryType === 'yesno') {
-        return (
-          <TwoDimensionalCategoricalGrid
-            market={twoDMarket}
-            onCellClick={() => onViewMarket?.(market.id)}
-          />
-        )
-      }
-
-      return (
-        <div className="flex-1 flex flex-col justify-center">
-          <div className="bg-gradient-to-br from-purple-50 to-blue-50 dark:from-purple-950/30 dark:to-blue-950/30 rounded-lg p-4 border border-purple-200 dark:border-purple-800 text-center">
-            <div className="text-xs text-slate-600 dark:text-slate-400 mb-2">
-              {t('market.complex2D')}
-            </div>
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                onViewMarket?.(market.id)
-              }}
-              className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-md"
-            >
-              {t('market.viewAndTrade')}
-            </button>
-          </div>
-        </div>
-      )
     }
   }
 
   const secondaryCount = secondaryMarketInfos?.length || 0
   const expandedHeight = isSecondaryExpanded ? 280 + (secondaryCount * 44) : 280
-
-  const is2DMarket = market.type === 'twodimensional'
-  const twoDMarket = is2DMarket ? (market as TwoDimensionalMarket) : null
 
   return (
     <div
@@ -535,32 +300,16 @@ export function MarketCard({
       <div className="flex items-start gap-3 p-4 pb-2 flex-shrink-0">
         <MarketThumbnail market={market} />
         <div className="flex-1 min-w-0">
-          {twoDMarket ? (
-            <>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 line-clamp-1">
-                {twoDMarket.baseMarketTitle}
-              </h3>
-              <div className="text-[10px] text-blue-600 dark:text-blue-400 font-medium mt-0.5">
-                and...
-              </div>
-              <h4 className="text-xs font-medium text-slate-700 dark:text-slate-300 line-clamp-1 mt-0.5">
-                {twoDMarket.secondaryQuestion}
-              </h4>
-            </>
-          ) : (
-            <>
-              <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 line-clamp-2">
-                {market.title}
-              </h3>
-              {secondaryMarketInfos && secondaryMarketInfos.length > 0 && (
-                <SecondaryMarketsExpander
-                  secondaryMarketInfos={secondaryMarketInfos}
-                  isExpanded={isSecondaryExpanded}
-                  onToggle={handleToggleSecondary}
-                  onViewSecondary={handleViewSecondary}
-                />
-              )}
-            </>
+          <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 line-clamp-2">
+            {market.title}
+          </h3>
+          {secondaryMarketInfos && secondaryMarketInfos.length > 0 && (
+            <SecondaryMarketsExpander
+              secondaryMarketInfos={secondaryMarketInfos}
+              isExpanded={isSecondaryExpanded}
+              onToggle={handleToggleSecondary}
+              onViewSecondary={handleViewSecondary}
+            />
           )}
         </div>
       </div>

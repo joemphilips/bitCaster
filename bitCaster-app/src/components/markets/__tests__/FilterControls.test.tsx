@@ -27,7 +27,7 @@ describe('FilterControls', () => {
     expect(screen.getByText('Filters:')).toBeInTheDocument()
     expect(screen.getByText('Yes/No')).toBeInTheDocument()
     expect(screen.getByText('Categorical')).toBeInTheDocument()
-    expect(screen.getByText('Two-Dimensional')).toBeInTheDocument()
+    expect(screen.queryByText('Two-Dimensional')).not.toBeInTheDocument()
   })
 
   it('calls onMarketTypeChange when a type is toggled', async () => {

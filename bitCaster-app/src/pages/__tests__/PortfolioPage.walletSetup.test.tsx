@@ -4,10 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const ensureImplicitWallet = vi.fn()
 const recoverFromMnemonic = vi.fn()
+const navigate = vi.fn()
 let mockWalletState: 'none' | 'ready' = 'none'
+let mockWalletBackupState: 'none' | 'needs_backup' | 'confirmed' = 'none'
 
 vi.mock('react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigate,
 }))
 
 vi.mock('@/components/deposit-withdraw/DepositWithdrawOverlay', () => ({
@@ -39,6 +41,7 @@ vi.mock('@/stores/wallet', () => ({
     getState: () => ({
       ensureImplicitWallet,
       recoverFromMnemonic,
+      walletBackupState: mockWalletBackupState,
     }),
   },
 }))
@@ -72,6 +75,8 @@ import { PortfolioPage } from '../PortfolioPage'
 describe('PortfolioPage wallet setup', () => {
   beforeEach(() => {
     mockWalletState = 'none'
+    mockWalletBackupState = 'none'
+    navigate.mockReset()
     ensureImplicitWallet.mockReset()
     recoverFromMnemonic.mockReset()
   })
@@ -110,7 +115,7 @@ describe('PortfolioPage wallet setup', () => {
     await userEvent.click(screen.getByRole('button', { name: /get started/i }))
     await userEvent.click(screen.getByRole('button', { name: /import existing wallet/i }))
 
-    expect(screen.getByLabelText(/enter your seed phrase/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/enter your seedphrase/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /restore wallet/i })).toBeInTheDocument()
   })
 
@@ -125,7 +130,7 @@ describe('PortfolioPage wallet setup', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /get started/i }))
     await userEvent.click(screen.getByRole('button', { name: /import existing wallet/i }))
-    await userEvent.type(screen.getByLabelText(/enter your seed phrase/i), words)
+    await userEvent.type(screen.getByLabelText(/enter your seedphrase/i), words)
     await userEvent.click(screen.getByRole('button', { name: /restore wallet/i }))
 
     expect(recoverFromMnemonic).toHaveBeenCalledWith(words.split(' '))
@@ -133,5 +138,22 @@ describe('PortfolioPage wallet setup', () => {
       expect(screen.queryByRole('heading', { name: /wallet setup/i })).not.toBeInTheDocument()
     })
     expect(screen.getByRole('button', { name: /deposit/i })).toBeInTheDocument()
+  })
+
+  it('prompts for wallet backup instead of opening deposit for an unbacked wallet', async () => {
+    mockWalletState = 'ready'
+    mockWalletBackupState = 'needs_backup'
+
+    render(<PortfolioPage />)
+
+    await userEvent.click(screen.getByRole('button', { name: /deposit/i }))
+
+    expect(screen.getByRole('heading', { name: /back up your wallet first/i })).toBeInTheDocument()
+    expect(
+      screen.getByText(/you need to back up your seedphrase before making trades or deposits/i),
+    ).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /go to backup/i }))
+    expect(navigate).toHaveBeenCalledWith('/settings?category=cashu')
   })
 })

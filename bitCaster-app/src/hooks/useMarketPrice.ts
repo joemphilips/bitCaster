@@ -70,12 +70,6 @@ function deriveInitialCurrentPrice(
 ): number {
   if (!market) return defaultLimitPriceForDivisibility(divisibility)
 
-  if (market.type === 'twodimensional') {
-    // 2D outcome-set pricing is not yet fully supported by the order ticket;
-    // use a neutral midpoint rather than borrowing an unrelated primary leg.
-    return defaultLimitPriceForDivisibility(divisibility, market.baseAsset)
-  }
-
   const historyPrice = latestHistoryNumerator(market, outcomeSetId, divisibility)
   if (historyPrice != null) return historyPrice
 

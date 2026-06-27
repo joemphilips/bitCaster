@@ -70,6 +70,7 @@ const yesNoEntry: MarketCatalogueEntry = {
   baseAsset: "sat",
   divisibility: 1_000,
   lastTradedPrice: 0.62,
+  initialProbabilities: {},
   categoryTags: ["crypto"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };
@@ -90,6 +91,7 @@ const categoricalEntry: MarketCatalogueEntry = {
   baseAsset: "sat",
   divisibility: 1_000,
   lastTradedPrice: null,
+  initialProbabilities: {},
   categoryTags: ["politics"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };

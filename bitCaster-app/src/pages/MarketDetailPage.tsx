@@ -12,7 +12,10 @@ import { MarketDetail } from "@/components/market-detail";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
 import { NostrAuthRequiredModal } from "@/components/shared/NostrAuthRequiredModal";
 import { NostrAccountChooserModal } from "@/components/shared/NostrAccountChooserModal";
-import { BackupSecretsReminderModal } from "@/components/shared/BackupSecretsReminderModal";
+import {
+  BackupSecretsReminderModal,
+  FundedActionBackupPromptModal,
+} from "@/components/shared/BackupSecretsReminderModal";
 import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
 import { useShareMarket } from "@/components/market-detail/useShareMarket";
 import {
@@ -106,8 +109,15 @@ import type {
   RelatedMarket,
   Trade,
 } from "@/types/market-detail";
+import type { SecretBackupState } from "@/types/settings";
 
 export { defaultLimitPriceForDivisibility };
+
+export function shouldPromptForFundedActionBackup(
+  walletBackupState: SecretBackupState,
+): boolean {
+  return walletBackupState === "needs_backup";
+}
 
 type TopUpStage = "closed" | "modal" | "overlay";
 type TopUpReason =
@@ -122,8 +132,6 @@ type DerivedMarketDetailFields =
   | "orderBook"
   | "outcomeOrderBooks"
   | "outcomePriceHistories"
-  | "cellPriceHistories"
-  | "cellOrderBooks"
   | "comments"
   | "recentTrades"
   | "relatedMarkets";
@@ -427,8 +435,6 @@ function marketCoreFromDetail(detail: MarketDetailType): MarketDetailCore {
   delete core.orderBook;
   delete core.outcomeOrderBooks;
   delete core.outcomePriceHistories;
-  delete core.cellPriceHistories;
-  delete core.cellOrderBooks;
   delete core.comments;
   delete core.recentTrades;
   delete core.relatedMarkets;
@@ -945,15 +951,6 @@ export function composeMarketDetail(
     };
   }
 
-  if (core.type === "twodimensional") {
-    return {
-      ...base,
-      type: "twodimensional",
-      cellPriceHistories: {},
-      cellOrderBooks: {},
-    } as MarketDetailType;
-  }
-
   return base as MarketDetailType;
 }
 
@@ -1034,6 +1031,8 @@ export function MarketDetailPage() {
   const [lazySetupError, setLazySetupError] = useState<string | null>(null);
   const [lazySetupCreating, setLazySetupCreating] = useState(false);
   const [showBackupReminder, setShowBackupReminder] = useState(false);
+  const [showFundedActionBackupPrompt, setShowFundedActionBackupPrompt] =
+    useState(false);
   const [engineScoreFeeSats, setEngineScoreFeeSats] = useState<number | null>(
     null,
   );
@@ -1769,6 +1768,14 @@ export function MarketDetailPage() {
   const handleTradeConfirm = useCallback(
     async (comment?: string) => {
       if (!market || !tradeSelection || !tradeAmount) return;
+      if (
+        shouldPromptForFundedActionBackup(
+          useWalletStore.getState().walletBackupState,
+        )
+      ) {
+        setShowFundedActionBackupPrompt(true);
+        return;
+      }
       try {
         assertMarketAcceptsOrders(market);
       } catch (error) {
@@ -1933,6 +1940,14 @@ export function MarketDetailPage() {
     await handleTradeConfirm(comment);
   }, [handleTradeConfirm, pendingTopUpComment]);
 
+  const handleStartTopUp = useCallback(() => {
+    if (useWalletStore.getState().walletBackupState === "needs_backup") {
+      setShowFundedActionBackupPrompt(true);
+      return;
+    }
+    setTopUpStage("overlay");
+  }, []);
+
   const handleRelatedMarketClick = useCallback(
     (marketId: string) => {
       navigate(`/markets/${marketId}`);
@@ -2033,7 +2048,7 @@ export function MarketDetailPage() {
             setTopUpStage("closed");
             setTopUpReason(null);
           }}
-          onTopUp={() => setTopUpStage("overlay")}
+          onTopUp={handleStartTopUp}
         />
       )}
       {topUpStage === "overlay" && (
@@ -2077,6 +2092,12 @@ export function MarketDetailPage() {
           includeNostr={signerBackupState === "needs_backup"}
           onDismiss={() => setShowBackupReminder(false)}
           onOpenSettings={() => navigate("/settings?category=nostr")}
+        />
+      )}
+      {showFundedActionBackupPrompt && (
+        <FundedActionBackupPromptModal
+          onCancel={() => setShowFundedActionBackupPrompt(false)}
+          onGoToBackup={() => navigate("/settings?category=cashu")}
         />
       )}
     </>

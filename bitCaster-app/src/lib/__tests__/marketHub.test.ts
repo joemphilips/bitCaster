@@ -17,7 +17,12 @@ const signalrMock = vi.hoisted(() => {
     reconnectedHandler: undefined as undefined | (() => void),
   }
 
-  return { connection }
+  const registeredHandlers = new Map<string, (payload: unknown) => void>()
+  connection.on.mockImplementation((eventName: string, handler: (payload: unknown) => void) => {
+    registeredHandlers.set(eventName, handler)
+  })
+
+  return { connection, registeredHandlers }
 })
 
 vi.mock('@microsoft/signalr', () => ({
@@ -33,7 +38,14 @@ vi.mock('@microsoft/signalr', () => ({
   },
 }))
 
-import { disconnect, joinMarket, parseMatched, parseTradeExecuted } from '../marketHub'
+import {
+  disconnect,
+  joinMarket,
+  onMatched,
+  onTradeExecuted,
+  parseMatched,
+  parseTradeExecuted,
+} from '../marketHub'
 
 beforeEach(async () => {
   await disconnect()
@@ -44,6 +56,7 @@ beforeEach(async () => {
   signalrMock.connection.on.mockClear()
   signalrMock.connection.onreconnected.mockClear()
   signalrMock.connection.reconnectedHandler = undefined
+  signalrMock.registeredHandlers.clear()
 })
 
 describe('parseTradeExecuted', () => {
@@ -120,5 +133,53 @@ describe('joinMarket reconnect recovery', () => {
 
     expect(signalrMock.connection.invoke).toHaveBeenCalledWith('JoinMarket', 'cond-YES')
     expect(signalrMock.connection.invoke).toHaveBeenCalledWith('JoinMarket', 'cond-NO')
+  })
+})
+
+describe('market trade lifecycle dispatch', () => {
+  it('keeps Matched and TradeExecuted separate but de-dupes duplicate settlement pushes by tradeId', async () => {
+    const matched = vi.fn()
+    const executed = vi.fn()
+
+    onMatched('cond-YES', matched)
+    onTradeExecuted('cond-YES', executed)
+    await joinMarket('cond-YES')
+
+    signalrMock.registeredHandlers.get('Matched')?.({
+      MarketId: 'cond-YES',
+      TradeId: 'trade-1',
+      MakerOrderId: 'maker-1',
+      TakerOrderId: 'taker-1',
+      ExecutionPrice: 420,
+      AmountSubunits: 5_000,
+      Path: 'Complementary',
+      MatchedAt: '2026-06-01T00:00:00Z',
+    })
+    signalrMock.registeredHandlers.get('TradeExecuted')?.({
+      MarketId: 'cond-YES',
+      TradeId: 'trade-1',
+      ExecutionPrice: 420,
+      AmountSubunits: 5_000,
+      Side: 'Buy',
+      Timestamp: '2026-06-01T00:00:10Z',
+    })
+    signalrMock.registeredHandlers.get('TradeExecuted')?.({
+      MarketId: 'cond-YES',
+      TradeId: 'trade-1',
+      ExecutionPrice: 420,
+      AmountSubunits: 5_000,
+      Side: 'Buy',
+      Timestamp: '2026-06-01T00:00:10Z',
+    })
+
+    expect(matched).toHaveBeenCalledTimes(1)
+    expect(executed).toHaveBeenCalledTimes(1)
+    expect(executed).toHaveBeenCalledWith({
+      tradeId: 'trade-1',
+      executionPrice: 420,
+      amountSubunits: 5_000,
+      side: 'Buy',
+      timestamp: '2026-06-01T00:00:10Z',
+    })
   })
 })

@@ -184,6 +184,7 @@ let _startPromise: Promise<void> | null = null
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>()
 const _tradeExecutedHandlers = new Map<string, Set<TradeExecutedHandler>>()
 const _matchedHandlers = new Map<string, Set<MatchedHandler>>()
+const _seenTradeExecutedIdsByMarket = new Map<string, Set<string>>()
 const _marketJoinCounts = new Map<string, number>()
 const _desiredMarketJoins = new Set<string>()
 const _marketRejoinedHandlers = new Map<string, Set<MarketRejoinedHandler>>()
@@ -216,6 +217,14 @@ function buildConnection(): HubConnection {
   conn.on('TradeExecuted', (payload: unknown) => {
     const parsed = parseTradeExecuted(payload)
     if (!parsed) return
+
+    let seenTradeIds = _seenTradeExecutedIdsByMarket.get(parsed.marketId)
+    if (!seenTradeIds) {
+      seenTradeIds = new Set()
+      _seenTradeExecutedIdsByMarket.set(parsed.marketId, seenTradeIds)
+    }
+    if (seenTradeIds.has(parsed.trade.tradeId)) return
+    seenTradeIds.add(parsed.trade.tradeId)
 
     const handlers = _tradeExecutedHandlers.get(parsed.marketId)
     if (!handlers) return
@@ -465,6 +474,7 @@ export async function disconnect(): Promise<void> {
   _orderBookHandlers.clear()
   _tradeExecutedHandlers.clear()
   _matchedHandlers.clear()
+  _seenTradeExecutedIdsByMarket.clear()
   _marketStatusHandlers.clear()
   _marketRejoinedHandlers.clear()
   for (const refresh of _rejoinRefreshers.values()) refresh.cancel()

@@ -65,7 +65,9 @@
     "createNewWallet": "新しいウォレットを作成",
     "importExistingWallet": "既存のウォレットをインポート",
     "enterSeedPhrase": "シードフレーズを入力",
-    "restoreWallet": "ウォレットを復元"
+    "restoreWallet": "ウォレットを復元",
+    "seedphraseWordCountError": "シードフレーズは12語または24語である必要があります",
+    "invalidSeedphraseWord": "無効な単語: {{word}}"
   },
   "auth": {
     "nostrRequiredTitle": "認証が必要です",
@@ -160,7 +162,6 @@
     "noMarketsFoundHint": "フィルターや検索条件を変更してみてください",
     "loadingMore": "マーケットを追加読み込み中...",
     "chance": "確率",
-    "complex2D": "複合2次元マーケット",
     "viewAndTrade": "表示してトレード",
     "marketsCreated": "{{count}} 件のマーケットを作成",
     "rating": "評価",
@@ -611,7 +612,6 @@
   "filter": {
     "yesNo": "YES/NO",
     "categorical": "カテゴリカル",
-    "twoDimensional": "二次元",
     "volAny": "出来高: すべて",
     "anyTime": "いつでも",
     "within7Days": "7日以内",
@@ -650,7 +650,11 @@
     "nostrSecret": "Nostr 秘密鍵",
     "identityDisclosure": "自動生成された Nostr キーは、ウォレット、取引、公開コメントを同じアイデンティティに結び付けます。分けたい場合は、最初の取引の前に設定で既存の Nostr アカウントを連携してください。",
     "later": "後で",
-    "openSettings": "設定を開く"
+    "openSettings": "設定を開く",
+    "fundedActionTitle": "先にウォレットをバックアップしてください",
+    "fundedActionDescription": "取引や入金を行う前に、シードフレーズをバックアップする必要があります。",
+    "goToBackup": "バックアップへ",
+    "cancel": "キャンセル"
   },
   "loading": {
     "tagline": "金融は自由であるべきだ | 偽物こそ高価でなければならない"

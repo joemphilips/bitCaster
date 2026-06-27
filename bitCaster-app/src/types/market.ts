@@ -32,19 +32,6 @@ export interface Outcome {
   odds: number
 }
 
-// Composite odds for Yes/No + Yes/No 2D markets
-export interface YesNoCompositeOdds {
-  yesYes: number
-  yesNo: number
-  noYes: number
-  noNo: number
-}
-
-// Composite odds for Categorical + Yes/No 2D markets
-export interface CategoricalYesNoCompositeOdds {
-  [outcomeId: string]: { yes: number; no: number }
-}
-
 // Base market properties shared by all market types
 interface BaseMarket {
   id: string
@@ -63,7 +50,7 @@ interface BaseMarket {
   baseAsset?: 'sat' | 'usd' | 'jpy'
   divisibility?: number
   creatorFeePercent: number
-  baseMarket: string              // Default: "sats", or market ID for 2D markets
+  baseMarket: string              // Default: "sats"
   secondaryMarkets?: string[]     // IDs of markets using this as base
 }
 
@@ -79,34 +66,14 @@ export interface CategoricalMarket extends BaseMarket {
   outcomes: Outcome[]
 }
 
-// Two-dimensional market type (composite market referencing another market)
-export interface TwoDimensionalMarket extends BaseMarket {
-  type: 'twodimensional'
-  baseMarketId: string                          // ID of the market this is based on
-  baseMarketTitle: string                       // Title of the base market for display
-  baseMarketType: 'yesno' | 'categorical'       // Type of the base market
-  secondaryType: 'yesno' | 'categorical'        // Type of this secondary market's outcomes
-  secondaryQuestion: string                     // The secondary question (displayed with base)
-
-  // For Yes/No + Yes/No combinations
-  compositeOdds?: YesNoCompositeOdds
-
-  // For Categorical + Yes/No combinations
-  categoricalCompositeOdds?: CategoricalYesNoCompositeOdds
-  baseOutcomes?: Outcome[]                      // Outcomes from base market (for categorical)
-
-  // For Categorical secondary
-  secondaryOutcomes?: Outcome[]                 // Outcomes if secondary is categorical
-}
-
 // Union type for all market types
-export type Market = YesNoMarket | CategoricalMarket | TwoDimensionalMarket
+export type Market = YesNoMarket | CategoricalMarket
 
 // =============================================================================
 // Filter Types
 // =============================================================================
 
-export type MarketType = 'yesno' | 'categorical' | 'twodimensional'
+export type MarketType = 'yesno' | 'categorical'
 
 export interface VolumeRange {
   min?: number

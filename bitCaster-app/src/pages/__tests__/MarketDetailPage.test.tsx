@@ -12,6 +12,7 @@ import {
   marketDetailDataReducer,
   resolvePreflightSplitBuyCollateralRequirement,
   resolveTradeOrderBooks,
+  shouldPromptForFundedActionBackup,
 } from "@/pages/MarketDetailPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
@@ -266,6 +267,7 @@ describe("MarketDetailPage live market status", () => {
     mocks.orderBookHandlers.clear();
     mocks.tradeExecutedHandlers.clear();
     mocks.routeParams.id = "condition-yesno";
+    mocks.navigate.mockReset();
   });
 
   it("applies a MarketStatusChanged close push to the detail page and disables trading", async () => {
@@ -299,6 +301,13 @@ describe("MarketDetailPage live market status", () => {
     }
 
     fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+    expect(submitOrder).not.toHaveBeenCalled();
+  });
+
+  it("classifies needs_backup wallets as requiring the funded-action backup prompt", () => {
+    expect(shouldPromptForFundedActionBackup("needs_backup")).toBe(true);
+    expect(shouldPromptForFundedActionBackup("none")).toBe(false);
+    expect(shouldPromptForFundedActionBackup("confirmed")).toBe(false);
     expect(submitOrder).not.toHaveBeenCalled();
   });
 

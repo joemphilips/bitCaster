@@ -64,8 +64,10 @@
     "setupFailed": "Could not set up wallet. Please try again.",
     "createNewWallet": "Create New Wallet",
     "importExistingWallet": "Import Existing Wallet",
-    "enterSeedPhrase": "Enter your seed phrase",
-    "restoreWallet": "Restore Wallet"
+    "enterSeedPhrase": "Enter your seedphrase",
+    "restoreWallet": "Restore Wallet",
+    "seedphraseWordCountError": "Seedphrase must be 12 or 24 words",
+    "invalidSeedphraseWord": "Invalid word: {{word}}"
   },
   "auth": {
     "nostrRequiredTitle": "Authentication required",
@@ -160,7 +162,6 @@
     "noMarketsFoundHint": "Try adjusting your filters or search query",
     "loadingMore": "Loading more markets...",
     "chance": "Chance",
-    "complex2D": "Complex 2D Market",
     "viewAndTrade": "View & Trade",
     "marketsCreated": "{{count}} markets created",
     "rating": "rating",
@@ -611,7 +612,6 @@
   "filter": {
     "yesNo": "Yes/No",
     "categorical": "Categorical",
-    "twoDimensional": "Two-Dimensional",
     "volAny": "Vol: Any",
     "anyTime": "Any time",
     "within7Days": "Within 7 days",
@@ -650,7 +650,11 @@
     "nostrSecret": "Nostr private key",
     "identityDisclosure": "Your auto-generated Nostr key links your wallet, trades, and any public comments under one identity. If you want them separate, pair your existing Nostr account in Settings before your first trade.",
     "later": "Later",
-    "openSettings": "Open settings"
+    "openSettings": "Open settings",
+    "fundedActionTitle": "Back up your wallet first",
+    "fundedActionDescription": "You need to back up your seedphrase before making trades or deposits.",
+    "goToBackup": "Go to backup",
+    "cancel": "Cancel"
   },
   "loading": {
     "tagline": "Finance wants to be free | Fake must be expensive"
