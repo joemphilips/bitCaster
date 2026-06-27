@@ -332,6 +332,7 @@ describe("MarketDetailPage live market status", () => {
 
     act(() => {
       mocks.tradeExecutedHandlers.get("condition-yesno-Yes")?.({
+        tradeId: "trade-test-1",
         executionPrice: 501,
         amountSubunits: 10,
         side: "Buy",
