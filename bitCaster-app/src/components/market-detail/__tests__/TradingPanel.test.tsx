@@ -184,7 +184,7 @@ describe('TradingPanel', () => {
     )
 
     expect(screen.getByText('Price per share')).toBeInTheDocument()
-    expect(screen.getByText('30 (30.00%)')).toBeInTheDocument()
+    expect(screen.getByText('0.03 sats (30.00%)')).toBeInTheDocument()
     expect(screen.getByText('Total expected cost')).toBeInTheDocument()
     expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1.5 sats')
     expect(screen.queryByText('Shares you receive if order fills')).not.toBeInTheDocument()
@@ -224,9 +224,41 @@ describe('TradingPanel', () => {
     )
 
     expect(screen.getByText('1 share = 10 sats')).toBeInTheDocument()
-    expect(screen.getByText('100 (1.00%)')).toBeInTheDocument()
+    expect(screen.getByText('0.10 sats (1.00%)')).toBeInTheDocument()
     expect(screen.getByTestId('limit-total-cost')).toHaveTextContent(/^0\.101 sats$/)
     expect(screen.getByTestId('limit-total-cost')).not.toHaveTextContent(/^101 sats$/)
+  })
+
+  it('displays sat-market limit prices as sats, not raw msat subunits', () => {
+    const preview: LimitOrderPreview = {
+      limitPrice: 8_500,
+      amount: 1,
+      sharesIfFilled: 1,
+      quoteSubunits: 8_500,
+      creatorFee: 0,
+      mintFee: 0,
+      engineScoreFeeSats: 0,
+      potentialPayout: 10_000,
+      totalCost: 8_500,
+    }
+
+    render(
+      <TradingPanel
+        market={makeMarket({ baseAsset: 'sat', baseUnit: 'sats', divisibility: 10_000 })}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={8_500}
+        limitOrderPreview={preview}
+        onTradeConfirm={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('limit-price-input')).toHaveValue(8.5)
+    expect(screen.getByText('8.50 sats (85.00%)')).toBeInTheDocument()
+    expect(screen.queryByText('8500 sats')).not.toBeInTheDocument()
   })
 
   it('uses market divisibility when displaying one-share face value', () => {
@@ -362,14 +394,14 @@ describe('TradingPanel', () => {
     expect(priceInput).toHaveValue(null)
     expect(onLimitPriceChange).not.toHaveBeenCalled()
 
-    await user.type(priceInput, '75')
-    expect(priceInput).toHaveValue(75)
+    await user.type(priceInput, '0.75')
+    expect(priceInput).toHaveValue(0.75)
     expect(onLimitPriceChange).not.toHaveBeenCalled()
 
     fireEvent.blur(priceInput)
 
     expect(onLimitPriceChange).toHaveBeenCalledWith(75)
-    expect(priceInput).toHaveValue(75)
+    expect(priceInput).toHaveValue(0.75)
   })
 
   it('clamps the limit price to the market tick range on blur', async () => {
@@ -384,7 +416,7 @@ describe('TradingPanel', () => {
     fireEvent.blur(priceInput)
 
     expect(onLimitPriceChange).toHaveBeenCalledWith(999)
-    expect(priceInput).toHaveValue(999)
+    expect(priceInput).toHaveValue(9.99)
   })
 
   it('restores the previous valid limit price when the field is empty on blur', async () => {
@@ -401,7 +433,7 @@ describe('TradingPanel', () => {
     fireEvent.blur(priceInput)
 
     expect(onLimitPriceChange).not.toHaveBeenCalled()
-    expect(priceInput).toHaveValue(40)
+    expect(priceInput).toHaveValue(0.4)
   })
 
   it('does not overwrite an in-progress limit price edit when live props refresh', async () => {
@@ -422,7 +454,7 @@ describe('TradingPanel', () => {
     const priceInput = screen.getByTestId('limit-price-input') as HTMLInputElement
     await user.click(priceInput)
     await user.clear(priceInput)
-    await user.type(priceInput, '75')
+    await user.type(priceInput, '0.75')
 
     rerender(
       <TradingPanel
@@ -436,7 +468,7 @@ describe('TradingPanel', () => {
       />,
     )
 
-    expect(priceInput).toHaveValue(75)
+    expect(priceInput).toHaveValue(0.75)
   })
 
   it('does not overwrite an in-progress share amount edit when live props refresh', async () => {
@@ -518,7 +550,7 @@ describe('TradingPanel', () => {
       />,
     )
 
-    expect(screen.getByText('30 (30.00%)')).toBeInTheDocument()
+    expect(screen.getByText('$0.30 (30.00%)')).toBeInTheDocument()
 
     rerender(
       <TradingPanel
@@ -539,6 +571,6 @@ describe('TradingPanel', () => {
       />,
     )
 
-    expect(screen.getByText('301 (30.10%)')).toBeInTheDocument()
+    expect(screen.getByText('$3.01 (30.10%)')).toBeInTheDocument()
   })
 })

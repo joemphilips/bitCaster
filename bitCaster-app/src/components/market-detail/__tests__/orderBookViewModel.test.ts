@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildOrderBookDepthRows, deriveExecutableOrderBook } from "../orderBookViewModel";
 
 describe("buildOrderBookDepthRows", () => {
-  it("scales row depth by a shared cumulative max across both sides", () => {
+  it("scales row depth by the largest displayed amount across both sides", () => {
     expect(
       buildOrderBookDepthRows(
         [
@@ -16,8 +16,8 @@ describe("buildOrderBookDepthRows", () => {
         ],
       ),
     ).toEqual([
-      { side: "bid", order: { price: 52, amount: 100, total: 1_000 }, depthPercent: 42 },
-      { side: "bid", order: { price: 51, amount: 200, total: 1_200 }, depthPercent: 50 },
+      { side: "bid", order: { price: 52, amount: 100, total: 1_000 }, depthPercent: 50 },
+      { side: "bid", order: { price: 51, amount: 200, total: 1_200 }, depthPercent: 100 },
     ]);
   });
 });

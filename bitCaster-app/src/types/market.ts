@@ -52,6 +52,8 @@ interface BaseMarket {
   creatorFeePercent: number
   baseMarket: string              // Default: "sats"
   secondaryMarkets?: string[]     // IDs of markets using this as base
+  /** Engine-reported winning outcome for closed/resolved markets. */
+  finalOutcome?: string
 }
 
 // Yes/No market type

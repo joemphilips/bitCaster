@@ -70,7 +70,7 @@ const yesNoEntry: MarketCatalogueEntry = {
   baseAsset: "sat",
   divisibility: 1_000,
   lastTradedPrice: 0.62,
-  initialProbabilities: {},
+  initialProbabilities: { Yes: 62, No: 38 },
   categoryTags: ["crypto"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };
@@ -114,17 +114,29 @@ describe("mapCatalogueEntryToMarket", () => {
     }
   });
 
-  it("derives yes/no odds from lastTradedPrice when it is emitted as a price numerator", () => {
+  it("uses creator initial probabilities for yes/no list odds instead of last traded price", () => {
     const market = mapCatalogueEntryToMarket({
       ...yesNoEntry,
       divisibility: 1_000,
       lastTradedPrice: 620,
+      initialProbabilities: { Yes: 77, No: 23 },
     });
 
     expect(market.type).toBe("yesno");
     if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 62, no: 38 });
+      expect(market.currentOdds).toEqual({ yes: 77, no: 23 });
     }
+  });
+
+  it("preserves finalOutcome from the catalogue entry for closed market cards", () => {
+    const market = mapCatalogueEntryToMarket({
+      ...yesNoEntry,
+      state: "closed",
+      finalOutcome: "No",
+    });
+
+    expect(market.state).toBe("closed");
+    expect(market.finalOutcome).toBe("No");
   });
 
   it("falls back to 50/50 when a yes/no market has no traded price", () => {
@@ -133,6 +145,7 @@ describe("mapCatalogueEntryToMarket", () => {
     const market = mapCatalogueEntryToMarket({
       ...yesNoEntry,
       lastTradedPrice: null,
+      initialProbabilities: {},
     });
 
     expect(market.type).toBe("yesno");

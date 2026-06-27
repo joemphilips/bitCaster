@@ -15,15 +15,15 @@ export function buildOrderBookDepthRows(
   side: OrderBookDepthSide,
   comparisonOrders: Order[] = orders,
 ): OrderBookDepthRow[] {
-  const maxTotal = Math.max(
-    ...orders.map((order) => order.total),
-    ...comparisonOrders.map((order) => order.total),
+  const maxAmount = Math.max(
+    ...orders.map((order) => order.amount),
+    ...comparisonOrders.map((order) => order.amount),
     0,
   );
   return orders.map((order) => ({
     side,
     order,
-    depthPercent: maxTotal > 0 ? Math.round((order.total / maxTotal) * 100) : 0,
+    depthPercent: maxAmount > 0 ? Math.round((order.amount / maxAmount) * 100) : 0,
   }));
 }
 

@@ -209,6 +209,14 @@ function SecondaryMarketsExpander({
   )
 }
 
+function normalizeResolvedOutcome(outcome: string | undefined): string | undefined {
+  const trimmed = outcome?.trim()
+  if (!trimmed) return undefined
+  if (trimmed.toLowerCase() === 'yes') return 'YES'
+  if (trimmed.toLowerCase() === 'no') return 'NO'
+  return trimmed
+}
+
 export function MarketCard({
   market,
   secondaryMarketInfos,
@@ -248,7 +256,31 @@ export function MarketCard({
     toggleBookmark(market.id)
   }
 
+  const renderClosedView = () => {
+    const resolvedOutcome = normalizeResolvedOutcome(market.finalOutcome) ?? 'Closed'
+    const isYes = resolvedOutcome === 'YES'
+    const isNo = resolvedOutcome === 'NO'
+    const outcomeColor = isYes
+      ? 'text-emerald-600 dark:text-emerald-400'
+      : isNo
+        ? 'text-rose-600 dark:text-rose-400'
+        : 'text-slate-900 dark:text-slate-100'
+
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center py-6 text-center">
+        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400 mb-2">
+          Resolved
+        </div>
+        <div className={`text-4xl font-black tracking-tight ${outcomeColor}`}>
+          {resolvedOutcome}
+        </div>
+      </div>
+    )
+  }
+
   const renderNormalView = () => {
+    if (market.state === 'closed') return renderClosedView()
+
     if (market.type === 'yesno') {
       const yesNoMarket = market as YesNoMarket
       return (

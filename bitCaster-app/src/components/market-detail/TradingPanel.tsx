@@ -16,7 +16,8 @@ import {
   formatMarketSubunits,
   formatPricePercentage,
   formatShareFace,
-  marketSubunitLabel,
+  marketUnitLabel,
+  type MarketBaseAsset,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from '@bitcaster/client-sdk/marketUnits'
@@ -424,44 +425,48 @@ function MarketLimitToggle({
 
 function LimitPriceInput({
   limitPrice,
-  baseUnit,
+  baseAsset,
   divisibility,
   onLimitPriceChange,
   disabled = false,
 }: {
   limitPrice: number
-  baseUnit: string
+  baseAsset: MarketBaseAsset
   divisibility: number
   onLimitPriceChange?: (price: number) => void
   disabled?: boolean
 }) {
   const { t } = useTranslation()
-  const [priceText, setPriceText] = useState(String(limitPrice))
+  const [priceText, setPriceText] = useState(formatLimitPriceInputValue(limitPrice, baseAsset))
   const [isFocused, setIsFocused] = useState(false)
   const maxPrice = Math.max(1, divisibility - 1)
+  const maxDisplayPrice = limitPriceToDisplayAmount(maxPrice, baseAsset)
+  const inputStep = limitPriceInputStep(baseAsset)
+  const displayUnit = marketUnitLabel(baseAsset)
 
   useEffect(() => {
     if (!isFocused) {
-      setPriceText(String(limitPrice))
+      setPriceText(formatLimitPriceInputValue(limitPrice, baseAsset))
     }
-  }, [limitPrice, isFocused])
+  }, [limitPrice, baseAsset, isFocused])
 
   const handlePriceBlur = () => {
     const trimmed = priceText.trim()
     if (trimmed === '') {
-      setPriceText(String(limitPrice))
+      setPriceText(formatLimitPriceInputValue(limitPrice, baseAsset))
       return
     }
 
     const parsed = Number(trimmed)
     if (!Number.isFinite(parsed)) {
-      setPriceText(String(limitPrice))
+      setPriceText(formatLimitPriceInputValue(limitPrice, baseAsset))
       return
     }
 
-    const clamped = Math.min(maxPrice, Math.max(1, Math.round(parsed)))
+    const priceSubunits = limitPriceDisplayAmountToSubunits(parsed, baseAsset)
+    const clamped = Math.min(maxPrice, Math.max(1, priceSubunits))
     onLimitPriceChange?.(clamped)
-    setPriceText(String(clamped))
+    setPriceText(formatLimitPriceInputValue(clamped, baseAsset))
   }
 
   return (
@@ -481,34 +486,83 @@ function LimitPriceInput({
             setIsFocused(false)
             handlePriceBlur()
           }}
-          min={1}
-          max={maxPrice}
+          min={limitPriceToDisplayAmount(1, baseAsset)}
+          max={maxDisplayPrice}
+          step={inputStep}
           className="w-full pr-14 pl-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-mono text-sm">
-          {baseUnit}
+          {displayUnit}
         </span>
       </div>
       <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
         {t('trade.pricePerShare', {
-          price: formatPriceWithProbability(limitPrice, divisibility),
+          price: formatPriceWithProbability(limitPrice, divisibility, baseAsset),
         })}
       </p>
     </div>
   )
 }
 
-function formatPriceWithProbability(price: number, divisibility: number): string {
-  return `${price.toLocaleString()} (${formatPricePercentage(price, divisibility)})`
+function limitPriceDisplayScale(baseAsset: MarketBaseAsset): number {
+  if (baseAsset === 'sat') return 1_000
+  if (baseAsset === 'usd') return 100
+  return 1
+}
+
+function limitPriceToDisplayAmount(priceSubunits: number, baseAsset: MarketBaseAsset): number {
+  return priceSubunits / limitPriceDisplayScale(baseAsset)
+}
+
+function limitPriceDisplayAmountToSubunits(displayAmount: number, baseAsset: MarketBaseAsset): number {
+  return Math.round(displayAmount * limitPriceDisplayScale(baseAsset))
+}
+
+function limitPriceInputStep(baseAsset: MarketBaseAsset): number {
+  if (baseAsset === 'sat') return 0.001
+  if (baseAsset === 'usd') return 0.01
+  return 1
+}
+
+function formatLimitPriceInputValue(priceSubunits: number, baseAsset: MarketBaseAsset): string {
+  return String(limitPriceToDisplayAmount(priceSubunits, baseAsset))
+}
+
+function formatLimitPriceAmount(priceSubunits: number, baseAsset: MarketBaseAsset): string {
+  const displayAmount = limitPriceToDisplayAmount(
+    Number.isFinite(priceSubunits) ? priceSubunits : 0,
+    baseAsset,
+  )
+  if (baseAsset === 'usd') {
+    return `$${displayAmount.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`
+  }
+  if (baseAsset === 'jpy') return `¥${Math.trunc(displayAmount).toLocaleString()}`
+  return `${displayAmount.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 3,
+  })} sats`
+}
+
+function formatPriceWithProbability(
+  price: number,
+  divisibility: number,
+  baseAsset: MarketBaseAsset,
+): string {
+  return `${formatLimitPriceAmount(price, baseAsset)} (${formatPricePercentage(price, divisibility)})`
 }
 
 function LimitOrderPreviewSection({
   preview,
   divisibility,
+  baseAsset,
   formatAmount,
 }: {
   preview: LimitOrderPreview
   divisibility: number
+  baseAsset: MarketBaseAsset
   formatAmount: (amount: number) => string
 }) {
   const { t } = useTranslation()
@@ -517,7 +571,7 @@ function LimitOrderPreviewSection({
       <div className="flex justify-between text-sm">
         <span className="text-slate-500 dark:text-slate-400">{t('trade.pricePerShareLabel')}</span>
         <span className="font-medium text-slate-600 dark:text-slate-300">
-          {formatPriceWithProbability(preview.limitPrice, divisibility)}
+          {formatPriceWithProbability(preview.limitPrice, divisibility, baseAsset)}
         </span>
       </div>
       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
@@ -562,7 +616,6 @@ export function TradingPanel({
   const isLimit = orderType === 'limit'
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset)
   const divisibility = normalizeMarketDivisibility(market.divisibility)
-  const subunitLabel = marketSubunitLabel(baseAsset)
   const wholeShareLabel = formatShareFace(baseAsset, divisibility)
   const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
   const shareCountLabel = (shares: number) =>
@@ -747,7 +800,7 @@ export function TradingPanel({
           {isLimit && (
             <LimitPriceInput
               limitPrice={limitPrice}
-              baseUnit={subunitLabel}
+              baseAsset={baseAsset}
               divisibility={divisibility}
               onLimitPriceChange={onLimitPriceChange}
               disabled={tradingDisabled}
@@ -779,7 +832,7 @@ export function TradingPanel({
                   <div className="flex justify-between text-sm">
                     <span className="text-slate-500 dark:text-slate-400">{t('trade.pricePerShareLabel')}</span>
                     <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="trade-average-execution-price">
-                      {formatPriceWithProbability(tradePreview.averageExecutionPrice ?? 0, divisibility)}
+                      {formatPriceWithProbability(tradePreview.averageExecutionPrice ?? 0, divisibility, baseAsset)}
                     </span>
                   </div>
                 </>
@@ -802,6 +855,7 @@ export function TradingPanel({
             <LimitOrderPreviewSection
               preview={limitOrderPreview}
               divisibility={divisibility}
+              baseAsset={baseAsset}
               formatAmount={formatAmount}
             />
           )}

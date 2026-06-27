@@ -189,7 +189,18 @@ function probabilityFromLastTradedPrice(
   return clampPercent(price <= 1 ? price * 100 : (price / divisibility) * 100);
 }
 
-function resolveYesNoOdds(
+function resolveYesNoCatalogueOdds(
+  entry: MarketCatalogueEntry,
+): CurrentOdds {
+  const yesInitial = initialProbabilityForOutcome(entry.initialProbabilities, "Yes");
+  const noInitial = initialProbabilityForOutcome(entry.initialProbabilities, "No");
+  if (yesInitial != null) return { yes: yesInitial, no: 100 - yesInitial };
+  if (noInitial != null) return { yes: 100 - noInitial, no: noInitial };
+
+  return { yes: 50, no: 50 };
+}
+
+function resolveYesNoDetailOdds(
   entry: MarketCatalogueEntry,
   divisibility: number,
 ): CurrentOdds {
@@ -198,12 +209,7 @@ function resolveYesNoOdds(
     return { yes, no: 100 - yes };
   }
 
-  const yesInitial = initialProbabilityForOutcome(entry.initialProbabilities, "Yes");
-  const noInitial = initialProbabilityForOutcome(entry.initialProbabilities, "No");
-  if (yesInitial != null) return { yes: yesInitial, no: 100 - yesInitial };
-  if (noInitial != null) return { yes: 100 - noInitial, no: noInitial };
-
-  return { yes: 50, no: 50 };
+  return resolveYesNoCatalogueOdds(entry);
 }
 
 function initialProbabilityForOutcome(
@@ -267,13 +273,14 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     baseAsset,
     divisibility,
     baseMarket: marketUnitLabel(baseAsset),
+    finalOutcome: entry.finalOutcome?.trim() || undefined,
   };
 
   if (isYesNo) {
     return {
       ...base,
       type: "yesno",
-      currentOdds: resolveYesNoOdds(entry, divisibility),
+      currentOdds: resolveYesNoCatalogueOdds(entry),
     };
   }
 
@@ -443,7 +450,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     return {
       ...base,
       type: "yesno",
-      currentOdds: resolveYesNoOdds(entry, divisibility),
+      currentOdds: resolveYesNoDetailOdds(entry, divisibility),
     };
   }
 

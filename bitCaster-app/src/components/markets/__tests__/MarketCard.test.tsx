@@ -58,6 +58,34 @@ describe('MarketCard', () => {
     expect(screen.getByText('Buy NO')).toBeInTheDocument()
   })
 
+  it('renders resolved YES for a closed binary market without Chance or trade buttons', () => {
+    render(<MarketCard market={{ ...yesNoMarket, state: 'closed', finalOutcome: 'Yes' }} />)
+
+    expect(screen.getByText('Will BTC reach 100K?')).toBeInTheDocument()
+    expect(screen.getByText('YES')).toBeInTheDocument()
+    expect(screen.queryByText('Chance')).not.toBeInTheDocument()
+    expect(screen.queryByText('65.00%')).not.toBeInTheDocument()
+    expect(screen.queryByText('Buy YES')).not.toBeInTheDocument()
+    expect(screen.queryByText('Buy NO')).not.toBeInTheDocument()
+  })
+
+  it('renders resolved NO for a closed binary market in red', () => {
+    render(<MarketCard market={{ ...yesNoMarket, state: 'closed', finalOutcome: 'No' }} />)
+
+    const resolvedOutcome = screen.getByText('NO')
+    expect(resolvedOutcome).toBeInTheDocument()
+    expect(resolvedOutcome).toHaveClass('text-rose-600')
+  })
+
+  it('renders winning outcome name for a closed categorical market without outcome buttons', () => {
+    render(<MarketCard market={{ ...categoricalMarket, state: 'closed', finalOutcome: 'Team B' }} />)
+
+    expect(screen.getByText('Team B')).toBeInTheDocument()
+    expect(screen.queryByText('Chance')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Yes' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'No' })).not.toBeInTheDocument()
+  })
+
   it('formats sat-market volume and liquidity from msat subunits', () => {
     render(<MarketCard market={yesNoMarket} />)
 
