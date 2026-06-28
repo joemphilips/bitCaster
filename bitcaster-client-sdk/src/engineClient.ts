@@ -23,7 +23,7 @@ export interface SubmitOrderRequest {
   price: number
   amountSubunits: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
-  ephemeralPubkey: string
+  clientOrderId: string
   comment?: NostrKind1Event | null
 }
 
@@ -48,7 +48,6 @@ export interface Fill {
   status: 'Matched' | 'Filled' | 'Failed'
   filledAt: string
   tradeId?: string
-  makerEphemeralPubkey?: string
   baseAsset: MarketBaseAsset
   divisibility: number
   tokenSide: 'Outcome' | 'Complement'
@@ -61,9 +60,17 @@ export interface SubmitOrderResponse {
   status: string
   remainingAmountSubunits: number
   fills: Fill[]
-  ephemeralPubkey: string
+  pendingPubkeySubmissions?: PendingPubkeySubmission[]
   baseAsset: MarketBaseAsset
   divisibility: number
+}
+
+export interface PendingPubkeySubmission {
+  tradeId: string
+  role: 'maker' | 'taker'
+  fillAmountSubunits: number
+  fillAmount?: number
+  deadline: string
 }
 
 export interface BatchSubmitOrdersRequest {
@@ -72,7 +79,6 @@ export interface BatchSubmitOrdersRequest {
 
 export interface BatchSubmitOrderRequestItem
   extends Omit<SubmitOrderRequest, 'comment'> {
-  clientOrderId?: string | null
   marketId: string
   expiresAt?: string | null
 }
@@ -90,7 +96,7 @@ export interface BatchSubmitOrderResult {
   status: string
   remainingAmountSubunits: number
   fills: Fill[]
-  ephemeralPubkey?: string | null
+  pendingPubkeySubmissions?: PendingPubkeySubmission[]
   baseAsset: MarketBaseAsset
   divisibility: number
   errorCode?: BatchSubmitOrderErrorCode | null
@@ -105,10 +111,19 @@ export type BatchSubmitOrderErrorCode =
   | 'invalidPrice'
   | 'invalidAmount'
   | 'invalidTimeInForce'
-  | 'invalidEphemeralPubkey'
-  | 'duplicateEphemeralPubkey'
+  | 'duplicateClientOrderId'
   | 'unsupportedOrder'
   | 'bookRejected'
+
+export interface SubmitEphemeralPubkeyRequest {
+  ephemeralPubkey: string
+}
+
+export interface SubmitEphemeralPubkeyResponse {
+  tradeId: string
+  role: string
+  bothReceived: boolean
+}
 
 export interface BatchCancelOrdersRequest {
   orderIds: string[]
@@ -145,6 +160,29 @@ export interface OrderStatusResponse {
   tokenSide: 'Outcome' | 'Complement'
   baseAsset: MarketBaseAsset
   divisibility: number
+}
+
+export interface OrderEntry {
+  orderId: string
+  marketId: string
+  conditionId: string
+  side: 'Buy' | 'Sell'
+  price: number
+  amountSubunits: number
+  remainingAmountSubunits: number
+  tokenSide: 'Outcome' | 'Complement'
+  status: 'Resting' | 'Filled' | 'Cancelled' | 'Matched' | string
+  placedAt: string
+  filledAt?: string | null
+  tradeId?: string | null
+  deadline?: string | null
+  pubkeySubmitted?: boolean | null
+  clientOrderId?: string | null
+}
+
+export interface ListMyOrdersResponse {
+  orders: OrderEntry[]
+  nextCursor?: string | null
 }
 
 export interface LevelDto {
@@ -267,6 +305,19 @@ export class BitcasterEngineClient {
     return (await response.json()) as OrderStatusResponse
   }
 
+  async listMyOrders(
+    conditionId: string,
+    cursor?: string,
+  ): Promise<ListMyOrdersResponse> {
+    return listMyOrders(
+      this.baseUrl,
+      conditionId,
+      cursor,
+      this.fetchImpl,
+      this.authorization,
+    )
+  }
+
   async batchSubmitOrders(
     conditionId: string,
     request: BatchSubmitOrdersRequest,
@@ -299,6 +350,21 @@ export class BitcasterEngineClient {
       bodyText,
     )
     return (await response.json()) as BatchCancelOrdersResponse
+  }
+
+  async submitEphemeralPubkey(
+    tradeId: string,
+    pubkey: string,
+    nostrEvent?: NostrKind1Event | null,
+  ): Promise<SubmitEphemeralPubkeyResponse> {
+    return submitEphemeralPubkey(
+      this.baseUrl,
+      tradeId,
+      pubkey,
+      nostrEvent,
+      this.fetchImpl,
+      this.authorization,
+    )
   }
 
   async cancelOrder(marketId: string, orderId: string): Promise<boolean> {
@@ -406,6 +472,69 @@ export class BitcasterEngineClient {
     }
     return response
   }
+}
+
+export async function submitEphemeralPubkey(
+  baseUrl: string,
+  tradeId: string,
+  pubkey: string,
+  nostrEvent?: NostrKind1Event | null,
+  fetchImpl: EngineFetch = fetch,
+  authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>,
+): Promise<SubmitEphemeralPubkeyResponse> {
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
+  const path = `/api/v1/trades/${encodePathSegment(tradeId)}/ephemeral-pubkey`
+  const body: SubmitEphemeralPubkeyRequest & { comment?: NostrKind1Event | null } = {
+    ephemeralPubkey: pubkey,
+    ...(nostrEvent ? { comment: nostrEvent } : {}),
+  }
+  const bodyText = JSON.stringify(body)
+  const url = `${normalizedBaseUrl}${path}`
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (authorization) {
+    headers.Authorization = await authorization({ url, method: 'POST', bodyText })
+  }
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    body: bodyText,
+    headers,
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    const problem = parseEngineProblem(detail)
+    throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
+  }
+  if (response.status === 204) {
+    return { tradeId, role: '', bothReceived: false }
+  }
+  const text = await response.text()
+  if (!text.trim()) return { tradeId, role: '', bothReceived: false }
+  return JSON.parse(text) as SubmitEphemeralPubkeyResponse
+}
+
+export async function listMyOrders(
+  baseUrl: string,
+  conditionId: string,
+  cursor?: string,
+  fetchImpl: EngineFetch = fetch,
+  authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>,
+): Promise<ListMyOrdersResponse> {
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
+  const query = new URLSearchParams({ conditionId })
+  if (cursor) query.set('cursor', cursor)
+  const path = `/api/v1/orders/mine?${query}`
+  const url = `${normalizedBaseUrl}${path}`
+  const headers: Record<string, string> = {}
+  if (authorization) {
+    headers.Authorization = await authorization({ url, method: 'GET' })
+  }
+  const response = await fetchImpl(url, { method: 'GET', headers })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    const problem = parseEngineProblem(detail)
+    throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
+  }
+  return (await response.json()) as ListMyOrdersResponse
 }
 
 function buildMarketsQueryString(params: QueryMarketsParams): string {

@@ -34,8 +34,6 @@ export interface PersistedTradeEntry {
   state: TradeLifecycleState
   /** 32-byte scalar, hex. */
   ephemeralPrivkeyHex: string
-  /** 33-byte compressed point, hex. */
-  ephemeralPubkeyHex: string
   counterpartyPubkey?: string
   locktimes?: { sellerUnix: number; buyerUnix: number }
   createdAt: number

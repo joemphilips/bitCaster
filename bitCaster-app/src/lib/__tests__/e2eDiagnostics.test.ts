@@ -13,9 +13,8 @@ describe("e2e diagnostics", () => {
   it("exposes bundled sanitized swap diagnostics", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-1",
+      clientOrderId: "client-order-1",
       marketId: "cond-A",
-      ephemeralPubkey: "02" + "11".repeat(32),
-      ephemeralPrivkey: "22".repeat(32),
       submittedAt: 1_700_000_000_000,
     });
     useActiveSwapsStore.getState().promote({
@@ -46,11 +45,11 @@ describe("e2e diagnostics", () => {
     });
     expect(snapshot.pendingTrades["order-1"]).toEqual({
       orderId: "order-1",
+      clientOrderId: "client-order-1",
       marketId: "cond-A",
       submittedAt: 1_700_000_000_000,
       hasPreflightSplit: false,
     });
-    expect(serialized).not.toContain("22".repeat(32));
     expect(serialized).not.toContain("33".repeat(32));
     expect(serialized).not.toContain("ciphertext");
   });

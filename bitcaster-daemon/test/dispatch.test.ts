@@ -1015,11 +1015,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       ])
     })
 
-    await t.test('order.submit stores local order and private ephemeral key', async () => {
+    await t.test('order.submit uses clientOrderId and submits pubkey only for pending matches', async () => {
       await writeState(emptyDaemonState())
       let capturedOptions: { baseUrl: string; nostrSecretKeyHex: string } | null =
         null
       let capturedRequest: unknown = null
+      const submittedPubkeys: Array<{ tradeId: string; pubkey: string }> = []
       let runtimeStartOrderIds: string[] = []
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
@@ -1029,7 +1030,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             orderId: 'order-1',
             status: 'matched',
             remainingAmountSubunits: 0,
-            ephemeralPubkey: request.ephemeralPubkey,
             fills: [
               {
                 id: 'fill-1',
@@ -1044,7 +1044,19 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 tradeId: 'trade-1',
               },
             ],
+            pendingPubkeySubmissions: [
+              {
+                tradeId: 'trade-1',
+                role: 'taker',
+                fillAmountSubunits: request.amountSubunits,
+                deadline: '2026-05-21T00:01:00.000Z',
+              },
+            ],
           }
+        },
+        async submitEphemeralPubkey(tradeId, pubkey) {
+          submittedPubkeys.push({ tradeId, pubkey })
+          return { tradeId, role: 'taker', bothReceived: false }
         },
         async getOrderStatus() {
           return null
@@ -1103,21 +1115,32 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         price: 42,
         amountSubunits: 100,
         timeInForce: 'GTC',
-        ephemeralPubkey: `02${'22'.repeat(32)}`,
+        clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
       })
+      assert.match(
+        (capturedRequest as { clientOrderId: string }).clientOrderId,
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      )
+      assert.deepEqual(submittedPubkeys, [
+        { tradeId: 'trade-1', pubkey: `02${'22'.repeat(32)}` },
+      ])
 
       const state = await readState()
-      assert.equal(state?.orders['order-1']?.ephemeralPubkey, `02${'22'.repeat(32)}`)
+      assert.equal(
+        state?.orders['order-1']?.clientOrderId,
+        (capturedRequest as { clientOrderId: string }).clientOrderId,
+      )
       assert.equal(state?.swaps['trade-1']?.step, 'awaiting-trade-created')
       assert.deepEqual(runtimeStartOrderIds, ['order-1'])
 
       const updatedSecrets = await readSecrets()
-      assert.deepEqual(updatedSecrets?.orderEphemeralKeys['order-1'], {
+      assert.deepEqual(updatedSecrets?.orderEphemeralKeys['trade-1'], {
         orderId: 'order-1',
+        tradeId: 'trade-1',
         marketId: 'cond-YES',
         privateKeyHex: '11'.repeat(32),
         publicKeyHex: `02${'22'.repeat(32)}`,
-        createdAt: updatedSecrets.orderEphemeralKeys['order-1'].createdAt,
+        createdAt: updatedSecrets.orderEphemeralKeys['trade-1'].createdAt,
       })
     })
 
@@ -1132,7 +1155,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             orderId: 'order-d1000',
             status: 'resting',
             remainingAmountSubunits: request.amountSubunits,
-            ephemeralPubkey: request.ephemeralPubkey,
             fills: [],
           }
         },
@@ -1190,8 +1212,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         price: 500,
         amountSubunits: 1_000,
         timeInForce: 'GTC',
-        ephemeralPubkey: `02${'66'.repeat(32)}`,
+        clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
       })
+      assert.match(
+        (capturedRequest as { clientOrderId: string }).clientOrderId,
+        /^[0-9a-f-]{36}$/i,
+      )
     })
 
     await t.test('order.submit starts runtime with complement order subscription state', async () => {
@@ -1206,7 +1232,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               status: 'resting',
               remainingAmountSubunits: request.amountSubunits,
               fills: [],
-              ephemeralPubkey: request.ephemeralPubkey,
             }
           },
           async getOrderStatus() {
@@ -1365,7 +1390,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               orderId: 'order-score',
               status: 'resting',
               remainingAmountSubunits: request.amountSubunits,
-              ephemeralPubkey: request.ephemeralPubkey,
               fills: [],
             }
           },
@@ -1753,7 +1777,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           orderId: 'order-cancel',
           marketId: 'cond-YES',
           status: 'cancelled',
-          ephemeralPubkey: undefined,
           tradeIds: [],
           engineStatus: {
             orderId: 'order-cancel',
@@ -1822,7 +1845,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             orderId: 'order-runtime-fail',
             status: 'resting',
             remainingAmountSubunits: request.amountSubunits,
-            ephemeralPubkey: request.ephemeralPubkey,
             fills: [],
           }
         },
@@ -1874,8 +1896,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       assert.equal(state?.orders['order-runtime-fail']?.status, 'resting')
       const updatedSecrets = await readSecrets()
       assert.equal(
-        updatedSecrets?.orderEphemeralKeys['order-runtime-fail']?.privateKeyHex,
-        '33'.repeat(32),
+        updatedSecrets?.orderEphemeralKeys['order-runtime-fail'],
+        undefined,
       )
     })
 
@@ -1905,7 +1927,6 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                   orderId: 'order-direct-sell',
                   status: 'resting',
                   remainingAmountSubunits: request.amountSubunits,
-                  ephemeralPubkey: request.ephemeralPubkey,
                   fills: [],
                 }
               },
@@ -1944,12 +1965,16 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         price: 42,
         amountSubunits: 100,
         timeInForce: 'GTC',
-        ephemeralPubkey: `02${'44'.repeat(32)}`,
+        clientOrderId: (capturedRequest as { clientOrderId?: unknown }).clientOrderId,
       })
+      assert.match(
+        (capturedRequest as { clientOrderId: string }).clientOrderId,
+        /^[0-9a-f-]{36}$/i,
+      )
       assert.equal((await readState())?.orders['order-direct-sell']?.status, 'resting')
       assert.equal(
-        (await readSecrets())?.orderEphemeralKeys['order-direct-sell']?.privateKeyHex,
-        '44'.repeat(32),
+        (await readSecrets())?.orderEphemeralKeys['order-direct-sell'],
+        undefined,
       )
     })
 

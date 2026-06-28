@@ -99,6 +99,10 @@ export interface EngineClientLike {
     marketId: string,
     request: SubmitOrderRequest,
   ): Promise<SubmitOrderResponse>
+  submitEphemeralPubkey?(
+    tradeId: string,
+    pubkey: string,
+  ): Promise<unknown>
   getOrderStatus(
     marketId: string,
     orderId: string,
@@ -622,8 +626,7 @@ export async function dispatch(
       if (!settlementSupport.supported) {
         return { ok: false, error: settlementSupport.message }
       }
-      const ephemeral =
-        deps.generateEphemeralKeypair?.() ?? generateOrderEphemeralKeypair()
+      const clientOrderId = randomUUID()
       const preparedPreflight = await maybePreparePreflightSplitForOrder({
         client: context.client,
         mintUrl: context.profile.mintUrl,
@@ -635,7 +638,7 @@ export async function dispatch(
         amountSats: amountSubunits,
         timeInForce: orderParams.timeInForce,
         preflightSplit: orderParams.preflightSplit,
-        ephemeralPubkey: ephemeral.publicKeyHex,
+        clientOrderId,
       })
       let participationScore: DaemonParticipationScorePreflightResult
       try {
@@ -660,7 +663,7 @@ export async function dispatch(
           price: orderParams.price,
           amountSubunits,
           timeInForce: orderParams.timeInForce,
-          ephemeralPubkey: ephemeral.publicKeyHex,
+          clientOrderId,
         })
       } catch (err) {
         if (preparedPreflight) {
@@ -677,7 +680,7 @@ export async function dispatch(
       }
       const local = await recordSubmittedOrder(
         orderParams.marketId,
-        ephemeral.publicKeyHex,
+        clientOrderId,
         submitted,
         preparedPreflight,
         orderParams.tokenSide,
@@ -685,14 +688,12 @@ export async function dispatch(
         orderParams.price,
         amountSubunits,
       )
-      await updateSecrets((current, now) => {
-        current.orderEphemeralKeys[submitted.orderId] = {
-          orderId: submitted.orderId,
-          marketId: orderParams.marketId,
-          privateKeyHex: ephemeral.privateKeyHex,
-          publicKeyHex: ephemeral.publicKeyHex,
-          createdAt: now,
-        }
+      await submitPendingEphemeralPubkeys({
+        client: context.client,
+        marketId: orderParams.marketId,
+        orderId: submitted.orderId,
+        pendingPubkeySubmissions: submitted.pendingPubkeySubmissions,
+        generateEphemeralKeypair: deps.generateEphemeralKeypair,
       })
       await startTradeRuntimeBestEffort(deps.tradeRuntime)
       return {
@@ -1132,6 +1133,40 @@ function shouldRetryOrderValidationWithMarketUnit(
   return price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSubunits >= DEFAULT_SAT_MARKET_DIVISIBILITY
 }
 
+async function submitPendingEphemeralPubkeys(input: {
+  client: EngineClientLike
+  marketId: string
+  orderId: string
+  pendingPubkeySubmissions?: SubmitOrderResponse['pendingPubkeySubmissions']
+  generateEphemeralKeypair?: typeof generateOrderEphemeralKeypair
+}): Promise<void> {
+  for (const submission of input.pendingPubkeySubmissions ?? []) {
+    if (!input.client.submitEphemeralPubkey) {
+      throw new Error('engine client does not support ephemeral pubkey submission')
+    }
+    const existing = (await readSecrets())?.orderEphemeralKeys[submission.tradeId]
+    const ephemeral = existing
+      ? {
+          privateKeyHex: existing.privateKeyHex,
+          publicKeyHex: existing.publicKeyHex,
+        }
+      : input.generateEphemeralKeypair?.() ?? generateOrderEphemeralKeypair()
+    if (!existing) {
+      await updateSecrets((current, now) => {
+        current.orderEphemeralKeys[submission.tradeId] = {
+          orderId: input.orderId,
+          tradeId: submission.tradeId,
+          marketId: input.marketId,
+          privateKeyHex: ephemeral.privateKeyHex,
+          publicKeyHex: ephemeral.publicKeyHex,
+          createdAt: now,
+        }
+      })
+    }
+    await input.client.submitEphemeralPubkey(submission.tradeId, ephemeral.publicKeyHex)
+  }
+}
+
 async function maybePreparePreflightSplitForOrder(input: {
   client: EngineClientLike
   mintUrl: string
@@ -1143,7 +1178,7 @@ async function maybePreparePreflightSplitForOrder(input: {
   amountSats: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
   preflightSplit?: boolean
-  ephemeralPubkey: string
+  clientOrderId: string
 }): Promise<PreparedPreflightSplit | null> {
   if (input.preflightSplit !== true) return null
   if (input.side !== 'Buy' || input.timeInForce !== 'GTC') return null
@@ -1174,7 +1209,7 @@ async function maybePreparePreflightSplitForOrder(input: {
   }
   const marketUnit = await loadMarketUnit(input.client, market.conditionId)
 
-  const reservationId = `order-preflight:${input.ephemeralPubkey}`
+  const reservationId = `order-preflight:${input.clientOrderId}`
   const keepOutcomeSetId =
     input.tokenSide === 'Complement' ? complement : market.outcomeSetId
   const lockOutcomeSetId =

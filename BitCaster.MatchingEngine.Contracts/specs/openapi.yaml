@@ -325,6 +325,87 @@ paths:
         '401':
           description: Missing or invalid NIP-98 authentication
 
+  /api/v1/orders/mine:
+    get:
+      operationId: listMyOrders
+      summary: List authenticated user's orders for a condition
+      security:
+        - nip98: []
+      description: >
+        Returns the caller's live resting orders plus bounded recent order
+        history for the requested condition. The conditionId query parameter
+        is required to avoid global user-order scans.
+      parameters:
+        - name: conditionId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Caller-owned orders for the condition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMyOrdersResponse'
+        '400':
+          description: Missing or invalid conditionId
+        '401':
+          description: Missing or invalid NIP-98 authentication
+
+  /api/v1/trades/{tradeId}/ephemeral-pubkey:
+    post:
+      operationId: submitTradeEphemeralPubkey
+      summary: Submit match-time ephemeral pubkey for a pending trade
+      security:
+        - nip98: []
+      description: >
+        Submits the caller's compressed secp256k1 ephemeral pubkey for a
+        pending matched trade. The conditionId query parameter identifies the
+        condition-local order book that currently owns the pending match.
+      parameters:
+        - name: tradeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: conditionId
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitEphemeralPubkeyRequest'
+      responses:
+        '200':
+          description: Ephemeral pubkey accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmitEphemeralPubkeyResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                type: string
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '404':
+          description: Trade not found or caller is not a party
+        '409':
+          description: Pubkey already differs or submission deadline expired
+
   /api/v1/{marketId}/orders/{orderId}:
     get:
       operationId: getOrderStatus
@@ -793,7 +874,9 @@ components:
         "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public
         market IDs never contain finite outcome-set separators such as "|";
         use SubmitOrderRequest.tokenSide to choose the primitive outcome token
-        or its one-vs-rest complement.
+        or its one-vs-rest complement. Binary YES/NO markets expose only the
+        YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement
+        on that YES route, and "{conditionId}-NO" is not a valid market ID.
 
     ConditionId:
       name: conditionId
@@ -858,15 +941,11 @@ components:
         means the selected primitive outcome named by outcomeId; `Complement`
         means the one-vs-rest complement of that outcome.
 
-        Note on binary YES/NO markets: for historical reasons, both YES and
-        NO are exposed as separate primitive outcome routes (cond-YES and
-        cond-NO), even though NO is technically the complement of YES. This
-        means binary clients can trade NO via either cond-NO (TokenSide:
-        Outcome) or cond-YES (TokenSide: Complement) — both resolve to the
-        same internal order book. Categorical markets (3+ outcomes) follow
-        the cleaner model: only atomic outcomes get public routes, and
-        complement collections are accessed via TokenSide: Complement on
-        the corresponding atomic route.
+        Note on binary YES/NO markets: only the YES route is public. Trade YES
+        with tokenSide=Outcome on cond-YES, and trade NO with
+        tokenSide=Complement on cond-YES. Categorical markets (3+ outcomes)
+        also expose atomic outcome routes only; complement collections are
+        accessed via TokenSide: Complement on the corresponding atomic route.
 
     OrderType:
       type: string
@@ -1147,7 +1226,7 @@ components:
         - side
         - price
         - amountSubunits
-        - ephemeralPubkey
+        - clientOrderId
       properties:
         outcomeId:
           type: string
@@ -1171,16 +1250,9 @@ components:
         timeInForce:
           $ref: '#/components/schemas/TimeInForce'
           default: GTC
-        ephemeralPubkey:
+        clientOrderId:
           type: string
-          pattern: '^[0-9a-fA-F]{66}$'
-          description: >
-            Hex-encoded compressed secp256k1 pubkey (33 bytes, 66 hex chars)
-            generated by the client per-order. Used by the matching engine to
-            route the counterparty's encrypted atomic-swap messages back to
-            this order's submitter. The corresponding private key stays on the
-            client and is the only thing that can decrypt and sign swap
-            payloads — the engine never sees it.
+          description: Client-supplied idempotency key scoped to the authenticated pubkey and condition.
         comment:
           oneOf:
             - $ref: '#/components/schemas/NostrKind1Event'
@@ -1335,11 +1407,6 @@ components:
           type: string
           format: date-time
           nullable: true
-        ephemeralPubkey:
-          type: string
-          nullable: true
-          pattern: '^[0-9a-fA-F]{66}$'
-          description: Order-level ephemeral pubkey supplied at submit time.
         baseAsset:
           allOf:
             - $ref: '#/components/schemas/BaseAsset'
@@ -1366,6 +1433,76 @@ components:
           items:
             $ref: '#/components/schemas/RestingOrderResponse'
 
+    OrderEntry:
+      type: object
+      required:
+        - orderId
+        - marketId
+        - conditionId
+        - side
+        - price
+        - amountSubunits
+        - remainingAmountSubunits
+        - tokenSide
+        - status
+        - placedAt
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        marketId:
+          type: string
+        conditionId:
+          type: string
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        price:
+          $ref: '#/components/schemas/Probability'
+        amountSubunits:
+          $ref: '#/components/schemas/CollateralSubunits'
+        remainingAmountSubunits:
+          $ref: '#/components/schemas/CollateralSubunits'
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
+        status:
+          type: string
+          enum: [Resting, Filled, Cancelled, Matched]
+        placedAt:
+          type: string
+          format: date-time
+        filledAt:
+          type: string
+          format: date-time
+          nullable: true
+        tradeId:
+          type: string
+          format: uuid
+          nullable: true
+        deadline:
+          type: string
+          format: date-time
+          nullable: true
+        pubkeySubmitted:
+          type: boolean
+          nullable: true
+        clientOrderId:
+          type: string
+          nullable: true
+
+    ListMyOrdersResponse:
+      type: object
+      required:
+        - orders
+      properties:
+        orders:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/OrderEntry'
+        nextCursor:
+          type: string
+          nullable: true
+
     SubmitOrderResponse:
       type: object
       required:
@@ -1373,7 +1510,7 @@ components:
         - status
         - remainingAmountSubunits
         - fills
-        - ephemeralPubkey
+        - pendingPubkeySubmissions
         - baseAsset
         - divisibility
       properties:
@@ -1394,12 +1531,10 @@ components:
           items:
             $ref: '#/components/schemas/Fill'
           description: List of fills produced by this order. Empty if no matches.
-        ephemeralPubkey:
-          type: string
-          pattern: '^[0-9a-fA-F]{66}$'
-          description: >
-            Echoes the ephemeralPubkey the client submitted. Lets clients
-            confirm round-trip before they discard the corresponding privkey.
+        pendingPubkeySubmissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PendingPubkeySubmission'
         baseAsset:
           allOf:
             - $ref: '#/components/schemas/BaseAsset'
@@ -1428,6 +1563,52 @@ components:
           items:
             $ref: '#/components/schemas/BatchSubmitOrderRequestItem'
 
+    PendingPubkeySubmission:
+      type: object
+      required:
+        - tradeId
+        - role
+        - fillAmount
+        - deadline
+      properties:
+        tradeId:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [maker, taker]
+        fillAmount:
+          $ref: '#/components/schemas/CollateralSubunits'
+        deadline:
+          type: string
+          format: date-time
+
+    SubmitEphemeralPubkeyRequest:
+      type: object
+      required:
+        - ephemeralPubkey
+      properties:
+        ephemeralPubkey:
+          type: string
+          description: 33-byte compressed secp256k1 public key as lowercase hex.
+          pattern: '^(02|03)[0-9a-fA-F]{64}$'
+
+    SubmitEphemeralPubkeyResponse:
+      type: object
+      required:
+        - tradeId
+        - role
+        - bothReceived
+      properties:
+        tradeId:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [maker, taker]
+        bothReceived:
+          type: boolean
+
     BatchSubmitOrderRequestItem:
       type: object
       required:
@@ -1437,13 +1618,11 @@ components:
         - side
         - price
         - amountSubunits
-        - ephemeralPubkey
+        - clientOrderId
       properties:
         clientOrderId:
-          type:
-            - string
-            - 'null'
-          description: Optional client correlation id; not an idempotency key.
+          type: string
+          description: Client-supplied idempotency key scoped to the authenticated pubkey and condition.
         marketId:
           type: string
           description: Visible market id for this item. Must belong to the route conditionId.
@@ -1466,9 +1645,6 @@ components:
             - string
             - 'null'
           format: date-time
-        ephemeralPubkey:
-          type: string
-          pattern: '^[0-9a-fA-F]{66}$'
 
     BatchSubmitOrdersResponse:
       type: object
@@ -1517,11 +1693,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Fill'
-        ephemeralPubkey:
-          type:
-            - string
-            - 'null'
-          pattern: '^[0-9a-fA-F]{66}$'
+        pendingPubkeySubmissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PendingPubkeySubmission'
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
         divisibility:
@@ -1552,8 +1727,7 @@ components:
         - invalidPrice
         - invalidAmount
         - invalidTimeInForce
-        - invalidEphemeralPubkey
-        - duplicateEphemeralPubkey
+        - duplicateClientOrderId
         - unsupportedOrder
         - bookRejected
 

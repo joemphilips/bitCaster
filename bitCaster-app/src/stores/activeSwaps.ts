@@ -7,9 +7,9 @@
  * each one, the ciphertexts received from the counterparty, and the small bits
  * of seller/buyer state that must survive across SignalR callbacks.
  *
- * The ephemeral private key never lives here — `pendingTrades` is the
- * authoritative source. We hold only `tradeId` plus a reference back into
- * `pendingTrades` via the `orderId` that produced the fill.
+ * The ephemeral keypair is generated at match time by the
+ * `pendingPubkeySubmissions` flow and copied here only after the trade has been
+ * promoted to active settlement work.
  *
  * Why in-memory and not sessionStorage / localStorage:
  *   - Phase scope per the plan: tab refreshes mid-handshake are out of scope.
@@ -74,11 +74,12 @@ export interface ActiveSwap {
   tradeId: string
   /** The order whose fill triggered this swap. */
   orderId: string
+  clientOrderId?: string
   marketId: string
   /**
-   * Ephemeral keypair seeded from `pendingTrades` at promote-time. Captured
-   * here so the swap can survive even after the pending-trade entry is
-   * evicted on terminal order status. Both halves are hex.
+   * Ephemeral keypair seeded from `pendingPubkeySubmissions` at promote-time.
+   * Captured here so the swap can survive even after the pending-pubkey entry
+   * is evicted on terminal settlement status. Both halves are hex.
    */
   ephemeralPrivkeyHex: string
   ephemeralPubkeyHex: string
@@ -119,6 +120,7 @@ interface ActiveSwapsState {
   promote: (init: {
     tradeId: string
     orderId: string
+    clientOrderId?: string
     marketId: string
     ephemeralPrivkeyHex: string
     ephemeralPubkeyHex: string
@@ -174,6 +176,7 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
   promote: ({
     tradeId,
     orderId,
+    clientOrderId,
     marketId,
     ephemeralPrivkeyHex,
     ephemeralPubkeyHex,
@@ -189,6 +192,7 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
       const swap: ActiveSwap = {
         tradeId,
         orderId,
+        clientOrderId,
         marketId,
         ephemeralPrivkeyHex,
         ephemeralPubkeyHex,

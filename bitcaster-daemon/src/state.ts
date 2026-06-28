@@ -15,6 +15,7 @@ import type {
   SwapFailure,
 } from '@bitcaster-market/client-sdk/swapFailure'
 import { ensureProfileDir, profileDir } from './profile.ts'
+import { readSecrets } from './secrets.ts'
 
 export interface CashuProofRecord {
   id?: string
@@ -114,7 +115,7 @@ export interface LocalOrderRecord {
   priceSubunits?: number
   amountSubunits?: number
   status: string
-  ephemeralPubkey?: string
+  clientOrderId?: string
   preflightSplit?: LocalOrderPreflightSplit
   baseAsset?: string | null
   divisibility?: number
@@ -635,7 +636,7 @@ export async function listProofOperations(
 
 export async function recordSubmittedOrder(
   marketId: string,
-  ephemeralPubkey: string,
+  clientOrderId: string,
   engineResponse: unknown,
   preflightSplit?: LocalOrderPreflightSplit | null,
   tokenSide?: 'Outcome' | 'Complement',
@@ -651,7 +652,7 @@ export async function recordSubmittedOrder(
     marketId,
     orderId,
     engineResponse,
-    ephemeralPubkey,
+    clientOrderId,
     preflightSplit,
     tokenSide,
     side,
@@ -691,7 +692,7 @@ function upsertOrderFromEngine(
   marketId: string,
   orderId: string,
   engineStatus: unknown,
-  ephemeralPubkey?: string,
+  clientOrderId?: string,
   preflightSplit?: LocalOrderPreflightSplit | null,
   tokenSide?: 'Outcome' | 'Complement',
   side?: 'Buy' | 'Sell',
@@ -723,7 +724,9 @@ function upsertOrderFromEngine(
       ...(nextPriceSubunits != null ? { priceSubunits: nextPriceSubunits } : {}),
       ...(nextAmountSubunits != null ? { amountSubunits: nextAmountSubunits } : {}),
       status,
-      ephemeralPubkey: ephemeralPubkey ?? existing?.ephemeralPubkey,
+      ...((clientOrderId ?? existing?.clientOrderId)
+        ? { clientOrderId: clientOrderId ?? existing?.clientOrderId }
+        : {}),
       ...(baseAsset ? { baseAsset } : {}),
       ...(divisibility ? { divisibility } : {}),
       ...(preflightSplit === null
@@ -778,8 +781,9 @@ function upsertOrderFromEngine(
 export async function recordTradeCreated(
   payload: DaemonTradeCreatedPayload,
 ): Promise<LocalSwapRecord | null> {
+  const ownEphemeralPubkey = (await readSecrets())?.orderEphemeralKeys[payload.tradeId]?.publicKeyHex
   return updateState((state, now) => {
-    const match = findOrderForTradeCreated(state, payload)
+    const match = findOrderForTradeCreated(state, payload, ownEphemeralPubkey)
     if (!match) return null
 
     const existing = state.swaps[payload.tradeId]
@@ -801,7 +805,7 @@ export async function recordTradeCreated(
       order.updatedAt = now
     }
     const decision = decideTradeCreated({
-      ownEphemeralPubkey: match.ephemeralPubkey,
+      ownEphemeralPubkey: match.ownEphemeralPubkey,
       sellerPubkey: payload.sellerPubkey,
       buyerPubkey: payload.buyerPubkey,
       sellerLocktime: payload.sellerLocktime,
@@ -1113,9 +1117,15 @@ function addAmount(
 }
 
 function extractTradeIds(value: unknown): string[] {
-  if (!isRecord(value) || !Array.isArray(value.fills)) return []
-  return value.fills
-    .map((fill) => (isRecord(fill) ? fill.tradeId : undefined))
+  if (!isRecord(value)) return []
+  const fillTradeIds = Array.isArray(value.fills)
+    ? value.fills.map((fill) => (isRecord(fill) ? fill.tradeId : undefined))
+    : []
+  const pendingTradeIds = Array.isArray(value.pendingPubkeySubmissions)
+    ? value.pendingPubkeySubmissions.map((submission) =>
+        isRecord(submission) ? submission.tradeId : undefined)
+    : []
+  return [...fillTradeIds, ...pendingTradeIds]
     .filter((tradeId): tradeId is string => typeof tradeId === 'string' && tradeId.length > 0)
 }
 
@@ -1175,91 +1185,19 @@ function isProofOperationState(value: unknown): value is ProofOperationState {
 function findOrderForTradeCreated(
   state: DaemonState,
   payload: DaemonTradeCreatedPayload,
-): { orderId: string; marketId: string; ephemeralPubkey: string } | null {
-  const seller = payload.sellerPubkey.toLowerCase()
-  const buyer = payload.buyerPubkey.toLowerCase()
+  ownEphemeralPubkey: string | undefined,
+): { orderId: string; marketId: string; ownEphemeralPubkey: string } | null {
+  if (!ownEphemeralPubkey) return null
   for (const order of Object.values(state.orders)) {
-    const ephemeralPubkey = order.ephemeralPubkey?.toLowerCase()
-    if (!ephemeralPubkey) continue
-    const role =
-      ephemeralPubkey === seller
-        ? 'seller'
-        : ephemeralPubkey === buyer
-          ? 'buyer'
-          : null
-    if (role && order.tradeIds.includes(payload.tradeId)) {
+    if (order.tradeIds.includes(payload.tradeId)) {
       return {
         orderId: order.orderId,
         marketId: order.marketId,
-        ephemeralPubkey: order.ephemeralPubkey!,
-      }
-    }
-    if (role && tradeCreatedMatchesOrderPath(order, payload, role)) {
-      return {
-        orderId: order.orderId,
-        marketId: order.marketId,
-        ephemeralPubkey: order.ephemeralPubkey!,
+        ownEphemeralPubkey,
       }
     }
   }
   return null
-}
-
-function tradeCreatedMatchesOrderPath(
-  order: LocalOrderRecord,
-  payload: DaemonTradeCreatedPayload,
-  role: 'seller' | 'buyer',
-): boolean {
-  const settlementKind = payload.settlementKind ?? 'DirectSwap'
-  if (settlementKind === 'DirectSwap') {
-    return order.marketId === payload.marketId
-  }
-
-  if (settlementKind !== 'Mint') {
-    return true
-  }
-
-  if (!payload.sellerKeepOutcomeSetId || !payload.sellerLockOutcomeSetId) {
-    return true
-  }
-
-  if (
-    order.marketId === payload.marketId &&
-    (role === 'buyer' || order.tokenSide === 'Complement')
-  ) {
-    return true
-  }
-
-  const market = parseMarketId(payload.marketId)
-  if (!market) return true
-
-  const sellerKeepMarketId = `${market.conditionId}-${payload.sellerKeepOutcomeSetId}`
-  const sellerLockMarketId = `${market.conditionId}-${payload.sellerLockOutcomeSetId}`
-  if (order.tokenSide === 'Complement') {
-    if (role === 'buyer' && order.marketId === sellerKeepMarketId) {
-      return true
-    }
-    if (role === 'seller' && order.marketId === sellerLockMarketId) {
-      return true
-    }
-  }
-
-  const expectedOutcomeSetId =
-    role === 'seller'
-      ? payload.sellerKeepOutcomeSetId
-      : payload.sellerLockOutcomeSetId
-  return order.marketId === `${market.conditionId}-${expectedOutcomeSetId}`
-}
-
-function parseMarketId(
-  marketId: string,
-): { conditionId: string; outcomeSetId: string } | null {
-  const dash = marketId.lastIndexOf('-')
-  if (dash <= 0 || dash >= marketId.length - 1) return null
-  return {
-    conditionId: marketId.slice(0, dash),
-    outcomeSetId: marketId.slice(dash + 1),
-  }
 }
 
 function mapEngineStateToStep(

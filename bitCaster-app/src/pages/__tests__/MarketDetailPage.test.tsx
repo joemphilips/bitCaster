@@ -71,6 +71,7 @@ vi.mock("@/lib/marketHub", () => ({
     mocks.matchedHandlers.set(marketId, handler);
     return () => mocks.matchedHandlers.delete(marketId);
   }),
+  onOrderCancelled: vi.fn(() => () => {}),
   onTradeExecuted: vi.fn((marketId: string, handler: (trade: TradeExecuted) => void) => {
     mocks.tradeExecutedHandlers.set(marketId, handler);
     return () => mocks.tradeExecutedHandlers.delete(marketId);

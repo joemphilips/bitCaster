@@ -10,7 +10,7 @@ import {
   replaceProofs,
 } from '@/stores/proof-db'
 import { usePartialLockFailuresStore } from '@/stores/partialLockFailures'
-import { usePendingTradesStore } from '@/stores/pendingTrades'
+import { usePendingPubkeySubmissionsStore } from '@/stores/pendingPubkeySubmissions'
 import { useWalletStore } from '@/stores/wallet'
 import type { PartialLockHeldRecord } from '@bitcaster/client-sdk/swapFailure'
 import { parseCashuProofUnit, type CashuProofUnit } from '@bitcaster/client-sdk/marketUnits'
@@ -43,8 +43,8 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
   if (!record) return
   if (!record.orderId || !record.mintUrl) return
   const mintUrl = record.mintUrl
-  const pending = usePendingTradesStore.getState().get(record.orderId)
-  if (!pending) return
+  const pendingKey = usePendingPubkeySubmissionsStore.getState().byTradeId[tradeId]
+  if (!pendingKey) return
 
   const locked = await getReservedProofs(tradeId)
   if (locked.length === 0) {
@@ -70,7 +70,7 @@ async function sweepOnePartialLockFailure(tradeId: string): Promise<void> {
 
   try {
     const wallet = await useWalletStore.getState().getWallet(mintUrl)
-    const refundKey = hexToBytes(pending.ephemeralPrivkey)
+    const refundKey = hexToBytes(pendingKey.privkey)
     const witnessed = locked.map((proof) => ({
       ...proof,
       witness: createP2PKWitness(

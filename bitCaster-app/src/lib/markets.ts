@@ -15,6 +15,7 @@ import type {
 import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
+  submitEphemeralPubkey as sdkSubmitEphemeralPubkey,
   type SubmitOrderRequest as SdkSubmitOrderRequest,
 } from "@bitcaster/client-sdk/engineClient";
 import {
@@ -31,7 +32,9 @@ export { requiredMarketCreationOutcomeCollections } from "@bitcaster/client-sdk/
 
 // Types from generated OpenAPI spec
 
-export type SubmitOrderRequest = components["schemas"]["SubmitOrderRequest"];
+export type SubmitOrderRequest = Omit<components["schemas"]["SubmitOrderRequest"], "clientOrderId"> & {
+  clientOrderId?: string;
+};
 export type SubmitOrderResponse = components["schemas"]["SubmitOrderResponse"];
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type LevelDto = components["schemas"]["LevelDto"];
@@ -761,10 +764,33 @@ export async function submitOrder(
   marketId: string,
   params: SubmitOrderRequest,
 ): Promise<SubmitOrderResponse> {
+  const request = {
+    ...params,
+    clientOrderId: params.clientOrderId ?? crypto.randomUUID(),
+  } as SdkSubmitOrderRequest;
   return (await createAuthenticatedBrowserEngineClient().submitOrder(
     marketId,
-    params as SdkSubmitOrderRequest,
-  )) as SubmitOrderResponse;
+    request,
+  )) as unknown as SubmitOrderResponse;
+}
+
+export async function submitEphemeralPubkey(
+  tradeId: string,
+  pubkey: string,
+): Promise<void> {
+  await sdkSubmitEphemeralPubkey(
+    window.location.origin,
+    tradeId,
+    pubkey,
+    null,
+    fetch,
+    async ({ url, method, bodyText }) => {
+      const payloadHash = bodyText
+        ? await sha256Hex(new TextEncoder().encode(bodyText))
+        : undefined;
+      return generateNip98Header(url, method, payloadHash);
+    },
+  );
 }
 
 export async function signTradeComment(

@@ -1230,9 +1230,9 @@ export class DaemonSwapExecutor {
     ])
     const swap = state?.swaps[tradeId]
     if (!profile || !secrets || !swap || !swap.role || !swap.orderId) return null
-    const key = secrets.orderEphemeralKeys[swap.orderId]
+    const key = secrets.orderEphemeralKeys[tradeId] ?? secrets.orderEphemeralKeys[swap.orderId]
     if (!key) {
-      await this.fail(tradeId, `missing ephemeral key for order ${swap.orderId}`)
+      await this.fail(tradeId, `missing ephemeral key for trade ${tradeId}`)
       return null
     }
     if (

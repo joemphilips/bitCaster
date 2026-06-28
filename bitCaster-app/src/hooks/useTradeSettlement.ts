@@ -11,10 +11,11 @@
  * Lifecycle per swap:
  *   1. `activeSwaps.promote()` — populated either by order-status polling when
  *      a direct fill with a tradeId is observed, or by matching a pushed
- *      complementary `TradeCreated` event to a pending order's ephemeral key.
+ *      complementary `TradeCreated` event to a pending order plus the
+ *      match-time ephemeral key in `pendingPubkeySubmissions`.
  *   2. `joinTrade(tradeId)` — register interest with the engine.
  *   3. `TradeCreated` — decide the local role from sellerPubkey vs our
- *      ephemeralPubkey, and remember locktimes.
+ *      match-time ephemeral pubkey, and remember locktimes.
  *   4. Drive the role-specific message exchange.
  *      - Seller: `sellerPrepareSwap`, send `adaptor-point` and
  *        `locked-proofs-seller`.
@@ -50,6 +51,7 @@ import {
   usePendingTradesStore,
   type PendingTrade,
 } from "@/stores/pendingTrades";
+import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 import { emitTradeTerminal } from "@/lib/tradeTerminalEvents";
 import { useWalletStore } from "@/stores/wallet";
 import { Mint as CashuMint } from "@cashu/cashu-ts";
@@ -605,9 +607,16 @@ async function handleTradeCreatedOnce(
     swap = promotePendingTradeFromTradeCreated(payload);
   }
   if (!swap) return;
+  const ownEphemeralPubkey = getPendingPubkeyForTrade(payload.tradeId)?.pubkey;
+  if (!ownEphemeralPubkey) {
+    useActiveSwapsStore
+      .getState()
+      .setStep(payload.tradeId, "failed", "Missing match-time ephemeral pubkey.");
+    return;
+  }
 
   const decision = decideTradeCreated({
-    ownEphemeralPubkey: swap.ephemeralPubkeyHex,
+    ownEphemeralPubkey,
     sellerPubkey: payload.sellerPubkey,
     buyerPubkey: payload.buyerPubkey,
     sellerLocktime: payload.sellerLocktime,
@@ -705,13 +714,16 @@ function promotePendingTradeFromTradeCreated(
   const match = findPendingTradeForTradeCreated(payload);
   if (!match) return null;
   const { pendingTrade } = match;
+  const pendingPubkey = getPendingPubkeyForTrade(payload.tradeId);
+  if (!pendingPubkey) return null;
 
   useActiveSwapsStore.getState().promote({
     tradeId: payload.tradeId,
     orderId: pendingTrade.orderId,
+    clientOrderId: pendingTrade.clientOrderId,
     marketId: pendingTrade.marketId,
-    ephemeralPrivkeyHex: pendingTrade.ephemeralPrivkey,
-    ephemeralPubkeyHex: pendingTrade.ephemeralPubkey,
+    ephemeralPrivkeyHex: pendingPubkey.privkey,
+    ephemeralPubkeyHex: pendingPubkey.pubkey,
     baseAsset: pendingTrade.baseAsset,
     divisibility: pendingTrade.divisibility,
     side: pendingTrade.side,
@@ -726,18 +738,15 @@ function promotePendingTradeFromTradeCreated(
 function findPendingTradeForTradeCreated(
   payload: TradeCreatedPayload,
 ): { pendingTrade: PendingTrade; role: SwapRole } | null {
-  const sellerPubkey = payload.sellerPubkey.toLowerCase();
-  const buyerPubkey = payload.buyerPubkey.toLowerCase();
   for (const pendingTrade of Object.values(
     usePendingTradesStore.getState().byOrderId,
   )) {
-    const pubkey = pendingTrade.ephemeralPubkey.toLowerCase();
-    const role: SwapRole | null =
-      pubkey === sellerPubkey
-        ? "seller"
-        : pubkey === buyerPubkey
-          ? "buyer"
-          : null;
+    const pendingPubkey = getPendingPubkeyForTrade(payload.tradeId);
+    const role = pendingPubkey?.pubkey.toLowerCase() === payload.sellerPubkey.toLowerCase()
+      ? "seller"
+      : pendingPubkey?.pubkey.toLowerCase() === payload.buyerPubkey.toLowerCase()
+        ? "buyer"
+        : null;
     if (
       role &&
       tradeCreatedMatchesPendingOrderPath(pendingTrade, payload, role)
@@ -746,6 +755,10 @@ function findPendingTradeForTradeCreated(
     }
   }
   return null;
+}
+
+function getPendingPubkeyForTrade(tradeId: string) {
+  return usePendingPubkeySubmissionsStore.getState().byTradeId[tradeId];
 }
 
 function tradeCreatedMatchesPendingOrderPath(

@@ -2,6 +2,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useActiveSwapsStore } from "@/stores/activeSwaps";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 import { useToastStore } from "@/stores/toast";
 
@@ -108,6 +109,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   useActiveSwapsStore.setState({ byTradeId: {} });
   usePendingTradesStore.setState({ byOrderId: {} });
+  usePendingPubkeySubmissionsStore.setState({ byTradeId: {} });
   usePartialLockFailuresStore.setState({ byTradeId: {} });
   useToastStore.setState({ toasts: [] });
   mockJoinOrder.mockResolvedValue(undefined);
@@ -205,6 +207,23 @@ beforeEach(() => {
   });
 });
 
+function seedPendingPubkey(
+  tradeId: string,
+  orderId = "order-pending",
+  marketId = "cond-YES",
+  pubkey = "02" + "22".repeat(32),
+) {
+  usePendingPubkeySubmissionsStore.getState().addPendingPubkey({
+    tradeId,
+    orderId,
+    marketId,
+    pubkey,
+    privkey: "11".repeat(32),
+    deadline: new Date(Date.now() + 60_000).toISOString(),
+    submitted: true,
+  });
+}
+
 describe("useTradeSettlement", () => {
   it("does not start the private TradeHub when no swap is active", () => {
     renderHook(() => useTradeSettlement(true));
@@ -267,8 +286,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
       divisibility: 2_000,
@@ -289,10 +307,11 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       submittedAt: Date.now(),
     });
+    seedPendingPubkey("trade-status-retry");
+    seedPendingPubkey("trade-status-retry");
 
     renderHook(() => useTradeSettlement(true));
 
@@ -324,10 +343,10 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       submittedAt: Date.now(),
     });
+    seedPendingPubkey("trade-status-retry");
 
     renderHook(() => useTradeSettlement(true));
 
@@ -359,8 +378,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       submittedAt: Date.now(),
     });
 
@@ -389,8 +407,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       submittedAt: Date.now(),
     });
 
@@ -409,8 +426,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-NO",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
       priceSubunits: 500,
@@ -440,6 +456,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-pending");
       callbacks.onTradeCreated({
         tradeId: "trade-pending",
         sellerPubkey: "02" + "33".repeat(32),
@@ -476,8 +493,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-usd",
       marketId: "cond-NO",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       baseAsset: "usd",
       divisibility: 2_000,
       side: "Buy",
@@ -508,6 +524,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-unit-mismatch");
       callbacks.onTradeCreated({
         tradeId: "trade-unit-mismatch",
         sellerPubkey: "02" + "33".repeat(32),
@@ -542,8 +559,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-price-mismatch",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       baseAsset: "sat",
       divisibility: 10_000,
       side: "Sell",
@@ -572,6 +588,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-price-mismatch");
       callbacks.onTradeCreated({
         tradeId: "trade-price-mismatch",
         sellerPubkey: "02" + "22".repeat(32),
@@ -605,8 +622,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-legacy-no-economics",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       baseAsset: "sat",
       divisibility: 10_000,
       submittedAt: Date.now(),
@@ -631,6 +647,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-legacy-no-economics");
       callbacks.onTradeCreated({
         tradeId: "trade-legacy-no-economics",
         sellerPubkey: "02" + "22".repeat(32),
@@ -663,8 +680,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-usd-canonical",
       marketId: "cond-NO",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       baseAsset: "usd",
       divisibility: 2_000,
       side: "Buy",
@@ -695,6 +711,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-missing-canonical");
       callbacks.onTradeCreated({
         tradeId: "trade-missing-canonical",
         sellerPubkey: "02" + "33".repeat(32),
@@ -728,8 +745,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-usd-canonical-only",
       marketId: "cond-NO",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       baseAsset: "usd",
       divisibility: 1_000,
       side: "Buy",
@@ -760,6 +776,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-canonical-only");
       callbacks.onTradeCreated({
         tradeId: "trade-canonical-only",
         sellerPubkey: "02" + "33".repeat(32),
@@ -791,8 +808,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-nondefault-divisibility-no-unit",
       marketId: "cond-NO",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
       priceSubunits: 500,
@@ -821,6 +837,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-nondefault-divisibility-no-unit");
       callbacks.onTradeCreated({
         tradeId: "trade-nondefault-divisibility-no-unit",
         sellerPubkey: "02" + "33".repeat(32),
@@ -860,8 +877,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-nondefault-divisibility-expected",
       marketId: "cond-NO",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       baseAsset: "sat",
       divisibility: 2_000,
       side: "Buy",
@@ -892,6 +908,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-nondefault-divisibility-expected");
       callbacks.onTradeCreated({
         tradeId: "trade-nondefault-divisibility-expected",
         sellerPubkey: "02" + "33".repeat(32),
@@ -930,8 +947,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-nondefault-divisibility-mismatch",
       marketId: "cond-NO",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       baseAsset: "sat",
       divisibility: 2_000,
       side: "Buy",
@@ -962,6 +978,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-nondefault-divisibility-mismatch");
       callbacks.onTradeCreated({
         tradeId: "trade-nondefault-divisibility-mismatch",
         sellerPubkey: "02" + "33".repeat(32),
@@ -1001,8 +1018,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Complement",
       priceSubunits: 500,
@@ -1033,6 +1049,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-pending-seller");
       callbacks.onTradeCreated({
         tradeId: "trade-pending-seller",
         sellerPubkey: "02" + "22".repeat(32),
@@ -1091,8 +1108,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-buyer-recover",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
       priceSubunits: 500,
@@ -1125,6 +1141,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-buyer-recover");
       callbacks.onTradeCreated({
         tradeId: "trade-buyer-recover",
         sellerPubkey: "02" + "33".repeat(32),
@@ -1198,8 +1215,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-preflight",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Complement",
       priceSubunits: 500,
@@ -1235,6 +1251,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-preflight-overpay");
       callbacks.onTradeCreated({
         tradeId: "trade-preflight-overpay",
         sellerPubkey: "02" + "22".repeat(32),
@@ -1391,8 +1408,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
       priceSubunits: 500,
@@ -1426,6 +1442,7 @@ describe("useTradeSettlement", () => {
       outcomeFaceAmountSubunits: 1_000_000,
       quotePaymentSubunits: 500_000,
     };
+    seedPendingPubkey("trade-duplicate");
 
     await act(async () => callbacks.onTradeCreated(payload));
     await act(async () => callbacks.onTradeCreated(payload));
@@ -1444,8 +1461,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-pending",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Sell",
       tokenSide: "Outcome",
       priceSubunits: 500,
@@ -1477,6 +1493,7 @@ describe("useTradeSettlement", () => {
       outcomeFaceAmountSubunits: 1_000_000,
       quotePaymentSubunits: 500_000,
     };
+    seedPendingPubkey("trade-duplicate-inflight");
 
     await act(async () => callbacks.onTradeCreated(payload));
     await waitFor(() =>
@@ -1541,6 +1558,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-2", "order-2", "market-1", "22".repeat(32));
       callbacks.onTradeCreated({
         tradeId: "trade-2",
         sellerPubkey: "22".repeat(32),
@@ -1626,8 +1644,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-ambiguous-sat100",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       baseAsset: "sat",
       divisibility: 10_000,
       side: "Buy",
@@ -1656,6 +1673,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-ambiguous-sat100");
       callbacks.onTradeCreated({
         tradeId: "trade-ambiguous-sat100",
         sellerPubkey: "02" + "33".repeat(32),
@@ -1688,8 +1706,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-ambiguous-usd",
       marketId: "cond-NO",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       baseAsset: "usd",
       divisibility: 1_000,
       side: "Buy",
@@ -1720,6 +1737,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-ambiguous-usd-quote");
       callbacks.onTradeCreated({
         tradeId: "trade-ambiguous-usd-quote",
         sellerPubkey: "02" + "33".repeat(32),
@@ -1754,8 +1772,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-legacy-no-unit",
       marketId: "cond-NO",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
       priceSubunits: 500,
@@ -1784,6 +1801,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-nondefault-no-expected-unit");
       callbacks.onTradeCreated({
         tradeId: "trade-nondefault-no-expected-unit",
         sellerPubkey: "02" + "33".repeat(32),
@@ -1818,8 +1836,7 @@ describe("useTradeSettlement", () => {
     usePendingTradesStore.getState().add({
       orderId: "order-tokenside-mismatch",
       marketId: "cond-YES",
-      ephemeralPrivkey: "11".repeat(32),
-      ephemeralPubkey: "02" + "22".repeat(32),
+      clientOrderId: "client-order-pending",
       side: "Buy",
       tokenSide: "Outcome",
       priceSubunits: 500,
@@ -1848,6 +1865,7 @@ describe("useTradeSettlement", () => {
     };
 
     await act(async () => {
+      seedPendingPubkey("trade-tokenside-mismatch");
       callbacks.onTradeCreated({
         tradeId: "trade-tokenside-mismatch",
         sellerPubkey: "02" + "22".repeat(32),

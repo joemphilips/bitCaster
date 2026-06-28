@@ -16,6 +16,7 @@ import {
   type OrderStatusResponse,
 } from '../orderStatus'
 import { useActiveSwapsStore } from '@/stores/activeSwaps'
+import { usePendingPubkeySubmissionsStore } from '@/stores/pendingPubkeySubmissions'
 
 describe('fetchOrderStatus', () => {
   beforeEach(() => {
@@ -71,6 +72,7 @@ describe('splitMarketId', () => {
 describe('promoteNewFillsToActiveSwaps', () => {
   beforeEach(() => {
     useActiveSwapsStore.setState({ byTradeId: {} })
+    usePendingPubkeySubmissionsStore.setState({ byTradeId: {} })
   })
 
   it('skips an unchanged fill snapshot', () => {
@@ -83,6 +85,8 @@ describe('promoteNewFillsToActiveSwaps', () => {
 
   it('promotes only fills that appeared after the last observed count', () => {
     const status = orderStatusWithTradeFills('trade-a', 'trade-b', 'trade-c')
+    seedPendingPubkey('trade-b')
+    seedPendingPubkey('trade-c')
     const promoted = promoteNewFillsToActiveSwaps(status, pendingTrade(), 1)
 
     expect(promoted).toBe(2)
@@ -228,10 +232,21 @@ describe('buildOrderStatusNotifications', () => {
 function pendingTrade() {
   return {
     orderId: 'order-1',
+    clientOrderId: 'client-order-1',
     marketId: 'market-1',
-    ephemeralPubkey: '02'.padEnd(66, '0'),
-    ephemeralPrivkey: '01'.padEnd(64, '0'),
   }
+}
+
+function seedPendingPubkey(tradeId: string) {
+  usePendingPubkeySubmissionsStore.getState().addPendingPubkey({
+    tradeId,
+    orderId: 'order-1',
+    marketId: 'market-1',
+    pubkey: '02'.padEnd(66, '0'),
+    privkey: '01'.padEnd(64, '0'),
+    deadline: new Date(Date.now() + 60_000).toISOString(),
+    submitted: true,
+  })
 }
 
 function orderStatusWithTradeFills(

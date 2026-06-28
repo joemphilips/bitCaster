@@ -20,6 +20,7 @@ export interface DaemonSecrets {
 
 export interface OrderEphemeralSecret {
   orderId: string
+  tradeId?: string
   marketId: string
   privateKeyHex: string
   publicKeyHex: string

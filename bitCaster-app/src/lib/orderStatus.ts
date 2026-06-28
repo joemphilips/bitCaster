@@ -7,6 +7,7 @@ import {
   useNotificationsStore,
 } from '@/stores/notifications'
 import { useActiveSwapsStore } from '@/stores/activeSwaps'
+import { usePendingPubkeySubmissionsStore } from '@/stores/pendingPubkeySubmissions'
 import { useToastStore } from '@/stores/toast'
 import { generateNip98Header } from '@/lib/markets'
 import { BitcasterEngineClient } from '@bitcaster/client-sdk/engineClient'
@@ -44,9 +45,8 @@ function assertNever(value: never): never {
 
 type PendingTradeForPromotion = {
   orderId: string
+  clientOrderId?: string
   marketId: string
-  ephemeralPubkey: string
-  ephemeralPrivkey: string
   baseAsset?: string | null
   divisibility?: number | null
   side?: 'Buy' | 'Sell'
@@ -87,9 +87,7 @@ const POLL_INTERVAL_MS = 5_000
  * Idempotent — `promote()` is a no-op for tradeIds already present in
  * `activeSwaps`.
  *
- * Captures the ephemeral keypair from `pendingTrades` at promote-time so the
- * swap-driver keeps working after the pending-trade entry is evicted on a
- * terminal order status.
+ * Captures the per-trade ephemeral keypair from `pendingPubkeySubmissions`.
  */
 export function promoteNewFillsToActiveSwaps(
   status: OrderStatusResponse,
@@ -111,12 +109,15 @@ export function promoteFillsToActiveSwaps(
   for (const fill of fills.slice(lastFillCount)) {
     const tradeId = fill.tradeId
     if (!tradeId) continue
+    const pendingKey = usePendingPubkeySubmissionsStore.getState().byTradeId[tradeId]
+    if (!pendingKey) continue
     promote({
       tradeId,
       orderId: trade.orderId,
+      clientOrderId: trade.clientOrderId,
       marketId: trade.marketId,
-      ephemeralPrivkeyHex: trade.ephemeralPrivkey,
-      ephemeralPubkeyHex: trade.ephemeralPubkey,
+      ephemeralPrivkeyHex: pendingKey.privkey,
+      ephemeralPubkeyHex: pendingKey.pubkey,
       baseAsset: trade.baseAsset,
       divisibility: trade.divisibility,
       side: trade.side,

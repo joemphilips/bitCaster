@@ -21,6 +21,7 @@ type SanitizedActiveSwap = {
 
 type SanitizedPendingTrade = {
   orderId: string;
+  clientOrderId?: string;
   marketId: string;
   submittedAt: number;
   hasPreflightSplit: boolean;
@@ -53,6 +54,7 @@ export function getSwapDiagnostics(tradeId: string): SwapDiagnosticsSnapshot {
       orderId,
       {
         orderId: trade.orderId,
+        clientOrderId: trade.clientOrderId,
         marketId: trade.marketId,
         submittedAt: trade.submittedAt,
         hasPreflightSplit: Boolean(trade.preflightSplit),

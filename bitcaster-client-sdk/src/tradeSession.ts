@@ -117,6 +117,8 @@ export function parseIsoLocktimeSeconds(iso: string): number {
 }
 
 export function decideSwapRole(params: {
+  // ownEphemeralPubkey is now a per-trade key looked up by tradeId from the
+  // pending pubkey-submission store; it is no longer generated or stored per order.
   ownEphemeralPubkey: string
   sellerPubkey: string
   buyerPubkey: string

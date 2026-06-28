@@ -488,7 +488,7 @@ describe("submitOrder", () => {
       price: 50,
       amountSubunits: 100,
       timeInForce: "GTC",
-      ephemeralPubkey: "02".padEnd(66, "a"),
+      clientOrderId: "client-order-1",
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -497,6 +497,9 @@ describe("submitOrder", () => {
     );
     const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
     expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      clientOrderId: "client-order-1",
+    });
     expect((init.headers as Record<string, string>).Authorization).toMatch(
       /^Nostr /,
     );

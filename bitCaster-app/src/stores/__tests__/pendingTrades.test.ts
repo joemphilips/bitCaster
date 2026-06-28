@@ -5,8 +5,7 @@ function makeTrade(orderId: string, overrides: Partial<PendingTrade> = {}): Pend
   return {
     orderId,
     marketId: 'cond-Alice',
-    ephemeralPubkey: '02' + '11'.repeat(32),
-    ephemeralPrivkey: '22'.repeat(32),
+    clientOrderId: `client-${orderId}`,
     submittedAt: 1_700_000_000_000,
     ...overrides,
   }

@@ -26,10 +26,12 @@ import {
   fetchMarketComments,
   fetchMarketPriceHistory,
   fetchOrderBook,
+  generateNip98Header,
   getParticipationScore,
   mapSnapshotToOrderBook,
   priceNumeratorToPercent,
   signTradeComment,
+  submitEphemeralPubkey,
   submitOrder,
   windowPriceHistory,
   type MarketPriceHistoryResponse,
@@ -71,10 +73,12 @@ import {
   leaveMarket,
   onMatched,
   onMarketRejoined,
+  onOrderCancelled,
   onOrderBookUpdated,
   onTradeExecuted,
   type MarketStatusChanged,
 } from "@/lib/marketHub";
+import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
 import { debounce } from "@/lib/debounce";
 import { refreshOrderBook } from "@/lib/orderBookRefresh";
 import { onTradeTerminal } from "@/lib/tradeTerminalEvents";
@@ -86,6 +90,7 @@ import {
 } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
@@ -1107,6 +1112,17 @@ export function MarketDetailPage() {
     const cleanups: Array<() => void> = [];
     const refreshers = new Map<string, () => void>();
 
+    const reconcileOwnOrders = debounce(() => {
+      void new BitcasterEngineClient({
+        baseUrl: window.location.origin,
+        authorization: ({ url, method }) => generateNip98Header(url, method),
+      }).listMyOrders(id).catch((err) => {
+        console.warn("[MarketDetailPage] own-order reconciliation failed:", err);
+      });
+    }, 200);
+    reconcileOwnOrders();
+    cleanups.push(reconcileOwnOrders.cancel);
+
     for (const outcomeSetId of outcomeSetIds) {
       const liveMarketId = outcomeSetMarketId(id, outcomeSetId);
       const refreshLiveOrderBook = debounce(() => {
@@ -1143,6 +1159,14 @@ export function MarketDetailPage() {
         onMatched(liveMarketId, () => {
           if (cancelled) return;
           refreshLiveOrderBook();
+          reconcileOwnOrders();
+        }),
+      );
+      cleanups.push(
+        onOrderCancelled(liveMarketId, () => {
+          if (cancelled) return;
+          refreshLiveOrderBook();
+          reconcileOwnOrders();
         }),
       );
       cleanups.push(
@@ -1159,7 +1183,10 @@ export function MarketDetailPage() {
           refreshLiveOrderBook();
         }),
       );
-      cleanups.push(onMarketRejoined(liveMarketId, refreshLiveOrderBook));
+      cleanups.push(onMarketRejoined(liveMarketId, () => {
+        refreshLiveOrderBook();
+        reconcileOwnOrders();
+      }));
       void joinMarket(liveMarketId).catch((err) => {
         console.warn("[MarketDetailPage] joinMarket failed:", err);
       });
@@ -1609,7 +1636,7 @@ export function MarketDetailPage() {
         return;
       }
 
-      const ephemeral = generateEphemeralKeyPair();
+      const clientOrderId = crypto.randomUUID();
       let preparedPreflightSplit: PreparedPreflightSplit | undefined;
       let submitAttempted = false;
       try {
@@ -1654,7 +1681,7 @@ export function MarketDetailPage() {
                 selectedOutcomeSetId: outcomeSets.selectedOutcomeSetId,
                 complementOutcomeSetId: outcomeSets.complementOutcomeSetId,
                 amountSubunits: ticket.request.amountSubunits,
-                reservationId: `order-preflight:${ephemeral.pubkey}`,
+                reservationId: `order-preflight:${clientOrderId}`,
               });
             },
           );
@@ -1665,7 +1692,7 @@ export function MarketDetailPage() {
         submitAttempted = true;
         const response = await submitOrder(ticket.marketId, {
           ...ticket.request,
-          ephemeralPubkey: ephemeral.pubkey,
+          clientOrderId,
           ...(signedComment ? { comment: signedComment } : {}),
         });
         const acceptedBaseAsset = normalizeMarketBaseAsset(
@@ -1680,8 +1707,7 @@ export function MarketDetailPage() {
         addPendingTrade({
           orderId: response.orderId,
           marketId: ticket.marketId,
-          ephemeralPubkey: ephemeral.pubkey,
-          ephemeralPrivkey: ephemeral.privkey,
+          clientOrderId,
           baseAsset: acceptedBaseAsset,
           divisibility: acceptedDivisibility,
           side: ticket.request.side,
@@ -1691,11 +1717,24 @@ export function MarketDetailPage() {
           submittedAt: Date.now(),
           preflightSplit: preparedPreflightSplit,
         });
+        for (const pending of response.pendingPubkeySubmissions ?? []) {
+          const key = generateEphemeralKeyPair();
+          usePendingPubkeySubmissionsStore.getState().addPendingPubkey({
+            tradeId: pending.tradeId,
+            orderId: response.orderId,
+            marketId: ticket.marketId,
+            pubkey: key.pubkey,
+            privkey: key.privkey,
+            deadline: pending.deadline,
+            submitted: false,
+          });
+          await submitEphemeralPubkey(pending.tradeId, key.pubkey);
+          usePendingPubkeySubmissionsStore.getState().markSubmitted(pending.tradeId);
+        }
         promoteFillsToActiveSwaps(response.fills ?? [], {
           orderId: response.orderId,
+          clientOrderId,
           marketId: ticket.marketId,
-          ephemeralPubkey: ephemeral.pubkey,
-          ephemeralPrivkey: ephemeral.privkey,
           baseAsset: acceptedBaseAsset,
           divisibility: acceptedDivisibility,
           side: ticket.request.side,

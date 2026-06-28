@@ -3,30 +3,18 @@ import { persist } from 'zustand/middleware'
 
 /**
  * TTL for persisted entries. A pending trade older than this is assumed to be
- * abandoned (tab closed, app uninstalled, etc.) — keeping ephemeral privkeys
- * in localStorage indefinitely is an unnecessary long-lived secret.
+ * abandoned (tab closed, app uninstalled, etc.).
  */
 const PENDING_TRADE_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 /**
- * Per-order crypto material that the client generates before submitting and
- * needs to keep around until the order fully settles (or is cancelled).
- *
- * The ephemeral keypair is used by the atomic-swap protocol after the engine
- * reports MATCHED: the counterparty encrypts messages to `ephemeralPubkey`,
- * and the client decrypts them with `ephemeralPrivkey`. The privkey never
- * leaves the browser.
- *
- * PR1 only populates this store on order submission; PR3 will consume it
- * during swap execution.
+ * Per-order metadata retained after submission. Ephemeral keypairs are now
+ * generated per trade at match time and live in pendingPubkeySubmissions.
  */
 export interface PendingTrade {
   orderId: string
   marketId: string
-  /** 33-byte compressed secp256k1 pubkey, hex. */
-  ephemeralPubkey: string
-  /** 32-byte secp256k1 scalar, hex. Never sent anywhere. */
-  ephemeralPrivkey: string
+  clientOrderId?: string
   /** Unix ms when the order was submitted — useful for TTL/expiry handling. */
   submittedAt: number
   /** Market base asset and denominator captured from the accepted order. */
@@ -80,8 +68,7 @@ export const usePendingTradesStore = create<PendingTradeState>()(
     }),
     {
       name: 'bitcaster-pending-trades',
-      // Purge expired entries on hydrate so long-abandoned privkeys don't
-      // accumulate in localStorage forever.
+      // Purge expired order metadata on hydrate.
       onRehydrateStorage: () => (state) => {
         if (!state) return
         const cutoff = Date.now() - PENDING_TRADE_TTL_MS
