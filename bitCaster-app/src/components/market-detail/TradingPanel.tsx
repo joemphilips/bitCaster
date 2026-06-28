@@ -749,7 +749,16 @@ export function TradingPanel({
               type="number"
               disabled={tradingDisabled}
               value={tradeAmountText}
-              onChange={(e) => setTradeAmountText(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value
+                setTradeAmountText(next)
+                const parsed = Number(next)
+                if (Number.isFinite(parsed) && parsed > 0) {
+                  onAmountChange?.(Math.max(1, Math.round(parsed)))
+                } else if (next.trim() === '') {
+                  onAmountChange?.(0)
+                }
+              }}
               onFocus={() => setIsTradeAmountFocused(true)}
               onBlur={() => {
                 setIsTradeAmountFocused(false)

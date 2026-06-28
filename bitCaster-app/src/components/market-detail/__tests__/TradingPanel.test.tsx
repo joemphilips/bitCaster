@@ -382,6 +382,19 @@ describe('TradingPanel', () => {
     expect(amountInput).toHaveValue(51)
   })
 
+  it('enables confirmation as soon as a valid share amount is typed', async () => {
+    const user = userEvent.setup()
+
+    render(<StatefulLimitTradingPanel initialTradeAmount={0} />)
+
+    const confirm = screen.getByTestId('trade-confirm')
+    expect(confirm).toBeDisabled()
+
+    await user.type(screen.getByTestId('trade-amount-input'), '1')
+
+    expect(confirm).toBeEnabled()
+  })
+
   it('allows the limit price to be cleared and replaced before committing on blur', async () => {
     const onLimitPriceChange = vi.fn()
     const user = userEvent.setup()
@@ -516,7 +529,7 @@ describe('TradingPanel', () => {
     await user.clear(amountInput)
 
     expect(amountInput).toHaveValue(null)
-    expect(onAmountChange).not.toHaveBeenCalled()
+    expect(onAmountChange).toHaveBeenCalledWith(0)
 
     fireEvent.blur(amountInput)
 

@@ -1728,7 +1728,11 @@ export function MarketDetailPage() {
             deadline: pending.deadline,
             submitted: false,
           });
-          await submitEphemeralPubkey(pending.tradeId, key.pubkey);
+          await submitEphemeralPubkey(
+            pending.tradeId,
+            key.pubkey,
+            ticket.marketId.split("-").slice(0, -1).join("-"),
+          );
           usePendingPubkeySubmissionsStore.getState().markSubmitted(pending.tradeId);
         }
         promoteFillsToActiveSwaps(response.fills ?? [], {

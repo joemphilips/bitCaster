@@ -481,6 +481,7 @@ export async function submitEphemeralPubkey(
   nostrEvent?: NostrKind1Event | null,
   fetchImpl: EngineFetch = fetch,
   authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>,
+  conditionId?: string,
 ): Promise<SubmitEphemeralPubkeyResponse> {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
   const path = `/api/v1/trades/${encodePathSegment(tradeId)}/ephemeral-pubkey`
@@ -489,7 +490,8 @@ export async function submitEphemeralPubkey(
     ...(nostrEvent ? { comment: nostrEvent } : {}),
   }
   const bodyText = JSON.stringify(body)
-  const url = `${normalizedBaseUrl}${path}`
+  const query = conditionId ? `?conditionId=${encodeURIComponent(conditionId)}` : ''
+  const url = `${normalizedBaseUrl}${path}${query}`
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (authorization) {
     headers.Authorization = await authorization({ url, method: 'POST', bodyText })

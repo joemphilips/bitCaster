@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { BitcasterEngineClient, EngineClientError } from '../src/engineClient.ts'
+import { BitcasterEngineClient, EngineClientError, submitEphemeralPubkey } from '../src/engineClient.ts'
 
 test('BitcasterEngineClient.getMarket reads one catalogue row through query ids', async () => {
   const requests: string[] = []
@@ -28,6 +28,36 @@ test('BitcasterEngineClient.getMarket reads one catalogue row through query ids'
   assert.deepEqual(requests, [
     'https://engine.example/api/v1/markets/query?state=All&ids=condition-1&limit=1',
   ])
+})
+
+test('submitEphemeralPubkey includes conditionId in the request URL and auth input', async () => {
+  const requests: string[] = []
+  const authUrls: string[] = []
+
+  await submitEphemeralPubkey(
+    'https://engine.example/',
+    '11111111-1111-4111-8111-111111111111',
+    '02'.padEnd(66, '1'),
+    null,
+    async (input) => {
+      requests.push(String(input))
+      return new Response(JSON.stringify({
+        tradeId: '11111111-1111-4111-8111-111111111111',
+        role: 'maker',
+        bothReceived: true,
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    },
+    async ({ url }) => {
+      authUrls.push(url)
+      return 'Nostr token'
+    },
+    'abcdef',
+  )
+
+  assert.deepEqual(requests, [
+    'https://engine.example/api/v1/trades/11111111-1111-4111-8111-111111111111/ephemeral-pubkey?conditionId=abcdef',
+  ])
+  assert.deepEqual(authUrls, requests)
 })
 
 test('BitcasterEngineClient.getMarket returns null for an empty catalogue result', async () => {

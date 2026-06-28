@@ -777,6 +777,7 @@ export async function submitOrder(
 export async function submitEphemeralPubkey(
   tradeId: string,
   pubkey: string,
+  conditionId?: string,
 ): Promise<void> {
   await sdkSubmitEphemeralPubkey(
     window.location.origin,
@@ -790,6 +791,7 @@ export async function submitEphemeralPubkey(
         : undefined;
       return generateNip98Header(url, method, payloadHash);
     },
+    conditionId,
   );
 }
 
