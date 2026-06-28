@@ -858,6 +858,16 @@ components:
         means the selected primitive outcome named by outcomeId; `Complement`
         means the one-vs-rest complement of that outcome.
 
+        Note on binary YES/NO markets: for historical reasons, both YES and
+        NO are exposed as separate primitive outcome routes (cond-YES and
+        cond-NO), even though NO is technically the complement of YES. This
+        means binary clients can trade NO via either cond-NO (TokenSide:
+        Outcome) or cond-YES (TokenSide: Complement) — both resolve to the
+        same internal order book. Categorical markets (3+ outcomes) follow
+        the cleaner model: only atomic outcomes get public routes, and
+        complement collections are accessed via TokenSide: Complement on
+        the corresponding atomic route.
+
     OrderType:
       type: string
       enum:
