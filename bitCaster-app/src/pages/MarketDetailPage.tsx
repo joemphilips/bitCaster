@@ -94,11 +94,13 @@ import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissi
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { canBackOrder } from "@bitcaster/client-sdk/tradingClient";
 import {
   formatMarketSubunits,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
+import { buildIndexedDbTokenHoldings } from "@/lib/walletHoldings";
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
@@ -1021,6 +1023,10 @@ export function MarketDetailPage() {
     kind: "info" | "success" | "error";
     message: string;
   } | null>(null);
+  const [tradeFeasibility, setTradeFeasibility] = useState<{
+    canBack: boolean;
+    message?: string;
+  } | null>(null);
   const [isTradeSubmitting, setIsTradeSubmitting] = useState(false);
   const tradeSubmitInFlightRef = useRef(false);
 
@@ -1530,6 +1536,76 @@ export function MarketDetailPage() {
     marketDivisibility,
   ]);
 
+  useEffect(() => {
+    if (!walletReady || !activeMintUrl || !market || !tradeSelection || tradeAmount <= 0) {
+      setTradeFeasibility(null);
+      return;
+    }
+
+    let cancelled = false;
+    const evaluate = async () => {
+      try {
+        const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
+        if (!tradeBooks) {
+          setTradeFeasibility(null);
+          return;
+        }
+        const ticket = buildTradeTicket({
+          market,
+          selection: tradeSelection,
+          amountSubunits: tradeFaceAmountSubunits,
+          side: tradeSide,
+          orderType,
+          limitPrice,
+          orderBook: tradeBooks.selectedBook,
+          complementaryOrderBook: tradeBooks.complementBook,
+        });
+        const holdings = await buildIndexedDbTokenHoldings({
+          mintUrl: activeMintUrl,
+          conditionId: market.id,
+          baseAsset: market.baseAsset,
+        });
+        if (cancelled) return;
+        const result = canBackOrder(
+          {
+            side: ticket.request.side === "Buy" ? "bid" : "ask",
+            sizeSubunits: ticket.request.amountSubunits,
+            shareFaceSubunits: marketDivisibility,
+          },
+          holdings,
+          {},
+          marketDivisibility,
+        );
+        if (result.canBack) {
+          setTradeFeasibility({ canBack: true });
+          return;
+        }
+        const requiredShares = Math.ceil(ticket.request.amountSubunits / marketDivisibility);
+        setTradeFeasibility({
+          canBack: false,
+          message: `Insufficient backing: need ${requiredShares} VCS, have ${result.maxShares}`,
+        });
+      } catch {
+        if (!cancelled) setTradeFeasibility(null);
+      }
+    };
+    void evaluate();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    walletReady,
+    activeMintUrl,
+    market,
+    tradeSelection,
+    tradeAmount,
+    tradeFaceAmountSubunits,
+    tradeSide,
+    orderType,
+    limitPrice,
+    marketDivisibility,
+  ]);
+
   // Submit the order. Assumes wallet is set up and balance has been checked —
   // callers that can't promise that must route through `handleTradeConfirm`.
   const placeOrder = useCallback(
@@ -1548,6 +1624,13 @@ export function MarketDetailPage() {
         return;
       }
       if (tradeSubmitInFlightRef.current) return;
+      if (tradeFeasibility?.canBack === false) {
+        setTradeSubmitStatus({
+          kind: "error",
+          message: tradeFeasibility.message ?? "Insufficient backing.",
+        });
+        return;
+      }
       tradeSubmitInFlightRef.current = true;
       setIsTradeSubmitting(true);
       setTradeSubmitStatus(null);
@@ -1918,6 +2001,7 @@ export function MarketDetailPage() {
       orderType,
       limitPrice,
       placeOrder,
+      tradeFeasibility,
     ],
   );
 
@@ -2057,6 +2141,7 @@ export function MarketDetailPage() {
         }}
         onTradeConfirm={handleTradeConfirm}
         tradeSubmitStatus={tradeSubmitStatus}
+        tradeFeasibility={tradeFeasibility}
         isTradeSubmitting={isTradeSubmitting}
         onShare={handleShare}
         onTradeSideChange={setTradeSide}

@@ -245,6 +245,7 @@
     "comment": "Leave a comment if you are not hiding about your opinion",
     "commentPlaceholder": "Share your reasoning...",
     "enterAmount": "Enter shares",
+    "insufficientBacking": "Insufficient backing",
     "confirmBuy": "Buy {{side}} for {{amount}}",
     "confirmSell": "Sell {{side}} for {{amount}}",
     "confirmLimitBuy": "Place Limit Order for {{amount}}",

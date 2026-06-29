@@ -23,6 +23,11 @@
       "types": "./dist/ctfRedeem.d.ts",
       "import": "./dist/ctfRedeem.js"
     },
+    "./ctfRegistration": "./src/ctfRegistration.ts",
+    "./conditionalKeysets": {
+      "types": "./dist/conditionalKeysets.d.ts",
+      "import": "./dist/conditionalKeysets.js"
+    },
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"
@@ -42,6 +47,10 @@
     "./proofSelection": {
       "types": "./dist/proofSelection.d.ts",
       "import": "./dist/proofSelection.js"
+    },
+    "./proofUnit": {
+      "types": "./dist/proofUnit.d.ts",
+      "import": "./dist/proofUnit.js"
     },
     "./participationScore": {
       "types": "./dist/participationScore.d.ts",
@@ -71,6 +80,7 @@
       "types": "./dist/tradeTicket.d.ts",
       "import": "./dist/tradeTicket.js"
     },
+    "./tradingClient": "./src/tradingClient.ts",
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js"

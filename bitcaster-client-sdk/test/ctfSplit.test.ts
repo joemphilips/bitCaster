@@ -6,7 +6,9 @@ import {
   normalizeProof,
   normalizeProofArray,
   normalizeProofGroups,
+  ProofOperationPendingError,
   resolveComplementaryOutcomeLegs,
+  resolveInputFeePpkByProofKeyset,
   resolveMintOutcomeSetKey,
   selectRootPartitionKeysets,
   splitRegularProofsWithOperation,
@@ -647,6 +649,48 @@ test("splitRegularProofsWithOperation replays completed regular splits without m
   assert.equal(wallet.completeCalls, 0);
 });
 
+test("splitRegularProofsWithOperation throws typed pending error and checks proof ids", async () => {
+  const store = new MemoryProofOperationStore();
+  store.records.set("regular-op-pending", {
+    operationId: "regular-op-pending",
+    kind: "regular-split",
+    state: "prepared",
+    mintUrl: "https://mint.example",
+    inputs: [proof("regular-keyset", 210, "input-210")],
+    outputs: {},
+    metadata: {},
+    createdAt: 1,
+    updatedAt: 2,
+  });
+  const wallet = new FakeRegularSplitWallet();
+  wallet.proofStates = [
+    { Y: "Y-input", state: CheckStateEnum.SPENT } as ProofState,
+    { Y: "Y-input", state: CheckStateEnum.UNSPENT } as ProofState,
+  ];
+
+  await assert.rejects(
+    () => splitRegularProofsWithOperation({
+      mintUrl: "https://mint.example",
+      operationId: "regular-op-pending",
+      wallet,
+      proofs: [],
+      amountSubunits: 100,
+      proofOperationStore: store,
+    }),
+    ProofOperationPendingError,
+  );
+  assert.deepEqual(wallet.checkProofCalls, [[{ id: "regular-keyset", secret: "input-210" }]]);
+});
+
+test("resolveInputFeePpkByProofKeyset throws when mint omits a proof keyset", async () => {
+  await assert.rejects(
+    () => resolveInputFeePpkByProofKeyset({
+      getKeys: async () => ({ keysets: [] }),
+    }, [proof("missing-keyset", 1, "secret")]),
+    /Mint did not return keys for keyset missing-keyset/,
+  );
+});
+
 test("computeGrossCtfInputAmountSubunits funds the convert fee from the output proof count", () => {
   const keyset = feePlanningKeyset(1, { 1: "k1", 2: "k2", 4: "k4" });
 
@@ -770,6 +814,7 @@ class FakeRegularSplitWallet {
   prepareCalls = 0;
   completeCalls = 0;
   proofStates: ProofState[] = [];
+  checkProofCalls: Array<Array<Pick<Proof, "id" | "secret">>> = [];
   private readonly script: {
     preview?: SwapPreview;
     result?: { keep: Proof[]; send: Proof[] };
@@ -796,7 +841,8 @@ class FakeRegularSplitWallet {
     return this.script.result;
   }
 
-  async checkProofsStates(): Promise<ProofState[]> {
+  async checkProofsStates(proofs: Array<Pick<Proof, "id" | "secret">>): Promise<ProofState[]> {
+    this.checkProofCalls.push(proofs);
     return this.proofStates.length > 0
       ? this.proofStates
       : [{ Y: "Y-input", state: CheckStateEnum.UNSPENT }];

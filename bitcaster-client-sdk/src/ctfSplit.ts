@@ -67,6 +67,13 @@ export type CtfProofOperationKind =
   | "regular-split";
 export type ProofOperationState = "prepared" | "completed" | "failed";
 
+export class ProofOperationPendingError extends Error {
+  constructor(operationId: string) {
+    super(`proof operation ${operationId} is still pending or partially spent at the mint`);
+    this.name = "ProofOperationPendingError";
+  }
+}
+
 export interface CtfProofOperationRecord {
   operationId: string;
   kind: CtfProofOperationKind;
@@ -245,6 +252,10 @@ export async function splitRegularProofsWithOperation(params: {
   amountSubunits?: number;
   amountSats?: number;
   proofOperationStore: CtfProofOperationStore;
+  restoreOutputGroups?: (
+    mintUrl: string,
+    outputs: Record<string, StoredOutputData[]>,
+  ) => Promise<Record<string, Proof[]>>;
 }): Promise<RegularProofSplitResult> {
   const amountSubunits = requirePositiveSafeInteger(
     params.amountSubunits ?? params.amountSats,
@@ -261,6 +272,7 @@ export async function splitRegularProofsWithOperation(params: {
       existing,
       params.wallet,
       params.proofOperationStore,
+      params.restoreOutputGroups,
     );
   }
 
@@ -427,12 +439,18 @@ export async function splitRootCompleteSetForSwap(params: {
   p2pk: P2PKOptions;
   operationId: string;
   proofOperationStore: CtfProofOperationStore;
+  transport?: CtfSplitTransport;
+  proofStateChecker?: Pick<RegularSplitWallet, "checkProofsStates">;
+  restoreOutputGroups?: (
+    mintUrl: string,
+    outputs: Record<string, StoredOutputData[]>,
+  ) => Promise<Record<string, Proof[]>>;
 }): Promise<MintSplitForSwapResult> {
   const amountSubunits = requirePositiveSafeInteger(
     params.amountSubunits ?? params.amountSats,
     "amountSubunits",
   );
-  const transport = new CashuMintCtfSplitTransport(params.mintUrl);
+  const transport = params.transport ?? new CashuMintCtfSplitTransport(params.mintUrl);
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     params.conditionId,
     {
@@ -459,6 +477,8 @@ export async function splitRootCompleteSetForSwap(params: {
     amountSubunits,
     baseAsset: params.baseAsset,
     proofOperationStore: params.proofOperationStore,
+    proofStateChecker: params.proofStateChecker,
+    restoreOutputGroups: params.restoreOutputGroups,
     makeOutputs: ({ collection, amountSubunits, keyset }) => {
       if (lockCollections.has(collection)) {
         return RegularOutputData.createP2PKData(
@@ -891,6 +911,11 @@ export async function splitCompleteSetWithOperation(params: {
   outcomeCollectionKeysets: Record<string, string>;
   amountSubunits: number;
   proofOperationStore: CtfProofOperationStore;
+  proofStateChecker?: Pick<RegularSplitWallet, "checkProofsStates">;
+  restoreOutputGroups?: (
+    mintUrl: string,
+    outputs: Record<string, StoredOutputData[]>,
+  ) => Promise<Record<string, Proof[]>>;
   makeOutputs: (input: {
     collection: string;
     amountSubunits: number;
@@ -906,6 +931,8 @@ export async function splitCompleteSetWithOperation(params: {
       existing,
       params.transport,
       params.proofOperationStore,
+      params.proofStateChecker,
+      params.restoreOutputGroups,
     );
   }
 
@@ -945,10 +972,14 @@ export async function splitCompleteSetWithOperation(params: {
     },
   );
 
-  await params.proofOperationStore.markProofOperationCompleted(
-    params.operationId,
-    result,
-  );
+  try {
+    await params.proofOperationStore.markProofOperationCompleted(
+      params.operationId,
+      result,
+    );
+  } catch {
+    throw new ProofOperationPendingError(params.operationId);
+  }
   return result;
 }
 
@@ -1157,9 +1188,7 @@ async function resumeCtfMergeToRegular(
       regularKeyset,
     });
   } else {
-    throw new Error(
-      `Proof operation ${entry.operationId} is still pending at the mint`,
-    );
+    throw new ProofOperationPendingError(entry.operationId);
   }
 
   await proofOperationStore.markProofOperationCompleted(
@@ -1224,6 +1253,11 @@ async function resumeCtfSplit(
   entry: CtfProofOperationRecord,
   transport: CtfSplitTransport,
   proofOperationStore: CtfProofOperationStore,
+  proofStateChecker?: Pick<RegularSplitWallet, "checkProofsStates">,
+  restoreOutputGroupsOverride?: (
+    mintUrl: string,
+    outputs: Record<string, StoredOutputData[]>,
+  ) => Promise<Record<string, Proof[]>>,
 ): Promise<Record<string, Proof[]>> {
   if (entry.kind !== "ctf-split") {
     throw new Error(`proof operation ${entry.operationId} is not a CTF split`);
@@ -1237,20 +1271,24 @@ async function resumeCtfSplit(
     );
   }
 
-  const wallet = new CashuWallet(new CashuMint(mintUrl), {
-    unit: readOperationBaseAsset(entry.metadata),
-  });
-  await wallet.loadMint();
-  if (!wallet.checkProofsStates) {
+  let proofStateWallet = proofStateChecker;
+  if (!proofStateWallet) {
+    const wallet = new CashuWallet(new CashuMint(mintUrl), {
+      unit: readOperationBaseAsset(entry.metadata),
+    });
+    await wallet.loadMint();
+    proofStateWallet = wallet;
+  }
+  if (!proofStateWallet.checkProofsStates) {
     throw new Error(
       "Cashu wallet adapter does not support proof-state recovery checks",
     );
   }
-  const states = await wallet.checkProofsStates(
+  const states = await proofStateWallet.checkProofsStates(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   );
   if (allStates(states, CheckStateEnum.SPENT)) {
-    const restored = await restoreOutputGroups(mintUrl, entry.outputs);
+    const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(mintUrl, entry.outputs);
     await proofOperationStore.markProofOperationCompleted(
       entry.operationId,
       restored,
@@ -1261,12 +1299,14 @@ async function resumeCtfSplit(
     const metadata = entry.metadata as {
       conditionId?: string;
       amountSubunits?: number;
+      amountSats?: number;
       baseAsset?: string | null;
       outcomeCollectionKeysets?: Record<string, string>;
     };
+    const amountSubunits = metadata.amountSubunits ?? metadata.amountSats;
     if (
       !metadata.conditionId ||
-      !metadata.amountSubunits ||
+      !amountSubunits ||
       !metadata.outcomeCollectionKeysets
     ) {
       throw new Error(
@@ -1279,7 +1319,7 @@ async function resumeCtfSplit(
       metadata.conditionId,
       entry.inputs,
       metadata.outcomeCollectionKeysets,
-      metadata.amountSubunits,
+      amountSubunits,
       {
         makeOutputs: ({ collection }) =>
           outputDataByCollection[collection] ?? [],
@@ -1292,9 +1332,7 @@ async function resumeCtfSplit(
     return normalizeProofGroups(result);
   }
 
-  throw new Error(
-    `Proof operation ${entry.operationId} is still pending at the mint`,
-  );
+  throw new ProofOperationPendingError(entry.operationId);
 }
 
 function readOperationBaseAsset(metadata: Record<string, unknown>): MarketBaseAsset {
@@ -1309,6 +1347,10 @@ async function resumeRegularSplit(
   entry: CtfProofOperationRecord,
   wallet: RegularSplitWallet,
   proofOperationStore: CtfProofOperationStore,
+  restoreOutputGroupsOverride?: (
+    mintUrl: string,
+    outputs: Record<string, StoredOutputData[]>,
+  ) => Promise<Record<string, Proof[]>>,
 ): Promise<RegularProofSplitResult> {
   if (entry.kind !== "regular-split") {
     throw new Error(
@@ -1338,7 +1380,7 @@ async function resumeRegularSplit(
   );
   let completed: { send: Proof[]; keep: Proof[] };
   if (allStates(states, CheckStateEnum.SPENT)) {
-    const restored = await restoreOutputGroups(mintUrl, entry.outputs);
+    const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(mintUrl, entry.outputs);
     completed = {
       send: (restored.send ?? []).map(normalizeProof),
       keep: [...(restored.keep ?? []), ...readUnselectedProofs(entry)].map(
@@ -1357,9 +1399,7 @@ async function resumeRegularSplit(
       keep: result.keep.map(normalizeProof),
     };
   } else {
-    throw new Error(
-      `Proof operation ${entry.operationId} is still pending at the mint`,
-    );
+    throw new ProofOperationPendingError(entry.operationId);
   }
 
   await proofOperationStore.markProofOperationCompleted(
@@ -1792,8 +1832,14 @@ async function validateInputBalance(
   }
 }
 
-async function resolveInputFeePpkByProofKeyset(
-  mint: CashuMint,
+export interface InputFeeKeysetSource {
+  getKeys(keysetId?: string): Promise<{
+    keysets: Array<{ id: string; input_fee_ppk?: number | null }>;
+  }>;
+}
+
+export async function resolveInputFeePpkByProofKeyset(
+  mint: InputFeeKeysetSource,
   proofs: readonly Pick<Proof, "id">[],
 ): Promise<Record<string, number>> {
   const result: Record<string, number> = {};

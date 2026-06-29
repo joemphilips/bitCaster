@@ -1016,7 +1016,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     })
 
     await t.test('order.submit uses clientOrderId and submits pubkey only for pending matches', async () => {
-      await writeState(emptyDaemonState())
+      await writeState(backedDaemonState('cond', 10_000))
       let capturedOptions: { baseUrl: string; nostrSecretKeyHex: string } | null =
         null
       let capturedRequest: unknown = null
@@ -1145,7 +1145,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     })
 
     await t.test('order.submit validates D=1000 prices using engine market metadata', async () => {
-      await writeState(emptyDaemonState())
+      await writeState(backedDaemonState('cond', 10_000))
       let capturedRequest: unknown = null
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
@@ -1220,9 +1220,131 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
     })
 
+    await t.test('order.submit blocks before POST when local VCS backing is insufficient', async () => {
+      await writeState(emptyDaemonState())
+      let submitCalls = 0
+      const engine: EngineClientLike = {
+        ...scoreDisabledEngineMethods,
+        async submitOrder() {
+          submitCalls += 1
+          throw new Error('submitOrder should be gated before POST')
+        },
+        async getOrderStatus() {
+          return null
+        },
+        async cancelOrder() {
+          throw new Error('cancelOrder unused')
+        },
+        async getOrderBook() {
+          throw new Error('getOrderBook unused')
+        },
+        async queryMarkets() {
+          return { markets: [], nextCursor: null }
+        },
+        async getMarket() {
+          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000 }
+        },
+      }
+
+      const response = await dispatch(
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-YES',
+            outcomeId: 'YES',
+            side: 'Buy',
+            price: 500,
+            amountSubunits: 2_000,
+            timeInForce: 'GTC',
+          },
+        },
+        { createEngineClient: () => engine },
+      )
+
+      assert.equal(response.ok, false)
+      assert.equal(response.error, 'insufficient backing: have 0 VCS, need 2 shares')
+      assert.equal(submitCalls, 0)
+      assert.deepEqual((await readState())?.orders, {})
+      // Bypass invariant: this client gate is UX-only. If bypassed, the engine
+      // and Cashu/mint settlement path remain authoritative and must reject or
+      // fail unbacked orders without spending proofs.
+    })
+
+    await t.test('order.submit allows POST when local VCS backing is sufficient', async () => {
+      const state = emptyDaemonState()
+      state.wallet.proofs.push(
+        proofRecord('mint-a', 2_000, 'available', {
+          kind: 'outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'YES',
+          baseAsset: 'sat',
+        }, 'yes-vcs'),
+        proofRecord('mint-a', 2_000, 'available', {
+          kind: 'outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'NO',
+          baseAsset: 'sat',
+        }, 'no-vcs'),
+      )
+      await writeState(state)
+      let capturedRequest: unknown = null
+      const engine: EngineClientLike = {
+        ...scoreDisabledEngineMethods,
+        async submitOrder(_marketId, request) {
+          capturedRequest = request
+          return {
+            orderId: 'order-backed',
+            status: 'resting',
+            remainingAmountSubunits: request.amountSubunits,
+            fills: [],
+          }
+        },
+        async getOrderStatus() {
+          return null
+        },
+        async cancelOrder() {
+          throw new Error('cancelOrder unused')
+        },
+        async getOrderBook() {
+          throw new Error('getOrderBook unused')
+        },
+        async queryMarkets() {
+          return { markets: [], nextCursor: null }
+        },
+        async getMarket() {
+          return { conditionId: 'cond', baseAsset: 'sat', divisibility: 1_000 }
+        },
+      }
+
+      const response = await dispatch(
+        {
+          method: 'order.submit',
+          params: {
+            marketId: 'cond-YES',
+            outcomeId: 'YES',
+            side: 'Buy',
+            price: 500,
+            amountSubunits: 2_000,
+            timeInForce: 'GTC',
+          },
+        },
+        {
+          createEngineClient: () => engine,
+          generateEphemeralKeypair: () => ({
+            privateKeyHex: '77'.repeat(32),
+            publicKeyHex: `02${'88'.repeat(32)}`,
+          }),
+        },
+      )
+
+      assert.equal(response.ok, true)
+      assert.equal((capturedRequest as { amountSubunits?: number }).amountSubunits, 2_000)
+      assert.equal((await readState())?.orders['order-backed']?.orderId, 'order-backed')
+    })
+
     await t.test('order.submit starts runtime with complement order subscription state', async () => {
       const priorState = await readState()
-      await writeState(emptyDaemonState())
+      await writeState(backedDaemonState())
       try {
         const engine: EngineClientLike = {
           ...scoreDisabledEngineMethods,
@@ -1297,7 +1419,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
     await t.test('order.submit propagates engine machine-code rejections', async () => {
       const priorState = await readState()
-      await writeState(emptyDaemonState())
+      await writeState(backedDaemonState())
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
         async submitOrder() {
@@ -1357,7 +1479,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
     await t.test('order.submit pays missing Participation Score from wallet sats before submitting', async () => {
       const priorState = await readState()
-      const state = emptyDaemonState()
+      const state = backedDaemonState()
       state.wallet.proofs.push(
         proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'score-proof'),
       )
@@ -1468,7 +1590,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           'wallet-send',
         )
         assert.deepEqual(
-          updated?.wallet.proofs.map((record) => record.proof.secret).sort(),
+          updated?.wallet.proofs
+            .filter((record) => record.asset.kind === 'sats')
+            .map((record) => record.proof.secret)
+            .sort(),
           ['score-change'],
         )
       } finally {
@@ -1478,7 +1603,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
     await t.test('order.submit rejects malformed order intent before side effects', async () => {
       const priorState = await readState()
-      await writeState(emptyDaemonState())
+      await writeState(backedDaemonState())
 
       try {
         for (const params of [
@@ -1837,7 +1962,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     })
 
     await t.test('order.submit remains successful when trade runtime start fails after persistence', async () => {
-      await writeState(emptyDaemonState())
+      await writeState(backedDaemonState())
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
         async submitOrder(_marketId, request) {
@@ -1902,7 +2027,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     })
 
     await t.test('order.submit accepts direct sell flow after same-outcome CTF swaps are supported', async () => {
-      await writeState(emptyDaemonState())
+      await writeState(backedDaemonState())
       let capturedRequest: unknown = null
 
       const response = await dispatch(
@@ -2092,6 +2217,25 @@ function proofRecord(
     createdAt: '2026-05-21T00:00:00.000Z',
     updatedAt: '2026-05-21T00:00:00.000Z',
   }
+}
+
+function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
+  const state = emptyDaemonState()
+  state.wallet.proofs.push(
+    proofRecord('mint-a', amount, 'available', {
+      kind: 'outcome',
+      conditionId,
+      outcomeSetId: 'YES',
+      baseAsset: 'sat',
+    }, `${conditionId}-yes-vcs`),
+    proofRecord('mint-a', amount, 'available', {
+      kind: 'outcome',
+      conditionId,
+      outcomeSetId: 'NO',
+      baseAsset: 'sat',
+    }, `${conditionId}-no-vcs`),
+  )
+  return state
 }
 
 const scoreDisabledEngineMethods = {

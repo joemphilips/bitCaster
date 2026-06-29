@@ -245,6 +245,7 @@
     "comment": "意見を隠さない場合はコメントを残してください",
     "commentPlaceholder": "あなたの考えを共有...",
     "enterAmount": "枚数を入力",
+    "insufficientBacking": "裏付け不足",
     "confirmBuy": "{{side}} を {{amount}} で買う",
     "confirmSell": "{{side}} を {{amount}} で売る",
     "confirmLimitBuy": "{{amount}} の指値注文を出す",

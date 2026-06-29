@@ -125,6 +125,57 @@ describe('TradingPanel', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('disables submit and shows the VCS backing tooltip when local backing is insufficient', () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={2}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={500}
+        onTradeConfirm={vi.fn()}
+        tradeFeasibility={{
+          canBack: false,
+          message: 'Insufficient backing: need 2 VCS, have 1',
+        }}
+      />,
+    )
+
+    const button = screen.getByTestId('trade-confirm')
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute(
+      'title',
+      'Insufficient backing: need 2 VCS, have 1',
+    )
+    expect(screen.getByTestId('trade-feasibility-status')).toHaveTextContent(
+      'Insufficient backing: need 2 VCS, have 1',
+    )
+  })
+
+  it('keeps submit enabled when local VCS backing is sufficient', () => {
+    const onTradeConfirm = vi.fn()
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={2}
+        tradePreview={null}
+        tradeSide="buy"
+        orderType="limit"
+        limitPrice={500}
+        onTradeConfirm={onTradeConfirm}
+        tradeFeasibility={{ canBack: true }}
+      />,
+    )
+
+    const button = screen.getByTestId('trade-confirm')
+    expect(button).toBeEnabled()
+    fireEvent.click(button)
+    expect(onTradeConfirm).toHaveBeenCalledTimes(1)
+  })
+
   it('uses market preview totalCost for expected cost when fees are non-zero', () => {
     const tradePreview: TradePreview = {
       amount: 50,

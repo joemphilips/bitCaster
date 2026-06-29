@@ -45,6 +45,7 @@ import {
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from '@bitcaster-market/client-sdk/marketUnits'
+import { canBackOrder } from '@bitcaster-market/client-sdk/tradingClient'
 import { generateOrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
@@ -79,6 +80,7 @@ import {
   splitAvailableSatProofsForCtfCollateral,
   type WalletOpsDependencies,
 } from './walletOps.ts'
+import { buildDaemonTokenHoldings } from './walletHoldings.ts'
 
 export interface DaemonServerOptions {
   host?: string
@@ -626,6 +628,30 @@ export async function dispatch(
       })
       if (!settlementSupport.supported) {
         return { ok: false, error: settlementSupport.message }
+      }
+      const conditionId = conditionIdFromMarketId(orderParams.marketId)
+      const marketUnit = await loadMarketUnit(context.client, conditionId)
+      const currentState = await ensureState()
+      const backing = canBackOrder(
+        {
+          side: orderParams.side === 'Buy' ? 'bid' : 'ask',
+          sizeSubunits: amountSubunits,
+          shareFaceSubunits: marketUnit.divisibility,
+        },
+        buildDaemonTokenHoldings(currentState, {
+          mintUrl: context.profile.mintUrl,
+          conditionId,
+          baseAsset: marketUnit.baseAsset,
+        }),
+        {},
+        marketUnit.divisibility,
+      )
+      if (!backing.canBack) {
+        const requiredShares = Math.ceil(amountSubunits / marketUnit.divisibility)
+        return {
+          ok: false,
+          error: `insufficient backing: have ${backing.maxShares} VCS, need ${requiredShares} shares`,
+        }
       }
       const clientOrderId = randomUUID()
       const preparedPreflight = await maybePreparePreflightSplitForOrder({

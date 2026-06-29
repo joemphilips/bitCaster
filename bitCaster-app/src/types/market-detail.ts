@@ -278,6 +278,12 @@ export interface MarketDetailProps {
     message: string
   } | null
 
+  /** UX-only wallet feasibility gate for local VCS backing checks. */
+  tradeFeasibility?: {
+    canBack: boolean
+    message?: string
+  } | null
+
   /** True while an order submit is in flight. Disables duplicate confirms. */
   isTradeSubmitting?: boolean
 

@@ -69,6 +69,7 @@ export function MarketDetail({
   onAmountChange,
   onTradeConfirm,
   tradeSubmitStatus,
+  tradeFeasibility,
   isTradeSubmitting,
   onShare,
   onCommentPost,
@@ -165,6 +166,7 @@ export function MarketDetail({
                 onAmountChange={onAmountChange}
                 onTradeConfirm={onTradeConfirm}
                 tradeSubmitStatus={tradeSubmitStatus}
+                tradeFeasibility={tradeFeasibility}
                 isTradeSubmitting={isTradeSubmitting}
                 onCommentPost={onCommentPost}
                 onTradeSideChange={onTradeSideChange}
@@ -295,6 +297,7 @@ export function MarketDetail({
                 onAmountChange={onAmountChange}
                 onTradeConfirm={onTradeConfirm}
                 tradeSubmitStatus={tradeSubmitStatus}
+                tradeFeasibility={tradeFeasibility}
                 isTradeSubmitting={isTradeSubmitting}
                 onCommentPost={onCommentPost}
                 onTradeSideChange={onTradeSideChange}
@@ -348,9 +351,11 @@ export function MarketDetail({
                 }}
                 disabled={
                   isTradeSubmitting ||
+                  tradeFeasibility?.canBack === false ||
                   marketOrderHasNoLiquidity ||
                   (walletReady && (!tradeAmount || tradeAmount <= 0))
                 }
+                title={tradeFeasibility?.canBack === false ? tradeFeasibility.message : undefined}
                 className={`px-6 py-2 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
                   !walletReady
                     ? "bg-[#f7931a] hover:bg-[#e8850f] text-white"
