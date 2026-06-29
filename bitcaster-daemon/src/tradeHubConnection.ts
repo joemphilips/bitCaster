@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 import { signNip98 } from './nostrAuth.ts'
 import type { DaemonTradeCreatedPayload } from './state.ts'
-import type { TradeRuntimeConnection } from './tradeRuntime.ts'
+import type { TradeJoinResult, TradeRuntimeConnection } from './tradeRuntime.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -140,8 +140,16 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
     await this.requireConnection().invoke('JoinOrder', marketId, orderId)
   }
 
-  async joinTrade(tradeId: string): Promise<void> {
-    await this.requireConnection().invoke('JoinTrade', tradeId)
+  async joinTrade(tradeId: string): Promise<TradeJoinResult> {
+    try {
+      await this.requireConnection().invoke('JoinTrade', tradeId)
+      return { success: true }
+    } catch (err) {
+      if (isJoinTradeReplayMiss(err)) {
+        return { success: false, error: errorMessage(err) }
+      }
+      throw err
+    }
   }
 
   async sendSwapMessage(
@@ -258,4 +266,21 @@ function stringFromSignalR(value: unknown): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return String(value)
   if (value instanceof Date) return value.toISOString()
   return null
+}
+
+function isJoinTradeReplayMiss(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const message = err.message.toLowerCase()
+  return (
+    err.name === 'HubException' ||
+    message.includes('hubexception') ||
+    message.includes('not authorised') ||
+    message.includes('not authorized') ||
+    message.includes('not found') ||
+    message.includes('does not exist')
+  )
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }

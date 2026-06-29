@@ -4,12 +4,17 @@ export interface TradeRuntimeConnection {
   start(): Promise<void>
   stop(): Promise<void>
   joinOrder(marketId: string, orderId: string): Promise<void>
-  joinTrade(tradeId: string): Promise<void>
+  joinTrade(tradeId: string): Promise<TradeJoinResult>
   sendSwapMessage(
     tradeId: string,
     messageType: string,
     ciphertext: string,
   ): Promise<void>
+}
+
+export interface TradeJoinResult {
+  success: boolean
+  error?: string
 }
 
 export interface TradeRuntime {
@@ -22,14 +27,40 @@ export interface TradeResumePlan {
   trades: Array<{ marketId?: string; tradeId: string }>
 }
 
+export interface DaemonTradeRuntimeOptions {
+  joinTradeMaxRetries?: number
+  joinTradeRetryDelayMs?: number
+  retryExhaustedRecoveryDelayMs?: number
+  scheduleResumeActiveSwaps?: (delayMs: number) => void
+}
+
+const DEFAULT_JOIN_TRADE_MAX_RETRIES = 5
+const DEFAULT_JOIN_TRADE_RETRY_DELAY_MS = 500
+const DEFAULT_RETRY_EXHAUSTED_RECOVERY_DELAY_MS = 10_000
+
 export class DaemonTradeRuntime implements TradeRuntime {
   private readonly joinedOrders = new Set<string>()
   private readonly joinedTrades = new Set<string>()
   private started = false
   private readonly connection: TradeRuntimeConnection
+  private readonly joinTradeMaxRetries: number
+  private readonly joinTradeRetryDelayMs: number
+  private readonly retryExhaustedRecoveryDelayMs: number
+  private readonly scheduleResumeActiveSwaps?: (delayMs: number) => void
 
-  constructor(connection: TradeRuntimeConnection) {
+  constructor(
+    connection: TradeRuntimeConnection,
+    options: DaemonTradeRuntimeOptions = {},
+  ) {
     this.connection = connection
+    this.joinTradeMaxRetries =
+      options.joinTradeMaxRetries ?? DEFAULT_JOIN_TRADE_MAX_RETRIES
+    this.joinTradeRetryDelayMs =
+      options.joinTradeRetryDelayMs ?? DEFAULT_JOIN_TRADE_RETRY_DELAY_MS
+    this.retryExhaustedRecoveryDelayMs =
+      options.retryExhaustedRecoveryDelayMs ??
+      DEFAULT_RETRY_EXHAUSTED_RECOVERY_DELAY_MS
+    this.scheduleResumeActiveSwaps = options.scheduleResumeActiveSwaps
   }
 
   async start(state: DaemonState): Promise<TradeResumePlan> {
@@ -55,7 +86,10 @@ export class DaemonTradeRuntime implements TradeRuntime {
       if (this.joinedTrades.has(trade.tradeId)) continue
       this.joinedTrades.add(trade.tradeId)
       try {
-        await this.connection.joinTrade(trade.tradeId)
+        const result = await this.joinTradeWithBoundedRetry(state, trade.tradeId)
+        if (!result.success) {
+          this.joinedTrades.delete(trade.tradeId)
+        }
       } catch (err) {
         this.joinedTrades.delete(trade.tradeId)
         throw err
@@ -71,6 +105,31 @@ export class DaemonTradeRuntime implements TradeRuntime {
     this.joinedOrders.clear()
     this.joinedTrades.clear()
     await this.connection.stop()
+  }
+
+  private async joinTradeWithBoundedRetry(
+    state: DaemonState,
+    tradeId: string,
+  ): Promise<TradeJoinResult> {
+    let lastResult: TradeJoinResult = { success: false }
+    for (let retry = 0; retry <= this.joinTradeMaxRetries; retry += 1) {
+      if (retry > 0 && !shouldRetryJoinTrade(state, tradeId)) {
+        return lastResult
+      }
+
+      lastResult = await this.connection.joinTrade(tradeId)
+      if (lastResult.success) return lastResult
+
+      if (!shouldRetryJoinTrade(state, tradeId)) return lastResult
+      if (retry >= this.joinTradeMaxRetries) break
+
+      await delay(this.joinTradeRetryDelayMs)
+    }
+
+    if (!lastResult.success) {
+      this.scheduleResumeActiveSwaps?.(this.retryExhaustedRecoveryDelayMs)
+    }
+    return lastResult
   }
 }
 
@@ -115,4 +174,13 @@ function isLiveOrder(order: LocalOrderRecord): boolean {
 
 function isLiveSwap(swap: LocalSwapRecord): boolean {
   return !['confirmed', 'refunded', 'failed'].includes(swap.step)
+}
+
+function shouldRetryJoinTrade(state: DaemonState, tradeId: string): boolean {
+  return state.swaps[tradeId]?.step === 'awaiting-trade-created'
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

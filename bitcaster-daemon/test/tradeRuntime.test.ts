@@ -37,6 +37,7 @@ test('DaemonTradeRuntime starts once and deduplicates joins', async () => {
     },
     async joinTrade(tradeId) {
       calls.push(`joinTrade:${tradeId}`)
+      return { success: true }
     },
     async sendSwapMessage(tradeId, messageType, ciphertext) {
       calls.push(`sendSwapMessage:${tradeId}:${messageType}:${ciphertext}`)
@@ -57,6 +58,75 @@ test('DaemonTradeRuntime starts once and deduplicates joins', async () => {
     'joinTrade:trade-a',
     'stop',
   ])
+})
+
+test('DaemonTradeRuntime retries awaiting trade-created joins until replay succeeds', async () => {
+  const calls: string[] = []
+  let attempts = 0
+  const connection: TradeRuntimeConnection = {
+    async start() {
+      calls.push('start')
+    },
+    async stop() {
+      calls.push('stop')
+    },
+    async joinOrder(marketId, orderId) {
+      calls.push(`joinOrder:${marketId}:${orderId}`)
+    },
+    async joinTrade(tradeId) {
+      calls.push(`joinTrade:${tradeId}`)
+      attempts += 1
+      return attempts < 3
+        ? { success: false, error: 'Trade was not found' }
+        : { success: true }
+    },
+    async sendSwapMessage(tradeId, messageType, ciphertext) {
+      calls.push(`sendSwapMessage:${tradeId}:${messageType}:${ciphertext}`)
+    },
+  }
+  const runtime = new DaemonTradeRuntime(connection, { joinTradeRetryDelayMs: 0 })
+  const state = emptyDaemonState()
+  state.swaps['trade-a'] = swap('trade-a', 'cond-YES', 'awaiting-trade-created')
+
+  await runtime.start(state)
+
+  assert.deepEqual(calls, [
+    'start',
+    'joinTrade:trade-a',
+    'joinTrade:trade-a',
+    'joinTrade:trade-a',
+  ])
+})
+
+test('DaemonTradeRuntime stops retrying when swap advances and schedules one recovery pass after exhaustion', async () => {
+  const scheduledRecoveryDelays: number[] = []
+  const joinCalls: string[] = []
+  const connection: TradeRuntimeConnection = {
+    async start() {},
+    async stop() {},
+    async joinOrder() {},
+    async joinTrade(tradeId) {
+      joinCalls.push(tradeId)
+      return { success: false, error: 'Trade was not found' }
+    },
+    async sendSwapMessage() {},
+  }
+  const runtime = new DaemonTradeRuntime(connection, {
+    joinTradeRetryDelayMs: 0,
+    scheduleResumeActiveSwaps: (delayMs) => {
+      scheduledRecoveryDelays.push(delayMs)
+    },
+  })
+  const state = emptyDaemonState()
+  state.swaps['trade-a'] = swap('trade-a', 'cond-YES', 'awaiting-trade-created')
+
+  await runtime.start(state)
+  await runtime.start(state)
+  state.swaps['trade-a']!.step = 'opened'
+  await runtime.start(state)
+
+  assert.equal(joinCalls.length, 13)
+  assert.deepEqual(scheduledRecoveryDelays, [10_000, 10_000])
 })
 
 function order(

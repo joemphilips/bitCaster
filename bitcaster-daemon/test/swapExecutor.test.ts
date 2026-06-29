@@ -1603,7 +1603,9 @@ function fakeConnection(sent: string[]): TradeRuntimeConnection {
     async start() {},
     async stop() {},
     async joinOrder() {},
-    async joinTrade() {},
+    async joinTrade() {
+      return { success: true }
+    },
     async sendSwapMessage(tradeId, messageType, ciphertext) {
       sent.push(`${tradeId}:${messageType}:${ciphertext}`)
     },
@@ -1615,7 +1617,9 @@ function throwingSendConnection(): TradeRuntimeConnection {
     async start() {},
     async stop() {},
     async joinOrder() {},
-    async joinTrade() {},
+    async joinTrade() {
+      return { success: true }
+    },
     async sendSwapMessage() {
       throw new Error('hub send unavailable')
     },

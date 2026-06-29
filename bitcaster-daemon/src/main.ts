@@ -104,7 +104,20 @@ switch (command) {
           ops: createRealDaemonSwapOps(),
         })
       : undefined
-    runtime = tradeHub ? new DaemonTradeRuntime(tradeHub) : undefined
+    runtime = tradeHub
+      ? new DaemonTradeRuntime(tradeHub, {
+          scheduleResumeActiveSwaps: (delayMs) => {
+            setTimeout(() => {
+              void (async () => {
+                await executor?.resumeActiveSwaps(await ensureState())
+              })().catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err)
+                process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
+              })
+            }, delayMs)
+          },
+        })
+      : undefined
     try {
       const server = await startDaemonServer({
         tradeRuntime: runtime,
