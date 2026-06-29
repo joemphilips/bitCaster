@@ -1054,8 +1054,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             ],
           }
         },
-        async submitEphemeralPubkey(tradeId, pubkey) {
-          submittedPubkeys.push({ tradeId, pubkey })
+        async submitEphemeralPubkey(tradeId, pubkey, conditionId) {
+          submittedPubkeys.push({ tradeId, pubkey, conditionId })
           return { tradeId, role: 'taker', bothReceived: false }
         },
         async getOrderStatus() {
@@ -1122,7 +1122,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
       )
       assert.deepEqual(submittedPubkeys, [
-        { tradeId: 'trade-1', pubkey: `02${'22'.repeat(32)}` },
+        { tradeId: 'trade-1', pubkey: `02${'22'.repeat(32)}`, conditionId: 'cond' },
       ])
 
       const state = await readState()

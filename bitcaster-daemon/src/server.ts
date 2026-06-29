@@ -102,6 +102,7 @@ export interface EngineClientLike {
   submitEphemeralPubkey?(
     tradeId: string,
     pubkey: string,
+    conditionId?: string,
   ): Promise<unknown>
   getOrderStatus(
     marketId: string,
@@ -688,10 +689,11 @@ export async function dispatch(
         orderParams.price,
         amountSubunits,
       )
-      await submitPendingEphemeralPubkeys({
-        client: context.client,
-        marketId: orderParams.marketId,
-        orderId: submitted.orderId,
+    await submitPendingEphemeralPubkeys({
+      client: context.client,
+      marketId: orderParams.marketId,
+      conditionId: splitMarketId(orderParams.marketId)?.conditionId,
+      orderId: submitted.orderId,
         pendingPubkeySubmissions: submitted.pendingPubkeySubmissions,
         generateEphemeralKeypair: deps.generateEphemeralKeypair,
       })
@@ -1136,6 +1138,7 @@ function shouldRetryOrderValidationWithMarketUnit(
 async function submitPendingEphemeralPubkeys(input: {
   client: EngineClientLike
   marketId: string
+  conditionId?: string
   orderId: string
   pendingPubkeySubmissions?: SubmitOrderResponse['pendingPubkeySubmissions']
   generateEphemeralKeypair?: typeof generateOrderEphemeralKeypair
@@ -1163,7 +1166,11 @@ async function submitPendingEphemeralPubkeys(input: {
         }
       })
     }
-    await input.client.submitEphemeralPubkey(submission.tradeId, ephemeral.publicKeyHex)
+    await input.client.submitEphemeralPubkey(
+      submission.tradeId,
+      ephemeral.publicKeyHex,
+      input.conditionId,
+    )
   }
 }
 

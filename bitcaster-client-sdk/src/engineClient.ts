@@ -355,15 +355,23 @@ export class BitcasterEngineClient {
   async submitEphemeralPubkey(
     tradeId: string,
     pubkey: string,
+    conditionIdOrNostrEvent?: string | NostrKind1Event | null,
     nostrEvent?: NostrKind1Event | null,
   ): Promise<SubmitEphemeralPubkeyResponse> {
+    const conditionId = typeof conditionIdOrNostrEvent === 'string'
+      ? conditionIdOrNostrEvent
+      : undefined
+    const comment = typeof conditionIdOrNostrEvent === 'string'
+      ? nostrEvent
+      : conditionIdOrNostrEvent
     return submitEphemeralPubkey(
       this.baseUrl,
       tradeId,
       pubkey,
-      nostrEvent,
+      comment,
       this.fetchImpl,
       this.authorization,
+      conditionId,
     )
   }
 

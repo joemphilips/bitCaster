@@ -60,6 +60,31 @@ test('submitEphemeralPubkey includes conditionId in the request URL and auth inp
   assert.deepEqual(authUrls, requests)
 })
 
+test('BitcasterEngineClient.submitEphemeralPubkey passes conditionId to the helper request', async () => {
+  const requests: string[] = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example/',
+    fetchImpl: async (input) => {
+      requests.push(String(input))
+      return new Response(JSON.stringify({
+        tradeId: '22222222-2222-4222-8222-222222222222',
+        role: 'maker',
+        bothReceived: true,
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    },
+  })
+
+  await client.submitEphemeralPubkey(
+    '22222222-2222-4222-8222-222222222222',
+    '02'.padEnd(66, '2'),
+    'cond-1',
+  )
+
+  assert.deepEqual(requests, [
+    'https://engine.example/api/v1/trades/22222222-2222-4222-8222-222222222222/ephemeral-pubkey?conditionId=cond-1',
+  ])
+})
+
 test('BitcasterEngineClient.getMarket returns null for an empty catalogue result', async () => {
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',
