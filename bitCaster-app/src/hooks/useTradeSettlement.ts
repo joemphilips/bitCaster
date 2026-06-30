@@ -822,7 +822,6 @@ function tradeCreatedMatchesPendingOrderPath(
   }
 
   if (
-    role === "buyer" &&
     payload.marketId &&
     pendingTrade.marketId === payload.marketId
   ) {
