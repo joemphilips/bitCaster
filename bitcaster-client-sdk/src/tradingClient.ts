@@ -61,9 +61,22 @@ export function canBackOrder(
     return { canBack: false, maxShares: 0 }
   }
 
-  const maxShares = Math.floor(vcsAvailable(holdings, reserves) / order.shareFaceSubunits)
   const requiredShares = Math.ceil(order.sizeSubunits / order.shareFaceSubunits)
 
+  if (order.side === 'bid') {
+    // Buys are backed by base-unit collateral (sats), not VCS.
+    // The buyer pays sats and receives outcome tokens at settlement.
+    const availableBase = Math.max(0, finiteOrZero(holdings.baseUnitProofs))
+    const maxShares = Math.floor(availableBase / order.shareFaceSubunits)
+    return {
+      canBack: maxShares >= requiredShares,
+      maxShares,
+    }
+  }
+
+  // Sells (asks) are backed by VCS — the seller delivers outcome tokens
+  // (directly or via complement merge) and receives sats.
+  const maxShares = Math.floor(vcsAvailable(holdings, reserves) / order.shareFaceSubunits)
   return {
     canBack: maxShares >= requiredShares,
     maxShares,

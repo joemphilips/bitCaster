@@ -47,10 +47,22 @@ test('computeTokenRatio is out of bounds below 5% or above 60%', () => {
   assert.equal(computeTokenRatio(holdings({ YES: 39, NO: 39 }, {}, 61)).withinBounds, false)
 })
 
-test('canBackOrder returns the correct maximum whole shares', () => {
+test('canBackOrder bid (buy) checks base-unit collateral, not VCS', () => {
   assert.deepEqual(
     canBackOrder(
       { side: 'bid', sizeSubunits: 2_000, shareFaceSubunits: 1_000 },
+      holdings({}, {}, 5_500),
+      {},
+      1_000,
+    ),
+    { canBack: true, maxShares: 5 },
+  )
+})
+
+test('canBackOrder ask (sell) checks VCS, not base-unit', () => {
+  assert.deepEqual(
+    canBackOrder(
+      { side: 'ask', sizeSubunits: 2_000, shareFaceSubunits: 1_000 },
       holdings({ YES: 5_500, NO: 5_500 }),
       {},
       1_000,
@@ -59,7 +71,19 @@ test('canBackOrder returns the correct maximum whole shares', () => {
   )
 })
 
-test('canBackOrder with zero VCS returns canBack=false', () => {
+test('canBackOrder bid with zero base-unit returns canBack=false', () => {
+  assert.deepEqual(
+    canBackOrder(
+      { side: 'bid', sizeSubunits: 1_000, shareFaceSubunits: 1_000 },
+      holdings({ YES: 100, NO: 100 }, {}, 0),
+      {},
+      1_000,
+    ),
+    { canBack: false, maxShares: 0 },
+  )
+})
+
+test('canBackOrder ask with zero VCS returns canBack=false', () => {
   assert.deepEqual(
     canBackOrder(
       { side: 'ask', sizeSubunits: 1_000, shareFaceSubunits: 1_000 },
