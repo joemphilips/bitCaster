@@ -35,6 +35,13 @@ export interface SignalRTradeHubConnectionOptions {
     ciphertext: string,
   ) => void | Promise<void>
   onTradeStateChanged?: (tradeId: string, newState: string) => void | Promise<void>
+  onPendingPubkeyRequired?: (
+    tradeId: string,
+    orderId: string,
+    role: string,
+    marketId: string,
+    deadline: string,
+  ) => void | Promise<void>
   onError?: (err: Error) => void
 }
 
@@ -242,6 +249,33 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
         await this.callbacks.onTradeStateChanged?.(tradeIdText, newState)
       })
     })
+
+    connection.on(
+      'PendingPubkeyRequired',
+      (
+        tradeId: unknown,
+        orderId: unknown,
+        role: unknown,
+        marketId: unknown,
+        deadline: unknown,
+      ) => {
+        void this.invokeCallback(async () => {
+          const tradeIdText = stringFromSignalR(tradeId)
+          const orderIdText = stringFromSignalR(orderId)
+          const marketIdText = stringFromSignalR(marketId)
+          if (!tradeIdText || !orderIdText || !marketIdText) {
+            throw new Error('PendingPubkeyRequired payload had unexpected shape')
+          }
+          await this.callbacks.onPendingPubkeyRequired?.(
+            tradeIdText,
+            orderIdText,
+            typeof role === 'string' ? role : '',
+            marketIdText,
+            deadline instanceof Date ? deadline.toISOString() : typeof deadline === 'string' ? deadline : '',
+          )
+        })
+      },
+    )
   }
 
   private invokeCallback(callback: () => Promise<void>): Promise<void> {

@@ -1125,7 +1125,8 @@ function extractTradeIds(value: unknown): string[] {
     ? value.pendingPubkeySubmissions.map((submission) =>
         isRecord(submission) ? submission.tradeId : undefined)
     : []
-  return [...fillTradeIds, ...pendingTradeIds]
+  const topLevelTradeId = typeof value.tradeId === 'string' && value.tradeId ? [value.tradeId] : []
+  return [...fillTradeIds, ...pendingTradeIds, ...topLevelTradeId]
     .filter((tradeId): tradeId is string => typeof tradeId === 'string' && tradeId.length > 0)
 }
 

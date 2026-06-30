@@ -94,6 +94,23 @@ switch (command) {
                 await recordTradeStateChanged(tradeId, newState),
               )
             },
+            onPendingPubkeyRequired: async (tradeId, _orderId, _role, marketId, _deadline) => {
+              const { signNip98 } = await import('./nostrAuth.ts')
+              const { conditionIdFromMarketId } = await import('@bitcaster-market/client-sdk/tradeIgnition')
+              const { generateOrderEphemeralKeypair } = await import('./ephemeralKey.ts')
+              const { submitEphemeralPubkey: submitPubkey } = await import('@bitcaster-market/client-sdk/engineClient')
+              const keypair = generateOrderEphemeralKeypair()
+              await submitPubkey(
+                profile.engineBaseUrl,
+                tradeId,
+                keypair.publicKeyHex,
+                null,
+                fetch,
+                async ({ url, method, bodyText }: { url: string; method: string; bodyText?: string }) =>
+                  signNip98({ privateKeyHex: secrets.nostrSecretKeyHex }, url, method, bodyText),
+                conditionIdFromMarketId(marketId),
+              )
+            },
             onError: (err: Error) => {
               process.stderr.write(`TradeHub event error: ${err.message}\n`)
             },

@@ -31,8 +31,8 @@ export class CompositeTradeRuntimeConnection implements TradeRuntimeConnection {
   }
 
   async start(): Promise<void> {
-    await this.trade.start()
     await this.market?.start()
+    await this.trade.start()
   }
 
   async stop(): Promise<void> {
@@ -41,8 +41,13 @@ export class CompositeTradeRuntimeConnection implements TradeRuntimeConnection {
   }
 
   async joinOrder(marketId: string, orderId: string): Promise<void> {
-    await this.trade.joinOrder(marketId, orderId)
     await this.market?.trackOrder(marketId, orderId)
+    try {
+      await this.trade.joinOrder(marketId, orderId)
+    } catch (_err) {
+      // TradeHub JoinOrder failure should not block MarketHub Matched delivery.
+      // The maker can still receive Matched events and submit ephemeral pubkeys.
+    }
   }
 
   joinTrade(tradeId: string): Promise<TradeJoinResult> {
