@@ -76,6 +76,7 @@ import {
   onOrderCancelled,
   onOrderBookUpdated,
   onTradeExecuted,
+  type Matched,
   type MarketStatusChanged,
 } from "@/lib/marketHub";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
@@ -1162,10 +1163,13 @@ export function MarketDetailPage() {
         }),
       );
       cleanups.push(
-        onMatched(liveMarketId, () => {
+        onMatched(liveMarketId, (match) => {
           if (cancelled) return;
           refreshLiveOrderBook();
           reconcileOwnOrders();
+          void submitMakerEphemeralPubkeyFromMatch(liveMarketId, match).catch((err) => {
+            console.warn("[MarketDetailPage] maker pubkey submission failed:", err);
+          });
         }),
       );
       cleanups.push(
@@ -1801,22 +1805,12 @@ export function MarketDetailPage() {
           preflightSplit: preparedPreflightSplit,
         });
         for (const pending of response.pendingPubkeySubmissions ?? []) {
-          const key = generateEphemeralKeyPair();
-          usePendingPubkeySubmissionsStore.getState().addPendingPubkey({
+          await submitPendingEphemeralPubkey({
             tradeId: pending.tradeId,
             orderId: response.orderId,
             marketId: ticket.marketId,
-            pubkey: key.pubkey,
-            privkey: key.privkey,
             deadline: pending.deadline,
-            submitted: false,
           });
-          await submitEphemeralPubkey(
-            pending.tradeId,
-            key.pubkey,
-            ticket.marketId.split("-").slice(0, -1).join("-"),
-          );
-          usePendingPubkeySubmissionsStore.getState().markSubmitted(pending.tradeId);
         }
         promoteFillsToActiveSwaps(response.fills ?? [], {
           orderId: response.orderId,
@@ -2230,4 +2224,58 @@ export function MarketDetailPage() {
       )}
     </>
   );
+}
+
+async function submitMakerEphemeralPubkeyFromMatch(
+  marketId: string,
+  match: Matched,
+): Promise<void> {
+  const pendingState = usePendingPubkeySubmissionsStore.getState();
+  if (pendingState.byTradeId[match.tradeId]) return;
+
+  const restingMaker = usePendingTradesStore.getState().byOrderId[match.makerOrderId];
+  if (!restingMaker) return;
+
+  await submitPendingEphemeralPubkey({
+    tradeId: match.tradeId,
+    orderId: match.makerOrderId,
+    marketId,
+    deadline: match.deadline,
+  });
+}
+
+async function submitPendingEphemeralPubkey(input: {
+  tradeId: string;
+  orderId: string;
+  marketId: string;
+  deadline: string;
+}): Promise<void> {
+  const store = usePendingPubkeySubmissionsStore.getState();
+  let entry = store.byTradeId[input.tradeId];
+  if (!entry) {
+    const key = generateEphemeralKeyPair();
+    entry = {
+      tradeId: input.tradeId,
+      orderId: input.orderId,
+      marketId: input.marketId,
+      pubkey: key.pubkey,
+      privkey: key.privkey,
+      deadline: input.deadline,
+      submitted: false,
+    };
+    store.addPendingPubkey(entry);
+  }
+  if (entry.submitted) return;
+
+  await submitEphemeralPubkey(
+    input.tradeId,
+    entry.pubkey,
+    conditionIdFromMarketId(input.marketId),
+  );
+  usePendingPubkeySubmissionsStore.getState().markSubmitted(input.tradeId);
+}
+
+function conditionIdFromMarketId(marketId: string): string {
+  const index = marketId.lastIndexOf("-");
+  return index > 0 ? marketId.substring(0, index) : marketId;
 }

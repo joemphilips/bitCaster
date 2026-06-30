@@ -619,7 +619,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(BaseAsset @baseAsset, int @divisibility, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, string @status, TokenSide @tokenSide)
+        public OrderStatusResponse(BaseAsset @baseAsset, int @divisibility, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, string @status, TokenSide @tokenSide, System.Guid? @tradeId = null, System.DateTimeOffset? @deadline = null)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -630,6 +630,8 @@ namespace BitCaster.MatchingEngine.Contracts
             this.TokenSide = @tokenSide;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
+            this.TradeId = @tradeId;
+            this.Deadline = @deadline;
         }
 
         /// <summary>
@@ -667,6 +669,19 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("fills")]
         public System.Collections.Generic.List<Fill> Fills { get; }
+
+        /// <summary>
+        /// Pending atomic-swap trade id when status is `matched` and the engine is waiting for ephemeral pubkey submission.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
+        public System.Guid? TradeId { get; }
+
+        /// <summary>
+        /// Deadline for pending ephemeral pubkey submission.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("deadline")]
+        public System.DateTimeOffset? Deadline { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]

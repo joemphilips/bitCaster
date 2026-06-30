@@ -68,6 +68,10 @@
       "types": "./dist/tradeFlow.d.ts",
       "import": "./dist/tradeFlow.js"
     },
+    "./tradeIgnition": {
+      "types": "./dist/tradeIgnition.d.ts",
+      "import": "./dist/tradeIgnition.js"
+    },
     "./tradePreparation": {
       "types": "./dist/tradePreparation.d.ts",
       "import": "./dist/tradePreparation.js"
@@ -101,6 +105,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "@noble/curves": "^2.2.0",
     "@cashu/cashu-ts": "file:../cashu-ts"
   },
   "devDependencies": {

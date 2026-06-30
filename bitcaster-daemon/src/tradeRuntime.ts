@@ -12,6 +12,52 @@ export interface TradeRuntimeConnection {
   ): Promise<void>
 }
 
+export interface MarketRuntimeConnection {
+  start(): Promise<void>
+  stop(): Promise<void>
+  trackOrder(marketId: string, orderId: string): Promise<void>
+}
+
+export class CompositeTradeRuntimeConnection implements TradeRuntimeConnection {
+  private readonly trade: TradeRuntimeConnection
+  private readonly market?: MarketRuntimeConnection
+
+  constructor(
+    trade: TradeRuntimeConnection,
+    market?: MarketRuntimeConnection,
+  ) {
+    this.trade = trade
+    this.market = market
+  }
+
+  async start(): Promise<void> {
+    await this.trade.start()
+    await this.market?.start()
+  }
+
+  async stop(): Promise<void> {
+    await this.market?.stop()
+    await this.trade.stop()
+  }
+
+  async joinOrder(marketId: string, orderId: string): Promise<void> {
+    await this.trade.joinOrder(marketId, orderId)
+    await this.market?.trackOrder(marketId, orderId)
+  }
+
+  joinTrade(tradeId: string): Promise<TradeJoinResult> {
+    return this.trade.joinTrade(tradeId)
+  }
+
+  sendSwapMessage(
+    tradeId: string,
+    messageType: string,
+    ciphertext: string,
+  ): Promise<void> {
+    return this.trade.sendSwapMessage(tradeId, messageType, ciphertext)
+  }
+}
+
 export interface TradeJoinResult {
   success: boolean
   error?: string

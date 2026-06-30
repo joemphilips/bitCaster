@@ -49,8 +49,9 @@ switch (command) {
   case 'run': {
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const { startDaemonServer } = await import('./server.ts')
-    const { DaemonTradeRuntime } = await import('./tradeRuntime.ts')
+    const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } = await import('./tradeRuntime.ts')
     const { SignalRTradeHubConnection } = await import('./tradeHubConnection.ts')
+    const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
     const { DaemonSwapExecutor } = await import('./swapExecutor.ts')
     const { createRealDaemonSwapOps } = await import('./swapProtocolAdapter.ts')
     const { readProfile } = await import('./profile.ts')
@@ -98,14 +99,27 @@ switch (command) {
             },
           })
         : undefined
+    const marketHub =
+      profile && secrets
+        ? new SignalRMarketHubConnection({
+            engineBaseUrl: profile.engineBaseUrl,
+            nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+            onError: (err: Error) => {
+              process.stderr.write(`MarketHub event error: ${err.message}\n`)
+            },
+          })
+        : undefined
+    const runtimeConnection = tradeHub
+      ? new CompositeTradeRuntimeConnection(tradeHub, marketHub)
+      : undefined
     executor = tradeHub
       ? new DaemonSwapExecutor({
           connection: tradeHub,
           ops: createRealDaemonSwapOps(),
         })
       : undefined
-    runtime = tradeHub
-      ? new DaemonTradeRuntime(tradeHub, {
+    runtime = runtimeConnection
+      ? new DaemonTradeRuntime(runtimeConnection, {
           scheduleResumeActiveSwaps: (delayMs) => {
             setTimeout(() => {
               void (async () => {

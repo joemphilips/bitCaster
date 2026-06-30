@@ -408,6 +408,7 @@ components:
         - amountSubunits
         - path
         - matchedAt
+        - deadline
       properties:
         marketId:
           type: string
@@ -429,6 +430,10 @@ components:
         matchedAt:
           type: string
           format: date-time
+        deadline:
+          type: string
+          format: date-time
+          description: Deadline for both parties to submit ephemeral pubkeys.
         baseAsset:
           oneOf:
             - $ref: '#/components/schemas/BaseAsset'

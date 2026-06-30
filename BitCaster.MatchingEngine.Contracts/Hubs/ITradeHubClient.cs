@@ -12,6 +12,9 @@ public interface ITradeHubClient
     /// <summary>Broadcast to both parties when the trade state transitions.</summary>
     Task TradeStateChanged(Guid tradeId, string newState);
 
+    /// <summary>Sent during JoinOrder recovery when a matched order is waiting for this party's ephemeral pubkey.</summary>
+    Task PendingPubkeyRequired(Guid tradeId, string role, DateTimeOffset deadline);
+
     /// <summary>
     /// Sent to both parties immediately after a trade is created from a fill.
     /// Carries counterparty pubkeys, the engine-computed asymmetric locktimes,

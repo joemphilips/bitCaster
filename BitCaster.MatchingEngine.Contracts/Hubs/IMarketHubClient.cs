@@ -43,7 +43,8 @@ public sealed record MatchedDelta(
     int ExecutionPrice,
     long AmountSubunits,
     MatchPath Path,
-    DateTimeOffset MatchedAt);
+    DateTimeOffset MatchedAt,
+    DateTimeOffset Deadline);
 
 public sealed record MarketStatusChanged(
     string ConditionId,

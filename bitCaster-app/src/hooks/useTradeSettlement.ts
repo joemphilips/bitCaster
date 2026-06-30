@@ -73,6 +73,8 @@ import {
   promoteFillsToActiveSwaps,
   splitMarketId,
 } from "@/lib/orderStatus";
+import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
+import { submitEphemeralPubkey } from "@/lib/markets";
 import { hexToBytes } from "@bitcaster/swap-protocol/ecdh";
 import {
   buyerClaimSwap,
@@ -457,6 +459,11 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
         })()
           .then(async (status) => {
             if (!status) return;
+            const pendingTradeId = typeof status.tradeId === "string" ? status.tradeId : null;
+            const pendingDeadline = typeof status.deadline === "string" ? status.deadline : null;
+            if (pendingTradeId && pendingDeadline) {
+              await submitPendingPubkeyFromRecovery(latest, pendingTradeId, pendingDeadline);
+            }
             const tradeIds = status.fills
               .map((fill) => fill.tradeId)
               .filter((tradeId): tradeId is string => Boolean(tradeId));
@@ -759,6 +766,41 @@ function findPendingTradeForTradeCreated(
 
 function getPendingPubkeyForTrade(tradeId: string) {
   return usePendingPubkeySubmissionsStore.getState().byTradeId[tradeId];
+}
+
+async function submitPendingPubkeyFromRecovery(
+  pendingTrade: PendingTrade,
+  tradeId: string,
+  deadline: string,
+): Promise<void> {
+  const store = usePendingPubkeySubmissionsStore.getState();
+  let entry = store.byTradeId[tradeId];
+  if (!entry) {
+    const key = generateEphemeralKeyPair();
+    entry = {
+      tradeId,
+      orderId: pendingTrade.orderId,
+      marketId: pendingTrade.marketId,
+      pubkey: key.pubkey,
+      privkey: key.privkey,
+      deadline,
+      submitted: false,
+    };
+    store.addPendingPubkey(entry);
+  }
+  if (entry.submitted) return;
+
+  await submitEphemeralPubkey(
+    tradeId,
+    entry.pubkey,
+    conditionIdFromMarketId(pendingTrade.marketId),
+  );
+  usePendingPubkeySubmissionsStore.getState().markSubmitted(tradeId);
+}
+
+function conditionIdFromMarketId(marketId: string): string {
+  const index = marketId.lastIndexOf("-");
+  return index > 0 ? marketId.substring(0, index) : marketId;
 }
 
 function tradeCreatedMatchesPendingOrderPath(

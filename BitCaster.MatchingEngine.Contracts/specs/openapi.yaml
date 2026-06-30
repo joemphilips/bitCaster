@@ -1344,6 +1344,18 @@ components:
           description: >
             All fills and active or terminal atomic-swap sessions produced
             against this order so far.
+        tradeId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Pending atomic-swap trade id when status is `matched` and the
+            engine is waiting for ephemeral pubkey submission.
+        deadline:
+          type: string
+          format: date-time
+          nullable: true
+          description: Deadline for pending ephemeral pubkey submission.
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
         baseAsset:

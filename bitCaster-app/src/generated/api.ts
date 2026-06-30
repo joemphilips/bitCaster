@@ -653,6 +653,16 @@ export interface components {
             filledAmountSubunits: components["schemas"]["CollateralSubunits"];
             /** @description All fills and active or terminal atomic-swap sessions produced against this order so far. */
             fills: components["schemas"]["Fill"][];
+            /**
+             * Format: uuid
+             * @description Pending atomic-swap trade id when status is `matched` and the engine is waiting for ephemeral pubkey submission.
+             */
+            tradeId?: string | null;
+            /**
+             * Format: date-time
+             * @description Deadline for pending ephemeral pubkey submission.
+             */
+            deadline?: string | null;
             tokenSide: components["schemas"]["TokenSide"];
             /**
              * @description Base asset context for amount and price fields.
