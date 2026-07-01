@@ -278,9 +278,10 @@ export interface MarketDetailProps {
     message: string
   } | null
 
-  /** UX-only wallet feasibility gate for local VCS backing checks. */
+  /** UX-only wallet feasibility gate for local wallet backing checks. */
   tradeFeasibility?: {
     canBack: boolean
+    reason?: 'funds' | 'outcome-tokens'
     message?: string
   } | null
 
@@ -340,4 +341,7 @@ export interface MarketDetailProps {
 
   /** Called when the trade UI needs wallet/Nostr setup before continuing. */
   onWalletRequired?: (comment?: string) => void
+
+  /** Called when the trade UI should open the wallet top-up flow. */
+  onTopUpRequired?: () => void
 }

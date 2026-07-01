@@ -1026,6 +1026,7 @@ export function MarketDetailPage() {
   } | null>(null);
   const [tradeFeasibility, setTradeFeasibility] = useState<{
     canBack: boolean;
+    reason?: "funds" | "outcome-tokens";
     message?: string;
   } | null>(null);
   const [isTradeSubmitting, setIsTradeSubmitting] = useState(false);
@@ -1584,10 +1585,13 @@ export function MarketDetailPage() {
           setTradeFeasibility({ canBack: true });
           return;
         }
-        const requiredShares = Math.ceil(ticket.request.amountSubunits / marketDivisibility);
         setTradeFeasibility({
           canBack: false,
-          message: `Insufficient backing: need ${requiredShares} VCS, have ${result.maxShares}`,
+          reason: tradeSide === "sell" ? "outcome-tokens" : "funds",
+          message:
+            tradeSide === "sell"
+              ? "Insufficient outcome tokens"
+              : "Insufficient funds",
         });
       } catch {
         if (!cancelled) setTradeFeasibility(null);
@@ -1631,7 +1635,11 @@ export function MarketDetailPage() {
       if (tradeFeasibility?.canBack === false) {
         setTradeSubmitStatus({
           kind: "error",
-          message: tradeFeasibility.message ?? "Insufficient backing.",
+          message:
+            tradeFeasibility.message ??
+            (tradeFeasibility.reason === "outcome-tokens"
+              ? "Insufficient outcome tokens"
+              : "Insufficient funds"),
         });
         return;
       }
@@ -2062,12 +2070,18 @@ export function MarketDetailPage() {
   }, [handleTradeConfirm, pendingTopUpComment]);
 
   const handleStartTopUp = useCallback(() => {
-    if (useWalletStore.getState().walletBackupState === "needs_backup") {
-      setShowFundedActionBackupPrompt(true);
-      return;
-    }
     setTopUpStage("overlay");
   }, []);
+
+  const handleTradingPanelTopUp = useCallback(() => {
+    setBalanceAtCheck(0);
+    setTopUpReason({
+      kind: "collateral",
+      required: Math.max(requiredBuyCostSubunits, tradeFaceAmountSubunits, 1),
+      baseAsset: marketBaseAsset,
+    });
+    setTopUpStage("overlay");
+  }, [marketBaseAsset, requiredBuyCostSubunits, tradeFaceAmountSubunits]);
 
   const handleRelatedMarketClick = useCallback(
     (marketId: string) => {
@@ -2146,6 +2160,7 @@ export function MarketDetailPage() {
         onRelatedMarketClick={handleRelatedMarketClick}
         walletReady={walletReady}
         onWalletRequired={handleWalletRequired}
+        onTopUpRequired={handleTradingPanelTopUp}
       />
       {topUpStage === "modal" && (
         <InsufficientBalanceModal

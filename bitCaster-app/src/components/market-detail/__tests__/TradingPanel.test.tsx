@@ -125,7 +125,8 @@ describe('TradingPanel', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('disables submit and shows the VCS backing tooltip when local backing is insufficient', () => {
+  it('disables buy submit and shows a top-up prompt when local funds are insufficient', () => {
+    const onTopUpRequired = vi.fn()
     render(
       <TradingPanel
         market={makeMarket()}
@@ -136,25 +137,53 @@ describe('TradingPanel', () => {
         orderType="limit"
         limitPrice={500}
         onTradeConfirm={vi.fn()}
+        onTopUpRequired={onTopUpRequired}
         tradeFeasibility={{
           canBack: false,
-          message: 'Insufficient backing: need 2 VCS, have 1',
+          reason: 'funds',
         }}
       />,
     )
 
     const button = screen.getByTestId('trade-confirm')
     expect(button).toBeDisabled()
-    expect(button).toHaveAttribute(
-      'title',
-      'Insufficient backing: need 2 VCS, have 1',
-    )
-    expect(screen.getByTestId('trade-feasibility-status')).toHaveTextContent(
-      'Insufficient backing: need 2 VCS, have 1',
-    )
+    expect(button).toHaveAttribute('title', 'Insufficient funds')
+    expect(screen.getByTestId('trade-feasibility-status')).toHaveTextContent('Insufficient funds')
+    expect(screen.queryByText(/VCS/i)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Top up wallet' }))
+    expect(onTopUpRequired).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps submit enabled when local VCS backing is sufficient', () => {
+  it('disables sell submit and shows outcome-token wording when local tokens are insufficient', () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: 'yes' }}
+        tradeAmount={2}
+        tradePreview={null}
+        tradeSide="sell"
+        orderType="limit"
+        limitPrice={500}
+        onTradeConfirm={vi.fn()}
+        tradeFeasibility={{
+          canBack: false,
+          reason: 'outcome-tokens',
+        }}
+      />,
+    )
+
+    const button = screen.getByTestId('trade-confirm')
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute('title', 'Insufficient outcome tokens')
+    expect(screen.getByTestId('trade-feasibility-status')).toHaveTextContent(
+      'Insufficient outcome tokens',
+    )
+    expect(screen.queryByRole('button', { name: 'Top up wallet' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/VCS/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps submit enabled when local backing is sufficient', () => {
     const onTradeConfirm = vi.fn()
     render(
       <TradingPanel

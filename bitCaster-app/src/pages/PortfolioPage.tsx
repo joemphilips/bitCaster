@@ -3,7 +3,6 @@ import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Portfolio } from "@/components/portfolio";
 import { DepositWithdrawOverlay } from "@/components/deposit-withdraw/DepositWithdrawOverlay";
-import { FundedActionBackupPromptModal } from "@/components/shared/BackupSecretsReminderModal";
 import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
 import { usePortfolioState } from "./usePortfolioState";
 import { useSettingsStore } from "@/stores/settings";
@@ -43,8 +42,6 @@ export function PortfolioPage() {
     null,
   );
   const [showWalletSetup, setShowWalletSetup] = useState(false);
-  const [showFundedActionBackupPrompt, setShowFundedActionBackupPrompt] =
-    useState(false);
   const [walletSetupCreating, setWalletSetupCreating] = useState(false);
   const [walletSetupError, setWalletSetupError] = useState<string | null>(null);
   const addActivity = useActivityLogStore((s) => s.addActivity);
@@ -108,10 +105,6 @@ export function PortfolioPage() {
   );
 
   const handleDeposit = useCallback(() => {
-    if (useWalletStore.getState().walletBackupState === "needs_backup") {
-      setShowFundedActionBackupPrompt(true);
-      return;
-    }
     setOverlayMode("deposit");
   }, []);
 
@@ -340,12 +333,6 @@ export function PortfolioPage() {
           onClose={() => setShowWalletSetup(false)}
           onCreateNew={handleCreateNewWallet}
           onImportSeed={handleImportSeed}
-        />
-      )}
-      {showFundedActionBackupPrompt && (
-        <FundedActionBackupPromptModal
-          onCancel={() => setShowFundedActionBackupPrompt(false)}
-          onGoToBackup={() => navigate("/settings?category=cashu")}
         />
       )}
     </>

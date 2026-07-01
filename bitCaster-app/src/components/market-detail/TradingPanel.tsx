@@ -38,6 +38,7 @@ interface TradingPanelProps {
   } | null
   tradeFeasibility?: {
     canBack: boolean
+    reason?: 'funds' | 'outcome-tokens'
     message?: string
   } | null
   isTradeSubmitting?: boolean
@@ -53,6 +54,7 @@ interface TradingPanelProps {
   onLimitPriceChange?: (price: number) => void
   walletReady?: boolean
   onWalletRequired?: (comment?: string) => void
+  onTopUpRequired?: () => void
   disabled?: boolean
 }
 
@@ -613,6 +615,7 @@ export function TradingPanel({
   onLimitPriceChange,
   walletReady = true,
   onWalletRequired,
+  onTopUpRequired,
   disabled = false,
 }: TradingPanelProps) {
   const { t } = useTranslation()
@@ -636,6 +639,12 @@ export function TradingPanel({
     tradeAmount > 0 &&
     tradePreview?.hasExecutableLiquidity === false
   const backingBlocked = walletReady && tradeFeasibility?.canBack === false
+  const backingBlockReason =
+    tradeFeasibility?.reason ?? (isSell ? 'outcome-tokens' : 'funds')
+  const backingBlockMessage =
+    backingBlockReason === 'outcome-tokens'
+      ? t('trade.insufficientOutcomeTokens')
+      : t('trade.insufficientFunds')
 
   useEffect(() => {
     if (!isTradeAmountFocused) {
@@ -668,7 +677,7 @@ export function TradingPanel({
     if (isTradeSubmitting) return t('trade.submittingOrder')
     if (!walletReady) return t('wallet.startTrading')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
-    if (backingBlocked) return t('trade.insufficientBacking')
+    if (backingBlocked) return backingBlockMessage
     if (marketOrderHasNoLiquidity) return t('trade.noExecutableLiquidity')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
     const amountLabel = shareCountLabel(tradeAmount)
@@ -892,13 +901,24 @@ export function TradingPanel({
             </div>
           )}
 
-          {backingBlocked && tradeFeasibility?.message && (
+          {backingBlocked && (
             <div
               role="status"
               data-testid="trade-feasibility-status"
               className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
             >
-              {tradeFeasibility.message}
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span>{backingBlockMessage}</span>
+                {backingBlockReason === 'funds' && onTopUpRequired && (
+                  <button
+                    type="button"
+                    onClick={onTopUpRequired}
+                    className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-700 dark:bg-amber-500 dark:text-slate-950 dark:hover:bg-amber-400"
+                  >
+                    {t('trade.topUpWallet')}
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -943,7 +963,7 @@ export function TradingPanel({
               marketOrderHasNoLiquidity ||
               (walletReady && (!tradeAmount || tradeAmount <= 0))
             }
-            title={backingBlocked ? tradeFeasibility?.message : undefined}
+            title={backingBlocked ? backingBlockMessage : undefined}
             className={`w-full py-3 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
               !walletReady
                 ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'

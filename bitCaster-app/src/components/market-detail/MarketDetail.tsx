@@ -84,6 +84,7 @@ export function MarketDetail({
   userHoldings,
   walletReady = true,
   onWalletRequired,
+  onTopUpRequired,
 }: MarketDetailProps) {
   const { t } = useTranslation();
   const outcomes =
@@ -177,6 +178,7 @@ export function MarketDetail({
                 userHoldings={userHoldings}
                 walletReady={walletReady}
                 onWalletRequired={onWalletRequired}
+                onTopUpRequired={onTopUpRequired}
                 disabled={isTradingDisabled}
               />
             </div>
@@ -308,6 +310,7 @@ export function MarketDetail({
                 userHoldings={userHoldings}
                 walletReady={walletReady}
                 onWalletRequired={onWalletRequired}
+                onTopUpRequired={onTopUpRequired}
                 disabled={isTradingDisabled}
               />
             </div>
@@ -355,7 +358,14 @@ export function MarketDetail({
                   marketOrderHasNoLiquidity ||
                   (walletReady && (!tradeAmount || tradeAmount <= 0))
                 }
-                title={tradeFeasibility?.canBack === false ? tradeFeasibility.message : undefined}
+                title={
+                  tradeFeasibility?.canBack === false
+                    ? (tradeFeasibility.message ??
+                      (tradeFeasibility.reason === "outcome-tokens"
+                        ? t("trade.insufficientOutcomeTokens")
+                        : t("trade.insufficientFunds")))
+                    : undefined
+                }
                 className={`px-6 py-2 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
                   !walletReady
                     ? "bg-[#f7931a] hover:bg-[#e8850f] text-white"

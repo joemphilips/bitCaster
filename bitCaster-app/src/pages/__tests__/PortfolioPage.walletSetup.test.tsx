@@ -13,7 +13,7 @@ vi.mock('react-router', () => ({
 }))
 
 vi.mock('@/components/deposit-withdraw/DepositWithdrawOverlay', () => ({
-  DepositWithdrawOverlay: () => null,
+  DepositWithdrawOverlay: ({ mode }: { mode: string }) => <div>{mode} overlay</div>,
 }))
 
 vi.mock('@/stores/settings', () => ({
@@ -140,7 +140,7 @@ describe('PortfolioPage wallet setup', () => {
     expect(screen.getByRole('button', { name: /deposit/i })).toBeInTheDocument()
   })
 
-  it('prompts for wallet backup instead of opening deposit for an unbacked wallet', async () => {
+  it('opens deposit for an unbacked wallet instead of blocking on backup', async () => {
     mockWalletState = 'ready'
     mockWalletBackupState = 'needs_backup'
 
@@ -148,12 +148,7 @@ describe('PortfolioPage wallet setup', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /deposit/i }))
 
-    expect(screen.getByRole('heading', { name: /back up your wallet first/i })).toBeInTheDocument()
-    expect(
-      screen.getByText(/you need to back up your seedphrase before making trades or deposits/i),
-    ).toBeInTheDocument()
-
-    await userEvent.click(screen.getByRole('button', { name: /go to backup/i }))
-    expect(navigate).toHaveBeenCalledWith('/settings?category=cashu')
+    expect(screen.getByText('deposit overlay')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /back up your wallet first/i })).not.toBeInTheDocument()
   })
 })

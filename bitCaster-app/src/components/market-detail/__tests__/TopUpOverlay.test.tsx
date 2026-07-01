@@ -9,6 +9,12 @@ const waitForMintQuotePaid = vi.fn()
 const mintProofs = vi.fn()
 const addProofs = vi.fn()
 const ensureImplicitWallet = vi.fn()
+const navigate = vi.fn()
+let walletBackupState: 'none' | 'needs_backup' | 'confirmed' = 'none'
+
+vi.mock('react-router', () => ({
+  useNavigate: () => navigate,
+}))
 
 vi.mock('@/lib/cashu', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/cashu')>()),
@@ -25,10 +31,10 @@ vi.mock('@/stores/proof-db', async (importOriginal) => ({
 
 vi.mock('@/stores/wallet', () => ({
   useWalletStore: Object.assign(
-    (selector: (state: { activeMintUrl: string; ensureImplicitWallet: typeof ensureImplicitWallet }) => unknown) =>
-      selector({ activeMintUrl: 'https://mint.example', ensureImplicitWallet }),
+    (selector: (state: { activeMintUrl: string; ensureImplicitWallet: typeof ensureImplicitWallet; walletBackupState: typeof walletBackupState }) => unknown) =>
+      selector({ activeMintUrl: 'https://mint.example', ensureImplicitWallet, walletBackupState }),
     {
-      getState: () => ({ activeMintUrl: 'https://mint.example', ensureImplicitWallet }),
+      getState: () => ({ activeMintUrl: 'https://mint.example', ensureImplicitWallet, walletBackupState }),
     },
   ),
 }))
@@ -44,6 +50,31 @@ describe('TopUpOverlay', () => {
     addProofs.mockReset()
     ensureImplicitWallet.mockReset()
     ensureImplicitWallet.mockResolvedValue(undefined)
+    navigate.mockReset()
+    walletBackupState = 'none'
+  })
+
+  it('shows a dismissible backup warning while still allowing top-up deposits', async () => {
+    walletBackupState = 'needs_backup'
+
+    render(
+      <TopUpOverlay
+        deficit={10_000}
+        baseAsset="sat"
+        onCancel={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Please back up your wallet to protect your funds')).toBeInTheDocument()
+    expect(screen.getByTestId('top-up-continue')).toBeEnabled()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Backup now' }))
+    expect(navigate).toHaveBeenCalledWith('/settings?category=cashu')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Later' }))
+    expect(screen.queryByText('Please back up your wallet to protect your funds')).not.toBeInTheDocument()
+    expect(screen.getByTestId('top-up-continue')).toBeEnabled()
   })
 
   it('shows USD top-up inputs in dollars while requesting cent subunits', async () => {
