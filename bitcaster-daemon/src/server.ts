@@ -1698,12 +1698,13 @@ function createEngineClient(
   if (deps.createEngineClient) return deps.createEngineClient(options)
   return new BitcasterEngineClient({
     baseUrl: options.baseUrl,
-    authorization: ({ url, method, bodyText }) =>
+    authorization: ({ url, method, bodyText, payloadHash }) =>
       signNip98(
         { privateKeyHex: options.nostrSecretKeyHex },
         url,
         method,
         bodyText,
+        payloadHash,
       ),
   })
 }

@@ -14,6 +14,7 @@ export interface EngineAuthorizationRequest {
   url: string
   method: string
   bodyText?: string
+  payloadHash?: string
 }
 
 export interface SubmitOrderRequest {

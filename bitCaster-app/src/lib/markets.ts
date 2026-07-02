@@ -15,9 +15,11 @@ import type {
 import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
+  createMarketViaEngine,
   submitEphemeralPubkey as sdkSubmitEphemeralPubkey,
+  submitOracleAttestationViaEngine,
   type SubmitOrderRequest as SdkSubmitOrderRequest,
-} from "@bitcaster/client-sdk/engineClient";
+} from "@bitcaster/client-sdk";
 import {
   marketUnitLabel,
   normalizeMarketBaseAsset,
@@ -785,12 +787,12 @@ export async function submitEphemeralPubkey(
     pubkey,
     null,
     fetch,
-    async ({ url, method, bodyText }) => {
-      const payloadHash = bodyText
-        ? await sha256Hex(new TextEncoder().encode(bodyText))
-        : undefined;
-      return generateNip98Header(url, method, payloadHash);
-    },
+    async ({ url, method, bodyText, payloadHash }) =>
+      generateNip98Header(
+        url,
+        method,
+        await resolveAuthorizationPayloadHash(bodyText, payloadHash),
+      ),
     conditionId,
   );
 }
@@ -828,12 +830,12 @@ export async function signTradeComment(
 export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient {
   return new BitcasterEngineClient({
     baseUrl: window.location.origin,
-    authorization: async ({ url, method, bodyText }) => {
-      const payloadHash = bodyText
-        ? await sha256Hex(new TextEncoder().encode(bodyText))
-        : undefined;
-      return generateNip98Header(url, method, payloadHash);
-    },
+    authorization: async ({ url, method, bodyText, payloadHash }) =>
+      generateNip98Header(
+        url,
+        method,
+        await resolveAuthorizationPayloadHash(bodyText, payloadHash),
+      ),
   });
 }
 
@@ -916,6 +918,16 @@ async function sha256Hex(data: BufferSource): Promise<string> {
   return bytesToHex(new Uint8Array(hash));
 }
 
+async function resolveAuthorizationPayloadHash(
+  bodyText?: string,
+  payloadHash?: string,
+): Promise<string | undefined> {
+  if (payloadHash) return payloadHash;
+  return bodyText
+    ? sha256Hex(new TextEncoder().encode(bodyText))
+    : undefined;
+}
+
 /**
  * Generate a NIP-98 Authorization header using NDK's active signer.
  * Works with both NIP-07 (browser extension) and nsec (private key) signers.
@@ -957,67 +969,38 @@ export async function createMarket(
   params: CreateMarketRequest,
   thumbnailFile?: File | null,
 ): Promise<CreateMarketResponse> {
-  const formData = new FormData();
-  formData.append("metadata", JSON.stringify(params));
-  if (thumbnailFile) {
-    formData.append("thumbnail", thumbnailFile);
-  }
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}`;
-  // Multipart bodies need pre-serialization so the NIP-98 `payload` tag binds
-  // to the exact bytes (including the random multipart boundary) that fetch
-  // will ship. Construct a transient Request to serialize, hash, then send
-  // the same bytes with the same Content-Type so server-side SHA-256 matches.
-  const serialized = new Request(url, { method: "POST", body: formData });
-  const bodyBytes = await serialized.arrayBuffer();
-  const contentType =
-    serialized.headers.get("Content-Type") ?? "multipart/form-data";
-  const payloadHash = await sha256Hex(bodyBytes);
-  const authHeader = await generateNip98Header(url, "POST", payloadHash);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": contentType, Authorization: authHeader },
-    body: bodyBytes,
-  });
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const body = await response.json();
-      const raw =
-        body.detail ?? body.title ?? body.message ?? JSON.stringify(body);
-      detail =
-        typeof raw === "string" ? raw.slice(0, 500) : String(raw).slice(0, 500);
-    } catch {
-      detail = response.statusText || detail;
-    }
-    throw new Error(`[Matching Engine] Failed to create market: ${detail}`);
-  }
-  return response.json();
+  const thumbnailBytes = thumbnailFile
+    ? {
+        data: new Uint8Array(await thumbnailFile.arrayBuffer()),
+        filename: thumbnailFile.name,
+        contentType: thumbnailFile.type,
+      }
+    : undefined;
+  return (await createMarketViaEngine(
+    new BitcasterEngineClient({
+      baseUrl: window.location.origin,
+      authorization: async ({ url, method, bodyText, payloadHash }) =>
+        generateNip98Header(
+          url,
+          method,
+          await resolveAuthorizationPayloadHash(bodyText, payloadHash),
+        ),
+    }),
+    conditionId,
+    params,
+    thumbnailBytes,
+  )) as unknown as CreateMarketResponse;
 }
 
 export async function submitOracleAttestation(
   conditionId: string,
   event: OracleNostrEvent,
 ): Promise<OracleAttestationResponse> {
-  const response = await fetch(
-    `/api/v1/markets/${encodeURIComponent(conditionId)}/oracle-attestation`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(event),
-    },
-  );
-  const body = (await response
-    .json()
-    .catch(() => null)) as OracleAttestationResponse | null;
-  if (!response.ok) {
-    throw new Error(
-      body?.result
-        ? `Oracle attestation rejected: ${body.result}`
-        : `Oracle attestation rejected: HTTP ${response.status}`,
-    );
-  }
-  if (!body) throw new Error("Oracle attestation response was empty");
-  return body;
+  return (await submitOracleAttestationViaEngine(
+    new BitcasterEngineClient({ baseUrl: window.location.origin }),
+    conditionId,
+    event,
+  )) as unknown as OracleAttestationResponse;
 }
 
 export async function fetchThumbnailUrl(

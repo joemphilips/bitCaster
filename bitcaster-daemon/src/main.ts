@@ -100,14 +100,26 @@ switch (command) {
               const { generateOrderEphemeralKeypair } = await import('./ephemeralKey.ts')
               const { submitEphemeralPubkey: submitPubkey } = await import('@bitcaster-market/client-sdk/engineClient')
               const keypair = generateOrderEphemeralKeypair()
+              type AuthorizationRequest = {
+                url: string
+                method: string
+                bodyText?: string
+                payloadHash?: string
+              }
               await submitPubkey(
                 profile.engineBaseUrl,
                 tradeId,
                 keypair.publicKeyHex,
                 null,
                 fetch,
-                async ({ url, method, bodyText }: { url: string; method: string; bodyText?: string }) =>
-                  signNip98({ privateKeyHex: secrets.nostrSecretKeyHex }, url, method, bodyText),
+                async ({ url, method, bodyText, payloadHash }: AuthorizationRequest) =>
+                  signNip98(
+                    { privateKeyHex: secrets.nostrSecretKeyHex },
+                    url,
+                    method,
+                    bodyText,
+                    payloadHash,
+                  ),
                 conditionIdFromMarketId(marketId),
               )
             },

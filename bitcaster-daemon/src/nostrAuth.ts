@@ -20,12 +20,15 @@ export function signNip98(
   url: string,
   method: string,
   bodyText?: string,
+  payloadHash?: string,
 ): string {
   const tags: string[][] = [
     ['u', url],
     ['method', method.toUpperCase()],
   ]
-  if (bodyText !== undefined) {
+  if (payloadHash !== undefined) {
+    tags.push(['payload', payloadHash])
+  } else if (bodyText !== undefined) {
     tags.push(['payload', sha256Hex(bodyText)])
   }
   const template: EventTemplate = {
