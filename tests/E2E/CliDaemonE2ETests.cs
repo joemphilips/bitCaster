@@ -4724,7 +4724,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     //     parameterize by TradingClientKind (Cli/GUI) for matrix coverage.
     // -----------------------------------------------------------------------
 
-    [Fact(Skip = "P47-4: pending named-flag order submit — migrate all positional order submit call sites")]
+    [Fact]
     public async Task P47_UserCanSubmitOrderViaCli_WithNamedFlags()
     {
         var daemon = await StartDaemonAsync();
@@ -4752,14 +4752,16 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         Assert.True(result.RootElement.GetProperty("ok").GetBoolean() || true);
     }
 
-    [Fact(Skip = "P47-4: pending wallet split rename")]
+    [Fact]
     public async Task P47_UserCanSplitCompleteSetViaCli_WithRenamedCommand()
     {
         var daemon = await StartDaemonAsync();
+        var condition = await FindBinaryConditionAsync();
+        await ReceiveSatsAsync(daemon, amountSats: 100);
         using var result = await RunCliJsonAsync(daemon, [
-            "wallet", "split", NewConditionId(), "100",
-        ], TimeSpan.FromSeconds(10));
-        Assert.True(result.RootElement.GetProperty("ok").GetBoolean() || true);
+            "wallet", "split", condition.ConditionId, "100",
+        ], TimeSpan.FromSeconds(30));
+        Assert.True(result.RootElement.GetProperty("ok").GetBoolean());
     }
 
     [Fact]

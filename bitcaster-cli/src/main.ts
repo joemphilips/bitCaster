@@ -270,22 +270,8 @@ function registerWalletCommand(program: Command): void {
       await printDaemonResult(callDaemon({ method: 'wallet.send', params }))
     })
 
-  wallet
-    .command('split-complete-set <conditionId> <amountSats>')
-    .description('Split regular ecash into a complete conditional outcome set.')
-    .option('--mint <url>', 'Mint URL')
-    .option('--operation-id <id>', 'Operation id')
-    .action(async (conditionId: string, amountSats: string, options: { mint?: string; operationId?: string }) => {
-      const params: {
-        conditionId: string
-        amountSats: number
-        mintUrl?: string
-        operationId?: string
-      } = { conditionId, amountSats: parseIntegerArg(amountSats, 'amount sats') }
-      if (options.mint !== undefined) params.mintUrl = options.mint
-      if (options.operationId !== undefined) params.operationId = options.operationId
-      await printDaemonResult(callDaemon({ method: 'wallet.splitCompleteSet', params }))
-    })
+  registerWalletSplitCommand(wallet, 'split')
+  registerWalletSplitCommand(wallet, 'split-complete-set', true)
 
   wallet
     .command('operations')
@@ -304,6 +290,25 @@ function registerWalletCommand(program: Command): void {
     .description('Resume or recover incomplete wallet operations.')
     .action(async () => {
       await printDaemonResult(callDaemon({ method: 'wallet.recover' }))
+    })
+}
+
+function registerWalletSplitCommand(wallet: Command, name: string, hidden = false): void {
+  wallet
+    .command(`${name} <conditionId> <amountSats>`, { hidden })
+    .description('Split regular ecash into a complete conditional outcome set.')
+    .option('--mint <url>', 'Mint URL')
+    .option('--operation-id <id>', 'Operation id')
+    .action(async (conditionId: string, amountSats: string, options: { mint?: string; operationId?: string }) => {
+      const params: {
+        conditionId: string
+        amountSats: number
+        mintUrl?: string
+        operationId?: string
+      } = { conditionId, amountSats: parseIntegerArg(amountSats, 'amount sats') }
+      if (options.mint !== undefined) params.mintUrl = options.mint
+      if (options.operationId !== undefined) params.operationId = options.operationId
+      await printDaemonResult(callDaemon({ method: 'wallet.splitCompleteSet', params }))
     })
 }
 
@@ -358,38 +363,19 @@ function registerOrderCommand(program: Command): void {
     .description('Submit, inspect, list, cancel orders, and read order books.')
 
   order
-    .command('submit <marketId> <outcomeId> <side> <price> <amountSats> [timeInForce]')
+    .command('submit')
     .description('Submit a buy or sell order to the matching engine.')
+    .option('--market <id>', 'Market id')
+    .option('--outcome <id>', 'Outcome id')
+    .option('--side <side>', 'Order side: buy or sell', parseSide)
+    .option('--price <n>', 'Limit price', parseIntegerOption('price'))
+    .option('--amount <sats>', 'Amount in sats', parseIntegerOption('amount sats'))
+    .option('--tif <tif>', 'Time in force: GTC, FAK, or FOK', parseTimeInForce, 'GTC')
     .option('--token-side <side>', 'Token side: Outcome or Complement', parseTokenSide)
     .option('--no-preflight-split', 'Disable preflight complete-set split')
-    .action(async (
-      marketId: string,
-      outcomeId: string,
-      sideRaw: string,
-      priceRaw: string,
-      amountSatsRaw: string,
-      timeInForceRaw: string | undefined,
-      options: { tokenSide?: 'Outcome' | 'Complement'; preflightSplit: boolean },
-    ) => {
-      const params: {
-        marketId: string
-        outcomeId: string
-        tokenSide: 'Outcome' | 'Complement'
-        side: 'Buy' | 'Sell'
-        price: number
-        amountSats: number
-        timeInForce: 'FAK' | 'FOK' | 'GTC'
-        preflightSplit: boolean
-      } = {
-        marketId,
-        outcomeId,
-        tokenSide: options.tokenSide ?? 'Outcome',
-        side: parseSide(sideRaw),
-        price: parseIntegerArg(priceRaw, 'price'),
-        amountSats: parseIntegerArg(amountSatsRaw, 'amount sats'),
-        timeInForce: parseTimeInForce(timeInForceRaw ?? 'GTC'),
-        preflightSplit: options.preflightSplit,
-      }
+    .allowExcessArguments(true)
+    .action(async (options: OrderSubmitOptions, command: Command) => {
+      const params = orderSubmitParams(options, command.args)
       await printDaemonResult(callDaemon({ method: 'order.submit', params }))
     })
 
@@ -432,6 +418,72 @@ function registerOrderCommand(program: Command): void {
         () => callDaemon({ method: 'order.book', params: { marketId } }),
       )
     })
+}
+
+interface OrderSubmitOptions {
+  market?: string
+  outcome?: string
+  side?: 'Buy' | 'Sell'
+  price?: number
+  amount?: number
+  tif: 'FAK' | 'FOK' | 'GTC'
+  tokenSide?: 'Outcome' | 'Complement'
+  preflightSplit: boolean
+}
+
+interface OrderSubmitParams {
+  marketId: string
+  outcomeId: string
+  tokenSide: 'Outcome' | 'Complement'
+  side: 'Buy' | 'Sell'
+  price: number
+  amountSats: number
+  timeInForce: 'FAK' | 'FOK' | 'GTC'
+  preflightSplit: boolean
+}
+
+function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): OrderSubmitParams {
+  const firstArg = positionals[0]
+  if (firstArg !== undefined && !firstArg.startsWith('--')) {
+    return positionalOrderSubmitParams(options, positionals)
+  }
+
+  if (positionals.length > 0) {
+    throwUsage(`Unexpected order submit argument: ${positionals[0]}`)
+  }
+
+  return {
+    marketId: requiredArg(options.market, 'market'),
+    outcomeId: requiredArg(options.outcome, 'outcome'),
+    tokenSide: options.tokenSide ?? 'Outcome',
+    side: requiredParsedOption(options.side, 'side'),
+    price: requiredParsedOption(options.price, 'price'),
+    amountSats: requiredParsedOption(options.amount, 'amount sats'),
+    timeInForce: options.tif,
+    preflightSplit: options.preflightSplit,
+  }
+}
+
+function positionalOrderSubmitParams(options: OrderSubmitOptions, positionals: string[]): OrderSubmitParams {
+  const [marketId, outcomeId, sideRaw, priceRaw, amountSatsRaw, timeInForceRaw, ...extra] = positionals
+  if (extra.length > 0) {
+    throwUsage(`Unexpected order submit argument: ${extra[0]}`)
+  }
+  return {
+    marketId: requiredArg(marketId, 'market id'),
+    outcomeId: requiredArg(outcomeId, 'outcome id'),
+    tokenSide: options.tokenSide ?? 'Outcome',
+    side: parseSide(requiredArg(sideRaw, 'side')),
+    price: parseIntegerArg(priceRaw, 'price'),
+    amountSats: parseIntegerArg(amountSatsRaw, 'amount sats'),
+    timeInForce: parseTimeInForce(timeInForceRaw ?? 'GTC'),
+    preflightSplit: options.preflightSplit,
+  }
+}
+
+function requiredParsedOption<T>(value: T | undefined, name: string): T {
+  if (value !== undefined) return value
+  throwUsage(`Missing ${name}`)
 }
 
 function registerTradeCommand(program: Command): void {
@@ -936,8 +988,9 @@ function requiredArg(value: string | undefined, name: string): string {
 }
 
 function parseSide(value: string): 'Buy' | 'Sell' {
-  if (value === 'Buy' || value === 'buy') return 'Buy'
-  if (value === 'Sell' || value === 'sell') return 'Sell'
+  const lower = value.toLowerCase()
+  if (lower === 'buy') return 'Buy'
+  if (lower === 'sell') return 'Sell'
   throwUsage(`Invalid side: ${value}`)
 }
 

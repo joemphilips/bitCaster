@@ -1508,7 +1508,7 @@ test('P47-3: order book with --engine-url calls engine directly without daemon R
   }
 })
 
-test.skip('P47-4: bitcaster-cli order submit accepts named flags', async () => {
+test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-named-flags-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -1535,6 +1535,15 @@ test.skip('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       '--amount', '100',
       '--tif', 'FAK',
     ])
+    await runCli(`http://127.0.0.1:${address.port}`, [
+      'order', 'submit',
+      '--market', 'cond-NO',
+      '--outcome', 'NO',
+      '--side', 'buy',
+      '--price', '55',
+      '--amount', '200',
+      '--no-preflight-split',
+    ])
     assert.deepEqual(received, [
       {
         method: 'order.submit',
@@ -1547,6 +1556,19 @@ test.skip('P47-4: bitcaster-cli order submit accepts named flags', async () => {
           amountSats: 100,
           timeInForce: 'FAK',
           preflightSplit: true,
+        },
+      },
+      {
+        method: 'order.submit',
+        params: {
+          marketId: 'cond-NO',
+          outcomeId: 'NO',
+          tokenSide: 'Outcome',
+          side: 'Buy',
+          price: 55,
+          amountSats: 200,
+          timeInForce: 'GTC',
+          preflightSplit: false,
         },
       },
     ])
@@ -1663,7 +1685,7 @@ test.skip('P47-5: bitcaster-cli wallet consolidate reclaim maps to t3 (default)'
   }
 })
 
-test.skip('P47-4: bitcaster-cli wallet split (renamed from split-complete-set)', async () => {
+test('P47-4: bitcaster-cli wallet split (renamed from split-complete-set)', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-wallet-split-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
