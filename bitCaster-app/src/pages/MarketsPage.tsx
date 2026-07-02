@@ -176,6 +176,28 @@ export function MarketsPage() {
     )
   }
 
+  if (markets.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4 px-4 text-center">
+        <div className="text-6xl" aria-hidden="true">📈</div>
+        <div className="space-y-2">
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+            No markets yet
+          </h2>
+          <p className="text-slate-500 dark:text-slate-400">
+            Create one to get started.
+          </p>
+        </div>
+        <button
+          onClick={() => navigate('/creator')}
+          className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
+        >
+          Create Market
+        </button>
+      </div>
+    )
+  }
+
   return (
     <MarketDiscovery
       categoryTags={derivedCategoryTags}
