@@ -111,18 +111,21 @@ function shouldAutoStartDaemon(err: unknown): boolean {
 
 function isNetworkFailure(err: unknown): boolean {
   if (!(err instanceof Error)) return false
-  const cause = (err as { cause?: unknown }).cause
-  if (cause && typeof cause === 'object') {
-    const code = (cause as { code?: unknown }).code
-    if (
-      code === 'ECONNREFUSED' ||
-      code === 'ECONNRESET' ||
-      code === 'ENOTFOUND' ||
-      code === 'EHOSTUNREACH' ||
-      code === 'ENOENT'
-    ) {
-      return true
-    }
+  const directCode = (err as { code?: unknown }).code
+  const causeObj = (err as { cause?: unknown }).cause
+  const causeCode =
+    causeObj && typeof causeObj === 'object'
+      ? (causeObj as { code?: unknown }).code
+      : undefined
+  const code = directCode ?? causeCode
+  if (
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'ENOTFOUND' ||
+    code === 'EHOSTUNREACH' ||
+    code === 'ENOENT'
+  ) {
+    return true
   }
   return err.name === 'TypeError' && /fetch failed/i.test(err.message)
 }
