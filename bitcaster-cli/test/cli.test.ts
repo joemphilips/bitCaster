@@ -1160,6 +1160,354 @@ test('P47-2: bitcaster-cli shows friendly error when daemon is unreachable', asy
   }
 })
 
+test('P47-3: market list with --engine-url calls engine directly without daemon RPC', async () => {
+  const daemonCalls: unknown[] = []
+  const daemon = createServer(async (req, res) => {
+    daemonCalls.push({ method: req.method, url: req.url })
+    writeJson(res, 500, { ok: false, error: 'daemon should not be called' })
+  })
+  const engineRequests: Array<{ method?: string; url?: string }> = []
+  const engine = createServer(async (req, res) => {
+    engineRequests.push({ method: req.method, url: req.url })
+    assert.equal(req.method, 'GET')
+    assert.equal(req.url, '/api/v1/markets/query?search=weather&page_size=5&state=All')
+    writeJson(res, 200, {
+      markets: [{ conditionId: 'condition-1', title: 'Weather' }],
+      nextCursor: null,
+      lastSuccessfulRefreshAt: '2026-07-02T00:00:00Z',
+    })
+  })
+  daemon.listen(0, '127.0.0.1')
+  engine.listen(0, '127.0.0.1')
+  await Promise.all([once(daemon, 'listening'), once(engine, 'listening')])
+  const daemonAddress = daemon.address()
+  const engineAddress = engine.address()
+  assert.equal(typeof daemonAddress, 'object')
+  assert.equal(typeof engineAddress, 'object')
+  assert.ok(daemonAddress)
+  assert.ok(engineAddress)
+
+  try {
+    const result = await runCliWithEnv(
+      [
+        '--engine-url',
+        `http://127.0.0.1:${engineAddress.port}`,
+        'market',
+        'list',
+        '--search',
+        'weather',
+        '--limit',
+        '5',
+        '--state',
+        'All',
+      ],
+      {
+        ...process.env,
+        BITCASTER_DAEMON_URL: `http://127.0.0.1:${daemonAddress.port}`,
+        BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      },
+    )
+
+    assert.deepEqual(JSON.parse(result.stdout), {
+      markets: [{ conditionId: 'condition-1', title: 'Weather' }],
+      nextCursor: null,
+      lastSuccessfulRefreshAt: '2026-07-02T00:00:00Z',
+    })
+    assert.deepEqual(engineRequests, [
+      { method: 'GET', url: '/api/v1/markets/query?search=weather&page_size=5&state=All' },
+    ])
+    assert.deepEqual(daemonCalls, [])
+  } finally {
+    daemon.close()
+    engine.close()
+  }
+})
+
+test('P47-3 regression: market show with --engine-url prints one market from engine query response', async () => {
+  const daemonCalls: unknown[] = []
+  const daemon = createServer(async (req, res) => {
+    daemonCalls.push({ method: req.method, url: req.url })
+    writeJson(res, 500, { ok: false, error: 'daemon should not be called' })
+  })
+  const engineRequests: Array<{ method?: string; url?: string }> = []
+  const engine = createServer(async (req, res) => {
+    engineRequests.push({ method: req.method, url: req.url })
+    assert.equal(req.method, 'GET')
+    assert.equal(req.url, '/api/v1/markets/query?ids=condition-1&state=All')
+    writeJson(res, 200, {
+      markets: [
+        { conditionId: 'condition-1', title: 'Weather' },
+        { conditionId: 'condition-2', title: 'Ignored' },
+      ],
+      nextCursor: null,
+    })
+  })
+  daemon.listen(0, '127.0.0.1')
+  engine.listen(0, '127.0.0.1')
+  await Promise.all([once(daemon, 'listening'), once(engine, 'listening')])
+  const daemonAddress = daemon.address()
+  const engineAddress = engine.address()
+  assert.equal(typeof daemonAddress, 'object')
+  assert.equal(typeof engineAddress, 'object')
+  assert.ok(daemonAddress)
+  assert.ok(engineAddress)
+
+  try {
+    const result = await runCliWithEnv(
+      ['--engine-url', `http://127.0.0.1:${engineAddress.port}`, 'market', 'show', 'condition-1'],
+      {
+        ...process.env,
+        BITCASTER_DAEMON_URL: `http://127.0.0.1:${daemonAddress.port}`,
+        BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      },
+    )
+
+    assert.deepEqual(JSON.parse(result.stdout), { conditionId: 'condition-1', title: 'Weather' })
+    assert.deepEqual(engineRequests, [
+      { method: 'GET', url: '/api/v1/markets/query?ids=condition-1&state=All' },
+    ])
+    assert.deepEqual(daemonCalls, [])
+  } finally {
+    daemon.close()
+    engine.close()
+  }
+})
+
+test('P47-3 regression: engine HTTP 500 is surfaced without daemon fallback', async () => {
+  const daemonCalls: unknown[] = []
+  const daemon = createServer(async (req, res) => {
+    daemonCalls.push({ method: req.method, url: req.url })
+    writeJson(res, 200, { ok: true, result: { markets: [] } })
+  })
+  const engine = createServer(async (_req, res) => {
+    writeJson(res, 500, { error: 'engine exploded' })
+  })
+  daemon.listen(0, '127.0.0.1')
+  engine.listen(0, '127.0.0.1')
+  await Promise.all([once(daemon, 'listening'), once(engine, 'listening')])
+  const daemonAddress = daemon.address()
+  const engineAddress = engine.address()
+  assert.equal(typeof daemonAddress, 'object')
+  assert.equal(typeof engineAddress, 'object')
+  assert.ok(daemonAddress)
+  assert.ok(engineAddress)
+
+  try {
+    await assert.rejects(
+      () => runCliWithEnv(
+        ['--engine-url', `http://127.0.0.1:${engineAddress.port}`, 'market', 'list'],
+        {
+          ...process.env,
+          BITCASTER_DAEMON_URL: `http://127.0.0.1:${daemonAddress.port}`,
+          BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+        },
+      ),
+      (err: unknown) => {
+        assert.equal((err as { code?: unknown }).code, 1)
+        assert.deepEqual(JSON.parse((err as { stdout?: string }).stdout ?? ''), {
+          ok: false,
+          error: 'engine returned HTTP 500: {"error":"engine exploded"}',
+        })
+        assert.deepEqual(daemonCalls, [])
+        return true
+      },
+    )
+  } finally {
+    daemon.close()
+    engine.close()
+  }
+})
+
+test('P47-3 regression: market list direct engine forwards sort creator tag and cursor params', async () => {
+  const daemonCalls: unknown[] = []
+  const daemon = createServer(async (req, res) => {
+    daemonCalls.push({ method: req.method, url: req.url })
+    writeJson(res, 500, { ok: false, error: 'daemon should not be called' })
+  })
+  const engineRequests: Array<{ method?: string; url?: string }> = []
+  const engine = createServer(async (req, res) => {
+    engineRequests.push({ method: req.method, url: req.url })
+    assert.equal(req.method, 'GET')
+    assert.equal(req.url, '/api/v1/markets/query?sort=Trending&tag=sports&creator_pubkey=npub1creator&cursor=page-2')
+    writeJson(res, 200, { markets: [], nextCursor: null })
+  })
+  daemon.listen(0, '127.0.0.1')
+  engine.listen(0, '127.0.0.1')
+  await Promise.all([once(daemon, 'listening'), once(engine, 'listening')])
+  const daemonAddress = daemon.address()
+  const engineAddress = engine.address()
+  assert.equal(typeof daemonAddress, 'object')
+  assert.equal(typeof engineAddress, 'object')
+  assert.ok(daemonAddress)
+  assert.ok(engineAddress)
+
+  try {
+    await runCliWithEnv(
+      [
+        '--engine-url',
+        `http://127.0.0.1:${engineAddress.port}`,
+        'market',
+        'list',
+        '--sort',
+        'Trending',
+        '--tag',
+        'sports',
+        '--creator',
+        'npub1creator',
+        '--cursor',
+        'page-2',
+      ],
+      {
+        ...process.env,
+        BITCASTER_DAEMON_URL: `http://127.0.0.1:${daemonAddress.port}`,
+        BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      },
+    )
+
+    assert.deepEqual(engineRequests, [
+      { method: 'GET', url: '/api/v1/markets/query?sort=Trending&tag=sports&creator_pubkey=npub1creator&cursor=page-2' },
+    ])
+    assert.deepEqual(daemonCalls, [])
+  } finally {
+    daemon.close()
+    engine.close()
+  }
+})
+
+test('P47-3 regression: market list daemon maps CLI sort aliases and keeps creator param', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-list-sort-daemon-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const daemon = createServer(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)))
+    writeJson(res, 200, { ok: true, result: { markets: [] } })
+  })
+  daemon.listen(0, '127.0.0.1')
+  await once(daemon, 'listening')
+  const daemonAddress = daemon.address()
+  assert.equal(typeof daemonAddress, 'object')
+  assert.ok(daemonAddress)
+
+  try {
+    for (const sort of ['Trending', 'Popular', 'New']) {
+      await runCliWithEnv(['market', 'list', '--sort', sort, '--creator', 'npub1creator'], {
+        ...process.env,
+        BITCASTER_DAEMON_URL: `http://127.0.0.1:${daemonAddress.port}`,
+        BITCASTER_ENGINE_URL: undefined,
+      })
+    }
+
+    assert.deepEqual(received, [
+      { method: 'markets.query', params: { creator: 'npub1creator', sort: 'Volume24h' } },
+      { method: 'markets.query', params: { creator: 'npub1creator', sort: 'Volume30d' } },
+      { method: 'markets.query', params: { creator: 'npub1creator', sort: 'Newest' } },
+    ])
+  } finally {
+    daemon.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('P47-3 regression: market list rejects unknown sort values', async () => {
+  await assert.rejects(
+    () => runCliWithEnv(['market', 'list', '--sort', 'Hot'], {
+      ...process.env,
+      BITCASTER_DAEMON_URL: 'http://127.0.0.1:9',
+      BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      BITCASTER_ENGINE_URL: undefined,
+    }),
+    (err: unknown) => {
+      assert.equal((err as { code?: unknown }).code, 1)
+      assert.match((err as { stderr?: string }).stderr ?? '', /Invalid market sort: Hot/)
+      return true
+    },
+  )
+})
+
+test('P47-3: market list without --engine-url falls back to daemon RPC', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-list-daemon-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const daemon = createServer(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)))
+    writeJson(res, 200, { ok: true, result: { markets: [] } })
+  })
+  daemon.listen(0, '127.0.0.1')
+  await once(daemon, 'listening')
+  const daemonAddress = daemon.address()
+  assert.equal(typeof daemonAddress, 'object')
+  assert.ok(daemonAddress)
+
+  try {
+    await runCliWithEnv(['market', 'list', '--search', 'weather', '--limit', '5', '--state', 'All'], {
+      ...process.env,
+      BITCASTER_DAEMON_URL: `http://127.0.0.1:${daemonAddress.port}`,
+      BITCASTER_ENGINE_URL: undefined,
+    })
+
+    assert.deepEqual(received, [
+      { method: 'markets.query', params: { search: 'weather', limit: 5, state: 'All' } },
+    ])
+  } finally {
+    daemon.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('P47-3: order book with --engine-url calls engine directly without daemon RPC', async () => {
+  const daemonCalls: unknown[] = []
+  const daemon = createServer(async (req, res) => {
+    daemonCalls.push({ method: req.method, url: req.url })
+    writeJson(res, 500, { ok: false, error: 'daemon should not be called' })
+  })
+  const engineRequests: Array<{ method?: string; url?: string }> = []
+  const engine = createServer(async (req, res) => {
+    engineRequests.push({ method: req.method, url: req.url })
+    assert.equal(req.method, 'GET')
+    assert.equal(req.url, '/api/v1/cond-YES/orderbook')
+    writeJson(res, 200, { marketId: 'cond-YES', bids: [{ price: 42, amount: 100 }], asks: [] })
+  })
+  daemon.listen(0, '127.0.0.1')
+  engine.listen(0, '127.0.0.1')
+  await Promise.all([once(daemon, 'listening'), once(engine, 'listening')])
+  const daemonAddress = daemon.address()
+  const engineAddress = engine.address()
+  assert.equal(typeof daemonAddress, 'object')
+  assert.equal(typeof engineAddress, 'object')
+  assert.ok(daemonAddress)
+  assert.ok(engineAddress)
+
+  try {
+    const result = await runCliWithEnv(
+      ['--engine-url', `http://127.0.0.1:${engineAddress.port}`, 'order', 'book', 'cond-YES'],
+      {
+        ...process.env,
+        BITCASTER_DAEMON_URL: `http://127.0.0.1:${daemonAddress.port}`,
+        BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      },
+    )
+
+    assert.deepEqual(JSON.parse(result.stdout), {
+      marketId: 'cond-YES',
+      bids: [{ price: 42, amount: 100 }],
+      asks: [],
+    })
+    assert.deepEqual(engineRequests, [{ method: 'GET', url: '/api/v1/cond-YES/orderbook' }])
+    assert.deepEqual(daemonCalls, [])
+  } finally {
+    daemon.close()
+    engine.close()
+  }
+})
+
 test.skip('P47-4: bitcaster-cli order submit accepts named flags', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-named-flags-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME

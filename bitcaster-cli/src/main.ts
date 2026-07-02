@@ -11,6 +11,7 @@ import {
   daemonLogPath,
   DaemonNotReachableError,
   isCliSpawnedDaemonRunning,
+  isNetworkFailure,
   restartDaemon,
   stopDaemon,
 } from './rpc.ts'
@@ -25,6 +26,7 @@ import {
 import type {
   DaemonCommand,
   DaemonResponse,
+  QueryMarketsParams,
   WalletConsolidationResult,
 } from '@bitcaster-market/daemon/protocol'
 
@@ -38,6 +40,13 @@ let globalMintUrl: string | undefined
 let globalDryRun = false
 let globalJson = false
 let rootProgram: Command | undefined
+
+class EngineHttpError extends Error {
+  constructor(status: number, body: string) {
+    super(`engine returned HTTP ${status}${body.length > 0 ? `: ${body}` : ''}`)
+    this.name = 'EngineHttpError'
+  }
+}
 
 await main()
 
@@ -146,7 +155,11 @@ function registerMarketCommand(program: Command, name: 'market' | 'markets', hid
     .option('--search <query>', 'Search query')
     .option('--limit <n>', 'Maximum number of markets', parseIntegerOption('limit'))
     .option('--state <state>', 'Lifecycle state: Open, Closed, Resolved, or All', parseMarketState)
-    .action(async (options: { search?: string; limit?: number; state?: 'Open' | 'Closed' | 'Resolved' | 'All' }) => {
+    .option('--sort <sort>', 'Sort dimension: Trending, Popular, or New', parseMarketSort)
+    .option('--tag <tag...>', 'Category tag filter (repeatable)')
+    .option('--creator <pubkey>', 'Creator Nostr pubkey filter')
+    .option('--cursor <cursor>', 'Pagination cursor')
+    .action(async (options: MarketListOptions) => {
       await queryMarkets(options)
     })
 
@@ -154,26 +167,60 @@ function registerMarketCommand(program: Command, name: 'market' | 'markets', hid
     .command('show <conditionId>')
     .description('Show one market by condition id.')
     .action(async (conditionId: string) => {
-      await printDaemonResult(
-        callDaemon({ method: 'markets.show', params: { conditionId } }),
+      await printDirectEngineResultOrDaemon(
+        () => fetchMarketShowFromEngine(conditionId),
+        () => callDaemon({ method: 'markets.show', params: { conditionId } }),
       )
     })
 }
 
-async function queryMarkets(options: {
+interface MarketListOptions {
   search?: string
   limit?: number
   state?: 'Open' | 'Closed' | 'Resolved' | 'All'
-}): Promise<void> {
-  const params: {
-    search?: string
-    limit?: number
-    state?: 'Open' | 'Closed' | 'Resolved' | 'All'
-  } = {}
+  sort?: string
+  tag?: string[]
+  creator?: string
+  cursor?: string
+}
+
+async function queryMarkets(options: MarketListOptions): Promise<void> {
+  const params = marketListDaemonParams(options)
+  await printDirectEngineResultOrDaemon(
+    () => fetchMarketListFromEngine(options),
+    () => callDaemon({ method: 'markets.query', params }),
+  )
+}
+
+function marketListDaemonParams(options: MarketListOptions): QueryMarketsParams {
+  const params: QueryMarketsParams = {}
   if (options.search !== undefined) params.search = options.search
   if (options.limit !== undefined) params.limit = options.limit
   if (options.state !== undefined) params.state = options.state
-  await printDaemonResult(callDaemon({ method: 'markets.query', params }))
+  if (options.cursor !== undefined) params.cursor = options.cursor
+  if (options.creator !== undefined) params.creator = options.creator
+  if (options.tag !== undefined && options.tag.length > 0) params.tag = options.tag[0]
+  const sort = daemonMarketSort(options.sort)
+  if (sort !== undefined) params.sort = sort
+  return params
+}
+
+function daemonMarketSort(value: string | undefined): QueryMarketsParams['sort'] | undefined {
+  if (value === undefined) return undefined
+  if (isDaemonMarketSort(value)) return value
+  switch (value) {
+    case 'Trending':
+      return 'Volume24h'
+    case 'Popular':
+      return 'Volume30d'
+    case 'New':
+      return 'Newest'
+  }
+  throwUsage(`Invalid market sort: ${value}`)
+}
+
+function isDaemonMarketSort(value: string | undefined): value is NonNullable<QueryMarketsParams['sort']> {
+  return value === 'Newest' || value === 'EndingSoon' || value === 'Volume24h' || value === 'Volume30d'
 }
 
 function registerWalletCommand(program: Command): void {
@@ -380,7 +427,10 @@ function registerOrderCommand(program: Command): void {
     .command('book <marketId>')
     .description('Show the order book for one market.')
     .action(async (marketId: string) => {
-      await printDaemonResult(callDaemon({ method: 'order.book', params: { marketId } }))
+      await printDirectEngineResultOrDaemon(
+        () => fetchOrderBookFromEngine(marketId),
+        () => callDaemon({ method: 'order.book', params: { marketId } }),
+      )
     })
 }
 
@@ -725,6 +775,105 @@ function isTerminalTradeResult(response: unknown): boolean {
   return step === 'confirmed' || step === 'refunded' || step === 'failed'
 }
 
+async function printDirectEngineResultOrDaemon<T>(
+  engineCall: () => Promise<unknown>,
+  daemonCall: () => Promise<T>,
+): Promise<void> {
+  if (globalEngineUrl === undefined) {
+    await printDaemonResult(daemonCall())
+    return
+  }
+  try {
+    const result = await engineCall()
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+  } catch (err) {
+    if (isEngineHttpError(err)) {
+      process.stdout.write(`${JSON.stringify({ ok: false, error: err.message }, null, 2)}\n`)
+      process.exitCode = 1
+      return
+    }
+    if (!isNetworkFailure(err)) throw err
+    process.stderr.write(`Warning: engine read failed at ${globalEngineUrl}: ${errorMessage(err)}; falling back to daemon\n`)
+    await printDaemonResult(daemonCall())
+  }
+}
+
+async function fetchMarketListFromEngine(params: {
+  search?: string
+  limit?: number
+  state?: 'Open' | 'Closed' | 'Resolved' | 'All'
+  sort?: string
+  tag?: string[]
+  creator?: string
+  cursor?: string
+}): Promise<unknown> {
+  const url = engineUrl('/api/v1/markets/query')
+  appendQuery(url, 'search', params.search)
+  appendQuery(url, 'page_size', params.limit)
+  appendQuery(url, 'state', params.state)
+  appendQuery(url, 'sort', params.sort)
+  for (const tag of params.tag ?? []) appendQuery(url, 'tag', tag)
+  appendQuery(url, 'creator_pubkey', params.creator)
+  appendQuery(url, 'cursor', params.cursor)
+  return fetchEngineJson(url)
+}
+
+async function fetchMarketShowFromEngine(conditionId: string): Promise<unknown> {
+  const url = engineUrl('/api/v1/markets/query')
+  appendQuery(url, 'ids', conditionId)
+  appendQuery(url, 'state', 'All')
+  const response = await fetchEngineJson(url)
+  const markets = response && typeof response === 'object'
+    ? (response as { markets?: unknown }).markets
+    : undefined
+  if (Array.isArray(markets) && markets.length > 0) return markets[0]
+  return { ok: true, result: null }
+}
+
+async function fetchOrderBookFromEngine(marketId: string): Promise<unknown> {
+  return fetchEngineJson(engineUrl(`/api/v1/${encodeURIComponent(marketId)}/orderbook`))
+}
+
+function engineUrl(path: string): URL {
+  if (globalEngineUrl === undefined) throw new Error('engine URL is not configured')
+  return new URL(path, ensureTrailingSlash(globalEngineUrl))
+}
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith('/') ? value : `${value}/`
+}
+
+function appendQuery(url: URL, key: string, value: string | number | undefined): void {
+  if (value !== undefined) url.searchParams.append(key, String(value))
+}
+
+async function fetchEngineJson(url: URL): Promise<unknown> {
+  const response = await fetch(url)
+  const text = await response.text()
+  if (!response.ok) {
+    throw new EngineHttpError(response.status, text)
+  }
+  let parsed: unknown = null
+  if (text.length > 0) {
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      throw new Error(`engine returned non-JSON response (${response.status})`)
+    }
+  }
+  return parsed
+}
+
+function isEngineHttpError(value: unknown): value is EngineHttpError {
+  return value instanceof EngineHttpError || (
+    value instanceof Error && value.name === 'EngineHttpError'
+  )
+}
+
+function errorMessage(value: unknown): string {
+  return value instanceof Error ? value.message : String(value)
+}
+
 async function printDaemonResult<T>(promise: Promise<T>): Promise<void> {
   const result = await promise
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
@@ -814,6 +963,18 @@ function parseMarketState(value: string): 'Open' | 'Closed' | 'Resolved' | 'All'
     return value
   }
   throwUsage(`Invalid market state: ${value}`)
+}
+
+function parseMarketSort(value: string): string {
+  if (
+    value === 'Trending' ||
+    value === 'Popular' ||
+    value === 'New' ||
+    isDaemonMarketSort(value)
+  ) {
+    return value
+  }
+  throwUsage(`Invalid market sort: ${value}`)
 }
 
 function throwUsage(message: string): never {
