@@ -27,6 +27,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@bitcaster-market/client-sdk": "0.1.0",
     "@bitcaster-market/daemon": "0.1.0",
     "commander": "^12.1.0"
   },

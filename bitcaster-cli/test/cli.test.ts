@@ -1731,6 +1731,243 @@ test('P47-4: bitcaster-cli wallet split (renamed from split-complete-set)', asyn
   }
 })
 
+test('P47-6b: market create with named flags sends daemon RPC params', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-create-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const server = createServer(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)))
+    writeJson(res, 200, { ok: true, result: { conditionId: 'cond-1' } })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await runCliWithEnv([
+      'market', 'create',
+      '--condition-id', 'cond-1',
+      '--title', 'Will it rain?',
+      '--description', 'Weather market',
+      '--outcomes', 'YES,NO,MAYBE',
+      '--liquidity-sats', '1000',
+      '--tag', 'weather',
+      '--tag', 'test',
+      '--thumbnail', '/tmp/thumb.png',
+      '--trust-engine-url',
+    ], {
+      ...process.env,
+      BITCASTER_DAEMON_HOME: home,
+      BITCASTER_DAEMON_URL: `http://127.0.0.1:${address.port}`,
+      BITCASTER_ENGINE_URL: 'https://engine.example',
+    })
+
+    assert.deepEqual(received, [
+      {
+        method: 'market.create',
+        params: {
+          conditionId: 'cond-1',
+          title: 'Will it rain?',
+          description: 'Weather market',
+          outcomes: ['YES', 'NO', 'MAYBE'],
+          liquiditySats: 1000,
+          tags: ['weather', 'test'],
+          thumbnailPath: '/tmp/thumb.png',
+        },
+      },
+    ])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('P47-6b: market close --attestation @file reads JSON locally before RPC', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-close-file-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const attestation = kind89Event()
+  const attestationPath = join(home, 'attestation.json')
+  await writeFile(attestationPath, JSON.stringify(attestation))
+  const received: unknown[] = []
+  const server = createServer(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)))
+    writeJson(res, 200, { ok: true, result: { result: 'Closed' } })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await runCli(`http://127.0.0.1:${address.port}`, [
+      'market', 'close',
+      '--condition-id', 'cond-1',
+      '--attestation', `@${attestationPath}`,
+    ])
+    assert.deepEqual(received, [
+      {
+        method: 'market.close',
+        params: { conditionId: 'cond-1', attestationEvent: attestation },
+      },
+    ])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('P47-6b: market close --attestation inline JSON sends event JSON', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-close-inline-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const attestation = kind89Event()
+  const received: unknown[] = []
+  const server = createServer(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)))
+    writeJson(res, 200, { ok: true, result: { result: 'Closed' } })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await runCli(`http://127.0.0.1:${address.port}`, [
+      'market', 'close',
+      '--condition-id', 'cond-1',
+      '--attestation', JSON.stringify(attestation),
+    ])
+    assert.deepEqual(received, [
+      {
+        method: 'market.close',
+        params: { conditionId: 'cond-1', attestationEvent: attestation },
+      },
+    ])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('P47-6b: market close rejects @file path containing parent traversal', async () => {
+  await assert.rejects(
+    () => runCliWithEnv([
+      'market', 'close',
+      '--condition-id', 'cond-1',
+      '--attestation', '@../attestation.json',
+    ], {
+      ...process.env,
+      BITCASTER_DAEMON_URL: 'http://127.0.0.1:9',
+      BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+    }),
+    (err: unknown) => {
+      assert.equal((err as { code?: unknown }).code, 3)
+      assert.match((err as { stderr?: string }).stderr ?? '', /must not contain \.\./)
+      return true
+    },
+  )
+})
+
+test('P47-6b: market close --attestation rejects invalid event JSON before RPC', async () => {
+  const invalidCases: Array<{ name: string; attestation: string; stderr: RegExp }> = [
+    {
+      name: 'non-json input',
+      attestation: 'not-json',
+      stderr: /Oracle attestation must be valid JSON/,
+    },
+    {
+      name: 'wrong kind',
+      attestation: JSON.stringify({ ...kind89Event(), kind: 1 }),
+      stderr: /Oracle attestation must be a kind-89 Nostr event/,
+    },
+    {
+      name: 'missing sig',
+      attestation: JSON.stringify(kind89EventWithout('sig')),
+      stderr: /Oracle attestation must be a kind-89 Nostr event/,
+    },
+    {
+      name: 'missing id',
+      attestation: JSON.stringify(kind89EventWithout('id')),
+      stderr: /Oracle attestation must be a kind-89 Nostr event/,
+    },
+    {
+      name: 'missing pubkey',
+      attestation: JSON.stringify(kind89EventWithout('pubkey')),
+      stderr: /Oracle attestation must be a kind-89 Nostr event/,
+    },
+    {
+      name: 'tags is not an array of arrays',
+      attestation: JSON.stringify({ ...kind89Event(), tags: ['e', 'c'.repeat(64)] }),
+      stderr: /Oracle attestation must be a kind-89 Nostr event/,
+    },
+  ]
+
+  for (const invalidCase of invalidCases) {
+    await assert.rejects(
+      () => runCliWithEnv([
+        'market', 'close',
+        '--condition-id', 'cond-1',
+        '--attestation', invalidCase.attestation,
+      ], {
+        ...process.env,
+        BITCASTER_DAEMON_URL: 'http://127.0.0.1:9',
+        BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      }),
+      (err: unknown) => {
+        assert.equal((err as { code?: unknown }).code, 3, invalidCase.name)
+        assert.match((err as { stderr?: string }).stderr ?? '', invalidCase.stderr, invalidCase.name)
+        return true
+      },
+      invalidCase.name,
+    )
+  }
+})
+
+test('P47-6b: market create refuses plain http engine URL without insecure localhost override', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-create-http-'))
+  try {
+    await assert.rejects(
+      () => runCliWithEnv([
+        'market', 'create',
+        '--condition-id', 'cond-1',
+        '--title', 'Market',
+        '--description', 'Description',
+        '--outcomes', 'YES,NO',
+        '--trust-engine-url',
+      ], {
+        ...process.env,
+        BITCASTER_DAEMON_HOME: home,
+        BITCASTER_DAEMON_URL: 'http://127.0.0.1:9',
+        BITCASTER_ENGINE_URL: 'http://engine.example',
+        BITCASTER_ALLOW_INSECURE_ENGINE: undefined,
+        BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      }),
+      (err: unknown) => {
+        assert.equal((err as { code?: unknown }).code, 3)
+        assert.match((err as { stderr?: string }).stderr ?? '', /Refusing insecure engine URL/)
+        return true
+      },
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test.skip('P47-7: bitcaster-cli order submit --dry-run prints payload without calling daemon', async () => {
   const result = await runCliWithOutput('http://127.0.0.1:1', [
     'order', 'submit',
@@ -1787,6 +2024,32 @@ async function runCliWithEnv(
     ],
     { env },
   )
+}
+
+function kind89Event(): {
+  id: string
+  pubkey: string
+  createdAt: number
+  kind: 89
+  tags: string[][]
+  content: string
+  sig: string
+} {
+  return {
+    id: 'a'.repeat(64),
+    pubkey: 'b'.repeat(64),
+    createdAt: 1_782_950_400,
+    kind: 89,
+    tags: [['e', 'c'.repeat(64)]],
+    content: 'attestation-payload',
+    sig: 'd'.repeat(128),
+  }
+}
+
+function kind89EventWithout(field: 'id' | 'pubkey' | 'sig'): Record<string, unknown> {
+  const event: Record<string, unknown> = kind89Event()
+  delete event[field]
+  return event
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {

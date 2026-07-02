@@ -3,8 +3,12 @@
 import { execFile } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { normalize } from 'node:path'
+import { stdin as input, stdout as output } from 'node:process'
+import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { validateMarketCreateEngineUrl } from '@bitcaster-market/client-sdk'
 import { Command, CommanderError, Option } from 'commander'
 import {
   callDaemon,
@@ -26,6 +30,8 @@ import {
 import type {
   DaemonCommand,
   DaemonResponse,
+  MarketCloseParams,
+  MarketCreateParams,
   QueryMarketsParams,
   WalletConsolidationResult,
 } from '@bitcaster-market/daemon/protocol'
@@ -172,6 +178,44 @@ function registerMarketCommand(program: Command, name: 'market' | 'markets', hid
         () => callDaemon({ method: 'markets.show', params: { conditionId } }),
       )
     })
+
+  market
+    .command('create')
+    .description('Create a market through the daemon using daemon-held Nostr auth.')
+    .requiredOption('--condition-id <id>', 'Condition id')
+    .requiredOption('--title <title>', 'Market title')
+    .requiredOption('--description <description>', 'Market description')
+    .requiredOption('--outcomes <a,b,c>', 'Comma-separated outcome names', parseOutcomeList)
+    .option('--liquidity-sats <n>', 'Initial liquidity in sats', parseIntegerOption('liquidity sats'))
+    .option('--tag <tag...>', 'Category tag (repeatable)')
+    .option('--thumbnail <path>', 'Thumbnail file path on the daemon host')
+    .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
+    .action(async (options: MarketCreateOptions) => {
+      await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true)
+      const params: MarketCreateParams = {
+        conditionId: options.conditionId,
+        title: options.title,
+        description: options.description,
+        outcomes: options.outcomes,
+      }
+      if (options.liquiditySats !== undefined) params.liquiditySats = options.liquiditySats
+      if (options.tag !== undefined && options.tag.length > 0) params.tags = options.tag
+      if (options.thumbnail !== undefined) params.thumbnailPath = options.thumbnail
+      await printDaemonResult(callDaemon({ method: 'market.create', params }))
+    })
+
+  market
+    .command('close')
+    .description('Close a market by submitting a signed kind-89 oracle attestation event.')
+    .requiredOption('--condition-id <id>', 'Condition id')
+    .requiredOption('--attestation <event-json|@file>', 'Inline JSON event or @file')
+    .action(async (options: MarketCloseOptions) => {
+      const params: MarketCloseParams = {
+        conditionId: options.conditionId,
+        attestationEvent: await parseOracleAttestationOption(options.attestation),
+      }
+      await printDaemonResult(callDaemon({ method: 'market.close', params }))
+    })
 }
 
 interface MarketListOptions {
@@ -182,6 +226,22 @@ interface MarketListOptions {
   tag?: string[]
   creator?: string
   cursor?: string
+}
+
+interface MarketCreateOptions {
+  conditionId: string
+  title: string
+  description: string
+  outcomes: string[]
+  liquiditySats?: number
+  tag?: string[]
+  thumbnail?: string
+  trustEngineUrl?: boolean
+}
+
+interface MarketCloseOptions {
+  conditionId: string
+  attestation: string
 }
 
 async function queryMarkets(options: MarketListOptions): Promise<void> {
@@ -1059,6 +1119,115 @@ function parseMarketSort(value: string): string {
     return value
   }
   throwUsage(`Invalid market sort: ${value}`)
+}
+
+function parseOutcomeList(value: string): string[] {
+  const outcomes = value
+    .split(',')
+    .map((outcome) => outcome.trim())
+    .filter((outcome) => outcome.length > 0)
+  if (outcomes.length < 2) {
+    throwUsage('market create requires at least two comma-separated outcomes')
+  }
+  return outcomes
+}
+
+async function ensureTrustedAuthedEngineUrl(trustEngineUrl: boolean): Promise<void> {
+  if (globalEngineUrl === undefined) return
+  validateAuthedEngineUrl(globalEngineUrl)
+
+  const config = readConfig()
+  if (config.engineUrl === globalEngineUrl) return
+  if (!trustEngineUrl) {
+    const confirmed = await confirmEngineUrlTrust(globalEngineUrl)
+    if (!confirmed) {
+      throwValidation(`Engine URL was not trusted: ${globalEngineUrl}`)
+    }
+  }
+  writeConfig({ ...config, engineUrl: globalEngineUrl })
+}
+
+function validateAuthedEngineUrl(value: string): void {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throwValidation(`Invalid engine URL: ${value}`)
+  }
+  const validation = validateMarketCreateEngineUrl(
+    url.toString(),
+    process.env.BITCASTER_ALLOW_INSECURE_ENGINE === '1',
+  )
+  if (validation.ok) return
+  throwValidation(
+    `Refusing insecure engine URL for market create: ${value}. Use https://, or set BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost only.`,
+  )
+}
+
+async function confirmEngineUrlTrust(engineUrl: string): Promise<boolean> {
+  process.stderr.write(`About to use engine URL for authenticated market create: ${engineUrl}\n`)
+  if (!process.stdin.isTTY) {
+    throwValidation('Refusing to trust a new engine URL without --trust-engine-url in non-interactive mode')
+  }
+  const rl = createInterface({ input, output })
+  try {
+    const answer = await rl.question('Trust this engine URL? Type yes to continue: ')
+    return answer.trim().toLowerCase() === 'yes'
+  } finally {
+    rl.close()
+  }
+}
+
+async function parseOracleAttestationOption(value: string): Promise<MarketCloseParams['attestationEvent']> {
+  const raw = value.startsWith('@')
+    ? await readAttestationFile(value.slice(1))
+    : value
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throwValidation('Oracle attestation must be valid JSON')
+  }
+  if (!isKind89NostrEvent(parsed)) {
+    throwValidation('Oracle attestation must be a kind-89 Nostr event')
+  }
+  return parsed
+}
+
+async function readAttestationFile(path: string): Promise<string> {
+  if (!path) throwValidation('Missing attestation file path after @')
+  if (pathContainsParentTraversal(path)) {
+    throwValidation('Attestation @file path must not contain .. segments')
+  }
+  return readFile(path, 'utf8')
+}
+
+function pathContainsParentTraversal(path: string): boolean {
+  const normalized = normalize(path)
+  const candidates = [path, normalized]
+  return candidates.some((candidate) =>
+    candidate.split(/[\\/]/).some((segment) => segment === '..'),
+  )
+}
+
+function isKind89NostrEvent(value: unknown): value is MarketCloseParams['attestationEvent'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const event = value as Record<string, unknown>
+  return (
+    typeof event.id === 'string' &&
+    typeof event.pubkey === 'string' &&
+    typeof event.sig === 'string' &&
+    event.kind === 89 &&
+    Array.isArray(event.tags) &&
+    event.tags.every((tag) => Array.isArray(tag) && tag.every((item) => typeof item === 'string')) &&
+    typeof event.content === 'string' &&
+    typeof event.createdAt === 'number'
+  )
+}
+
+function throwValidation(message: string): never {
+  process.stderr.write(`${message}\n`)
+  process.exit(3)
 }
 
 function throwUsage(message: string): never {

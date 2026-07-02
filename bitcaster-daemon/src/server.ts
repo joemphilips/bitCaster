@@ -6,7 +6,8 @@ import {
 } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { createConnection } from 'node:net'
-import { unlink } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
+import { basename } from 'node:path'
 import { Amount, OutputData, type Proof } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
@@ -20,6 +21,13 @@ import {
   type SubmitOrderRequest,
   type SubmitOrderResponse,
 } from '@bitcaster-market/client-sdk/engineClient'
+import {
+  createMarketViaEngine,
+  validateMarketCreateEngineUrl,
+  submitOracleAttestationViaEngine,
+  type CreateMarketOutcome,
+  type MarketThumbnailBytes,
+} from '@bitcaster-market/client-sdk'
 import { planParticipationScoreTopUp } from '@bitcaster-market/client-sdk/participationScore'
 import {
   complementOutcomeSetId,
@@ -400,6 +408,62 @@ export async function dispatch(
             'restart bitcaster-daemon to reconnect long-lived TradeHub runtime with updated endpoints',
         },
       }
+    }
+    case 'market.create': {
+      const profile = await readProfile()
+      if (!profile) {
+        return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      const secrets = await readSecrets()
+      if (!secrets) {
+        return { ok: false, error: 'daemon secrets are not initialized' }
+      }
+      const engineUrlValidation = validateMarketCreateEngineUrl(
+        profile.engineBaseUrl,
+        process.env.BITCASTER_ALLOW_INSECURE_ENGINE === '1',
+      )
+      if (!engineUrlValidation.ok) {
+        return {
+          ok: false,
+          error: engineUrlValidation.error,
+          code: engineUrlValidation.code,
+        }
+      }
+      const client = createAuthenticatedBitcasterEngineClient({
+        baseUrl: profile.engineBaseUrl,
+        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      })
+      const thumbnailBytes = command.params.thumbnailPath
+        ? await readMarketThumbnail(command.params.thumbnailPath)
+        : undefined
+      const response = await createMarketViaEngine(
+        client,
+        command.params.conditionId,
+        {
+          title: command.params.title,
+          description: command.params.description,
+          outcomes: createMarketOutcomes(command.params.outcomes),
+          ...(command.params.liquiditySats !== undefined
+            ? { liquiditySats: command.params.liquiditySats }
+            : {}),
+          ...(command.params.tags !== undefined ? { categoryTags: command.params.tags } : {}),
+        },
+        thumbnailBytes,
+      )
+      return { ok: true, result: response }
+    }
+    case 'market.close': {
+      const profile = await readProfile()
+      if (!profile) {
+        return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      const client = new BitcasterEngineClient({ baseUrl: profile.engineBaseUrl })
+      const response = await submitOracleAttestationViaEngine(
+        client,
+        command.params.conditionId,
+        command.params.attestationEvent,
+      )
+      return { ok: true, result: response }
     }
     case 'wallet.balance':
       if (!(await readProfile())) {
@@ -1707,6 +1771,36 @@ function createEngineClient(
         payloadHash,
       ),
   })
+}
+
+function createAuthenticatedBitcasterEngineClient(options: {
+  baseUrl: string
+  nostrSecretKeyHex: string
+}): BitcasterEngineClient {
+  return new BitcasterEngineClient({
+    baseUrl: options.baseUrl,
+    authorization: ({ url, method, bodyText, payloadHash }) =>
+      signNip98(
+        { privateKeyHex: options.nostrSecretKeyHex },
+        url,
+        method,
+        bodyText,
+        payloadHash,
+      ),
+  })
+}
+
+function createMarketOutcomes(outcomes: string[]): CreateMarketOutcome[] {
+  const probability = outcomes.length > 0 ? 1 / outcomes.length : 0
+  return outcomes.map((name) => ({ name, probability }))
+}
+
+async function readMarketThumbnail(path: string): Promise<MarketThumbnailBytes> {
+  const bytes = await readFile(path)
+  return {
+    data: bytes,
+    filename: basename(path),
+  }
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {

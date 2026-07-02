@@ -6,7 +6,9 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
 import { ensureRpcToken } from '../src/rpcAuth.ts'
+import { createDaemonSecrets, writeSecrets } from '../src/secrets.ts'
 import { orderBackingError, startDaemonServer } from '../src/server.ts'
 
 test('startDaemonServer rejects non-loopback bind hosts', async () => {
@@ -195,6 +197,58 @@ test('startDaemonServer requires initialized RPC token for non-health commands',
     await once(server, 'close')
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('market.create refuses insecure daemon profile engine URL before engine RPC', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-market-create-http-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  const previousAllowInsecure = process.env.BITCASTER_ALLOW_INSECURE_ENGINE
+  process.env.BITCASTER_DAEMON_HOME = home
+  delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
+  const token = await ensureRpcToken()
+  const secrets = createDaemonSecrets()
+  await writeSecrets(secrets)
+  await writeProfile(profileFromPublicKey(secrets.nostrPublicKeyHex, {
+    engineBaseUrl: 'http://engine.example',
+    mintUrl: 'http://localhost:8085',
+  }))
+  const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
+  try {
+    const address = server.address()
+    assert.equal(typeof address, 'object')
+    assert.ok(address)
+    const response = await fetch(`http://127.0.0.1:${address.port}/rpc`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        method: 'market.create',
+        params: {
+          conditionId: 'cond-1',
+          title: 'Market',
+          description: 'Description',
+          outcomes: ['YES', 'NO'],
+        },
+      }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: 'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
+      code: 'insecure-engine-url',
+    })
+  } finally {
+    server.close()
+    await once(server, 'close')
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    if (previousAllowInsecure === undefined) delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
+    else process.env.BITCASTER_ALLOW_INSECURE_ENGINE = previousAllowInsecure
     await rm(home, { recursive: true, force: true })
   }
 })

@@ -1,7 +1,11 @@
+import type { OracleNostrEvent } from '@bitcaster-market/client-sdk'
+
 export type DaemonCommand =
   | { method: 'health'; params?: undefined }
   | { method: 'daemon.status'; params?: undefined }
   | { method: 'daemon.config'; params: { engineUrl?: string; mintUrl?: string } }
+  | { method: 'market.create'; params: MarketCreateParams }
+  | { method: 'market.close'; params: MarketCloseParams }
   | { method: 'markets.query'; params: QueryMarketsParams }
   | { method: 'markets.show'; params: { conditionId: string } }
   | { method: 'wallet.balance'; params?: undefined }
@@ -46,6 +50,23 @@ export interface QueryMarketsParams {
   search?: string
   limit?: number
   cursor?: string
+}
+
+export interface MarketCreateParams {
+  conditionId: string
+  title: string
+  description: string
+  outcomes: string[]
+  liquiditySats?: number
+  tags?: string[]
+  /** Local file path on the daemon host. */
+  thumbnailPath?: string
+}
+
+export interface MarketCloseParams {
+  conditionId: string
+  /** Signed kind-89 DLC oracle attestation event JSON. */
+  attestationEvent: OracleNostrEvent
 }
 
 export interface WalletReceiveParams {
