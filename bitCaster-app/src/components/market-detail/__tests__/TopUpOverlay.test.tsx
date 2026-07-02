@@ -66,14 +66,14 @@ describe('TopUpOverlay', () => {
       />,
     )
 
-    expect(screen.getByText('Please back up your wallet to protect your funds')).toBeInTheDocument()
+    expect(screen.getByText('You must back up your wallet to protect your funds')).toBeInTheDocument()
     expect(screen.getByTestId('top-up-continue')).toBeEnabled()
 
     await userEvent.click(screen.getByRole('button', { name: 'Backup now' }))
     expect(navigate).toHaveBeenCalledWith('/settings?category=cashu')
 
     await userEvent.click(screen.getByRole('button', { name: 'Later' }))
-    expect(screen.queryByText('Please back up your wallet to protect your funds')).not.toBeInTheDocument()
+    expect(screen.queryByText('You must back up your wallet to protect your funds')).not.toBeInTheDocument()
     expect(screen.getByTestId('top-up-continue')).toBeEnabled()
   })
 

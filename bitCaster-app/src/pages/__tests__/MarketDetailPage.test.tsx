@@ -27,8 +27,20 @@ import type {
 
 const mocks = vi.hoisted(() => ({
   resolveRootPreflightOutputAmountSats: vi.fn(),
+  buildIndexedDbTokenHoldings: vi.fn(),
+  getBalance: vi.fn(),
   navigate: vi.fn(),
   routeParams: { id: "condition-yesno" } as { id?: string },
+  walletState: {
+    setupComplete: false,
+    walletBackupState: "confirmed",
+    activeMintUrl: null as string | null,
+    mints: [] as Array<{ url: string; nickname?: string }>,
+  },
+  settingsState: {
+    nostrSignerMode: "none",
+    signerBackupState: "confirmed",
+  },
   liveStatusHandlers: [] as Array<(status: MarketStatusChanged) => void>,
   orderBookHandlers: new Map<string, (snapshot: OrderBookSnapshot) => void>(),
   matchedHandlers: new Map<string, (match: Matched) => void>(),
@@ -87,7 +99,11 @@ vi.mock("@/lib/markets", () => ({
     data: [...history.data, point],
   }),
   fetchMarketDetail: vi.fn(),
+  fetchMarketComments: vi.fn().mockResolvedValue({ comments: [] }),
+  fetchMarketPriceHistory: vi.fn().mockResolvedValue({ data: [], timeframe: "7d" }),
   fetchOrderBook: vi.fn(),
+  generateNip98Header: vi.fn(),
+  getParticipationScore: vi.fn().mockResolvedValue({ enabled: false, matchDebitScore: 0 }),
   mapSnapshotToOrderBook: (snapshot: OrderBookSnapshot) => ({
     bids: snapshot.bids.map((level) => ({
       price: level.price,
@@ -104,6 +120,8 @@ vi.mock("@/lib/markets", () => ({
   }),
   priceNumeratorToPercent: (price: number, divisibility = 100) =>
     (price / divisibility) * 100,
+  signTradeComment: vi.fn(),
+  submitEphemeralPubkey: vi.fn(),
   submitOrder: vi.fn(),
   windowPriceHistory: mocks.windowPriceHistory,
 }));
@@ -111,6 +129,30 @@ vi.mock("@/lib/markets", () => ({
 vi.mock("@/lib/ctfSplit", () => ({
   resolveRootPreflightOutputAmountSats:
     mocks.resolveRootPreflightOutputAmountSats,
+}));
+
+vi.mock("@bitcaster/client-sdk/engineClient", () => ({
+  BitcasterEngineClient: vi.fn().mockImplementation(function () {
+    return {
+      listMyOrders: vi.fn().mockResolvedValue([]),
+    };
+  }),
+}));
+
+vi.mock("@/lib/walletHoldings", () => ({
+  buildIndexedDbTokenHoldings: mocks.buildIndexedDbTokenHoldings,
+}));
+
+vi.mock("@/stores/wallet", () => ({
+  getBalance: mocks.getBalance,
+  useActiveMintInputFeePpk: () => 0,
+  useWalletStore: (selector: (state: typeof mocks.walletState) => unknown) =>
+    selector(mocks.walletState),
+}));
+
+vi.mock("@/stores/settings", () => ({
+  useSettingsStore: (selector: (state: typeof mocks.settingsState) => unknown) =>
+    selector(mocks.settingsState),
 }));
 
 const emptyBook: OrderBook = { bids: [], asks: [], spread: 0 };
@@ -264,11 +306,19 @@ describe("MarketDetailPage live market status", () => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
     vi.mocked(submitOrder).mockReset();
+    mocks.buildIndexedDbTokenHoldings.mockReset();
+    mocks.getBalance.mockReset();
     mocks.liveStatusHandlers.length = 0;
     mocks.orderBookHandlers.clear();
     mocks.tradeExecutedHandlers.clear();
     mocks.routeParams.id = "condition-yesno";
     mocks.navigate.mockReset();
+    mocks.walletState.setupComplete = false;
+    mocks.walletState.walletBackupState = "confirmed";
+    mocks.walletState.activeMintUrl = null;
+    mocks.walletState.mints = [];
+    mocks.settingsState.nostrSignerMode = "none";
+    mocks.settingsState.signerBackupState = "confirmed";
   });
 
   it("applies a MarketStatusChanged close push to the detail page and disables trading", async () => {
@@ -358,6 +408,75 @@ describe("MarketDetailPage live market status", () => {
     await new Promise((resolve) => setTimeout(resolve, 550));
 
     expect(fetchOrderBook).not.toHaveBeenCalled();
+  });
+
+  it("keeps a priced buy enabled when base balance covers quote cost but not face value", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 500,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByRole("button", { name: /limit/i })[0]);
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    fireEvent.change(screen.getAllByTestId("limit-price-input")[0], {
+      target: { value: "0.4" },
+    });
+    fireEvent.blur(screen.getAllByTestId("limit-price-input")[0]);
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId("trade-confirm")[0]).toHaveTextContent(
+        "Place Limit Order for 1 shares",
+      ),
+    );
+    expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled();
+    expect(screen.queryByText("Insufficient funds")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Top up wallet" })).not.toBeInTheDocument();
+  });
+
+  it("opens the trade top-up overlay from the page-level buy top-up button", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 100,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByRole("button", { name: /limit/i })[0]);
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    fireEvent.change(screen.getAllByTestId("limit-price-input")[0], {
+      target: { value: "0.4" },
+    });
+    fireEvent.blur(screen.getAllByTestId("limit-price-input")[0]);
+
+    await screen.findAllByRole("button", { name: "Top up wallet" });
+    const panelTopUpButton = screen
+      .getAllByTestId("trade-confirm")
+      .find((button) => button.textContent?.includes("Top up wallet"));
+    expect(panelTopUpButton).toBeDefined();
+    fireEvent.click(panelTopUpButton!);
+
+    expect(await screen.findByRole("heading", { name: "Top Up Wallet" })).toBeInTheDocument();
+    expect(screen.getByTestId("top-up-amount-input")).toBeInTheDocument();
   });
 });
 

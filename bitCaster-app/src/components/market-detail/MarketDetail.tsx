@@ -98,6 +98,10 @@ export function MarketDetail({
     !!tradeSelection &&
     tradeAmount > 0 &&
     tradePreview?.hasExecutableLiquidity === false;
+  const backingBlocked = walletReady && tradeFeasibility?.canBack === false;
+  const backingBlockReason =
+    tradeFeasibility?.reason ?? (tradeSide === "sell" ? "outcome-tokens" : "funds");
+  const buyNeedsTopUp = backingBlocked && backingBlockReason === "funds";
 
   // Get outcome-specific data for categorical markets
   const outcomePriceHistories =
@@ -350,18 +354,22 @@ export function MarketDetail({
                     onWalletRequired?.();
                     return;
                   }
+                  if (buyNeedsTopUp) {
+                    onTopUpRequired?.();
+                    return;
+                  }
                   onTradeConfirm?.();
                 }}
                 disabled={
                   isTradeSubmitting ||
-                  tradeFeasibility?.canBack === false ||
+                  (buyNeedsTopUp ? !onTopUpRequired : backingBlocked) ||
                   marketOrderHasNoLiquidity ||
                   (walletReady && (!tradeAmount || tradeAmount <= 0))
                 }
                 title={
-                  tradeFeasibility?.canBack === false
+                  backingBlocked && !buyNeedsTopUp
                     ? (tradeFeasibility.message ??
-                      (tradeFeasibility.reason === "outcome-tokens"
+                      (backingBlockReason === "outcome-tokens"
                         ? t("trade.insufficientOutcomeTokens")
                         : t("trade.insufficientFunds")))
                     : undefined
@@ -379,7 +387,9 @@ export function MarketDetail({
                   {isTradeSubmitting
                     ? t("trade.submittingOrder")
                     : walletReady
-                      ? t("market.confirm")
+                      ? buyNeedsTopUp
+                        ? t("trade.topUpWallet")
+                        : t("market.confirm")
                       : t("wallet.startTrading")}
                 </span>
               </button>

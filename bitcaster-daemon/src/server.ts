@@ -44,8 +44,9 @@ import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
+  quotePaymentSubunits,
 } from '@bitcaster-market/client-sdk/marketUnits'
-import { canBackOrder } from '@bitcaster-market/client-sdk/tradingClient'
+import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
 import { generateOrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
@@ -632,26 +633,20 @@ export async function dispatch(
       const conditionId = conditionIdFromMarketId(orderParams.marketId)
       const marketUnit = await loadMarketUnit(context.client, conditionId)
       const currentState = await ensureState()
-      const backing = canBackOrder(
-        {
-          side: orderParams.side === 'Buy' ? 'bid' : 'ask',
-          sizeSubunits: amountSubunits,
-          shareFaceSubunits: marketUnit.divisibility,
-        },
-        buildDaemonTokenHoldings(currentState, {
-          mintUrl: context.profile.mintUrl,
-          conditionId,
-          baseAsset: marketUnit.baseAsset,
-        }),
-        {},
-        marketUnit.divisibility,
-      )
-      if (!backing.canBack) {
-        const requiredShares = Math.ceil(amountSubunits / marketUnit.divisibility)
-        return {
-          ok: false,
-          error: `insufficient backing: have ${backing.maxShares} VCS, need ${requiredShares} shares`,
-        }
+      const holdings = buildDaemonTokenHoldings(currentState, {
+        mintUrl: context.profile.mintUrl,
+        conditionId,
+        baseAsset: marketUnit.baseAsset,
+      })
+      const backingError = orderBackingError({
+        side: orderParams.side,
+        price: orderParams.price,
+        amountSubunits,
+        divisibility: marketUnit.divisibility,
+        holdings,
+      })
+      if (backingError) {
+        return { ok: false, error: backingError }
       }
       const clientOrderId = randomUUID()
       const preparedPreflight = await maybePreparePreflightSplitForOrder({
@@ -1624,6 +1619,41 @@ async function replaceReservedSatProofsWithReservedOutcomes(input: {
       }
     }
   })
+}
+
+export function orderBackingError(input: {
+  side: 'Buy' | 'Sell'
+  price: number
+  amountSubunits: number
+  divisibility: number
+  holdings: TokenHoldings
+}): string | null {
+  if (input.side === 'Buy') {
+    const requiredCollateral = input.amountSubunits % input.divisibility === 0
+      ? quotePaymentSubunits({
+        faceAmountSubunits: input.amountSubunits,
+        priceNumerator: input.price,
+        divisibility: input.divisibility,
+      })
+      // TODO: move arbitrary-size quote-payment rounding into the SDK helper.
+      : Math.ceil(input.amountSubunits * input.price / input.divisibility)
+    if (input.holdings.baseUnitProofs >= requiredCollateral) return null
+    return `insufficient backing: have ${input.holdings.baseUnitProofs} base subunits, need ${requiredCollateral}`
+  }
+
+  const backing = canBackOrder(
+    {
+      side: 'ask',
+      sizeSubunits: input.amountSubunits,
+      shareFaceSubunits: input.divisibility,
+    },
+    input.holdings,
+    {},
+    input.divisibility,
+  )
+  if (backing.canBack) return null
+  const requiredShares = Math.ceil(input.amountSubunits / input.divisibility)
+  return `insufficient backing: have ${backing.maxShares} outcome token shares, need ${requiredShares} shares`
 }
 
 function splitMarketId(

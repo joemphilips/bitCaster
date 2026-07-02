@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ArrowLeft, KeyRound, Loader2, X } from 'lucide-react'
-import { Link, useNavigate } from 'react-router'
+import { Link } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import type { MarketCreationWizardProps } from '@/types/market-creation'
 import { createGeneratedNostrIdentity } from '@/lib/identityOps'
@@ -14,14 +14,11 @@ import { ResumeBanner } from './ResumeBanner'
 import { DepositStep } from './DepositStep'
 import { RegistrationFeeConfirmationModal } from './RegistrationFeeConfirmationModal'
 import { InsufficientBalanceModal } from '@/components/shared/InsufficientBalanceModal'
-import { FundedActionBackupPromptModal } from '@/components/shared/BackupSecretsReminderModal'
 import { TopUpOverlay } from '@/components/market-detail/TopUpOverlay'
-import { useWalletStore } from '@/stores/wallet'
 import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
 
 export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const { t } = useTranslation()
-  const navigate = useNavigate()
   const hasNsecOracleKey = useSettingsStore(
     (s) => s.nostrSignerMode === 'nsec' && !!s.nsecSecret,
   )
@@ -68,8 +65,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const { currentStep } = draft
 
   const [bannerDismissed, setBannerDismissed] = useState(false)
-  const [showFundedActionBackupPrompt, setShowFundedActionBackupPrompt] =
-    useState(false)
   const showResumeBanner = hasSavedDraft && !bannerDismissed
 
   const handleStartOver = () => {
@@ -78,10 +73,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
   }
 
   const handleStartTopUp = () => {
-    if (useWalletStore.getState().walletBackupState === 'needs_backup') {
-      setShowFundedActionBackupPrompt(true)
-      return
-    }
     onStartRegistrationFeeTopUp()
   }
 
@@ -145,12 +136,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           })}
           onSuccess={onRegistrationFeeTopUpSuccess}
           onCancel={onCancelRegistrationFeeTopUp}
-        />
-      )}
-      {showFundedActionBackupPrompt && (
-        <FundedActionBackupPromptModal
-          onCancel={() => setShowFundedActionBackupPrompt(false)}
-          onGoToBackup={() => navigate('/settings?category=cashu')}
         />
       )}
     </>

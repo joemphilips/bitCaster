@@ -1,5 +1,5 @@
 import type { DepositWithdrawMode } from '@/types/deposit-withdraw'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { useDepositWithdrawState } from '@/pages/useDepositWithdrawState'
@@ -14,6 +14,8 @@ import { amountToNumber } from '@bitcaster/client-sdk/proofSelection'
 import { formatAmount } from '@/lib/formatAmount'
 import { useWalletStore } from '@/stores/wallet'
 
+const DEPOSIT_BACKUP_WARNING_DISMISSED_KEY = 'bitcaster.depositBackupWarningDismissed'
+
 interface DepositWithdrawOverlayProps {
   mode: DepositWithdrawMode
   onClose: () => void
@@ -24,11 +26,24 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
   const navigate = useNavigate()
   const state = useDepositWithdrawState(mode, onClose)
   const walletBackupState = useWalletStore((s) => s.walletBackupState)
-  const [backupWarningDismissed, setBackupWarningDismissed] = useState(false)
+  const [backupWarningDismissed, setBackupWarningDismissed] = useState(() =>
+    window.localStorage.getItem(DEPOSIT_BACKUP_WARNING_DISMISSED_KEY) === 'true',
+  )
   const showBackupWarning =
     mode === 'deposit' &&
     walletBackupState === 'needs_backup' &&
     !backupWarningDismissed
+
+  useEffect(() => {
+    if (mode !== 'deposit' || walletBackupState !== 'needs_backup') return
+    window.localStorage.setItem(DEPOSIT_BACKUP_WARNING_DISMISSED_KEY, 'false')
+    setBackupWarningDismissed(false)
+  }, [mode, walletBackupState])
+
+  const dismissBackupWarning = () => {
+    window.localStorage.setItem(DEPOSIT_BACKUP_WARNING_DISMISSED_KEY, 'true')
+    setBackupWarningDismissed(true)
+  }
 
   // Error toast
   const errorBanner = state.error ? (
@@ -50,7 +65,7 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         </button>
         <button
           type="button"
-          onClick={() => setBackupWarningDismissed(true)}
+          onClick={dismissBackupWarning}
           className="rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-900 transition-colors hover:bg-amber-100 dark:border-amber-700 dark:text-amber-100 dark:hover:bg-amber-900/70"
         >
           {t('backupSecrets.later')}

@@ -657,7 +657,7 @@
     "openSettings": "Open settings",
     "fundedActionTitle": "Back up your wallet first",
     "fundedActionDescription": "You need to back up your seedphrase before this funded action.",
-    "depositWarning": "Please back up your wallet to protect your funds",
+    "depositWarning": "You must back up your wallet to protect your funds",
     "backupNow": "Backup now",
     "goToBackup": "Go to backup",
     "cancel": "Cancel"

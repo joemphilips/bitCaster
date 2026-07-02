@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { ensureRpcToken } from '../src/rpcAuth.ts'
-import { startDaemonServer } from '../src/server.ts'
+import { orderBackingError, startDaemonServer } from '../src/server.ts'
 
 test('startDaemonServer rejects non-loopback bind hosts', async () => {
   await assert.rejects(
@@ -230,3 +230,37 @@ function postSocketJson(socketPath: string, body: unknown): Promise<unknown> {
     req.end(text)
   })
 }
+
+test('buy order backing uses quote payment, not face amount', () => {
+  assert.equal(
+    orderBackingError({
+      side: 'Buy',
+      price: 4_000,
+      amountSubunits: 30_000,
+      divisibility: 10_000,
+      holdings: {
+        baseUnitProofs: 12_000,
+        primitiveProofsByAtom: {},
+        complementProofsByAtom: {},
+      },
+    }),
+    null,
+  )
+})
+
+test('sell order backing still uses VCS face amount', () => {
+  assert.match(
+    orderBackingError({
+      side: 'Sell',
+      price: 4_000,
+      amountSubunits: 30_000,
+      divisibility: 10_000,
+      holdings: {
+        baseUnitProofs: 50_000,
+        primitiveProofsByAtom: { Alpha: 20_000 },
+        complementProofsByAtom: {},
+      },
+    }) ?? '',
+    /need 3 shares/,
+  )
+})

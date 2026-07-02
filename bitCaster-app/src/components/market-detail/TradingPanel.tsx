@@ -645,6 +645,7 @@ export function TradingPanel({
     backingBlockReason === 'outcome-tokens'
       ? t('trade.insufficientOutcomeTokens')
       : t('trade.insufficientFunds')
+  const buyNeedsTopUp = backingBlocked && backingBlockReason === 'funds'
 
   useEffect(() => {
     if (!isTradeAmountFocused) {
@@ -677,6 +678,7 @@ export function TradingPanel({
     if (isTradeSubmitting) return t('trade.submittingOrder')
     if (!walletReady) return t('wallet.startTrading')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
+    if (buyNeedsTopUp) return t('trade.topUpWallet')
     if (backingBlocked) return backingBlockMessage
     if (marketOrderHasNoLiquidity) return t('trade.noExecutableLiquidity')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''
@@ -909,15 +911,6 @@ export function TradingPanel({
             >
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <span>{backingBlockMessage}</span>
-                {backingBlockReason === 'funds' && onTopUpRequired && (
-                  <button
-                    type="button"
-                    onClick={onTopUpRequired}
-                    className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-700 dark:bg-amber-500 dark:text-slate-950 dark:hover:bg-amber-400"
-                  >
-                    {t('trade.topUpWallet')}
-                  </button>
-                )}
               </div>
             </div>
           )}
@@ -949,6 +942,10 @@ export function TradingPanel({
                 onWalletRequired?.(tradeComment.trim() || undefined)
                 return
               }
+              if (buyNeedsTopUp) {
+                onTopUpRequired?.()
+                return
+              }
               const comment = tradeComment.trim()
               onTradeConfirm?.(comment || undefined)
               if (comment) {
@@ -959,11 +956,11 @@ export function TradingPanel({
             disabled={
               isTradeSubmitting ||
               tradingDisabled ||
-              backingBlocked ||
+              (buyNeedsTopUp ? !onTopUpRequired : backingBlocked) ||
               marketOrderHasNoLiquidity ||
               (walletReady && (!tradeAmount || tradeAmount <= 0))
             }
-            title={backingBlocked ? backingBlockMessage : undefined}
+            title={backingBlocked && !buyNeedsTopUp ? backingBlockMessage : undefined}
             className={`w-full py-3 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${
               !walletReady
                 ? 'bg-[#f7931a] hover:bg-[#e8850f] text-white'

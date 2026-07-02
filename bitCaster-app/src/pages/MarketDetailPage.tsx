@@ -1571,17 +1571,20 @@ export function MarketDetailPage() {
           baseAsset: market.baseAsset,
         });
         if (cancelled) return;
-        const result = canBackOrder(
-          {
-            side: ticket.request.side === "Buy" ? "bid" : "ask",
-            sizeSubunits: ticket.request.amountSubunits,
-            shareFaceSubunits: marketDivisibility,
-          },
-          holdings,
-          {},
-          marketDivisibility,
-        );
-        if (result.canBack) {
+        const canBack =
+          tradeSide === "buy"
+            ? holdings.baseUnitProofs >= requiredBuyCostSubunits
+            : canBackOrder(
+                {
+                  side: "ask",
+                  sizeSubunits: ticket.request.amountSubunits,
+                  shareFaceSubunits: marketDivisibility,
+                },
+                holdings,
+                {},
+                marketDivisibility,
+              ).canBack;
+        if (canBack) {
           setTradeFeasibility({ canBack: true });
           return;
         }
@@ -1612,6 +1615,7 @@ export function MarketDetailPage() {
     orderType,
     limitPrice,
     marketDivisibility,
+    requiredBuyCostSubunits,
   ]);
 
   // Submit the order. Assumes wallet is set up and balance has been checked —
@@ -2075,13 +2079,15 @@ export function MarketDetailPage() {
 
   const handleTradingPanelTopUp = useCallback(() => {
     setBalanceAtCheck(0);
+    const required =
+      tradeSide === "sell" ? tradeFaceAmountSubunits : requiredBuyCostSubunits;
     setTopUpReason({
       kind: "collateral",
-      required: Math.max(requiredBuyCostSubunits, tradeFaceAmountSubunits, 1),
+      required: Math.max(required, 1),
       baseAsset: marketBaseAsset,
     });
     setTopUpStage("overlay");
-  }, [marketBaseAsset, requiredBuyCostSubunits, tradeFaceAmountSubunits]);
+  }, [marketBaseAsset, requiredBuyCostSubunits, tradeFaceAmountSubunits, tradeSide]);
 
   const handleRelatedMarketClick = useCallback(
     (marketId: string) => {

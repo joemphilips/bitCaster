@@ -125,7 +125,7 @@ describe('TradingPanel', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('disables buy submit and shows a top-up prompt when local funds are insufficient', () => {
+  it('turns buy submit into a top-up button when local funds are insufficient', () => {
     const onTopUpRequired = vi.fn()
     render(
       <TradingPanel
@@ -146,12 +146,14 @@ describe('TradingPanel', () => {
     )
 
     const button = screen.getByTestId('trade-confirm')
-    expect(button).toBeDisabled()
-    expect(button).toHaveAttribute('title', 'Insufficient funds')
+    expect(button).toBeEnabled()
+    expect(button).toHaveTextContent('Top up wallet')
+    expect(button).not.toHaveAttribute('title')
     expect(screen.getByTestId('trade-feasibility-status')).toHaveTextContent('Insufficient funds')
+    expect(screen.queryByRole('button', { name: 'Top up wallet' })).toBe(button)
     expect(screen.queryByText(/VCS/i)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Top up wallet' }))
+    fireEvent.click(button)
     expect(onTopUpRequired).toHaveBeenCalledTimes(1)
   })
 

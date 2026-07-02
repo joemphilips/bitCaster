@@ -1220,7 +1220,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
     })
 
-    await t.test('order.submit blocks before POST when local VCS backing is insufficient', async () => {
+    await t.test('order.submit blocks before POST when local buy collateral is insufficient', async () => {
       await writeState(emptyDaemonState())
       let submitCalls = 0
       const engine: EngineClientLike = {
@@ -1262,7 +1262,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       )
 
       assert.equal(response.ok, false)
-      assert.equal(response.error, 'insufficient backing: have 0 VCS, need 2 shares')
+      assert.equal(response.error, 'insufficient backing: have 0 base subunits, need 1000')
       assert.equal(submitCalls, 0)
       assert.deepEqual((await readState())?.orders, {})
       // Bypass invariant: this client gate is UX-only. If bypassed, the engine
@@ -1270,21 +1270,13 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       // fail unbacked orders without spending proofs.
     })
 
-    await t.test('order.submit allows POST when local VCS backing is sufficient', async () => {
+    await t.test('order.submit allows POST when local buy collateral is sufficient', async () => {
       const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 2_000, 'available', {
-          kind: 'outcome',
-          conditionId: 'cond',
-          outcomeSetId: 'YES',
+        proofRecord('mint-a', 1_000, 'available', {
+          kind: 'sats',
           baseAsset: 'sat',
-        }, 'yes-vcs'),
-        proofRecord('mint-a', 2_000, 'available', {
-          kind: 'outcome',
-          conditionId: 'cond',
-          outcomeSetId: 'NO',
-          baseAsset: 'sat',
-        }, 'no-vcs'),
+        }, 'base-collateral'),
       )
       await writeState(state)
       let capturedRequest: unknown = null
@@ -1479,9 +1471,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
 
     await t.test('order.submit pays missing Participation Score from wallet sats before submitting', async () => {
       const priorState = await readState()
-      const state = backedDaemonState()
+      const state = emptyDaemonState()
       state.wallet.proofs.push(
-        proofRecord('mint-a', 8, 'available', { kind: 'sats' }, 'score-proof'),
+        proofRecord('mint-a', 100, 'available', { kind: 'sats', baseAsset: 'sat' }, 'score-proof'),
       )
       await writeState(state)
 
@@ -1557,7 +1549,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 onComplete() {
                   return {
                     send: [cashuProof(2, 'score-token-proof')],
-                    keep: [cashuProof(6, 'score-change')],
+                    keep: [cashuProof(98, 'score-change')],
                   }
                 },
               })
@@ -2234,6 +2226,10 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
       outcomeSetId: 'NO',
       baseAsset: 'sat',
     }, `${conditionId}-no-vcs`),
+    proofRecord('mint-a', amount, 'available', {
+      kind: 'sats',
+      baseAsset: 'sat',
+    }, `${conditionId}-base`),
   )
   return state
 }

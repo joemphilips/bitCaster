@@ -657,7 +657,7 @@
     "openSettings": "設定を開く",
     "fundedActionTitle": "先にウォレットをバックアップしてください",
     "fundedActionDescription": "この資金を使う操作の前に、シードフレーズをバックアップする必要があります。",
-    "depositWarning": "資金を保護するためにウォレットをバックアップしてください",
+    "depositWarning": "資金を保護するためにウォレットをバックアップする必要があります",
     "backupNow": "今すぐバックアップ",
     "goToBackup": "バックアップへ",
     "cancel": "キャンセル"

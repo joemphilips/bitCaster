@@ -43,6 +43,7 @@ describe('DepositWithdrawOverlay backup warning', () => {
   beforeEach(() => {
     navigate.mockReset()
     walletBackupState = 'none'
+    window.localStorage.clear()
   })
 
   it('shows a dismissible backup warning for deposit without blocking the flow', async () => {
@@ -51,13 +52,29 @@ describe('DepositWithdrawOverlay backup warning', () => {
     render(<DepositWithdrawOverlay mode="deposit" onClose={vi.fn()} />)
 
     expect(screen.getByText('deposit chooser')).toBeInTheDocument()
-    expect(screen.getByText('Please back up your wallet to protect your funds')).toBeInTheDocument()
+    expect(screen.getByText('You must back up your wallet to protect your funds')).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Backup now' }))
     expect(navigate).toHaveBeenCalledWith('/settings?category=cashu')
 
     await userEvent.click(screen.getByRole('button', { name: 'Later' }))
-    expect(screen.queryByText('Please back up your wallet to protect your funds')).not.toBeInTheDocument()
+    expect(screen.queryByText('You must back up your wallet to protect your funds')).not.toBeInTheDocument()
     expect(screen.getByText('deposit chooser')).toBeInTheDocument()
+    expect(window.localStorage.getItem('bitcaster.depositBackupWarningDismissed')).toBe('true')
+  })
+
+  it('shows the deposit backup warning again when a later deposit starts', async () => {
+    walletBackupState = 'needs_backup'
+
+    const { unmount } = render(<DepositWithdrawOverlay mode="deposit" onClose={vi.fn()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Later' }))
+    expect(screen.queryByText('You must back up your wallet to protect your funds')).not.toBeInTheDocument()
+
+    unmount()
+    render(<DepositWithdrawOverlay mode="deposit" onClose={vi.fn()} />)
+
+    expect(screen.getByText('You must back up your wallet to protect your funds')).toBeInTheDocument()
+    expect(window.localStorage.getItem('bitcaster.depositBackupWarningDismissed')).toBe('false')
   })
 })
