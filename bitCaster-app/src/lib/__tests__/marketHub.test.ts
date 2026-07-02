@@ -110,6 +110,7 @@ describe('parseMatched', () => {
         takerOrderId: 'taker-1',
         executionPrice: 420,
         amountSubunits: 5_000,
+        deadline: '2026-06-01T00:00:00Z',
         path: 'Complementary',
         matchedAt: '2026-06-01T00:00:00Z',
       },

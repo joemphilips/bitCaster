@@ -5,7 +5,7 @@ export function normalizeUrl(url: string | undefined): string {
     const parsed = new URL(url)
     parsed.hash = ''
     parsed.search = ''
-    return parsed.toString().replace(/\/$/, '')
+    return parsed.toString().replace(/\/+$/, '')
   } catch {
     return url.trim().replace(/\/+$/, '')
   }

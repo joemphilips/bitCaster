@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => {
     remove: vi.fn(),
   }
   const pendingState = {
-    get: vi.fn(),
+    byTradeId: {} as Record<string, unknown>,
   }
   const walletState = {
     getWallet: vi.fn(),
@@ -53,8 +53,8 @@ vi.mock('@/stores/partialLockFailures', () => ({
   },
 }))
 
-vi.mock('@/stores/pendingTrades', () => ({
-  usePendingTradesStore: {
+vi.mock('@/stores/pendingPubkeySubmissions', () => ({
+  usePendingPubkeySubmissionsStore: {
     getState: () => mocks.pendingState,
   },
 }))
@@ -95,7 +95,9 @@ describe('partial-lock recovery', () => {
       },
     }
     mocks.partialState.list.mockReturnValue(Object.values(mocks.partialState.byTradeId))
-    mocks.pendingState.get.mockReturnValue({ ephemeralPrivkey: '11'.repeat(32) })
+    mocks.pendingState.byTradeId = {
+      'trade-1': { privkey: '11'.repeat(32) },
+    }
     mocks.getReservedProofs.mockResolvedValue([
       {
         id: 'keyset-B',
