@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path'
 export interface CliConfig {
   engineUrl?: string
   mintUrl?: string
+  trustedEngineUrls: string[]
 }
 
 export function configFilePath(): string {
@@ -17,19 +18,23 @@ function daemonProfileDir(): string {
 
 export function readConfig(): CliConfig {
   const path = configFilePath()
-  if (!existsSync(path)) return {}
+  if (!existsSync(path)) return emptyConfig()
   let parsed: unknown
+  let raw: string
   try {
-    const raw = readFileSync(path, 'utf8')
+    raw = readFileSync(path, 'utf8')
     parsed = JSON.parse(raw)
   } catch {
-    return {}
+    return emptyConfig()
   }
   const config = sanitizeConfig(parsed)
-  try {
-    writeConfig(config)
-  } catch {
-    // Reading should still succeed even when an existing config cannot be rewritten.
+  const sanitizedText = configText(config)
+  if (sanitizedText !== raw) {
+    try {
+      writeConfig(config)
+    } catch {
+      // Reading should still succeed even when an existing config cannot be rewritten.
+    }
   }
   return config
 }
@@ -39,17 +44,31 @@ export function writeConfig(config: CliConfig): void {
   const dir = dirname(path)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
   const tmp = `${path}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(sanitizeConfig(config), null, 2) + '\n', { mode: 0o600 })
+  writeFileSync(tmp, configText(config), { mode: 0o600 })
   renameSync(tmp, path)
 }
 
 function sanitizeConfig(value: unknown): CliConfig {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return emptyConfig()
   const source = value as Record<string, unknown>
-  const config: CliConfig = {}
+  const config: Partial<CliConfig> = {}
   if (typeof source.engineUrl === 'string') config.engineUrl = source.engineUrl
   if (typeof source.mintUrl === 'string') config.mintUrl = source.mintUrl
-  return config
+  let trustedEngineUrls: string[] = []
+  if (Array.isArray(source.trustedEngineUrls)) {
+    trustedEngineUrls = Array.from(new Set(
+      source.trustedEngineUrls.filter((url): url is string => typeof url === 'string'),
+    ))
+  }
+  return { ...config, trustedEngineUrls }
+}
+
+function emptyConfig(): CliConfig {
+  return { trustedEngineUrls: [] }
+}
+
+function configText(config: CliConfig): string {
+  return JSON.stringify(sanitizeConfig(config), null, 2) + '\n'
 }
 
 export function setConfigValue(key: 'engineUrl' | 'mintUrl', value: string): CliConfig {

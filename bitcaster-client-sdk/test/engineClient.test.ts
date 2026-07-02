@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { BitcasterEngineClient, EngineClientError, submitEphemeralPubkey } from '../src/engineClient.ts'
+import { isKind89NostrEvent } from '../src/marketLifecycle.ts'
 
 test('BitcasterEngineClient.getMarket reads one catalogue row through query ids', async () => {
   const requests: string[] = []
@@ -26,8 +27,52 @@ test('BitcasterEngineClient.getMarket reads one catalogue row through query ids'
     title: 'Weather',
   })
   assert.deepEqual(requests, [
-    'https://engine.example/api/v1/markets/query?state=All&ids=condition-1&limit=1',
+    'https://engine.example/api/v1/markets/query?state=All&ids=condition-1&page_size=1',
   ])
+})
+
+test('BitcasterEngineClient.queryMarkets uses OpenAPI query parameter names', async () => {
+  const requests: string[] = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (input) => {
+      requests.push(String(input))
+      return new Response(JSON.stringify({ markets: [], nextCursor: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+
+  await client.queryMarkets({
+    search: 'weather',
+    pageSize: 5,
+    state: 'All',
+    sort: 'Trending',
+    tag: 'sports',
+    creatorPubkey: 'npub1creator',
+    cursor: 'next-page',
+  })
+
+  assert.deepEqual(requests, [
+    'https://engine.example/api/v1/markets/query?state=All&sort=Trending&tag=sports&creator_pubkey=npub1creator&search=weather&page_size=5&cursor=next-page',
+  ])
+})
+
+test('isKind89NostrEvent validates oracle attestation event shape from SDK', () => {
+  const event = {
+    id: 'e'.repeat(64),
+    pubkey: 'p'.repeat(64),
+    createdAt: 1_718_000_000,
+    kind: 89,
+    tags: [['d', 'condition-1']],
+    content: '{}',
+    sig: 's'.repeat(128),
+  }
+
+  assert.equal(isKind89NostrEvent(event), true)
+  assert.equal(isKind89NostrEvent({ ...event, kind: 1 }), false)
+  assert.equal(isKind89NostrEvent({ ...event, tags: ['d', 'condition-1'] }), false)
 })
 
 test('submitEphemeralPubkey includes conditionId in the request URL and auth input', async () => {

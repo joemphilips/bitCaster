@@ -37,6 +37,21 @@ export interface OracleNostrEvent {
   sig: string
 }
 
+export function isKind89NostrEvent(value: unknown): value is OracleNostrEvent {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const event = value as Record<string, unknown>
+  return (
+    typeof event.id === 'string' &&
+    typeof event.pubkey === 'string' &&
+    typeof event.sig === 'string' &&
+    event.kind === 89 &&
+    Array.isArray(event.tags) &&
+    event.tags.every((tag) => Array.isArray(tag) && tag.every((item) => typeof item === 'string')) &&
+    typeof event.content === 'string' &&
+    typeof event.createdAt === 'number'
+  )
+}
+
 export type OracleAttestationResult =
   | 'Closed'
   | 'AlreadyClosed'

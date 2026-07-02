@@ -201,12 +201,16 @@ export interface OrderBookSnapshot {
 
 export interface QueryMarketsParams {
   state?: 'Open' | 'Closed' | 'Resolved' | 'All'
-  sort?: 'Newest' | 'EndingSoon' | 'Volume24h' | 'Volume30d'
+  sort?: 'Trending' | 'Popular' | 'New'
   tag?: string
+  /** @deprecated Use creatorPubkey; OpenAPI wire name is creator_pubkey. */
   creator?: string
+  creatorPubkey?: string
   ids?: string[]
   search?: string
+  /** @deprecated Use pageSize; OpenAPI wire name is page_size. */
   limit?: number
+  pageSize?: number
   cursor?: string
 }
 
@@ -449,7 +453,7 @@ export class BitcasterEngineClient {
     const response = await this.queryMarkets({
       ids: [conditionId],
       state: 'All',
-      limit: 1,
+      pageSize: 1,
     })
     return response.markets[0] ?? null
   }
@@ -553,10 +557,12 @@ function buildMarketsQueryString(params: QueryMarketsParams): string {
   if (params.state) query.set('state', params.state)
   if (params.sort) query.set('sort', params.sort)
   if (params.tag) query.set('tag', params.tag)
-  if (params.creator) query.set('creator', params.creator)
+  const creatorPubkey = params.creatorPubkey ?? params.creator
+  if (creatorPubkey) query.set('creator_pubkey', creatorPubkey)
   if (params.ids?.length) query.set('ids', params.ids.join(','))
   if (params.search) query.set('search', params.search)
-  if (params.limit !== undefined) query.set('limit', String(params.limit))
+  const pageSize = params.pageSize ?? params.limit
+  if (pageSize !== undefined) query.set('page_size', String(pageSize))
   if (params.cursor) query.set('cursor', params.cursor)
   const text = query.toString()
   return text ? `?${text}` : ''

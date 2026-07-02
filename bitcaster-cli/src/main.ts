@@ -9,7 +9,12 @@ import { stdin as input, stdout as output } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { validateMarketCreateEngineUrl } from '@bitcaster-market/client-sdk'
+import {
+  BitcasterEngineClient,
+  EngineClientError,
+  isKind89NostrEvent,
+  validateMarketCreateEngineUrl,
+} from '@bitcaster-market/client-sdk'
 import { Command, CommanderError, Option } from 'commander'
 import {
   callDaemon,
@@ -55,12 +60,7 @@ let globalDryRun = false
 let globalJson = false
 let rootProgram: Command | undefined
 
-class EngineHttpError extends Error {
-  constructor(status: number, body: string) {
-    super(`engine returned HTTP ${status}${body.length > 0 ? `: ${body}` : ''}`)
-    this.name = 'EngineHttpError'
-  }
-}
+const DIRECT_ENGINE_READ_TIMEOUT_MS = 5_000
 
 await main()
 
@@ -295,20 +295,12 @@ function marketListDaemonParams(options: MarketListOptions): QueryMarketsParams 
 
 function daemonMarketSort(value: string | undefined): QueryMarketsParams['sort'] | undefined {
   if (value === undefined) return undefined
-  if (isDaemonMarketSort(value)) return value
-  switch (value) {
-    case 'Trending':
-      return 'Volume24h'
-    case 'Popular':
-      return 'Volume30d'
-    case 'New':
-      return 'Newest'
-  }
+  if (isMarketSort(value)) return value
   throwUsage(`Invalid market sort: ${value}`)
 }
 
-function isDaemonMarketSort(value: string | undefined): value is NonNullable<QueryMarketsParams['sort']> {
-  return value === 'Newest' || value === 'EndingSoon' || value === 'Volume24h' || value === 'Volume30d'
+function isMarketSort(value: string | undefined): value is NonNullable<QueryMarketsParams['sort']> {
+  return value === 'Trending' || value === 'Popular' || value === 'New'
 }
 
 function registerWalletCommand(program: Command): void {
@@ -976,11 +968,11 @@ async function printDirectEngineResultOrDaemon<T>(
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   } catch (err) {
     if (isEngineHttpError(err)) {
-      process.stdout.write(`${JSON.stringify({ ok: false, error: err.message }, null, 2)}\n`)
+      process.stdout.write(`${JSON.stringify({ ok: false, error: engineHttpErrorMessage(err) }, null, 2)}\n`)
       process.exitCode = 1
       return
     }
-    if (!isNetworkFailure(err)) throw err
+    if (!isNetworkFailure(err) && !isTimeoutFailure(err)) throw err
     process.stderr.write(`Warning: engine read failed at ${globalEngineUrl}: ${errorMessage(err)}; falling back to daemon\n`)
     await printDaemonResult(daemonCall())
   }
@@ -995,67 +987,48 @@ async function fetchMarketListFromEngine(params: {
   creator?: string
   cursor?: string
 }): Promise<unknown> {
-  const url = engineUrl('/api/v1/markets/query')
-  appendQuery(url, 'search', params.search)
-  appendQuery(url, 'page_size', params.limit)
-  appendQuery(url, 'state', params.state)
-  appendQuery(url, 'sort', params.sort)
-  for (const tag of params.tag ?? []) appendQuery(url, 'tag', tag)
-  appendQuery(url, 'creator_pubkey', params.creator)
-  appendQuery(url, 'cursor', params.cursor)
-  return fetchEngineJson(url)
+  return directEngineClient().queryMarkets({
+    search: params.search,
+    pageSize: params.limit,
+    state: params.state,
+    sort: daemonMarketSort(params.sort),
+    tag: params.tag?.[0],
+    creatorPubkey: params.creator,
+    cursor: params.cursor,
+  })
 }
 
 async function fetchMarketShowFromEngine(conditionId: string): Promise<unknown> {
-  const url = engineUrl('/api/v1/markets/query')
-  appendQuery(url, 'ids', conditionId)
-  appendQuery(url, 'state', 'All')
-  const response = await fetchEngineJson(url)
-  const markets = response && typeof response === 'object'
-    ? (response as { markets?: unknown }).markets
-    : undefined
-  if (Array.isArray(markets) && markets.length > 0) return markets[0]
-  return { ok: true, result: null }
+  return (await directEngineClient().getMarket(conditionId)) ?? { ok: true, result: null }
 }
 
 async function fetchOrderBookFromEngine(marketId: string): Promise<unknown> {
-  return fetchEngineJson(engineUrl(`/api/v1/${encodeURIComponent(marketId)}/orderbook`))
+  return directEngineClient().getOrderBook(marketId)
 }
 
-function engineUrl(path: string): URL {
+function directEngineClient(): BitcasterEngineClient {
   if (globalEngineUrl === undefined) throw new Error('engine URL is not configured')
-  return new URL(path, ensureTrailingSlash(globalEngineUrl))
+  return new BitcasterEngineClient({
+    baseUrl: globalEngineUrl,
+    fetchImpl: (input, init) => fetch(input, {
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(DIRECT_ENGINE_READ_TIMEOUT_MS),
+    }),
+  })
 }
 
-function ensureTrailingSlash(value: string): string {
-  return value.endsWith('/') ? value : `${value}/`
-}
-
-function appendQuery(url: URL, key: string, value: string | number | undefined): void {
-  if (value !== undefined) url.searchParams.append(key, String(value))
-}
-
-async function fetchEngineJson(url: URL): Promise<unknown> {
-  const response = await fetch(url)
-  const text = await response.text()
-  if (!response.ok) {
-    throw new EngineHttpError(response.status, text)
-  }
-  let parsed: unknown = null
-  if (text.length > 0) {
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      throw new Error(`engine returned non-JSON response (${response.status})`)
-    }
-  }
-  return parsed
-}
-
-function isEngineHttpError(value: unknown): value is EngineHttpError {
-  return value instanceof EngineHttpError || (
-    value instanceof Error && value.name === 'EngineHttpError'
+function isEngineHttpError(value: unknown): value is EngineClientError {
+  return value instanceof EngineClientError || (
+    value instanceof Error && value.name === 'EngineClientError'
   )
+}
+
+function engineHttpErrorMessage(error: EngineClientError): string {
+  return `engine returned HTTP ${error.status}${error.detail.length > 0 ? `: ${error.detail}` : ''}`
+}
+
+function isTimeoutFailure(value: unknown): boolean {
+  return value instanceof Error && (value.name === 'TimeoutError' || value.name === 'AbortError')
 }
 
 function errorMessage(value: unknown): string {
@@ -1155,12 +1128,7 @@ function parseMarketState(value: string): 'Open' | 'Closed' | 'Resolved' | 'All'
 }
 
 function parseMarketSort(value: string): string {
-  if (
-    value === 'Trending' ||
-    value === 'Popular' ||
-    value === 'New' ||
-    isDaemonMarketSort(value)
-  ) {
+  if (isMarketSort(value)) {
     return value
   }
   throwUsage(`Invalid market sort: ${value}`)
@@ -1182,14 +1150,22 @@ async function ensureTrustedAuthedEngineUrl(trustEngineUrl: boolean): Promise<vo
   validateAuthedEngineUrl(globalEngineUrl)
 
   const config = readConfig()
-  if (config.engineUrl === globalEngineUrl) return
+  const normalizedEngineUrl = normalizeTrustedEngineUrl(globalEngineUrl)
+  if (config.trustedEngineUrls.includes(normalizedEngineUrl)) return
   if (!trustEngineUrl) {
     const confirmed = await confirmEngineUrlTrust(globalEngineUrl)
     if (!confirmed) {
       throwValidation(`Engine URL was not trusted: ${globalEngineUrl}`)
     }
   }
-  writeConfig({ ...config, engineUrl: globalEngineUrl })
+  writeConfig({
+    ...config,
+    trustedEngineUrls: Array.from(new Set([...config.trustedEngineUrls, normalizedEngineUrl])),
+  })
+}
+
+function normalizeTrustedEngineUrl(value: string): string {
+  return new URL(value).toString()
 }
 
 function validateAuthedEngineUrl(value: string): void {
@@ -1258,21 +1234,6 @@ function pathContainsParentTraversal(path: string): boolean {
   const candidates = [path, normalized]
   return candidates.some((candidate) =>
     candidate.split(/[\\/]/).some((segment) => segment === '..'),
-  )
-}
-
-function isKind89NostrEvent(value: unknown): value is MarketCloseParams['attestationEvent'] {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const event = value as Record<string, unknown>
-  return (
-    typeof event.id === 'string' &&
-    typeof event.pubkey === 'string' &&
-    typeof event.sig === 'string' &&
-    event.kind === 89 &&
-    Array.isArray(event.tags) &&
-    event.tags.every((tag) => Array.isArray(tag) && tag.every((item) => typeof item === 'string')) &&
-    typeof event.content === 'string' &&
-    typeof event.createdAt === 'number'
   )
 }
 

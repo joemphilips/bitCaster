@@ -43,7 +43,7 @@ export interface SubmitOrderParams {
 
 export interface QueryMarketsParams {
   state?: 'Open' | 'Closed' | 'Resolved' | 'All'
-  sort?: 'Newest' | 'EndingSoon' | 'Volume24h' | 'Volume30d'
+  sort?: 'Trending' | 'Popular' | 'New'
   tag?: string
   creator?: string
   ids?: string[]

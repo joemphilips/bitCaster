@@ -253,6 +253,64 @@ test('market.create refuses insecure daemon profile engine URL before engine RPC
   }
 })
 
+test('market.close refuses insecure daemon profile engine URL before engine RPC', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-market-close-http-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  const previousAllowInsecure = process.env.BITCASTER_ALLOW_INSECURE_ENGINE
+  process.env.BITCASTER_DAEMON_HOME = home
+  delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
+  const token = await ensureRpcToken()
+  const secrets = createDaemonSecrets()
+  await writeSecrets(secrets)
+  await writeProfile(profileFromPublicKey(secrets.nostrPublicKeyHex, {
+    engineBaseUrl: 'http://engine.example',
+    mintUrl: 'http://localhost:8085',
+  }))
+  const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
+  try {
+    const address = server.address()
+    assert.equal(typeof address, 'object')
+    assert.ok(address)
+    const response = await fetch(`http://127.0.0.1:${address.port}/rpc`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        method: 'market.close',
+        params: {
+          conditionId: 'cond-1',
+          attestationEvent: {
+            id: 'e'.repeat(64),
+            pubkey: 'p'.repeat(64),
+            createdAt: 1_718_000_000,
+            kind: 89,
+            tags: [['d', 'cond-1']],
+            content: '{}',
+            sig: 's'.repeat(128),
+          },
+        },
+      }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: 'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
+      code: 'insecure-engine-url',
+    })
+  } finally {
+    server.close()
+    await once(server, 'close')
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    if (previousAllowInsecure === undefined) delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
+    else process.env.BITCASTER_ALLOW_INSECURE_ENGINE = previousAllowInsecure
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 function postSocketJson(socketPath: string, body: unknown): Promise<unknown> {
   const text = JSON.stringify(body)
   return new Promise((resolve, reject) => {

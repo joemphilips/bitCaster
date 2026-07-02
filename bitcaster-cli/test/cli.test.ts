@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import { join } from 'node:path'
@@ -1066,6 +1066,7 @@ test('bitcaster-cli config list drops unknown config keys and preserves private 
     assert.deepEqual(JSON.parse(result.stdout), {
       engineUrl: 'http://engine.example',
       mintUrl: 'https://mint.example',
+      trustedEngineUrls: [],
     })
     const fileMode = (await stat(configPath)).mode & 0o777
     assert.equal(fileMode, 0o600)
@@ -1099,6 +1100,7 @@ test('bitcaster-cli config set writes config without auto-starting an unreachabl
     assert.equal(parsed.result?.config?.engineUrl, 'http://engine.example')
     assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
       engineUrl: 'http://engine.example',
+      trustedEngineUrls: [],
     })
   } finally {
     await rm(home, { recursive: true, force: true })
@@ -1130,6 +1132,7 @@ test('bitcaster-cli config set does not auto-start the daemon when autostart is 
     assert.match(combinedOutput, /bitcaster daemon init/i)
     assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
       engineUrl: 'http://engine.example',
+      trustedEngineUrls: [],
     })
     await assert.rejects(
       () => stat(autostartPidPath),
@@ -1151,6 +1154,107 @@ test('bitcaster-cli config set does not auto-start the daemon when autostart is 
         // Process may have exited during test teardown.
       }
     }
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli config set --engine-url records URL without trusting it', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-config-set-untrusted-'))
+  const configPath = join(home, 'config.json')
+  try {
+    await runCliWithEnv(['config', 'set', '--engine-url', 'https://engine.example'], {
+      ...process.env,
+      BITCASTER_DAEMON_HOME: home,
+      BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      BITCASTER_DAEMON_URL: 'http://127.0.0.1:1',
+    })
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
+      engineUrl: 'https://engine.example',
+      trustedEngineUrls: [],
+    })
+
+    await assert.rejects(
+      () => runCliWithEnv([
+        'market', 'create',
+        '--condition-id', 'cond-1',
+        '--title', 'Market',
+        '--description', 'Description',
+        '--outcomes', 'YES,NO',
+        '--dry-run',
+      ], {
+        ...process.env,
+        BITCASTER_DAEMON_HOME: home,
+        BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+        BITCASTER_DAEMON_URL: 'http://127.0.0.1:1',
+      }),
+      (err: unknown) => {
+        assert.equal((err as { code?: unknown }).code, 3)
+        assert.match((err as { stderr?: string }).stderr ?? '', /without --trust-engine-url/)
+        return true
+      },
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli market create --trust-engine-url records URL in trusted engine list', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-create-trust-list-'))
+  const configPath = join(home, 'config.json')
+  try {
+    await runCliWithEnv([
+      'market', 'create',
+      '--condition-id', 'cond-1',
+      '--title', 'Market',
+      '--description', 'Description',
+      '--outcomes', 'YES,NO',
+      '--dry-run',
+      '--trust-engine-url',
+    ], {
+      ...process.env,
+      BITCASTER_DAEMON_HOME: home,
+      BITCASTER_ENGINE_URL: 'https://engine.example',
+      BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      BITCASTER_DAEMON_URL: 'http://127.0.0.1:1',
+    })
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
+      trustedEngineUrls: ['https://engine.example/'],
+    })
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli config list does not rewrite already sanitized config', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-config-no-rewrite-'))
+  const configPath = join(home, 'config.json')
+  const configText = JSON.stringify({
+    engineUrl: 'https://engine.example',
+    mintUrl: 'https://mint.example',
+    trustedEngineUrls: ['https://trusted-engine.example'],
+  }, null, 2) + '\n'
+  try {
+    await writeFile(configPath, configText, { mode: 0o600 })
+    const oldTime = new Date('2026-01-01T00:00:00.000Z')
+    await utimes(configPath, oldTime, oldTime)
+    const before = await stat(configPath)
+
+    const result = await runCliWithEnv(['config', 'list'], {
+      ...process.env,
+      BITCASTER_DAEMON_HOME: home,
+    })
+
+    assert.deepEqual(JSON.parse(result.stdout), {
+      engineUrl: 'https://engine.example',
+      mintUrl: 'https://mint.example',
+      trustedEngineUrls: ['https://trusted-engine.example'],
+    })
+    const after = await stat(configPath)
+    assert.equal(after.mtimeMs, before.mtimeMs)
+    assert.equal(await readFile(configPath, 'utf8'), configText)
+  } finally {
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -1192,7 +1296,7 @@ test('P47-3: market list with --engine-url calls engine directly without daemon 
   const engine = createServer(async (req, res) => {
     engineRequests.push({ method: req.method, url: req.url })
     assert.equal(req.method, 'GET')
-    assert.equal(req.url, '/api/v1/markets/query?search=weather&page_size=5&state=All')
+    assert.equal(req.url, '/api/v1/markets/query?state=All&search=weather&page_size=5')
     writeJson(res, 200, {
       markets: [{ conditionId: 'condition-1', title: 'Weather' }],
       nextCursor: null,
@@ -1236,7 +1340,7 @@ test('P47-3: market list with --engine-url calls engine directly without daemon 
       lastSuccessfulRefreshAt: '2026-07-02T00:00:00Z',
     })
     assert.deepEqual(engineRequests, [
-      { method: 'GET', url: '/api/v1/markets/query?search=weather&page_size=5&state=All' },
+      { method: 'GET', url: '/api/v1/markets/query?state=All&search=weather&page_size=5' },
     ])
     assert.deepEqual(daemonCalls, [])
   } finally {
@@ -1255,7 +1359,7 @@ test('P47-3 regression: market show with --engine-url prints one market from eng
   const engine = createServer(async (req, res) => {
     engineRequests.push({ method: req.method, url: req.url })
     assert.equal(req.method, 'GET')
-    assert.equal(req.url, '/api/v1/markets/query?ids=condition-1&state=All')
+    assert.equal(req.url, '/api/v1/markets/query?state=All&ids=condition-1&page_size=1')
     writeJson(res, 200, {
       markets: [
         { conditionId: 'condition-1', title: 'Weather' },
@@ -1286,7 +1390,7 @@ test('P47-3 regression: market show with --engine-url prints one market from eng
 
     assert.deepEqual(JSON.parse(result.stdout), { conditionId: 'condition-1', title: 'Weather' })
     assert.deepEqual(engineRequests, [
-      { method: 'GET', url: '/api/v1/markets/query?ids=condition-1&state=All' },
+      { method: 'GET', url: '/api/v1/markets/query?state=All&ids=condition-1&page_size=1' },
     ])
     assert.deepEqual(daemonCalls, [])
   } finally {
@@ -1396,7 +1500,7 @@ test('P47-3 regression: market list direct engine forwards sort creator tag and 
   }
 })
 
-test('P47-3 regression: market list daemon maps CLI sort aliases and keeps creator param', async () => {
+test('P47-3 regression: market list daemon forwards canonical CLI sort values and keeps creator param', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-list-sort-daemon-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -1422,12 +1526,69 @@ test('P47-3 regression: market list daemon maps CLI sort aliases and keeps creat
     }
 
     assert.deepEqual(received, [
-      { method: 'markets.query', params: { creator: 'npub1creator', sort: 'Volume24h' } },
-      { method: 'markets.query', params: { creator: 'npub1creator', sort: 'Volume30d' } },
-      { method: 'markets.query', params: { creator: 'npub1creator', sort: 'Newest' } },
+      { method: 'markets.query', params: { creator: 'npub1creator', sort: 'Trending' } },
+      { method: 'markets.query', params: { creator: 'npub1creator', sort: 'Popular' } },
+      { method: 'markets.query', params: { creator: 'npub1creator', sort: 'New' } },
     ])
   } finally {
     daemon.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('P47-3 regression: market list direct engine times out after 5s and falls back to daemon', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-list-timeout-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const daemon = createServer(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)))
+    writeJson(res, 200, { ok: true, result: { markets: [{ conditionId: 'from-daemon' }], nextCursor: null } })
+  })
+  const engineRequests: Array<{ method?: string; url?: string }> = []
+  const engine = createServer(async (req, _res) => {
+    engineRequests.push({ method: req.method, url: req.url })
+  })
+  daemon.listen(0, '127.0.0.1')
+  engine.listen(0, '127.0.0.1')
+  await Promise.all([once(daemon, 'listening'), once(engine, 'listening')])
+  const daemonAddress = daemon.address()
+  const engineAddress = engine.address()
+  assert.equal(typeof daemonAddress, 'object')
+  assert.equal(typeof engineAddress, 'object')
+  assert.ok(daemonAddress)
+  assert.ok(engineAddress)
+
+  try {
+    const startedAt = Date.now()
+    const result = await runCliWithEnv(
+      ['--engine-url', `http://127.0.0.1:${engineAddress.port}`, 'market', 'list', '--sort', 'Trending'],
+      {
+        ...process.env,
+        BITCASTER_DAEMON_URL: `http://127.0.0.1:${daemonAddress.port}`,
+        BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+      },
+    )
+    const elapsedMs = Date.now() - startedAt
+
+    assert.ok(elapsedMs >= 4_500, `expected direct engine timeout to wait about 5s, got ${elapsedMs}ms`)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      result: { markets: [{ conditionId: 'from-daemon' }], nextCursor: null },
+    })
+    assert.match(result.stderr, /falling back to daemon/)
+    assert.deepEqual(engineRequests, [
+      { method: 'GET', url: '/api/v1/markets/query?sort=Trending' },
+    ])
+    assert.deepEqual(received, [
+      { method: 'markets.query', params: { sort: 'Trending' } },
+    ])
+  } finally {
+    daemon.close()
+    engine.close()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })

@@ -23,6 +23,7 @@ import {
 } from '@bitcaster-market/client-sdk/engineClient'
 import {
   createMarketViaEngine,
+  isKind89NostrEvent,
   validateMarketCreateEngineUrl,
   submitOracleAttestationViaEngine,
   type CreateMarketOutcome,
@@ -456,6 +457,20 @@ export async function dispatch(
       const profile = await readProfile()
       if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      const engineUrlValidation = validateMarketCreateEngineUrl(
+        profile.engineBaseUrl,
+        process.env.BITCASTER_ALLOW_INSECURE_ENGINE === '1',
+      )
+      if (!engineUrlValidation.ok) {
+        return {
+          ok: false,
+          error: engineUrlValidation.error,
+          code: engineUrlValidation.code,
+        }
+      }
+      if (!isKind89NostrEvent(command.params.attestationEvent)) {
+        return { ok: false, error: 'attestationEvent must be a kind-89 Nostr event' }
       }
       const client = new BitcasterEngineClient({ baseUrl: profile.engineBaseUrl })
       const response = await submitOracleAttestationViaEngine(
