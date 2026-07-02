@@ -4762,7 +4762,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         Assert.True(result.RootElement.GetProperty("ok").GetBoolean() || true);
     }
 
-    [Fact(Skip = "P47-2: pending friendly daemon error — needs no AppHost, consider moving to CLI unit test")]
+    [Fact]
     public async Task P47_UserSeesFriendlyError_WhenDaemonIsUnreachable()
     {
         var env = new Dictionary<string, string?>

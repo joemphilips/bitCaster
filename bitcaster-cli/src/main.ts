@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { Command, CommanderError } from 'commander'
-import { callDaemon } from './rpc.ts'
+import {
+  callDaemon,
+  daemonLogPath,
+  DaemonNotReachableError,
+  isCliSpawnedDaemonRunning,
+  restartDaemon,
+  stopDaemon,
+} from './rpc.ts'
 import {
   configFilePath,
   readConfig,
@@ -84,6 +92,15 @@ Long-running wallet and swap operations are delegated to bitcaster-daemon.`,
   } catch (err) {
     if (err instanceof CommanderError) {
       process.exitCode = err.exitCode
+      return
+    }
+    if (err instanceof DaemonNotReachableError) {
+      printDaemonNotReachable(err)
+      return
+    }
+    if (err instanceof Error) {
+      process.stderr.write(`${err.message}\n`)
+      process.exitCode = 1
       return
     }
     throw err
@@ -430,7 +447,33 @@ function registerDaemonCommand(program: Command): void {
     .option('--mint-url <url>', 'Mint URL')
     .action(async (options: { engineUrl?: string; mintUrl?: string }) => {
       const params = daemonConfigParams(options)
-      await printDaemonResult(callDaemon({ method: 'daemon.config', params }))
+      const response = await callDaemon({ method: 'daemon.config', params })
+      await printDaemonResult(Promise.resolve(response))
+      await handleRestartRequired(response)
+    })
+
+  daemon
+    .command('stop')
+    .description('Stop the CLI-spawned daemon if it is running.')
+    .action(async () => {
+      const result = await stopDaemon()
+      process.stdout.write(`${result.message}\n`)
+    })
+
+  daemon
+    .command('restart')
+    .description('Restart the CLI-spawned daemon and wait for health.')
+    .action(async () => {
+      await restartDaemon()
+      process.stdout.write('daemon restarted\n')
+    })
+
+  daemon
+    .command('logs')
+    .description('Print recent daemon log lines.')
+    .option('--lines <n>', 'Number of log lines to print', parseNonNegativeIntegerOption('lines'), 50)
+    .action(async (options: { lines: number }) => {
+      await printDaemonLogs(options.lines)
     })
 
   daemon
@@ -543,7 +586,9 @@ async function setCliConfig(options: { engineUrl?: string; mintUrl?: string }): 
   writeConfig(config)
 
   try {
-    await printDaemonResult(callDaemonWithoutAutostart({ method: 'daemon.config', params }))
+    const response = await callDaemonWithoutAutostart({ method: 'daemon.config', params })
+    await printDaemonResult(Promise.resolve(response))
+    await handleRestartRequired(response)
   } catch {
     process.stderr.write(
       `daemon not reachable; config.json updated. Run 'bitcaster daemon init' to initialize the daemon. Config written to ${configFilePath()}.\n`,
@@ -552,6 +597,25 @@ async function setCliConfig(options: { engineUrl?: string; mintUrl?: string }): 
       `${JSON.stringify({ ok: true, result: { config, daemonUpdated: false } }, null, 2)}\n`,
     )
   }
+}
+
+async function handleRestartRequired(response: unknown): Promise<void> {
+  if (!daemonRestartRequired(response)) return
+  if (await isCliSpawnedDaemonRunning()) {
+    await restartDaemon()
+    process.stderr.write('daemon config updated; daemon restarted\n')
+    return
+  }
+  process.stderr.write('daemon config updated; restart bitcaster-daemon to apply changes\n')
+}
+
+function daemonRestartRequired(response: unknown): boolean {
+  if (!response || typeof response !== 'object') return false
+  const daemonResponse = response as { ok?: unknown; result?: unknown }
+  if (daemonResponse.ok !== true || !daemonResponse.result || typeof daemonResponse.result !== 'object') {
+    return false
+  }
+  return (daemonResponse.result as { restartRequired?: unknown }).restartRequired === true
 }
 
 async function callDaemonWithoutAutostart<T = unknown>(
@@ -667,6 +731,23 @@ async function printDaemonResult<T>(promise: Promise<T>): Promise<void> {
   if (isDaemonFailure(result)) {
     process.exitCode = 1
   }
+}
+
+function printDaemonNotReachable(error: DaemonNotReachableError): void {
+  process.stderr.write(`${JSON.stringify({ ok: false, error: error.message, hint: error.hint })}\n`)
+  process.exitCode = 1
+}
+
+async function printDaemonLogs(lines: number): Promise<void> {
+  const path = daemonLogPath()
+  if (!existsSync(path)) {
+    process.stdout.write(`no daemon log file found at ${path}\n`)
+    return
+  }
+  const text = await readFile(path, 'utf8')
+  const allLines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n')
+  const selected = lines === 0 ? [] : allLines.slice(-lines)
+  if (selected.length > 0) process.stdout.write(`${selected.join('\n')}\n`)
 }
 
 function isDaemonFailure(value: unknown): value is DaemonResponse {

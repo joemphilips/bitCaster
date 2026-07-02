@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { execFile, spawn } from 'node:child_process'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import { join } from 'node:path'
@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { ensureRpcToken } from '@bitcaster-market/daemon/rpcAuth'
+import { isNetworkFailure } from '../src/rpc.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -821,9 +822,9 @@ test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', a
     )
 
     assert.equal(JSON.parse(result.stdout).ok, true)
-    daemonPid = Number(
+    daemonPid = JSON.parse(
       (await readFile(join(home, 'daemon-autostart.pid'), 'utf8')).trim(),
-    )
+    ).pid as number
     assert.equal(Number.isSafeInteger(daemonPid), true)
   } finally {
     if (daemonPid) {
@@ -835,6 +836,105 @@ test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', a
     }
     await rm(home, { recursive: true, force: true })
   }
+})
+
+test('bitcaster-cli daemon stop refuses a stale pid file when process start time differs', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-stale-pid-'))
+  const pidPath = join(home, 'daemon-autostart.pid')
+  try {
+    await writeFile(
+      pidPath,
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: 'definitely-not-this-process-start-time',
+        daemonMain: process.argv[1] ?? 'bitcaster-cli-test',
+      }) + '\n',
+    )
+
+    await assert.rejects(
+      () => runCliWithEnv(['daemon', 'stop'], {
+        ...process.env,
+        BITCASTER_DAEMON_HOME: home,
+      }),
+      (err: unknown) => {
+        assert.equal((err as { code?: unknown }).code, 1)
+        assert.match(
+          (err as { stderr?: string }).stderr ?? '',
+          new RegExp(`PID ${process.pid} no longer belongs to bitcaster-daemon`),
+        )
+        return true
+      },
+    )
+    assert.ok(await fileExists(pidPath), 'stale pid file should not be removed')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli daemon stop fails and keeps pid file when daemon ignores SIGTERM', async () => {
+  if (process.platform === 'win32') return
+
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-stop-timeout-'))
+  const daemonMain = join(home, 'node_modules', '@bitcaster-market', 'daemon', 'dist', 'main.js')
+  const pidPath = join(home, 'daemon-autostart.pid')
+  let childPid: number | undefined
+  try {
+    await mkdir(join(home, 'node_modules', '@bitcaster-market', 'daemon', 'dist'), { recursive: true })
+    await writeFile(
+      daemonMain,
+      "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\n",
+    )
+    const child = spawn(process.execPath, [daemonMain, 'run'], {
+      stdio: 'ignore',
+    })
+    assert.ok(child.pid)
+    childPid = child.pid
+    await waitForProcessStartTime(childPid)
+    await writeFile(
+      pidPath,
+      JSON.stringify({
+        pid: childPid,
+        startedAt: await processStartTime(childPid),
+        daemonMain,
+      }) + '\n',
+    )
+
+    await assert.rejects(
+      () => runCliWithEnv(['daemon', 'stop'], {
+        ...process.env,
+        BITCASTER_DAEMON_HOME: home,
+      }),
+      (err: unknown) => {
+        assert.equal((err as { code?: unknown }).code, 1)
+        assert.match(
+          (err as { stderr?: string }).stderr ?? '',
+          /daemon did not exit within 5000ms after SIGTERM/,
+        )
+        return true
+      },
+    )
+    assert.ok(await fileExists(pidPath), 'pid file should remain when daemon is still alive')
+    assert.doesNotThrow(() => process.kill(childPid!, 0))
+  } finally {
+    if (childPid) {
+      try {
+        process.kill(childPid, 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli classifies broader network and fetch failures', () => {
+  for (const code of ['ETIMEDOUT', 'ENETUNREACH', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT']) {
+    const err = new Error('connect failed') as Error & { code: string }
+    err.code = code
+    assert.equal(isNetworkFailure(err), true, code)
+  }
+  assert.equal(isNetworkFailure(new TypeError('network request failed')), true)
+  assert.equal(isNetworkFailure(new TypeError('fetch failed: connection timeout')), true)
 })
 
 // ---------------------------------------------------------------------------
@@ -1018,7 +1118,7 @@ test('bitcaster-cli config set does not auto-start the daemon when autostart is 
     )
   } finally {
     try {
-      daemonPid = Number((await readFile(autostartPidPath, 'utf8')).trim())
+      daemonPid = JSON.parse((await readFile(autostartPidPath, 'utf8')).trim()).pid as number
     } catch {
       // No auto-start PID was written.
     }
@@ -1033,7 +1133,7 @@ test('bitcaster-cli config set does not auto-start the daemon when autostart is 
   }
 })
 
-test.skip('P47-2: bitcaster-cli shows friendly error when daemon is unreachable', async () => {
+test('P47-2: bitcaster-cli shows friendly error when daemon is unreachable', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-no-daemon-'))
   try {
     await assert.rejects(
@@ -1047,8 +1147,10 @@ test.skip('P47-2: bitcaster-cli shows friendly error when daemon is unreachable'
         }),
       (err: unknown) => {
         const stderr = (err as { stderr?: string }).stderr ?? ''
-        assert.match(stderr, /daemon not reachable|daemon is not running/i)
-        assert.match(stderr, /bitcaster daemon init/)
+        const parsed = JSON.parse(stderr) as { ok?: boolean; error?: string; hint?: string }
+        assert.equal(parsed.ok, false)
+        assert.match(parsed.error ?? '', /daemon not reachable|daemon is not running/i)
+        assert.equal(parsed.hint, "Run 'bitcaster daemon init' or set BITCASTER_DAEMON_URL.")
         assert.doesNotMatch(stderr, /triggerUncaughtException|TypeError|ECONNREFUSED/)
         return true
       },
@@ -1309,6 +1411,47 @@ async function readBody(req: IncomingMessage): Promise<string> {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
   }
   return Buffer.concat(chunks).toString('utf8')
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch (err) {
+    if (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ENOENT') {
+      return false
+    }
+    throw err
+  }
+}
+
+async function waitForProcessStartTime(pid: number): Promise<void> {
+  const deadline = Date.now() + 2_000
+  while (Date.now() < deadline) {
+    if ((await processStartTime(pid)) !== null) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`process ${pid} did not expose start time`)
+}
+
+async function processStartTime(pid: number): Promise<string | null> {
+  if (process.platform === 'linux') {
+    try {
+      const statText = await readFile(`/proc/${pid}/stat`, 'utf8')
+      const closeParen = statText.lastIndexOf(')')
+      if (closeParen === -1) return null
+      const fieldsFrom3 = statText.slice(closeParen + 2).trim().split(/\s+/)
+      return fieldsFrom3[19] ?? null
+    } catch {
+      return null
+    }
+  }
+  try {
+    const result = await execFileAsync('ps', ['-p', String(pid), '-o', 'lstart='])
+    return result.stdout.trim() || null
+  } catch {
+    return null
+  }
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
