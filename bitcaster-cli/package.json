@@ -27,7 +27,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@bitcaster-market/daemon": "0.1.0"
+    "@bitcaster-market/daemon": "0.1.0",
+    "commander": "^12.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

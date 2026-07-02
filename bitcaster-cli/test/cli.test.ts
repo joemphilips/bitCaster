@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import { join } from 'node:path'
@@ -33,9 +33,19 @@ test('bitcaster-cli command help includes usage and subcommand summaries', async
 
   assert.match(result.stdout, /bitcaster-cli wallet/)
   assert.match(result.stdout, /Usage:/)
-  assert.match(result.stdout, /bitcaster-cli wallet balance/)
-  assert.match(result.stdout, /Subcommands:/)
-  assert.match(result.stdout, /receive\s+Import a Cashu token/)
+  assert.match(result.stdout, /wallet balance/)
+  assert.match(result.stdout, /Commands:/)
+  assert.match(result.stdout, /receive(?: \[options\])? <token>\s+Import a Cashu token/)
+})
+
+test('bitcaster-cli completion reports that shell completion is a stub', async () => {
+  const result = await execFileAsync(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    ['completion'],
+    { env: process.env },
+  )
+
+  assert.match(result.stdout, /not yet implemented/i)
 })
 
 test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
@@ -825,6 +835,441 @@ test('bitcaster-cli auto-starts default local daemon when RPC is unavailable', a
     }
     await rm(home, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// P47 Phase 0 — red-first tests for the new CLI surface.
+// These tests assert the target behavior and are skipped until the
+// corresponding phase lands. Unskip them as each phase is implemented.
+// ---------------------------------------------------------------------------
+
+test('P47-1: bitcaster-cli --version prints a version string', async () => {
+  const result = await execFileAsync(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    ['--version'],
+    { env: process.env },
+  )
+  assert.match(result.stdout, /\d+\.\d+\.\d+/)
+})
+
+test('P47-1: bitcaster-cli -V is an alias for --version', async () => {
+  const result = await execFileAsync(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    ['-V'],
+    { env: process.env },
+  )
+  assert.match(result.stdout, /\d+\.\d+\.\d+/)
+})
+
+test('P47-1: bitcaster-cli market list works (singular command name)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-singular-market-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const server = createServer(async (_req, res) => {
+    writeJson(res, 200, { ok: true, result: { markets: [] } })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await runCli(`http://127.0.0.1:${address.port}`, ['market', 'list'])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('P47-1: bitcaster-cli daemon init --help shows help text (not an error)', async () => {
+  const result = await execFileAsync(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    ['daemon', 'init', '--help'],
+    { env: process.env },
+  )
+  assert.match(result.stdout, /daemon init/)
+  assert.match(result.stdout, /wallet-seed-hex/)
+})
+
+test('P47-1: bitcaster-cli config is a top-level command', async () => {
+  const result = await execFileAsync(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    ['config', '--help'],
+    { env: process.env },
+  )
+  assert.match(result.stdout, /config/)
+  assert.match(result.stdout, /engine-url|mint-url/)
+})
+
+test('P47-1: bitcaster-cli config path shows config file location', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-config-path-'))
+  try {
+    const result = await runCliWithEnv(['config', 'path'], {
+      ...process.env,
+      BITCASTER_DAEMON_HOME: home,
+    })
+    assert.match(result.stdout, /config\.json/)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli config list drops unknown config keys and preserves private file mode', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-config-sanitize-'))
+  const configPath = join(home, 'config.json')
+  try {
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          engineUrl: 'http://engine.example',
+          mintUrl: 'https://mint.example',
+          nostrSecretKeyHex: 'super-secret-key',
+        },
+        null,
+        2,
+      ) + '\n',
+    )
+
+    const result = await runCliWithEnv(['config', 'list'], {
+      ...process.env,
+      BITCASTER_DAEMON_HOME: home,
+    })
+
+    assert.doesNotMatch(result.stdout, /nostrSecretKeyHex|super-secret-key/)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      engineUrl: 'http://engine.example',
+      mintUrl: 'https://mint.example',
+    })
+    const fileMode = (await stat(configPath)).mode & 0o777
+    assert.equal(fileMode, 0o600)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli config set writes config without auto-starting an unreachable daemon', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-config-set-no-daemon-'))
+  const configPath = join(home, 'config.json')
+  try {
+    const result = await runCliWithEnv(
+      ['config', 'set', '--engine-url', 'http://engine.example'],
+      {
+        ...process.env,
+        BITCASTER_DAEMON_HOME: home,
+        BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+        BITCASTER_DAEMON_URL: 'http://127.0.0.1:1',
+      },
+    )
+
+    assert.match(result.stderr, /daemon not reachable; config\.json updated/i)
+    assert.match(result.stderr, /bitcaster daemon init/)
+    const parsed = JSON.parse(result.stdout) as {
+      ok?: boolean
+      result?: { config?: { engineUrl?: string }; daemonUpdated?: boolean }
+    }
+    assert.equal(parsed.ok, true)
+    assert.equal(parsed.result?.daemonUpdated, false)
+    assert.equal(parsed.result?.config?.engineUrl, 'http://engine.example')
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
+      engineUrl: 'http://engine.example',
+    })
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli config set does not auto-start the daemon when autostart is otherwise enabled', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-config-set-autostart-enabled-'))
+  const port = 44_000 + Math.floor(Math.random() * 10_000)
+  const configPath = join(home, 'config.json')
+  const autostartPidPath = join(home, 'daemon-autostart.pid')
+  let daemonPid: number | undefined
+  const env = {
+    ...process.env,
+    BITCASTER_DAEMON_HOME: home,
+    BITCASTER_DAEMON_PORT: String(port),
+  }
+  delete env.BITCASTER_CLI_AUTOSTART_DAEMON
+  delete env.BITCASTER_DAEMON_URL
+
+  try {
+    const result = await runCliWithEnv(
+      ['config', 'set', '--engine-url', 'http://engine.example'],
+      env,
+    )
+
+    const combinedOutput = `${result.stdout}\n${result.stderr}`
+    assert.match(combinedOutput, /daemon not reachable; config\.json updated/i)
+    assert.match(combinedOutput, /bitcaster daemon init/i)
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
+      engineUrl: 'http://engine.example',
+    })
+    await assert.rejects(
+      () => stat(autostartPidPath),
+      (err: unknown) =>
+        typeof err === 'object' &&
+        err !== null &&
+        (err as { code?: unknown }).code === 'ENOENT',
+    )
+  } finally {
+    try {
+      daemonPid = Number((await readFile(autostartPidPath, 'utf8')).trim())
+    } catch {
+      // No auto-start PID was written.
+    }
+    if (daemonPid) {
+      try {
+        process.kill(daemonPid, 'SIGTERM')
+      } catch {
+        // Process may have exited during test teardown.
+      }
+    }
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test.skip('P47-2: bitcaster-cli shows friendly error when daemon is unreachable', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-no-daemon-'))
+  try {
+    await assert.rejects(
+      () =>
+        runCliWithEnv(['health'], {
+          ...process.env,
+          BITCASTER_DAEMON_HOME: home,
+          BITCASTER_CLI_AUTOSTART_DAEMON: '0',
+          BITCASTER_DAEMON_URL: undefined,
+          BITCASTER_DAEMON_PORT: undefined,
+        }),
+      (err: unknown) => {
+        const stderr = (err as { stderr?: string }).stderr ?? ''
+        assert.match(stderr, /daemon not reachable|daemon is not running/i)
+        assert.match(stderr, /bitcaster daemon init/)
+        assert.doesNotMatch(stderr, /triggerUncaughtException|TypeError|ECONNREFUSED/)
+        return true
+      },
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test.skip('P47-4: bitcaster-cli order submit accepts named flags', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-named-flags-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const server = createServer(async (req, res) => {
+    const command = JSON.parse(await readBody(req))
+    received.push(command)
+    writeJson(res, 200, { ok: true, result: { orderId: 'ord-1' } })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await runCli(`http://127.0.0.1:${address.port}`, [
+      'order', 'submit',
+      '--market', 'cond-YES',
+      '--outcome', 'YES',
+      '--side', 'Buy',
+      '--price', '42',
+      '--amount', '100',
+      '--tif', 'FAK',
+    ])
+    assert.deepEqual(received, [
+      {
+        method: 'order.submit',
+        params: {
+          marketId: 'cond-YES',
+          outcomeId: 'YES',
+          tokenSide: 'Outcome',
+          side: 'Buy',
+          price: 42,
+          amountSats: 100,
+          timeInForce: 'FAK',
+          preflightSplit: true,
+        },
+      },
+    ])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test.skip('P47-5: bitcaster-cli wallet consolidate merge maps to t1', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-wallet-consolidate-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const server = createServer(async (req, res) => {
+    const command = JSON.parse(await readBody(req))
+    received.push(command)
+    writeJson(res, 200, {
+      ok: true,
+      result: { marketId: 'cond-A', status: 'consolidated', convertFeeSats: 1, collateralReturnedSats: 2, spentInputs: [], outputs: [] },
+    })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await runCli(`http://127.0.0.1:${address.port}`, [
+      'wallet', 'consolidate', 'cond-A', '--strategy', 'merge',
+    ])
+    assert.deepEqual(received, [
+      { method: 'wallet.consolidateMarket', params: { marketId: 'cond-A', type: 't1' } },
+    ])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test.skip('P47-5: bitcaster-cli wallet consolidate sweep maps to t2', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-wallet-sweep-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const server = createServer(async (req, res) => {
+    const command = JSON.parse(await readBody(req))
+    received.push(command)
+    writeJson(res, 200, {
+      ok: true,
+      result: { marketId: 'cond-A', status: 'consolidated', convertFeeSats: 1, collateralReturnedSats: 2, spentInputs: [], outputs: [] },
+    })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await runCli(`http://127.0.0.1:${address.port}`, [
+      'wallet', 'consolidate', 'cond-A', '--strategy', 'sweep',
+    ])
+    assert.deepEqual(received, [
+      { method: 'wallet.consolidateMarket', params: { marketId: 'cond-A', type: 't2' } },
+    ])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test.skip('P47-5: bitcaster-cli wallet consolidate reclaim maps to t3 (default)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-wallet-reclaim-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const server = createServer(async (req, res) => {
+    const command = JSON.parse(await readBody(req))
+    received.push(command)
+    writeJson(res, 200, {
+      ok: true,
+      result: { marketId: 'cond-A', status: 'consolidated', convertFeeSats: 1, collateralReturnedSats: 2, spentInputs: [], outputs: [] },
+    })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await runCli(`http://127.0.0.1:${address.port}`, [
+      'wallet', 'consolidate', 'cond-A',
+    ])
+    assert.deepEqual(received, [
+      { method: 'wallet.consolidateMarket', params: { marketId: 'cond-A', type: 't3' } },
+    ])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test.skip('P47-4: bitcaster-cli wallet split (renamed from split-complete-set)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-wallet-split-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  const received: unknown[] = []
+  const server = createServer(async (req, res) => {
+    const command = JSON.parse(await readBody(req))
+    received.push(command)
+    writeJson(res, 200, { ok: true, result: {} })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  assert.ok(address)
+
+  try {
+    await runCli(`http://127.0.0.1:${address.port}`, [
+      'wallet', 'split', 'cond-1', '100',
+    ])
+    assert.deepEqual(received, [
+      { method: 'wallet.splitCompleteSet', params: { conditionId: 'cond-1', amountSats: 100 } },
+    ])
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test.skip('P47-7: bitcaster-cli order submit --dry-run prints payload without calling daemon', async () => {
+  const result = await runCliWithOutput('http://127.0.0.1:1', [
+    'order', 'submit',
+    '--market', 'cond-YES',
+    '--outcome', 'YES',
+    '--side', 'Buy',
+    '--price', '42',
+    '--amount', '100',
+    '--tif', 'FAK',
+    '--dry-run',
+  ])
+  assert.match(result.stdout, /marketId.*cond-YES|market.*cond-YES/i)
+  assert.doesNotMatch(result.stdout, /secret|witness|mnemonic|nwc|authorization|sig/i)
+})
+
+test.skip('P47-7: bitcaster-cli lint gate — CLI source must not import NIP-98 signing functions', async () => {
+  const mainSrc = await readFile(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    'utf8',
+  )
+  assert.doesNotMatch(
+    mainSrc,
+    /generateNip98Header|finalizeNip98|signNip98|nip98.*sign/,
+    'bitcaster-cli/src must not import NIP-98 signing functions — signing stays in the daemon',
+  )
 })
 
 async function runCli(daemonUrl: string, args: string[]): Promise<void> {
