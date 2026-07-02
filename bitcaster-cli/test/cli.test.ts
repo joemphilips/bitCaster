@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import { join } from 'node:path'
@@ -85,7 +85,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'https://mint.example',
     ])
     await runCli(daemonUrl, [
-      'markets',
+      'market',
       'list',
       '--search',
       'weather',
@@ -94,7 +94,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       '--state',
       'All',
     ])
-    await runCli(daemonUrl, ['markets', 'show', 'condition-1'])
+    await runCli(daemonUrl, ['market', 'show', 'condition-1'])
     await runCli(daemonUrl, [
       'wallet',
       'balance',
@@ -135,40 +135,59 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'recover',
     ])
     await runCli(daemonUrl, [
+      'wallet',
       'consolidate',
       'cond-YES',
-      '--type',
-      't2',
+      '--strategy',
+      'sweep',
     ])
     await runCli(daemonUrl, [
       'order',
       'submit',
+      '--market',
       'cond-YES',
+      '--outcome',
       'YES',
+      '--side',
       'Buy',
+      '--price',
       '42',
+      '--amount',
       '100',
+      '--tif',
       'FAK',
     ])
     await runCli(daemonUrl, [
       'order',
       'submit',
+      '--market',
       'cond-NO',
+      '--outcome',
       'NO',
+      '--side',
       'Buy',
+      '--price',
       '55',
+      '--amount',
       '200',
+      '--tif',
       'GTC',
       '--no-preflight-split',
     ])
     await runCli(daemonUrl, [
       'order',
       'submit',
+      '--market',
       'cond-A',
+      '--outcome',
       'A',
+      '--side',
       'Buy',
+      '--price',
       '60',
+      '--amount',
       '100',
+      '--tif',
       'FAK',
       '--token-side',
       'Complement',
@@ -370,10 +389,11 @@ test('bitcaster-cli consolidate treats no-gain as a warning exit', async () => {
 
   try {
     const result = await runCliWithOutput(`http://127.0.0.1:${address.port}`, [
+      'wallet',
       'consolidate',
       'cond-A',
-      '--type',
-      't2',
+      '--strategy',
+      'sweep',
     ])
     assert.equal(result.stdout, '')
     assert.match(result.stderr, /Warning: skipped cond-A: market cond consolidation has no net collateral gain/)
@@ -407,6 +427,7 @@ test('bitcaster-cli consolidate exits non-zero for a non-pending market', async 
   try {
     await assert.rejects(
       () => runCliWithOutput(`http://127.0.0.1:${address.port}`, [
+        'wallet',
         'consolidate',
         'closed-A',
       ]),
@@ -478,10 +499,11 @@ test('bitcaster-cli consolidate --all sweeps wallet markets and warns on non-pen
 
   try {
     const result = await runCliWithOutput(`http://127.0.0.1:${address.port}`, [
+      'wallet',
       'consolidate',
       '--all',
-      '--type',
-      't3',
+      '--strategy',
+      'reclaim',
     ])
     assert.match(result.stdout, /cond1-A/)
     assert.match(result.stdout, /cond2-B/)
@@ -522,7 +544,7 @@ test('bitcaster-cli rejects partial outcome-token receive metadata before RPC', 
           'cond',
         ]),
       (err: unknown) => {
-        assert.equal((err as { code?: unknown }).code, 1)
+        assert.equal((err as { code?: unknown }).code, 2)
         assert.match(
           (err as { stderr?: string }).stderr ?? '',
           /require both --condition-id and --outcome-set/,
@@ -1421,7 +1443,7 @@ test('P47-3 regression: market list rejects unknown sort values', async () => {
       BITCASTER_ENGINE_URL: undefined,
     }),
     (err: unknown) => {
-      assert.equal((err as { code?: unknown }).code, 1)
+      assert.equal((err as { code?: unknown }).code, 2)
       assert.match((err as { stderr?: string }).stderr ?? '', /Invalid market sort: Hot/)
       return true
     },
@@ -1968,7 +1990,7 @@ test('P47-6b: market create refuses plain http engine URL without insecure local
   }
 })
 
-test.skip('P47-7: bitcaster-cli order submit --dry-run prints payload without calling daemon', async () => {
+test('P47-7: bitcaster-cli order submit --dry-run prints payload without calling daemon', async () => {
   const result = await runCliWithOutput('http://127.0.0.1:1', [
     'order', 'submit',
     '--market', 'cond-YES',
@@ -1977,23 +1999,109 @@ test.skip('P47-7: bitcaster-cli order submit --dry-run prints payload without ca
     '--price', '42',
     '--amount', '100',
     '--tif', 'FAK',
+    '--token-side', 'Complement',
     '--dry-run',
   ])
-  assert.match(result.stdout, /marketId.*cond-YES|market.*cond-YES/i)
+  assert.deepEqual(JSON.parse(result.stdout), {
+    marketId: 'cond-YES',
+    outcomeId: 'YES',
+    tokenSide: 'Complement',
+    side: 'Buy',
+    price: 42,
+    amountSats: 100,
+    timeInForce: 'FAK',
+    preflightSplit: true,
+  })
   assert.doesNotMatch(result.stdout, /secret|witness|mnemonic|nwc|authorization|sig/i)
 })
 
-test.skip('P47-7: bitcaster-cli lint gate — CLI source must not import NIP-98 signing functions', async () => {
-  const mainSrc = await readFile(
-    join(import.meta.dirname, '..', 'src', 'main.ts'),
-    'utf8',
-  )
+test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daemon and redact sensitive fields', async () => {
+  const attestation = kind89Event()
+  const cases: Array<{ args: string[]; expected: unknown }> = [
+    {
+      args: ['wallet', 'send', '25', '--mint', 'mint-a', '--operation-id', 'op-1', '--dry-run'],
+      expected: { amountSats: 25, mintUrl: 'mint-a', operationId: 'op-1' },
+    },
+    {
+      args: ['wallet', 'split', 'cond-1', '100', '--mint', 'mint-a', '--dry-run'],
+      expected: { conditionId: 'cond-1', amountSats: 100, mintUrl: 'mint-a' },
+    },
+    {
+      args: ['wallet', 'consolidate', 'cond-A', '--strategy', 'merge', '--dry-run'],
+      expected: { marketId: 'cond-A', type: 't1' },
+    },
+    {
+      args: ['market', 'create', '--condition-id', 'cond-1', '--title', 'Market', '--description', 'Description', '--outcomes', 'YES,NO', '--liquidity-sats', '1000', '--dry-run'],
+      expected: { conditionId: 'cond-1', title: 'Market', description: 'Description', outcomes: ['YES', 'NO'], liquiditySats: 1000 },
+    },
+    {
+      args: ['market', 'close', '--condition-id', 'cond-1', '--attestation', JSON.stringify(attestation), '--dry-run'],
+      expected: {
+        conditionId: 'cond-1',
+        attestationTemplate: {
+          kind: 89,
+          createdAt: attestation.createdAt,
+          tags: attestation.tags,
+          contentHash: 'dc540359a784bd009f963db761392a256fe02a8ae8ef8d0efc0f61fb9f4acd33',
+        },
+      },
+    },
+  ]
+
+  for (const testCase of cases) {
+    const result = await runCliWithOutput('http://127.0.0.1:1', testCase.args)
+    assert.deepEqual(JSON.parse(result.stdout), testCase.expected)
+    assert.doesNotMatch(result.stdout, /secret|witness|mnemonic|nwc|authorization|sig|nostrSecretKeyHex/i)
+  }
+})
+
+test('P47-7: removed aliases exit with usage error code 2', async () => {
+  const removedAliases = [
+    ['markets', 'list'],
+    ['wallet', 'split-complete-set', 'cond-1', '100'],
+    ['consolidate', 'cond-A'],
+    ['wallet', 'consolidate', 'cond-A', '--type', 't1'],
+    ['order', 'submit', 'cond-YES', 'YES', 'Buy', '42', '100', 'FAK'],
+  ]
+
+  for (const args of removedAliases) {
+    await assert.rejects(
+      () => runCliWithOutput('http://127.0.0.1:1', args),
+      (err: unknown) => {
+        assert.equal((err as { code?: unknown }).code, 2, args.join(' '))
+        return true
+      },
+      args.join(' '),
+    )
+  }
+})
+
+test('P47-7: bitcaster-cli lint gate — CLI source must not import NIP-98 signing functions', async () => {
+  const sourceFiles = await sourceTsFiles(join(import.meta.dirname, '..', 'src'))
+  const sourceText = (
+    await Promise.all(
+      sourceFiles.map(async (filePath) => `// ${filePath}\n${await readFile(filePath, 'utf8')}`),
+    )
+  ).join('\n')
+
+  assert.ok(sourceFiles.length > 0, 'bitcaster-cli/src should contain TypeScript source files')
   assert.doesNotMatch(
-    mainSrc,
+    sourceText,
     /generateNip98Header|finalizeNip98|signNip98|nip98.*sign/,
     'bitcaster-cli/src must not import NIP-98 signing functions — signing stays in the daemon',
   )
 })
+
+async function sourceTsFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true })
+  const files = await Promise.all(entries.map(async (entry) => {
+    const entryPath = join(directory, entry.name)
+    if (entry.isDirectory()) return sourceTsFiles(entryPath)
+    if (entry.isFile() && entry.name.endsWith('.ts')) return [entryPath]
+    return []
+  }))
+  return files.flat().sort()
+}
 
 async function runCli(daemonUrl: string, args: string[]): Promise<void> {
   const result = await runCliWithOutput(daemonUrl, args)
