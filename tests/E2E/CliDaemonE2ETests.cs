@@ -132,6 +132,105 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Cli_MarketCreate_RegistersMintConditionAndAppearsInMarketList()
+    {
+        var daemon = await StartDaemonAsync();
+        var unique = Guid.NewGuid().ToString("N")[..8];
+        const string title = "Test Market";
+        const string description = "Test";
+        string[] outcomes = ["Yes", "No"];
+        var announcementHex = await BuildTestEnumAnnouncementHexAsync(
+            outcomes,
+            $"p47-cli-market-create-{unique}",
+            DateTimeOffset.UtcNow.AddMonths(6));
+        var conditionId = await RegisterMintConditionWithFeeAsync(
+            title,
+            description,
+            announcementHex,
+            outcomes);
+        Assert.False(string.IsNullOrWhiteSpace(conditionId));
+
+        using var create = await RunCliJsonAsync(daemon, [
+            "market",
+            "create",
+            "--condition-id",
+            conditionId!,
+            "--title",
+            title,
+            "--description",
+            description,
+            "--outcomes",
+            "Yes,No",
+            "--trust-engine-url",
+        ], TimeSpan.FromSeconds(30));
+
+        Assert.True(create.RootElement.GetProperty("ok").GetBoolean());
+        var result = create.RootElement.GetProperty("result");
+        Assert.Equal(conditionId, result.GetProperty("conditionId").GetString());
+
+        using var list = await WaitForCliMarketListEntryAsync(daemon, conditionId!);
+        AssertCliMarketListContains(list.RootElement, conditionId!, title);
+    }
+
+    [Fact(Skip = "TODO(P47 Phase 6c): generate a real kormir-signed kind-89 attestation for the registered condition before enabling this E2E.")]
+    public async Task Cli_MarketClose_SubmitsKind89AttestationAndClosesMarket()
+    {
+        var daemon = await StartDaemonAsync();
+        var unique = Guid.NewGuid().ToString("N")[..8];
+        const string title = "Test Market";
+        const string description = "Test";
+        string[] outcomes = ["Yes", "No"];
+        var announcementHex = await BuildTestEnumAnnouncementHexAsync(
+            outcomes,
+            $"p47-cli-market-close-{unique}",
+            DateTimeOffset.UtcNow.AddMonths(6));
+        var conditionId = await RegisterMintConditionWithFeeAsync(
+            title,
+            description,
+            announcementHex,
+            outcomes);
+        Assert.False(string.IsNullOrWhiteSpace(conditionId));
+
+        using var create = await RunCliJsonAsync(daemon, [
+            "market",
+            "create",
+            "--condition-id",
+            conditionId!,
+            "--title",
+            title,
+            "--description",
+            description,
+            "--outcomes",
+            "Yes,No",
+            "--trust-engine-url",
+        ], TimeSpan.FromSeconds(30));
+        Assert.True(create.RootElement.GetProperty("ok").GetBoolean());
+
+        // TODO(P47 Phase 6c): replace this placeholder with an attestation built
+        // from kormir.sign_enum_event for the announcement above, then wrapped in
+        // the kind-89 NIP-01 envelope used by the frontend close-market flow.
+        var attestationJson = BuildPlaceholderKind89AttestationJson();
+        using var close = await RunCliJsonAsync(daemon, [
+            "market",
+            "close",
+            "--condition-id",
+            conditionId!,
+            "--attestation",
+            attestationJson,
+        ], TimeSpan.FromSeconds(30));
+
+        Assert.True(close.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal("Closed", close.RootElement.GetProperty("result").GetProperty("result").GetString());
+
+        using var list = await WaitForCliMarketListEntryAsync(
+            daemon,
+            conditionId!,
+            market => market.TryGetProperty("state", out var state)
+                && string.Equals(state.GetString(), "closed", StringComparison.OrdinalIgnoreCase));
+        AssertCliMarketListContains(list.RootElement, conditionId!, title, expectedState: "closed");
+    }
+
+    [Fact]
     public async Task Cli_ComplementaryBuyMatch_WakesRestingMakerAndCarriesSettlementMetadata()
     {
         var maker = await StartDaemonAsync();
@@ -2156,6 +2255,113 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
     {
         var result = await RunNodeAsync(BitcasterCliMain, args, daemon, timeout);
         return JsonDocument.Parse(result.Stdout);
+    }
+
+    private async Task<JsonDocument> WaitForCliMarketListEntryAsync(
+        DaemonHandle daemon,
+        string conditionId,
+        Func<JsonElement, bool>? extraPredicate = null)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        JsonDocument? lastList = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            lastList?.Dispose();
+            lastList = await RunCliJsonAsync(daemon, [
+                "market",
+                "list",
+                "--state",
+                "All",
+                "--limit",
+                "500",
+            ], TimeSpan.FromSeconds(10));
+
+            if (TryFindMarketInList(lastList.RootElement, conditionId, out var market)
+                && (extraPredicate is null || extraPredicate(market)))
+            {
+                return lastList;
+            }
+
+            await Task.Delay(500);
+        }
+
+        var diagnostic = lastList is null
+            ? "(market list never returned)"
+            : lastList.RootElement.GetRawText();
+        lastList?.Dispose();
+        throw new TimeoutException(
+            $"Market {conditionId} did not appear in CLI market list. Last list: {diagnostic}");
+    }
+
+    private static void AssertCliMarketListContains(
+        JsonElement root,
+        string conditionId,
+        string title,
+        string? expectedState = null)
+    {
+        Assert.True(
+            TryFindMarketInList(root, conditionId, out var market),
+            $"CLI market list did not include condition {conditionId}. Body: {root.GetRawText()}");
+        Assert.Equal(conditionId, market.GetProperty("conditionId").GetString());
+        Assert.Equal(title, market.GetProperty("title").GetString());
+        if (expectedState is not null)
+        {
+            Assert.True(market.TryGetProperty("state", out var state));
+            Assert.Equal(expectedState, state.GetString(), ignoreCase: true);
+        }
+    }
+
+    private static bool TryFindMarketInList(
+        JsonElement root,
+        string conditionId,
+        out JsonElement market)
+    {
+        if (root.TryGetProperty("markets", out var markets)
+            && markets.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var candidate in markets.EnumerateArray())
+            {
+                if (candidate.TryGetProperty("conditionId", out var candidateId)
+                    && string.Equals(candidateId.GetString(), conditionId, StringComparison.Ordinal))
+                {
+                    market = candidate;
+                    return true;
+                }
+            }
+        }
+
+        if (root.TryGetProperty("result", out var result)
+            && result.TryGetProperty("markets", out var daemonMarkets)
+            && daemonMarkets.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var candidate in daemonMarkets.EnumerateArray())
+            {
+                if (candidate.TryGetProperty("conditionId", out var candidateId)
+                    && string.Equals(candidateId.GetString(), conditionId, StringComparison.Ordinal))
+                {
+                    market = candidate;
+                    return true;
+                }
+            }
+        }
+
+        market = default;
+        return false;
+    }
+
+    private static string BuildPlaceholderKind89AttestationJson()
+    {
+        var placeholder = new
+        {
+            id = new string('0', 64),
+            pubkey = new string('1', 64),
+            createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            kind = 89,
+            tags = new[] { new[] { "e", new string('2', 64) } },
+            content = Convert.ToBase64String([0x00]),
+            sig = new string('3', 128),
+        };
+        return JsonSerializer.Serialize(placeholder, new JsonSerializerOptions(JsonSerializerDefaults.Web));
     }
 
     private Task<ProcessResult> RunCliProcessAsync(
@@ -4551,6 +4757,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             startInfo.Environment["BITCASTER_DAEMON_URL"] = $"http://127.0.0.1:{daemon.Port}";
             startInfo.Environment["BITCASTER_ENGINE_URL"] = TestPorts.ServerUrl;
             startInfo.Environment["BITCASTER_MINT_URL"] = TestPorts.MintUrl;
+            startInfo.Environment["BITCASTER_ALLOW_INSECURE_ENGINE"] = "1";
         }
 
         return Process.Start(startInfo)
