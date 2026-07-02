@@ -11,11 +11,11 @@ export const KNOWN_PUBLIC_NOSTR_RELAYS = [
 ] as const;
 
 /**
- * Production builds must not silently publish to or subscribe from public
- * relays. Operators should set VITE_NOSTR_RELAYS to an app-owned relay when
- * production Nostr sync is required.
+ * All environments default to the curated public relay set (ADR-028).
+ * Operators can override with VITE_NOSTR_RELAYS for app-owned relays.
+ * Users can also configure custom relays in Settings.
  */
-export const PRODUCTION_NOSTR_RELAYS = [] as const;
+export const PRODUCTION_NOSTR_RELAYS = KNOWN_PUBLIC_NOSTR_RELAYS;
 
 export const LOCAL_NOSTR_RELAYS = ["ws://localhost:7777"] as const;
 

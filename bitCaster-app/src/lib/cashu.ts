@@ -19,6 +19,7 @@ import {
   type MeltQuoteResponse,
   type PartialMintQuoteResponse,
   type Token,
+  type OutputType,
 } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 import { normalizeUrl } from "@/lib/url";
@@ -552,7 +553,11 @@ export async function receiveToken(
   baseAsset?: MarketBaseAsset | string | null,
 ): Promise<Proof[]> {
   const wallet = await getWallet(mintUrl, baseAsset);
-  return wallet.receive(tokenStr);
+  // Token ingress is a one-way receive from another wallet. Use random receive
+  // outputs so pasted tokens do not collide with deterministic counters already
+  // reserved for the browser wallet's own mint/deposit operations.
+  const receiveOutput: OutputType = { type: "random" };
+  return wallet.receive(tokenStr, undefined, receiveOutput);
 }
 
 /**

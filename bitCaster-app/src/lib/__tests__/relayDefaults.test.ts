@@ -53,12 +53,12 @@ describe("relay defaults", () => {
     expect(module.isAllowedNostrRelayUrl("wss://relay.app.example")).toBe(false);
   });
 
-  it("does not hard-code public relay defaults for production builds", async () => {
+  it("defaults production builds to the curated public relay set (ADR-028)", async () => {
     vi.resetModules();
 
     const module = await import("../relayDefaults");
 
-    expect(module.PRODUCTION_NOSTR_RELAYS).toEqual([]);
+    expect(module.PRODUCTION_NOSTR_RELAYS).toEqual(module.KNOWN_PUBLIC_NOSTR_RELAYS);
   });
 
   it("removes old public defaults from persisted settings and backfills the local default", async () => {
