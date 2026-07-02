@@ -156,7 +156,7 @@ export function MarketDetail({
             )}
 
             {/* Mobile: Trading Panel (disabled, not hidden, after close). */}
-            <div className="lg:hidden">
+            <div className="lg:hidden" data-testid="trading-panel-mobile">
               <TradingPanel
                 market={market}
                 tradeSelection={tradeSelection}
@@ -287,7 +287,7 @@ export function MarketDetail({
           </div>
 
           {/* Right Column - Trading Panel (disabled, not hidden, after close). */}
-          <div className="hidden lg:block">
+          <div className="hidden lg:block" data-testid="trading-panel-desktop">
             <div className="sticky top-6">
               <TradingPanel
                 market={market}
