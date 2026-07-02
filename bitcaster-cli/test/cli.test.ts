@@ -1580,7 +1580,7 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
   }
 })
 
-test.skip('P47-5: bitcaster-cli wallet consolidate merge maps to t1', async () => {
+test('P47-5: bitcaster-cli wallet consolidate merge maps to t1', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-wallet-consolidate-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -1615,7 +1615,7 @@ test.skip('P47-5: bitcaster-cli wallet consolidate merge maps to t1', async () =
   }
 })
 
-test.skip('P47-5: bitcaster-cli wallet consolidate sweep maps to t2', async () => {
+test('P47-5: bitcaster-cli wallet consolidate sweep maps to t2', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-wallet-sweep-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -1650,7 +1650,7 @@ test.skip('P47-5: bitcaster-cli wallet consolidate sweep maps to t2', async () =
   }
 })
 
-test.skip('P47-5: bitcaster-cli wallet consolidate reclaim maps to t3 (default)', async () => {
+test('P47-5: bitcaster-cli wallet consolidate reclaim maps to t3 (default)', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-wallet-reclaim-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -1683,6 +1683,20 @@ test.skip('P47-5: bitcaster-cli wallet consolidate reclaim maps to t3 (default)'
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
   }
+})
+
+test('P47-5: bitcaster-cli wallet consolidate help describes strategy names', async () => {
+  const result = await execFileAsync(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    ['wallet', 'consolidate', '--help'],
+    { env: process.env },
+  )
+
+  assert.match(result.stdout, /--strategy <type>\s+Consolidation strategy:/)
+  assert.match(result.stdout, /merge\s+- Merge singletons \+ collateral into the missing complement set/)
+  assert.match(result.stdout, /sweep\s+- Extract collateral from overlapping complement collections/)
+  assert.match(result.stdout, /reclaim\s+- Extract collateral from all mixed positions \(default\)/)
+  assert.doesNotMatch(result.stdout, /--type/)
 })
 
 test('P47-4: bitcaster-cli wallet split (renamed from split-complete-set)', async () => {

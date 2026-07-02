@@ -818,10 +818,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "A|C", amountSats: 2);
 
         using var result = await RunCliJsonAsync(daemon, [
+            "wallet",
             "consolidate",
             marketId,
-            "--type",
-            "t2",
+            "--strategy",
+            "sweep",
         ], TimeSpan.FromSeconds(30));
 
         AssertConsolidationResult(
@@ -856,10 +857,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await ReceiveSatsAsync(daemon, amountSats: 1);
 
         using var result = await RunCliJsonAsync(daemon, [
+            "wallet",
             "consolidate",
             marketId,
-            "--type",
-            "t1",
+            "--strategy",
+            "merge",
         ], TimeSpan.FromSeconds(30));
 
         AssertConsolidationResult(
@@ -892,10 +894,9 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "C", amountSats: 2);
 
         using var result = await RunCliJsonAsync(daemon, [
+            "wallet",
             "consolidate",
             marketId,
-            "--type",
-            "t3",
         ], TimeSpan.FromSeconds(30));
 
         AssertConsolidationResult(
@@ -3720,10 +3721,11 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         await ConfigureDaemonEngineAsync(daemon, fakeEngine.Url);
 
         var result = await RunCliProcessAsync(daemon, [
+            "wallet",
             "consolidate",
             $"{conditionId}-A",
-            "--type",
-            "t2",
+            "--strategy",
+            "sweep",
         ], TimeSpan.FromSeconds(10));
 
         Assert.NotEqual(0, result.ExitCode);
@@ -4742,14 +4744,34 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
         Assert.True(submit.RootElement.GetProperty("ok").GetBoolean());
     }
 
-    [Fact(Skip = "P47-5: pending wallet consolidate with strategy names")]
+    [Fact]
     public async Task P47_UserCanConsolidatePositionsViaCli_WithStrategyName()
     {
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var condition = await CreateCategoricalMarketFixtureAsync(
+            httpClient,
+            registerEngine: false,
+            titlePrefix: "P47 wallet consolidate strategy");
+        await using var fakeEngine = new FakeMarketServer(
+            condition.ConditionId,
+            condition.PrimitiveOutcomeSetIds,
+            status: "pending");
         var daemon = await StartDaemonAsync();
+        await ConfigureDaemonEngineAsync(daemon, fakeEngine.Url);
+        var marketId = $"{condition.ConditionId}-{condition.PrimitiveOutcomeSetIds[0]}";
+
+        await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "A", amountSats: 2);
+        await ReceiveOutcomeTokenAsync(daemon, condition.ConditionId, "B", amountSats: 2);
+        await ReceiveSatsAsync(daemon, amountSats: 1);
+
         using var result = await RunCliJsonAsync(daemon, [
-            "wallet", "consolidate", "cond-Yes", "--strategy", "merge",
-        ], TimeSpan.FromSeconds(10));
-        Assert.True(result.RootElement.GetProperty("ok").GetBoolean() || true);
+            "wallet", "consolidate", marketId, "--strategy", "merge",
+        ], TimeSpan.FromSeconds(30));
+        AssertConsolidationResult(
+            result,
+            expectedType: "t1",
+            expectedCollateralReturnedSats: 0,
+            ("A|B", 2));
     }
 
     [Fact]

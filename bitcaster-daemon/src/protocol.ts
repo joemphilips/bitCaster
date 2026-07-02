@@ -63,6 +63,7 @@ export interface WalletSplitCompleteSetParams {
 
 export interface WalletConsolidateMarketParams {
   marketId: string
+  // CLI strategy names: merge→t1, sweep→t2, reclaim→t3
   type: 't1' | 't2' | 't3'
 }
 

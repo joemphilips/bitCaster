@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { Command, CommanderError } from 'commander'
+import { Command, CommanderError, Option } from 'commander'
 import {
   callDaemon,
   daemonLogPath,
@@ -127,7 +127,7 @@ function registerCommands(program: Command): void {
   registerMarketCommand(program, 'market')
   registerMarketCommand(program, 'markets', true)
   registerWalletCommand(program)
-  registerConsolidateCommand(program)
+  registerTopLevelConsolidateAlias(program)
   registerOrderCommand(program)
   registerTradeCommand(program)
   registerDaemonCommand(program)
@@ -272,6 +272,7 @@ function registerWalletCommand(program: Command): void {
 
   registerWalletSplitCommand(wallet, 'split')
   registerWalletSplitCommand(wallet, 'split-complete-set', true)
+  registerConsolidateCommand(wallet, 'consolidate')
 
   wallet
     .command('operations')
@@ -312,23 +313,40 @@ function registerWalletSplitCommand(wallet: Command, name: string, hidden = fals
     })
 }
 
-function registerConsolidateCommand(program: Command): void {
-  program
-    .command('consolidate [marketId]')
+function registerTopLevelConsolidateAlias(program: Command): void {
+  registerConsolidateCommand(program, 'consolidate', true)
+}
+
+function registerConsolidateCommand(parent: Command, name: string, hidden = false): void {
+  parent
+    .command(`${name} [marketId]`, { hidden })
     .description('Consolidate pending CTF market positions through bitcaster-daemon.')
     .option('--all', 'Sweep every market id found in wallet balance')
-    .option('--type <type>', 'Consolidation type: t1, t2, or t3', parseConsolidationType, 't3')
-    .action(async (marketId: string | undefined, options: { all?: boolean; type: 't1' | 't2' | 't3' }) => {
-      await handleConsolidate({ all: options.all === true, marketId: marketId ?? '', type: options.type })
+    .addOption(new Option(
+      '--strategy <type>',
+      'Consolidation strategy:\n' +
+      '                       merge    - Merge singletons + collateral into the missing complement set\n' +
+      '                       sweep    - Extract collateral from overlapping complement collections\n' +
+      '                       reclaim  - Extract collateral from all mixed positions (default)',
+    ).argParser(parseConsolidationStrategy).default('t3', 'reclaim'))
+    .addOption(new Option('--type <type>', 'Consolidation type: t1, t2, or t3')
+      .argParser(parseConsolidationType)
+      .hideHelp())
+    .action(async (marketId: string | undefined, options: { all?: boolean; strategy: 't1' | 't2' | 't3'; type?: 't1' | 't2' | 't3' }) => {
+      await handleConsolidate({
+        all: options.all === true,
+        marketId: marketId ?? '',
+        type: options.type ?? options.strategy,
+      })
     })
 }
 
 async function handleConsolidate(parsed: ConsolidateArgs): Promise<void> {
   if (parsed.all && parsed.marketId) {
-    throwUsage('consolidate --all cannot be combined with a market id')
+    throwUsage('wallet consolidate --all cannot be combined with a market id')
   }
   if (!parsed.all && !parsed.marketId) {
-    throwUsage('Usage: bitcaster-cli consolidate <market-id> [--type t1|t2|t3]')
+    throwUsage('Usage: bitcaster-cli wallet consolidate <market-id> [--strategy merge|sweep|reclaim]')
   }
   if (parsed.all) {
     const balance = await callDaemon<WalletBalanceResult>({ method: 'wallet.balance' })
@@ -750,6 +768,19 @@ function parseConsolidationType(value: string): 't1' | 't2' | 't3' {
   const lower = value.toLowerCase()
   if (lower === 't1' || lower === 't2' || lower === 't3') return lower
   throwUsage(`Invalid consolidation type: ${value}`)
+}
+
+function parseConsolidationStrategy(value: string): 't1' | 't2' | 't3' {
+  const lower = value.toLowerCase()
+  switch (lower) {
+    case 'merge':
+      return 't1'
+    case 'sweep':
+      return 't2'
+    case 'reclaim':
+      return 't3'
+  }
+  throwUsage(`Invalid consolidation strategy: ${value}`)
 }
 
 async function printConsolidationResponse(
