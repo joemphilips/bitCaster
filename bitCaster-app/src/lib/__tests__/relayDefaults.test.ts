@@ -53,15 +53,49 @@ describe("relay defaults", () => {
     expect(module.isAllowedNostrRelayUrl("wss://relay.app.example")).toBe(false);
   });
 
-  it("does not hard-code public relay defaults for production builds", async () => {
+  it("defaults production builds to the curated public relay set (ADR-028)", async () => {
     vi.resetModules();
 
     const module = await import("../relayDefaults");
 
-    expect(module.PRODUCTION_NOSTR_RELAYS).toEqual([]);
+    expect(module.PRODUCTION_NOSTR_RELAYS).toEqual(module.KNOWN_PUBLIC_NOSTR_RELAYS);
   });
 
-  it("removes old public defaults from persisted settings and backfills the local default", async () => {
+  it("uses default relays for fresh users without persisted relay config", async () => {
+    vi.resetModules();
+
+    const module = await import("../relayDefaults");
+
+    expect(module.effectiveRelayUrls(undefined)).toEqual(["ws://localhost:7777"]);
+    expect(module.removeRetiredPublicDefaultRelays(undefined)).toEqual([
+      { url: "ws://localhost:7777", connectionStatus: "disconnected" },
+    ]);
+  });
+
+  it("respects an explicitly empty user relay config", async () => {
+    vi.resetModules();
+
+    const module = await import("../relayDefaults");
+
+    expect(module.effectiveRelayUrls([])).toEqual([]);
+    expect(module.removeRetiredPublicDefaultRelays([])).toEqual([]);
+  });
+
+  it("keeps only the public defaults that the user retained", async () => {
+    vi.stubEnv("PROD", true);
+    vi.resetModules();
+
+    const module = await import("../relayDefaults");
+
+    expect(
+      module.effectiveRelayUrls([
+        { url: "wss://nos.lol" },
+        { url: "wss://relay.primal.net" },
+      ]),
+    ).toEqual(["wss://nos.lol", "wss://relay.primal.net"]);
+  });
+
+  it("removes old public defaults from persisted settings without backfilling defaults", async () => {
     vi.resetModules();
 
     const module = await import("../relayDefaults");
@@ -71,9 +105,7 @@ describe("relay defaults", () => {
         { url: "wss://relay.damus.io", connectionStatus: "disconnected" },
         { url: "wss://relay.user.example", connectionStatus: "disconnected" },
       ]),
-    ).toEqual([
-      { url: "ws://localhost:7777", connectionStatus: "disconnected" },
-    ]);
+    ).toEqual([]);
   });
 
   it("drops explicitly configured known public relays", async () => {

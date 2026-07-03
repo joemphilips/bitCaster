@@ -20,6 +20,7 @@ export function MarketsPage() {
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [lastSuccessfulRefreshAt, setLastSuccessfulRefreshAt] = useState<string | null>(null)
   // Selected category tags. P7 §`/markets`: chip multi-select with OR
   // semantics. The engine's `/api/v1/markets/query?tag=…` accepts repeated
   // `tag=` parameters, so the page forwards the whole set verbatim.
@@ -50,6 +51,7 @@ export function MarketsPage() {
       .then((result) => {
         setMarkets(result.markets)
         setNextCursor(result.nextCursor)
+        setLastSuccessfulRefreshAt(result.lastSuccessfulRefreshAt ?? null)
       })
       .catch(() => {
         setError(
@@ -154,6 +156,10 @@ export function MarketsPage() {
     [navigate],
   )
 
+  const catalogueHasRefreshed =
+    lastSuccessfulRefreshAt !== null &&
+    !lastSuccessfulRefreshAt.startsWith('0001-01-01T00:00:00')
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
@@ -171,6 +177,36 @@ export function MarketsPage() {
           className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
         >
           Retry
+        </button>
+      </div>
+    )
+  }
+
+  if (markets.length === 0 && !catalogueHasRefreshed) {
+    return (
+      <div className="flex items-center justify-center min-h-[50vh]">
+        <div className="text-slate-400 animate-pulse">Catalogue refreshing...</div>
+      </div>
+    )
+  }
+
+  if (markets.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4 px-4 text-center">
+        <div className="text-6xl" aria-hidden="true">📈</div>
+        <div className="space-y-2">
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+            No markets yet
+          </h2>
+          <p className="text-slate-500 dark:text-slate-400">
+            Create one to get started.
+          </p>
+        </div>
+        <button
+          onClick={() => navigate('/creator')}
+          className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
+        >
+          Create Market
         </button>
       </div>
     )

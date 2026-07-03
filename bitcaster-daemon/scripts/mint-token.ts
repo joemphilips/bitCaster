@@ -44,6 +44,9 @@ if (mode === 'sats') {
     collateralAmountForUnit('msat', amountMinorUnits),
   )
   printToken(mintUrl, 'msat', msats)
+} else if (mode === 'usd') {
+  const usd = await mintRegularProofs(mintUrl, 'usd', amountMinorUnits)
+  printToken(mintUrl, 'usd', usd)
 } else if (mode === 'outcome' || mode === 'outcome-msats') {
   if (!conditionId || !outcomeSetId) usage()
   const unit = mode === 'outcome-msats' ? 'msat' : 'sat'
@@ -69,8 +72,9 @@ if (mode === 'sats') {
   usage()
 }
 
-function collateralAmountForUnit(unit: 'sat' | 'msat', amountMinorUnits: number): number {
+function collateralAmountForUnit(unit: CollateralTokenUnit, amountMinorUnits: number): number {
   if (unit === 'sat') return amountMinorUnits
+  if (unit === 'usd') return amountMinorUnits
   const amountMsats = amountMinorUnits * msatsPerSat
   if (!Number.isSafeInteger(amountMsats)) {
     throw new Error(`amount is too large to scale from sats to msat: ${amountMinorUnits}`)
@@ -80,24 +84,24 @@ function collateralAmountForUnit(unit: 'sat' | 'msat', amountMinorUnits: number)
 
 async function mintRegularProofs(
   mintUrl: string,
-  unit: 'sat' | 'msat',
-  faceAmountSats: number,
+  unit: CollateralTokenUnit,
+  faceAmountSubunits: number,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl)
   const keyset = await getActiveCollateralKeyset(mint, unit)
   const wallet = new CashuWallet(mint, { unit })
   await wallet.loadMint()
-  const grossAmountSats = computeGrossCtfInputAmountSats({
-    faceAmountSats,
+  const grossAmountSubunits = computeGrossCtfInputAmountSats({
+    faceAmountSats: faceAmountSubunits,
     keyset: {
       id: keyset.id,
       keys: keyset.keys,
       input_fee_ppk: keyset.input_fee_ppk ?? 0,
     },
   })
-  const quote = await wallet.createMintQuote(grossAmountSats)
+  const quote = await wallet.createMintQuote(grossAmountSubunits)
   await waitForPaidQuote(wallet, quote)
-  return wallet.mintProofs(grossAmountSats, quote.quote)
+  return wallet.mintProofs(grossAmountSubunits, quote.quote)
 }
 
 async function mintRegularProofsForCtfSplit(
@@ -122,7 +126,9 @@ async function mintRegularProofsForCtfSplit(
   return wallet.mintProofs(grossAmountSats, quote.quote)
 }
 
-async function getActiveCollateralKeyset(mint: CashuMint, unit: 'sat' | 'msat'): Promise<MintKeys> {
+type CollateralTokenUnit = 'sat' | 'msat' | 'usd'
+
+async function getActiveCollateralKeyset(mint: CashuMint, unit: CollateralTokenUnit): Promise<MintKeys> {
   const active = (await mint.getKeySets()).keysets.find(
     (keyset) => keyset.active && keyset.unit === unit,
   )
@@ -207,7 +213,7 @@ async function waitForPaidQuote(
   throw new Error(`mint quote was not paid by fakewallet; last state=${last?.state ?? 'unknown'}`)
 }
 
-function printToken(mintUrl: string, unit: 'sat' | 'msat', proofs: Proof[]): void {
+function printToken(mintUrl: string, unit: CollateralTokenUnit, proofs: Proof[]): void {
   const token = getEncodedToken({ mint: mintUrl, unit, proofs })
   process.stdout.write(
     jsonOutput
@@ -220,6 +226,7 @@ function usage(): never {
   process.stderr.write(
     'Usage: mint-token.ts sats <mint-url> <amount-sats> [--json]\n' +
       '       mint-token.ts msats <mint-url> <amount-sats> [--json]\n' +
+      '       mint-token.ts usd <mint-url> <amount-usd-subunits> [--json]\n' +
       '       mint-token.ts outcome <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n' +
       '       mint-token.ts outcome-msats <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n',
   )
