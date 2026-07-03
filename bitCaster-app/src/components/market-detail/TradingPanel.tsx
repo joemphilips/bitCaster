@@ -17,6 +17,7 @@ import {
   formatPricePercentage,
   formatShareFace,
   marketUnitLabel,
+  bufferSubunits,
   type MarketBaseAsset,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
@@ -572,6 +573,8 @@ function LimitOrderPreviewSection({
   formatAmount: (amount: number) => string
 }) {
   const { t } = useTranslation()
+  const estimatedSettlementFee = bufferSubunits(baseAsset, 1)
+  const totalWithFee = preview.totalCost + estimatedSettlementFee
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
       <div className="flex justify-between text-sm">
@@ -581,9 +584,21 @@ function LimitOrderPreviewSection({
         </span>
       </div>
       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
-        <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalExpectedCost')}</span>
+        <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.quotePayment')}</span>
         <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-total-cost">
           {formatAmount(preview.totalCost)}
+        </span>
+      </div>
+      <div className="flex justify-between text-sm">
+        <span className="text-slate-500 dark:text-slate-400">{t('trade.estimatedSettlementFee')}</span>
+        <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="limit-settlement-fee">
+          {formatAmount(estimatedSettlementFee)}
+        </span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-slate-700 dark:text-slate-300 font-medium">{t('trade.totalWithFee')}</span>
+        <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-grand-total">
+          {formatAmount(totalWithFee)}
         </span>
       </div>
     </div>
@@ -627,6 +642,7 @@ export function TradingPanel({
   const divisibility = normalizeMarketDivisibility(market.divisibility)
   const wholeShareLabel = formatShareFace(baseAsset, divisibility)
   const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
+  const estimatedSettlementFee = bufferSubunits(baseAsset, 1)
   const shareCountLabel = (shares: number) =>
     t('trade.shareCount', { count: shares.toLocaleString() })
   const [tradeAmountText, setTradeAmountText] = useState(tradeAmount > 0 ? String(tradeAmount) : '')
@@ -866,14 +882,32 @@ export function TradingPanel({
                 </>
               )}
               {tradePreview.hasExecutableLiquidity !== false && (
-                <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
-                  <span className="text-slate-700 dark:text-slate-300 font-medium">
-                    {t('trade.totalExpectedCost')}
-                  </span>
-                  <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="trade-total-cost">
-                    {formatAmount(tradePreview.totalCost)}
-                  </span>
-                </div>
+                <>
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
+                    <span className="text-slate-700 dark:text-slate-300 font-medium">
+                      {t('trade.quotePayment')}
+                    </span>
+                    <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="trade-total-cost">
+                      {formatAmount(tradePreview.totalCost)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {t('trade.estimatedSettlementFee')}
+                    </span>
+                    <span className="font-medium text-slate-600 dark:text-slate-300" data-testid="trade-settlement-fee">
+                      {formatAmount(estimatedSettlementFee)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-700 dark:text-slate-300 font-medium">
+                      {t('trade.totalWithFee')}
+                    </span>
+                    <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="trade-grand-total">
+                      {formatAmount(tradePreview.totalCost + estimatedSettlementFee)}
+                    </span>
+                  </div>
+                </>
               )}
             </div>
           )}

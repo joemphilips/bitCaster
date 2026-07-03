@@ -81,7 +81,7 @@ describe('TradingPanel', () => {
     )
   }
 
-  it('uses a share input and only shows market price plus expected cost', () => {
+  it('uses a share input and shows market quote payment plus estimated settlement fee', () => {
     const tradePreview: TradePreview = {
       amount: 50,
       predictedOdds: 50,
@@ -112,7 +112,11 @@ describe('TradingPanel', () => {
     expect(screen.getByText('Shares')).toBeInTheDocument()
     expect(screen.getByText('1 share = $10.00')).toBeInTheDocument()
     expect(screen.getByText('Price per share')).toBeInTheDocument()
+    expect(screen.getByText('Quote payment')).toBeInTheDocument()
+    expect(screen.getByText('Est. settlement fee')).toBeInTheDocument()
     expect(screen.getByTestId('trade-total-cost')).toHaveTextContent('$1.50')
+    expect(screen.getByTestId('trade-settlement-fee')).toHaveTextContent('$0.10')
+    expect(screen.getByTestId('trade-grand-total')).toHaveTextContent('$1.60')
     expect(
       screen.getByRole('button', { name: 'Buy YES for 50 shares' }),
     ).toBeInTheDocument()
@@ -238,7 +242,7 @@ describe('TradingPanel', () => {
     expect(screen.getByTestId('trade-total-cost')).toHaveTextContent('$2.50')
   })
 
-  it('formats sat-denominated limit preview as price plus expected cost only', () => {
+  it('formats sat-denominated limit preview as price plus quote payment and estimated settlement fee', () => {
     const preview: LimitOrderPreview = {
       limitPrice: 30,
       amount: 50,
@@ -267,8 +271,11 @@ describe('TradingPanel', () => {
 
     expect(screen.getByText('Price per share')).toBeInTheDocument()
     expect(screen.getByText('0.03 sats (30.00%)')).toBeInTheDocument()
-    expect(screen.getByText('Total expected cost')).toBeInTheDocument()
+    expect(screen.getByText('Quote payment')).toBeInTheDocument()
+    expect(screen.getByText('Est. settlement fee')).toBeInTheDocument()
     expect(screen.getByTestId('limit-total-cost')).toHaveTextContent('1.5 sats')
+    expect(screen.getByTestId('limit-settlement-fee')).toHaveTextContent('10 sats')
+    expect(screen.getByTestId('limit-grand-total')).toHaveTextContent('11.5 sats')
     expect(screen.queryByText('Shares you receive if order fills')).not.toBeInTheDocument()
     expect(screen.queryByText('Market Creator fee (1%)')).not.toBeInTheDocument()
     expect(screen.queryByText('Mint fee')).not.toBeInTheDocument()
