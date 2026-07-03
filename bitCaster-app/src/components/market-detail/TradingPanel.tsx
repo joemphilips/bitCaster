@@ -623,6 +623,7 @@ export function TradingPanel({
   const isSell = tradeSide === 'sell'
   const isLimit = orderType === 'limit'
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset)
+  const unitLabel = marketUnitLabel(baseAsset)
   const divisibility = normalizeMarketDivisibility(market.divisibility)
   const wholeShareLabel = formatShareFace(baseAsset, divisibility)
   const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
@@ -678,7 +679,7 @@ export function TradingPanel({
     if (isTradeSubmitting) return t('trade.submittingOrder')
     if (!walletReady) return t('wallet.startTrading')
     if (!tradeAmount || tradeAmount <= 0) return t('trade.enterAmount')
-    if (buyNeedsTopUp) return t('trade.topUpWallet')
+    if (buyNeedsTopUp) return t('trade.topUpWalletUnit', { unit: unitLabel })
     if (backingBlocked) return backingBlockMessage
     if (marketOrderHasNoLiquidity) return t('trade.noExecutableLiquidity')
     const sideLabel = tradeSelection?.side.toUpperCase() ?? ''

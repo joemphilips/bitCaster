@@ -249,6 +249,7 @@
     "insufficientFunds": "Insufficient funds",
     "insufficientOutcomeTokens": "Insufficient outcome tokens",
     "topUpWallet": "Top up wallet",
+    "topUpWalletUnit": "Top up {{unit}} wallet",
     "confirmBuy": "Buy {{side}} for {{amount}}",
     "confirmSell": "Sell {{side}} for {{amount}}",
     "confirmLimitBuy": "Place Limit Order for {{amount}}",

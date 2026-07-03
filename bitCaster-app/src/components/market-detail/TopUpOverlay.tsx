@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { InvoiceDisplay } from '@/components/deposit-withdraw/InvoiceDisplay'
 import {
-  FEE_BUFFER_SATS,
   createMintQuote,
   decodeToken,
   getWalletForUnit,
@@ -17,6 +16,7 @@ import { useWalletStore } from '@/stores/wallet'
 import type { MintQuoteResponse, OutputType } from '@cashu/cashu-ts'
 import {
   formatAmount,
+  bufferSubunits,
   defaultCollateralUnit,
   marketUnitLabel,
   normalizeMarketBaseAsset,
@@ -46,12 +46,6 @@ function inputAmountToSubunits(displayAmount: number, baseAsset: string): number
   if (!Number.isFinite(displayAmount)) return 0
   if (baseAsset === 'usd') return Math.round(displayAmount * 100)
   if (baseAsset === 'sat') return Math.round(displayAmount * 1000)
-  throw new Error(`unsupported base asset: ${baseAsset}`)
-}
-
-function feeBufferSubunits(baseAsset: string): number {
-  if (baseAsset === 'usd') return 0
-  if (baseAsset === 'sat') return FEE_BUFFER_SATS * 1000
   throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
@@ -114,7 +108,7 @@ interface TopUpOverlayProps {
 /**
  * Self-contained Lightning top-up flow mirroring
  * `useDepositWithdrawState.onCreateInvoice` but scoped to the trade context:
- * user picks an amount (prefilled with the deficit plus `FEE_BUFFER_SATS`, floor `deficit`),
+ * user picks an amount (prefilled with the deficit plus a unit-aware buffer),
  * sees a bolt11, and the overlay tears itself down once proofs are stored.
  */
 export function TopUpOverlay({
@@ -133,8 +127,7 @@ export function TopUpOverlay({
   const walletBackupState = useWalletStore((s) => s.walletBackupState)
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
   const unitLabel = marketUnitLabel(baseAsset)
-  const bufferSubunits = feeBufferSubunits(baseAsset)
-  const prefill = Math.max(deficit + bufferSubunits, 1)
+  const prefill = deficit > 0 ? Math.max(deficit + bufferSubunits(baseAsset, deficit), 1) : 1
   const displayMin = displayInputAmount(deficit, baseAsset)
   const inputStep = displayInputStep(baseAsset)
   const showFeeSummary = feeSubunits !== undefined && balanceSubunits !== undefined

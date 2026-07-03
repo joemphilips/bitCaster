@@ -117,6 +117,18 @@ export function marketSubunitLabel(value: MarketBaseAsset | string | null | unde
   throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
+export function bufferSubunits(
+  baseAsset: MarketBaseAsset | string | null | undefined,
+  deficit: number,
+): number {
+  const asset = requireMarketBaseAsset(baseAsset)
+  if (deficit <= 0) return 0
+  if (!Number.isFinite(deficit)) throw new Error('deficit must be finite')
+  const floor = asset === 'sat' ? 10_000 : asset === 'usd' ? 10 : null
+  if (floor === null) throw new Error(`unsupported base asset: ${asset}`)
+  return Math.max(Math.ceil(deficit * 0.2), floor)
+}
+
 export function defaultCollateralUnit(value: MarketBaseAsset | string | null | undefined): CashuProofUnit {
   const asset = requireMarketBaseAsset(value)
   if (asset === 'usd') return 'usd'

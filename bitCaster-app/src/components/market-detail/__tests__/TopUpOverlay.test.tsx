@@ -20,7 +20,6 @@ vi.mock('react-router', () => ({
 
 vi.mock('@/lib/cashu', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/cashu')>()),
-  FEE_BUFFER_SATS: 1_000,
   createMintQuote: (...args: unknown[]) => createMintQuote(...args),
   waitForMintQuotePaid: (...args: unknown[]) => waitForMintQuotePaid(...args),
   mintProofs: (...args: unknown[]) => mintProofs(...args),
@@ -105,7 +104,7 @@ describe('TopUpOverlay', () => {
 
     expect(screen.getByText(/Minimum \$15\.00 to cover the trade/)).toBeInTheDocument()
     expect(screen.getByText('Amount (USD)')).toBeInTheDocument()
-    expect(screen.getByTestId('top-up-amount-input')).toHaveValue(15)
+    expect(screen.getByTestId('top-up-amount-input')).toHaveValue(18)
 
     await user.clear(screen.getByTestId('top-up-amount-input'))
     await user.type(screen.getByTestId('top-up-amount-input'), '150')
@@ -138,7 +137,7 @@ describe('TopUpOverlay', () => {
     expect(screen.getByText('$15.00')).toBeInTheDocument()
   })
 
-  it('converts sat-market deficit subunits to sats for the top-up invoice', async () => {
+  it('adds the unit-aware top-up buffer and converts sat-market subunits to sats for the invoice', async () => {
     const user = userEvent.setup()
 
     render(
@@ -151,12 +150,12 @@ describe('TopUpOverlay', () => {
     )
 
     expect(screen.getByText(/Minimum 10 sats to cover the trade/)).toBeInTheDocument()
-    expect(screen.getByTestId('top-up-amount-input')).toHaveValue(1_010)
+    expect(screen.getByTestId('top-up-amount-input')).toHaveValue(20)
 
     await user.click(screen.getByTestId('top-up-continue'))
 
     await waitFor(() => {
-      expect(createMintQuote).toHaveBeenCalledWith(1_010, 'https://mint.example', 'sat')
+      expect(createMintQuote).toHaveBeenCalledWith(20, 'https://mint.example', 'sat')
     })
   })
 

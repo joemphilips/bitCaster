@@ -249,6 +249,7 @@
     "insufficientFunds": "残高不足",
     "insufficientOutcomeTokens": "アウトカムトークンが不足しています",
     "topUpWallet": "ウォレットをチャージ",
+    "topUpWalletUnit": "{{unit}} ウォレットをチャージ",
     "confirmBuy": "{{side}} を {{amount}} で買う",
     "confirmSell": "{{side}} を {{amount}} で売る",
     "confirmLimitBuy": "{{amount}} の指値注文を出す",

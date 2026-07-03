@@ -147,10 +147,10 @@ describe('TradingPanel', () => {
 
     const button = screen.getByTestId('trade-confirm')
     expect(button).toBeEnabled()
-    expect(button).toHaveTextContent('Top up wallet')
+    expect(button).toHaveTextContent('Top up USD wallet')
     expect(button).not.toHaveAttribute('title')
     expect(screen.getByTestId('trade-feasibility-status')).toHaveTextContent('Insufficient funds')
-    expect(screen.queryByRole('button', { name: 'Top up wallet' })).toBe(button)
+    expect(screen.queryByRole('button', { name: 'Top up USD wallet' })).toBe(button)
     expect(screen.queryByText(/VCS/i)).not.toBeInTheDocument()
 
     fireEvent.click(button)

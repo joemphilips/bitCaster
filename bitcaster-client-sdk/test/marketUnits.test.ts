@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
   DEFAULT_USD_MARKET_DIVISIBILITY,
+  bufferSubunits,
   collateralScaleForUnit,
   defaultMarketDivisibility,
   defaultCollateralUnit,
@@ -106,6 +107,16 @@ test('normalizes initial AMM liquidity to sat markets only', () => {
   assert.equal(normalizeMarketCreationLiquiditySats({ baseAsset: 'usd', liquiditySats: 10_000 }), 0)
   assert.equal(normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: -1 }), 0)
   assert.equal(normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: 1.5 }), 0)
+})
+
+test('computes unit-aware top-up buffer subunits', () => {
+  assert.equal(bufferSubunits('sat', 0), 0)
+  assert.equal(bufferSubunits('usd', 0), 0)
+  assert.equal(bufferSubunits('sat', 10_000), 10_000)
+  assert.equal(bufferSubunits('sat', 100_000), 20_000)
+  assert.equal(bufferSubunits('usd', 1_500), 300)
+  assert.equal(bufferSubunits('usd', 25), 10)
+  assert.throws(() => bufferSubunits('jpy', 1_000), /unsupported base asset: jpy/)
 })
 
 test('formats market subunits without confusing cents for dollars', () => {
