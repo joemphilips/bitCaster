@@ -115,6 +115,7 @@ public class ClosedMarketUiTests : IAsyncLifetime
                     ""volume24hSubunits"": 0,
                     ""volume30dSubunits"": 0,
                     ""liquiditySubunits"": 25000,
+                    ""ammBotBudgetSubunits"": 25000,
                     ""traderCount"": 3,
                     ""volumeLifetimeSubunits"": 50000,
                     ""lastTradedPrice"": null,

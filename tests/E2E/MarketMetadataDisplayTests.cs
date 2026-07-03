@@ -71,6 +71,7 @@ public class MarketMetadataDisplayTests : IAsyncLifetime
                             volume24hSubunits = 50_000L,
                             volume30dSubunits = 200_000L,
                             liquiditySubunits = 150_000L,
+                    ammBotBudgetSubunits = 150_000L,
                             traderCount = 100,
                             volumeLifetimeSubunits = 750_000L,
                             lastTradedPrice = (double?)null,

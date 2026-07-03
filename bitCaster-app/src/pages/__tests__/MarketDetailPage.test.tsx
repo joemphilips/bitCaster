@@ -192,6 +192,7 @@ function yesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     volume: 0,
     liquidity: 0,
     liquiditySubunits: 0,
+    ammBotBudgetSubunits: 0,
     volumeLifetimeSubunits: 0,
     closingDate: "2026-12-31T00:00:00Z",
     createdDate: "2026-01-01T00:00:00Z",
@@ -239,6 +240,7 @@ function categoricalMarket(): MarketDetail {
     volume: 0,
     liquidity: 0,
     liquiditySubunits: 0,
+    ammBotBudgetSubunits: 0,
     volumeLifetimeSubunits: 0,
     closingDate: "2026-12-31T00:00:00Z",
     createdDate: "2026-01-01T00:00:00Z",
@@ -441,7 +443,7 @@ describe("MarketDetailPage live market status", () => {
     );
     expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled();
     expect(screen.queryByText("Insufficient funds")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Top up wallet" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Top up .+ wallet/i })).not.toBeInTheDocument();
   });
 
   it("opens the trade top-up overlay from the page-level buy top-up button", async () => {
@@ -468,10 +470,10 @@ describe("MarketDetailPage live market status", () => {
     });
     fireEvent.blur(screen.getAllByTestId("limit-price-input")[0]);
 
-    await screen.findAllByRole("button", { name: "Top up wallet" });
+    await screen.findAllByRole("button", { name: /Top up .+ wallet/i });
     const panelTopUpButton = screen
       .getAllByTestId("trade-confirm")
-      .find((button) => button.textContent?.includes("Top up wallet"));
+      .find((button) => /Top up .+ wallet/i.test(button.textContent ?? ""));
     expect(panelTopUpButton).toBeDefined();
     fireEvent.click(panelTopUpButton!);
 

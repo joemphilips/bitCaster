@@ -131,8 +131,10 @@ public static class MarketQueryEndpoint
     {
         var open = string.Equals(c.AttestationStatus, "pending", StringComparison.OrdinalIgnoreCase);
         var market = MarketEndpoints.TryGetMarket(c.ConditionId);
+        var baseAsset = market?.BaseAsset ?? BaseAsset.Sat;
         return new MarketCatalogueEntry(
-            baseAsset: market?.BaseAsset ?? BaseAsset.Sat,
+            ammBotBudgetSubunits: StubAmmBotBudgetSubunits(baseAsset),
+            baseAsset: baseAsset,
             categoryTags: c.CategoryTags,
             closedAt: null,
             conditionId: c.ConditionId,
@@ -145,6 +147,7 @@ public static class MarketQueryEndpoint
             description: null!,
             divisibility: market?.Divisibility ?? MarketEndpoints.DefaultMarketDivisibility,
             finalOutcome: null!,
+            initialProbabilities: InitialProbabilities(c),
             lastSuccessfulRefreshAt: refreshedAt,
             lastTradedPrice: null,
             liquiditySubunits: StubLiquiditySubunits(c),
@@ -159,6 +162,25 @@ public static class MarketQueryEndpoint
 
     private static long StubLiquiditySubunits(MintdConditionDto c) =>
         25_000L + (StableBucket(c.ConditionId, modulo: 12) * 5_000L);
+
+    private static long StubAmmBotBudgetSubunits(BaseAsset baseAsset) =>
+        baseAsset == BaseAsset.Usd
+            ? 100_000L * 100L
+            : 100_000L * 1_000L;
+
+    private static Dictionary<string, int> InitialProbabilities(MintdConditionDto c)
+    {
+        var outcomes = c.Outcomes.Where(o => !string.IsNullOrWhiteSpace(o)).ToList();
+        var count = Math.Max(1, outcomes.Count);
+        var baseProbability = 100 / count;
+        var remainder = 100 - (baseProbability * count);
+
+        return outcomes
+            .Select((outcome, index) => new KeyValuePair<string, int>(
+                outcome,
+                baseProbability + (index == 0 ? remainder : 0)))
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+    }
 
     private static long StubVolumeLifetimeSubunits(MintdConditionDto c) =>
         StubLiquiditySubunits(c) * (2 + StableBucket(c.ConditionId, modulo: 4));

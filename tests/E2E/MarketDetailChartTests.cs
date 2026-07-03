@@ -152,6 +152,7 @@ public class MarketDetailChartTests : IAsyncLifetime
                             volume24hSubunits = 0,
                             volume30dSubunits = 0,
                             liquiditySubunits = 30_000L,
+                    ammBotBudgetSubunits = 30_000L,
                             traderCount = 3,
                             volumeLifetimeSubunits = 30_000L,
                             lastTradedPrice = 0.05m,

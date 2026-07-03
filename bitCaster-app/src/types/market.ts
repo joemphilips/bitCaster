@@ -43,6 +43,7 @@ interface BaseMarket {
   volume: number
   liquidity: number
   liquiditySubunits: number
+  ammBotBudgetSubunits: number
   volumeLifetimeSubunits: number
   closingDate: string
   createdDate: string

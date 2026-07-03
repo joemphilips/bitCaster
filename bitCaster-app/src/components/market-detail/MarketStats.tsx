@@ -71,9 +71,10 @@ export function MarketStats({ market }: MarketStatsProps) {
     },
     {
       icon: Droplets,
-      label: t('market.liquidity'),
-      value: formatMarketSubunits(market.liquiditySubunits, baseAsset),
+      label: t('market.botBudget'),
+      value: formatMarketSubunits(market.ammBotBudgetSubunits, baseAsset),
       color: 'text-cyan-500',
+      testId: 'market-bot-budget',
     },
     {
       icon: Calendar,
@@ -110,6 +111,7 @@ export function MarketStats({ market }: MarketStatsProps) {
         {stats.map((stat) => (
           <div
             key={stat.label}
+            data-testid={stat.testId}
             className={`relative p-3 rounded-xl ${
               stat.highlight
                 ? 'bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30'

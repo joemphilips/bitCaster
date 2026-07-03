@@ -133,6 +133,8 @@
     "statistics": "マーケット統計",
     "volume": "取引量",
     "liquidity": "流動性",
+    "botBudget": "ボット予算",
+    "botBudgetLabel": "ボット予算",
     "traders": "トレーダー数",
     "created": "作成日",
     "activeSince": "アクティブ開始",

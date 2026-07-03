@@ -133,6 +133,8 @@
     "statistics": "Market Statistics",
     "volume": "Volume",
     "liquidity": "Liquidity",
+    "botBudget": "Bot Budget",
+    "botBudgetLabel": "Bot Budget",
     "traders": "Traders",
     "created": "Created",
     "activeSince": "Active Since",

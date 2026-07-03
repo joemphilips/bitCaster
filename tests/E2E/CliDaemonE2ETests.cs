@@ -4290,6 +4290,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             outcomes = EqualProbabilityOutcomes(outcomes),
             outcomeType = "categorical",
             liquiditySubunits = 0,
+                    ammBotBudgetSubunits = 0,
             categoryTags = new[] { "qa" },
             oracleAnnouncementHex = announcementHex,
         };
@@ -4348,6 +4349,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
             outcomes = EqualProbabilityOutcomes(outcomes),
             outcomeType = "yesno",
             liquiditySubunits = 0,
+                    ammBotBudgetSubunits = 0,
             categoryTags = new[] { "qa" },
             oracleAnnouncementHex = announcementHex,
         };
@@ -4868,6 +4870,7 @@ public sealed class CliDaemonE2ETests : IAsyncLifetime
                                 lastSuccessfulRefreshAt = now,
                                 lastTradedPrice = (double?)null,
                                 liquiditySubunits = 0,
+                    ammBotBudgetSubunits = 0,
                                 categoryTags = Array.Empty<string>(),
                                 thumbnailUrl = "",
                                 traderCount = 0,

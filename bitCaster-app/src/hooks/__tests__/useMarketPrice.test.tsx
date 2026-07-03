@@ -27,6 +27,7 @@ function makeMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     volume: 0,
     liquidity: 0,
     liquiditySubunits: 0,
+    ammBotBudgetSubunits: 0,
     volumeLifetimeSubunits: 0,
     closingDate: null,
     createdDate: '2026-01-01T00:00:00Z',

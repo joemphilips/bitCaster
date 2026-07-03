@@ -416,6 +416,7 @@ public class MarketCreationTests : IAsyncLifetime
             description = "E2E test description",
             outcomes,
             liquiditySubunits = 1000,
+                    ammBotBudgetSubunits = 1000,
             categoryTags = new[] { "crypto" },
         });
 
@@ -453,6 +454,7 @@ public class MarketCreationTests : IAsyncLifetime
                     volume24hSubunits = 0,
                     volume30dSubunits = 0,
                     liquiditySubunits = 25_000L,
+                    ammBotBudgetSubunits = 25_000L,
                     traderCount = 3,
                     volumeLifetimeSubunits = 50_000L,
                     lastTradedPrice = (double?)null,

@@ -2486,6 +2486,7 @@ components:
         - volume24hSubunits
         - volume30dSubunits
         - liquiditySubunits
+        - ammBotBudgetSubunits
         - volumeLifetimeSubunits
         - categoryTags
         - lastSuccessfulRefreshAt
@@ -2592,6 +2593,16 @@ components:
             Total face amount of currently-resting orders across the market's
             order books, denominated in the market collateral's base subunits:
             msat for sat markets, cents (`usd`) for USD markets.
+        ammBotBudgetSubunits:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Static initial budget deposited to the LMSR bot at funding time,
+            denominated in the market collateral's base subunits (msat for sat
+            markets, cents for USD markets). Operator-owned, non-withdrawable,
+            immutable after funding (ADR-024 §2 P46 amendment). Not a live
+            residual and not orderbook depth.
         volumeLifetimeSubunits:
           type: integer
           format: int64

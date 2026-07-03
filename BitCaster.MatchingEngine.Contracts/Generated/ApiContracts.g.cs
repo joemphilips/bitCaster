@@ -619,7 +619,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(BaseAsset @baseAsset, int @divisibility, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, string @status, TokenSide @tokenSide, System.Guid? @tradeId = null, System.DateTimeOffset? @deadline = null)
+        public OrderStatusResponse(BaseAsset @baseAsset, System.DateTimeOffset? @deadline, int @divisibility, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, string @status, TokenSide @tokenSide, System.Guid? @tradeId)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -627,11 +627,11 @@ namespace BitCaster.MatchingEngine.Contracts
             this.RemainingAmountSubunits = @remainingAmountSubunits;
             this.FilledAmountSubunits = @filledAmountSubunits;
             this.Fills = @fills;
+            this.TradeId = @tradeId;
+            this.Deadline = @deadline;
             this.TokenSide = @tokenSide;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
-            this.TradeId = @tradeId;
-            this.Deadline = @deadline;
         }
 
         /// <summary>
@@ -2614,7 +2614,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.Collections.Generic.Dictionary<string, int> @initialProbabilities, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
+        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string @creatorPubkey, System.DateTimeOffset? @deadline, string @description, int @divisibility, string @finalOutcome, System.Collections.Generic.Dictionary<string, int> @initialProbabilities, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string @thumbnailUrl, string @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -2630,6 +2630,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.Volume24hSubunits = @volume24hSubunits;
             this.Volume30dSubunits = @volume30dSubunits;
             this.LiquiditySubunits = @liquiditySubunits;
+            this.AmmBotBudgetSubunits = @ammBotBudgetSubunits;
             this.VolumeLifetimeSubunits = @volumeLifetimeSubunits;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
@@ -2737,6 +2738,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySubunits")]
         public long LiquiditySubunits { get; }
+
+        /// <summary>
+        /// Static initial budget deposited to the LMSR bot at funding time, denominated in the market collateral's base subunits (msat for sat markets, cents for USD markets). Operator-owned, non-withdrawable, immutable after funding (ADR-024 §2 P46 amendment). Not a live residual and not orderbook depth.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("ammBotBudgetSubunits")]
+        public long AmmBotBudgetSubunits { get; }
 
         /// <summary>
         /// Cumulative settled collateral face amount of all fills in the market's history.

@@ -370,12 +370,13 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           </div>
           <div
             className="flex items-center gap-1"
-            title={t("market.liquidity")}
-            aria-label={t("market.liquidity")}
+            title={t("market.botBudgetLabel")}
+            aria-label={t("market.botBudgetLabel")}
+            data-testid="market-bot-budget"
           >
             <Droplet className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
-              {formatMarketSubunits(market.liquiditySubunits, baseAsset)}
+              {formatMarketSubunits(market.ammBotBudgetSubunits, baseAsset)}
             </span>
           </div>
           <button

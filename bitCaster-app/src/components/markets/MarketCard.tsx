@@ -362,11 +362,12 @@ export function MarketCard({
           </div>
           <div
             className="flex items-center gap-1"
-            title={t('market.liquidity')}
-            aria-label={t('market.liquidity')}
+            title={t('market.botBudgetLabel')}
+            aria-label={t('market.botBudgetLabel')}
+            data-testid="market-bot-budget"
           >
             <Droplet className="w-3.5 h-3.5" />
-            <span className="font-mono font-medium">{formatMarketSubunits(market.liquiditySubunits, market.baseAsset ?? 'sat')}</span>
+            <span className="font-mono font-medium">{formatMarketSubunits(market.ammBotBudgetSubunits, market.baseAsset ?? 'sat')}</span>
           </div>
           <button
             onClick={handleBookmark}

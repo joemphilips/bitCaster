@@ -769,6 +769,7 @@ public class TradingFlowTests : IAsyncLifetime
                             volume24hSubunits = 0,
                             volume30dSubunits = 0,
                             liquiditySubunits = 10_000L,
+                    ammBotBudgetSubunits = 10_000L,
                             traderCount = 2,
                             volumeLifetimeSubunits = 0,
                             lastTradedPrice = 0.6m,

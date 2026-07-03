@@ -16,6 +16,7 @@ function market(id: string, state: Market['state']): Market {
     volume: 0,
     liquidity: 0,
     liquiditySubunits: 0,
+    ammBotBudgetSubunits: 0,
     volumeLifetimeSubunits: 0,
     closingDate: '',
     createdDate: '',
