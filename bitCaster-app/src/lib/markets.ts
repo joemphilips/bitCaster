@@ -510,9 +510,8 @@ async function fetchEngineCatalogueEntry(
 /**
  * Normalise the engine `state` field at the boundary. Per the OpenAPI spec
  * (and `bitcaster-coding-guideline` Rule 1) the engine MUST emit `"open"` /
- * `"closed"` (camelCase). Both the InMemoryMatchingEngine and (as of this
- * writing) the production engine ship with NSwag-generated DTOs whose
- * property-level `[JsonConverter(typeof(JsonStringEnumConverter<T>))]`
+ * `"closed"` (camelCase). Some engine builds ship with NSwag-generated DTOs
+ * whose property-level `[JsonConverter(typeof(JsonStringEnumConverter<T>))]`
  * attribute overrides the global naming policy and emits the bare enum
  * NAME — i.e. `"Open"` / `"Closed"` (PascalCase). Until the producer is
  * fixed upstream (track via the engine repo's TODO), normalise once here so
