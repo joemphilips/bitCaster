@@ -18,6 +18,7 @@ import {
 } from '@/lib/markets'
 import { useSettingsStore } from '@/stores/settings'
 import type { MarketBaseAsset } from '@/types/market-creation'
+import { estimateDepthPreview } from '@bitcaster/client-sdk/lmsrDomain'
 
 function isFundingDepositComplete(state: DepositState | null | undefined): boolean {
   if (state == null) return false
@@ -72,7 +73,7 @@ interface DepositStepProps {
   baseAsset?: MarketBaseAsset
 }
 
-export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps) {
+export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }: DepositStepProps) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [selectedTier, setSelectedTier] = useState<AmmFundingTierId>('standard')
@@ -106,7 +107,10 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
   const budgetLabel = formatFundingBudget(budgetSats, fundingUnit, {
     wholeUsd: selectedTier !== 'custom',
   })
-  const showWarning = selectedTier === 'none'
+  const showWarning = selectedTier === 'minimal'
+  const depthPreview = selectedTier === 'none'
+    ? null
+    : estimateDepthPreview({ budgetSubunits: budgetSats, outcomeCount })
 
   useEffect(() => {
     if (!invoice) return
@@ -295,7 +299,21 @@ export function DepositStep({ conditionId, baseAsset = 'sat' }: DepositStepProps
       {showWarning && (
         <div className="mb-5 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
           <span className="font-semibold">{t('marketCreation.ammFundingWarningBadge')}</span>
-          <span className="ml-2">{t('marketCreation.ammFundingThinLiquidity')}</span>
+          <span className="ml-2">{t('marketCreation.ammFundingMinimalWarning')}</span>
+        </div>
+      )}
+
+      {depthPreview && (
+        <div className="mb-4 rounded-lg border border-blue-400/30 bg-blue-400/10 p-3 text-sm text-blue-100">
+          <p>
+            {t('marketCreation.ammFundingDepthPreview', {
+              levels: depthPreview.levelsPerSide,
+              shares: depthPreview.sharesPerLevel.toLocaleString(),
+            })}
+          </p>
+          <p className="mt-1 text-xs text-blue-100/80">
+            {t('marketCreation.ammFundingDepthPreviewDisclaimer')}
+          </p>
         </div>
       )}
 

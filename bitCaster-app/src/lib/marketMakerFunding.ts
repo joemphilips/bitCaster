@@ -1,8 +1,8 @@
 export const BINARY_AMM_FUNDING_TIERS = [
   { id: 'none', budgetSats: 0, budgetUsdSubunits: 0, warning: true },
-  { id: 'minimal', budgetSats: 1_500, budgetUsdSubunits: 1_500, warning: false },
-  { id: 'standard', budgetSats: 15_000, budgetUsdSubunits: 15_000, warning: false },
-  { id: 'deep', budgetSats: 30_000, budgetUsdSubunits: 30_000, warning: false },
+  { id: 'minimal', budgetSats: 10_000, budgetUsdSubunits: 10_000, warning: true },
+  { id: 'standard', budgetSats: 100_000, budgetUsdSubunits: 100_000, warning: false },
+  { id: 'deep', budgetSats: 500_000, budgetUsdSubunits: 500_000, warning: false },
 ] as const
 
 export type AmmFundingTierId = typeof BINARY_AMM_FUNDING_TIERS[number]['id'] | 'custom'

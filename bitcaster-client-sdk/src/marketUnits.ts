@@ -1,6 +1,18 @@
 export type MarketBaseAsset = 'sat' | 'usd' | 'jpy'
 export type CashuProofUnit = 'sat' | 'msat' | 'usd'
 
+/**
+ * Default LMSR quote-grid step for a market price denominator D.
+ * D = 100 keeps legacy one-cent behaviour; D > 100 targets ~0.1% spacing.
+ */
+export function defaultPriceStepSubunits(divisibility: number): number {
+  if (!Number.isInteger(divisibility) || divisibility < 100) {
+    throw new Error(`divisibility must be an integer >= 100, got ${divisibility}`)
+  }
+  if (divisibility <= 100) return 1
+  return Math.max(1, Math.floor(divisibility / 1_000))
+}
+
 export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
 export const DEFAULT_SAT_MARKET_DIVISIBILITY = 10_000
 export const DEFAULT_USD_MARKET_DIVISIBILITY = 1_000

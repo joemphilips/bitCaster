@@ -132,20 +132,20 @@ describe('DepositStep', () => {
     expect(screen.getByText(DISCLOSURE)).toBeInTheDocument()
   })
 
-  it('shows the warning only for no-liquidity funding', async () => {
+  it('shows the thin-depth warning only for minimal funding', async () => {
     const user = userEvent.setup()
     renderStep()
 
     await openFunding(user)
     await user.click(screen.getByTestId('amm-funding-tier-minimal'))
-    expect(screen.queryByText('Very thin liquidity')).not.toBeInTheDocument()
+    expect(screen.getByText('Minimal funding produces thin 1-share levels.')).toBeInTheDocument()
 
     await user.clear(screen.getByRole('spinbutton'))
     await user.type(screen.getByRole('spinbutton'), '9999')
-    expect(screen.queryByText('Very thin liquidity')).not.toBeInTheDocument()
+    expect(screen.queryByText('Minimal funding produces thin 1-share levels.')).not.toBeInTheDocument()
 
     await user.click(screen.getByTestId('amm-funding-tier-none'))
-    expect(screen.getByText('Very thin liquidity')).toBeInTheDocument()
+    expect(screen.queryByText('Minimal funding produces thin 1-share levels.')).not.toBeInTheDocument()
   })
 
   it('previews USD custom funding as entered dollars', async () => {
@@ -183,9 +183,9 @@ describe('DepositStep', () => {
 
     await openFunding(user)
 
-    expect(screen.getByTestId('amm-funding-tier-minimal')).toHaveTextContent('$15')
-    expect(screen.getByTestId('amm-funding-tier-standard')).toHaveTextContent('$150')
-    expect(screen.getByTestId('amm-funding-tier-deep')).toHaveTextContent('$300')
+    expect(screen.getByTestId('amm-funding-tier-minimal')).toHaveTextContent('$100')
+    expect(screen.getByTestId('amm-funding-tier-standard')).toHaveTextContent('$1,000')
+    expect(screen.getByTestId('amm-funding-tier-deep')).toHaveTextContent('$5,000')
     expect(screen.queryByText('1500')).not.toBeInTheDocument()
     expect(screen.queryByText('15000')).not.toBeInTheDocument()
   })
@@ -200,7 +200,7 @@ describe('DepositStep', () => {
     await waitFor(() => {
       expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
-        15_000_000,
+        100_000_000,
         expect.objectContaining({ fundAmm: true }),
       )
     })
@@ -218,16 +218,18 @@ describe('DepositStep', () => {
 
     await openFunding(user)
 
-    expect(screen.getByTestId('amm-funding-tier-minimal')).toHaveTextContent('1,500 sats')
-    expect(screen.getByTestId('amm-funding-tier-standard')).toHaveTextContent('15,000 sats')
-    expect(screen.getByTestId('amm-funding-tier-deep')).toHaveTextContent('30,000 sats')
+    expect(screen.getByTestId('amm-funding-tier-minimal')).toHaveTextContent('10,000 sats')
+    expect(screen.getByTestId('amm-funding-tier-standard')).toHaveTextContent('100,000 sats')
+    expect(screen.getByTestId('amm-funding-tier-deep')).toHaveTextContent('500,000 sats')
+    expect(screen.getByText(/At this budget, the bot posts ~/)).toBeInTheDocument()
+    expect(screen.getByText('Depth before mint fees — actual quoted depth may be lower.')).toBeInTheDocument()
 
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     await waitFor(() => {
       expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
-        15_000_000,
+        100_000_000,
         expect.objectContaining({ fundAmm: true }),
       )
     })
@@ -374,9 +376,9 @@ describe('DepositStep', () => {
     renderStep({ baseAsset: 'usd', outcomeCount: 4 })
 
     await openFunding(user)
-    expect(screen.getByTestId('amm-funding-tier-minimal')).toHaveTextContent('$15')
-    expect(screen.getByTestId('amm-funding-tier-standard')).toHaveTextContent('$150')
-    expect(screen.getByTestId('amm-funding-tier-deep')).toHaveTextContent('$300')
+    expect(screen.getByTestId('amm-funding-tier-minimal')).toHaveTextContent('$100')
+    expect(screen.getByTestId('amm-funding-tier-standard')).toHaveTextContent('$1,000')
+    expect(screen.getByTestId('amm-funding-tier-deep')).toHaveTextContent('$5,000')
     expect(screen.queryByText('$15.00')).not.toBeInTheDocument()
     expect(screen.queryByText('cents')).not.toBeInTheDocument()
 
@@ -385,7 +387,7 @@ describe('DepositStep', () => {
     await waitFor(() => {
       expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
-        15_000,
+        100_000,
         expect.objectContaining({ fundAmm: true }),
       )
     })
