@@ -48,6 +48,29 @@ describe('MarketsPage', () => {
     ).toBeInTheDocument()
   })
 
+  it('shows a catalogue-refreshing state while an empty catalogue has no successful refresh timestamp', async () => {
+    mockedGetMarkets.mockResolvedValue({
+      markets: [],
+      nextCursor: null,
+      lastSuccessfulRefreshAt: '0001-01-01T00:00:00+00:00',
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/markets']}>
+        <MarketsPage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Catalogue refreshing...')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByText('No markets yet')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /create market/i }),
+    ).not.toBeInTheDocument()
+  })
+
   it('keeps the engine-unavailable response in the error state', async () => {
     mockedGetMarkets.mockRejectedValue(new Error('HTTP 503'))
 

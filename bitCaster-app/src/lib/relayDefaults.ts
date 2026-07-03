@@ -114,7 +114,6 @@ export function isKnownPublicNostrRelayUrl(url: string): boolean {
 }
 
 export function isAllowedNostrRelayUrl(url: string): boolean {
-  if (isKnownPublicNostrRelayUrl(url)) return false;
   const normalized = normalizedRelayUrl(url);
   if (
     DEFAULT_NOSTR_RELAYS.some(
@@ -124,19 +123,23 @@ export function isAllowedNostrRelayUrl(url: string): boolean {
     return true;
   }
 
+  if (isKnownPublicNostrRelayUrl(url)) return false;
+
   return isConfiguredAppOwnedRelayUrl(url);
 }
 
 export function removeRetiredPublicDefaultRelays(
-  relays: RelayConfig[],
+  relays?: RelayConfig[],
 ): RelayConfig[] {
+  if (relays === undefined) return defaultRelayConfigs();
+
   const filtered = relays.filter((relay) => isAllowedNostrRelayUrl(relay.url));
-  return filtered.length > 0 ? filtered : defaultRelayConfigs();
+  return filtered;
 }
 
-export function effectiveRelayUrls(relays: Array<{ url: string }>): string[] {
+export function effectiveRelayUrls(relays?: Array<{ url: string }>): string[] {
   return removeRetiredPublicDefaultRelays(
-    relays.map((relay) => ({
+    relays?.map((relay) => ({
       url: relay.url,
       connectionStatus: "disconnected" as const,
     })),
