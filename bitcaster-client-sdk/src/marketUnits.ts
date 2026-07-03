@@ -141,6 +141,20 @@ export function bufferSubunits(
   return Math.max(Math.ceil(deficit * 0.2), floor)
 }
 
+/**
+ * Conservative estimated settlement fee for trade cost breakdown display.
+ * This is a fixed estimate (not a live mint fee fetch) per P46-B1 plan.
+ * Floor: 10 sats (10_000 msat) for sat markets, 10 cents for USD markets.
+ */
+export function estimatedSettlementFeeSubunits(
+  baseAsset: MarketBaseAsset | string | null | undefined,
+): number {
+  const asset = requireMarketBaseAsset(baseAsset)
+  const floor = asset === 'sat' ? 10_000 : asset === 'usd' ? 10 : null
+  if (floor === null) throw new Error(`unsupported base asset: ${asset}`)
+  return floor
+}
+
 export function defaultCollateralUnit(value: MarketBaseAsset | string | null | undefined): CashuProofUnit {
   const asset = requireMarketBaseAsset(value)
   if (asset === 'usd') return 'usd'

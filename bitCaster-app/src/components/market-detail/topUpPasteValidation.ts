@@ -77,7 +77,18 @@ export async function validateTopUpEcashToken(
   }
 
   const expectedBaseAsset = normalizeMarketBaseAsset(params.baseAsset)
-  const unit = parseCashuProofUnit(token.unit) ?? 'sat'
+  const parsedUnit = parseCashuProofUnit(token.unit)
+  const unit = parsedUnit ?? (token.unit === '' || token.unit === undefined ? 'sat' : null)
+  if (unit === null) {
+    return {
+      ok: false,
+      code: 'unit_mismatch',
+      values: {
+        tokenUnit: token.unit ?? '',
+        expectedUnit: marketUnitLabel(expectedBaseAsset),
+      },
+    }
+  }
   const tokenBaseAsset = COLLATERAL_UNIT_REGISTRY[unit]?.baseAsset
   if (tokenBaseAsset !== expectedBaseAsset) {
     return {

@@ -8,6 +8,7 @@ import {
   collateralScaleForUnit,
   defaultMarketDivisibility,
   defaultCollateralUnit,
+  estimatedSettlementFeeSubunits,
   formatPricePercentage,
   formatAmount,
   formatMarketSubunits,
@@ -117,6 +118,13 @@ test('computes unit-aware top-up buffer subunits', () => {
   assert.equal(bufferSubunits('usd', 1_500), 300)
   assert.equal(bufferSubunits('usd', 25), 10)
   assert.throws(() => bufferSubunits('jpy', 1_000), /unsupported base asset: jpy/)
+})
+
+test('computes fixed estimated settlement fee subunits separately from top-up buffer', () => {
+  assert.equal(estimatedSettlementFeeSubunits('sat'), 10_000)
+  assert.equal(estimatedSettlementFeeSubunits('usd'), 10)
+  assert.equal(estimatedSettlementFeeSubunits(undefined), 10_000)
+  assert.throws(() => estimatedSettlementFeeSubunits('jpy'), /unsupported base asset: jpy/)
 })
 
 test('formats market subunits without confusing cents for dollars', () => {

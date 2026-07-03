@@ -17,7 +17,7 @@ import {
   formatPricePercentage,
   formatShareFace,
   marketUnitLabel,
-  bufferSubunits,
+  estimatedSettlementFeeSubunits,
   type MarketBaseAsset,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
@@ -573,7 +573,7 @@ function LimitOrderPreviewSection({
   formatAmount: (amount: number) => string
 }) {
   const { t } = useTranslation()
-  const estimatedSettlementFee = bufferSubunits(baseAsset, 1)
+  const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset)
   const totalWithFee = preview.totalCost + estimatedSettlementFee
   return (
     <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
@@ -642,7 +642,7 @@ export function TradingPanel({
   const divisibility = normalizeMarketDivisibility(market.divisibility)
   const wholeShareLabel = formatShareFace(baseAsset, divisibility)
   const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset)
-  const estimatedSettlementFee = bufferSubunits(baseAsset, 1)
+  const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset)
   const shareCountLabel = (shares: number) =>
     t('trade.shareCount', { count: shares.toLocaleString() })
   const [tradeAmountText, setTradeAmountText] = useState(tradeAmount > 0 ? String(tradeAmount) : '')
