@@ -7,6 +7,8 @@ import { TopUpOverlay } from '../TopUpOverlay'
 const createMintQuote = vi.fn()
 const waitForMintQuotePaid = vi.fn()
 const mintProofs = vi.fn()
+const decodeToken = vi.fn()
+const getWalletForUnit = vi.fn()
 const addProofs = vi.fn()
 const ensureImplicitWallet = vi.fn()
 const navigate = vi.fn()
@@ -22,6 +24,8 @@ vi.mock('@/lib/cashu', async (importOriginal) => ({
   createMintQuote: (...args: unknown[]) => createMintQuote(...args),
   waitForMintQuotePaid: (...args: unknown[]) => waitForMintQuotePaid(...args),
   mintProofs: (...args: unknown[]) => mintProofs(...args),
+  decodeToken: (...args: unknown[]) => decodeToken(...args),
+  getWalletForUnit: (...args: unknown[]) => getWalletForUnit(...args),
 }))
 
 vi.mock('@/stores/proof-db', async (importOriginal) => ({
@@ -47,6 +51,16 @@ describe('TopUpOverlay', () => {
     waitForMintQuotePaid.mockReset()
     waitForMintQuotePaid.mockResolvedValue(() => undefined)
     mintProofs.mockReset()
+    decodeToken.mockReset()
+    decodeToken.mockResolvedValue({
+      mint: 'https://mint.example',
+      unit: 'msat',
+      proofs: [{ id: 'keyset-msat', amount: 15_000, secret: 'incoming', C: 'incoming-c' }],
+    })
+    getWalletForUnit.mockReset()
+    getWalletForUnit.mockResolvedValue({
+      receive: vi.fn().mockResolvedValue([{ id: 'keyset-msat', amount: 15_000, secret: 'received', C: 'received-c' }]),
+    })
     addProofs.mockReset()
     ensureImplicitWallet.mockReset()
     ensureImplicitWallet.mockResolvedValue(undefined)
@@ -143,6 +157,43 @@ describe('TopUpOverlay', () => {
 
     await waitFor(() => {
       expect(createMintQuote).toHaveBeenCalledWith(1_010, 'https://mint.example', 'sat')
+    })
+  })
+
+  it('accepts a same-mint same-unit ecash token and closes after storing received proofs', async () => {
+    const user = userEvent.setup()
+    const onSuccess = vi.fn()
+
+    render(
+      <TopUpOverlay
+        deficit={10_000}
+        baseAsset="sat"
+        onCancel={vi.fn()}
+        onSuccess={onSuccess}
+      />,
+    )
+
+    await user.click(screen.getByTestId('top-up-method-ecash'))
+    await user.type(screen.getByTestId('top-up-ecash-input'), 'cashuB-token')
+    await user.click(screen.getByTestId('top-up-ecash-submit'))
+
+    await waitFor(() => {
+      expect(decodeToken).toHaveBeenCalledWith('cashuB-token')
+    })
+    expect(getWalletForUnit).toHaveBeenCalledWith('https://mint.example', 'msat')
+    await waitFor(() => {
+      expect(addProofs).toHaveBeenCalledWith([
+        {
+          id: 'keyset-msat',
+          amount: 15_000,
+          secret: 'received',
+          C: 'received-c',
+          mintUrl: 'https://mint.example',
+          baseAsset: 'sat',
+          unit: 'msat',
+        },
+      ])
+      expect(onSuccess).toHaveBeenCalledTimes(1)
     })
   })
 

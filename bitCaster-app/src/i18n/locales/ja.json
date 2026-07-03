@@ -684,7 +684,21 @@
     "topUpNeeded": "必要なチャージ額",
     "amount": "数量",
     "amountSats": "数量 (sats)",
-    "requesting": "インボイスをリクエスト中…"
+    "requesting": "インボイスをリクエスト中…",
+    "methodLightning": "Lightning",
+    "methodEcash": "Ecash貼り付け",
+    "ecash": {
+      "label": "Cashu ecashトークン",
+      "placeholder": "cashuトークンをここに貼り付け…",
+      "addFunds": "資金を追加",
+      "adding": "資金を追加中…",
+      "errorRequired": "先にCashu ecashトークンを貼り付けてください。",
+      "errorTooLarge": "トークンが大きすぎます。{{maxKb}} KB未満のトークンを貼り付けてください。",
+      "errorDecode": "このCashuトークンをデコードできませんでした。",
+      "errorMintMismatch": "このトークンは {{mintUrl}} のもので、アクティブなbitCasterミントのものではありません。",
+      "errorUnitMismatch": "このトークンは {{tokenUnit}} 建てですが、このマーケットには {{expectedUnit}} が必要です。",
+      "errorAmountTooLow": "トークンは {{covered}} 分です。少なくとも {{needed}} 必要です。"
+    }
   },
   "insufficientBalance": {
     "title": "残高不足",

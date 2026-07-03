@@ -684,7 +684,21 @@
     "topUpNeeded": "Top-up needed",
     "amount": "Amount",
     "amountSats": "Amount (sats)",
-    "requesting": "Requesting invoice…"
+    "requesting": "Requesting invoice…",
+    "methodLightning": "Lightning",
+    "methodEcash": "Ecash paste",
+    "ecash": {
+      "label": "Cashu ecash token",
+      "placeholder": "Paste a cashu token here…",
+      "addFunds": "Add funds",
+      "adding": "Adding funds…",
+      "errorRequired": "Paste a Cashu ecash token first.",
+      "errorTooLarge": "Token is too large. Paste a token under {{maxKb}} KB.",
+      "errorDecode": "Could not decode this Cashu token.",
+      "errorMintMismatch": "This token is from {{mintUrl}}, not your active bitCaster mint.",
+      "errorUnitMismatch": "This token is denominated in {{tokenUnit}}, but this market requires {{expectedUnit}}.",
+      "errorAmountTooLow": "Token covers {{covered}}, need at least {{needed}}."
+    }
   },
   "insufficientBalance": {
     "title": "Insufficient Balance",

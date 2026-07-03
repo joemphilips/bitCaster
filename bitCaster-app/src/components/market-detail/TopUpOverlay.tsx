@@ -6,22 +6,29 @@ import { InvoiceDisplay } from '@/components/deposit-withdraw/InvoiceDisplay'
 import {
   FEE_BUFFER_SATS,
   createMintQuote,
+  decodeToken,
+  getWalletForUnit,
   mintProofs,
   waitForMintQuotePaid,
   type MintQuoteWaitResult,
 } from '@/lib/cashu'
 import { addProofs, type StoredProof } from '@/stores/proof-db'
 import { useWalletStore } from '@/stores/wallet'
-import type { MintQuoteResponse } from '@cashu/cashu-ts'
+import type { MintQuoteResponse, OutputType } from '@cashu/cashu-ts'
 import {
   formatAmount,
   defaultCollateralUnit,
   marketUnitLabel,
   normalizeMarketBaseAsset,
 } from '@bitcaster/client-sdk/marketUnits'
+import {
+  validateTopUpEcashToken,
+  type TopUpPasteValidationError,
+} from './topUpPasteValidation'
 
 type View = 'amount' | 'invoice'
 type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
+type TopUpMethod = 'lightning' | 'ecash'
 
 function displayInputAmount(amountSubunits: number, baseAsset: string): number {
   if (baseAsset === 'usd') return amountSubunits / 100
@@ -62,6 +69,30 @@ function topUpAmountLabel(baseAsset: string, unitLabel: string, t: (key: string)
 
 function assertNeverWaitResult(r: never): never {
   throw new Error(`unhandled MintQuoteWaitResult: ${JSON.stringify(r)}`)
+}
+
+function topUpPasteValidationErrorMessage(
+  error: TopUpPasteValidationError,
+  t: (key: string, values?: Record<string, string | number>) => string,
+): string {
+  switch (error.code) {
+    case 'too_large':
+      return t('topUp.ecash.errorTooLarge', error.values)
+    case 'decode_failed':
+      return t('topUp.ecash.errorDecode')
+    case 'mint_mismatch':
+      return t('topUp.ecash.errorMintMismatch', error.values)
+    case 'unit_mismatch':
+      return t('topUp.ecash.errorUnitMismatch', error.values)
+    case 'amount_too_low':
+      return t('topUp.ecash.errorAmountTooLow', error.values)
+    default:
+      return assertNeverTopUpPasteError(error.code)
+  }
+}
+
+function assertNeverTopUpPasteError(code: never): never {
+  throw new Error(`unhandled top-up paste validation error: ${code}`)
 }
 
 interface TopUpOverlayProps {
@@ -109,7 +140,9 @@ export function TopUpOverlay({
   const showFeeSummary = feeSubunits !== undefined && balanceSubunits !== undefined
 
   const [view, setView] = useState<View>('amount')
+  const [method, setMethod] = useState<TopUpMethod>('lightning')
   const [amount, setAmount] = useState(prefill)
+  const [ecashToken, setEcashToken] = useState('')
   const [bolt11, setBolt11] = useState('')
   const [expiresAtSec, setExpiresAtSec] = useState<number | undefined>()
   const [status, setStatus] = useState<InvoiceStatus>('pending')
@@ -238,6 +271,48 @@ export function TopUpOverlay({
     }
   }, [activeMintUrl, amount, baseAsset, deficit, handleWaitResult, minimumErrorDescription])
 
+  const submitEcashToken = useCallback(async () => {
+    if (inflightRef.current) return
+    const trimmed = ecashToken.trim()
+    if (!trimmed) {
+      setError(t('topUp.ecash.errorRequired'))
+      return
+    }
+    inflightRef.current = true
+    setLoading(true)
+    setError(null)
+    try {
+      await useWalletStore.getState().ensureImplicitWallet()
+      const validation = await validateTopUpEcashToken(trimmed, {
+        activeMintUrl,
+        baseAsset,
+        deficit,
+        decodeToken,
+      })
+      if (!validation.ok) {
+        setError(topUpPasteValidationErrorMessage(validation, t))
+        return
+      }
+
+      const wallet = await getWalletForUnit(activeMintUrl, validation.unit)
+      const receiveOutput: OutputType = { type: 'random' }
+      const proofs = await wallet.receive(trimmed, undefined, receiveOutput)
+      const stored: StoredProof[] = proofs.map((p) => ({
+        ...p,
+        mintUrl: validation.mintUrl,
+        baseAsset: validation.baseAsset,
+        unit: validation.unit,
+      }))
+      await addProofs(stored)
+      if (!cancelledRef.current) onSuccessRef.current()
+    } catch (e) {
+      if (!cancelledRef.current) setError((e as Error).message)
+    } finally {
+      inflightRef.current = false
+      if (!cancelledRef.current) setLoading(false)
+    }
+  }, [activeMintUrl, baseAsset, deficit, ecashToken, t])
+
   const regenerateInvoice = useCallback(() => {
     // Tear down the prior wait and clear the cached quote so the next
     // startInvoice() requests a fresh one.
@@ -335,34 +410,83 @@ export function TopUpOverlay({
           </dl>
         )}
 
-        <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">
-          {topUpAmountLabel(baseAsset, unitLabel, t)}
-        </label>
-        <input
-          data-testid="top-up-amount-input"
-          type="number"
-          min={displayMin}
-          step={inputStep}
-          value={displayInputAmount(amount, baseAsset)}
-          onChange={(e) => {
-            const next = Number(e.target.value)
-            if (Number.isFinite(next)) setAmount(inputAmountToSubunits(next, baseAsset))
-          }}
-          className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-[#f7931a]"
-        />
+        <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-900">
+          <button
+            type="button"
+            data-testid="top-up-method-lightning"
+            onClick={() => { setMethod('lightning'); setError(null) }}
+            className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${method === 'lightning' ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'}`}
+          >
+            {t('topUp.methodLightning')}
+          </button>
+          <button
+            type="button"
+            data-testid="top-up-method-ecash"
+            onClick={() => { setMethod('ecash'); setError(null) }}
+            className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${method === 'ecash' ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'}`}
+          >
+            {t('topUp.methodEcash')}
+          </button>
+        </div>
+
+        {method === 'lightning' ? (
+          <>
+            <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1">
+              {topUpAmountLabel(baseAsset, unitLabel, t)}
+            </label>
+            <input
+              data-testid="top-up-amount-input"
+              type="number"
+              min={displayMin}
+              step={inputStep}
+              value={displayInputAmount(amount, baseAsset)}
+              onChange={(e) => {
+                const next = Number(e.target.value)
+                if (Number.isFinite(next)) setAmount(inputAmountToSubunits(next, baseAsset))
+              }}
+              className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-[#f7931a]"
+            />
+          </>
+        ) : (
+          <>
+            <label className="block text-xs text-slate-400 dark:text-slate-500 mb-1" htmlFor="top-up-ecash-input">
+              {t('topUp.ecash.label')}
+            </label>
+            <textarea
+              id="top-up-ecash-input"
+              data-testid="top-up-ecash-input"
+              value={ecashToken}
+              onChange={(e) => setEcashToken(e.target.value)}
+              placeholder={t('topUp.ecash.placeholder')}
+              rows={5}
+              className="w-full resize-y bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[#f7931a]"
+            />
+          </>
+        )}
 
         {error && (
           <div className="mt-3 text-xs text-red-500 dark:text-red-400">{error}</div>
         )}
 
-        <button
-          data-testid="top-up-continue"
-          onClick={startInvoice}
-          disabled={loading || amount < deficit}
-          className="mt-6 w-full py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-semibold transition-colors"
-        >
-          {loading ? t('topUp.requesting') : t('common.continue')}
-        </button>
+        {method === 'lightning' ? (
+          <button
+            data-testid="top-up-continue"
+            onClick={startInvoice}
+            disabled={loading || amount < deficit}
+            className="mt-6 w-full py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-semibold transition-colors"
+          >
+            {loading ? t('topUp.requesting') : t('common.continue')}
+          </button>
+        ) : (
+          <button
+            data-testid="top-up-ecash-submit"
+            onClick={submitEcashToken}
+            disabled={loading || ecashToken.trim().length === 0}
+            className="mt-6 w-full py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-semibold transition-colors"
+          >
+            {loading ? t('topUp.ecash.adding') : t('topUp.ecash.addFunds')}
+          </button>
+        )}
       </div>
     </div>
   )
