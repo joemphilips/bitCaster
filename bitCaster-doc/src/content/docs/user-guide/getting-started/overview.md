@@ -17,7 +17,7 @@ For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https:/
 
 ### Trade anything, any way you wish
 
-Browse existing markets or place limit orders at any price. Markets can be binary (Yes/No), categorical (multiple outcomes), or even two-dimensional. You trade using Bitcoin via Lightning.
+Browse existing markets or place limit orders at any price. Markets can be binary (Yes/No), categorical (multiple outcomes), or even two-dimensional. You trade with ecash in the market's unit: sat markets use sat ecash, and USD markets use USD ecash. You can top up through a Lightning invoice or by pasting an existing Cashu ecash token.
 
 Categorical markets show primitive outcome books such as `A / Not A`, `B / Not B`, and `C / Not C`. Under the hood, settlement can still lock complementary multi-outcome legs such as `B|C`, but users trade through the primitive book labels. The first release supports markets with up to 8 outcomes.
 
@@ -42,7 +42,7 @@ Any user can run their own Cashu mint to issue prediction market tokens. The min
 
 Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. Prices are shown as probabilities with two decimal places, such as **53.27%**.
 
-The trade ticket asks for whole shares and shows the total cost before you submit. It no longer asks you to calculate payout rows or executable-share estimates. One sat-market share pays **10 sats** if it wins. One USD-market share pays **$10.00** if it wins. Internally, sat-display markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% cost 150 sats in a sat market and pay 500 sats if they win.
+The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One sat-market share pays **10 sats** if it wins. One USD-market share pays **$10.00** if it wins. Internally, sat-display markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% quote 150 sats in a sat market before any estimated settlement fee, and pay 500 sats if they win.
 
 When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
 
@@ -62,7 +62,7 @@ When you first open the portfolio page or try to trade, bitCaster asks you to se
 
 The market chart shows recorded trades for each primitive outcome. If only one outcome has traded, only that line is shown; bitCaster does not invent prices for outcomes that have not traded.
 
-The order book shows asks (sell orders) above the spread and bids (buy orders) below it, with the best prices closest to the spread. Each row combines price, cumulative depth, and visual thickness. Longer bars mean more cumulative liquidity available at that price or better, normalized across both sides so you can compare bid and ask depth at a glance.
+The order book shows asks (sell orders) above the spread and bids (buy orders) below it, with the best prices closest to the spread. Each row combines price, cumulative depth, and visual thickness. Longer bars mean more cumulative liquidity available at that price or better, normalized across both sides so you can compare bid and ask depth at a glance. Market cards and detail pages show **Bot Budget** for creator-funded AMM markets; this is the static budget deposited for the bot, not a live order-book liquidity number.
 
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
 

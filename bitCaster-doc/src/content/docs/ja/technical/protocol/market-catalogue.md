@@ -7,15 +7,16 @@ sidebar:
 
 `/api/v1/markets/query` エンドポイントは、マーケット一覧や検索フローで使う公開マーケットカタログを返します。各項目は `MarketCatalogueEntry` で、マーケット識別子、アウトカム、ライフサイクル状態、作成者が設定した表示メタデータ、カテゴリタグ、取引サマリ指標を含みます。
 
-カタログは、表示用の累計指標として次の3つを公開します。
+カタログは、マーケットカードや発見ページ向けの累計・表示指標として次のフィールドを公開します。
 
 | フィールド | 型 | 意味 |
 | --- | --- | --- |
+| `ammBotBudgetSubunits` | `int64` | 自動マーケットメイキングBotへ入金された静的な初期予算。単位はマーケット担保サブユニットで、sat表示のマーケットではmsat、USDマーケットではcents (`usd`)。クライアントはこの値を **Bot Budget** として表示します。ライブの注文板流動性、Botの残り在庫、作成者が引き出せる残高ではありません。 |
 | `liquiditySubunits` | `int64` | そのマーケットの注文板に現在残っている注文の額面合計。単位はマーケット担保サブユニットで、sat表示のマーケットではmsat、USDマーケットではcents (`usd`)。 |
 | `traderCount` | `int32` | そのマーケットで約定済み取引を決済した重複なしのトレーダー数。 |
 | `volumeLifetimeSubunits` | `int64` | そのマーケットの履歴全体における全約定の決済済み担保額面の累計。単位は担保サブユニット。 |
 
-レスポンスには、ローリング出来高やソート用の `volume24hSubunits` と `volume30dSubunits` も含まれます。クライアントがマーケットの Volume、Liquidity、Traders 指標を表示する場合は、`volumeLifetimeSubunits`、`liquiditySubunits`、`traderCount` を使ってください。
+レスポンスには、ローリング出来高やソート用の `volume24hSubunits` と `volume30dSubunits` も含まれます。クライアントがマーケットの Volume、Bot Budget、Traders 指標を表示する場合は、`volumeLifetimeSubunits`、`ammBotBudgetSubunits`、`traderCount` を使ってください。`liquiditySubunits` は、それを必要とするクライアント向けの残存注文サマリとして残りますが、Bot Budgetとして表示すべきではありません。
 
 他の公開マーケットサマリも同じ命名規則を使います。価格履歴ポイントは `volumeSubunits`、マーケットメタデータスナップショットは `totalVolumeSubunits` と `totalLiquiditySubunits`、流動性スナップショットは `restingOrderLiquiditySubunits`、`completeSetLiquiditySubunits`、`totalLiquiditySubunits` を公開します。非推奨の `liquiditySats` 作成メタデータフィールドは互換性のため引き続き受け付けますが、マーケットメイカー資金は作成後のフローで集めるため、作成リクエストでは `0` を送ってください。
 

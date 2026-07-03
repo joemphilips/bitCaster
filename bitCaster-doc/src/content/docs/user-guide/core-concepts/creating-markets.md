@@ -50,7 +50,9 @@ The funding deposit is sent with the creator's Nostr public key and a `fundAmm` 
 
 Market-maker funding follows the market's display base asset. Sat markets show funding in sats; USD markets show funding in dollars backed by the mint's BTC-collateralized USD ecash. Internally and on public `*Subunits` wire fields, collateral is tracked as msat for sat-display markets and cents (`usd`) for USD markets. JPY and other units are not available yet.
 
-The funding step offers No liquidity, Minimal, Standard, Deep, and Custom budgets. Binary markets show round preset tiers of **$15 / $150 / $300** for USD markets and **1500 / 15000 / 30000 sats** for sat markets. Categorical markets multiply the paid tiers by `log2(outcome count)`.
+The funding step offers No liquidity, Minimal, Standard, Deep, and Custom budgets. Binary markets show round preset tiers of **$100 / $1,000 / $5,000** for USD markets and **10,000 / 100,000 / 500,000 sats** for sat markets. Categorical markets multiply the paid tiers by `log2(outcome count)`.
+
+The wizard also previews the estimated starting depth for the selected budget, showing roughly how many price levels the bot can post on each side and how many shares appear at each level. The preview is an estimate before mint fees, so actual quoted depth can be lower.
 
 Choosing **No liquidity** leaves the market available without bot-provided quotes, so human makers must provide liquidity. Very small custom budgets may show a thin-liquidity warning.
 
