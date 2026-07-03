@@ -71,6 +71,24 @@ describe('validateTopUpEcashToken', () => {
     })
   })
 
+  it('rejects msat-denominated regular sats before applying USD deficit coverage', async () => {
+    const result = await validateTopUpEcashToken('cashuB-token', {
+      activeMintUrl: 'https://mint.example',
+      baseAsset: 'usd',
+      deficit: 1,
+      decodeToken: vi.fn<DecodeCashuToken>().mockResolvedValue(token({
+        unit: 'msat',
+        proofs: [{ id: 'keyset-msat', amount: 1_000_000 as never, secret: 's', C: 'c' }],
+      })),
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'unit_mismatch',
+      values: { tokenUnit: 'msat', expectedUnit: 'USD' },
+    })
+  })
+
   it('rejects USD-denominated tokens for sat markets', async () => {
     const result = await validateTopUpEcashToken('cashuB-token', {
       activeMintUrl: 'https://mint.example',
