@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { AlertTriangle, Check, Info, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { InvoiceDisplay } from '@/components/deposit-withdraw/InvoiceDisplay'
 import { resolveCreatorPubkey } from '@/lib/identityOps'
 import {
   BINARY_AMM_FUNDING_TIERS,
@@ -10,15 +9,11 @@ import {
   fundingTierBudget,
   type AmmFundingTierId,
 } from '@/lib/marketMakerFunding'
-import {
-  getDepositStatus,
-  requestLnInvoiceDeposit,
-  type DepositState,
-  type RequestLnInvoiceDepositResponse,
-} from '@/lib/markets'
+import { getDepositStatus, requestEcashDeposit, type DepositState } from '@/lib/markets'
 import { useSettingsStore } from '@/stores/settings'
 import type { MarketBaseAsset } from '@/types/market-creation'
 import { estimateDepthPreview } from '@bitcaster/client-sdk/lmsrDomain'
+import { defaultCollateralUnit, normalizeMarketDivisibility } from '@bitcaster/client-sdk/marketUnits'
 
 function isFundingDepositComplete(state: DepositState | null | undefined): boolean {
   if (state == null) return false
@@ -32,6 +27,10 @@ function isFundingDepositComplete(state: DepositState | null | undefined): boole
     default:
       return assertNeverDepositState(state)
   }
+}
+
+function isFundingDepositPending(state: DepositState | null | undefined): boolean {
+  return state === 'requested'
 }
 
 function assertNeverDepositState(state: never): never {
@@ -79,12 +78,14 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
   const [selectedTier, setSelectedTier] = useState<AmmFundingTierId>('standard')
   const [customBudgetInput, setCustomBudgetInput] = useState(0)
   const [stage, setStage] = useState<'created' | 'funding'>('created')
-  const [invoice, setInvoice] = useState<RequestLnInvoiceDepositResponse | null>(null)
-  const [invoiceStatus, setInvoiceStatus] = useState<'pending' | 'paid' | 'expired' | 'error'>('pending')
-  const [invoiceError, setInvoiceError] = useState<string | null>(null)
+  const [ecashToken, setEcashToken] = useState('')
+  const [depositState, setDepositState] = useState<DepositState | null>(null)
+  const [activeDepositId, setActiveDepositId] = useState<string | null>(null)
   const [isRequesting, setIsRequesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fundingUnit = fundingUnitForBaseAsset(baseAsset)
+  const cashuUnit = defaultCollateralUnit(baseAsset)
+  const divisibility = normalizeMarketDivisibility(undefined, baseAsset)
   const customBudgetSubunits = customBudgetInputToSubunits(customBudgetInput, baseAsset)
 
   useEffect(() => {
@@ -104,74 +105,71 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
     tiers.find((tier) => tier.id === selectedTier)?.budgetSats ?? customBudgetSubunits
   const budgetSats = selectedTier === 'custom' ? customBudgetSubunits : selectedTierBudget
   const customBudgetPreview = formatFundingBudget(customBudgetSubunits, fundingUnit)
-  const budgetLabel = formatFundingBudget(budgetSats, fundingUnit, {
-    wholeUsd: selectedTier !== 'custom',
-  })
   const showWarning = selectedTier === 'minimal'
   const depthPreview = selectedTier === 'none'
     ? null
     : estimateDepthPreview({ budgetSubunits: budgetSats, outcomeCount })
 
-  useEffect(() => {
-    if (!invoice) return
+  const continueToMarket = useCallback(() => {
+    navigate(`/markets/${conditionId}`)
+  }, [conditionId, navigate])
 
+  useEffect(() => {
+    if (!isFundingDepositComplete(depositState)) return undefined
+    const timer = window.setTimeout(continueToMarket, 5_000)
+    return () => window.clearTimeout(timer)
+  }, [continueToMarket, depositState])
+
+  useEffect(() => {
+    if (!activeDepositId || !isFundingDepositPending(depositState)) return undefined
     let cancelled = false
     let timer: number | undefined
-    let navigationTimer: number | undefined
-
+    const schedulePoll = () => {
+      timer = window.setTimeout(poll, 2_000)
+    }
     const poll = async () => {
       try {
-        const status = await getDepositStatus(conditionId, invoice.depositId)
+        const status = await getDepositStatus(conditionId, activeDepositId)
         if (cancelled) return
-
-        if (isFundingDepositComplete(status?.state)) {
-          setInvoiceStatus('paid')
-          setInvoiceError(null)
-          navigationTimer = window.setTimeout(() => {
-            if (!cancelled) continueToMarket()
-          }, 5_000)
+        if (status == null) {
+          schedulePoll()
           return
         }
-        if (status?.state === 'failed') {
-          setInvoiceStatus('error')
-          setInvoiceError(status.failureReason ?? t('marketCreation.ammFundingRequestFailed'))
-          return
+        setDepositState(status.state)
+        if (isFundingDepositPending(status.state)) {
+          schedulePoll()
+        } else {
+          setActiveDepositId(null)
         }
-        if (new Date(invoice.expiresAt).getTime() <= Date.now()) {
-          setInvoiceStatus('expired')
-          return
+      } catch {
+        if (!cancelled) {
+          setError(t('marketCreation.statusPollError'))
+          schedulePoll()
         }
-
-        setInvoiceStatus('pending')
-        timer = window.setTimeout(poll, 1_500)
-      } catch (err) {
-        if (cancelled) return
-        setInvoiceStatus('error')
-        setInvoiceError(err instanceof Error ? err.message : t('marketCreation.ammFundingRequestFailed'))
       }
     }
-
-    void poll()
-
+    schedulePoll()
     return () => {
       cancelled = true
       if (timer !== undefined) window.clearTimeout(timer)
-      if (navigationTimer !== undefined) window.clearTimeout(navigationTimer)
     }
-  }, [conditionId, invoice, t])
+  }, [activeDepositId, conditionId, depositState, t])
 
-  const continueToMarket = () => {
-    navigate(`/markets/${conditionId}`)
-  }
-
-  const onRequestInvoice = async () => {
+  const onSubmitEcash = async () => {
     if (selectedTier === 'none') {
       continueToMarket()
       return
     }
     if (isRequesting || budgetSats < 1) return
+    const trimmedToken = ecashToken.trim()
+    if (!trimmedToken) {
+      setError(t('marketCreation.ecashRequiredError'))
+      return
+    }
     setIsRequesting(true)
     setError(null)
+    setDepositState(null)
+    setActiveDepositId(null)
     try {
       const settings = useSettingsStore.getState()
       const creatorPubkey = resolveCreatorPubkey({
@@ -179,15 +177,18 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
         nsecSecret: settings.nsecSecret,
         nostrProfilePubkey: settings.nostrProfile?.pubkey,
       })
-      const result = await requestLnInvoiceDeposit(conditionId, budgetSats, {
+      const result = await requestEcashDeposit(conditionId, budgetSats, trimmedToken, {
         creatorPubkey,
         fundAmm: true,
+        unit: cashuUnit,
+        divisibility,
       })
-      setInvoice(result)
-      setInvoiceStatus('pending')
-      setInvoiceError(null)
+      setDepositState(result.state)
+      if (isFundingDepositPending(result.state)) {
+        setActiveDepositId(result.depositId)
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('marketCreation.ammFundingRequestFailed'))
+      setError(err instanceof Error ? err.message : t('marketCreation.ecashSubmitError'))
     } finally {
       setIsRequesting(false)
     }
@@ -218,23 +219,6 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
 
   return (
     <div className="w-full max-w-2xl">
-      {invoice && (
-        <InvoiceDisplay
-          bolt11={invoice.bolt11}
-          amountSats={budgetSats}
-          amountLabel={budgetLabel}
-          status={invoiceStatus}
-          errorMessage={invoiceError}
-          expiresAtSec={Math.floor(new Date(invoice.expiresAt).getTime() / 1000)}
-          onClose={continueToMarket}
-          onRegenerate={() => {
-            setInvoice(null)
-            setInvoiceStatus('pending')
-            setInvoiceError(null)
-            void onRequestInvoice()
-          }}
-        />
-      )}
       <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
         {t('marketCreation.ammFundingTitle')}
       </h2>
@@ -322,22 +306,61 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
         <p>{t('marketCreation.ammFundingDisclosure')}</p>
       </div>
 
+      {selectedTier !== 'none' && (
+        <label className="mb-4 block">
+          <span className="mb-2 block text-sm font-semibold text-white">
+            {t('marketCreation.ecashTokenLabel')}
+          </span>
+          <textarea
+            data-testid="amm-funding-ecash-token"
+            value={ecashToken}
+            onChange={(event) => {
+              setEcashToken(event.target.value)
+              if (error) setError(null)
+            }}
+            placeholder={t('marketCreation.ecashTokenPlaceholder')}
+            rows={5}
+            className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-blue-400"
+          />
+          <span className="mt-2 block text-xs text-slate-400">
+            {t('marketCreation.ecashTokenHint')}
+          </span>
+        </label>
+      )}
+
+      {depositState && (
+        depositState === 'failed' ? (
+          <div className="mb-4 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+            <p className="font-semibold">{t('marketCreation.depositFailed')}</p>
+            <p className="mt-1">{t('marketCreation.depositFailedHint')}</p>
+          </div>
+        ) : (
+          <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+            {isFundingDepositComplete(depositState)
+              ? t('marketCreation.statusPaymentReceived')
+              : t('marketCreation.statusAwaitingPayment')}
+          </p>
+        )
+      )}
+
       <button
         data-testid="confirm-amm-funding"
         type="button"
-        onClick={onRequestInvoice}
-        disabled={isRequesting || (selectedTier !== 'none' && budgetSats < 1)}
+        onClick={onSubmitEcash}
+        disabled={isRequesting || isFundingDepositPending(depositState) || (selectedTier !== 'none' && (budgetSats < 1 || ecashToken.trim().length === 0))}
         className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
       >
         {isRequesting ? (
           <span className="inline-flex items-center justify-center gap-2">
             <Loader2 className="h-4 w-4 animate-spin" />
-            {t('marketCreation.ammFundingRequestingInvoice')}
+            {t('marketCreation.submitEcash')}
           </span>
         ) : (
-          selectedTier === 'none'
-            ? t('marketCreation.continueToMarket')
-            : t('marketCreation.ammFundingConfirm')
+            selectedTier === 'none'
+              ? t('marketCreation.continueToMarket')
+              : depositState === 'failed'
+                ? t('marketCreation.retryEcashDeposit')
+                : t('marketCreation.submitEcash')
         )}
       </button>
 

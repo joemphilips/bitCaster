@@ -303,26 +303,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/markets/{conditionId}/deposit/ln-invoice": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Request a Lightning invoice for market liquidity
-         * @description Issues a bolt11 invoice payable to the market's funding account. Once the invoice is paid, the deposit advances asynchronously through the deposit lifecycle until the market account is credited. The bolt11 string is returned only in this response — the polling endpoint deliberately omits bearer material.
-         */
-        post: operations["requestLnInvoiceDeposit"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/markets/{conditionId}/deposit/ecash": {
         parameters: {
             query?: never;
@@ -1064,34 +1044,16 @@ export interface components {
          * @enum {string}
          */
         DepositMethod: "lightningInvoice" | "ecash";
-        RequestLnInvoiceDepositRequest: {
-            /** @description Amount of market-collateral base subunits the funder intends to deposit. The engine derives the unit from the registered market: msat for sat markets, cents (`usd`) for USD markets. */
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description Nostr public key (hex) of the market creator */
-            creatorPubkey?: string;
-            /**
-             * @description Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
-             * @default false
-             */
-            fundAmm: boolean;
-        };
-        RequestLnInvoiceDepositResponse: {
-            /**
-             * Format: uuid
-             * @description Identifier for polling the deposit's lifecycle state.
-             */
-            depositId: string;
-            /** @description Bolt11 invoice the funder pays. Bearer material — never echoed from the polling endpoint. */
-            bolt11: string;
-            /**
-             * Format: date-time
-             * @description When the bolt11 stops being payable.
-             */
-            expiresAt: string;
-        };
         RequestEcashDepositRequest: {
             /** @description Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market. */
             amountSubunits: components["schemas"]["CollateralSubunits"];
+            /** @description Cashu token unit expected for the supplied proofs. */
+            unit?: string;
+            /**
+             * Format: int32
+             * @description Market price divisibility associated with the supplied unit.
+             */
+            divisibility?: number;
             /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
             proofsToken: string;
             /** @description Nostr public key (hex) of the market creator */
@@ -1985,68 +1947,6 @@ export interface operations {
             };
             /** @description No thumbnail for this condition */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    requestLnInvoiceDeposit: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RequestLnInvoiceDepositRequest"];
-            };
-        };
-        responses: {
-            /** @description Invoice issued; deposit recorded in `Requested` state */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RequestLnInvoiceDepositResponse"];
-                };
-            };
-            /** @description Validation error (e.g. non-positive amount) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Market not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Per-pubkey deposit-request rate limit exceeded */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Lightning invoice provider error */
-            502: {
                 headers: {
                     [name: string]: unknown;
                 };

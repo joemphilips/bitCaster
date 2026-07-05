@@ -610,7 +610,7 @@
     "botFunded": "Bot funded — your market is live",
     "botFundedHint": "The LMSR maker is now quoting bid/ask on the order book.",
     "depositFailed": "Deposit failed",
-    "depositFailedHint": "The invoice expired or proof verification failed. Retry from the market detail page.",
+    "depositFailedHint": "Proof verification or crediting failed. Check the token and retry.",
     "continueToMarket": "Continue to your market",
     "skipLiquidityProvisioning": "Skip liquidity provisioning",
     "statusAwaitingPayment": "Awaiting payment…",
@@ -620,6 +620,7 @@
     "ecashRequiredError": "Paste an ecash token before submitting",
     "lnRequestError": "Failed to request invoice",
     "ecashSubmitError": "Failed to submit ecash",
+    "retryEcashDeposit": "Retry ecash deposit",
     "statusPollError": "Status poll failed"
   },
   "filter": {

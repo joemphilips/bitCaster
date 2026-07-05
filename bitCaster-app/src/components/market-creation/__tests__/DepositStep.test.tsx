@@ -1,46 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router'
 import userEvent from '@testing-library/user-event'
 import i18n from '@/i18n'
 import { DepositStep } from '../DepositStep'
 
-const requestLnInvoiceDeposit = vi.fn()
+const requestEcashDeposit = vi.fn()
 const getDepositStatus = vi.fn()
 
 vi.mock('@/lib/markets', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/markets')>()),
-  requestLnInvoiceDeposit: (...args: unknown[]) => requestLnInvoiceDeposit(...args),
+  requestEcashDeposit: (...args: unknown[]) => requestEcashDeposit(...args),
   getDepositStatus: (...args: unknown[]) => getDepositStatus(...args),
 }))
 
 const DISCLOSURE =
   'This deposit is non-refundable. If the market resolves, the budget is expected to be spent paying traders who informed the price. Any residual at close becomes operator income.'
-
-async function flushAsyncEffects() {
-  await act(async () => {
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
-  })
-}
-
-function depositStatus(
-  state: 'requested' | 'paid' | 'credited' | 'failed',
-  options: { expiresAt?: string } = {},
-) {
-  return {
-    depositId: 'deposit-1',
-    conditionId: 'cond-test-abc123',
-    state,
-    method: 'lightningInvoice',
-    amountSats: 100_000,
-    requestedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    expiresAt: options.expiresAt ?? new Date(Date.now() + 60_000).toISOString(),
-    failureReason: null,
-  }
-}
 
 function renderStep(
   props?: Partial<{
@@ -79,18 +54,17 @@ function renderStep(
 describe('DepositStep', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en')
-    requestLnInvoiceDeposit.mockReset()
-    requestLnInvoiceDeposit.mockResolvedValue({
-      depositId: 'deposit-1',
-      bolt11: 'lnbc10u1pjexampleinvoice',
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    })
+    requestEcashDeposit.mockReset()
     getDepositStatus.mockReset()
-    getDepositStatus.mockResolvedValue(depositStatus('requested'))
-  })
-
-  afterEach(() => {
-    vi.useRealTimers()
+    requestEcashDeposit.mockResolvedValue({
+      depositId: 'deposit-1',
+      state: 'paid',
+    })
+    getDepositStatus.mockResolvedValue({
+      depositId: 'deposit-1',
+      state: 'paid',
+      method: 'ecash',
+    })
   })
 
   async function openFunding(user = userEvent.setup()) {
@@ -166,13 +140,15 @@ describe('DepositStep', () => {
     await openFunding(user)
     await user.clear(screen.getByRole('spinbutton'))
     await user.type(screen.getByRole('spinbutton'), '15')
+    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBusdtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     await waitFor(() => {
-      expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
+      expect(requestEcashDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
         1_500,
-        expect.objectContaining({ fundAmm: true }),
+        'cashuBusdtoken',
+        expect.objectContaining({ fundAmm: true, unit: 'usd', divisibility: 1_000 }),
       )
     })
   })
@@ -190,26 +166,24 @@ describe('DepositStep', () => {
     expect(screen.queryByText('15000')).not.toBeInTheDocument()
   })
 
-  it('requests AMM funding and shows the shared invoice display', async () => {
+  it('submits AMM funding with a pasted ecash token', async () => {
     const user = userEvent.setup()
     renderStep()
 
     await openFunding(user)
+    expect(screen.queryByTestId('request-ln-invoice')).not.toBeInTheDocument()
+    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     await waitFor(() => {
-      expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
+      expect(requestEcashDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
         100_000_000,
-        expect.objectContaining({ fundAmm: true }),
+        'cashuBtoken',
+        expect.objectContaining({ fundAmm: true, unit: 'msat', divisibility: 10_000 }),
       )
     })
-    expect(await screen.findByTestId('bolt11-display')).toHaveTextContent(
-      'lnbc10u1pjexampleinvoice',
-    )
-    await waitFor(() => {
-      expect(getDepositStatus).toHaveBeenCalledWith('cond-test-abc123', 'deposit-1')
-    })
+    expect(await screen.findByText('Payment received — crediting your market…')).toBeInTheDocument()
   })
 
   it('renders SAT funding tiers as hardcoded round whole-sat amounts', async () => {
@@ -224,13 +198,15 @@ describe('DepositStep', () => {
     expect(screen.getByText(/At this budget, the bot posts ~/)).toBeInTheDocument()
     expect(screen.getByText('Depth before mint fees — actual quoted depth may be lower.')).toBeInTheDocument()
 
+    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     await waitFor(() => {
-      expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
+      expect(requestEcashDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
         100_000_000,
-        expect.objectContaining({ fundAmm: true }),
+        'cashuBtoken',
+        expect.objectContaining({ fundAmm: true, unit: 'msat', divisibility: 10_000 }),
       )
     })
   })
@@ -239,61 +215,16 @@ describe('DepositStep', () => {
     expect(() => renderStep({ baseAsset: 'jpy' })).toThrow(/unsupported base asset: jpy/)
   })
 
-  it('marks the funding invoice paid once the Lightning payment is confirmed', async () => {
-    const user = userEvent.setup()
-    getDepositStatus.mockResolvedValue(depositStatus('paid'))
-    renderStep()
-
-    await openFunding(user)
-    await user.click(screen.getByTestId('confirm-amm-funding'))
-
-    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
-  })
-
-  it('keeps polling until a requested invoice is paid', async () => {
-    vi.useFakeTimers()
-    getDepositStatus
-      .mockResolvedValueOnce(depositStatus('requested'))
-      .mockResolvedValueOnce(depositStatus('paid'))
-    renderStep()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Attract Traders' }))
-    fireEvent.click(screen.getByTestId('confirm-amm-funding'))
-    await flushAsyncEffects()
-
-    expect(getDepositStatus).toHaveBeenCalledTimes(1)
-    expect(screen.queryByText('Payment received!')).not.toBeInTheDocument()
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_500)
-    })
-    await flushAsyncEffects()
-
-    expect(screen.getByText('Payment received!')).toBeInTheDocument()
-    expect(getDepositStatus).toHaveBeenCalledTimes(2)
-  })
-
-  it('still marks credited deposits as paid when polling observes the terminal state first', async () => {
-    const user = userEvent.setup()
-    getDepositStatus.mockResolvedValue(depositStatus('credited'))
-    renderStep()
-
-    await openFunding(user)
-    await user.click(screen.getByTestId('confirm-amm-funding'))
-
-    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
-  })
-
-  it('auto-navigates five seconds after Lightning payment is confirmed', async () => {
+  it('auto-navigates five seconds after ecash funding is accepted', async () => {
     const user = userEvent.setup()
     const timeoutSpy = vi.spyOn(window, 'setTimeout')
-    getDepositStatus.mockResolvedValue(depositStatus('paid'))
     renderStep()
 
     await openFunding(user)
     timeoutSpy.mockClear()
+    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
-    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
+    expect(await screen.findByText('Payment received — crediting your market…')).toBeInTheDocument()
 
     expect(screen.queryByTestId('market-detail-page')).not.toBeInTheDocument()
     const navigationCall = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000)
@@ -305,17 +236,54 @@ describe('DepositStep', () => {
     timeoutSpy.mockRestore()
   })
 
-  it('auto-navigates when polling observes credited before paid', async () => {
+  it('polls requested ecash deposits until they are credited before navigating', async () => {
     const user = userEvent.setup()
     const timeoutSpy = vi.spyOn(window, 'setTimeout')
-    getDepositStatus.mockResolvedValue(depositStatus('credited'))
+    requestEcashDeposit.mockResolvedValueOnce({
+      depositId: 'deposit-requested',
+      state: 'requested',
+    })
+    getDepositStatus.mockResolvedValueOnce({
+      depositId: 'deposit-requested',
+      state: 'requested',
+      method: 'ecash',
+    })
+    getDepositStatus.mockResolvedValueOnce({
+      depositId: 'deposit-requested',
+      state: 'credited',
+      method: 'ecash',
+    })
     renderStep()
 
     await openFunding(user)
     timeoutSpy.mockClear()
+    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
-    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
 
+    expect(await screen.findByText('Awaiting payment…')).toBeInTheDocument()
+    const pollingCall = timeoutSpy.mock.calls.find(([, delay]) => delay === 2_000)
+    expect(pollingCall).toBeDefined()
+
+    await act(async () => {
+      ;(pollingCall?.[0] as () => void)()
+    })
+
+    await waitFor(() => {
+      expect(getDepositStatus).toHaveBeenCalledWith('cond-test-abc123', 'deposit-requested')
+    })
+    expect(screen.getByText('Awaiting payment…')).toBeInTheDocument()
+    const secondPollingCall = timeoutSpy.mock.calls.filter(([, delay]) => delay === 2_000)[1]
+    expect(secondPollingCall).toBeDefined()
+
+    await act(async () => {
+      ;(secondPollingCall?.[0] as () => void)()
+    })
+
+    await waitFor(() => {
+      expect(getDepositStatus).toHaveBeenCalledTimes(2)
+    })
+    expect(await screen.findByText('Payment received — crediting your market…')).toBeInTheDocument()
+    expect(screen.queryByTestId('market-detail-page')).not.toBeInTheDocument()
     const navigationCall = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000)
     expect(navigationCall).toBeDefined()
     act(() => {
@@ -325,50 +293,21 @@ describe('DepositStep', () => {
     timeoutSpy.mockRestore()
   })
 
-  it('does not expire an invoice after payment is already confirmed', async () => {
+  it('renders failed ecash deposit state with an error and retry action', async () => {
     const user = userEvent.setup()
-    requestLnInvoiceDeposit.mockResolvedValueOnce({
-      depositId: 'deposit-1',
-      bolt11: 'lnbc10u1pjexampleinvoice',
-      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    requestEcashDeposit.mockResolvedValueOnce({
+      depositId: 'deposit-failed',
+      state: 'failed',
     })
-    getDepositStatus.mockResolvedValue(
-      depositStatus('paid', { expiresAt: new Date(Date.now() - 1_000).toISOString() }),
-    )
     renderStep()
 
     await openFunding(user)
+    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
-    expect(await screen.findByText('Payment received!')).toBeInTheDocument()
-    expect(screen.queryByText('Invoice expired')).not.toBeInTheDocument()
-  })
-
-  it('lets the creator request a fresh funding invoice after expiry', async () => {
-    const user = userEvent.setup()
-    requestLnInvoiceDeposit
-      .mockResolvedValueOnce({
-        depositId: 'deposit-expired',
-        bolt11: 'lnbc10u1pjexpired',
-        expiresAt: new Date(Date.now() - 1_000).toISOString(),
-      })
-      .mockResolvedValueOnce({
-        depositId: 'deposit-fresh',
-        bolt11: 'lnbc10u1pjfresh',
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      })
-    renderStep()
-
-    await openFunding(user)
-    await user.click(screen.getByTestId('confirm-amm-funding'))
-    expect(await screen.findByText('Invoice expired')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Re-quote' }))
-
-    await waitFor(() => {
-      expect(requestLnInvoiceDeposit).toHaveBeenCalledTimes(2)
-    })
-    expect(await screen.findByText('lnbc10u1pjfresh')).toBeInTheDocument()
+    expect(await screen.findByText('Deposit failed')).toBeInTheDocument()
+    expect(screen.getByText('Proof verification or crediting failed. Check the token and retry.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry ecash deposit' })).toBeEnabled()
   })
 
   it('renders USD funding tiers as hardcoded round whole-dollar amounts and requests base subunits', async () => {
@@ -382,13 +321,15 @@ describe('DepositStep', () => {
     expect(screen.queryByText('$15.00')).not.toBeInTheDocument()
     expect(screen.queryByText('cents')).not.toBeInTheDocument()
 
+    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBusdtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     await waitFor(() => {
-      expect(requestLnInvoiceDeposit).toHaveBeenCalledWith(
+      expect(requestEcashDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
         100_000,
-        expect.objectContaining({ fundAmm: true }),
+        'cashuBusdtoken',
+        expect.objectContaining({ fundAmm: true, unit: 'usd', divisibility: 1_000 }),
       )
     })
   })

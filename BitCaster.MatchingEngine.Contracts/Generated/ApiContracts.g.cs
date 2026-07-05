@@ -2217,94 +2217,14 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class RequestLnInvoiceDepositRequest
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public RequestLnInvoiceDepositRequest(long @amountSubunits, string @creatorPubkey, bool? @fundAmm)
-        {
-            this.AmountSubunits = @amountSubunits;
-            this.CreatorPubkey = @creatorPubkey;
-            this.FundAmm = @fundAmm;
-        }
-
-        /// <summary>
-        /// Amount of market-collateral base subunits the funder intends to deposit. The engine derives the unit from the registered market: msat for sat markets, cents (`usd`) for USD markets.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
-        public long AmountSubunits { get; }
-
-        /// <summary>
-        /// Nostr public key (hex) of the market creator
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
-        public string CreatorPubkey { get; }
-
-        /// <summary>
-        /// Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("fundAmm")]
-        public bool? FundAmm { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class RequestLnInvoiceDepositResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public RequestLnInvoiceDepositResponse(string @bolt11, System.Guid @depositId, System.DateTimeOffset @expiresAt)
-        {
-            this.DepositId = @depositId;
-            this.Bolt11 = @bolt11;
-            this.ExpiresAt = @expiresAt;
-        }
-
-        /// <summary>
-        /// Identifier for polling the deposit's lifecycle state.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("depositId")]
-        public System.Guid DepositId { get; }
-
-        /// <summary>
-        /// Bolt11 invoice the funder pays. Bearer material — never echoed from the polling endpoint.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("bolt11")]
-        public string Bolt11 { get; }
-
-        /// <summary>
-        /// When the bolt11 stops being payable.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
-        public System.DateTimeOffset ExpiresAt { get; }
-
-        private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class RequestEcashDepositRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RequestEcashDepositRequest(long @amountSubunits, string @creatorPubkey, bool? @fundAmm, string @proofsToken)
+        public RequestEcashDepositRequest(long @amountSubunits, string @creatorPubkey, int? @divisibility, bool? @fundAmm, string @proofsToken, string @unit)
         {
             this.AmountSubunits = @amountSubunits;
+            this.Unit = @unit;
+            this.Divisibility = @divisibility;
             this.ProofsToken = @proofsToken;
             this.CreatorPubkey = @creatorPubkey;
             this.FundAmm = @fundAmm;
@@ -2316,6 +2236,18 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
         public long AmountSubunits { get; }
+
+        /// <summary>
+        /// Cashu token unit expected for the supplied proofs.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("unit")]
+        public string Unit { get; }
+
+        /// <summary>
+        /// Market price divisibility associated with the supplied unit.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int? Divisibility { get; }
 
         /// <summary>
         /// Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting.

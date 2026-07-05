@@ -146,7 +146,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
   // before `setCreatedMarketConditionId` re-renders us, which without this
   // override would bounce the user back to the first wizard step even though
   // the market is already registered on the mint and engine. The matching test
-  // is `MarketCreateWithDepositE2ETests.DepositStep_LightningHappyPath`.
+  // is `MarketCreateWithDepositE2ETests.DepositStep_EcashHappyPath`.
   if (createdMarketConditionId) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">

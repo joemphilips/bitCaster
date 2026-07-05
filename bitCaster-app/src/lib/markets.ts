@@ -1040,10 +1040,6 @@ export function getMarketThumbnail(market: {
 // AMM Bot Deposit API (matching engine MarketFunding aggregate)
 // =============================================================================
 
-export type RequestLnInvoiceDepositRequest =
-  components["schemas"]["RequestLnInvoiceDepositRequest"];
-export type RequestLnInvoiceDepositResponse =
-  components["schemas"]["RequestLnInvoiceDepositResponse"];
 export type RequestEcashDepositRequest =
   components["schemas"]["RequestEcashDepositRequest"];
 export type RequestEcashDepositResponse =
@@ -1060,6 +1056,8 @@ export type DepositMethod = components["schemas"]["DepositMethod"];
 export interface MarketFundingDepositOptions {
   creatorPubkey?: string | null;
   fundAmm?: boolean;
+  unit?: string;
+  divisibility?: number;
 }
 
 function normalizeDepositState(state: unknown): DepositState {
@@ -1095,38 +1093,6 @@ function normalizeDepositMethod(method: unknown): DepositMethod {
 }
 
 /**
- * Request a Lightning invoice for a market's AMM bot deposit. The returned
- * `bolt11` is bearer material — it appears only in this immediate response,
- * never in the polling endpoint, so capture and display it before navigating
- * away.
- */
-export async function requestLnInvoiceDeposit(
-  conditionId: string,
-  amountSubunits: number,
-  options: MarketFundingDepositOptions = {},
-): Promise<RequestLnInvoiceDepositResponse> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ln-invoice`;
-  const body: RequestLnInvoiceDepositRequest = { amountSubunits, fundAmm: false };
-  if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
-  if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
-  const bodyText = JSON.stringify(body);
-  const bodyBytes = new TextEncoder().encode(bodyText);
-  const payloadHash = await sha256Hex(bodyBytes);
-  const authHeader = await generateNip98Header(url, "POST", payloadHash);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: authHeader },
-    body: bodyText,
-  });
-  if (!response.ok) {
-    throw new Error(
-      `[Matching Engine] Failed to request LN deposit: ${response.status} ${await response.text()}`,
-    );
-  }
-  return response.json();
-}
-
-/**
  * Submit ecash proofs as a market's AMM bot deposit. Phase 1 of the engine
  * records the request and defers proof verification to the wallet-service;
  * the deposit walks `Requested → Paid → Credited` as the wallet-service
@@ -1139,9 +1105,15 @@ export async function requestEcashDeposit(
   options: MarketFundingDepositOptions = {},
 ): Promise<RequestEcashDepositResponse> {
   const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`;
-  const body: RequestEcashDepositRequest = { amountSubunits, proofsToken, fundAmm: false };
+  const body: RequestEcashDepositRequest = {
+    amountSubunits,
+    proofsToken,
+    fundAmm: false,
+  };
   if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
   if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
+  if (options.unit) body.unit = options.unit;
+  if (options.divisibility !== undefined) body.divisibility = options.divisibility;
   const bodyText = JSON.stringify(body);
   const bodyBytes = new TextEncoder().encode(bodyText);
   const payloadHash = await sha256Hex(bodyBytes);

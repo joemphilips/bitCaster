@@ -610,7 +610,7 @@
     "botFunded": "ボットへの資金提供完了 — マーケットが稼働中です",
     "botFundedHint": "LMSR メイカーが注文板に bid/ask を提示しています。",
     "depositFailed": "入金に失敗しました",
-    "depositFailedHint": "インボイスの有効期限切れ、またはプルーフ検証に失敗しました。マーケット詳細ページから再試行してください。",
+    "depositFailedHint": "プルーフ検証またはクレジットに失敗しました。トークンを確認して再試行してください。",
     "continueToMarket": "マーケットへ進む",
     "skipLiquidityProvisioning": "流動性提供をスキップ",
     "statusAwaitingPayment": "支払い待ち…",
@@ -620,6 +620,7 @@
     "ecashRequiredError": "送信する前に ecash トークンを貼り付けてください",
     "lnRequestError": "インボイスのリクエストに失敗しました",
     "ecashSubmitError": "ecash の送信に失敗しました",
+    "retryEcashDeposit": "Ecash 入金を再試行",
     "statusPollError": "状態の取得に失敗しました"
   },
   "filter": {

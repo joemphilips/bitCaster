@@ -526,44 +526,6 @@ paths:
         '404':
           description: No thumbnail for this condition
 
-  /api/v1/markets/{conditionId}/deposit/ln-invoice:
-    post:
-      operationId: requestLnInvoiceDeposit
-      summary: Request a Lightning invoice for market liquidity
-      security:
-        - nip98: []
-      description: >
-        Issues a bolt11 invoice payable to the market's funding account. Once
-        the invoice is paid, the deposit advances asynchronously through the
-        deposit lifecycle until the market account is credited. The bolt11
-        string is returned only in this response — the polling endpoint
-        deliberately omits bearer material.
-      parameters:
-        - $ref: '#/components/parameters/ConditionId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RequestLnInvoiceDepositRequest'
-      responses:
-        '200':
-          description: Invoice issued; deposit recorded in `Requested` state
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RequestLnInvoiceDepositResponse'
-        '400':
-          description: Validation error (e.g. non-positive amount)
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '404':
-          description: Market not found
-        '429':
-          description: Per-pubkey deposit-request rate limit exceeded
-        '502':
-          description: Lightning invoice provider error
-
   /api/v1/markets/{conditionId}/deposit/ecash:
     post:
       operationId: requestEcashDeposit
@@ -2259,48 +2221,6 @@ components:
         - ecash
       description: How the funder is paying the deposit.
 
-    RequestLnInvoiceDepositRequest:
-      type: object
-      required:
-        - amountSubunits
-      properties:
-        amountSubunits:
-          allOf:
-            - $ref: '#/components/schemas/CollateralSubunits'
-          description: >
-            Amount of market-collateral base subunits the
-            funder intends to deposit. The engine derives the unit from the
-            registered market: msat for sat markets, cents (`usd`) for USD markets.
-        creatorPubkey:
-          type: string
-          pattern: '^[0-9a-f]{64}$'
-          description: Nostr public key (hex) of the market creator
-        fundAmm:
-          type: boolean
-          default: false
-          description: Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
-
-    RequestLnInvoiceDepositResponse:
-      type: object
-      required:
-        - depositId
-        - bolt11
-        - expiresAt
-      properties:
-        depositId:
-          type: string
-          format: uuid
-          description: Identifier for polling the deposit's lifecycle state.
-        bolt11:
-          type: string
-          description: >
-            Bolt11 invoice the funder pays. Bearer material — never echoed
-            from the polling endpoint.
-        expiresAt:
-          type: string
-          format: date-time
-          description: When the bolt11 stops being payable.
-
     RequestEcashDepositRequest:
       type: object
       required:
@@ -2314,6 +2234,15 @@ components:
             Asserted value of the supplied ecash proofs in
             market-collateral base subunits. The engine derives the unit from
             the registered market.
+        unit:
+          type: string
+          minLength: 1
+          description: Cashu token unit expected for the supplied proofs.
+        divisibility:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Market price divisibility associated with the supplied unit.
         proofsToken:
           type: string
           description: >
