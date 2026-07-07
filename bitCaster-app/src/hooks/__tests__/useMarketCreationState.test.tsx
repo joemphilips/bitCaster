@@ -155,7 +155,7 @@ beforeEach(() => {
   useSettingsStore.setState({
     nostrSignerMode: 'nsec',
     nsecSecret: '11'.repeat(32),
-    relays: [{ url: 'wss://relay.example.test', connectionStatus: 'connected' }],
+    relays: [{ url: 'ws://localhost:7777', connectionStatus: 'connected' }],
   })
   // Reset the persisted wizard draft so each test starts from a clean
   // "no work in progress" state.
@@ -621,7 +621,7 @@ describe('useMarketCreationState – onCreateMarket', () => {
     useSettingsStore.setState({
       nostrSignerMode: 'nsec',
       nsecSecret: '11'.repeat(32),
-      relays: [{ url: 'wss://relay.example.test', connectionStatus: 'connected' }],
+      relays: [{ url: 'ws://localhost:7777', connectionStatus: 'connected' }],
     })
     const { result } = renderHook(() => useMarketCreationState(), { wrapper })
 

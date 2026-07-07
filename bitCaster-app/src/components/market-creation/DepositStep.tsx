@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { AlertTriangle, Check, Info, Loader2 } from 'lucide-react'
+import { AlertTriangle, Check, Info } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { LocalWalletPayButton } from '@/components/shared/LocalWalletPayButton'
 import { resolveCreatorPubkey } from '@/lib/identityOps'
 import {
   BINARY_AMM_FUNDING_TIERS,
@@ -78,10 +79,8 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
   const [selectedTier, setSelectedTier] = useState<AmmFundingTierId>('standard')
   const [customBudgetInput, setCustomBudgetInput] = useState(0)
   const [stage, setStage] = useState<'created' | 'funding'>('created')
-  const [ecashToken, setEcashToken] = useState('')
   const [depositState, setDepositState] = useState<DepositState | null>(null)
   const [activeDepositId, setActiveDepositId] = useState<string | null>(null)
-  const [isRequesting, setIsRequesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fundingUnit = fundingUnitForBaseAsset(baseAsset)
   const cashuUnit = defaultCollateralUnit(baseAsset)
@@ -155,18 +154,8 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
     }
   }, [activeDepositId, conditionId, depositState, t])
 
-  const onSubmitEcash = async () => {
-    if (selectedTier === 'none') {
-      continueToMarket()
-      return
-    }
-    if (isRequesting || budgetSats < 1) return
-    const trimmedToken = ecashToken.trim()
-    if (!trimmedToken) {
-      setError(t('marketCreation.ecashRequiredError'))
-      return
-    }
-    setIsRequesting(true)
+  const onSubmitLocalWalletToken = useCallback(async (token: string) => {
+    if (budgetSats < 1) return { accepted: false } as const
     setError(null)
     setDepositState(null)
     setActiveDepositId(null)
@@ -177,7 +166,7 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
         nsecSecret: settings.nsecSecret,
         nostrProfilePubkey: settings.nostrProfile?.pubkey,
       })
-      const result = await requestEcashDeposit(conditionId, budgetSats, trimmedToken, {
+      const result = await requestEcashDeposit(conditionId, budgetSats, token, {
         creatorPubkey,
         fundAmm: true,
         unit: cashuUnit,
@@ -187,12 +176,12 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
       if (isFundingDepositPending(result.state)) {
         setActiveDepositId(result.depositId)
       }
+      return result.state === 'failed' ? { accepted: false } as const : { accepted: true } as const
     } catch (err) {
       setError(err instanceof Error ? err.message : t('marketCreation.ecashSubmitError'))
-    } finally {
-      setIsRequesting(false)
+      throw err
     }
-  }
+  }, [budgetSats, cashuUnit, conditionId, divisibility, t])
 
   if (stage === 'created') {
     return (
@@ -306,28 +295,6 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
         <p>{t('marketCreation.ammFundingDisclosure')}</p>
       </div>
 
-      {selectedTier !== 'none' && (
-        <label className="mb-4 block">
-          <span className="mb-2 block text-sm font-semibold text-white">
-            {t('marketCreation.ecashTokenLabel')}
-          </span>
-          <textarea
-            data-testid="amm-funding-ecash-token"
-            value={ecashToken}
-            onChange={(event) => {
-              setEcashToken(event.target.value)
-              if (error) setError(null)
-            }}
-            placeholder={t('marketCreation.ecashTokenPlaceholder')}
-            rows={5}
-            className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-blue-400"
-          />
-          <span className="mt-2 block text-xs text-slate-400">
-            {t('marketCreation.ecashTokenHint')}
-          </span>
-        </label>
-      )}
-
       {depositState && (
         depositState === 'failed' ? (
           <div className="mb-4 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
@@ -343,26 +310,28 @@ export function DepositStep({ conditionId, outcomeCount = 2, baseAsset = 'sat' }
         )
       )}
 
-      <button
-        data-testid="confirm-amm-funding"
-        type="button"
-        onClick={onSubmitEcash}
-        disabled={isRequesting || isFundingDepositPending(depositState) || (selectedTier !== 'none' && (budgetSats < 1 || ecashToken.trim().length === 0))}
-        className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-      >
-        {isRequesting ? (
-          <span className="inline-flex items-center justify-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            {t('marketCreation.submitEcash')}
-          </span>
-        ) : (
-            selectedTier === 'none'
-              ? t('marketCreation.continueToMarket')
-              : depositState === 'failed'
-                ? t('marketCreation.retryEcashDeposit')
-                : t('marketCreation.submitEcash')
-        )}
-      </button>
+      {selectedTier === 'none' ? (
+        <button
+          data-testid="confirm-amm-funding"
+          type="button"
+          onClick={continueToMarket}
+          className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+        >
+          {t('marketCreation.continueToMarket')}
+        </button>
+      ) : (
+        <LocalWalletPayButton
+          testId="confirm-amm-funding"
+          amountSubunits={budgetSats}
+          baseAsset={baseAsset}
+          unit={cashuUnit}
+          reservationPurpose="market-funding"
+          pending={isFundingDepositPending(depositState)}
+          failed={depositState === 'failed'}
+          disabled={budgetSats < 1 || isFundingDepositComplete(depositState)}
+          onTokenPayment={onSubmitLocalWalletToken}
+        />
+      )}
 
       {error && (
         <p className="mt-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">

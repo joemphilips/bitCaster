@@ -113,6 +113,7 @@ import {
   releaseProofReservation,
   releaseProofReservationsBySecret,
   reserveProofs,
+  selectAndReserveUnitProofs,
 } from '../proof-db'
 
 beforeEach(() => {
@@ -448,5 +449,34 @@ describe('proof-db normalization', () => {
       's1',
       's2',
     ])
+  })
+
+  it('selects spendable unit proofs and reserves them in one transaction', async () => {
+    await addProofs([
+      { secret: 's1', amount: Amount.from(60), id: 'id1', C: 'C1', mintUrl: 'http://m', baseAsset: 'sat', unit: 'msat' },
+      { secret: 's2', amount: Amount.from(50), id: 'id2', C: 'C2', mintUrl: 'http://m', baseAsset: 'sat', unit: 'msat' },
+      { secret: 's3', amount: Amount.from(100), id: 'id3', C: 'C3', mintUrl: 'http://m', baseAsset: 'sat', unit: 'sat' },
+      { secret: 'ctf', amount: Amount.from(100), id: 'id4', C: 'C4', mintUrl: 'http://m', baseAsset: 'sat', unit: 'msat', conditionId: 'cond' },
+    ])
+
+    const selected = await selectAndReserveUnitProofs('http://m/', { unit: 'msat' }, 'pay-1')
+
+    expect(txCallbacks).toHaveLength(1)
+    expect(selected.map((proof) => proof.secret)).toEqual(['s1', 's2'])
+    expect((await getReservedProofs('pay-1')).map((proof) => proof.secret)).toEqual(['s1', 's2'])
+    expect((await getUnitProofs('http://m', { unit: 'msat' })).map((proof) => proof.secret)).toEqual([])
+  })
+
+  it('fails atomic unit proof selection when the selected proofs cannot satisfy the requested amount', async () => {
+    await addProofs([
+      { secret: 'reserved', amount: Amount.from(60), id: 'id1', C: 'C1', mintUrl: 'http://m', baseAsset: 'sat', unit: 'msat' },
+      { secret: 'free', amount: Amount.from(20), id: 'id2', C: 'C2', mintUrl: 'http://m', baseAsset: 'sat', unit: 'msat' },
+    ])
+    await reserveProofs(['reserved'], 'other-flow')
+
+    await expect(
+      selectAndReserveUnitProofs('http://m', { unit: 'msat', minimumAmount: 50 }, 'pay-1'),
+    ).rejects.toThrow('Insufficient spendable proofs')
+    expect(await getReservedProofs('pay-1')).toEqual([])
   })
 })

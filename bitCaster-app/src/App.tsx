@@ -36,6 +36,7 @@ import {
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 import { sweepElapsedPartialLockFailures } from "@/lib/partialLockRecovery";
 import { installE2EDiagnostics } from "@/lib/e2eDiagnostics";
+import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
 
 installE2EDiagnostics();
 
@@ -129,6 +130,7 @@ function titleForPath(pathname: string): string {
 
 function AppRoutes() {
   const location = useLocation();
+  const [pendingWalletWarning, setPendingWalletWarning] = useState(false);
   useBookmarkSync();
   useCreatorSync();
   useActivityLogSync();
@@ -216,6 +218,18 @@ function AppRoutes() {
     }
   }, []);
 
+  const pendingWalletPaymentReconcileAttempted = useRef(false);
+  useEffect(() => {
+    if (pendingWalletPaymentReconcileAttempted.current) return;
+    pendingWalletPaymentReconcileAttempted.current = true;
+    reconcileAcceptedLocalWalletPayments()
+      .then((remaining) => setPendingWalletWarning(remaining.length > 0))
+      .catch((error) => {
+        console.warn("[wallet] pending local-wallet payment reconciliation failed", error);
+        setPendingWalletWarning(true);
+      });
+  }, []);
+
   // Continuous NIP-17 listener so inbound payment-request DMs are
   // processed regardless of which route is mounted. The per-view
   // subscription inside `useDepositWithdrawState` was lost on reload and
@@ -293,7 +307,16 @@ function AppRoutes() {
   const isWizard = (WIZARD_PATHS as readonly string[]).includes(
     location.pathname,
   );
-  return isWizard ? <WizardRoutes /> : <ShellRoutes />;
+  return (
+    <>
+      {pendingWalletWarning && (
+        <div className="border-b border-amber-400/40 bg-amber-500/15 px-4 py-3 text-sm text-amber-100">
+          Payment was sent but local wallet state may be inconsistent. Please restart the app to reconcile.
+        </div>
+      )}
+      {isWizard ? <WizardRoutes /> : <ShellRoutes />}
+    </>
+  );
 }
 
 export default function App() {

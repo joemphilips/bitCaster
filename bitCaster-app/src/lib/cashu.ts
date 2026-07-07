@@ -442,8 +442,8 @@ export async function recoverKeysetCountersForMint(
 }
 
 /** Encode proofs as a cashuV4 token string ready to share. */
-export function encodeToken(proofs: Proof[], mintUrl?: string): string {
-  const token: Token = { mint: mintUrl ?? _mintUrl, proofs };
+export function encodeToken(proofs: Proof[], mintUrl?: string, unit?: CashuProofUnit): string {
+  const token: Token = { mint: mintUrl ?? _mintUrl, proofs, unit };
   return getEncodedTokenV4(token);
 }
 

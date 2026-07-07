@@ -55,7 +55,7 @@ interface TradingPanelProps {
   onLimitPriceChange?: (price: number) => void
   walletReady?: boolean
   onWalletRequired?: (comment?: string) => void
-  onTopUpRequired?: () => void
+  onTopUpRequired?: (comment?: string) => void
   disabled?: boolean
 }
 
@@ -978,7 +978,8 @@ export function TradingPanel({
                 return
               }
               if (buyNeedsTopUp) {
-                onTopUpRequired?.()
+                const comment = tradeComment.trim()
+                onTopUpRequired?.(comment || undefined)
                 return
               }
               const comment = tradeComment.trim()

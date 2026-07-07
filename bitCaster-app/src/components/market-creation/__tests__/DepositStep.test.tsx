@@ -7,11 +7,49 @@ import { DepositStep } from '../DepositStep'
 
 const requestEcashDeposit = vi.fn()
 const getDepositStatus = vi.fn()
+const getWalletForUnit = vi.fn()
+const encodeToken = vi.fn()
+const addProofs = vi.fn()
+const getUnitProofs = vi.fn()
+const selectAndReserveUnitProofs = vi.fn()
+const releaseProofReservation = vi.fn()
+const replaceProofs = vi.fn()
+const reserveProofs = vi.fn()
+const ensureImplicitWallet = vi.fn()
+let activeMintUrl = 'https://mint.example'
+let walletBalance = 200_000_000
 
 vi.mock('@/lib/markets', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/markets')>()),
   requestEcashDeposit: (...args: unknown[]) => requestEcashDeposit(...args),
   getDepositStatus: (...args: unknown[]) => getDepositStatus(...args),
+}))
+
+vi.mock('@/lib/cashu', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/cashu')>()),
+  encodeToken: (...args: unknown[]) => encodeToken(...args),
+  getWalletForUnit: (...args: unknown[]) => getWalletForUnit(...args),
+}))
+
+vi.mock('@/stores/proof-db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/stores/proof-db')>()),
+  addProofs: (...args: unknown[]) => addProofs(...args),
+  getUnitProofs: (...args: unknown[]) => getUnitProofs(...args),
+  selectAndReserveUnitProofs: (...args: unknown[]) => selectAndReserveUnitProofs(...args),
+  releaseProofReservation: (...args: unknown[]) => releaseProofReservation(...args),
+  replaceProofs: (...args: unknown[]) => replaceProofs(...args),
+  reserveProofs: (...args: unknown[]) => reserveProofs(...args),
+}))
+
+vi.mock('@/stores/wallet', () => ({
+  useBalance: () => walletBalance,
+  useWalletStore: Object.assign(
+    (selector: (state: { activeMintUrl: string; ensureImplicitWallet: typeof ensureImplicitWallet }) => unknown) =>
+      selector({ activeMintUrl, ensureImplicitWallet }),
+    {
+      getState: () => ({ activeMintUrl, ensureImplicitWallet }),
+    },
+  ),
 }))
 
 const DISCLOSURE =
@@ -56,6 +94,17 @@ describe('DepositStep', () => {
     await i18n.changeLanguage('en')
     requestEcashDeposit.mockReset()
     getDepositStatus.mockReset()
+    getWalletForUnit.mockReset()
+    encodeToken.mockReset()
+    addProofs.mockReset()
+    getUnitProofs.mockReset()
+    selectAndReserveUnitProofs.mockReset()
+    releaseProofReservation.mockReset()
+    replaceProofs.mockReset()
+    reserveProofs.mockReset()
+    ensureImplicitWallet.mockReset()
+    activeMintUrl = 'https://mint.example'
+    walletBalance = 200_000_000
     requestEcashDeposit.mockResolvedValue({
       depositId: 'deposit-1',
       state: 'paid',
@@ -65,6 +114,26 @@ describe('DepositStep', () => {
       state: 'paid',
       method: 'ecash',
     })
+    getUnitProofs.mockResolvedValue([
+      { id: 'keyset-msat', amount: 100_000_000, secret: 'proof-a', C: 'C-a' },
+      { id: 'keyset-msat', amount: 100_000_000, secret: 'proof-b', C: 'C-b' },
+    ])
+    selectAndReserveUnitProofs.mockResolvedValue([
+      { id: 'keyset-msat', amount: 100_000_000, secret: 'proof-a', C: 'C-a' },
+      { id: 'keyset-msat', amount: 100_000_000, secret: 'proof-b', C: 'C-b' },
+    ])
+    getWalletForUnit.mockResolvedValue({
+      send: vi.fn().mockResolvedValue({
+        keep: [{ id: 'keyset-msat', amount: 100_000_000, secret: 'change-a', C: 'C-change' }],
+        send: [{ id: 'keyset-msat', amount: 100_000_000, secret: 'send-a', C: 'C-send' }],
+      }),
+    })
+    encodeToken.mockReturnValue('cashuBlocally-generated')
+    addProofs.mockResolvedValue(undefined)
+    ensureImplicitWallet.mockResolvedValue(undefined)
+    releaseProofReservation.mockResolvedValue(undefined)
+    replaceProofs.mockResolvedValue(undefined)
+    reserveProofs.mockResolvedValue(undefined)
   })
 
   async function openFunding(user = userEvent.setup()) {
@@ -140,17 +209,17 @@ describe('DepositStep', () => {
     await openFunding(user)
     await user.clear(screen.getByRole('spinbutton'))
     await user.type(screen.getByRole('spinbutton'), '15')
-    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBusdtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     await waitFor(() => {
       expect(requestEcashDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
         1_500,
-        'cashuBusdtoken',
+        'cashuBlocally-generated',
         expect.objectContaining({ fundAmm: true, unit: 'usd', divisibility: 1_000 }),
       )
     })
+    expect(getWalletForUnit).toHaveBeenCalledWith('https://mint.example', 'usd')
   })
 
   it('renders USD funding tiers in dollars instead of cent subunits', async () => {
@@ -166,24 +235,62 @@ describe('DepositStep', () => {
     expect(screen.queryByText('15000')).not.toBeInTheDocument()
   })
 
-  it('submits AMM funding with a pasted ecash token', async () => {
+  it('submits AMM funding by paying from the local wallet', async () => {
     const user = userEvent.setup()
     renderStep()
 
     await openFunding(user)
     expect(screen.queryByTestId('request-ln-invoice')).not.toBeInTheDocument()
-    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
+    expect(screen.queryByTestId('amm-funding-ecash-token')).not.toBeInTheDocument()
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     await waitFor(() => {
       expect(requestEcashDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
         100_000_000,
-        'cashuBtoken',
+        'cashuBlocally-generated',
         expect.objectContaining({ fundAmm: true, unit: 'msat', divisibility: 10_000 }),
       )
     })
+    expect(selectAndReserveUnitProofs).toHaveBeenCalledWith(
+      'https://mint.example',
+      { unit: 'msat', minimumAmount: 100_000_000 },
+      expect.stringMatching(/^market-funding:/),
+    )
+    expect(reserveProofs).not.toHaveBeenCalled()
+    expect(replaceProofs).toHaveBeenCalledWith(
+      ['proof-a', 'proof-b'],
+      [expect.objectContaining({ secret: 'change-a', mintUrl: 'https://mint.example', baseAsset: 'sat', unit: 'msat' })],
+    )
     expect(await screen.findByText('Payment received — crediting your market…')).toBeInTheDocument()
+  })
+
+  it('guards local-wallet funding against rapid double-clicks', async () => {
+    const user = userEvent.setup()
+    let resolveDeposit!: (value: { depositId: string; state: 'paid' }) => void
+    requestEcashDeposit.mockReturnValue(new Promise((resolve) => { resolveDeposit = resolve }))
+    renderStep()
+
+    await openFunding(user)
+    const payButton = screen.getByTestId('confirm-amm-funding')
+    await Promise.all([user.click(payButton), user.click(payButton)])
+
+    await waitFor(() => expect(requestEcashDeposit).toHaveBeenCalledTimes(1))
+    await act(async () => resolveDeposit({ depositId: 'deposit-1', state: 'paid' }))
+    expect(await screen.findByText('Payment received — crediting your market…')).toBeInTheDocument()
+  })
+
+  it('opens the wallet top-up modal when local funding balance is insufficient', async () => {
+    const user = userEvent.setup()
+    walletBalance = 1_000
+    renderStep()
+
+    await openFunding(user)
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+
+    expect(screen.getByRole('heading', { name: 'Insufficient balance' })).toBeInTheDocument()
+    expect(screen.getByTestId('insufficient-balance-top-up')).toBeInTheDocument()
+    expect(requestEcashDeposit).not.toHaveBeenCalled()
   })
 
   it('renders SAT funding tiers as hardcoded round whole-sat amounts', async () => {
@@ -198,14 +305,13 @@ describe('DepositStep', () => {
     expect(screen.getByText(/At this budget, the bot posts ~/)).toBeInTheDocument()
     expect(screen.getByText('Depth before mint fees — actual quoted depth may be lower.')).toBeInTheDocument()
 
-    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     await waitFor(() => {
       expect(requestEcashDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
         100_000_000,
-        'cashuBtoken',
+        'cashuBlocally-generated',
         expect.objectContaining({ fundAmm: true, unit: 'msat', divisibility: 10_000 }),
       )
     })
@@ -222,7 +328,6 @@ describe('DepositStep', () => {
 
     await openFunding(user)
     timeoutSpy.mockClear()
-    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
     expect(await screen.findByText('Payment received — crediting your market…')).toBeInTheDocument()
 
@@ -257,7 +362,6 @@ describe('DepositStep', () => {
 
     await openFunding(user)
     timeoutSpy.mockClear()
-    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     expect(await screen.findByText('Awaiting payment…')).toBeInTheDocument()
@@ -302,12 +406,48 @@ describe('DepositStep', () => {
     renderStep()
 
     await openFunding(user)
-    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     expect(await screen.findByText('Deposit failed')).toBeInTheDocument()
     expect(screen.getByText('Proof verification or crediting failed. Check the token and retry.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Retry ecash deposit' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Retry wallet payment' })).toBeEnabled()
+    expect(replaceProofs).toHaveBeenCalledWith(
+      ['proof-a', 'proof-b'],
+      [
+        expect.objectContaining({ secret: 'change-a' }),
+        expect.objectContaining({ secret: 'send-a' }),
+      ],
+    )
+  })
+
+  it('does not roll back submitted proofs when local persistence fails after accepted deposit', async () => {
+    const user = userEvent.setup()
+    replaceProofs.mockRejectedValueOnce(new Error('indexeddb write failed'))
+    renderStep()
+
+    await openFunding(user)
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+
+    await waitFor(() => expect(requestEcashDeposit).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(replaceProofs).toHaveBeenCalledTimes(1))
+    expect(replaceProofs).toHaveBeenCalledWith(
+      ['proof-a', 'proof-b'],
+      [expect.objectContaining({ secret: 'change-a' })],
+    )
+    expect(
+      screen.getByText('Payment was sent but local wallet state may be inconsistent. Please restart the app to reconcile.'),
+    ).toBeInTheDocument()
+  })
+
+  it('disables local-wallet funding after payment is accepted while auto-navigation is pending', async () => {
+    const user = userEvent.setup()
+    renderStep()
+
+    await openFunding(user)
+    await user.click(screen.getByTestId('confirm-amm-funding'))
+
+    expect(await screen.findByText('Payment received — crediting your market…')).toBeInTheDocument()
+    expect(screen.getByTestId('confirm-amm-funding')).toBeDisabled()
   })
 
   it('renders USD funding tiers as hardcoded round whole-dollar amounts and requests base subunits', async () => {
@@ -321,14 +461,13 @@ describe('DepositStep', () => {
     expect(screen.queryByText('$15.00')).not.toBeInTheDocument()
     expect(screen.queryByText('cents')).not.toBeInTheDocument()
 
-    await user.type(screen.getByTestId('amm-funding-ecash-token'), 'cashuBusdtoken')
     await user.click(screen.getByTestId('confirm-amm-funding'))
 
     await waitFor(() => {
       expect(requestEcashDeposit).toHaveBeenCalledWith(
         'cond-test-abc123',
         100_000,
-        'cashuBusdtoken',
+        'cashuBlocally-generated',
         expect.objectContaining({ fundAmm: true, unit: 'usd', divisibility: 1_000 }),
       )
     })

@@ -131,6 +131,17 @@ type TopUpStage = "closed" | "modal" | "overlay";
 type TopUpReason =
   | { kind: "collateral"; required: number; baseAsset: string }
   | { kind: "score"; required: number };
+export interface PendingTopUpOrderIntent {
+  marketId: string;
+  selectionKey: string;
+  tradeAmount: number;
+  tradeSide: TradeSide;
+  orderType: OrderType;
+  limitPrice: number;
+  comment?: string;
+  baseAsset: "sat" | "usd" | "jpy";
+  required: number;
+}
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
   ? Omit<T, Extract<keyof T, K>>
@@ -241,6 +252,58 @@ export function decideTradeCollateralGate(input: {
     return { kind: "top-up", balance: input.balance, required };
   }
   return { kind: "proceed", balance: input.balance, required };
+}
+
+export function tradeSelectionIntentKey(selection: TradeSelection): string {
+  return `${selection.side}:${selection.outcomeId ?? ""}`;
+}
+
+export function buildPendingTopUpOrderIntent(input: {
+  market: MarketDetailType | null;
+  tradeSelection: TradeSelection | null;
+  tradeAmount: number;
+  tradeSide: TradeSide;
+  orderType: OrderType;
+  limitPrice: number;
+  comment?: string;
+  baseAsset: string | null | undefined;
+  required: number;
+}): PendingTopUpOrderIntent | null {
+  if (!input.market || !input.tradeSelection || input.tradeAmount <= 0) return null;
+  if (!Number.isFinite(input.required) || input.required <= 0) return null;
+  return {
+    marketId: input.market.id,
+    selectionKey: tradeSelectionIntentKey(input.tradeSelection),
+    tradeAmount: input.tradeAmount,
+    tradeSide: input.tradeSide,
+    orderType: input.orderType,
+    limitPrice: input.limitPrice,
+    comment: input.comment?.trim() || undefined,
+    baseAsset: normalizeMarketBaseAsset(input.baseAsset),
+    required: Math.ceil(input.required),
+  };
+}
+
+export function pendingTopUpOrderIntentMatches(
+  intent: PendingTopUpOrderIntent,
+  current: {
+    market: MarketDetailType | null;
+    tradeSelection: TradeSelection | null;
+    tradeAmount: number;
+    tradeSide: TradeSide;
+    orderType: OrderType;
+    limitPrice: number;
+  },
+): boolean {
+  return (
+    current.market?.id === intent.marketId &&
+    current.tradeSelection != null &&
+    tradeSelectionIntentKey(current.tradeSelection) === intent.selectionKey &&
+    current.tradeAmount === intent.tradeAmount &&
+    current.tradeSide === intent.tradeSide &&
+    current.orderType === intent.orderType &&
+    current.limitPrice === intent.limitPrice
+  );
 }
 
 export function resolveTradeOrderBooks(
@@ -1052,6 +1115,9 @@ export function MarketDetailPage() {
   const [pendingTopUpComment, setPendingTopUpComment] = useState<
     string | undefined
   >();
+  const [pendingTopUpIntent, setPendingTopUpIntent] = useState<
+    PendingTopUpOrderIntent | null
+  >(null);
   const [lazySetupComment, setLazySetupComment] = useState<
     string | undefined
   >();
@@ -1940,6 +2006,19 @@ export function MarketDetailPage() {
         if (collateralGate.kind === "top-up") {
           setBalanceAtCheck(collateralGate.balance);
           setPendingTopUpComment(comment?.trim() || undefined);
+          setPendingTopUpIntent(
+            buildPendingTopUpOrderIntent({
+              market,
+              tradeSelection,
+              tradeAmount,
+              tradeSide,
+              orderType,
+              limitPrice,
+              comment,
+              baseAsset: marketBaseAsset,
+              required: collateralGate.required,
+            }),
+          );
           setTopUpReason({
             kind: "collateral",
             required: collateralGate.required,
@@ -1954,6 +2033,19 @@ export function MarketDetailPage() {
         if (score.kind === "needs-regular-top-up") {
           setBalanceAtCheck(score.balanceSats);
           setPendingTopUpComment(comment?.trim() || undefined);
+          setPendingTopUpIntent(
+            buildPendingTopUpOrderIntent({
+              market,
+              tradeSelection,
+              tradeAmount,
+              tradeSide,
+              orderType,
+              limitPrice,
+              comment,
+              baseAsset: "sat",
+              required: score.requiredSats,
+            }),
+          );
           setTopUpReason({
             kind: "score",
             required: score.requiredSats,
@@ -2049,33 +2141,105 @@ export function MarketDetailPage() {
     await handleTradeConfirm(comment);
   }, [handleTradeConfirm, lazySetupComment]);
 
-  // After a successful top-up, close the overlay and place the order.
-  // TopUpOverlay only invokes onSuccess once proofs have been written to the
-  // store, so the balance is guaranteed to cover `tradeAmount` by the time we
-  // get here — no re-read needed.
+  // After a successful top-up, close the overlay and place the order once, but
+  // only if the wallet proof store now confirms the exact unit/amount captured
+  // when the user first clicked Buy. If the market/selection/amount changed
+  // while the interstitial was open, require a fresh confirmation instead of
+  // auto-executing a stale intent.
   const handleTopUpSuccess = useCallback(async () => {
+    const intent = pendingTopUpIntent;
     setTopUpStage("closed");
     setTopUpReason(null);
-    const comment = pendingTopUpComment;
+    setPendingTopUpIntent(null);
     setPendingTopUpComment(undefined);
-    await handleTradeConfirm(comment);
-  }, [handleTradeConfirm, pendingTopUpComment]);
+    if (!intent) return;
+    if (
+      !pendingTopUpOrderIntentMatches(intent, {
+        market,
+        tradeSelection,
+        tradeAmount,
+        tradeSide,
+        orderType,
+        limitPrice,
+      })
+    ) {
+      setTradeSubmitStatus({
+        kind: "info",
+        message: t("trade.topUpIntentChanged"),
+      });
+      return;
+    }
+    if (!activeMintUrl) {
+      setTradeSubmitStatus({
+        kind: "error",
+        message: t("trade.selectActiveMintBeforeSubmit"),
+      });
+      return;
+    }
+    const balance = await getBalance(activeMintUrl, { baseAsset: intent.baseAsset });
+    if (balance < intent.required) {
+      setTradeSubmitStatus({
+        kind: "error",
+        message: t("trade.topUpStillInsufficient"),
+      });
+      return;
+    }
+    await handleTradeConfirm(intent.comment ?? pendingTopUpComment);
+  }, [
+    activeMintUrl,
+    handleTradeConfirm,
+    limitPrice,
+    market,
+    orderType,
+    pendingTopUpComment,
+    pendingTopUpIntent,
+    t,
+    tradeAmount,
+    tradeSelection,
+    tradeSide,
+  ]);
 
   const handleStartTopUp = useCallback(() => {
     setTopUpStage("overlay");
   }, []);
 
-  const handleTradingPanelTopUp = useCallback(() => {
+  const handleTradingPanelTopUp = useCallback((comment?: string) => {
+    if (!market || !tradeSelection || tradeAmount <= 0) return;
     setBalanceAtCheck(0);
     const required =
       tradeSide === "sell" ? tradeFaceAmountSubunits : requiredBuyCostSubunits;
+    const baseAsset = marketBaseAsset;
+    setPendingTopUpComment(comment?.trim() || undefined);
+    setPendingTopUpIntent(
+      buildPendingTopUpOrderIntent({
+        market,
+        tradeSelection,
+        tradeAmount,
+        tradeSide,
+        orderType,
+        limitPrice,
+        comment,
+        baseAsset,
+        required: Math.max(required, 1),
+      }),
+    );
     setTopUpReason({
       kind: "collateral",
       required: Math.max(required, 1),
-      baseAsset: marketBaseAsset,
+      baseAsset,
     });
     setTopUpStage("overlay");
-  }, [marketBaseAsset, requiredBuyCostSubunits, tradeFaceAmountSubunits, tradeSide]);
+  }, [
+    limitPrice,
+    market,
+    marketBaseAsset,
+    orderType,
+    requiredBuyCostSubunits,
+    tradeAmount,
+    tradeFaceAmountSubunits,
+    tradeSelection,
+    tradeSide,
+  ]);
 
   const handleRelatedMarketClick = useCallback(
     (marketId: string) => {
@@ -2178,6 +2342,8 @@ export function MarketDetailPage() {
           onCancel={() => {
             setTopUpStage("closed");
             setTopUpReason(null);
+            setPendingTopUpIntent(null);
+            setPendingTopUpComment(undefined);
           }}
           onTopUp={handleStartTopUp}
         />
@@ -2203,6 +2369,8 @@ export function MarketDetailPage() {
           onCancel={() => {
             setTopUpStage("closed");
             setTopUpReason(null);
+            setPendingTopUpIntent(null);
+            setPendingTopUpComment(undefined);
           }}
         />
       )}

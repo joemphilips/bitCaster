@@ -173,6 +173,61 @@ export async function getUnitProofs(
   );
 }
 
+export async function selectAndReserveUnitProofs(
+  mintUrl: string | undefined,
+  options: { unit: CashuProofUnit | string; minimumAmount?: number },
+  reservedBy: string,
+): Promise<StoredProof[]> {
+  const unit = parseCashuProofUnit(options.unit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
+  const normalizedMintUrl = mintUrl ? normalizeUrl(mintUrl) : undefined;
+  const minimumAmount = options.minimumAmount ?? 0;
+  let selected: StoredProof[] = [];
+
+  await db.transaction("rw", db.proofs, async () => {
+    const rows = normalizedMintUrl
+      ? await db.proofs.where("mintUrl").equals(normalizedMintUrl).toArray()
+      : await db.proofs.toArray();
+    const spendable = rows
+      .map(normalizeStoredProof)
+      .filter(
+        (proof) =>
+          !proof.reservedBy &&
+          !isCtfProof(proof) &&
+          normalizeStoredProofUnit(proof) === unit,
+      );
+
+    const picked: StoredProof[] = [];
+    let pickedAmount = 0;
+    for (const proof of spendable) {
+      picked.push(proof);
+      pickedAmount += amountToNumber(proof.amount);
+      if (minimumAmount > 0 && pickedAmount >= minimumAmount) break;
+    }
+    if (minimumAmount > 0 && pickedAmount < minimumAmount) {
+      throw new Error("Insufficient spendable proofs for requested amount");
+    }
+
+    const currentRows = await db.proofs.bulkGet(picked.map((proof) => proof.secret));
+    if (currentRows.length !== picked.length) {
+      throw new Error("Selected proof reservation failed: proof set changed");
+    }
+    const current = currentRows.map((row) => (row ? normalizeStoredProof(row) : undefined));
+    if (current.some((row) => !row || row.reservedBy)) {
+      throw new Error("Selected proof reservation failed: proof already reserved or missing");
+    }
+
+    selected = current.filter((row): row is StoredProof => !!row);
+    if (selected.length > 0) {
+      await db.proofs.bulkPut(
+        selected.map((proof) => normalizeStoredProof({ ...proof, reservedBy })),
+      );
+    }
+  });
+
+  return selected;
+}
+
 export async function getOutcomeProofs(
   mintUrl: string,
   conditionId: string,

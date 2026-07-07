@@ -87,6 +87,15 @@ message also carries the quote payment separately. Sat-display markets use
 10,000 msat face value of YES and Bob locks 3,700 msat of regular collateral.
 Implementations must not use one amount for both swap legs.
 
+Wire payloads use the canonical OpenAPI and AsyncAPI enum strings exactly as
+specified, not lowercase or numeric encodings. For example, clients should
+expect values such as `side: "Buy"`, `path: "Mint"`, `status: "Filled"`, and
+`tokenSide: "Outcome"` on REST fill responses and real-time match updates.
+Fill responses may also carry `makerEphemeralPubkey`, a nullable compressed
+secp256k1 public key for the maker order. When it is present, the taker can use
+it to derive the ECDH shared secret without an extra pubkey round trip. When it
+is `null`, clients must continue through the normal TradeHub pubkey exchange.
+
 For mint matches, the order book journals the trade start and then consumes the
 matched quantity. The public order status exposes the matched row with a
 `tradeId`; once both parties complete the atomic swap the trade becomes

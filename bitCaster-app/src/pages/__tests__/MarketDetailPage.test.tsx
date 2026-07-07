@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import {
   assertMarketAcceptsOrders,
   booksByOutcomeSetFromDetail,
+  buildPendingTopUpOrderIntent,
   composeMarketDetail,
   createMarketDetailDataState,
   decideTradeCollateralGate,
@@ -10,6 +11,7 @@ import {
   fetchMarketDetailWithBooks,
   liveTradeChartUpdate,
   marketDetailDataReducer,
+  pendingTopUpOrderIntentMatches,
   resolvePreflightSplitBuyCollateralRequirement,
   resolveTradeOrderBooks,
   shouldPromptForFundedActionBackup,
@@ -60,6 +62,21 @@ vi.mock("react-router", () => ({
 
 vi.mock("@/components/market-detail/PriceChart", () => ({
   PriceChart: () => <div data-testid="price-chart" />,
+}));
+
+vi.mock("@/components/market-detail/TopUpOverlay", () => ({
+  TopUpOverlay: ({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) => (
+    <div role="dialog" aria-label="Top Up Wallet">
+      <h2>Top Up Wallet</h2>
+      <input data-testid="top-up-amount-input" />
+      <button data-testid="top-up-success" onClick={onSuccess}>
+        Simulate top-up success
+      </button>
+      <button data-testid="top-up-cancel" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("@/hooks/useMarketStatusLive", () => ({
@@ -143,12 +160,16 @@ vi.mock("@/lib/walletHoldings", () => ({
   buildIndexedDbTokenHoldings: mocks.buildIndexedDbTokenHoldings,
 }));
 
-vi.mock("@/stores/wallet", () => ({
-  getBalance: mocks.getBalance,
-  useActiveMintInputFeePpk: () => 0,
-  useWalletStore: (selector: (state: typeof mocks.walletState) => unknown) =>
-    selector(mocks.walletState),
-}));
+vi.mock("@/stores/wallet", () => {
+  const useWalletStore = (selector: (state: typeof mocks.walletState) => unknown) =>
+    selector(mocks.walletState);
+  useWalletStore.getState = () => mocks.walletState;
+  return {
+    getBalance: mocks.getBalance,
+    useActiveMintInputFeePpk: () => 0,
+    useWalletStore,
+  };
+});
 
 vi.mock("@/stores/settings", () => ({
   useSettingsStore: (selector: (state: typeof mocks.settingsState) => unknown) =>
@@ -228,6 +249,31 @@ function yesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     },
     ...overrides,
   } as MarketDetail;
+}
+
+function usdYesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
+  return yesNoMarket({
+    baseUnit: "USD",
+    baseAsset: "usd",
+    divisibility: 100,
+    outcomeOrderBooks: {
+      Yes: askBook(40),
+      No: emptyBook,
+    },
+    ...overrides,
+  });
+}
+
+function mockAcceptedOrder() {
+  vi.mocked(submitOrder).mockResolvedValue({
+    orderId: "order-auto-1",
+    status: "filled",
+    remainingAmountSubunits: 0,
+    fills: [],
+    pendingPubkeySubmissions: [],
+    baseAsset: "usd",
+    divisibility: 100,
+  });
 }
 
 function categoricalMarket(): MarketDetail {
@@ -479,6 +525,123 @@ describe("MarketDetailPage live market status", () => {
 
     expect(await screen.findByRole("heading", { name: "Top Up Wallet" })).toBeInTheDocument();
     expect(screen.getByTestId("top-up-amount-input")).toBeInTheDocument();
+  });
+
+  it("auto-executes a USD market order once top-up success leaves enough proof-store balance", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 0,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    mocks.getBalance.mockResolvedValue(0);
+    const market = usdYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(40) : emptyBook,
+    );
+    mockAcceptedOrder();
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await screen.findByTestId("insufficient-balance-top-up");
+    fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
+    mocks.getBalance.mockResolvedValue(100);
+    fireEvent.click(await screen.findByTestId("top-up-success"));
+
+    await waitFor(() => expect(submitOrder).toHaveBeenCalledTimes(1));
+    expect(submitOrder).toHaveBeenCalledWith(
+      "condition-yesno-Yes",
+      expect.objectContaining({
+        amountSubunits: 100,
+        outcomeId: "Yes",
+        side: "Buy",
+        timeInForce: "FAK",
+      }),
+    );
+  });
+
+  it("does not auto-execute a USD market order when post-top-up balance is still insufficient", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 0,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    mocks.getBalance.mockResolvedValue(0);
+    const market = usdYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(40) : emptyBook,
+    );
+    mockAcceptedOrder();
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await screen.findByTestId("insufficient-balance-top-up");
+    fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
+    mocks.getBalance.mockResolvedValue(39);
+    fireEvent.click(await screen.findByTestId("top-up-success"));
+
+    await screen.findAllByText(
+      "Top-up completed, but the wallet balance is still below the order requirement.",
+    );
+    expect(submitOrder).not.toHaveBeenCalled();
+  });
+
+  it("drops a pending USD market order intent when order details change during top-up", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 0,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    mocks.getBalance.mockResolvedValue(0);
+    const market = usdYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(40) : emptyBook,
+    );
+    mockAcceptedOrder();
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await screen.findByTestId("insufficient-balance-top-up");
+    fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "2" },
+    });
+    mocks.getBalance.mockResolvedValue(40);
+    fireEvent.click(await screen.findByTestId("top-up-success"));
+
+    await screen.findAllByText(
+      "Order details changed during top-up. Review the order and confirm again.",
+    );
+    expect(submitOrder).not.toHaveBeenCalled();
   });
 });
 
@@ -958,5 +1121,87 @@ describe("decideTradeCollateralGate", () => {
         preflightSplitRequirement: 100,
       }),
     ).toEqual({ kind: "proceed", balance: 100, required: 100 });
+  });
+});
+
+describe("pending top-up order intent", () => {
+  it("binds a USD top-up intent to market, selection, amount, comment, and required cents", () => {
+    const market = yesNoMarket({
+      id: "condition-usd",
+      baseAsset: "usd",
+      baseUnit: "USD",
+      divisibility: 1_000,
+    });
+
+    const intent = buildPendingTopUpOrderIntent({
+      market,
+      tradeSelection: { side: "yes" },
+      tradeAmount: 2,
+      tradeSide: "buy",
+      orderType: "limit",
+      limitPrice: 450,
+      comment: "  auto after top-up  ",
+      baseAsset: "usd",
+      required: 900,
+    });
+
+    expect(intent).toMatchObject({
+      marketId: "condition-usd",
+      selectionKey: "yes:",
+      tradeAmount: 2,
+      tradeSide: "buy",
+      orderType: "limit",
+      limitPrice: 450,
+      comment: "auto after top-up",
+      baseAsset: "usd",
+      required: 900,
+    });
+    expect(
+      intent &&
+        pendingTopUpOrderIntentMatches(intent, {
+          market,
+          tradeSelection: { side: "yes" },
+          tradeAmount: 2,
+          tradeSide: "buy",
+          orderType: "limit",
+          limitPrice: 450,
+        }),
+    ).toBe(true);
+  });
+
+  it("drops a pending top-up intent when amount or selection changes before success", () => {
+    const market = yesNoMarket({ id: "condition-usd", baseAsset: "usd" });
+    const intent = buildPendingTopUpOrderIntent({
+      market,
+      tradeSelection: { side: "yes" },
+      tradeAmount: 2,
+      tradeSide: "buy",
+      orderType: "market",
+      limitPrice: 999,
+      baseAsset: "usd",
+      required: 1_998,
+    });
+
+    expect(intent).not.toBeNull();
+    expect(
+      pendingTopUpOrderIntentMatches(intent!, {
+        market,
+        tradeSelection: { side: "yes" },
+        tradeAmount: 3,
+        tradeSide: "buy",
+        orderType: "market",
+        limitPrice: 999,
+      }),
+    ).toBe(false);
+    expect(
+      pendingTopUpOrderIntentMatches(intent!, {
+        market,
+        tradeSelection: { side: "no" },
+        tradeAmount: 2,
+        tradeSide: "buy",
+        orderType: "market",
+        limitPrice: 999,
+      }),
+    ).toBe(false);
   });
 });

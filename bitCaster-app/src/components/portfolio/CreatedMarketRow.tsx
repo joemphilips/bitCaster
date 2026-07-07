@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type KeyboardEvent, type SyntheticEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { CreatedMarket, CreatedMarketStatus } from "@/types/portfolio";
 import {
@@ -44,8 +44,31 @@ export function CreatedMarketRow({
     market.oracle?.outcomes[0] ?? "",
   );
 
+  const handleRowClick = () => {
+    onView?.(market.id);
+  };
+
+  const handleRowKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!onView) return;
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onView(market.id);
+  };
+
+  const stopRowNavigation = (event: SyntheticEvent) => {
+    event.stopPropagation();
+  };
+
   return (
-    <div className="rounded-lg p-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-700/50">
+    <div
+      onClick={onView ? handleRowClick : undefined}
+      onKeyDown={handleRowKeyDown}
+      tabIndex={onView ? 0 : undefined}
+      className={`rounded-lg p-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-700/50 ${
+        onView ? "cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500" : ""
+      }`}
+    >
       <div className="flex items-center gap-3">
         {/* Market Image */}
         <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-slate-200 dark:bg-slate-700">
@@ -115,7 +138,10 @@ export function CreatedMarketRow({
         {canClaimFees && onClaimFees && (
           <button
             type="button"
-            onClick={() => onClaimFees(market.id)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onClaimFees(market.id);
+            }}
             className="shrink-0 rounded-lg bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:hover:bg-amber-800/40"
           >
             {t("portfolio.claimFees")}
@@ -127,6 +153,8 @@ export function CreatedMarketRow({
             <select
               value={selectedOutcome}
               onChange={(e) => setSelectedOutcome(e.target.value)}
+              onClick={stopRowNavigation}
+              onKeyDown={stopRowNavigation}
               aria-label={t("creator.winningOutcomeLabel", {
                 title: market.title,
               })}
@@ -146,9 +174,10 @@ export function CreatedMarketRow({
                   ? t("creator.closingMarket")
                   : t("creator.closeMarket")
               }
-              onClick={() =>
-                onPublishOracleAttestation?.(market.id, selectedOutcome)
-              }
+              onClick={(event) => {
+                event.stopPropagation();
+                onPublishOracleAttestation?.(market.id, selectedOutcome);
+              }}
               className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
             >
               <CheckCircle2 className="h-4 w-4" />
@@ -164,7 +193,10 @@ export function CreatedMarketRow({
         {onView && (
           <button
             type="button"
-            onClick={() => onView(market.id)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onView(market.id);
+            }}
             aria-label={t("portfolio.viewMarket", { title: market.title })}
             className="shrink-0 rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white"
           >

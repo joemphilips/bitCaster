@@ -16,7 +16,7 @@ const yesNoMarket: YesNoMarket = {
   volume: 100000,
   liquidity: 50000,
   liquiditySubunits: 50_000,
-    ammBotBudgetSubunits: 50_000,
+  ammBotBudgetSubunits: 50_000,
   volumeLifetimeSubunits: 100_000,
   closingDate: '2026-12-31T00:00:00Z',
   createdDate: '2026-01-01T00:00:00Z',
@@ -41,7 +41,7 @@ const categoricalMarket: CategoricalMarket = {
   volume: 50000,
   liquidity: 20000,
   liquiditySubunits: 20_000,
-    ammBotBudgetSubunits: 20_000,
+  ammBotBudgetSubunits: 20_000,
   volumeLifetimeSubunits: 50_000,
   closingDate: '2026-06-30T00:00:00Z',
   createdDate: '2026-01-01T00:00:00Z',
@@ -93,6 +93,29 @@ describe('MarketCard', () => {
 
     expect(screen.getByText('100 sats')).toBeInTheDocument()
     expect(screen.getByText('50 sats')).toBeInTheDocument()
+  })
+
+  it('shows non-zero funded USD bot budget in dollars', () => {
+    render(
+      <MarketCard
+        market={{
+          ...yesNoMarket,
+          baseAsset: 'usd',
+          baseMarket: 'USD',
+          volumeLifetimeSubunits: 12_345,
+          ammBotBudgetSubunits: 1_234,
+        }}
+      />,
+    )
+
+    expect(screen.getByTestId('market-bot-budget')).toHaveTextContent('$12.34')
+    expect(screen.getByTestId('market-bot-budget')).not.toHaveTextContent('0 sats')
+  })
+
+  it('shows zero bot budget for unfunded markets without inventing liquidity', () => {
+    render(<MarketCard market={{ ...yesNoMarket, ammBotBudgetSubunits: 0 }} />)
+
+    expect(screen.getByTestId('market-bot-budget')).toHaveTextContent('0 sats')
   })
 
   it('renders categorical market with outcome list', () => {

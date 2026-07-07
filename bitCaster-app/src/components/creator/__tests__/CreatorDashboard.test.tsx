@@ -189,6 +189,36 @@ describe('CreatorDashboard', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/creator/new')
   })
 
+  it('navigates to the market detail page when a My Markets row is clicked', async () => {
+    const user = userEvent.setup()
+    const marketId = 'b'.repeat(64)
+    mockUseCreatorDashboardState.mockReturnValue({
+      pubkey: 'a'.repeat(64),
+      stats: { ...emptyStats(), activeMarketsCount: 1 },
+      markets: [
+        {
+          id: marketId,
+          title: 'Clickable creator market',
+          imageUrl: '',
+          status: 'active',
+          createdDate: '2026-04-10T00:00:00.000Z',
+          volume: 0,
+          creatorFeesEarned: 0,
+          creatorFeePercent: 0,
+        },
+      ] as CreatedMarket[],
+      isLoading: false,
+      error: null,
+      refresh: vi.fn(),
+    })
+
+    renderDashboard()
+
+    await user.click(screen.getByText('Clickable creator market'))
+
+    expect(mockNavigate).toHaveBeenCalledWith(`/markets/${marketId}`)
+  })
+
   it('switches to the analytics tab and shows the coming-soon placeholder', async () => {
     const user = userEvent.setup()
     mockUseCreatorDashboardState.mockReturnValue({
@@ -246,7 +276,7 @@ describe('CreatorDashboard', () => {
     useSettingsStore.setState({
       nostrSignerMode: 'nsec',
       nsecSecret: 'nsec1test',
-      relays: [{ url: 'wss://relay.example.test', connectionStatus: 'connected' }],
+      relays: [{ url: 'ws://localhost:7777', connectionStatus: 'connected' }],
     })
     useCreatorMarketsStore.setState({
       markets: [{
