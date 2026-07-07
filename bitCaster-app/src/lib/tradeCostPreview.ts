@@ -161,10 +161,10 @@ export function computeMarketOrderQuotePreview(params: {
   }
 
   consume(
-    tradeSide === 'sell' ? (orderBook?.bids ?? []) : (orderBook?.asks ?? []),
+    tradeSide === 'Sell' ? (orderBook?.bids ?? []) : (orderBook?.asks ?? []),
     (price) => price,
   )
-  if (tradeSide === 'buy') {
+  if (tradeSide === 'Buy') {
     consume(complementaryOrderBook?.bids ?? [], (price) => divisibility - price)
   }
 

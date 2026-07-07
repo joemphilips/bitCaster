@@ -101,7 +101,7 @@ describe('buildOrderStatusNotifications', () => {
   it('notifies on a mint match-shaped settlement handle', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
-      status: 'matched',
+      status: 'Matched',
       remainingAmountSubunits: 100,
       filledAmountSubunits: 100,
     } as OrderStatusResponse
@@ -116,7 +116,7 @@ describe('buildOrderStatusNotifications', () => {
     expect(notifications).toHaveLength(1)
     expect(notifications[0]).toMatchObject({
       id: 'order-1-matched-1',
-      kind: 'matched',
+      kind: 'Matched',
       filledAmountSubunits: 100,
       remainingAmountSubunits: 100,
       occurredAt: 123,
@@ -166,7 +166,7 @@ describe('buildOrderStatusNotifications', () => {
   it('notifies when an order settlement fails terminally', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
-      status: 'failed',
+      status: 'Failed',
       remainingAmountSubunits: 0,
       filledAmountSubunits: 0,
     } as OrderStatusResponse
@@ -181,7 +181,7 @@ describe('buildOrderStatusNotifications', () => {
     expect(notifications).toHaveLength(1)
     expect(notifications[0]).toMatchObject({
       id: 'order-1-failed',
-      kind: 'failed',
+      kind: 'Failed',
       filledAmountSubunits: 0,
       remainingAmountSubunits: 0,
       occurredAt: 123,
@@ -191,7 +191,7 @@ describe('buildOrderStatusNotifications', () => {
   it('carries the trade baseAsset onto the notification unit', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
-      status: 'filled',
+      status: 'Filled',
       filledAmountSubunits: 50,
       remainingAmountSubunits: 0,
     } as OrderStatusResponse
@@ -205,7 +205,7 @@ describe('buildOrderStatusNotifications', () => {
 
     expect(notifications).toHaveLength(1)
     expect(notifications[0]).toMatchObject({
-      kind: 'filled',
+      kind: 'Filled',
       unit: 'usd',
     })
   })
@@ -213,7 +213,7 @@ describe('buildOrderStatusNotifications', () => {
   it('defaults unit to sat when trade baseAsset is absent', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),
-      status: 'filled',
+      status: 'Filled',
       filledAmountSubunits: 1000,
       remainingAmountSubunits: 0,
     } as OrderStatusResponse

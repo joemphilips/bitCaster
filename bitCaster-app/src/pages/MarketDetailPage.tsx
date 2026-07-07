@@ -201,7 +201,7 @@ export async function resolvePreflightSplitBuyCollateralRequirement(input: {
 }): Promise<number | null> {
   if (
     !input.preflightSplit ||
-    input.tradeSide !== "buy" ||
+    input.tradeSide !== "Buy" ||
     input.orderType !== "limit" ||
     input.tradeAmount <= 0
   ) {
@@ -245,7 +245,7 @@ export function decideTradeCollateralGate(input: {
   | { kind: "top-up"; balance: number; required: number }
   | { kind: "proceed"; balance: number; required: number } {
   const required =
-    input.tradeSide === "sell"
+    input.tradeSide === "Sell"
       ? input.tradeFaceAmountSubunits
       : (input.preflightSplitRequirement ?? input.requiredBuyCostSubunits);
   if (input.balance < required) {
@@ -1076,7 +1076,7 @@ export function MarketDetailPage() {
     null,
   );
   const [tradeAmount, setTradeAmount] = useState(0);
-  const [tradeSide, setTradeSide] = useState<TradeSide>("buy");
+  const [tradeSide, setTradeSide] = useState<TradeSide>("Buy");
   const [orderType, setOrderType] = useState<OrderType>("market");
   const [preflightSplit, setPreflightSplit] = useState(true);
   const [limitPrice, setLimitPrice] = useState(
@@ -1458,7 +1458,7 @@ export function MarketDetailPage() {
   }, []);
 
   const marketBalanceGatePrice =
-    tradeSide === "sell" ? 1 : marketDivisibility - 1;
+    tradeSide === "Sell" ? 1 : marketDivisibility - 1;
 
   const tradeFaceAmountSubunits = displaySharesToFaceSubunits(
     tradeAmount,
@@ -1638,7 +1638,7 @@ export function MarketDetailPage() {
         });
         if (cancelled) return;
         const canBack =
-          tradeSide === "buy"
+          tradeSide === "Buy"
             ? holdings.baseUnitProofs >= requiredBuyCostSubunits
             : canBackOrder(
                 {
@@ -1656,9 +1656,9 @@ export function MarketDetailPage() {
         }
         setTradeFeasibility({
           canBack: false,
-          reason: tradeSide === "sell" ? "outcome-tokens" : "funds",
+          reason: tradeSide === "Sell" ? "outcome-tokens" : "funds",
           message:
-            tradeSide === "sell"
+            tradeSide === "Sell"
               ? "Insufficient outcome tokens"
               : "Insufficient funds",
         });
@@ -1806,7 +1806,7 @@ export function MarketDetailPage() {
             normalizeMarketDivisibility(latestMarket.divisibility, latestMarket.baseAsset);
         const shouldPreflightSplit =
           preflightSplit &&
-          tradeSide === "buy" &&
+          tradeSide === "Buy" &&
           orderType === "limit" &&
           !directCross &&
           !complementaryCross;
@@ -1980,7 +1980,7 @@ export function MarketDetailPage() {
       setIsTradeSubmitting(true);
       try {
         const preflightSplitRequirement =
-          tradeSide === "buy"
+          tradeSide === "Buy"
             ? await resolvePreflightSplitBuyCollateralRequirement({
                 activeMintUrl,
                 preflightSplit,
@@ -1993,7 +1993,7 @@ export function MarketDetailPage() {
               })
             : null;
         const current =
-          tradeSide === "sell"
+          tradeSide === "Sell"
             ? await getSellSideBalance(activeMintUrl, market, tradeSelection)
             : await getBalance(activeMintUrl, { baseAsset: marketBaseAsset });
         const collateralGate = decideTradeCollateralGate({
@@ -2207,7 +2207,7 @@ export function MarketDetailPage() {
     if (!market || !tradeSelection || tradeAmount <= 0) return;
     setBalanceAtCheck(0);
     const required =
-      tradeSide === "sell" ? tradeFaceAmountSubunits : requiredBuyCostSubunits;
+      tradeSide === "Sell" ? tradeFaceAmountSubunits : requiredBuyCostSubunits;
     const baseAsset = marketBaseAsset;
     setPendingTopUpComment(comment?.trim() || undefined);
     setPendingTopUpIntent(

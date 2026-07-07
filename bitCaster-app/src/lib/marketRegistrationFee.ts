@@ -161,7 +161,7 @@ async function resumeOrRetryRegistration(
   if (entry.state === "completed") {
     return registerCondition(request);
   }
-  if (entry.state === "failed") {
+  if (entry.state === "Failed") {
     throw new Error(
       `condition registration fee operation previously failed: ${entry.lastError ?? "unknown error"}`,
     );

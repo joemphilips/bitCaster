@@ -110,7 +110,7 @@ describe('useMarketPrice', () => {
         tradeId: 'trade-1',
         executionPrice: 63,
         amountSubunits: 10,
-        side: 'buy',
+        side: 'Buy',
         timestamp: '2026-01-01T00:01:00Z',
       })
     })

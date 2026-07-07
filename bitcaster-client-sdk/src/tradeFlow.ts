@@ -356,7 +356,7 @@ function validateExpectedOrderEconomics(input: {
 
   const side = normalizeOrderSide(order.side)
   if (input.role === 'buyer') {
-    if (side !== 'buy') return 'Trade role does not match the submitted order side.'
+    if (side !== 'Buy') return 'Trade role does not match the submitted order side.'
     const maxQuote = quotePaymentSubunits({
       faceAmountSubunits: faceAmount,
       priceNumerator: order.priceSubunits,
@@ -373,8 +373,8 @@ function validateExpectedOrderEconomics(input: {
   // swap seller that splits collateral, regardless of whether its tokenSide is
   // Outcome, Complement, or omitted. tokenSide describes which token the maker
   // wants to keep, not whether the maker may take the swap seller role.
-  const mintBidSeller = input.settlementKind === 'Mint' && side === 'buy'
-  if (side !== 'sell' && !mintBidSeller) {
+  const mintBidSeller = input.settlementKind === 'Mint' && side === 'Buy'
+  if (side !== 'Sell' && !mintBidSeller) {
     return 'Trade role does not match the submitted order side.'
   }
   const effectiveSellerPrice = mintBidSeller
@@ -391,8 +391,8 @@ function validateExpectedOrderEconomics(input: {
   return null
 }
 
-function normalizeOrderSide(side: TradeCreatedExpectedOrder['side']): 'buy' | 'sell' {
-  return side === 'bid' || side === 'Buy' ? 'buy' : 'sell'
+function normalizeOrderSide(side: TradeCreatedExpectedOrder['side']): 'Buy' | 'Sell' {
+  return side === 'bid' || side === 'Buy' ? 'Buy' : 'Sell'
 }
 
 function isPositiveInteger(value: unknown): value is number {
@@ -456,15 +456,15 @@ export type TradeStateAction =
   | 'finish-refunded'
 
 export function decideTradeStateChanged(newState: string): TradeStateAction {
-  switch (newState.toLowerCase()) {
-    case 'settling':
+  switch (newState) {
+    case 'Settling':
       return 'settlement-claim'
-    case 'confirmed':
+    case 'Confirmed':
       return 'finish-confirmed'
-    case 'refunded':
+    case 'Refunded':
       return 'finish-refunded'
-    case 'failed':
-    case 'cancelled':
+    case 'Failed':
+    case 'Cancelled':
       return 'finish-failed'
     default:
       return 'none'

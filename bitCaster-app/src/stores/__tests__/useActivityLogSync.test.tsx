@@ -104,7 +104,7 @@ describe("useActivityLogSync", () => {
 
     act(() => {
       useActivityLogStore.getState().addActivity({
-        type: "buy",
+        type: "Buy",
         amountSats: 500,
         status: "completed",
         marketId: "m1",
@@ -121,7 +121,7 @@ describe("useActivityLogSync", () => {
     expect(mockPublishActivityLog.mock.calls[0][0]).toBe("private-key");
     expect(mockPublishActivityLog.mock.calls[0][1]).toHaveLength(1);
     expect(mockPublishActivityLog.mock.calls[0][1][0]).toMatchObject({
-      type: "buy",
+      type: "Buy",
       amountSats: 500,
       marketId: "m1",
     });

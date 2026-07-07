@@ -267,7 +267,7 @@ function usdYesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
 function mockAcceptedOrder() {
   vi.mocked(submitOrder).mockResolvedValue({
     orderId: "order-auto-1",
-    status: "filled",
+    status: "Filled",
     remainingAmountSubunits: 0,
     fills: [],
     pendingPubkeySubmissions: [],
@@ -1055,7 +1055,7 @@ describe("resolvePreflightSplitBuyCollateralRequirement", () => {
       market,
       tradeSelection: { side: "yes", outcomeId: "outcome-0" },
       tradeAmount: 1,
-      tradeSide: "buy",
+      tradeSide: "Buy",
       orderType: "limit",
       limitPrice: 40,
     });
@@ -1088,7 +1088,7 @@ describe("resolvePreflightSplitBuyCollateralRequirement", () => {
       market,
       tradeSelection: { side: "yes", outcomeId: "outcome-0" },
       tradeAmount: 1,
-      tradeSide: "buy",
+      tradeSide: "Buy",
       orderType: "limit",
       limitPrice: 40,
     });
@@ -1103,7 +1103,7 @@ describe("decideTradeCollateralGate", () => {
     expect(
       decideTradeCollateralGate({
         balance: 50,
-        tradeSide: "buy",
+        tradeSide: "Buy",
         tradeFaceAmountSubunits: 100,
         requiredBuyCostSubunits: 40,
         preflightSplitRequirement: 100,
@@ -1115,7 +1115,7 @@ describe("decideTradeCollateralGate", () => {
     expect(
       decideTradeCollateralGate({
         balance: 100,
-        tradeSide: "buy",
+        tradeSide: "Buy",
         tradeFaceAmountSubunits: 100,
         requiredBuyCostSubunits: 40,
         preflightSplitRequirement: 100,
@@ -1137,7 +1137,7 @@ describe("pending top-up order intent", () => {
       market,
       tradeSelection: { side: "yes" },
       tradeAmount: 2,
-      tradeSide: "buy",
+      tradeSide: "Buy",
       orderType: "limit",
       limitPrice: 450,
       comment: "  auto after top-up  ",
@@ -1149,7 +1149,7 @@ describe("pending top-up order intent", () => {
       marketId: "condition-usd",
       selectionKey: "yes:",
       tradeAmount: 2,
-      tradeSide: "buy",
+      tradeSide: "Buy",
       orderType: "limit",
       limitPrice: 450,
       comment: "auto after top-up",
@@ -1162,7 +1162,7 @@ describe("pending top-up order intent", () => {
           market,
           tradeSelection: { side: "yes" },
           tradeAmount: 2,
-          tradeSide: "buy",
+          tradeSide: "Buy",
           orderType: "limit",
           limitPrice: 450,
         }),
@@ -1175,7 +1175,7 @@ describe("pending top-up order intent", () => {
       market,
       tradeSelection: { side: "yes" },
       tradeAmount: 2,
-      tradeSide: "buy",
+      tradeSide: "Buy",
       orderType: "market",
       limitPrice: 999,
       baseAsset: "usd",
@@ -1188,7 +1188,7 @@ describe("pending top-up order intent", () => {
         market,
         tradeSelection: { side: "yes" },
         tradeAmount: 3,
-        tradeSide: "buy",
+        tradeSide: "Buy",
         orderType: "market",
         limitPrice: 999,
       }),
@@ -1198,7 +1198,7 @@ describe("pending top-up order intent", () => {
         market,
         tradeSelection: { side: "no" },
         tradeAmount: 2,
-        tradeSide: "buy",
+        tradeSide: "Buy",
         orderType: "market",
         limitPrice: 999,
       }),

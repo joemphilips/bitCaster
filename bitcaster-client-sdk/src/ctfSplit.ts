@@ -65,7 +65,7 @@ export type CtfProofOperationKind =
   | "ctf-merge"
   | "ctf-redeem"
   | "regular-split";
-export type ProofOperationState = "prepared" | "completed" | "failed";
+export type ProofOperationState = "prepared" | "completed" | "Failed";
 
 export class ProofOperationPendingError extends Error {
   constructor(operationId: string) {
@@ -1142,7 +1142,7 @@ async function resumeCtfMergeToRegular(
   if (entry.state === "completed") {
     return (entry.resultProofs?.regular ?? []).map(normalizeProof);
   }
-  if (entry.state === "failed") {
+  if (entry.state === "Failed") {
     throw new Error(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
     );
@@ -1265,7 +1265,7 @@ async function resumeCtfSplit(
   if (entry.state === "completed") {
     return structuredClone(entry.resultProofs ?? {});
   }
-  if (entry.state === "failed") {
+  if (entry.state === "Failed") {
     throw new Error(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
     );
@@ -1364,7 +1364,7 @@ async function resumeRegularSplit(
       spent: entry.inputs.map(normalizeProof),
     };
   }
-  if (entry.state === "failed") {
+  if (entry.state === "Failed") {
     throw new Error(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
     );

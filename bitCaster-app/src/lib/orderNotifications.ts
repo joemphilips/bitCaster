@@ -36,10 +36,10 @@ export function addOrderSubmitNotifications({
   if (fillCount <= 0 || filledAmountSubunits <= 0) return
 
   const fullyFilled = remainingAmountSubunits <= 0
-  if (status === 'matched') {
+  if (status === 'Matched') {
     add({
       id: `${orderId}-matched-${fillCount}`,
-      kind: 'matched',
+      kind: 'Matched',
       orderId,
       marketId,
       filledAmountSubunits,
@@ -52,7 +52,7 @@ export function addOrderSubmitNotifications({
 
   add({
     id: fullyFilled ? `${orderId}-filled` : `${orderId}-partially_filled-${fillCount}`,
-    kind: fullyFilled ? 'filled' : 'partially_filled',
+    kind: fullyFilled ? 'Filled' : 'partially_filled',
     orderId,
     marketId,
     filledAmountSubunits,

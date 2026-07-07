@@ -162,10 +162,10 @@ function NotificationIcon({ kind }: { kind: Notification['kind'] }) {
   if (kind === 'accepted') {
     return <Check className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
   }
-  if (kind === 'filled') {
+  if (kind === 'Filled') {
     return <Check className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" />
   }
-  if (kind === 'matched' || kind === 'partially_filled') {
+  if (kind === 'Matched' || kind === 'partially_filled') {
     return <TrendingUp className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />
   }
   if (kind === 'market_closed') {
@@ -182,7 +182,7 @@ function formatNotification(n: Notification, t: (key: string, opts?: Record<stri
   if (n.kind === 'accepted') {
     return t('notification.accepted', { market: marketLabel })
   }
-  if (n.kind === 'filled') {
+  if (n.kind === 'Filled') {
     return t('notification.filled', { amount: formatAmount(filled, n.unit), market: marketLabel })
   }
   if (n.kind === 'partially_filled') {
@@ -192,7 +192,7 @@ function formatNotification(n: Notification, t: (key: string, opts?: Record<stri
       market: marketLabel,
     })
   }
-  if (n.kind === 'matched') {
+  if (n.kind === 'Matched') {
     return t('notification.matched', { amount: formatAmount(filled, n.unit), market: marketLabel })
   }
   if (n.kind === 'market_closed') {

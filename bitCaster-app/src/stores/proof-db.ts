@@ -48,7 +48,7 @@ export type ProofOperationKind =
   | "ctf-condition-registration"
   | "regular-split"
   | "proof-split";
-export type ProofOperationState = "prepared" | "completed" | "failed";
+export type ProofOperationState = "prepared" | "completed" | "Failed";
 
 export interface ProofOperationRecord {
   operationId: string;
@@ -530,7 +530,7 @@ export async function markProofOperationFailed(
   const existing = await getRequiredProofOperation(operationId);
   const updated: ProofOperationRecord = {
     ...existing,
-    state: "failed",
+    state: "Failed",
     lastError: error instanceof Error ? error.message : String(error),
     failureCode: mintErrorCode(error),
     updatedAt: Date.now(),

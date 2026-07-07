@@ -22,11 +22,11 @@ const MAX_NOTIFICATIONS = 100
  */
 export type NotificationKind =
   | 'accepted'
-  | 'matched'
-  | 'filled'
+  | 'Matched'
+  | 'Filled'
   | 'partially_filled'
   | 'cancelled'
-  | 'failed'
+  | 'Failed'
   | 'market_closed'
 
 export interface Notification {

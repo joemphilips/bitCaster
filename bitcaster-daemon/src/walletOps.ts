@@ -200,7 +200,7 @@ export async function receiveWalletToken(
   if (mintUrl !== profile.mintUrl) {
     throw new Error('cashu token mint does not match daemon profile mint')
   }
-  if (asset.kind === 'outcome') {
+  if (asset.kind === 'Outcome') {
     return receiveOutcomeToken(decoded.proofs as Proof[], mintUrl, asset, secrets, deps)
   }
 
@@ -624,7 +624,7 @@ async function replaceConsolidatedProofs(input: {
       const asset: StoredProofAsset =
         collection === COLLATERAL_COLLECTION
           ? { kind: 'sats' }
-          : { kind: 'outcome', conditionId: input.conditionId, outcomeSetId: collection }
+          : { kind: 'Outcome', conditionId: input.conditionId, outcomeSetId: collection }
       for (const proof of proofs) {
         if (existingSecrets.has(proof.secret)) continue
         existingSecrets.add(proof.secret)
@@ -817,7 +817,7 @@ async function resumeCtfConsolidationOperation(
     })
     return resultProofs
   }
-  if (entry.state === 'failed') {
+  if (entry.state === 'Failed') {
     throw new Error(
       `Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
     )
@@ -873,7 +873,7 @@ async function resumeWalletSendOperation(
     })
     return split
   }
-  if (entry.state === 'failed') {
+  if (entry.state === 'Failed') {
     throw new Error(`Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`)
   }
   if (!wallet.checkProofsStates) {
@@ -1304,7 +1304,7 @@ function resolveReceiveAsset(metadata: WalletReceiveMetadata): StoredProofAsset 
   if (!conditionId || !outcomeSetId) {
     throw new Error('conditionId and outcomeSetId must be supplied together')
   }
-  return { kind: 'outcome', conditionId, outcomeSetId, baseAsset }
+  return { kind: 'Outcome', conditionId, outcomeSetId, baseAsset }
 }
 
 async function getConditionKeysetIds(

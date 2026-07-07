@@ -199,7 +199,7 @@ async function splitWalletCompleteSet(input: {
         input.mintUrl,
         proofs,
         'available',
-        { kind: 'outcome', conditionId: input.conditionId, outcomeSetId },
+        { kind: 'Outcome', conditionId: input.conditionId, outcomeSetId },
         now,
       )
     }
@@ -1124,7 +1124,7 @@ async function availableMarketProofs(input: {
       continue
     }
     if (
-      record.asset.kind === 'outcome' &&
+      record.asset.kind === 'Outcome' &&
       record.asset.conditionId === input.conditionId
     ) {
       groups[record.asset.outcomeSetId] = [
@@ -1687,7 +1687,7 @@ async function replaceReservedSatProofsWithReservedOutcomes(input: {
           state: 'reserved',
           reservedBy: input.reservationId,
           asset: {
-            kind: 'outcome',
+            kind: 'Outcome',
             conditionId: input.conditionId,
             outcomeSetId,
             baseAsset,

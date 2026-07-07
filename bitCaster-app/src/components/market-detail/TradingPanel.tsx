@@ -152,7 +152,7 @@ function YesNoOutcomes({
   disabled?: boolean
 }) {
   const { t } = useTranslation()
-  const isSell = tradeSide === 'sell'
+  const isSell = tradeSide === 'Sell'
   return (
     <div className="grid grid-cols-2 gap-3">
       <button
@@ -208,7 +208,7 @@ function CategoricalOutcomes({
   disabled?: boolean
 }) {
   const { t } = useTranslation()
-  const isSell = tradeSide === 'sell'
+  const isSell = tradeSide === 'Sell'
   return (
     <ScrollableContainer className="space-y-2 max-h-64 overflow-y-auto pr-1 scrollbar-hide">
       {market.outcomes.map((outcome) => {
@@ -277,7 +277,7 @@ function NumericOutcomes({
   disabled?: boolean
 }) {
   const { t } = useTranslation()
-  const isSell = tradeSide === 'sell'
+  const isSell = tradeSide === 'Sell'
   const formatPrice = (value: number) => {
     if (market.unit === 'USD') return `$${value.toLocaleString()}`
     return `${value.toLocaleString()} ${market.unit}`
@@ -367,10 +367,10 @@ function BuySellToggle({
   return (
     <div className="grid grid-cols-2 mb-3">
       <button
-        onClick={() => onTradeSideChange?.('buy')}
+        onClick={() => onTradeSideChange?.('Buy')}
         disabled={disabled}
         className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
-          tradeSide === 'buy'
+          tradeSide === 'Buy'
             ? 'text-slate-900 dark:text-white border-slate-900 dark:border-white'
             : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
         }`}
@@ -378,10 +378,10 @@ function BuySellToggle({
         {t('trade.buy')}
       </button>
       <button
-        onClick={() => onTradeSideChange?.('sell')}
+        onClick={() => onTradeSideChange?.('Sell')}
         disabled={disabled}
         className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
-          tradeSide === 'sell'
+          tradeSide === 'Sell'
             ? 'text-slate-900 dark:text-white border-slate-900 dark:border-white'
             : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
         }`}
@@ -635,7 +635,7 @@ export function TradingPanel({
 }: TradingPanelProps) {
   const { t } = useTranslation()
   const [tradeComment, setTradeComment] = useState('')
-  const isSell = tradeSide === 'sell'
+  const isSell = tradeSide === 'Sell'
   const isLimit = orderType === 'limit'
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset)
   const unitLabel = marketUnitLabel(baseAsset)

@@ -18,7 +18,7 @@ describe('addOrderSubmitNotifications', () => {
 
     expect(add.mock.calls.map(([notification]) => notification.kind)).toEqual([
       'accepted',
-      'filled',
+      'Filled',
     ])
     expect(add.mock.calls[1][0]).toMatchObject({
       id: 'order-1-filled',
@@ -61,13 +61,13 @@ describe('addOrderSubmitNotifications', () => {
       requestedAmountSubunits: 100,
       remainingAmountSubunits: 0,
       fillCount: 1,
-      status: 'matched',
+      status: 'Matched',
       now: 123,
     })
 
     expect(add.mock.calls.map(([notification]) => notification.kind)).toEqual([
       'accepted',
-      'matched',
+      'Matched',
     ])
     expect(add.mock.calls[1][0]).toMatchObject({
       id: 'order-1-matched-1',

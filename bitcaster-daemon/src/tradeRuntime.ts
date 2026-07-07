@@ -220,11 +220,11 @@ export function buildTradeResumePlan(state: DaemonState): TradeResumePlan {
 }
 
 function isLiveOrder(order: LocalOrderRecord): boolean {
-  return !['filled', 'cancelled', 'failed'].includes(order.status.toLowerCase())
+  return !['Filled', 'cancelled', 'Failed'].includes(order.status)
 }
 
 function isLiveSwap(swap: LocalSwapRecord): boolean {
-  return !['confirmed', 'refunded', 'failed'].includes(swap.step)
+  return !['confirmed', 'refunded', 'Failed'].includes(swap.step)
 }
 
 function shouldRetryJoinTrade(state: DaemonState, tradeId: string): boolean {

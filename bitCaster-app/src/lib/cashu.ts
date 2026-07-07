@@ -1040,7 +1040,7 @@ async function redeemKeysetLeg(
   });
 
   if (result.losing) {
-    if (existing?.state === "failed") {
+    if (existing?.state === "Failed") {
       await removeProofs(proofs.map((proof) => proof.secret));
     }
     return [];

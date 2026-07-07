@@ -139,7 +139,7 @@ function positionSide(outcomeCollection: string): Position['side'] {
   const normalized = outcomeCollection.toUpperCase()
   if (normalized === 'YES') return 'yes'
   if (normalized === 'NO') return 'no'
-  return 'outcome'
+  return 'Outcome'
 }
 
 async function loadMarketCatalogue(

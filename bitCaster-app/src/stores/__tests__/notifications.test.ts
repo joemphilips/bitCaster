@@ -11,7 +11,7 @@ function makeNotification(
 ): Notification {
   return {
     id,
-    kind: 'filled',
+    kind: 'Filled',
     orderId: 'order-1',
     marketId: 'cond-Alice',
     filledAmountSubunits: 100,

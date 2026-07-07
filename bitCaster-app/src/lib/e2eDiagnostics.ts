@@ -84,7 +84,7 @@ export function installE2EDiagnostics(): void {
           }
         }
         for (const swap of Object.values(state.byTradeId)) {
-          if (swap.step === "completed" || swap.step === "failed") {
+          if (swap.step === "completed" || swap.step === "Failed") {
             rememberTerminalSwap(swap);
           }
         }

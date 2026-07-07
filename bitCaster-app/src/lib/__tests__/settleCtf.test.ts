@@ -75,7 +75,7 @@ vi.mock('@/stores/proof-db', () => {
         const existing = proofDbState.operations.get(operationId)
         const updated = {
           ...existing,
-          state: 'failed',
+          state: 'Failed',
           lastError: error instanceof Error ? error.message : String(error),
           failureCode:
             typeof error === 'object' &&
@@ -398,7 +398,7 @@ describe('settleCtfPosition — per-keyset redeem', () => {
     const losingOpAfterResume = Array.from(proofDbState.operations.values()).find(
       (op) => op.metadata?.keysetId === 'keyset-B',
     )
-    expect(losingOpAfterResume?.state).toBe('failed')
+    expect(losingOpAfterResume?.state).toBe('Failed')
     expect(proofDbState.removedSecrets.filter((secret) => secret === 'sB')).toHaveLength(2)
   })
 
@@ -428,7 +428,7 @@ describe('settleCtfPosition — per-keyset redeem', () => {
     const losingOp = Array.from(proofDbState.operations.values()).find(
       (op) => op.metadata?.keysetId === 'keyset-B',
     )
-    expect(losingOp?.state).toBe('failed')
+    expect(losingOp?.state).toBe('Failed')
     expect(losingOp?.failureCode).toBe(13015)
   })
 
@@ -440,7 +440,7 @@ describe('settleCtfPosition — per-keyset redeem', () => {
     proofDbState.operations.set(`ctf-redeem:${CONDITION_ID}:keyset-A:sA`, {
       operationId: `ctf-redeem:${CONDITION_ID}:keyset-A:sA`,
       kind: 'ctf-redeem',
-      state: 'failed',
+      state: 'Failed',
       mintUrl: 'http://mint.test',
       inputs: [proof],
       outputs: { regular: [] },
@@ -472,7 +472,7 @@ describe('settleCtfPosition — per-keyset redeem', () => {
     proofDbState.operations.set(`ctf-redeem:${CONDITION_ID}:keyset-A:sA`, {
       operationId: `ctf-redeem:${CONDITION_ID}:keyset-A:sA`,
       kind: 'ctf-redeem',
-      state: 'failed',
+      state: 'Failed',
       mintUrl: 'http://mint.test',
       inputs: [proof],
       outputs: { regular: [] },

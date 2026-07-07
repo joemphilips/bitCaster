@@ -145,7 +145,7 @@ const STATE_META: Record<
   TradeLifecycleState,
   { icon: React.ReactNode; labelKey: string; colour: string }
 > = {
-  matched: {
+  Matched: {
     icon: <SpinnerIcon className="w-5 h-5" />,
     labelKey: 'trade.preparing',
     colour: 'text-blue-600 dark:text-blue-400',
@@ -165,7 +165,7 @@ const STATE_META: Record<
     labelKey: 'trade.retrying',
     colour: 'text-amber-600 dark:text-amber-400',
   },
-  failed: {
+  Failed: {
     icon: <AlertIcon className="w-5 h-5" />,
     labelKey: 'trade.failed',
     colour: 'text-red-600 dark:text-red-400',

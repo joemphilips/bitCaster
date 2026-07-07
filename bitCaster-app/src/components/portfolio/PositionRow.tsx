@@ -26,7 +26,7 @@ function fallbackPositionLabel(position: Position, sideLabel: string): string {
       .filter(Boolean)
       .join(" or ");
   }
-  return position.side === "outcome" ? "Position" : sideLabel;
+  return position.side === "Outcome" ? "Position" : sideLabel;
 }
 
 export function PositionRow({

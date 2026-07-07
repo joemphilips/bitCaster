@@ -52,7 +52,7 @@ export interface PortfolioStats {
 // =============================================================================
 
 export type PositionStatus = 'active' | 'closed'
-export type PositionSide = 'yes' | 'no' | 'outcome'
+export type PositionSide = 'yes' | 'no' | 'Outcome'
 
 export interface Position {
   id: string
@@ -121,8 +121,8 @@ export interface Fund {
 // Activity Types (replaces OrderHistoryItem)
 // =============================================================================
 
-export type ActivityType = 'deposit' | 'withdrawal' | 'buy' | 'sell' | 'payout_claimed' | 'creator_fee_claimed'
-export type ActivityStatus = 'pending' | 'completed' | 'failed'
+export type ActivityType = 'deposit' | 'withdrawal' | 'Buy' | 'Sell' | 'payout_claimed' | 'creator_fee_claimed'
+export type ActivityStatus = 'pending' | 'completed' | 'Failed'
 
 export interface ActivityItem {
   id: string

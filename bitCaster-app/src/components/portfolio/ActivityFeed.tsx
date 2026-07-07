@@ -16,8 +16,8 @@ import {
 const TYPE_META: Record<ActivityType, { icon: typeof ArrowDownLeft; labelKey: string; colorClass: string }> = {
   deposit: { icon: ArrowDownLeft, labelKey: 'activityType.deposit', colorClass: 'text-emerald-500 bg-emerald-100 dark:bg-emerald-900/30' },
   withdrawal: { icon: ArrowUpRight, labelKey: 'activityType.withdrawal', colorClass: 'text-rose-500 bg-rose-100 dark:bg-rose-900/30' },
-  buy: { icon: ShoppingCart, labelKey: 'activityType.buy', colorClass: 'text-blue-500 bg-blue-100 dark:bg-blue-900/30' },
-  sell: { icon: Tag, labelKey: 'activityType.sell', colorClass: 'text-amber-500 bg-amber-100 dark:bg-amber-900/30' },
+  Buy: { icon: ShoppingCart, labelKey: 'activityType.buy', colorClass: 'text-blue-500 bg-blue-100 dark:bg-blue-900/30' },
+  Sell: { icon: Tag, labelKey: 'activityType.sell', colorClass: 'text-amber-500 bg-amber-100 dark:bg-amber-900/30' },
   payout_claimed: { icon: Trophy, labelKey: 'activityType.payout_claimed', colorClass: 'text-emerald-500 bg-emerald-100 dark:bg-emerald-900/30' },
   creator_fee_claimed: { icon: Coins, labelKey: 'activityType.creator_fee_claimed', colorClass: 'text-amber-500 bg-amber-100 dark:bg-amber-900/30' },
 }

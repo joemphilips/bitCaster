@@ -328,7 +328,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   const tradeJoinAttemptsRef = useRef<Map<string, number>>(new Map());
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
-    (swap) => swap.step !== "completed" && swap.step !== "failed",
+    (swap) => swap.step !== "completed" && swap.step !== "Failed",
   );
   const pendingTrades = Object.values(pendingTradesByOrderId);
   const tradeHubEnabled =
@@ -391,7 +391,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
             const message = err instanceof Error ? err.message : String(err);
             useActiveSwapsStore
               .getState()
-              .setStep(swap.tradeId, "failed", message);
+              .setStep(swap.tradeId, "Failed", message);
             tradeJoinAttemptsRef.current.delete(swap.tradeId);
             return;
           }
@@ -593,7 +593,7 @@ async function handleTradeCreated(
       .getState()
       .setStep(
         payload.tradeId,
-        "failed",
+        "Failed",
         "TradeCreated payload changed for an existing trade.",
       );
     return;
@@ -626,7 +626,7 @@ async function handleTradeCreatedOnce(
   if (!ownEphemeralPubkey) {
     useActiveSwapsStore
       .getState()
-      .setStep(payload.tradeId, "failed", "Missing match-time ephemeral pubkey.");
+      .setStep(payload.tradeId, "Failed", "Missing match-time ephemeral pubkey.");
     return;
   }
 
@@ -659,7 +659,7 @@ async function handleTradeCreatedOnce(
   if (!decision.accepted) {
     useActiveSwapsStore
       .getState()
-      .setStep(payload.tradeId, "failed", decision.error);
+      .setStep(payload.tradeId, "Failed", decision.error);
     return;
   }
 
@@ -675,7 +675,7 @@ async function handleTradeCreatedOnce(
   }
 
   const latest = useActiveSwapsStore.getState().byTradeId[payload.tradeId];
-  if (!latest || latest.role || latest.step === "failed") return;
+  if (!latest || latest.role || latest.step === "Failed") return;
   swap = latest;
 
   useActiveSwapsStore.getState().setRoleAndCounterparty(
@@ -1552,7 +1552,7 @@ async function runBuyerRespond(
     if (
       swap.step === "awaiting-confirmation" ||
       swap.step === "completed" ||
-      swap.step === "failed"
+      swap.step === "Failed"
     ) {
       return;
     }
@@ -1633,17 +1633,17 @@ function handleTradeStateChanged(
   if (action === "finish-confirmed") return finishSwap(tradeId, "success");
   if (action === "finish-failed" || action === "finish-refunded") {
     const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
-    if (swap?.step === "completed") return finishSwap(tradeId, "failed");
+    if (swap?.step === "completed") return finishSwap(tradeId, "Failed");
     if (swap && !swap.error) {
       useActiveSwapsStore
         .getState()
         .setStep(
           tradeId,
-          "failed",
+          "Failed",
           "settlement timed out before both parties confirmed",
         );
     }
-    return finishSwap(tradeId, "failed");
+    return finishSwap(tradeId, "Failed");
   }
   if (action === "settlement-claim") {
     void runSettlementClaim(tradeId, sendSwapMessage);
@@ -1661,7 +1661,7 @@ async function runSettlementClaim(
     if (
       swap.step === "awaiting-confirmation" ||
       swap.step === "completed" ||
-      swap.step === "failed"
+      swap.step === "Failed"
     )
       return;
     if (swap.role === "seller" && !swap.messages.lockedProofsBuyer) return;
@@ -2104,10 +2104,10 @@ function outcomeMetadataForCondition(
 // Cleanup helpers
 // ---------------------------------------------------------------------------
 
-function finishSwap(tradeId: string, outcome: "success" | "failed"): void {
+function finishSwap(tradeId: string, outcome: "success" | "Failed"): void {
   const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
   if (!swap) return;
-  if (outcome === "failed" && swap.step === "completed") return;
+  if (outcome === "Failed" && swap.step === "completed") return;
   const shouldNotify =
     outcome === "success" || isLocalTradeParticipant(swap, tradeId);
   emitTradeTerminal({
@@ -2117,7 +2117,7 @@ function finishSwap(tradeId: string, outcome: "success" | "failed"): void {
   });
   useActiveSwapsStore
     .getState()
-    .setStep(tradeId, outcome === "success" ? "completed" : "failed");
+    .setStep(tradeId, outcome === "success" ? "completed" : "Failed");
   useActiveSwapsStore.getState().clearProtocolState(tradeId);
   if (shouldNotify) {
     const toast = useToastStore.getState().addToast;
@@ -2144,8 +2144,8 @@ function failSwap(tradeId: string, err: unknown): void {
   const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
   if (!swap || swap.step === "completed") return;
   const message = err instanceof Error ? err.message : String(err);
-  useActiveSwapsStore.getState().setStep(tradeId, "failed", message);
-  finishSwap(tradeId, "failed");
+  useActiveSwapsStore.getState().setStep(tradeId, "Failed", message);
+  finishSwap(tradeId, "Failed");
 }
 
 function claimStep(tradeId: string, key: SwapWorkKey): boolean {

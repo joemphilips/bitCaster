@@ -206,7 +206,7 @@ describe("computeMarketOrderQuotePreview", () => {
   it("walks ask depth and returns average execution price for buys", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 3,
-      tradeSide: "buy",
+      tradeSide: "Buy",
       divisibility: 100,
       orderBook: {
         bids: [],
@@ -226,7 +226,7 @@ describe("computeMarketOrderQuotePreview", () => {
   it("walks bid depth for sells", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 2,
-      tradeSide: "sell",
+      tradeSide: "Sell",
       divisibility: 100,
       orderBook: {
         bids: [{ price: 45, amount: 200, total: 200 }],
@@ -243,7 +243,7 @@ describe("computeMarketOrderQuotePreview", () => {
   it("quotes complementary bids for market buys when the direct ask book is empty", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 2,
-      tradeSide: "buy",
+      tradeSide: "Buy",
       divisibility: 100,
       orderBook: { bids: [], asks: [], spread: 0 },
       complementaryOrderBook: {
@@ -262,7 +262,7 @@ describe("computeMarketOrderQuotePreview", () => {
     expect(
       computeMarketOrderQuotePreview({
         displayShares: 1,
-        tradeSide: "buy",
+        tradeSide: "Buy",
         divisibility: 100,
         orderBook: null,
         complementaryOrderBook: {
@@ -277,7 +277,7 @@ describe("computeMarketOrderQuotePreview", () => {
   it("uses complementary bids rather than complementary asks for market buys", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 1,
-      tradeSide: "buy",
+      tradeSide: "Buy",
       divisibility: 100,
       orderBook: null,
       complementaryOrderBook: {
@@ -294,7 +294,7 @@ describe("computeMarketOrderQuotePreview", () => {
   it("uses direct asks before complementary bids for partial market buys", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 3,
-      tradeSide: "buy",
+      tradeSide: "Buy",
       divisibility: 100,
       orderBook: {
         bids: [],
@@ -317,7 +317,7 @@ describe("computeMarketOrderQuotePreview", () => {
     expect(
       computeMarketOrderQuotePreview({
         displayShares: 1,
-        tradeSide: "buy",
+        tradeSide: "Buy",
         divisibility: 100,
         orderBook: { bids: [], asks: [], spread: 0 },
       }),

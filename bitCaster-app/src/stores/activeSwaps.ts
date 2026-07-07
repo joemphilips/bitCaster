@@ -68,7 +68,7 @@ export type SwapStep =
   | 'driving'
   | 'awaiting-confirmation'
   | 'completed'
-  | 'failed'
+  | 'Failed'
 
 export interface ActiveSwap {
   tradeId: string

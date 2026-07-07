@@ -21,11 +21,11 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 export type TradeRole = 'seller' | 'buyer'
 
 export type TradeLifecycleState =
-  | 'matched'
+  | 'Matched'
   | 'settling'
   | 'confirmed'
   | 'retrying'
-  | 'failed'
+  | 'Failed'
 
 /** Serialised form stored in sessionStorage — private key as hex. */
 export interface PersistedTradeEntry {

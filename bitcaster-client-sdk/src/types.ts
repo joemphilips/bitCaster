@@ -16,7 +16,7 @@ export interface SdkOrderBook {
 }
 
 export type SdkMarketType = 'yesno' | 'categorical' | 'numeric' | 'twodimensional'
-export type SdkTradeSide = 'buy' | 'sell'
+export type SdkTradeSide = 'Buy' | 'Sell'
 export type SdkOrderType = 'market' | 'limit'
 
 export interface SdkMarketForTrading {

@@ -332,7 +332,7 @@ describe("useTradeSettlement", () => {
     mockFetchOrderStatus.mockResolvedValue({
       orderId: "order-pending",
       marketId: "cond-YES",
-      status: "matched",
+      status: "Matched",
       remainingAmountSubunits: 0,
       filledAmountSubunits: 100,
       fills: [{ tradeId: "trade-status-retry" }],
@@ -545,7 +545,7 @@ describe("useTradeSettlement", () => {
     await waitFor(() =>
       expect(
         useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.step,
-      ).toBe("failed"),
+      ).toBe("Failed"),
     );
     expect(
       useActiveSwapsStore.getState().byTradeId["trade-unit-mismatch"]?.error,
@@ -607,7 +607,7 @@ describe("useTradeSettlement", () => {
     await waitFor(() =>
       expect(
         useActiveSwapsStore.getState().byTradeId["trade-price-mismatch"]?.step,
-      ).toBe("failed"),
+      ).toBe("Failed"),
     );
     expect(
       useActiveSwapsStore.getState().byTradeId["trade-price-mismatch"]?.error,
@@ -666,7 +666,7 @@ describe("useTradeSettlement", () => {
     await waitFor(() =>
       expect(
         useActiveSwapsStore.getState().byTradeId["trade-legacy-no-economics"]?.step,
-      ).toBe("failed"),
+      ).toBe("Failed"),
     );
     expect(
       useActiveSwapsStore.getState().byTradeId["trade-legacy-no-economics"]?.error,
@@ -730,7 +730,7 @@ describe("useTradeSettlement", () => {
     await waitFor(() =>
       expect(
         useActiveSwapsStore.getState().byTradeId["trade-missing-canonical"]?.step,
-      ).toBe("failed"),
+      ).toBe("Failed"),
     );
     expect(
       useActiveSwapsStore.getState().byTradeId["trade-missing-canonical"]?.error,
@@ -860,7 +860,7 @@ describe("useTradeSettlement", () => {
         useActiveSwapsStore.getState().byTradeId[
           "trade-nondefault-divisibility-no-unit"
         ]?.step,
-      ).toBe("failed"),
+      ).toBe("Failed"),
     );
     expect(
       useActiveSwapsStore.getState().byTradeId[
@@ -1001,7 +1001,7 @@ describe("useTradeSettlement", () => {
         useActiveSwapsStore.getState().byTradeId[
           "trade-nondefault-divisibility-mismatch"
         ]?.step,
-      ).toBe("failed"),
+      ).toBe("Failed"),
     );
     expect(
       useActiveSwapsStore.getState().byTradeId[
@@ -1511,7 +1511,7 @@ describe("useTradeSettlement", () => {
 
     let swap =
       useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"];
-    expect(swap.step).toBe("failed");
+    expect(swap.step).toBe("Failed");
     expect(swap.role).toBeNull();
     expect(swap.error).toMatch(/TradeCreated payload changed/i);
 
@@ -1522,7 +1522,7 @@ describe("useTradeSettlement", () => {
     await waitFor(() => {
       swap =
         useActiveSwapsStore.getState().byTradeId["trade-duplicate-inflight"];
-      expect(swap.step).toBe("failed");
+      expect(swap.step).toBe("Failed");
       expect(swap.role).toBeNull();
     });
     expect(mockSellerPreparePrelockedSwap).not.toHaveBeenCalled();
@@ -1571,7 +1571,7 @@ describe("useTradeSettlement", () => {
     });
 
     const swap = useActiveSwapsStore.getState().byTradeId["trade-2"];
-    expect(swap.step).toBe("failed");
+    expect(swap.step).toBe("Failed");
     expect(swap.role).toBeNull();
     expect(swap.error).toMatch(
       /locktime ordering violates protocol invariant/i,
@@ -1637,7 +1637,7 @@ describe("useTradeSettlement", () => {
     expect(
       useActiveSwapsStore.getState().byTradeId["trade-nonparticipant-failure"]
         .step,
-    ).toBe("failed");
+    ).toBe("Failed");
   });
 
   it("fails before locking proofs when TradeCreated outcome face is not a whole market share for sat/10000", async () => {
@@ -1692,7 +1692,7 @@ describe("useTradeSettlement", () => {
     await waitFor(() =>
       expect(
         useActiveSwapsStore.getState().byTradeId["trade-ambiguous-sat100"]?.step,
-      ).toBe("failed"),
+      ).toBe("Failed"),
     );
     expect(
       useActiveSwapsStore.getState().byTradeId["trade-ambiguous-sat100"]?.error,
@@ -1758,7 +1758,7 @@ describe("useTradeSettlement", () => {
     await waitFor(() =>
       expect(
         useActiveSwapsStore.getState().byTradeId["trade-ambiguous-usd-quote"]?.step,
-      ).toBe("failed"),
+      ).toBe("Failed"),
     );
     expect(
       useActiveSwapsStore.getState().byTradeId["trade-ambiguous-usd-quote"]?.error,
@@ -1822,7 +1822,7 @@ describe("useTradeSettlement", () => {
     await waitFor(() =>
       expect(
         useActiveSwapsStore.getState().byTradeId["trade-nondefault-no-expected-unit"]?.step,
-      ).toBe("failed"),
+      ).toBe("Failed"),
     );
     expect(
       useActiveSwapsStore.getState().byTradeId["trade-nondefault-no-expected-unit"]?.error,

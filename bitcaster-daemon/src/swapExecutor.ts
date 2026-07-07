@@ -35,7 +35,7 @@ import {
   updateState,
 } from './state.ts'
 
-type OutcomeAsset = Extract<StoredProofRecord['asset'], { kind: 'outcome' }>
+type OutcomeAsset = Extract<StoredProofRecord['asset'], { kind: 'Outcome' }>
 const PARTIAL_LOCK_REFUND_MARGIN_SECS = 60
 const RETRYABLE_SWAP_STEP_RETRY_DELAY_MS = 1_000
 const RETRYABLE_SWAP_STEP_MAX_ATTEMPTS = 90
@@ -206,7 +206,7 @@ export class DaemonSwapExecutor {
   }
 
   async onTradeCreated(swap: LocalSwapRecord | null): Promise<void> {
-    if (!swap || swap.step === 'failed') return
+    if (!swap || swap.step === 'Failed') return
     if (swap.role === 'seller' && swap.step === 'opened') {
       await this.runOnce(swap.tradeId, 'seller-open', () =>
         this.sellerOpen(swap.tradeId),
@@ -221,7 +221,7 @@ export class DaemonSwapExecutor {
   }
 
   async onSwapMessage(swap: LocalSwapRecord | null): Promise<void> {
-    if (!swap || swap.step === 'failed') return
+    if (!swap || swap.step === 'Failed') return
     if (swap.role === 'buyer') await this.maybeBuyerRespond(swap.tradeId)
     if (swap.role === 'seller') await this.maybeClaim(swap.tradeId)
   }
@@ -930,7 +930,7 @@ export class DaemonSwapExecutor {
         result.lockedProofs,
         'locked',
         {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: split.conditionId,
           outcomeSetId: preflight.lockOutcomeSetId,
         },
@@ -1004,7 +1004,7 @@ export class DaemonSwapExecutor {
       mintUrl,
       sourceProofs: selected.map((row) => row.proof),
       amountSats: amount,
-      preserveSourceKeyset: selected.some((row) => row.asset.kind === 'outcome'),
+      preserveSourceKeyset: selected.some((row) => row.asset.kind === 'Outcome'),
       operationId,
     })
     return {
@@ -1024,7 +1024,7 @@ export class DaemonSwapExecutor {
   ): Promise<ReservedExactProofGroup[]> {
     const byOutcome = new Map<string, StoredProofRecord[]>()
     for (const row of selected) {
-      if (row.asset.kind !== 'outcome') {
+      if (row.asset.kind !== 'Outcome') {
         throw new Error('pre-flight keep proofs must be outcome proofs')
       }
       byOutcome.set(row.asset.outcomeSetId, [
@@ -1036,7 +1036,7 @@ export class DaemonSwapExecutor {
     const groups: ReservedExactProofGroup[] = []
     for (const [outcomeSetId, rows] of byOutcome) {
       const first = rows[0]
-      if (!first || first.asset.kind !== 'outcome') {
+      if (!first || first.asset.kind !== 'Outcome') {
         throw new Error(`pre-flight keep proof group ${outcomeSetId} is empty`)
       }
       groups.push({
@@ -1048,7 +1048,7 @@ export class DaemonSwapExecutor {
           `${operationId}/${encodeURIComponent(outcomeSetId)}`,
         ),
         asset: {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: first.asset.conditionId,
           outcomeSetId,
         },
@@ -1179,7 +1179,7 @@ export class DaemonSwapExecutor {
       const receivedAsset =
         swap.settlementKind === 'Mint' && swap.sellerLockOutcomeSetId
           ? {
-              kind: 'outcome' as const,
+              kind: 'Outcome' as const,
               conditionId: asset.conditionId,
               outcomeSetId: swap.sellerLockOutcomeSetId,
             }
@@ -1270,7 +1270,7 @@ export class DaemonSwapExecutor {
     await updateState((state, now) => {
       const swap = state.swaps[tradeId]
       if (!swap || isTerminal(swap)) return
-      swap.step = 'failed'
+      swap.step = 'Failed'
       swap.error = error
       swap.updatedAt = now
     })
@@ -1283,7 +1283,7 @@ export class DaemonSwapExecutor {
     await updateState((state, now) => {
       const swap = state.swaps[tradeId]
       if (!swap || isTerminal(swap)) return
-      swap.step = 'failed'
+      swap.step = 'Failed'
       swap.error = failure.detail
       swap.failure = failure
       swap.updatedAt = now
@@ -1441,7 +1441,7 @@ async function selectOutcomeProofsForOutcomeSet(
     state,
     mintUrl,
     (proof) =>
-      proof.asset.kind === 'outcome' &&
+      proof.asset.kind === 'Outcome' &&
       proof.asset.conditionId === conditionId &&
       proof.asset.outcomeSetId === outcomeSetId &&
       normalizeMarketBaseAsset(proof.asset.baseAsset) === baseAsset,
@@ -1456,7 +1456,7 @@ async function selectOutcomeProofsForOutcomeSet(
       state,
       mintUrl,
       (proof) =>
-        proof.asset.kind === 'outcome' &&
+        proof.asset.kind === 'Outcome' &&
         proof.asset.conditionId === conditionId &&
         proof.asset.outcomeSetId === outcomeCollection &&
         normalizeMarketBaseAsset(proof.asset.baseAsset) === baseAsset,
@@ -1513,7 +1513,7 @@ async function selectReservedProofsForOutcomeSet(
     mintUrl,
     reservedBy,
     (proof) =>
-      proof.asset.kind === 'outcome' &&
+      proof.asset.kind === 'Outcome' &&
       proof.asset.conditionId === conditionId &&
       proof.asset.outcomeSetId === outcomeSetId,
     amount,
@@ -1528,7 +1528,7 @@ async function selectReservedProofsForOutcomeSet(
       mintUrl,
       reservedBy,
       (proof) =>
-        proof.asset.kind === 'outcome' &&
+        proof.asset.kind === 'Outcome' &&
         proof.asset.conditionId === conditionId &&
         proof.asset.outcomeSetId === outcomeCollection,
       amount,
@@ -1565,7 +1565,7 @@ function selectReservedProofRowsForOutcomeSet(
       proof.mintUrl === mintUrl &&
       proof.state === 'reserved' &&
       proof.reservedBy === reservedBy &&
-      proof.asset.kind === 'outcome' &&
+      proof.asset.kind === 'Outcome' &&
       proof.asset.conditionId === conditionId &&
       proof.asset.outcomeSetId === outcomeSetId,
   )
@@ -1578,7 +1578,7 @@ function selectReservedProofRowsForOutcomeSet(
         proof.mintUrl === mintUrl &&
         proof.state === 'reserved' &&
         proof.reservedBy === reservedBy &&
-        proof.asset.kind === 'outcome' &&
+        proof.asset.kind === 'Outcome' &&
         proof.asset.conditionId === conditionId &&
         proof.asset.outcomeSetId === outcomeCollection,
     )
@@ -1731,7 +1731,7 @@ function addOutcomeProofsByCollection(
       mintUrl,
       proofsByCollection[collection] ?? [],
       proofState,
-      { kind: 'outcome', conditionId, outcomeSetId: collection },
+      { kind: 'Outcome', conditionId, outcomeSetId: collection },
       now,
       reservedBy,
     )
@@ -1763,7 +1763,7 @@ function addOutcomeProofsByKeyset(
       mintUrl,
       collectionProofs,
       proofState,
-      { kind: 'outcome', conditionId, outcomeSetId: collection },
+      { kind: 'Outcome', conditionId, outcomeSetId: collection },
       now,
       reservedBy,
     )
@@ -1787,7 +1787,7 @@ function addRefundedProofsByKeyset(
       throw new Error(`No locked-proof asset metadata for keyset ${proof.id ?? '<missing>'}`)
     }
     const asset: StoredProofRecord['asset'] = {
-      kind: 'outcome',
+      kind: 'Outcome',
       conditionId: metadata.conditionId,
       outcomeSetId: metadata.outcomeCollection,
     }
@@ -1838,7 +1838,7 @@ function outcomeAssetForMarket(
   const dash = marketId.indexOf('-')
   if (dash <= 0 || dash >= marketId.length - 1) return null
   return {
-    kind: 'outcome',
+    kind: 'Outcome',
     conditionId: marketId.slice(0, dash),
     outcomeSetId: marketId.slice(dash + 1),
   }
@@ -1905,11 +1905,11 @@ function requiredAmount(amount: number | undefined): number {
 }
 
 function isTerminal(swap: LocalSwapRecord): boolean {
-  return ['confirmed', 'refunded', 'failed'].includes(swap.step)
+  return ['confirmed', 'refunded', 'Failed'].includes(swap.step)
 }
 
 function proofWithOutcomeMetadata(row: StoredProofRecord): CashuProofRecord {
-  if (row.asset.kind !== 'outcome') return row.proof
+  if (row.asset.kind !== 'Outcome') return row.proof
   return {
     ...row.proof,
     conditionId: row.asset.conditionId,
@@ -1931,7 +1931,7 @@ function proofWithAssetMetadata(
 function keysetToOutcomeCollection(rows: StoredProofRecord[]): Map<string, string> {
   return keysetToOutcomeCollectionShared(rows, (row) => ({
     keysetId: row.proof.id,
-    outcomeCollection: row.asset.kind === 'outcome' ? row.asset.outcomeSetId : null,
+    outcomeCollection: row.asset.kind === 'Outcome' ? row.asset.outcomeSetId : null,
   }))
 }
 
@@ -1940,7 +1940,7 @@ function groupOutcomeProofRowsByCollection(
 ): OutcomeProofRowGroup[] {
   const byCollection = new Map<string, StoredProofRecord[]>()
   for (const row of rows) {
-    if (row.asset.kind !== 'outcome') {
+    if (row.asset.kind !== 'Outcome') {
       throw new Error('Cannot lock non-outcome proofs as outcome inventory')
     }
     byCollection.set(row.asset.outcomeSetId, [
@@ -2064,7 +2064,7 @@ function outcomeByKeysetForPartialLock(
   }
   const outcomeByKeyset: PartialLockHeldRecord['outcomeByKeyset'] = {}
   for (const row of lockedRows) {
-    if (!row.proof.id || row.asset.kind !== 'outcome') continue
+    if (!row.proof.id || row.asset.kind !== 'Outcome') continue
     outcomeByKeyset[row.proof.id] = {
       conditionId: row.asset.conditionId,
       outcomeCollection: row.asset.outcomeSetId,

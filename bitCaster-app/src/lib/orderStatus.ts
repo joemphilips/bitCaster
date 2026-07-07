@@ -22,11 +22,11 @@ export type FillStatus = components['schemas']['FillStatus']
  */
 export type OrderStatus =
   | 'resting'
-  | 'matched'
+  | 'Matched'
   | 'partially_filled'
-  | 'filled'
+  | 'Filled'
   | 'cancelled'
-  | 'failed'
+  | 'Failed'
 
 export function isTerminalFillStatus(status: FillStatus): boolean {
   switch (status) {
@@ -61,9 +61,9 @@ type FillLike = {
 }
 
 const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set([
-  'filled',
+  'Filled',
   'cancelled',
-  'failed',
+  'Failed',
 ])
 
 export async function fetchOrderStatus(
@@ -147,14 +147,15 @@ export function buildOrderStatusNotifications(
 
   if (
     !isTerminal &&
-    (current === 'matched' || current === 'partially_filled') &&
+    (current === 'Matched' || current === 'partially_filled') &&
     hasNewFills &&
     status.filledAmountSubunits > 0
   ) {
-    const kind = current === 'matched' ? 'matched' : 'partially_filled'
+    const kind = current === 'Matched' ? 'Matched' : 'partially_filled'
+    const idKind = current === 'Matched' ? 'matched' : 'partially_filled'
     return [
       {
-        id: `${trade.orderId}-${kind}-${fillCount}`,
+        id: `${trade.orderId}-${idKind}-${fillCount}`,
         kind,
         orderId: trade.orderId,
         marketId: trade.marketId,
@@ -169,9 +170,10 @@ export function buildOrderStatusNotifications(
 
   if (isTerminal) {
     const kind = current as NotificationKind
+    const idKind = String(current).toLowerCase()
     return [
       {
-        id: `${trade.orderId}-${kind}`,
+        id: `${trade.orderId}-${idKind}`,
         kind,
         orderId: trade.orderId,
         marketId: trade.marketId,
@@ -271,7 +273,7 @@ export function usePendingTradesPoller(): void {
             const hasNewFills = fillCount > lastFillCount
             promoteNewFillsToActiveSwaps(status, trade, lastFillCount)
 
-            // Terminal status short-circuits partial-fill: a "filled" that
+            // Terminal status short-circuits partial-fill: a "Filled" that
             // also has new fills shouldn't generate two separate bell entries
             // for the same settlement.
             const notifications = buildOrderStatusNotifications(
@@ -288,7 +290,7 @@ export function usePendingTradesPoller(): void {
             }
 
             if (isTerminal) {
-              if (current === 'filled') {
+              if (current === 'Filled') {
                 useToastStore.getState().addToast({
                   type: 'success',
                   message: `All your amount for order ${shortOrderId(trade.orderId)} has been filled. 0 sats remaining.`,

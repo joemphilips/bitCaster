@@ -952,7 +952,7 @@ function isTerminalTradeResult(response: unknown): boolean {
   const result = (response as { result?: unknown }).result
   if (!result || typeof result !== 'object') return false
   const step = (result as { step?: unknown }).step
-  return step === 'confirmed' || step === 'refunded' || step === 'failed'
+  return step === 'confirmed' || step === 'refunded' || step === 'Failed'
 }
 
 async function printDirectEngineResultOrDaemon<T>(
@@ -1097,15 +1097,14 @@ function requiredArg(value: string | undefined, name: string): string {
 }
 
 function parseSide(value: string): 'Buy' | 'Sell' {
-  const lower = value.toLowerCase()
-  if (lower === 'buy') return 'Buy'
-  if (lower === 'sell') return 'Sell'
+  if (value === 'Buy') return 'Buy'
+  if (value === 'Sell') return 'Sell'
   throwUsage(`Invalid side: ${value}`)
 }
 
 function parseTokenSide(value: string): 'Outcome' | 'Complement' {
-  if (value === 'Outcome' || value === 'outcome') return 'Outcome'
-  if (value === 'Complement' || value === 'complement') return 'Complement'
+  if (value === 'Outcome') return 'Outcome'
+  if (value === 'Complement') return 'Complement'
   throwUsage(`Invalid token side: ${value}`)
 }
 

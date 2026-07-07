@@ -49,10 +49,10 @@ function marketPriceFor(
   orderBook: SdkOrderBook | null | undefined,
   complementaryOrderBook: SdkOrderBook | null | undefined,
 ): number {
-  const direct = side === 'buy' ? orderBook?.asks[0] : orderBook?.bids[0]
-  if (direct) return side === 'buy' ? divisibility - 1 : 1
+  const direct = side === 'Buy' ? orderBook?.asks[0] : orderBook?.bids[0]
+  if (direct) return side === 'Buy' ? divisibility - 1 : 1
 
-  if (side === 'buy') {
+  if (side === 'Buy') {
     const complementaryBid = complementaryOrderBook?.bids[0]
     if (complementaryBid) return divisibility - 1
   }
@@ -120,7 +120,7 @@ export function buildTradeTicket(params: {
       'Choose an outcome before placing an order.',
     )
   }
-  const requestSide = side === 'buy' ? 'Buy' : 'Sell'
+  const requestSide = side === 'Buy'  ? 'Buy' : 'Sell'
   const settlementSupport = checkOrderSettlementSupport({
     request: { side: requestSide },
   })

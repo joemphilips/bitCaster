@@ -193,7 +193,7 @@ export type MarketDetail = YesNoMarketDetail | CategoricalMarketDetail | Numeric
 // Trade Side & Order Type
 // =============================================================================
 
-export type TradeSide = 'buy' | 'sell'
+export type TradeSide = 'Buy' | 'Sell'
 export type OrderType = 'market' | 'limit'
 
 export interface LimitOrderPreview {

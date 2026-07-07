@@ -18,7 +18,7 @@ export function buildDaemonTokenHoldings(
     if (input.mintUrl && record.mintUrl !== input.mintUrl) continue
     if (recordBaseAsset(record) !== baseAsset) continue
 
-    if (record.asset.kind === 'outcome') {
+    if (record.asset.kind === 'Outcome') {
       if (record.asset.conditionId !== input.conditionId) continue
       for (const atom of atomsFromOutcomeSet(record.asset.outcomeSetId)) {
         ;(primitiveProofsByAtom[atom] ??= []).push({

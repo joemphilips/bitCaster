@@ -49,7 +49,7 @@ export type ProofOperationKind =
   | 'proof-split'
   | 'swap-refund'
 
-export type ProofOperationState = 'prepared' | 'completed' | 'failed'
+export type ProofOperationState = 'prepared' | 'completed' | 'Failed'
 
 export interface ProofOperationRecord {
   operationId: string
@@ -105,7 +105,7 @@ export interface StoredProofRecord {
 
 export type StoredProofAsset =
   | { kind: 'sats'; baseAsset?: string | null }
-  | { kind: 'outcome'; conditionId: string; outcomeSetId: string; baseAsset?: string | null }
+  | { kind: 'Outcome'; conditionId: string; outcomeSetId: string; baseAsset?: string | null }
 
 export interface LocalOrderRecord {
   orderId: string
@@ -183,7 +183,7 @@ export interface LocalSwapRecord {
     | 'awaiting-confirmation'
     | 'confirmed'
       | 'refunded'
-      | 'failed'
+      | 'Failed'
   error?: string
   failure?: SwapFailure | PartialLockHeldRecord
   createdAt: string
@@ -560,12 +560,12 @@ export function summarizeWalletBalance(state: DaemonState): WalletBalance {
     }))
     addAmount(mint, proof.state, amount)
 
-    if (proof.asset.kind === 'outcome') {
+    if (proof.asset.kind === 'Outcome') {
       const key = `${proof.mintUrl}\n${proof.asset.conditionId}\n${proof.asset.outcomeSetId}`
       const outcome = getOrCreate(outcomes, key, () => ({
         mintUrl: proof.mintUrl,
-        conditionId: proof.asset.kind === 'outcome' ? proof.asset.conditionId : '',
-        outcomeSetId: proof.asset.kind === 'outcome' ? proof.asset.outcomeSetId : '',
+        conditionId: proof.asset.kind === 'Outcome' ? proof.asset.conditionId : '',
+        outcomeSetId: proof.asset.kind === 'Outcome' ? proof.asset.outcomeSetId : '',
         availableSats: 0,
         reservedSats: 0,
         lockedSats: 0,
@@ -869,7 +869,7 @@ export async function recordTradeCreated(
       buyerLockedProofs: existing?.buyerLockedProofs,
       sellerPreSigsHex: existing?.sellerPreSigsHex,
       engineState: existing?.engineState,
-      step: accepted ? promoteTradeCreatedStep(existing?.step) : 'failed',
+      step: accepted ? promoteTradeCreatedStep(existing?.step) : 'Failed',
       error: protocolError ?? existing?.error,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
@@ -964,9 +964,9 @@ function normalizeState(value: unknown): DaemonState {
 }
 
 function normalizeProofAsset(asset: StoredProofAsset | undefined): StoredProofAsset {
-  if (asset?.kind === 'outcome') {
+  if (asset?.kind === 'Outcome') {
     return {
-      kind: 'outcome',
+      kind: 'Outcome',
       conditionId: asset.conditionId,
       outcomeSetId: asset.outcomeSetId,
       baseAsset: normalizeProofAssetBaseAsset(asset),
@@ -1180,7 +1180,7 @@ function toJsonSafe(value: unknown): unknown {
 }
 
 function isProofOperationState(value: unknown): value is ProofOperationState {
-  return value === 'prepared' || value === 'completed' || value === 'failed'
+  return value === 'prepared' || value === 'completed' || value === 'Failed'
 }
 
 function findOrderForTradeCreated(
@@ -1213,7 +1213,7 @@ function mapEngineStateToStep(
     case 'finish-refunded':
       return 'refunded'
     case 'finish-failed':
-      return 'failed'
+      return 'Failed'
     default:
       return current
   }

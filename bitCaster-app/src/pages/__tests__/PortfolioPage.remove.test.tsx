@@ -72,7 +72,7 @@ function closedPosition(overrides: Partial<Position>): Position {
     marketId: 'cond1-A|B',
     marketTitle: 'Lost market',
     marketImageUrl: '',
-    side: 'outcome',
+    side: 'Outcome',
     outcomeId: 'A|B',
     outcomeLabel: 'A|B',
     shares: 100,

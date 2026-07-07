@@ -184,7 +184,7 @@ async function resumeCtfRedeem(params: {
       losing: false,
     };
   }
-  if (entry.state === "failed") {
+  if (entry.state === "Failed") {
     if (
       entry.failureCode === undefined ||
       entry.failureCode === ORACLE_NOT_ATTESTED_OUTCOME_CODE

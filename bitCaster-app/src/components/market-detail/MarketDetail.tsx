@@ -100,7 +100,7 @@ export function MarketDetail({
     tradePreview?.hasExecutableLiquidity === false;
   const backingBlocked = walletReady && tradeFeasibility?.canBack === false;
   const backingBlockReason =
-    tradeFeasibility?.reason ?? (tradeSide === "sell" ? "outcome-tokens" : "funds");
+    tradeFeasibility?.reason ?? (tradeSide === "Sell" ? "outcome-tokens" : "funds");
   const buyNeedsTopUp = backingBlocked && backingBlockReason === "funds";
 
   // Get outcome-specific data for categorical markets

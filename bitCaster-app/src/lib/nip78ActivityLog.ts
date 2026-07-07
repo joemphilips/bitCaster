@@ -22,8 +22,8 @@ interface ActivityLogPayload {
 const ACTIVITY_TYPES = new Set<ActivityType>([
   "deposit",
   "withdrawal",
-  "buy",
-  "sell",
+  "Buy",
+  "Sell",
   "payout_claimed",
   "creator_fee_claimed",
 ]);
@@ -31,7 +31,7 @@ const ACTIVITY_TYPES = new Set<ActivityType>([
 const ACTIVITY_STATUSES = new Set<ActivityStatus>([
   "pending",
   "completed",
-  "failed",
+  "Failed",
 ]);
 
 function isActivityItem(value: unknown): value is ActivityItem {
