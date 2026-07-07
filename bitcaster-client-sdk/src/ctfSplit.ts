@@ -292,7 +292,7 @@ export async function splitRegularProofsWithOperation(params: {
     operationId: params.operationId,
     kind: "regular-split",
     mintUrl: params.mintUrl,
-    inputs: preview.inputs,
+    inputs: preview.inputs.map(normalizeProof),
     outputs: {
       send: serializeOutputDataArray(preview.sendOutputs ?? []),
       keep: serializeOutputDataArray(preview.keepOutputs ?? []),
@@ -1661,7 +1661,7 @@ function normalizeRootConditionKeysets(
         normalized.set(keyset.outcome_collection, keysetId);
       }
     } else {
-      normalized.set(collection, keysetId);
+      if (!normalized.has(collection)) normalized.set(collection, keysetId);
     }
   }
 
@@ -1689,15 +1689,10 @@ function buildOutcomeCollectionKeysetLookup(
   for (const [collection, keysetId] of Object.entries(keysets)) {
     lookup.set(collection, keysetId);
   }
-  const conditionKeysetIds = new Set(Object.values(keysets));
   for (const keyset of conditionalKeysets) {
     if (!sameConditionId(keyset.condition_id, conditionId)) continue;
     if (!conditionalKeysetMatchesUnit(keyset, baseAsset)) continue;
-    const keysetId =
-      keysets[keyset.outcome_collection] ??
-      keysets[keyset.outcome_collection_id] ??
-      keyset.id;
-    if (!conditionKeysetIds.has(keysetId)) continue;
+    const keysetId = keyset.id;
     for (const collection of [
       keyset.outcome_collection,
       keyset.outcome_collection_id,

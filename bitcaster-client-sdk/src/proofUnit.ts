@@ -50,21 +50,42 @@ export async function resolveProofUnit(
     }
   }
 
+  let resolved = collectProofUnits(keysetIds, unitByKeysetId);
+  if (
+    resolved.missing.length > 0 &&
+    !options.conditionalKeysets &&
+    options.conditionalKeysetTransport
+  ) {
+    const freshConditionalKeysets = await getConditionalKeysets({
+      transport: options.conditionalKeysetTransport,
+      mintUrl: options.mintUrl,
+      cacheKey: options.cacheKey,
+      forceRefresh: true,
+    });
+    for (const keyset of freshConditionalKeysets) {
+      if (keyset.unit) unitByKeysetId.set(keyset.id, keyset.unit);
+    }
+    resolved = collectProofUnits(keysetIds, unitByKeysetId);
+  }
+  if (resolved.missing.length > 0) {
+    throw new Error(`Mint did not return unit metadata for proof keyset(s): ${resolved.missing.join(", ")}`);
+  }
+  if (resolved.units.size !== 1) {
+    throw new Error(`Proof set contains mixed units: ${[...resolved.units].sort().join(", ")}`);
+  }
+  return [...resolved.units][0]!;
+}
+
+function collectProofUnits(
+  keysetIds: string[],
+  unitByKeysetId: Map<string, string>,
+): { units: Set<string>; missing: string[] } {
   const units = new Set<string>();
   const missing: string[] = [];
   for (const keysetId of keysetIds) {
     const unit = unitByKeysetId.get(keysetId);
-    if (!unit) {
-      missing.push(keysetId);
-    } else {
-      units.add(unit);
-    }
+    if (!unit) missing.push(keysetId);
+    else units.add(unit);
   }
-  if (missing.length > 0) {
-    throw new Error(`Mint did not return unit metadata for proof keyset(s): ${missing.join(", ")}`);
-  }
-  if (units.size !== 1) {
-    throw new Error(`Proof set contains mixed units: ${[...units].sort().join(", ")}`);
-  }
-  return [...units][0]!;
+  return { units, missing };
 }

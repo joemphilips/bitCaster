@@ -517,17 +517,25 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
 
       joinedOrderKeysRef.current.add(key);
       void fetchOrderStatus(trade.marketId, trade.orderId)
-        .then((status) => {
+        .then(async (status) => {
           if (!status) {
-            const misses = (orderJoinMissCountsRef.current.get(key) ?? 0) + 1;
-            orderJoinMissCountsRef.current.set(key, misses);
-            joinedOrderKeysRef.current.delete(key);
-            if (misses >= MAX_JOIN_ORDER_STATUS_MISSES) {
-              usePendingTradesStore.getState().remove(trade.orderId);
+            try {
+              await joinOrder(trade.marketId, trade.orderId);
+              orderJoinMissCountsRef.current.delete(key);
+              scheduleOrderStatusRecovery(trade);
+              return;
+            } catch {
+              const misses =
+                (orderJoinMissCountsRef.current.get(key) ?? 0) + 1;
+              orderJoinMissCountsRef.current.set(key, misses);
+              joinedOrderKeysRef.current.delete(key);
+              if (misses >= MAX_JOIN_ORDER_STATUS_MISSES) {
+                usePendingTradesStore.getState().remove(trade.orderId);
+                return;
+              }
+              scheduleOrderJoinRetry(key, trade.orderId, attemptJoinOrder);
               return;
             }
-            scheduleOrderJoinRetry(key, trade.orderId, attemptJoinOrder);
-            return;
           }
 
           orderJoinMissCountsRef.current.delete(key);

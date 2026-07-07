@@ -24,6 +24,7 @@ import {
 
 const [, , mode, mintUrl, rawAmount, conditionId, outcomeSetId] = process.argv
 const jsonOutput = process.argv.includes('--json')
+const exactOutput = process.argv.includes('--exact')
 const msatsPerSat = 1_000
 if (!mode || !mintUrl || !rawAmount) {
   usage()
@@ -99,9 +100,10 @@ async function mintRegularProofs(
       input_fee_ppk: keyset.input_fee_ppk ?? 0,
     },
   })
-  const quote = await wallet.createMintQuote(grossAmountSubunits)
+  const mintAmountSubunits = exactOutput ? faceAmountSubunits : grossAmountSubunits
+  const quote = await wallet.createMintQuote(mintAmountSubunits)
   await waitForPaidQuote(wallet, quote)
-  return wallet.mintProofs(grossAmountSubunits, quote.quote)
+  return wallet.mintProofs(mintAmountSubunits, quote.quote)
 }
 
 async function mintRegularProofsForCtfSplit(
@@ -224,9 +226,9 @@ function printToken(mintUrl: string, unit: CollateralTokenUnit, proofs: Proof[])
 
 function usage(): never {
   process.stderr.write(
-    'Usage: mint-token.ts sats <mint-url> <amount-sats> [--json]\n' +
-      '       mint-token.ts msats <mint-url> <amount-sats> [--json]\n' +
-      '       mint-token.ts usd <mint-url> <amount-usd-subunits> [--json]\n' +
+    'Usage: mint-token.ts sats <mint-url> <amount-sats> [--json] [--exact]\n' +
+      '       mint-token.ts msats <mint-url> <amount-sats> [--json] [--exact]\n' +
+      '       mint-token.ts usd <mint-url> <amount-usd-subunits> [--json] [--exact]\n' +
       '       mint-token.ts outcome <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n' +
       '       mint-token.ts outcome-msats <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n',
   )

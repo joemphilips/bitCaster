@@ -224,6 +224,62 @@ test("selectRootPartitionKeysets resolves id-keyed root keysets through conditio
   );
 });
 
+test("selectRootPartitionKeysets prefers requested-unit conditional metadata over ambiguous condition map values", () => {
+  const condition = {
+    condition_id: CONDITION_ID,
+    collateral: "sat",
+    keysets: {
+      Alice: "usd-keyset-alice",
+      "Bob|Carol|Dave": "usd-keyset-not-alice",
+    },
+  };
+
+  assert.deepEqual(
+    selectRootPartitionKeysets(
+      condition,
+      {
+        lockOutcomeSetId: "Alice",
+        keepOutcomeSetId: "Carol|Bob|Dave",
+        baseAsset: "sat",
+      },
+      [
+        {
+          id: "usd-keyset-alice",
+          condition_id: CONDITION_ID,
+          outcome_collection: "Alice",
+          outcome_collection_id: "alice-usd",
+          unit: "usd",
+        },
+        {
+          id: "usd-keyset-not-alice",
+          condition_id: CONDITION_ID,
+          outcome_collection: "Bob|Carol|Dave",
+          outcome_collection_id: "not-alice-usd",
+          unit: "usd",
+        },
+        {
+          id: "sat-keyset-alice",
+          condition_id: CONDITION_ID,
+          outcome_collection: "Alice",
+          outcome_collection_id: "alice-sat",
+          unit: "msat",
+        },
+        {
+          id: "sat-keyset-not-alice",
+          condition_id: CONDITION_ID,
+          outcome_collection: "Bob|Carol|Dave",
+          outcome_collection_id: "not-alice-sat",
+          unit: "msat",
+        },
+      ],
+    ),
+    {
+      Alice: "sat-keyset-alice",
+      "Bob|Carol|Dave": "sat-keyset-not-alice",
+    },
+  );
+});
+
 test("selectRootPartitionKeysets keeps binary single-root compatibility without a target", () => {
   const condition = {
     condition_id: CONDITION_ID,

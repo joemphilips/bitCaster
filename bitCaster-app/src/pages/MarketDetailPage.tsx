@@ -1636,17 +1636,6 @@ export function MarketDetailPage() {
         return;
       }
       if (tradeSubmitInFlightRef.current) return;
-      if (tradeFeasibility?.canBack === false) {
-        setTradeSubmitStatus({
-          kind: "error",
-          message:
-            tradeFeasibility.message ??
-            (tradeFeasibility.reason === "outcome-tokens"
-              ? "Insufficient outcome tokens"
-              : "Insufficient funds"),
-        });
-        return;
-      }
       tradeSubmitInFlightRef.current = true;
       setIsTradeSubmitting(true);
       setTradeSubmitStatus(null);
@@ -2007,7 +1996,6 @@ export function MarketDetailPage() {
       orderType,
       limitPrice,
       placeOrder,
-      tradeFeasibility,
     ],
   );
 
@@ -2201,6 +2189,7 @@ export function MarketDetailPage() {
             0,
           )}
           baseAsset={topUpReason?.kind === "score" ? "sat" : marketBaseAsset}
+          proofUnit={topUpReason?.kind === "score" ? "sat" : undefined}
           minimumDescription={
             topUpReason?.kind === "score"
               ? t("topUp.scoreMinimumDesc", {

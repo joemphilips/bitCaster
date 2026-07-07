@@ -34,3 +34,27 @@ export function resolveHubServerUrl(
 
   return DEFAULT_DEV_SERVER_URL
 }
+
+export function resolveApiServerUrl(
+  env: HubUrlEnv = import.meta.env,
+  browserOrigin = typeof window !== 'undefined' ? window.location?.origin : undefined,
+): string {
+  if (env.DEV) {
+    const explicitApiUrl = env.VITE_SERVER_URL ?? env.VITE_HUB_SERVER_URL
+    if (explicitApiUrl) return trimTrailingSlash(explicitApiUrl)
+  }
+
+  if (browserOrigin) {
+    return trimTrailingSlash(browserOrigin)
+  }
+
+  return DEFAULT_DEV_SERVER_URL
+}
+
+export function resolveApiSigningUrl(
+  requestUrl: string,
+  _env: HubUrlEnv = import.meta.env,
+  _browserOrigin = typeof window !== 'undefined' ? window.location?.origin : undefined,
+): string {
+  return requestUrl
+}

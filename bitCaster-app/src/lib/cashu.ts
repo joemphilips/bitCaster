@@ -140,6 +140,16 @@ export async function createMintQuote(
   return wallet.createMintQuote(collateralSubunitsFromBaseAmount(amountSats, baseAsset));
 }
 
+/** Request a Lightning invoice for an explicit Cashu unit, e.g. regular sat Score funds. */
+export async function createMintQuoteForUnit(
+  amount: number,
+  mintUrl: string | undefined,
+  unit: CashuProofUnit | string,
+): Promise<MintQuoteResponse> {
+  const wallet = await getWalletForUnit(mintUrl, unit);
+  return wallet.createMintQuote(amount);
+}
+
 /** Mint proofs after the invoice in `quote` has been paid.
  *
  * Wraps cashu-ts `wallet.mintProofs` with a one-shot recovery+retry on CDK's
@@ -201,6 +211,17 @@ export async function mintProofs(
     // the recovered counter on the retry without rebuilding the wallet.
     return await mintOnce();
   }
+}
+
+/** Mint proofs for an explicit Cashu unit, without market-collateral scaling. */
+export async function mintProofsForUnit(
+  amount: number,
+  quote: MintQuoteResponse,
+  mintUrl: string | undefined,
+  unit: CashuProofUnit | string,
+): Promise<Proof[]> {
+  const wallet = await getWalletForUnit(mintUrl, unit);
+  return wallet.mintProofs(amount, quote.quote);
 }
 
 function collateralSubunitsFromBaseAmount(
@@ -691,6 +712,27 @@ export async function waitForMintQuotePaid(
   baseAsset?: MarketBaseAsset | string | null,
 ): Promise<() => void> {
   const wallet = await getWallet(mintUrl, baseAsset);
+  return waitForMintQuotePaidWithWallet(wallet, quote, onResult, options);
+}
+
+/** Subscribe to mint quote payment updates for an explicit Cashu unit. */
+export async function waitForMintQuotePaidForUnit(
+  quote: MintQuoteResponse,
+  onResult: (result: MintQuoteWaitResult) => void,
+  options: WaitForMintQuoteOptions = {},
+  mintUrl: string | undefined,
+  unit: CashuProofUnit | string,
+): Promise<() => void> {
+  const wallet = await getWalletForUnit(mintUrl, unit);
+  return waitForMintQuotePaidWithWallet(wallet, quote, onResult, options);
+}
+
+function waitForMintQuotePaidWithWallet(
+  wallet: CashuWallet,
+  quote: MintQuoteResponse,
+  onResult: (result: MintQuoteWaitResult) => void,
+  options: WaitForMintQuoteOptions = {},
+): () => void {
   const expiresAtSec = options.expiresAtSec ?? quote.expiry ?? undefined;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 

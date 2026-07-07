@@ -394,7 +394,7 @@ describe("useTradeSettlement", () => {
     expect(mockJoinOrder).toHaveBeenLastCalledWith("cond-YES", "order-pending");
   });
 
-  it("waits for order status before joining pending order groups", async () => {
+  it("joins pending order groups while order status projection is lagging", async () => {
     vi.useFakeTimers();
     mockFetchOrderStatus.mockResolvedValueOnce(null).mockResolvedValue({
       orderId: "order-pending",
@@ -414,7 +414,7 @@ describe("useTradeSettlement", () => {
     renderHook(() => useTradeSettlement(true));
 
     await act(async () => {});
-    expect(mockJoinOrder).not.toHaveBeenCalled();
+    expect(mockJoinOrder).toHaveBeenCalledWith("cond-YES", "order-pending");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });

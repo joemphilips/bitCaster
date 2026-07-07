@@ -12,6 +12,7 @@ export interface GetConditionalKeysetsOptions {
   active?: boolean;
   cacheKey?: string;
   ttlMs?: number;
+  forceRefresh?: boolean;
   now?: () => number;
 }
 
@@ -38,7 +39,7 @@ export async function getConditionalKeysets(
   const now = options.now?.() ?? Date.now();
   const key = options.cacheKey ?? `${options.mintUrl ?? "<unknown-mint>"}:active=${options.active ?? "all"}`;
   const cached = cache.get(key);
-  if (cached && cached.expiresAt > now) {
+  if (!options.forceRefresh && cached && cached.expiresAt > now) {
     return structuredClone(cached.value);
   }
 

@@ -26,6 +26,7 @@ import {
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { getNdk } from "@/lib/nostr";
+import { resolveApiSigningUrl } from "@/lib/hubUrl";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "nostr-tools/utils";
 import { toWireAmountBearing } from "@bitcaster/client-sdk/ctfRegistration";
@@ -790,7 +791,7 @@ export async function submitEphemeralPubkey(
     fetch,
     async ({ url, method, bodyText, payloadHash }) =>
       generateNip98Header(
-        url,
+        resolveApiSigningUrl(url),
         method,
         await resolveAuthorizationPayloadHash(bodyText, payloadHash),
       ),
@@ -833,7 +834,7 @@ export function createAuthenticatedBrowserEngineClient(): BitcasterEngineClient 
     baseUrl: window.location.origin,
     authorization: async ({ url, method, bodyText, payloadHash }) =>
       generateNip98Header(
-        url,
+        resolveApiSigningUrl(url),
         method,
         await resolveAuthorizationPayloadHash(bodyText, payloadHash),
       ),

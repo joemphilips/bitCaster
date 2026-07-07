@@ -5,8 +5,11 @@ import i18n from '@/i18n'
 import { TopUpOverlay } from '../TopUpOverlay'
 
 const createMintQuote = vi.fn()
+const createMintQuoteForUnit = vi.fn()
 const waitForMintQuotePaid = vi.fn()
+const waitForMintQuotePaidForUnit = vi.fn()
 const mintProofs = vi.fn()
+const mintProofsForUnit = vi.fn()
 const decodeToken = vi.fn()
 const getWalletForUnit = vi.fn()
 const addProofs = vi.fn()
@@ -21,8 +24,11 @@ vi.mock('react-router', () => ({
 vi.mock('@/lib/cashu', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/cashu')>()),
   createMintQuote: (...args: unknown[]) => createMintQuote(...args),
+  createMintQuoteForUnit: (...args: unknown[]) => createMintQuoteForUnit(...args),
   waitForMintQuotePaid: (...args: unknown[]) => waitForMintQuotePaid(...args),
+  waitForMintQuotePaidForUnit: (...args: unknown[]) => waitForMintQuotePaidForUnit(...args),
   mintProofs: (...args: unknown[]) => mintProofs(...args),
+  mintProofsForUnit: (...args: unknown[]) => mintProofsForUnit(...args),
   decodeToken: (...args: unknown[]) => decodeToken(...args),
   getWalletForUnit: (...args: unknown[]) => getWalletForUnit(...args),
 }))
@@ -47,9 +53,14 @@ describe('TopUpOverlay', () => {
     await i18n.changeLanguage('en')
     createMintQuote.mockReset()
     createMintQuote.mockResolvedValue({ request: 'lnbc1example', expiry: 123 })
+    createMintQuoteForUnit.mockReset()
+    createMintQuoteForUnit.mockResolvedValue({ request: 'lnbc1score', expiry: 123 })
     waitForMintQuotePaid.mockReset()
     waitForMintQuotePaid.mockResolvedValue(() => undefined)
+    waitForMintQuotePaidForUnit.mockReset()
+    waitForMintQuotePaidForUnit.mockResolvedValue(() => undefined)
     mintProofs.mockReset()
+    mintProofsForUnit.mockReset()
     decodeToken.mockReset()
     decodeToken.mockResolvedValue({
       mint: 'https://mint.example',
@@ -157,6 +168,31 @@ describe('TopUpOverlay', () => {
     await waitFor(() => {
       expect(createMintQuote).toHaveBeenCalledWith(20, 'https://mint.example', 'sat')
     })
+  })
+
+  it('can mint regular sat proofs for Engine Score top-ups', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <TopUpOverlay
+        deficit={500}
+        baseAsset="sat"
+        proofUnit="sat"
+        minimumDescription="Top up at least 500 sats to cover Engine Score before placing the order."
+        onCancel={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Top up at least 500 sats/)).toBeInTheDocument()
+    expect(screen.getByTestId('top-up-amount-input')).toHaveValue(600)
+
+    await user.click(screen.getByTestId('top-up-continue'))
+
+    await waitFor(() => {
+      expect(createMintQuoteForUnit).toHaveBeenCalledWith(600, 'https://mint.example', 'sat')
+    })
+    expect(createMintQuote).not.toHaveBeenCalled()
   })
 
   it('accepts a same-mint same-unit ecash token and closes after storing received proofs', async () => {

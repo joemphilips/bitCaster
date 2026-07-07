@@ -46,6 +46,7 @@ export async function validateTopUpEcashToken(
   params: {
     activeMintUrl: string
     baseAsset: MarketBaseAsset | string | null | undefined
+    proofUnit?: CashuProofUnit | null
     deficit: number
     decodeToken: DecodeCashuToken
   },
@@ -89,6 +90,16 @@ export async function validateTopUpEcashToken(
       },
     }
   }
+  if (params.proofUnit && unit !== params.proofUnit) {
+    return {
+      ok: false,
+      code: 'unit_mismatch',
+      values: {
+        tokenUnit: unit,
+        expectedUnit: params.proofUnit,
+      },
+    }
+  }
   const tokenBaseAsset = COLLATERAL_UNIT_REGISTRY[unit]?.baseAsset
   if (tokenBaseAsset !== expectedBaseAsset) {
     return {
@@ -102,7 +113,10 @@ export async function validateTopUpEcashToken(
   }
 
   const tokenAmountSubunits = token.proofs.reduce(
-    (sum, proof) => sum + tokenProofAmountToMarketSubunits(amountToNumber(proof.amount), unit),
+    (sum, proof) => {
+      const amount = amountToNumber(proof.amount)
+      return sum + (params.proofUnit ? amount : tokenProofAmountToMarketSubunits(amount, unit))
+    },
     0,
   )
   if (tokenAmountSubunits < params.deficit) {

@@ -5,10 +5,13 @@ import { useNavigate } from 'react-router'
 import { InvoiceDisplay } from '@/components/deposit-withdraw/InvoiceDisplay'
 import {
   createMintQuote,
+  createMintQuoteForUnit,
   decodeToken,
   getWalletForUnit,
   mintProofs,
+  mintProofsForUnit,
   waitForMintQuotePaid,
+  waitForMintQuotePaidForUnit,
   type MintQuoteWaitResult,
 } from '@/lib/cashu'
 import { addProofs, type StoredProof } from '@/stores/proof-db'
@@ -20,6 +23,7 @@ import {
   defaultCollateralUnit,
   marketUnitLabel,
   normalizeMarketBaseAsset,
+  type CashuProofUnit,
 } from '@bitcaster/client-sdk/marketUnits'
 import {
   validateTopUpEcashToken,
@@ -30,9 +34,9 @@ type View = 'amount' | 'invoice'
 type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'error'
 type TopUpMethod = 'lightning' | 'ecash'
 
-function displayInputAmount(amountSubunits: number, baseAsset: string): number {
+function displayInputAmount(amountSubunits: number, baseAsset: string, proofUnit: CashuProofUnit): number {
   if (baseAsset === 'usd') return amountSubunits / 100
-  if (baseAsset === 'sat') return amountSubunits / 1000
+  if (baseAsset === 'sat') return proofUnit === 'sat' ? amountSubunits : amountSubunits / 1000
   throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
@@ -42,16 +46,16 @@ function displayInputStep(baseAsset: string): number {
   throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
-function inputAmountToSubunits(displayAmount: number, baseAsset: string): number {
+function inputAmountToSubunits(displayAmount: number, baseAsset: string, proofUnit: CashuProofUnit): number {
   if (!Number.isFinite(displayAmount)) return 0
   if (baseAsset === 'usd') return Math.round(displayAmount * 100)
-  if (baseAsset === 'sat') return Math.round(displayAmount * 1000)
+  if (baseAsset === 'sat') return proofUnit === 'sat' ? Math.round(displayAmount) : Math.round(displayAmount * 1000)
   throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
-function topUpRequestAmount(amountSubunits: number, baseAsset: string): number {
+function topUpRequestAmount(amountSubunits: number, baseAsset: string, proofUnit: CashuProofUnit): number {
   if (baseAsset === 'usd') return amountSubunits
-  if (baseAsset === 'sat') return Math.ceil(amountSubunits / 1000)
+  if (baseAsset === 'sat') return proofUnit === 'sat' ? amountSubunits : Math.ceil(amountSubunits / 1000)
   throw new Error(`unsupported base asset: ${baseAsset}`)
 }
 
@@ -59,6 +63,20 @@ function topUpAmountLabel(baseAsset: string, unitLabel: string, t: (key: string)
   if (baseAsset === 'usd') return `${t('topUp.amount')} (${unitLabel})`
   if (baseAsset === 'sat') return t('topUp.amountSats')
   throw new Error(`unsupported base asset: ${baseAsset}`)
+}
+
+function topUpBuffer(baseAsset: string, deficit: number, proofUnit: CashuProofUnit): number {
+  if (baseAsset === 'sat' && proofUnit === 'sat') {
+    return Math.max(Math.ceil(deficit * 0.2), 10)
+  }
+  return bufferSubunits(baseAsset, deficit)
+}
+
+function formatTopUpAmount(amount: number, baseAsset: string, proofUnit: CashuProofUnit): string {
+  if (baseAsset === 'sat' && proofUnit === 'sat') {
+    return `${amount.toLocaleString()} sats`
+  }
+  return formatAmount(amount, baseAsset)
 }
 
 function assertNeverWaitResult(r: never): never {
@@ -97,6 +115,7 @@ interface TopUpOverlayProps {
   /** Current user balance for market-creation top-ups. Omit for trade top-ups. */
   balanceSubunits?: number
   baseAsset?: string | null
+  proofUnit?: CashuProofUnit | null
   minimumDescription?: string
   minimumErrorDescription?: string
   /** Called after proofs have landed in the store. */
@@ -116,6 +135,7 @@ export function TopUpOverlay({
   feeSubunits,
   balanceSubunits,
   baseAsset: baseAssetInput,
+  proofUnit: proofUnitInput,
   minimumDescription,
   minimumErrorDescription,
   onSuccess,
@@ -126,9 +146,10 @@ export function TopUpOverlay({
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl)
   const walletBackupState = useWalletStore((s) => s.walletBackupState)
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const proofUnit = proofUnitInput ?? defaultCollateralUnit(baseAsset)
   const unitLabel = marketUnitLabel(baseAsset)
-  const prefill = deficit > 0 ? Math.max(deficit + bufferSubunits(baseAsset, deficit), 1) : 1
-  const displayMin = displayInputAmount(deficit, baseAsset)
+  const prefill = deficit > 0 ? Math.max(deficit + topUpBuffer(baseAsset, deficit, proofUnit), 1) : 1
+  const displayMin = displayInputAmount(deficit, baseAsset, proofUnit)
   const inputStep = displayInputStep(baseAsset)
   const showFeeSummary = feeSubunits !== undefined && balanceSubunits !== undefined
 
@@ -179,12 +200,14 @@ export function TopUpOverlay({
 
   const handlePaidQuote = useCallback(async (quote: MintQuoteResponse, requested: number) => {
     try {
-      const proofs = await mintProofs(requested, quote, activeMintUrl, baseAsset)
+      const proofs = proofUnitInput
+        ? await mintProofsForUnit(requested, quote, activeMintUrl, proofUnit)
+        : await mintProofs(requested, quote, activeMintUrl, baseAsset)
       const stored: StoredProof[] = proofs.map((p) => ({
         ...p,
         mintUrl: activeMintUrl,
         baseAsset,
-        unit: defaultCollateralUnit(baseAsset),
+        unit: proofUnit,
       }))
       await addProofs(stored)
       if (cancelledRef.current) return
@@ -197,7 +220,7 @@ export function TopUpOverlay({
         setError((e as Error).message)
       }
     }
-  }, [activeMintUrl, baseAsset])
+  }, [activeMintUrl, baseAsset, proofUnit, proofUnitInput])
 
   const handleWaitResult = useCallback((result: MintQuoteWaitResult, quote: MintQuoteResponse, requested: number) => {
     if (cancelledRef.current) return
@@ -223,11 +246,11 @@ export function TopUpOverlay({
     if (amount < deficit) {
       setError(
         minimumErrorDescription ??
-          `Amount must be at least ${formatAmount(deficit, baseAsset)} to cover this trade.`,
+          `Amount must be at least ${formatTopUpAmount(deficit, baseAsset, proofUnit)} to cover this trade.`,
       )
       return
     }
-    const requested = topUpRequestAmount(amount, baseAsset)
+    const requested = topUpRequestAmount(amount, baseAsset, proofUnit)
     inflightRef.current = true
     setError(null)
     setStatus('pending')
@@ -238,19 +261,32 @@ export function TopUpOverlay({
       // Otherwise StrictMode (or a parent re-render) would issue a second quote
       // against the same mint state — LNBits then returns "Invoice already paid
       // or pending" verbatim, which the user sees as the P8 snackbar.
-      const quote = activeQuoteRef.current ?? await createMintQuote(requested, activeMintUrl, baseAsset)
+      const quote = activeQuoteRef.current ?? (
+        proofUnitInput
+          ? await createMintQuoteForUnit(requested, activeMintUrl, proofUnit)
+          : await createMintQuote(requested, activeMintUrl, baseAsset)
+      )
       activeQuoteRef.current = quote
       setBolt11(quote.request)
       setExpiresAtSec(quote.expiry ?? undefined)
       setView('invoice')
 
-      const unsub = await waitForMintQuotePaid(
-        quote,
-        (r) => handleWaitResult(r, quote, requested),
-        { onTransientError: (e) => { if (!cancelledRef.current) setError(e.message) } },
-        activeMintUrl,
-        baseAsset,
-      )
+      const onTransientError = (e: Error) => { if (!cancelledRef.current) setError(e.message) }
+      const unsub = proofUnitInput
+        ? await waitForMintQuotePaidForUnit(
+            quote,
+            (r) => handleWaitResult(r, quote, requested),
+            { onTransientError },
+            activeMintUrl,
+            proofUnit,
+          )
+        : await waitForMintQuotePaid(
+            quote,
+            (r) => handleWaitResult(r, quote, requested),
+            { onTransientError },
+            activeMintUrl,
+            baseAsset,
+          )
       if (cancelledRef.current) unsub()
       else unsubRef.current = unsub
     } catch (e) {
@@ -262,7 +298,7 @@ export function TopUpOverlay({
     } finally {
       if (!cancelledRef.current) setLoading(false)
     }
-  }, [activeMintUrl, amount, baseAsset, deficit, handleWaitResult, minimumErrorDescription])
+  }, [activeMintUrl, amount, baseAsset, deficit, handleWaitResult, minimumErrorDescription, proofUnit, proofUnitInput])
 
   const submitEcashToken = useCallback(async () => {
     if (inflightRef.current) return
@@ -279,6 +315,7 @@ export function TopUpOverlay({
       const validation = await validateTopUpEcashToken(trimmed, {
         activeMintUrl,
         baseAsset,
+        proofUnit: proofUnitInput ?? undefined,
         deficit,
         decodeToken,
       })
@@ -304,7 +341,7 @@ export function TopUpOverlay({
       inflightRef.current = false
       if (!cancelledRef.current) setLoading(false)
     }
-  }, [activeMintUrl, baseAsset, deficit, ecashToken, t])
+  }, [activeMintUrl, baseAsset, deficit, ecashToken, proofUnitInput, t])
 
   const regenerateInvoice = useCallback(() => {
     // Tear down the prior wait and clear the cached quote so the next
@@ -323,7 +360,7 @@ export function TopUpOverlay({
       <InvoiceDisplay
         bolt11={bolt11}
         amountSats={amount}
-        amountLabel={formatAmount(amount, baseAsset)}
+        amountLabel={formatTopUpAmount(amount, baseAsset, proofUnit)}
         status={status}
         expiresAtSec={expiresAtSec}
         errorMessage={error}
@@ -432,10 +469,10 @@ export function TopUpOverlay({
               type="number"
               min={displayMin}
               step={inputStep}
-              value={displayInputAmount(amount, baseAsset)}
+              value={displayInputAmount(amount, baseAsset, proofUnit)}
               onChange={(e) => {
                 const next = Number(e.target.value)
-                if (Number.isFinite(next)) setAmount(inputAmountToSubunits(next, baseAsset))
+                if (Number.isFinite(next)) setAmount(inputAmountToSubunits(next, baseAsset, proofUnit))
               }}
               className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-[#f7931a]"
             />

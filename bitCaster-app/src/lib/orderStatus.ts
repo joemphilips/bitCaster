@@ -10,6 +10,7 @@ import { useActiveSwapsStore } from '@/stores/activeSwaps'
 import { usePendingPubkeySubmissionsStore } from '@/stores/pendingPubkeySubmissions'
 import { useToastStore } from '@/stores/toast'
 import { generateNip98Header } from '@/lib/markets'
+import { resolveApiSigningUrl } from '@/lib/hubUrl'
 import { BitcasterEngineClient } from '@bitcaster/client-sdk/engineClient'
 import { normalizeMarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
 
@@ -71,7 +72,8 @@ export async function fetchOrderStatus(
 ): Promise<OrderStatusResponse | null> {
   return (await new BitcasterEngineClient({
     baseUrl: window.location.origin,
-    authorization: ({ url, method }) => generateNip98Header(url, method),
+    authorization: ({ url, method }) =>
+      generateNip98Header(resolveApiSigningUrl(url), method),
   }).getOrderStatus(marketId, orderId)) as OrderStatusResponse | null
 }
 
