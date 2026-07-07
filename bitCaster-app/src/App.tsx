@@ -15,7 +15,7 @@ import { MarketCreationPage } from "@/pages/MarketCreationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { MintDetailPage } from "@/pages/MintDetailPage";
 import { UserPage } from "@/pages/UserPage";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { useActivityLogSync } from "@/stores/useActivityLogSync";
@@ -135,7 +135,8 @@ function AppRoutes() {
   usePendingTradesPoller();
   useLikedMarketCloseReconcile();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
-  useTradeSettlement(nostrSignerMode !== "none");
+  const [nostrSignerReady, setNostrSignerReady] = useState(false);
+  useTradeSettlement(nostrSignerReady && nostrSignerMode !== "none");
 
   useEffect(() => {
     document.title = titleForPath(location.pathname);
@@ -144,7 +145,9 @@ function AppRoutes() {
   // Re-install the Nostr signer from persisted settings after Zustand
   // hydration. The identityOps helper owns the one-shot/hydration semantics.
   useEffect(() => {
-    rehydratePersistedNostrIdentity().catch(() => {});
+    rehydratePersistedNostrIdentity()
+      .catch(() => {})
+      .finally(() => setNostrSignerReady(true));
   }, []);
 
   // One-shot migration: pre-fix proofs stored their mintUrl verbatim from

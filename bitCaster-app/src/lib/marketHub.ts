@@ -191,6 +191,19 @@ type MarketRejoinedHandler = () => void
 const SERVER_URL = resolveHubServerUrl()
 const HUB_URL = `${SERVER_URL}/hubs/market`
 
+function marketHubDisabledForE2E(): boolean {
+  if (typeof window === 'undefined') return false
+  if (!import.meta.env.DEV) return false
+  if (Boolean((window as unknown as { __BITCASTER_E2E_DISABLE_MARKET_HUB?: boolean }).__BITCASTER_E2E_DISABLE_MARKET_HUB)) {
+    return true
+  }
+  try {
+    return window.localStorage.getItem('bitcaster-e2e-disable-market-hub') === 'true'
+  } catch {
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Singleton connection state
 // ---------------------------------------------------------------------------
@@ -368,6 +381,7 @@ async function ensureStarted(): Promise<HubConnection> {
 
 export async function joinMarket(marketId: string): Promise<void> {
   _desiredMarketJoins.add(marketId)
+  if (marketHubDisabledForE2E()) return
   const currentCount = _marketJoinCounts.get(marketId) ?? 0
   if (currentCount > 0) {
     _marketJoinCounts.set(marketId, currentCount + 1)
@@ -379,6 +393,11 @@ export async function joinMarket(marketId: string): Promise<void> {
 }
 
 export async function leaveMarket(marketId: string): Promise<void> {
+  if (marketHubDisabledForE2E()) {
+    _marketJoinCounts.delete(marketId)
+    _desiredMarketJoins.delete(marketId)
+    return
+  }
   const currentCount = _marketJoinCounts.get(marketId) ?? 0
   if (currentCount > 1) {
     _marketJoinCounts.set(marketId, currentCount - 1)
