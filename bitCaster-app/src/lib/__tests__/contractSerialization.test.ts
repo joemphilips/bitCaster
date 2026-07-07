@@ -18,7 +18,6 @@ describe("generated contract serialization", () => {
       outcomeFaceAmountSubunits: 1000,
       tokenSide: "Outcome",
       tradeId: "44444444-4444-4444-4444-444444444444",
-      makerEphemeralPubkey: "02" + "a".repeat(64),
     };
 
     const roundTripped = JSON.parse(JSON.stringify(fill)) as components["schemas"]["Fill"];
@@ -28,5 +27,6 @@ describe("generated contract serialization", () => {
     expect(roundTripped.quotePaymentSubunits).toBe(500);
     expect(roundTripped.outcomeFaceAmountSubunits).toBe(1000);
     expect(roundTripped.tokenSide).toBe("Outcome");
+    expect(roundTripped).not.toHaveProperty("makerEphemeralPubkey");
   });
 });

@@ -373,7 +373,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class Fill
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public Fill(long @amountSubunits, BaseAsset? @baseAsset, int? @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, string @makerEphemeralPubkey, System.Guid @makerOrderId, long? @outcomeFaceAmountSubunits, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, TokenSide? @tokenSide, System.Guid? @tradeId)
+        public Fill(long @amountSubunits, BaseAsset? @baseAsset, int? @divisibility, int @executionPrice, System.DateTimeOffset @filledAt, System.Guid @id, System.Guid @makerOrderId, long? @outcomeFaceAmountSubunits, MatchPath @path, long? @quotePaymentSubunits, FillStatus @status, System.Guid @takerOrderId, TokenSide? @tokenSide, System.Guid? @tradeId)
         {
             this.Id = @id;
             this.TakerOrderId = @takerOrderId;
@@ -389,7 +389,6 @@ namespace BitCaster.MatchingEngine.Contracts
             this.TokenSide = @tokenSide;
             this.FilledAt = @filledAt;
             this.TradeId = @tradeId;
-            this.MakerEphemeralPubkey = @makerEphemeralPubkey;
         }
 
         /// <summary>
@@ -477,13 +476,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("tradeId")]
         public System.Guid? TradeId { get; }
-
-        /// <summary>
-        /// Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on complementary-match fills (Buy vs Sell) so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on mint-match fills (Buy vs Buy splitter) and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders).
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("makerEphemeralPubkey")]
-        public string MakerEphemeralPubkey { get; }
 
         private System.Collections.Generic.IDictionary<string, object> _additionalProperties;
 

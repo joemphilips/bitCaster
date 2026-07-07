@@ -586,8 +586,6 @@ export interface components {
              * @description Atomic-swap trade session identifier for this fill. Present when the client must join TradeHub to settle; omitted only for legacy fills that do not have a corresponding TradeHub session.
              */
             tradeId?: string;
-            /** @description Hex-encoded compressed secp256k1 pubkey of the maker order's ephemeral key. Present on complementary-match fills (Buy vs Sell) so the taker can derive the ECDH shared secret with the maker without an extra round-trip through the engine. Null on mint-match fills (Buy vs Buy splitter) and on fills against orders that did not declare an ephemeral pubkey (e.g. legacy automated-liquidity orders). */
-            makerEphemeralPubkey?: string;
         };
         SubmitOrderRequest: {
             /** @description The primitive outcome to trade (e.g. "Alice" or "YES"). Must match the outcomeName segment of marketId and must not contain "|". */
