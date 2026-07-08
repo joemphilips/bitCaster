@@ -34,7 +34,7 @@ if (!string.Equals(text, patched, StringComparison.Ordinal))
     </Task>
   </UsingTask>
 
-  <Target Name="NSwagGenerate" BeforeTargets="CoreCompile" Inputs="specs/openapi.yaml;nswag.json" Outputs="Generated/ApiContracts.g.cs">
+  <Target Name="NSwagGenerate" Condition="'$(TargetFramework)' == '' or '$(TargetFramework)' == 'net10.0'" BeforeTargets="CoreCompile" Inputs="specs/openapi.yaml;nswag.json" Outputs="Generated/ApiContracts.g.cs">
     <Exec Command="dotnet nswag run nswag.json" WorkingDirectory="$(MSBuildProjectDirectory)" />
     <RewriteGeneratedEnumConverters GeneratedFile="$(MSBuildProjectDirectory)/Generated/ApiContracts.g.cs" />
   </Target>
