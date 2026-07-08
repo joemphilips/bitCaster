@@ -12,7 +12,6 @@ import {
   liveTradeChartUpdate,
   marketDetailDataReducer,
   pendingTopUpOrderIntentMatches,
-  resolvePreflightSplitBuyCollateralRequirement,
   resolveTradeOrderBooks,
   shouldPromptForFundedActionBackup,
 } from "@/pages/MarketDetailPage";
@@ -28,7 +27,6 @@ import type {
 } from "@/types/market-detail";
 
 const mocks = vi.hoisted(() => ({
-  resolveRootPreflightOutputAmountSats: vi.fn(),
   buildIndexedDbTokenHoldings: vi.fn(),
   getBalance: vi.fn(),
   navigate: vi.fn(),
@@ -141,11 +139,6 @@ vi.mock("@/lib/markets", () => ({
   submitEphemeralPubkey: vi.fn(),
   submitOrder: vi.fn(),
   windowPriceHistory: mocks.windowPriceHistory,
-}));
-
-vi.mock("@/lib/ctfSplit", () => ({
-  resolveRootPreflightOutputAmountSats:
-    mocks.resolveRootPreflightOutputAmountSats,
 }));
 
 vi.mock("@bitcaster/client-sdk/engineClient", () => ({
@@ -326,7 +319,6 @@ describe("fetchMarketDetailWithBooks", () => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
     vi.mocked(submitOrder).mockReset();
-    mocks.resolveRootPreflightOutputAmountSats.mockReset();
     mocks.windowPriceHistory.mockClear();
     mocks.liveStatusHandlers.length = 0;
     mocks.routeParams.id = "condition-yesno";
@@ -458,7 +450,7 @@ describe("MarketDetailPage live market status", () => {
     expect(fetchOrderBook).not.toHaveBeenCalled();
   });
 
-  it("keeps a priced buy enabled when base balance covers quote cost but not face value", async () => {
+  it("requires top-up when a priced buy covers quote cost but not face value", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
     mocks.settingsState.nostrSignerMode = "nsec";
@@ -484,12 +476,11 @@ describe("MarketDetailPage live market status", () => {
 
     await waitFor(() =>
       expect(screen.getAllByTestId("trade-confirm")[0]).toHaveTextContent(
-        "Place Limit Order for 1 shares",
+        "Top up sats wallet",
       ),
     );
     expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled();
-    expect(screen.queryByText("Insufficient funds")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Top up .+ wallet/i })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Insufficient funds").length).toBeGreaterThan(0);
   });
 
   it("opens the trade top-up overlay from the page-level buy top-up button", async () => {
@@ -1032,93 +1023,21 @@ describe("resolveTradeOrderBooks", () => {
   });
 });
 
-describe("resolvePreflightSplitBuyCollateralRequirement", () => {
-  beforeEach(() => {
-    mocks.resolveRootPreflightOutputAmountSats.mockReset();
-  });
-
-  it("uses face-value root collateral for non-crossing preflight limit buys", async () => {
-    mocks.resolveRootPreflightOutputAmountSats.mockResolvedValue(100);
-    const market = categoricalMarket();
-    market.outcomeOrderBooks = {
-      Alice: { bids: [], asks: [], spread: 0 },
-      "Bob|Carol": {
-        bids: [{ price: 20, amount: 100, total: 100 }],
-        asks: [],
-        spread: 0,
-      },
-    };
-
-    const required = await resolvePreflightSplitBuyCollateralRequirement({
-      activeMintUrl: "https://mint.example",
-      preflightSplit: true,
-      market,
-      tradeSelection: { side: "yes", outcomeId: "outcome-0" },
-      tradeAmount: 1,
-      tradeSide: "Buy",
-      orderType: "limit",
-      limitPrice: 40,
-    });
-
-    expect(required).toBe(100);
-    expect(mocks.resolveRootPreflightOutputAmountSats).toHaveBeenCalledWith({
-      mintUrl: "https://mint.example",
-      baseAsset: "sat",
-      conditionId: "condition-1",
-      amountSats: 1_000,
-      keepOutcomeSetId: "Alice",
-      lockOutcomeSetId: "Bob|Carol",
-    });
-  });
-
-  it("does not replace cost gating when the limit buy can cross immediately", async () => {
-    const market = categoricalMarket();
-    market.outcomeOrderBooks = {
-      Alice: {
-        bids: [],
-        asks: [{ price: 40, amount: 100, total: 100 }],
-        spread: 0,
-      },
-      "Bob|Carol": emptyBook,
-    };
-
-    const required = await resolvePreflightSplitBuyCollateralRequirement({
-      activeMintUrl: "https://mint.example",
-      preflightSplit: true,
-      market,
-      tradeSelection: { side: "yes", outcomeId: "outcome-0" },
-      tradeAmount: 1,
-      tradeSide: "Buy",
-      orderType: "limit",
-      limitPrice: 40,
-    });
-
-    expect(required).toBeNull();
-    expect(mocks.resolveRootPreflightOutputAmountSats).not.toHaveBeenCalled();
-  });
-});
-
 describe("decideTradeCollateralGate", () => {
-  it("returns top-up when balance covers quoted cost but not preflight face collateral", () => {
+  it("returns top-up when balance does not cover the order face collateral", () => {
     expect(
       decideTradeCollateralGate({
         balance: 50,
-        tradeSide: "Buy",
         tradeFaceAmountSubunits: 100,
-        requiredBuyCostSubunits: 40,
-        preflightSplitRequirement: 100,
       }),
     ).toEqual({ kind: "top-up", balance: 50, required: 100 });
   });
 
-  it("proceeds when balance covers preflight face collateral", () => {
+  it("proceeds when balance covers the order face collateral", () => {
     expect(
       decideTradeCollateralGate({
         balance: 100,
-        tradeSide: "Buy",
         tradeFaceAmountSubunits: 100,
-        requiredBuyCostSubunits: 40,
-        preflightSplitRequirement: 100,
       }),
     ).toEqual({ kind: "proceed", balance: 100, required: 100 });
   });

@@ -43,7 +43,7 @@ The maker first tries to settle from local outcome inventory:
 
 1. If the exact complementary collection is available locally, for example `B|C`, the maker locks that collection into the normal seller atomic-swap branch.
 2. If the exact collection is not available but all primitive complement legs are available, for example `B` plus `C`, the maker locks each primitive leg. The trade uses one seller opening containing all locked proof groups; it does not first convert `B` and `C` into `B|C`.
-3. If local inventory is insufficient and the order has an opted-in pre-flight split reservation, the maker uses the reserved lock side and releases the matched keep side.
+3. If local inventory is insufficient and the order has a CLI/daemon pre-flight split reservation, the maker uses the reserved lock side and releases the matched keep side.
 4. Otherwise, the maker selects regular collateral in the market's subunit, asks the mint to split it into the needed complementary CTF collections, keeps their desired outcome set, and locks the taker's outcome set.
 5. The taker pays through the normal buyer branch using the same market collateral subunit.
 
@@ -51,11 +51,11 @@ This is why mint settlement does not require the maker to already own the exact 
 
 ## Pre-Flight Split and Local Reservation
 
-For resting limit buys that can become mint maker orders, bitCaster may offer a pre-flight split. Before the order rests, the client splits regular collateral proofs into the needed CTF outcome collections, stores the resulting outcome proofs locally, and reserves the keep and lock sides for that order.
+For resting limit buys that can become mint maker orders, the CLI/daemon can optionally perform a pre-flight split. Before the order rests, the client splits regular collateral proofs into the needed CTF outcome collections, stores the resulting outcome proofs locally, and reserves the keep and lock sides for that order. The browser GUI does not pre-split; it checks whether the wallet has enough total collateral (`canBackOrder`) and submits the order directly, deferring the mint split to settlement time.
 
-This keeps the live order honest: if the mint is unavailable or the wallet cannot select enough regular collateral, the client should fail the submission or cancel the order path instead of leaving a maker quote that cannot settle. When a mint taker later matches the order, the maker locks only the matched amount of the reserved side and releases only the matched amount of the kept side as an active position. Remaining reserved proofs stay attached to the unfilled order quantity.
+This keeps the live order honest: if the wallet cannot select enough regular collateral, the client should fail the submission instead of leaving a maker quote that cannot settle. When a mint taker later matches the order, the maker locks only the matched amount of the reserved side and releases only the matched amount of the kept side as an active position. Remaining reserved proofs stay attached to the unfilled order quantity.
 
-The browser exposes this as a **Pre-flight split** checkbox for limit buys. The CLI has the same order-level option. Pre-flight is a maker choice, not a protocol requirement: at match time local exact inventory and local primitive complement inventory are preferred before reserved pre-flight proofs. Opting out increases settlement-failure risk if no suitable local inventory exists and collateral is spent, reserved elsewhere, or the mint is slow when the match arrives.
+Pre-flight is a CLI/daemon option, not a protocol requirement: at match time local exact inventory and local primitive complement inventory are preferred before reserved pre-flight proofs. The browser GUI accepts the settlement-failure risk in exchange for a simpler user experience — if collateral is spent elsewhere before a match, the settlement fails and the maker is penalized by the participation-score system.
 
 ## Fees and Maker Surplus
 
@@ -88,7 +88,7 @@ In Polymarket V2 Mint, the exchange contract takes USDC from both buyers and cal
 
 In bitCaster Mint, the maker supplies the complementary CTF side. They may already hold the exact complement, hold all primitive complement legs, use an order-local pre-flight reservation, or split regular collateral proofs from their own wallet at match time. Two consequences follow. First, if the maker has to split and the taker fails to complete, the maker can be stuck with unwanted complement inventory until they find another counterparty or pay another mint fee to merge back. Polymarket's atomic on-chain trade has no equivalent stuck-inventory failure mode. Second, the mint input fee falls on the maker — Polymarket's `splitPosition` gas is socialized through the on-chain transaction, but bitCaster's per-proof fee is paid by whoever submits the split. This is a real economic asymmetry: bitCaster makers carry the cost of supplying complete-set inventory.
 
-The pre-flight split policy partially mitigates this by letting makers split before the order rests, holding both sides of the complete set as reserved inventory. This trades held capital for settlement certainty: no mint-unavailable race at fill time, but the maker is committing collateral to a quote that may not fill.
+The CLI/daemon pre-flight split policy partially mitigates this by letting makers split before the order rests, holding both sides of the complete set as reserved inventory. This trades held capital for settlement certainty: no mint-unavailable race at fill time, but the maker is committing collateral to a quote that may not fill.
 
 ### Atomicity model
 
@@ -104,7 +104,7 @@ bitCaster does not currently support Merge. Off-chain Sell vs Sell is doable as 
 
 ### Pre-flight split has no Polymarket analogue
 
-In Polymarket V2 the mint happens atomically with the trade, so there is no maker-held inventory model to pre-populate. In the off-chain model the maker holds inventory locally, and pre-splitting before the order rests substitutes wallet-side capital commitment for at-match-time mint availability. Pre-flight split is therefore a bitCaster-specific reliability optimization, addressing a failure mode that does not exist on-chain.
+In Polymarket V2 the mint happens atomically with the trade, so there is no maker-held inventory model to pre-populate. In the off-chain model the maker holds inventory locally, and the CLI/daemon's pre-split option substitutes wallet-side capital commitment for at-match-time mint availability. Pre-flight split is therefore a bitCaster-specific reliability optimization for the CLI/daemon, addressing a failure mode that does not exist on-chain. The browser GUI defers all splitting to match time.
 
 ### Summary
 

@@ -78,8 +78,6 @@ export function MarketDetail({
   onRelatedMarketClick,
   onTradeSideChange,
   onOrderTypeChange,
-  preflightSplit,
-  onPreflightSplitChange,
   onLimitPriceChange,
   userHoldings,
   walletReady = true,
@@ -176,8 +174,6 @@ export function MarketDetail({
                 onCommentPost={onCommentPost}
                 onTradeSideChange={onTradeSideChange}
                 onOrderTypeChange={onOrderTypeChange}
-                preflightSplit={preflightSplit}
-                onPreflightSplitChange={onPreflightSplitChange}
                 onLimitPriceChange={onLimitPriceChange}
                 userHoldings={userHoldings}
                 walletReady={walletReady}
@@ -308,8 +304,6 @@ export function MarketDetail({
                 onCommentPost={onCommentPost}
                 onTradeSideChange={onTradeSideChange}
                 onOrderTypeChange={onOrderTypeChange}
-                preflightSplit={preflightSplit}
-                onPreflightSplitChange={onPreflightSplitChange}
                 onLimitPriceChange={onLimitPriceChange}
                 userHoldings={userHoldings}
                 walletReady={walletReady}

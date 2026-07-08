@@ -209,7 +209,6 @@
     "limitPrice": "指値価格",
     "pricePerShareLabel": "1枚あたりの価格",
     "pricePerShare": "1枚あたりの価格: {{price}}",
-    "preflightSplit": "事前スプリット",
     "sharesTimesPrice": "枚数 × 価格",
     "creatorFee": "マーケット作成者手数料 ({{percent}}%)",
     "creatorFeeTooltip": "このマーケットを作成した報酬として、マーケット作成者に支払われます",

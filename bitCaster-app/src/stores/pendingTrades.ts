@@ -24,16 +24,6 @@ export interface PendingTrade {
   tokenSide?: 'Outcome' | 'Complement'
   priceSubunits?: number | null
   amountSubunits?: number | null
-  /** Reserved complete-set proofs created before a mint-maker buy rests. */
-  preflightSplit?: PendingPreflightSplit
-}
-
-export interface PendingPreflightSplit {
-  reservationId: string
-  conditionId: string
-  keepOutcomeSetId: string
-  lockOutcomeSetId: string
-  amountSubunits: number
 }
 
 interface PendingTradeState {

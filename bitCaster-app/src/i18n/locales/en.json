@@ -209,7 +209,6 @@
     "limitPrice": "Limit Price",
     "pricePerShareLabel": "Price per share",
     "pricePerShare": "Price per share: {{price}}",
-    "preflightSplit": "Pre-flight split",
     "sharesTimesPrice": "Shares × price",
     "creatorFee": "Market Creator fee ({{percent}}%)",
     "creatorFeeTooltip": "Paid to the market creator as a reward for creating this market",

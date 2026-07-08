@@ -48,7 +48,6 @@ describe("e2e diagnostics", () => {
       clientOrderId: "client-order-1",
       marketId: "cond-A",
       submittedAt: 1_700_000_000_000,
-      hasPreflightSplit: false,
     });
     expect(serialized).not.toContain("33".repeat(32));
     expect(serialized).not.toContain("ciphertext");

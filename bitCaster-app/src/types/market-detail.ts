@@ -319,12 +319,6 @@ export interface MarketDetailProps {
   /** Called when user toggles between market and limit order */
   onOrderTypeChange?: (type: OrderType) => void
 
-  /** Whether limit buys should split complete-set collateral before submit. */
-  preflightSplit?: boolean
-
-  /** Called when user toggles pre-flight split for limit buys. */
-  onPreflightSplitChange?: (enabled: boolean) => void
-
   /** Preview for limit orders (null if not applicable) */
   limitOrderPreview?: LimitOrderPreview | null
 

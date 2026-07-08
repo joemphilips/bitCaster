@@ -60,10 +60,8 @@ import {
   getUnitProofs,
   getOutcomeProofs,
   getProofOperation,
-  getReservedProofs,
   markProofOperationCompleted,
   prepareProofOperation,
-  releaseProofReservationsBySecret,
   removeProofs,
   replaceProofs,
   type StoredProof,
@@ -84,7 +82,6 @@ import {
   sellerLockOutcomeProofs,
   sellerPreparePrelockedSwap,
   sellerPrepareSwap,
-  splitProofsForExactSend,
   type ProofOperationRecord as SwapProofOperationRecord,
   type ProofOperationStore,
 } from "@bitcaster/swap-protocol/atomicSwap";
@@ -896,21 +893,9 @@ interface MintSellerSplit {
   lockOutcomeSetId: string;
 }
 
-interface ReservedExactProofs {
-  exactProofs: Proof[];
-  spentProofs: StoredProof[];
-  changeProofs: Proof[];
-  wasSplit: boolean;
-}
-
 interface SelectedOutcomeProofGroup {
   outcomeSetId: string;
   proofs: StoredProof[];
-}
-
-interface SelectedPreflightProofGroup {
-  outcomeSetId: string;
-  proofs: ReservedExactProofs;
 }
 
 async function prepareDirectSellerOpening(
@@ -993,108 +978,6 @@ async function prepareMintSellerOpening(
       baseAsset: swap.baseAsset,
     });
     return sellerPreparePrelockedSwap(ctx, locked.lockedProofs);
-  }
-
-  const pendingTrade = usePendingTradesStore.getState().get(swap.orderId);
-  if (
-    pendingTrade?.preflightSplit &&
-    pendingTrade.preflightSplit.conditionId === split.conditionId
-  ) {
-    const preflight = pendingTrade.preflightSplit;
-    let selectedLockGroups: SelectedPreflightProofGroup[];
-    try {
-      selectedLockGroups = [
-        {
-          outcomeSetId: preflight.lockOutcomeSetId,
-          proofs: await prepareReservedPreflightExactProofs({
-            mintUrl,
-            reservationId: preflight.reservationId,
-            conditionId: split.conditionId,
-            outcomeSetId: preflight.lockOutcomeSetId,
-            amountSats,
-            operationId: proofOperationId(
-              swap.tradeId,
-              `seller-preflight-lock-exact-v2/${encodeURIComponent(preflight.lockOutcomeSetId)}`,
-            ),
-            preserveGrossLot: true,
-          }),
-        },
-      ];
-    } catch (exactErr) {
-      const lockOutcomeSetIds = parseOutcomeSetId(preflight.lockOutcomeSetId);
-      if (lockOutcomeSetIds.length <= 1) throw exactErr;
-      selectedLockGroups = await Promise.all(
-        lockOutcomeSetIds.map(async (outcomeSetId) => ({
-          outcomeSetId,
-          proofs: await prepareReservedPreflightExactProofs({
-            mintUrl,
-            reservationId: preflight.reservationId,
-            conditionId: split.conditionId,
-            outcomeSetId,
-            amountSats,
-            operationId: proofOperationId(
-              swap.tradeId,
-              `seller-preflight-lock-exact-v2/${encodeURIComponent(outcomeSetId)}`,
-            ),
-            preserveGrossLot: true,
-          }),
-        })),
-      );
-    }
-    for (const group of selectedLockGroups) {
-      await persistReservedPreflightExactProofs({
-        ...group.proofs,
-        mintUrl,
-        conditionId: split.conditionId,
-        reservedBy: preflight.reservationId,
-        baseAsset: swap.baseAsset,
-      });
-    }
-
-    const spentProofs: Proof[] = [];
-    const lockedProofs: Proof[] = [];
-    const changeProofs: Proof[] = [];
-    for (const group of selectedLockGroups) {
-      const locked = await sellerLockOutcomeProofs(
-        ctx,
-        group.proofs.exactProofs,
-        amountSats,
-        {
-          operationId: proofOperationId(
-            swap.tradeId,
-            selectedLockGroups.length === 1
-              ? "seller-preflight-lock"
-              : `seller-preflight-lock/${encodeURIComponent(group.outcomeSetId)}`,
-          ),
-          proofOperationStore,
-        },
-      );
-      spentProofs.push(...group.proofs.exactProofs);
-      lockedProofs.push(...locked.lockedProofs);
-      changeProofs.push(...locked.changeProofs);
-    }
-    const out = await sellerPreparePrelockedSwap(ctx, lockedProofs);
-    await persistConditionalLockChange({
-      spentProofs,
-      changeProofs,
-      mintUrl,
-      conditionId: split.conditionId,
-      reservedBy: preflight.reservationId,
-      baseAsset: swap.baseAsset,
-    });
-    await releaseMatchedPreflightProofs({
-      mintUrl,
-      reservationId: preflight.reservationId,
-      conditionId: split.conditionId,
-      outcomeSetId: preflight.keepOutcomeSetId,
-      amountSats,
-      operationId: proofOperationId(
-        swap.tradeId,
-        "seller-preflight-keep-exact-v2",
-      ),
-      baseAsset: swap.baseAsset,
-    });
-    return out;
   }
 
   const splitOutputAmountSats = await resolveRootDirectLockOutputAmountSats({
@@ -1305,93 +1188,6 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-async function selectReservedPreflightProofs(
-  reservationId: string,
-  conditionId: string,
-  outcomeSetId: string,
-  amountSats: number,
-  preserveGrossLot = false,
-): Promise<StoredProof[]> {
-  const reserved = await getReservedProofs(reservationId);
-  const candidates = reserved.filter(
-    (proof) =>
-      proof.conditionId === conditionId &&
-      proof.outcomeCollection === outcomeSetId,
-  );
-  if (preserveGrossLot && candidates.length > 0) return candidates;
-
-  const selected = takeProofsForLock(
-    candidates,
-    amountSats,
-    await inputFeePpkByKeysetForProofs(
-      candidates[0]?.mintUrl ?? "",
-      candidates,
-    ),
-  );
-  const total =
-    selected?.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0) ??
-    0;
-  if (!selected || total < amountSats) {
-    throw new Error(
-      `Pre-flight split has ${total} reserved ${outcomeSetId} sats, expected ${amountSats}`,
-    );
-  }
-  return selected;
-}
-
-async function prepareReservedPreflightExactProofs(input: {
-  mintUrl: string;
-  reservationId: string;
-  conditionId: string;
-  outcomeSetId: string;
-  amountSats: number;
-  operationId: string;
-  preserveGrossLot?: boolean;
-}): Promise<ReservedExactProofs> {
-  const selected = await selectReservedPreflightProofs(
-    input.reservationId,
-    input.conditionId,
-    input.outcomeSetId,
-    input.amountSats,
-    input.preserveGrossLot,
-  );
-  const total = selected.reduce(
-    (sum, proof) => sum + amountToNumber(proof.amount),
-    0,
-  );
-  if (input.preserveGrossLot) {
-    return {
-      exactProofs: selected,
-      spentProofs: selected,
-      changeProofs: [],
-      wasSplit: false,
-    };
-  }
-  if (total === input.amountSats) {
-    return {
-      exactProofs: selected,
-      spentProofs: selected,
-      changeProofs: [],
-      wasSplit: false,
-    };
-  }
-
-  const split = await splitProofsForExactSend({
-    mintUrl: input.mintUrl,
-    sourceProofs: selected,
-    amountSats: input.amountSats,
-    preserveSourceKeyset: true,
-    operationId: input.operationId,
-    proofOperationStore,
-  });
-  return {
-    exactProofs: split.sendProofs,
-    spentProofs: selected,
-    changeProofs: split.changeProofs,
-    wasSplit: true,
-  };
-}
-
 async function inputFeePpkByKeysetForProofs(
   mintUrl: string,
   proofs: Array<Pick<Proof, "id">>,
@@ -1411,72 +1207,6 @@ async function inputFeePpkByKeysetForProofs(
     inputFeePpkByKeyset[proof.id] = keyset.input_fee_ppk ?? 0;
   }
   return inputFeePpkByKeyset;
-}
-
-async function persistReservedPreflightExactProofs(input: {
-  exactProofs: Proof[];
-  spentProofs: StoredProof[];
-  changeProofs: Proof[];
-  mintUrl: string;
-  conditionId: string;
-  reservedBy: string;
-  baseAsset?: string | null;
-}): Promise<void> {
-  const spentSecrets = new Set(input.spentProofs.map((proof) => proof.secret));
-  const isNoop =
-    input.changeProofs.length === 0 &&
-    input.exactProofs.length === input.spentProofs.length &&
-    input.exactProofs.every((proof) => spentSecrets.has(proof.secret));
-  if (isNoop) return;
-
-  await replaceProofs(
-    input.spentProofs.map((proof) => proof.secret),
-    await storedConditionalProofsFromMintMetadata({
-      mintUrl: input.mintUrl,
-      proofs: [...input.exactProofs, ...input.changeProofs],
-      expectedConditionId: input.conditionId,
-      reservedBy: input.reservedBy,
-      baseAsset: input.baseAsset,
-      unit: defaultCollateralUnit(input.baseAsset),
-    }),
-  );
-}
-
-async function releaseMatchedPreflightProofs(input: {
-  mintUrl: string;
-  reservationId: string;
-  conditionId: string;
-  outcomeSetId: string;
-  amountSats: number;
-  operationId: string;
-  baseAsset?: string | null;
-}): Promise<void> {
-  const selected = await prepareReservedPreflightExactProofs(input);
-  if (!selected.wasSplit) {
-    await releaseProofReservationsBySecret(
-      selected.exactProofs.map((proof) => proof.secret),
-    );
-    return;
-  }
-
-  await replaceProofs(
-    selected.spentProofs.map((proof) => proof.secret),
-    [
-      ...(await storedConditionalProofsFromMintMetadata({
-        mintUrl: input.mintUrl,
-        proofs: selected.exactProofs,
-        expectedConditionId: input.conditionId,
-        baseAsset: input.baseAsset,
-      })),
-      ...(await storedConditionalProofsFromMintMetadata({
-        mintUrl: input.mintUrl,
-        proofs: selected.changeProofs,
-        expectedConditionId: input.conditionId,
-        reservedBy: input.reservationId,
-        baseAsset: input.baseAsset,
-      })),
-    ],
-  );
 }
 
 function mintSellerSplit(
