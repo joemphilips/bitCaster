@@ -167,10 +167,10 @@ test('TradeCreated rejects unit metadata that does not match the local order', a
       settlementKind: 'DirectSwap',
     })
 
-    assert.equal(created?.step, 'failed')
+    assert.equal(created?.step, 'Failed')
     assert.match(created?.error ?? '', /Trade unit mismatch/)
     const persisted = await readState()
-    assert.equal(persisted?.swaps['trade-unit-mismatch'].step, 'failed')
+    assert.equal(persisted?.swaps['trade-unit-mismatch'].step, 'Failed')
     assert.match(persisted?.swaps['trade-unit-mismatch'].error ?? '', /Trade unit mismatch/)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -217,10 +217,10 @@ test('TradeCreated rejects quote payment that violates local submitted order eco
       settlementKind: 'DirectSwap',
     })
 
-    assert.equal(created?.step, 'failed')
+    assert.equal(created?.step, 'Failed')
     assert.match(created?.error ?? '', /does not satisfy the submitted order price/)
     const persisted = await readState()
-    assert.equal(persisted?.swaps['trade-price-mismatch'].step, 'failed')
+    assert.equal(persisted?.swaps['trade-price-mismatch'].step, 'Failed')
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -262,7 +262,7 @@ test('TradeCreated rejects legacy local orders without submitted order economics
       settlementKind: 'DirectSwap',
     })
 
-    assert.equal(created?.step, 'failed')
+    assert.equal(created?.step, 'Failed')
     assert.match(created?.error ?? '', /Expected order economics are missing/)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -304,7 +304,7 @@ test('TradeCreated rejects non-default rows without canonical settlement amounts
       settlementKind: 'DirectSwap',
     })
 
-    assert.equal(created?.step, 'failed')
+    assert.equal(created?.step, 'Failed')
     assert.match(created?.error ?? '', /outcome face subunits must be a positive safe integer|missing outcome face subunits/)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME

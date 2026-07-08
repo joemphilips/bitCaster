@@ -455,7 +455,7 @@ function assertWalletProofs(
     const total = state.wallet.proofs
       .filter(
         (record) =>
-          record.asset.kind === 'outcome' &&
+          record.asset.kind === 'Outcome' &&
           record.asset.outcomeSetId === outcomeSetId,
       )
       .reduce((sum, record) => sum + amountToNumber(record.proof.amount), 0)

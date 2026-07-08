@@ -10,7 +10,7 @@ import { emptyDaemonState, type DaemonState } from '../src/state.ts'
 test('buildTradeResumePlan rejoins live orders and swaps only', () => {
   const state = emptyDaemonState()
   state.orders['resting'] = order('resting', 'cond-YES', 'resting', ['trade-a'])
-  state.orders['filled'] = order('filled', 'cond-YES', 'filled', ['trade-filled'])
+  state.orders['filled'] = order('filled', 'cond-YES', 'Filled', ['trade-filled'])
   state.swaps['trade-b'] = swap('trade-b', 'cond-NO', 'opened')
   state.swaps['trade-done'] = swap('trade-done', 'cond-NO', 'confirmed')
 

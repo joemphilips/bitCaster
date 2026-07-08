@@ -41,7 +41,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         proofRecord('mint-a', 50, 'reserved', { kind: 'sats' }),
         proofRecord('mint-a', 999, 'available', { kind: 'sats', baseAsset: 'usd' }),
         proofRecord('mint-a', 25, 'locked', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
         }),
@@ -446,7 +446,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         amountSats: 11,
         proofCount: 1,
         asset: {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
           baseAsset: 'sat',
@@ -454,7 +454,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
       const state = await readState()
       assert.deepEqual(state?.wallet.proofs[0]?.asset, {
-        kind: 'outcome',
+        kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'YES',
         baseAsset: 'sat',

@@ -49,7 +49,7 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
     }
     state.wallet.proofs.push(
       proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'outcome',
+        kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'YES',
       }),
@@ -140,7 +140,7 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
     }
     state.wallet.proofs.push(
       proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'outcome',
+        kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'A',
       }),
@@ -201,7 +201,7 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
     )
 
     const persisted = await readState()
-    assert.equal(persisted?.swaps['trade-partial-lock'].step, 'failed')
+    assert.equal(persisted?.swaps['trade-partial-lock'].step, 'Failed')
     assert.equal(
       persisted?.swaps['trade-partial-lock'].failure?.kind,
       'PartialLockHeld',
@@ -252,7 +252,7 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
       buyerLocktime: 1,
       fillAmountSats: 100,
       messages: {},
-      step: 'failed',
+      step: 'Failed',
       error: 'leg 1 locked; leg 2 failed',
       failure: {
         kind: 'PartialLockHeld',
@@ -265,7 +265,7 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
     }
     state.wallet.proofs.push({
       ...proofRecord(profile.mintUrl, 100, 'locked', {
-        kind: 'outcome',
+        kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'A',
       }),
@@ -330,7 +330,7 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
       buyerLocktime: 1,
       fillAmountSats: 100,
       messages: {},
-      step: 'failed',
+      step: 'Failed',
       error: 'leg 1 locked; leg 2 failed',
       failure: {
         kind: 'PartialLockHeld',
@@ -361,7 +361,7 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
     state.wallet.proofs.push(
       {
         ...proofRecord(profile.mintUrl, 100, 'locked', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'B',
         }),
@@ -370,7 +370,7 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
       },
       {
         ...proofRecord(profile.mintUrl, 100, 'locked', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'C',
         }),
@@ -403,14 +403,14 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
     const refundedC = persisted?.wallet.proofs.find(
       (row) => row.proof.secret === 'refunded-partial-locked-C',
     )
-    assert.equal(refundedB?.asset.kind, 'outcome')
+    assert.equal(refundedB?.asset.kind, 'Outcome')
     assert.equal(
-      refundedB?.asset.kind === 'outcome' ? refundedB.asset.outcomeSetId : '',
+      refundedB?.asset.kind === 'Outcome' ? refundedB.asset.outcomeSetId : '',
       'B',
     )
-    assert.equal(refundedC?.asset.kind, 'outcome')
+    assert.equal(refundedC?.asset.kind, 'Outcome')
     assert.equal(
-      refundedC?.asset.kind === 'outcome' ? refundedC.asset.outcomeSetId : '',
+      refundedC?.asset.kind === 'Outcome' ? refundedC.asset.outcomeSetId : '',
       'C',
     )
   } finally {
@@ -441,7 +441,7 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
       buyerLocktime: 1,
       fillAmountSats: 100,
       messages: {},
-      step: 'failed',
+      step: 'Failed',
       error: 'leg 1 locked; leg 2 failed',
       failure: {
         kind: 'PartialLockHeld',
@@ -454,7 +454,7 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
     }
     state.wallet.proofs.push({
       ...proofRecord(profile.mintUrl, 100, 'locked', {
-        kind: 'outcome',
+        kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'A',
       }),
@@ -511,7 +511,7 @@ test('DaemonSwapExecutor leaves persisted seller open resumable when hub send fa
     }
     state.wallet.proofs.push(
       proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'outcome',
+        kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'YES',
       }),
@@ -574,7 +574,7 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
     }
     state.wallet.proofs.push(
       proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'outcome',
+        kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'YES',
       }),
@@ -643,7 +643,7 @@ test('DaemonSwapExecutor retries mint-pending seller open without another event'
     }
     state.wallet.proofs.push(
       proofRecord(profile.mintUrl, 100, 'available', {
-        kind: 'outcome',
+        kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'YES',
       }),
@@ -769,7 +769,7 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
     assert.equal(
       persisted?.wallet.proofs.some(
         (row) =>
-          row.asset.kind === 'outcome' &&
+          row.asset.kind === 'Outcome' &&
           row.asset.outcomeSetId === 'NO' &&
           row.proof.secret === 'buyer-claim',
       ),
@@ -853,7 +853,7 @@ test('DaemonSwapExecutor resume sweep retries active claim after retryable timeo
     assert.equal(
       persisted?.wallet.proofs.some(
         (row) =>
-          row.asset.kind === 'outcome' &&
+          row.asset.kind === 'Outcome' &&
           row.asset.outcomeSetId === 'NO' &&
           row.proof.secret === 'buyer-claim-retry',
       ),
@@ -993,7 +993,7 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
     assert.equal(
       persisted?.wallet.proofs.some(
         (row) =>
-          row.asset.kind === 'outcome' &&
+          row.asset.kind === 'Outcome' &&
           row.asset.outcomeSetId === 'YES' &&
           row.proof.secret === 'keep-proof',
       ),
@@ -1043,7 +1043,7 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
     state.wallet.proofs.push(
       {
         ...proofRecord(profile.mintUrl, 100, 'reserved', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'NO',
         }),
@@ -1052,7 +1052,7 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
       },
       {
         ...proofRecord(profile.mintUrl, 100, 'reserved', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
         }),
@@ -1172,7 +1172,7 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
     state.wallet.proofs.push(
       {
         ...proofRecord(profile.mintUrl, 100, 'available', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'B',
         }),
@@ -1180,7 +1180,7 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
       },
       {
         ...proofRecord(profile.mintUrl, 100, 'available', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'C',
         }),
@@ -1188,7 +1188,7 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
       },
       {
         ...proofRecord(profile.mintUrl, 100, 'reserved', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'B|C',
         }),
@@ -1270,7 +1270,7 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
     )
     assert.equal(
       persisted?.wallet.proofs.find((row) => row.proof.secret === 'locked-primitive-b')?.asset.kind,
-      'outcome',
+      'Outcome',
     )
     assert.equal(
       persisted?.wallet.proofs.find((row) => row.proof.secret === 'locked-primitive-b')?.asset
@@ -1328,7 +1328,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
     state.wallet.proofs.push(
       {
         ...proofRecord(profile.mintUrl, 136, 'reserved', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'NO',
         }),
@@ -1337,7 +1337,7 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       },
       {
         ...proofRecord(profile.mintUrl, 136, 'reserved', {
-          kind: 'outcome',
+          kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
         }),

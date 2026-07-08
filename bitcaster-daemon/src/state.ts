@@ -781,7 +781,8 @@ function upsertOrderFromEngine(
 export async function recordTradeCreated(
   payload: DaemonTradeCreatedPayload,
 ): Promise<LocalSwapRecord | null> {
-  const ownEphemeralPubkey = (await readSecrets())?.orderEphemeralKeys[payload.tradeId]?.publicKeyHex
+  const secrets = await readSecrets()
+  const ownEphemeralPubkey = secrets?.orderEphemeralKeys[payload.tradeId]?.publicKeyHex
   return updateState((state, now) => {
     const match = findOrderForTradeCreated(state, payload, ownEphemeralPubkey)
     if (!match) return null
@@ -955,7 +956,7 @@ function normalizeState(value: unknown): DaemonState {
       ? normalizeProofOperations(value.proofOperations)
       : {},
     orders: isRecord(value.orders)
-      ? (value.orders as Record<string, LocalOrderRecord>)
+      ? normalizeOrders(value.orders)
       : {},
     swaps: isRecord(value.swaps)
       ? normalizeSwaps(value.swaps)
@@ -964,7 +965,7 @@ function normalizeState(value: unknown): DaemonState {
 }
 
 function normalizeProofAsset(asset: StoredProofAsset | undefined): StoredProofAsset {
-  if (asset?.kind === 'Outcome') {
+  if (isOutcomeProofAsset(asset)) {
     return {
       kind: 'Outcome',
       conditionId: asset.conditionId,
@@ -977,6 +978,12 @@ function normalizeProofAsset(asset: StoredProofAsset | undefined): StoredProofAs
     kind: 'sats',
     baseAsset: normalizeProofAssetBaseAsset(asset),
   }
+}
+
+function isOutcomeProofAsset(
+  asset: StoredProofAsset | undefined,
+): asset is Extract<StoredProofAsset, { kind: 'Outcome' }> {
+  return asset?.kind === 'Outcome' || (asset as { kind?: unknown } | undefined)?.kind === 'outcome'
 }
 
 function normalizeProofAssetBaseAsset(asset: StoredProofAsset | undefined): string {
@@ -1010,7 +1017,7 @@ function normalizeProofOperation(
 ): [string, ProofOperationRecord] | null {
   if (!isRecord(raw)) return null
   const kind = raw.kind
-  const state = raw.state
+  const state = normalizeProofOperationState(raw.state)
   const mintUrl = raw.mintUrl
   if (
     !isProofOperationKind(kind) ||
@@ -1071,13 +1078,74 @@ function normalizeSwaps(value: Record<string, unknown>): Record<string, LocalSwa
           ...swap,
           tradeId: swap.tradeId ?? tradeId,
           messages: swap.messages ?? {},
-          step: swap.step ?? 'awaiting-trade-created',
+          step: normalizeSwapStep(swap.step),
           createdAt: swap.createdAt ?? new Date(0).toISOString(),
           updatedAt: swap.updatedAt ?? new Date(0).toISOString(),
         } as LocalSwapRecord,
       ]
     }),
   )
+}
+
+function normalizeOrders(value: Record<string, unknown>): Record<string, LocalOrderRecord> {
+  return Object.fromEntries(
+    Object.entries(value).map(([orderId, raw]) => {
+      const order = raw as Partial<LocalOrderRecord>
+      return [
+        orderId,
+        {
+          ...order,
+          orderId: order.orderId ?? orderId,
+          ...(normalizeTokenSide(order.tokenSide)
+            ? { tokenSide: normalizeTokenSide(order.tokenSide) }
+            : {}),
+          ...(normalizeOrderSide(order.side)
+            ? { side: normalizeOrderSide(order.side) }
+            : {}),
+          status: normalizeOrderStatus(order.status),
+          tradeIds: order.tradeIds ?? [],
+          createdAt: order.createdAt ?? new Date(0).toISOString(),
+          updatedAt: order.updatedAt ?? new Date(0).toISOString(),
+        } as LocalOrderRecord,
+      ]
+    }),
+  )
+}
+
+function normalizeTokenSide(value: unknown): LocalOrderRecord['tokenSide'] {
+  if (value === 'Outcome' || value === 'outcome') return 'Outcome'
+  if (value === 'Complement' || value === 'complement') return 'Complement'
+  return undefined
+}
+
+function normalizeOrderSide(value: unknown): LocalOrderRecord['side'] {
+  if (value === 'Buy' || value === 'buy') return 'Buy'
+  if (value === 'Sell' || value === 'sell') return 'Sell'
+  return undefined
+}
+
+function normalizeOrderStatus(value: unknown): string {
+  if (value === 'filled') return 'Filled'
+  if (value === 'failed') return 'Failed'
+  return typeof value === 'string' ? value : 'unknown'
+}
+
+function normalizeSwapStep(value: unknown): LocalSwapRecord['step'] {
+  if (value === 'failed') return 'Failed'
+  if (
+    value === 'awaiting-trade-created' ||
+    value === 'opened' ||
+    value === 'seller-opened' ||
+    value === 'buyer-responded' ||
+    value === 'settling' ||
+    value === 'awaiting-confirmation' ||
+    value === 'confirmed' ||
+    value === 'refunded' ||
+    value === 'Failed'
+  ) {
+    return value
+  }
+  return 'awaiting-trade-created'
 }
 
 function getOrCreate<K, V>(map: Map<K, V>, key: K, create: () => V): V {
@@ -1183,21 +1251,78 @@ function isProofOperationState(value: unknown): value is ProofOperationState {
   return value === 'prepared' || value === 'completed' || value === 'Failed'
 }
 
+function normalizeProofOperationState(value: unknown): unknown {
+  return value === 'failed' ? 'Failed' : value
+}
+
 function findOrderForTradeCreated(
   state: DaemonState,
   payload: DaemonTradeCreatedPayload,
   ownEphemeralPubkey: string | undefined,
 ): { orderId: string; marketId: string; ownEphemeralPubkey: string } | null {
-  if (!ownEphemeralPubkey) return null
   for (const order of Object.values(state.orders)) {
-    if (order.tradeIds.includes(payload.tradeId)) {
+    const orderEphemeralPubkey = readStringProperty(order, 'ephemeralPubkey')
+    const matchedEphemeralPubkey = ownEphemeralPubkey ?? orderEphemeralPubkey ?? undefined
+    if (
+      matchedEphemeralPubkey &&
+      order.tradeIds.includes(payload.tradeId)
+    ) {
       return {
         orderId: order.orderId,
         marketId: order.marketId,
-        ownEphemeralPubkey,
+        ownEphemeralPubkey: matchedEphemeralPubkey,
+      }
+    }
+    if (
+      orderEphemeralPubkey &&
+      isOrderEphemeralForTrade(orderEphemeralPubkey, payload) &&
+      orderMarketMatchesTradeCreated(order, payload)
+    ) {
+      return {
+        orderId: order.orderId,
+        marketId: order.marketId,
+        ownEphemeralPubkey: orderEphemeralPubkey,
       }
     }
   }
+  return null
+}
+
+function isOrderEphemeralForTrade(
+  orderEphemeralPubkey: string,
+  payload: DaemonTradeCreatedPayload,
+): boolean {
+  return orderEphemeralPubkey === payload.sellerPubkey || orderEphemeralPubkey === payload.buyerPubkey
+}
+
+function orderMarketMatchesTradeCreated(
+  order: LocalOrderRecord,
+  payload: DaemonTradeCreatedPayload,
+): boolean {
+  if (payload.settlementKind !== 'Mint') {
+    return order.marketId === payload.marketId
+  }
+  const role = orderRoleForTradeCreated(order, payload)
+  if (!role) return false
+  const conditionId = payload.marketId.split('-', 1)[0]
+  const sellerKeepMarketId = payload.sellerKeepOutcomeSetId
+    ? `${conditionId}-${payload.sellerKeepOutcomeSetId}`
+    : null
+  const sellerLockMarketId = payload.sellerLockOutcomeSetId
+    ? `${conditionId}-${payload.sellerLockOutcomeSetId}`
+    : payload.marketId
+  if (role === 'seller') return order.marketId === sellerKeepMarketId
+  if (order.tokenSide === 'Complement') return order.marketId === sellerKeepMarketId
+  return order.marketId === sellerLockMarketId
+}
+
+function orderRoleForTradeCreated(
+  order: LocalOrderRecord,
+  payload: DaemonTradeCreatedPayload,
+): 'seller' | 'buyer' | null {
+  const orderEphemeralPubkey = readStringProperty(order, 'ephemeralPubkey')
+  if (orderEphemeralPubkey === payload.sellerPubkey) return 'seller'
+  if (orderEphemeralPubkey === payload.buyerPubkey) return 'buyer'
   return null
 }
 
