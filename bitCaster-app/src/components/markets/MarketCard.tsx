@@ -229,9 +229,16 @@ export function MarketCard({
   const toggleBookmark = useBookmarkStore((s) => s.toggle)
 
   const handleCardClick = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('a')) return
     if ((e.target as HTMLElement).closest('button')) return
     if ((e.target as HTMLElement).closest('input')) return
     onViewMarket?.(market.id)
+  }
+
+  const handleTitleLinkClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (!onViewMarket) return
+    e.preventDefault()
+    onViewMarket(market.id)
   }
 
   const handleBuyClick = (e: React.MouseEvent) => {
@@ -326,6 +333,7 @@ export function MarketCard({
   return (
     <div
       onClick={handleCardClick}
+      data-testid={`market-card-${market.id}`}
       style={{ height: `${expandedHeight}px` }}
       className="group relative bg-white dark:bg-slate-900 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 transition-all duration-300 flex flex-col shadow-md hover:shadow-xl hover:scale-[1.01] cursor-pointer"
     >
@@ -333,7 +341,13 @@ export function MarketCard({
         <MarketThumbnail market={market} />
         <div className="flex-1 min-w-0">
           <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 line-clamp-2">
-            {market.title}
+            <a
+              href={`/markets/${market.id}`}
+              onClick={handleTitleLinkClick}
+              className="hover:text-blue-600 dark:hover:text-blue-400"
+            >
+              {market.title}
+            </a>
           </h3>
           {secondaryMarketInfos && secondaryMarketInfos.length > 0 && (
             <SecondaryMarketsExpander

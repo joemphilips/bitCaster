@@ -55,6 +55,10 @@ describe('MarketCard', () => {
     render(<MarketCard market={yesNoMarket} />)
 
     expect(screen.getByText('Will BTC reach 100K?')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Will BTC reach 100K?' })).toHaveAttribute(
+      'href',
+      '/markets/mkt-1',
+    )
     expect(screen.getByText('65.00%')).toBeInTheDocument()
     expect(screen.getByText('Buy YES')).toBeInTheDocument()
     expect(screen.getByText('Buy NO')).toBeInTheDocument()

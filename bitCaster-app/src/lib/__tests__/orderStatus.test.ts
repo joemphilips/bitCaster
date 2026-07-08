@@ -210,6 +210,31 @@ describe('buildOrderStatusNotifications', () => {
     })
   })
 
+  it('treats lower-case filled status from the wire contract as terminal', () => {
+    const status = {
+      ...orderStatusWithTradeFills('trade-a'),
+      status: 'filled',
+      filledAmountSubunits: 100,
+      remainingAmountSubunits: 0,
+    } as OrderStatusResponse
+
+    const notifications = buildOrderStatusNotifications(
+      status,
+      pendingTrade(),
+      0,
+      123,
+    )
+
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]).toMatchObject({
+      id: 'order-1-filled',
+      kind: 'Filled',
+      filledAmountSubunits: 100,
+      remainingAmountSubunits: 0,
+      occurredAt: 123,
+    })
+  })
+
   it('defaults unit to sat when trade baseAsset is absent', () => {
     const status = {
       ...orderStatusWithTradeFills('trade-a'),

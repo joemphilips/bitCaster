@@ -22,11 +22,51 @@ export type FillStatus = components['schemas']['FillStatus']
  */
 export type OrderStatus =
   | 'resting'
+  | 'matched'
   | 'Matched'
   | 'partially_filled'
+  | 'filled'
   | 'Filled'
   | 'cancelled'
+  | 'failed'
   | 'Failed'
+
+function normalizeOrderStatus(status: string): OrderStatus {
+  switch (status) {
+    case 'resting':
+    case 'matched':
+    case 'Matched':
+    case 'partially_filled':
+    case 'filled':
+    case 'Filled':
+    case 'cancelled':
+    case 'failed':
+    case 'Failed':
+      return status
+    default:
+      throw new Error(`Unhandled OrderStatus: ${status}`)
+  }
+}
+
+function notificationKindForTerminalStatus(status: OrderStatus): NotificationKind {
+  switch (status) {
+    case 'filled':
+    case 'Filled':
+      return 'Filled'
+    case 'failed':
+    case 'Failed':
+      return 'Failed'
+    case 'cancelled':
+      return 'cancelled'
+    case 'resting':
+    case 'matched':
+    case 'Matched':
+    case 'partially_filled':
+      throw new Error(`OrderStatus is not terminal: ${status}`)
+    default:
+      return assertNever(status)
+  }
+}
 
 export function isTerminalFillStatus(status: FillStatus): boolean {
   switch (status) {
@@ -61,8 +101,10 @@ type FillLike = {
 }
 
 const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set([
+  'filled',
   'Filled',
   'cancelled',
+  'failed',
   'Failed',
 ])
 
@@ -138,7 +180,7 @@ export function buildOrderStatusNotifications(
   lastFillCount: number,
   now = Date.now(),
 ): Notification[] {
-  const current = status.status as OrderStatus
+  const current = normalizeOrderStatus(String(status.status))
   const isTerminal = TERMINAL_STATUSES.has(current)
   const fillCount = status.fills.length
   const hasNewFills = fillCount > lastFillCount
@@ -147,12 +189,12 @@ export function buildOrderStatusNotifications(
 
   if (
     !isTerminal &&
-    (current === 'Matched' || current === 'partially_filled') &&
+    (current === 'matched' || current === 'Matched' || current === 'partially_filled') &&
     hasNewFills &&
     status.filledAmountSubunits > 0
   ) {
-    const kind = current === 'Matched' ? 'Matched' : 'partially_filled'
-    const idKind = current === 'Matched' ? 'matched' : 'partially_filled'
+    const kind = current === 'matched' || current === 'Matched' ? 'Matched' : 'partially_filled'
+    const idKind = current === 'matched' || current === 'Matched' ? 'matched' : 'partially_filled'
     return [
       {
         id: `${trade.orderId}-${idKind}-${fillCount}`,
@@ -169,7 +211,7 @@ export function buildOrderStatusNotifications(
   }
 
   if (isTerminal) {
-    const kind = current as NotificationKind
+    const kind = notificationKindForTerminalStatus(current)
     const idKind = String(current).toLowerCase()
     return [
       {
@@ -260,7 +302,7 @@ export function usePendingTradesPoller(): void {
             }
             if (!status || cancelled) return
 
-            const current = status.status as OrderStatus
+            const current = normalizeOrderStatus(String(status.status))
             const isTerminal = TERMINAL_STATUSES.has(current)
             const fillCount = status.fills.length
             const lastFillCount =
@@ -290,7 +332,7 @@ export function usePendingTradesPoller(): void {
             }
 
             if (isTerminal) {
-              if (current === 'Filled') {
+              if (current === 'Filled' || current === 'filled') {
                 useToastStore.getState().addToast({
                   type: 'success',
                   message: `All your amount for order ${shortOrderId(trade.orderId)} has been filled. 0 sats remaining.`,
