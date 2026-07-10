@@ -62,6 +62,7 @@ import {
   getProofOperation,
   markProofOperationCompleted,
   prepareProofOperation,
+  releaseProofReservation,
   removeProofs,
   replaceProofs,
   tryReserveProofs,
@@ -1307,6 +1308,7 @@ async function runBuyerRespond(
   mintUrl: string,
 ): Promise<void> {
   if (!claimStep(tradeId, "buyer-respond")) return;
+  let buyerLockOperationId: string | null = null;
   try {
     const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
     if (!swap || swap.role !== "buyer") return;
@@ -1345,6 +1347,7 @@ async function runBuyerRespond(
     const ctx = buildSwapContext(swap, mintUrl);
     if (!ctx) return;
     const operationId = proofOperationId(tradeId, "buyer-lock");
+    buyerLockOperationId = operationId;
     const existingOperation = await getProofOperation(operationId);
     const proofs = existingOperation?.kind === "swap-lock"
       ? existingOperation.inputs
@@ -1383,9 +1386,30 @@ async function runBuyerRespond(
       out.lockedProofsCipher,
     );
   } catch (err) {
+    if (buyerLockOperationId) {
+      await releaseBuyerReservationBeforeMint(buyerLockOperationId);
+    }
     failSwap(tradeId, err);
   } finally {
     releaseStep(tradeId, "buyer-respond");
+  }
+}
+
+/**
+ * A reservation is disposable only before the proof operation exists. Once it
+ * is prepared, its inputs may have reached the mint and recovery must retain
+ * the reservation until the operation resolves deterministically.
+ */
+async function releaseBuyerReservationBeforeMint(
+  operationId: string,
+): Promise<void> {
+  try {
+    if (await getProofOperation(operationId)) return;
+    await releaseProofReservation(operationId);
+  } catch (cleanupError) {
+    // Failing closed retains the reservation rather than making a possibly
+    // submitted mint operation spendable by another swap.
+    console.warn("Could not release pre-mint buyer proof reservation", cleanupError);
   }
 }
 

@@ -31,6 +31,7 @@ const {
   mockGetReservedProofs,
   mockMarkProofOperationCompleted,
   mockPrepareProofOperation,
+  mockReleaseProofReservation,
   mockReleaseProofReservationsBySecret,
   mockRemoveProofs,
   mockReplaceProofs,
@@ -44,6 +45,7 @@ const {
   mockGetReservedProofs: vi.fn(),
   mockMarkProofOperationCompleted: vi.fn(),
   mockPrepareProofOperation: vi.fn(),
+  mockReleaseProofReservation: vi.fn(),
   mockReleaseProofReservationsBySecret: vi.fn(),
   mockRemoveProofs: vi.fn(),
   mockReplaceProofs: vi.fn(),
@@ -75,6 +77,7 @@ vi.mock("@/stores/proof-db", () => ({
   getReservedProofs: mockGetReservedProofs,
   markProofOperationCompleted: mockMarkProofOperationCompleted,
   prepareProofOperation: mockPrepareProofOperation,
+  releaseProofReservation: mockReleaseProofReservation,
   releaseProofReservationsBySecret: mockReleaseProofReservationsBySecret,
   removeProofs: mockRemoveProofs,
   replaceProofs: mockReplaceProofs,
@@ -135,6 +138,7 @@ beforeEach(() => {
   mockGetReservedProofs.mockResolvedValue([]);
   mockMarkProofOperationCompleted.mockResolvedValue({});
   mockPrepareProofOperation.mockResolvedValue({});
+  mockReleaseProofReservation.mockResolvedValue(undefined);
   mockReleaseProofReservationsBySecret.mockResolvedValue(undefined);
   mockRemoveProofs.mockResolvedValue(undefined);
   mockReplaceProofs.mockResolvedValue(undefined);
@@ -1305,6 +1309,183 @@ describe("useTradeSettlement", () => {
         "trade-buyer-reserve/browser/buyer-lock",
       ),
     );
+  });
+
+  it("releases a buyer proof reservation when locking fails before mint preparation", async () => {
+    mockGetUnitProofs.mockResolvedValue([
+      proof(6_000, "buyer-pre-mint-6000", "keyset-YES"),
+    ]);
+    mockBuyerPrepareSwap.mockRejectedValue(
+      new Error("mint unavailable before proof operation preparation"),
+    );
+    usePendingTradesStore.getState().add({
+      orderId: "order-buyer-pre-mint-failure",
+      marketId: "cond-YES",
+      clientOrderId: "client-buyer-pre-mint-failure",
+      side: "Buy",
+      tokenSide: "Outcome",
+      baseAsset: "sat",
+      divisibility: 10_000,
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
+        baseAsset?: string;
+        divisibility?: number;
+      }) => void;
+      onSwapMessageReceived: (message: {
+        tradeId: string;
+        messageType: string;
+        ciphertext: string;
+      }) => void;
+    };
+
+    await act(async () => {
+      seedPendingPubkey(
+        "trade-buyer-pre-mint-failure",
+        "order-buyer-pre-mint-failure",
+      );
+      callbacks.onTradeCreated({
+        tradeId: "trade-buyer-pre-mint-failure",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: new Date(Date.now() + 120_000).toISOString(),
+        buyerLocktime: new Date(Date.now() + 60_000).toISOString(),
+        marketId: "cond-YES",
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 5_000,
+        baseAsset: "sat",
+        divisibility: 10_000,
+      });
+    });
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId[
+          "trade-buyer-pre-mint-failure"
+        ]?.role,
+      ).toBe("buyer"),
+    );
+    await act(async () => {
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-pre-mint-failure",
+        messageType: "adaptor-point",
+        ciphertext: "cipher-adaptor",
+      });
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-pre-mint-failure",
+        messageType: "locked-proofs-seller",
+        ciphertext: "cipher-seller",
+      });
+    });
+
+    await waitFor(() =>
+      expect(mockReleaseProofReservation).toHaveBeenCalledWith(
+        "trade-buyer-pre-mint-failure/browser/buyer-lock",
+      ),
+    );
+    expect(mockSendSwapMessage).not.toHaveBeenCalledWith(
+      "trade-buyer-pre-mint-failure",
+      "locked-proofs-buyer",
+      expect.any(String),
+    );
+  });
+
+  it("retains a buyer proof reservation once a lock operation exists", async () => {
+    mockGetUnitProofs.mockResolvedValue([
+      proof(6_000, "buyer-submitted-6000", "keyset-YES"),
+    ]);
+    mockBuyerPrepareSwap.mockRejectedValue(
+      new Error("mint response lost after proof operation preparation"),
+    );
+    mockGetProofOperation
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ kind: "swap-lock", state: "prepared" });
+    usePendingTradesStore.getState().add({
+      orderId: "order-buyer-submitted-failure",
+      marketId: "cond-YES",
+      clientOrderId: "client-buyer-submitted-failure",
+      side: "Buy",
+      tokenSide: "Outcome",
+      baseAsset: "sat",
+      divisibility: 10_000,
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
+        baseAsset?: string;
+        divisibility?: number;
+      }) => void;
+      onSwapMessageReceived: (message: {
+        tradeId: string;
+        messageType: string;
+        ciphertext: string;
+      }) => void;
+    };
+
+    await act(async () => {
+      seedPendingPubkey(
+        "trade-buyer-submitted-failure",
+        "order-buyer-submitted-failure",
+      );
+      callbacks.onTradeCreated({
+        tradeId: "trade-buyer-submitted-failure",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: new Date(Date.now() + 120_000).toISOString(),
+        buyerLocktime: new Date(Date.now() + 60_000).toISOString(),
+        marketId: "cond-YES",
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 5_000,
+        baseAsset: "sat",
+        divisibility: 10_000,
+      });
+    });
+    await waitFor(() =>
+      expect(
+        useActiveSwapsStore.getState().byTradeId[
+          "trade-buyer-submitted-failure"
+        ]?.role,
+      ).toBe("buyer"),
+    );
+    await act(async () => {
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-submitted-failure",
+        messageType: "adaptor-point",
+        ciphertext: "cipher-adaptor",
+      });
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-submitted-failure",
+        messageType: "locked-proofs-seller",
+        ciphertext: "cipher-seller",
+      });
+    });
+
+    await waitFor(() => expect(mockBuyerPrepareSwap).toHaveBeenCalled());
+    expect(mockReleaseProofReservation).not.toHaveBeenCalled();
   });
 
   it("persistPartialLockFromError_MultiKeyset_AttachesCorrectMetadataPerKeyset", async () => {
