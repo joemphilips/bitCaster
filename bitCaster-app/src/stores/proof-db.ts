@@ -8,6 +8,7 @@ import {
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
 import { normalizeUrl } from "../lib/url";
+import type { DurableTradeSession } from "@bitcaster/client-sdk/durableTradeRecovery";
 
 export interface StoredProof extends Proof {
   mintUrl: string;
@@ -75,6 +76,17 @@ export interface PrepareProofOperationInput {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * The opaque GUI payload is owned by the swap-session adapter; the common
+ * session schema is owned by bitcaster-client-sdk.
+ */
+export interface SwapSessionRecord {
+  tradeId: string;
+  session: DurableTradeSession;
+  adapterState: unknown;
+  updatedAt: number;
+}
+
 export function isCtfProof(proof: StoredProof | Proof): boolean {
   const candidate = proof as Proof & {
     conditionId?: unknown;
@@ -93,6 +105,7 @@ export function isCtfProof(proof: StoredProof | Proof): boolean {
 class BitcasterDB extends Dexie {
   proofs!: Table<StoredProof>;
   proofOperations!: Table<ProofOperationRecord>;
+  swapSessions!: Table<SwapSessionRecord>;
 
   constructor() {
     super("bitcaster");
@@ -110,6 +123,12 @@ class BitcasterDB extends Dexie {
       proofs:
         "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
       proofOperations: "operationId, state, kind, mintUrl, updatedAt",
+    });
+    this.version(5).stores({
+      proofs:
+        "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
+      proofOperations: "operationId, state, kind, mintUrl, updatedAt",
+      swapSessions: "tradeId, updatedAt",
     });
   }
 }

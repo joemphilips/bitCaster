@@ -64,6 +64,13 @@ export interface DurableTradeSession {
   outboundCiphers: Partial<Record<SwapCipherMessageType, DurableTradeCipher>>
 }
 
+/** A client-owned durable session plus its adapter-specific private payload. */
+export interface DurableTradeSessionRecord<TAdapterState> {
+  session: DurableTradeSession
+  adapterState: TAdapterState
+  updatedAt: number
+}
+
 export interface DurableTradeSessionRepository {
   get(tradeId: string): Promise<DurableTradeSession | null>
   listRecoverable(): Promise<DurableTradeSession[]>
@@ -512,7 +519,7 @@ function isIdentifier(value: string): boolean {
 }
 
 function isProtocolPubkey(value: string): boolean {
-  return /^[a-f0-9]{64}$/.test(value)
+  return /^[a-f0-9]{64}$/.test(value) || /^0[23][a-f0-9]{64}$/.test(value)
 }
 
 function isMintUrl(value: string): boolean {

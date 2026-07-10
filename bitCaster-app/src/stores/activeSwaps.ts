@@ -46,6 +46,9 @@ export interface SwapMessages {
 
 export interface SellerProtocolState {
   adaptorPoint: AdaptorPoint
+  /** Exact previously journaled ciphertexts; never regenerate on recovery. */
+  adaptorPointCipher?: string
+  lockedProofsCipher?: string
 }
 
 export interface BuyerProtocolState {
@@ -178,6 +181,7 @@ interface ActiveSwapsState {
   releaseStep: (tradeId: string, key: SwapWorkKey) => void
   clearProtocolState: (tradeId: string) => void
   setStep: (tradeId: string, step: SwapStep, error?: string) => void
+  hydrate: (swaps: ActiveSwap[]) => void
   remove: (tradeId: string) => void
 }
 
@@ -447,6 +451,16 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
           [tradeId]: { ...existing, step, error: error ?? existing.error },
         },
       }
+    })
+  },
+
+  hydrate: (swaps) => {
+    set((s) => {
+      const byTradeId = { ...s.byTradeId }
+      for (const swap of swaps) {
+        if (!byTradeId[swap.tradeId]) byTradeId[swap.tradeId] = swap
+      }
+      return { byTradeId }
     })
   },
 
