@@ -4,8 +4,11 @@ import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   canSalvageDurableRefund,
+  classifyDurableTradeRecoveryDisposition,
+  createDurableTradeExpectedProofOperation,
   createDurableTradeProofOperationLink,
   deriveDurableProofOperationId,
+  recoverDurableTradeSessions,
   isDurableTradeSessionPurgeEligible,
   resumeDurableTradeSession,
   reduceDurableTradeSession,
@@ -15,12 +18,20 @@ import {
   validateDurableTradePrivateKeyBinding,
   verifyDurableTradeSessionCipherIntegrity,
   type DurableRefundSalvageEvidence,
+  type DurableProofOperationRepository,
+  type DurableTradeMintRecoveryState,
+  type DurableTradeRecoveryPorts,
   type DurableTradeProofOperationLink,
+  type DurableTradeSessionRepository,
   type DurableTradeSession,
 } from '../src/durableTradeRecovery.ts'
 
 const LOCAL_PROTOCOL_PUBKEY = 'a'.repeat(64)
 const COUNTERPARTY_PROTOCOL_PUBKEY = 'b'.repeat(64)
+const REFUND_PRIVATE_KEY = '01'.repeat(32)
+const REFUND_PROTOCOL_PUBKEY = Array.from(
+  secp256k1.getPublicKey(new Uint8Array(32).fill(1), true),
+).map((part) => part.toString(16).padStart(2, '0')).join('')
 
 function session(
   overrides: Partial<DurableTradeSession> = {},
@@ -75,6 +86,15 @@ function preparedOperation(
   }
 }
 
+function expectedOperation(operation: DurableTradeProofOperationLink) {
+  return createDurableTradeExpectedProofOperation({
+    tradeId: operation.tradeId,
+    role: operation.role,
+    stage: operation.stage,
+    operationKey: operation.operationKey ?? 'legacy-operation-key-is-not-relinkable',
+  })
+}
+
 test('deterministic proof-operation identifiers bind trade, role, and stage', () => {
   const sellerReservation = deriveDurableProofOperationId(
     'trade-001',
@@ -121,6 +141,18 @@ test('a client operation key is bound into the SDK recovery identity', () => {
       proofOperations: [{ ...operation, operationKey: 'different-operation' }],
     })) ?? '',
     /not bound/,
+  )
+})
+
+test('new durable proof-operation links require the retained operation key', () => {
+  assert.throws(
+    () => createDurableTradeProofOperationLink({
+      tradeId: 'trade-001',
+      role: 'seller',
+      stage: 'proof-reservation',
+      state: 'prepared',
+    } as never),
+    /operation key is invalid/,
   )
 })
 
@@ -354,3 +386,580 @@ test('recovery fails closed before joining or sending an invalid durable session
   assert.equal(result.kind, 'invalid-session')
   assert.deepEqual(calls, [])
 })
+
+test('the coordinator disposition table is pure, exhaustive, and never retries terminal or ambiguous mint states', () => {
+  assert.deepEqual(
+    classifyDurableTradeRecoveryDisposition('prepared-unspent'),
+    { action: 'resume-exact-prepared-operation' },
+  )
+  assert.deepEqual(
+    classifyDurableTradeRecoveryDisposition('prepared-spent-restorable'),
+    { action: 'restore-exact-persisted-outputs' },
+  )
+  assert.deepEqual(
+    classifyDurableTradeRecoveryDisposition('pending-or-mixed'),
+    { action: 'backoff', reason: 'pending-or-mixed' },
+  )
+  assert.deepEqual(
+    classifyDurableTradeRecoveryDisposition('mint-response-unknown'),
+    { action: 'backoff', reason: 'mint-response-unknown' },
+  )
+  assert.deepEqual(
+    classifyDurableTradeRecoveryDisposition('engine-terminal'),
+    { action: 'await-refund-salvage' },
+  )
+  assert.deepEqual(
+    classifyDurableTradeRecoveryDisposition('corrupt'),
+    { action: 'fail-closed', reason: 'corrupt' },
+  )
+})
+
+test('the coordinator restores spent prepared outputs, reconciles both stores, then replays only the journalled bytes', async () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'gui:trade-001:seller-lock',
+  })
+  const durableSession = reduceDurableTradeSession(
+    session(),
+    { kind: 'proof-operation-prepared', operation },
+  )
+  const journalled = reduceDurableTradeSession(durableSession, {
+    kind: 'outbound-cipher-journaled',
+    messageType: 'adaptor-point',
+    ciphertext: 'journalled-adaptor-cipher',
+    sha256: 'a'.repeat(64),
+  })
+  const fixture = recoveryFixture({ sessions: [journalled], operations: [operation] })
+  fixture.mint.next = 'prepared-spent-restorable'
+
+  const result = await recoverDurableTradeSessions(fixture.ports)
+
+  assert.deepEqual(fixture.calls, [
+    `restore:${operation.operationId}`,
+    `reconciled:${operation.operationId}`,
+    'join:trade-001',
+    'send:adaptor-point:journalled-adaptor-cipher',
+  ])
+  assert.equal(result.sessions[0]?.kind, 'replayed')
+  assert.equal(fixture.sessions.get('trade-001')?.stage, 'reconciliation-complete')
+  assert.equal(fixture.operations.get(operation.operationId)?.state, 'reconciled')
+})
+
+test('the coordinator resumes an unspent operation exactly once and repairs a stale session link through CAS', async () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'daemon:trade-001:seller-lock',
+  })
+  const preparedSession = reduceDurableTradeSession(session(), {
+    kind: 'proof-operation-prepared',
+    operation,
+  })
+  const staleSession: DurableTradeSession = {
+    ...preparedSession,
+    revision: preparedSession.revision + 1,
+    stage: 'mint-submitted',
+    proofOperations: [{ ...operation, state: 'mint-submitted' }],
+  }
+  const fixture = recoveryFixture({ sessions: [staleSession], operations: [operation] })
+  fixture.mint.next = 'prepared-unspent'
+
+  const result = await recoverDurableTradeSessions(fixture.ports)
+
+  assert.deepEqual(fixture.calls, [
+    `submitted:${operation.operationId}`,
+    `resume:${operation.operationId}`,
+    `reconciled:${operation.operationId}`,
+    'join:trade-001',
+  ])
+  assert.equal(result.sessions[0]?.kind, 'ready')
+  assert.equal(fixture.operations.get(operation.operationId)?.state, 'reconciled')
+  assert.equal(fixture.sessions.get('trade-001')?.proofOperations[0]?.state, 'reconciled')
+})
+
+test('the coordinator relinks an expected orphan and recovers it in the same invocation without creating a replacement', async () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'wallet:trade-001:seller-lock',
+  })
+  const fixture = recoveryFixture({ sessions: [session({
+    expectedProofOperations: [expectedOperation(operation)],
+  })], operations: [operation] })
+  fixture.mint.next = 'prepared-spent-restorable'
+
+  const result = await recoverDurableTradeSessions(fixture.ports)
+
+  assert.equal(fixture.preparedCount, 0)
+  assert.equal(fixture.sessions.get('trade-001')?.proofOperations[0]?.operationId, operation.operationId)
+  assert.deepEqual(result.orphans, [])
+  assert.deepEqual(result.sessions, [{ kind: 'ready', tradeId: 'trade-001' }])
+  assert.deepEqual(fixture.calls, [
+    `restore:${operation.operationId}`,
+    `reconciled:${operation.operationId}`,
+    'join:trade-001',
+  ])
+
+  const missing = recoveryFixture({
+    sessions: [reduceDurableTradeSession(session(), {
+      kind: 'proof-operation-prepared',
+      operation,
+    })],
+    operations: [],
+  })
+  const missingResult = await recoverDurableTradeSessions(missing.ports)
+  assert.equal(missing.preparedCount, 0)
+  assert.deepEqual(missingResult.sessions, [{
+    kind: 'failed-closed',
+    tradeId: 'trade-001',
+    reason: 'missing-proof-operation',
+  }])
+})
+
+test('rate limits back off before the local deadline and terminal states never retry or replay', async () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'cli:trade-001:seller-lock',
+  })
+  const active = reduceDurableTradeSession(session({
+    sellerLocktimeSecs: 10,
+    buyerLocktimeSecs: 9,
+  }), {
+    kind: 'proof-operation-prepared',
+    operation,
+  })
+  const rateLimited = recoveryFixture({ sessions: [active], operations: [operation], nowMs: 1_000 })
+  rateLimited.mint.next = 'rate-limited'
+  rateLimited.mint.retryAfterMs = 9_500
+  const limited = await recoverDurableTradeSessions(rateLimited.ports)
+  assert.equal(limited.sessions[0]?.kind, 'retry-scheduled')
+  assert.deepEqual(rateLimited.calls, [`retry:${operation.operationId}:9000:rate-limited`])
+
+  const terminal = recoveryFixture({ sessions: [active], operations: [operation], nowMs: 1_000 })
+  terminal.mint.next = 'engine-terminal'
+  const terminalResult = await recoverDurableTradeSessions(terminal.ports)
+  assert.deepEqual(terminalResult.sessions, [{
+    kind: 'awaiting-refund-salvage',
+    tradeId: 'trade-001',
+    operationId: operation.operationId,
+  }])
+  assert.deepEqual(terminal.calls, [])
+})
+
+test('refund salvage requires the bound refund operation, private key handle, and own locktime', async () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'refund',
+    state: 'prepared',
+    operationKey: 'seller-refund',
+  })
+  const prepared = reduceDurableTradeSession(session({
+    localProtocolPubkey: REFUND_PROTOCOL_PUBKEY,
+    sellerLocktimeSecs: 10,
+    buyerLocktimeSecs: 9,
+  }), {
+    kind: 'proof-operation-prepared',
+    operation,
+  })
+  const active = reduceDurableTradeSession(prepared, {
+    kind: 'mint-submitted',
+    operationId: operation.operationId,
+  })
+  const submittedOperation = { ...operation, state: 'mint-submitted' as const }
+  const evidence: DurableRefundSalvageEvidence & { privateKeyHex: string } = {
+    tradeId: active.tradeId,
+    role: active.role,
+    localProtocolPubkey: active.localProtocolPubkey,
+    counterpartyProtocolPubkey: active.counterpartyProtocolPubkey,
+    mintUrl: active.mintUrl,
+    sellerLocktimeSecs: active.sellerLocktimeSecs,
+    buyerLocktimeSecs: active.buyerLocktimeSecs,
+    keyHandle: active.ephemeralKeyHandle,
+    proofOperation: submittedOperation,
+    privateKeyHex: REFUND_PRIVATE_KEY,
+  }
+
+  const beforeLocktime = recoveryFixture({
+    sessions: [active],
+    operations: [submittedOperation],
+    nowMs: 9_999,
+  })
+  beforeLocktime.mint.next = 'expired-refund-salvage'
+  beforeLocktime.mint.refundEvidence = evidence
+  assert.equal((await recoverDurableTradeSessions(beforeLocktime.ports)).sessions[0]?.kind, 'awaiting-refund-salvage')
+  assert.deepEqual(beforeLocktime.calls, [])
+
+  const valid = recoveryFixture({ sessions: [active], operations: [submittedOperation], nowMs: 10_000 })
+  valid.mint.next = 'expired-refund-salvage'
+  valid.mint.refundEvidence = evidence
+  assert.equal((await recoverDurableTradeSessions(valid.ports)).sessions[0]?.kind, 'ready')
+  assert.deepEqual(valid.calls, [
+    `salvage:${operation.operationId}`,
+    `reconciled:${operation.operationId}`,
+    'join:trade-001',
+  ])
+})
+
+test('a lost exact-mint response retains mint-submitted state and cannot clear or replay custody state', async () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'gui:trade-001:lost-response',
+  })
+  const active = reduceDurableTradeSession(session(), {
+    kind: 'proof-operation-prepared',
+    operation,
+  })
+  const fixture = recoveryFixture({ sessions: [active], operations: [operation] })
+  fixture.mint.next = 'prepared-unspent'
+  fixture.mint.resumeError = new Error('response lost')
+
+  const result = await recoverDurableTradeSessions(fixture.ports)
+
+  assert.deepEqual(result.sessions, [{
+    kind: 'mint-response-unknown',
+    tradeId: 'trade-001',
+    operationId: operation.operationId,
+  }])
+  assert.deepEqual(fixture.calls, [`submitted:${operation.operationId}`, `resume:${operation.operationId}`])
+  assert.equal(fixture.operations.get(operation.operationId)?.state, 'mint-submitted')
+  assert.equal(fixture.sessions.get('trade-001')?.stage, 'mint-submitted')
+})
+
+test('a crash after exact mint success but before reconciliation cannot replay the outbox or duplicate restored outputs', async () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'gui:trade-001:reconcile-crash',
+  })
+  const active = reduceDurableTradeSession(session(), {
+    kind: 'proof-operation-prepared',
+    operation,
+  })
+  const journalled = reduceDurableTradeSession(active, {
+    kind: 'outbound-cipher-journaled',
+    messageType: 'adaptor-point',
+    ciphertext: 'crash-boundary-cipher',
+    sha256: 'a'.repeat(64),
+  })
+  const fixture = recoveryFixture({ sessions: [journalled], operations: [operation] })
+  fixture.mint.next = 'prepared-unspent'
+  fixture.markReconciledError = new Error('crash before durable mark')
+
+  assert.deepEqual((await recoverDurableTradeSessions(fixture.ports)).sessions, [{
+    kind: 'failed-closed',
+    tradeId: 'trade-001',
+    reason: 'storage-unavailable',
+  }])
+  assert.deepEqual(fixture.calls, [
+    `submitted:${operation.operationId}`,
+    `resume:${operation.operationId}`,
+  ])
+  assert.equal(fixture.sessions.get('trade-001')?.stage, 'mint-submitted')
+
+  fixture.markReconciledError = undefined
+  fixture.mint.next = 'prepared-spent-restorable'
+  assert.equal((await recoverDurableTradeSessions(fixture.ports)).sessions[0]?.kind, 'replayed')
+  assert.deepEqual(fixture.calls, [
+    `submitted:${operation.operationId}`,
+    `resume:${operation.operationId}`,
+    `restore:${operation.operationId}`,
+    `reconciled:${operation.operationId}`,
+    'join:trade-001',
+    'send:adaptor-point:crash-boundary-cipher',
+  ])
+  assert.equal(fixture.restoredOutputCredits, 1)
+})
+
+test('an orphan must match the write-ahead retained operation identity before it can relink', async () => {
+  const expected = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'expected-lock',
+  })
+  const stale = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'claim',
+    state: 'prepared',
+    operationKey: 'stale-claim',
+  })
+  const fixture = recoveryFixture({
+    sessions: [session({ expectedProofOperations: [expectedOperation(expected)] })],
+    operations: [stale],
+  })
+
+  const result = await recoverDurableTradeSessions(fixture.ports)
+
+  assert.deepEqual(result.orphans, [{
+    kind: 'failed-closed',
+    operationId: stale.operationId,
+    reason: 'invalid-operation',
+  }])
+  assert.equal(fixture.sessions.get('trade-001')?.proofOperations.length, 0)
+  assert.deepEqual(fixture.calls, [])
+})
+
+test('a session cannot link an operation outside its write-ahead expected identity', () => {
+  const expected = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'expected-lock',
+  })
+  const foreign = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'claim',
+    state: 'prepared',
+    operationKey: 'different-claim',
+  })
+
+  assert.throws(
+    () => reduceDurableTradeSession(session({
+      expectedProofOperations: [expectedOperation(expected)],
+    }), { kind: 'proof-operation-prepared', operation: foreign }),
+    /write-ahead identity/,
+  )
+})
+
+test('legacy links remain parseable but are rejected before coordinator custody work', async () => {
+  const legacy = preparedOperation()
+  const active = reduceDurableTradeSession(session(), {
+    kind: 'proof-operation-prepared',
+    operation: legacy,
+  })
+  const fixture = recoveryFixture({ sessions: [active], operations: [legacy] })
+
+  assert.deepEqual((await recoverDurableTradeSessions(fixture.ports)).sessions, [{
+    kind: 'failed-closed',
+    tradeId: 'trade-001',
+    reason: 'foreign-proof-operation',
+  }])
+  assert.deepEqual(fixture.calls, [])
+})
+
+test('malformed persisted records and unknown mint inspection values fail closed per record', async () => {
+  const malformed = recoveryFixture({
+    sessions: [null as never, [] as never],
+    operations: [null as never, [] as never],
+  })
+  assert.deepEqual(await recoverDurableTradeSessions(malformed.ports), {
+    sessions: [
+      { kind: 'failed-closed', tradeId: 'invalid-session-0', reason: 'invalid-session' },
+      { kind: 'failed-closed', tradeId: 'invalid-session-1', reason: 'invalid-session' },
+    ],
+    orphans: [
+      { kind: 'failed-closed', operationId: 'invalid-operation-0', reason: 'invalid-operation' },
+      { kind: 'failed-closed', operationId: 'invalid-operation-1', reason: 'invalid-operation' },
+    ],
+  })
+
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'unknown-inspection',
+  })
+  const active = reduceDurableTradeSession(session(), {
+    kind: 'proof-operation-prepared',
+    operation,
+  })
+  const unknown = recoveryFixture({ sessions: [active], operations: [operation] })
+  unknown.mint.next = 'unrecognized-mint-state' as never
+  assert.deepEqual((await recoverDurableTradeSessions(unknown.ports)).sessions, [{
+    kind: 'failed-closed',
+    tradeId: 'trade-001',
+    reason: 'foreign-proof-operation',
+  }])
+  assert.deepEqual(unknown.calls, [])
+})
+
+test('corrupt sessions and CAS conflicts fail closed before mint or transport side effects', async () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'gui:trade-001:seller-lock',
+  })
+  const corrupt = recoveryFixture({
+    sessions: [{ ...session(), schemaVersion: 999 }],
+    operations: [operation],
+  })
+  assert.deepEqual(await recoverDurableTradeSessions(corrupt.ports), {
+    sessions: [{ kind: 'failed-closed', tradeId: 'trade-001', reason: 'invalid-session' }],
+    orphans: [{ kind: 'failed-closed', operationId: operation.operationId, reason: 'invalid-session' }],
+  })
+  assert.deepEqual(corrupt.calls, [])
+
+  const valid = reduceDurableTradeSession(session(), {
+    kind: 'proof-operation-prepared',
+    operation,
+  })
+  const conflicted = recoveryFixture({ sessions: [valid], operations: [operation] })
+  conflicted.conflictNextCas = true
+  conflicted.mint.next = 'prepared-unspent'
+  assert.deepEqual(await recoverDurableTradeSessions(conflicted.ports), {
+    sessions: [{ kind: 'failed-closed', tradeId: 'trade-001', reason: 'session-cas-conflict' }],
+    orphans: [],
+  })
+  assert.deepEqual(conflicted.calls, [])
+})
+
+function recoveryFixture(input: {
+  sessions: unknown[]
+  operations: unknown[]
+  nowMs?: number
+}): {
+  sessions: Map<string, DurableTradeSession>
+  operations: Map<string, DurableTradeProofOperationLink>
+  calls: string[]
+  mint: {
+    next: DurableTradeMintRecoveryState
+    retryAfterMs?: number
+    resumeError?: Error
+    refundEvidence?: (DurableRefundSalvageEvidence & { privateKeyHex: string }) | null
+  }
+  restoredOutputCredits: number
+  markReconciledError?: Error
+  ports: DurableTradeRecoveryPorts
+  preparedCount: number
+  conflictNextCas: boolean
+} {
+  const sessions = new Map(input.sessions.flatMap((entry) =>
+    entry && typeof entry === 'object' && typeof (entry as { tradeId?: unknown }).tradeId === 'string'
+      ? [[(entry as { tradeId: string }).tradeId, structuredClone(entry) as DurableTradeSession] as const]
+      : [],
+  ))
+  const operations = new Map(input.operations.flatMap((entry) =>
+    entry && typeof entry === 'object' && typeof (entry as { operationId?: unknown }).operationId === 'string'
+      ? [[(entry as { operationId: string }).operationId,
+        structuredClone(entry) as DurableTradeProofOperationLink] as const]
+      : [],
+  ))
+  const calls: string[] = []
+  const state = {
+    preparedCount: 0,
+    conflictNextCas: false,
+    restoredOutputCredits: 0,
+    markReconciledError: undefined as Error | undefined,
+  }
+  const sessionRepository: DurableTradeSessionRepository = {
+    get: async (tradeId) => sessions.get(tradeId) ?? null,
+    listRecoverable: async () => [
+      ...sessions.values(),
+      ...input.sessions.filter((entry) => !entry || typeof entry !== 'object' ||
+        typeof (entry as { tradeId?: unknown }).tradeId !== 'string'),
+    ] as DurableTradeSession[],
+    create: async (entry) => {
+      state.preparedCount += 1
+      sessions.set(entry.tradeId, entry)
+      return entry
+    },
+    compareAndSwap: async (tradeId, revision, next) => {
+      const current = sessions.get(tradeId)
+      if (!current || current.revision !== revision || state.conflictNextCas) return null
+      sessions.set(tradeId, structuredClone(next))
+      return next
+    },
+    remove: async () => false,
+  }
+  const operationRepository: DurableProofOperationRepository = {
+    get: async (operationId) => operations.get(operationId) ?? null,
+    listByTrade: async (tradeId) => [...operations.values()].filter((item) => item.tradeId === tradeId),
+    listRecoverable: async () => [
+      ...operations.values(),
+      ...input.operations.filter((entry) => !entry || typeof entry !== 'object' ||
+        typeof (entry as { operationId?: unknown }).operationId !== 'string'),
+    ] as DurableTradeProofOperationLink[],
+    prepare: async (entry) => {
+      state.preparedCount += 1
+      operations.set(entry.operationId, entry)
+      return entry
+    },
+    markMintSubmitted: async (operationId) => {
+      const current = operations.get(operationId)
+      assert.ok(current)
+      const next = { ...current, state: 'mint-submitted' as const }
+      operations.set(operationId, next)
+      calls.push(`submitted:${operationId}`)
+      return next
+    },
+    markReconciled: async (operationId) => {
+      if (state.markReconciledError) throw state.markReconciledError
+      const current = operations.get(operationId)
+      assert.ok(current)
+      const next = { ...current, state: 'reconciled' as const }
+      operations.set(operationId, next)
+      calls.push(`reconciled:${operationId}`)
+      return next
+    },
+  }
+  const mint: {
+    next: DurableTradeMintRecoveryState
+    retryAfterMs?: number
+    resumeError?: Error
+    refundEvidence?: (DurableRefundSalvageEvidence & { privateKeyHex: string }) | null
+  } = {
+    next: 'pending-or-mixed',
+  }
+  const ports: DurableTradeRecoveryPorts = {
+    sessions: sessionRepository,
+    operations: operationRepository,
+    mint: {
+      inspect: async () => ({ kind: mint.next, retryAfterMs: mint.retryAfterMs }),
+      restoreExactPersistedOutputs: async (entry) => {
+        calls.push(`restore:${entry.operationId}`)
+        state.restoredOutputCredits = 1
+      },
+      resumeExactPreparedOperation: async (entry) => {
+        calls.push(`resume:${entry.operationId}`)
+        if (mint.resumeError) throw mint.resumeError
+      },
+      salvageExpiredRefund: async (entry) => { calls.push(`salvage:${entry.operationId}`) },
+      getRefundSalvageEvidence: async () => mint.refundEvidence ?? null,
+    },
+    transport: {
+      joinTrade: async (tradeId) => { calls.push(`join:${tradeId}`) },
+      sendCipher: async (_tradeId, messageType, ciphertext) => { calls.push(`send:${messageType}:${ciphertext}`) },
+    },
+    clock: { nowMs: () => input.nowMs ?? 0 },
+    hashCiphertext: async (ciphertext) => ciphertext === 'journalled-adaptor-cipher'
+      ? 'a'.repeat(64)
+      : 'a'.repeat(64),
+    scheduleRetry: async (entry) => { calls.push(`retry:${entry.operationId}:${entry.delayMs}:${entry.reason}`) },
+  }
+  return {
+    sessions,
+    operations,
+    calls,
+    mint,
+    ports,
+    get preparedCount() { return state.preparedCount },
+    get restoredOutputCredits() { return state.restoredOutputCredits },
+    get markReconciledError() { return state.markReconciledError },
+    set markReconciledError(value: Error | undefined) { state.markReconciledError = value },
+    get conflictNextCas() { return state.conflictNextCas },
+    set conflictNextCas(value: boolean) { state.conflictNextCas = value },
+  }
+}
