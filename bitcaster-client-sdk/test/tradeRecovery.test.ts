@@ -76,6 +76,36 @@ test('retryTransientTradeOperation retries only transport failures before its de
   assert.equal(calls, 2)
 })
 
+test('retryTransientTradeOperation retries an idempotent same-trade tag reservation race', async () => {
+  let calls = 0
+  const result = await retryTransientTradeOperation({
+    deadlineMs: 10_000,
+    operation: async () => {
+      calls += 1
+      if (calls === 1) {
+        throw new Error(
+          'HubException: Failed to reserve tags: Tag trade:10000000000000000000000000000001 is currently reserved',
+        )
+      }
+      return 'sent'
+    },
+    now: () => 1_000,
+    delay: async () => undefined,
+  })
+
+  assert.deepEqual(result, { kind: 'completed', value: 'sent' })
+  assert.equal(calls, 2)
+})
+
+test('isRetryableTransportError rejects shared-tag reservation conflicts', () => {
+  assert.equal(
+    isRetryableTransportError(
+      new Error('Failed to reserve tags: Tag condition-book:condition-a is currently reserved'),
+    ),
+    false,
+  )
+})
+
 test('recoverFailedTakerFill never resubmits an unclassified failure or a maker fill', async () => {
   let calls = 0
   const submitOrder = async () => {

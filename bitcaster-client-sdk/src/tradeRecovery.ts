@@ -148,13 +148,16 @@ export async function retryTransientTradeOperation<T>(
 }
 
 /**
- * Only retry errors where the caller cannot know whether the request reached
- * the engine. Hub exceptions and HTTP responses are explicit protocol results
- * and must stay fail-closed.
+ * Retry errors where the caller cannot know whether the request reached the
+ * engine, plus the one idempotent DCB reservation race on the same trade. A
+ * shared-condition tag conflict remains an explicit protocol failure.
  */
 export function isRetryableTransportError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const message = error.message.toLowerCase()
+  if (/\bfailed to reserve tags:\s*tag trade:[0-9a-f]{32}\b.*\bis currently reserved\b/i.test(error.message)) {
+    return true
+  }
   return [
     'failed to fetch',
     'fetch failed',
