@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  isRetryableTransportError,
   recoverFailedTakerFill,
   retryTransientTradeOperation,
   type TakerFillRecoveryRequest,
@@ -126,4 +127,11 @@ test('recoverFailedTakerFill does not retry an explicit protocol rejection', asy
     /Not authorised/,
   )
   assert.equal(calls, 1)
+})
+
+test('isRetryableTransportError rejects programming TypeErrors', () => {
+  assert.equal(
+    isRetryableTransportError(new TypeError("Cannot read properties of undefined (reading 'id')")),
+    false,
+  )
 })

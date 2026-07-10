@@ -153,11 +153,11 @@ export async function retryTransientTradeOperation<T>(
  * and must stay fail-closed.
  */
 export function isRetryableTransportError(error: unknown): boolean {
-  if (error instanceof TypeError) return true
   if (!(error instanceof Error)) return false
   const message = error.message.toLowerCase()
   return [
     'failed to fetch',
+    'fetch failed',
     'networkerror',
     'network request failed',
     'connection is not in the connected state',
