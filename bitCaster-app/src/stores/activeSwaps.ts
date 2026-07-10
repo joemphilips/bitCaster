@@ -11,13 +11,9 @@
  * `pendingPubkeySubmissions` flow and copied here only after the trade has been
  * promoted to active settlement work.
  *
- * Why in-memory and not sessionStorage / localStorage:
- *   - Phase scope per the plan: tab refreshes mid-handshake are out of scope.
- *     The handshake is short (seconds) and the engine's state machine is
- *     deterministic on message sequence — a refreshed tab can be made to
- *     resume in a future iteration without changing the storage shape here.
- *   - Storing per-trade ciphertexts in localStorage would compound key
- *     exposure for no benefit during the live handshake.
+ * This store remains the working projection. `swapSessions` in the existing
+ * IndexedDB database is the durable recovery authority; the settlement hook
+ * hydrates this store from that session before driving protocol work.
  */
 
 import { create } from 'zustand'

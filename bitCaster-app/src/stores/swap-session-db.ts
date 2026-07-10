@@ -1,7 +1,10 @@
 import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
+  resumeDurableTradeSession,
   validateDurableTradeSession,
   verifyDurableTradeSessionCipherIntegrity,
+  type DurableTradeResumePorts,
+  type DurableTradeResumeResult,
   type DurableTradeSession,
   type DurableTradeSessionRecord,
 } from '@bitcaster/client-sdk/durableTradeRecovery'
@@ -122,6 +125,20 @@ export async function loadRecoverableGuiSwapSessions(): Promise<ActiveSwap[]> {
     recovered.push(row.adapterState)
   }
   return recovered
+}
+
+/** Rejoins a persisted session and replays only its SDK-owned durable outbox. */
+export async function resumeGuiSwapSession(
+  tradeId: string,
+  ports: DurableTradeResumePorts,
+): Promise<DurableTradeResumeResult | null> {
+  const row = await db.swapSessions.get(tradeId)
+  if (!isGuiSwapSessionRecord(row)) return null
+  const validationError = validateDurableTradeSession(row.session)
+  if (validationError) return { kind: 'invalid-session', reason: validationError }
+  const integrityError = await verifyDurableTradeSessionCipherIntegrity(row.session, sha256Hex)
+  if (integrityError) return { kind: 'invalid-session', reason: integrityError }
+  return resumeDurableTradeSession(row.session, ports)
 }
 
 export async function removeGuiSwapSession(tradeId: string): Promise<void> {

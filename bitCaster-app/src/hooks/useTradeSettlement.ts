@@ -102,6 +102,7 @@ import {
   prepareGuiProofOperationWithSession,
   completeGuiProofOperationWithSession,
   removeGuiSwapSession,
+  resumeGuiSwapSession,
   withGuiSwapSessionOwnership,
 } from "@/stores/swap-session-db";
 import type {
@@ -444,9 +445,22 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
       if (joinedTradeIds.has(swap.tradeId)) return;
       if (tradeJoinRetryTimersRef.current.has(swap.tradeId)) return;
       joinedTradeIds.add(swap.tradeId);
-      joinTrade(swap.tradeId)
-        .then(() => {
+      void (async () => {
+        const recovery = await resumeGuiSwapSession(swap.tradeId, {
+          joinTrade,
+          sendCipher: (tradeId, messageType, ciphertext) =>
+            sendSwapMessageWithRetry(sendSwapMessage, tradeId, messageType, ciphertext),
+        })
+        if (recovery?.kind === 'invalid-session') {
+          throw new Error(`Durable GUI swap recovery is invalid: ${recovery.reason}`)
+        }
+        if (recovery?.kind === 'replayed') return true
+        if (!recovery) await joinTrade(swap.tradeId)
+        return false
+      })()
+        .then((replayed) => {
           tradeJoinAttemptsRef.current.delete(swap.tradeId);
+          if (replayed) return;
           void resumeHydratedGuiSwap(swap.tradeId, sendSwapMessage, activeMintUrl);
         })
         .catch((err) => {

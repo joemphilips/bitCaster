@@ -60,6 +60,7 @@ import {
   completeGuiProofOperationWithSession,
   persistGuiSwapSession,
   removeGuiSwapSession,
+  resumeGuiSwapSession,
   withGuiSwapSessionOwnership,
 } from '../swap-session-db'
 
@@ -167,6 +168,31 @@ describe('GUI durable swap session repository', () => {
 
     expect(proofOperations.get('trade-001/browser/buyer-lock')?.state).toBe('completed')
     expect(rows.has('trade-001')).toBe(true)
+  })
+
+  it('rejoins then replays the SDK-owned durable outbox without regenerating ciphers', async () => {
+    await persistGuiSwapSession(swap({
+      sellerState: {
+        adaptorPoint: {} as never,
+        adaptorPointCipher: 'adaptor-cipher',
+        lockedProofsCipher: 'seller-cipher',
+      },
+    }), 'https://mint.example')
+    const calls: string[] = []
+
+    const result = await resumeGuiSwapSession('trade-001', {
+      joinTrade: async (tradeId) => { calls.push(`join:${tradeId}`) },
+      sendCipher: async (_tradeId, messageType, ciphertext) => {
+        calls.push(`${messageType}:${ciphertext}`)
+      },
+    })
+
+    expect(result?.kind).toBe('replayed')
+    expect(calls).toEqual([
+      'join:trade-001',
+      'adaptor-point:adaptor-cipher',
+      'locked-proofs-seller:seller-cipher',
+    ])
   })
 
   it('fails closed instead of evicting a live durable session at capacity', async () => {
