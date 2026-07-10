@@ -409,7 +409,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
         tradeJoinRetryTimersRef.current.delete(tradeId);
         joinedTradeIds.delete(tradeId);
         const latest = useActiveSwapsStore.getState().byTradeId[tradeId];
-        if (!latest || latest.step !== "awaiting-trade-created") {
+        if (!isRecoverableGuiSwap(latest)) {
           tradeJoinAttemptsRef.current.delete(tradeId);
           return;
         }
@@ -425,11 +425,12 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
       joinTrade(swap.tradeId)
         .then(() => {
           tradeJoinAttemptsRef.current.delete(swap.tradeId);
+          void resumeHydratedGuiSwap(swap.tradeId, sendSwapMessage, activeMintUrl);
         })
         .catch((err) => {
           joinedTradeIds.delete(swap.tradeId);
           const latest = useActiveSwapsStore.getState().byTradeId[swap.tradeId];
-          if (!latest || latest.step !== "awaiting-trade-created") {
+          if (!isRecoverableGuiSwap(latest)) {
             tradeJoinAttemptsRef.current.delete(swap.tradeId);
             return;
           }
@@ -450,7 +451,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     };
 
     for (const swap of Object.values(swapsByTradeId)) {
-      if (swap.step !== "awaiting-trade-created") continue;
+      if (!isRecoverableGuiSwap(swap)) continue;
       attemptJoinActiveSwap(swap);
     }
   }, [
@@ -1334,6 +1335,52 @@ async function handleSwapMessage(
       !latest.messages.lockedProofsBuyer);
   if (shouldDriveBuyerResponse) {
     void runBuyerRespond(msg.tradeId, sendSwapMessage, mintUrl);
+  }
+}
+
+function isRecoverableGuiSwap(swap: ActiveSwap | undefined): swap is ActiveSwap {
+  return Boolean(swap && swap.step !== 'completed' && swap.step !== 'Failed')
+}
+
+async function resumeHydratedGuiSwap(
+  tradeId: string,
+  sendSwapMessage: SendSwapMessageFn,
+  mintUrl: string,
+): Promise<void> {
+  const swap = useActiveSwapsStore.getState().byTradeId[tradeId]
+  if (!isRecoverableGuiSwap(swap) || !swap.role) return
+
+  if (swap.role === 'seller') {
+    if (swap.sellerState?.adaptorPointCipher && swap.sellerState.lockedProofsCipher) {
+      await sendSwapMessageWithRetry(
+        sendSwapMessage,
+        tradeId,
+        TRADE_MESSAGE_TYPES.adaptorPoint,
+        swap.sellerState.adaptorPointCipher,
+      )
+      await sendSwapMessageWithRetry(
+        sendSwapMessage,
+        tradeId,
+        TRADE_MESSAGE_TYPES.lockedProofsSeller,
+        swap.sellerState.lockedProofsCipher,
+      )
+      return
+    }
+    await runSellerSendOpening(tradeId, sendSwapMessage, mintUrl)
+    return
+  }
+
+  if (swap.buyerState?.lockedProofsCipher) {
+    await sendSwapMessageWithRetry(
+      sendSwapMessage,
+      tradeId,
+      TRADE_MESSAGE_TYPES.lockedProofsBuyer,
+      swap.buyerState.lockedProofsCipher,
+    )
+    return
+  }
+  if (swap.messages.adaptorPoint && swap.messages.lockedProofsSeller) {
+    await runBuyerRespond(tradeId, sendSwapMessage, mintUrl)
   }
 }
 
