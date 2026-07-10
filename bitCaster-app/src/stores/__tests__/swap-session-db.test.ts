@@ -3,8 +3,14 @@ import type { ActiveSwap } from '../activeSwaps'
 
 const rows = new Map<string, Record<string, unknown>>()
 const proofOperations = new Map<string, Record<string, unknown>>()
+let storageOpenError: Error | null = null
 
 vi.mock('../proof-db', () => ({
+  ensureDurableSwapStorage: async () => {
+    if (storageOpenError) {
+      throw new Error(`Durable swap storage is unavailable: ${storageOpenError.message}`)
+    }
+  },
   prepareProofOperation: async (input: {
     operationId: string
     kind: string
@@ -32,6 +38,9 @@ vi.mock('../proof-db', () => ({
     return record
   },
   db: {
+    open: async () => {
+      if (storageOpenError) throw storageOpenError
+    },
     transaction: async (...args: unknown[]) =>
       (args.at(-1) as () => Promise<unknown>)(),
     swapSessions: {
@@ -98,6 +107,7 @@ function swap(overrides: Partial<ActiveSwap> = {}): ActiveSwap {
 beforeEach(() => {
   rows.clear()
   proofOperations.clear()
+  storageOpenError = null
 })
 
 describe('GUI durable swap session repository', () => {
@@ -210,5 +220,21 @@ describe('GUI durable swap session repository', () => {
       persistGuiSwapSession(swap({ tradeId: 'trade-overflow' }), 'https://mint.example'),
     ).rejects.toThrow(/capacity is exhausted/)
     expect(rows).toHaveLength(MAX_ACTIVE_GUI_SWAP_SESSIONS)
+  })
+
+  it('fails before creating a proof operation when durable storage is unavailable', async () => {
+    storageOpenError = new Error('IndexedDB open blocked')
+
+    await expect(
+      prepareGuiProofOperationWithSession({
+        operationId: 'trade-001/browser/buyer-lock',
+        kind: 'swap-lock',
+        mintUrl: 'https://mint.example',
+        inputs: [],
+        outputs: {},
+      }, swap()),
+    ).rejects.toThrow(/Durable swap storage is unavailable/)
+    expect(proofOperations).toHaveLength(0)
+    expect(rows).toHaveLength(0)
   })
 })

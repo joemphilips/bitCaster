@@ -23,6 +23,7 @@ type AnyProof = {
 const store = new Map<string, AnyProof>()
 const txCallbacks: Array<() => Promise<void>> = []
 let transactionTail = Promise.resolve()
+let dbOpenError: Error | null = null
 
 vi.mock('dexie', () => {
   class FakeTable {
@@ -88,6 +89,10 @@ vi.mock('dexie', () => {
         },
       }
     }
+    on(_event: string, _callback: () => void): void {}
+    async open(): Promise<void> {
+      if (dbOpenError) throw dbOpenError
+    }
     async transaction(
       _mode: string,
       _table: unknown,
@@ -106,6 +111,7 @@ vi.mock('dexie', () => {
 // Import after mock so the module picks up the fake.
 import {
   addProofs,
+  ensureDurableSwapStorage,
   getBaseProofs,
   getConditionCtfProofs,
   getOutcomeProofs,
@@ -124,9 +130,18 @@ beforeEach(() => {
   store.clear()
   txCallbacks.length = 0
   transactionTail = Promise.resolve()
+  dbOpenError = null
 })
 
 describe('proof-db normalization', () => {
+  it('surfaces an unavailable durable swap database before protected work begins', async () => {
+    dbOpenError = new Error('IndexedDB unavailable')
+
+    await expect(ensureDurableSwapStorage()).rejects.toThrow(
+      /Durable swap storage is unavailable: IndexedDB unavailable/,
+    )
+  })
+
   it('normalizes trailing slash on write', async () => {
     await addProofs([
       {

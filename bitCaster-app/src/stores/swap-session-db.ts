@@ -11,6 +11,7 @@ import {
 import type { ActiveSwap } from './activeSwaps'
 import {
   db,
+  ensureDurableSwapStorage,
   markProofOperationCompleted,
   prepareProofOperation,
   type PrepareProofOperationInput,
@@ -34,6 +35,7 @@ export async function persistGuiSwapSession(swap: ActiveSwap, mintUrl: string): 
   if (!session) {
     throw new Error('Cannot persist a swap session before trade role and locktimes are known')
   }
+  await ensureDurableSwapStorage()
   await db.transaction('rw', db.swapSessions, async () => {
     await putGuiSwapSessionInTransaction(swap, session)
   })
@@ -46,6 +48,7 @@ export async function prepareGuiProofOperationWithSession(
 ): Promise<ProofOperationRecord> {
   const session = await durableSessionFromActiveSwap(swap, input.mintUrl)
   if (!session) throw new Error('Cannot prepare proof operation without a durable swap session')
+  await ensureDurableSwapStorage()
   return db.transaction('rw', db.proofOperations, db.swapSessions, async () => {
     const operation = await prepareProofOperation(input)
     await putGuiSwapSessionInTransaction(swap, session)
@@ -62,6 +65,7 @@ export async function completeGuiProofOperationWithSession(
 ): Promise<ProofOperationRecord> {
   const session = await durableSessionFromActiveSwap(swap, mintUrl)
   if (!session) throw new Error('Cannot complete proof operation without a durable swap session')
+  await ensureDurableSwapStorage()
   return db.transaction('rw', db.proofOperations, db.swapSessions, async () => {
     const operation = await markProofOperationCompleted(operationId, resultProofs)
     await putGuiSwapSessionInTransaction(swap, session)
@@ -114,6 +118,7 @@ export async function withGuiSwapSessionOwnership<T>(
 }
 
 export async function loadRecoverableGuiSwapSessions(): Promise<ActiveSwap[]> {
+  await ensureDurableSwapStorage()
   const rows = await db.swapSessions.toArray()
   const recovered: ActiveSwap[] = []
   for (const row of rows) {
@@ -132,6 +137,7 @@ export async function resumeGuiSwapSession(
   tradeId: string,
   ports: DurableTradeResumePorts,
 ): Promise<DurableTradeResumeResult | null> {
+  await ensureDurableSwapStorage()
   const row = await db.swapSessions.get(tradeId)
   if (!isGuiSwapSessionRecord(row)) return null
   const validationError = validateDurableTradeSession(row.session)
@@ -142,6 +148,7 @@ export async function resumeGuiSwapSession(
 }
 
 export async function removeGuiSwapSession(tradeId: string): Promise<void> {
+  await ensureDurableSwapStorage()
   await db.swapSessions.delete(tradeId)
 }
 

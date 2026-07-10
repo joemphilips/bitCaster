@@ -88,6 +88,11 @@ export interface SwapSessionRecord {
   lease?: { ownerId: string; expiresAt: number };
 }
 
+let durableSwapStorageBlockedReason: string | null = null;
+let rejectDurableSwapStorageOpen: ((error: Error) => void) | null = null;
+let durableSwapStorageOpenInFlight: Promise<void> | null = null;
+const DURABLE_SWAP_STORAGE_OPEN_TIMEOUT_MS = 5_000;
+
 export function isCtfProof(proof: StoredProof | Proof): boolean {
   const candidate = proof as Proof & {
     conditionId?: unknown;
@@ -131,10 +136,52 @@ class BitcasterDB extends Dexie {
       proofOperations: "operationId, state, kind, mintUrl, updatedAt",
       swapSessions: "tradeId, updatedAt",
     });
+    this.on("blocked", () => {
+      durableSwapStorageBlockedReason =
+        "Durable swap storage upgrade is blocked by another open tab";
+      rejectDurableSwapStorageOpen?.(new Error(durableSwapStorageBlockedReason));
+    });
   }
 }
 
 export const db = new BitcasterDB();
+
+/**
+ * New protected swaps must not begin unless the IndexedDB recovery store is
+ * writable. A blocked schema upgrade or open failure is therefore surfaced
+ * before a proof reservation or mint operation can be prepared.
+ */
+export async function ensureDurableSwapStorage(): Promise<void> {
+  if (durableSwapStorageBlockedReason) {
+    throw new Error(durableSwapStorageBlockedReason);
+  }
+  if (!durableSwapStorageOpenInFlight) {
+    durableSwapStorageOpenInFlight = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("Timed out opening durable swap storage"));
+      }, DURABLE_SWAP_STORAGE_OPEN_TIMEOUT_MS);
+      rejectDurableSwapStorageOpen = reject;
+      void db.open().then(
+        () => resolve(),
+        (error) => reject(error instanceof Error ? error : new Error(String(error))),
+      ).finally(() => {
+        clearTimeout(timeout);
+        rejectDurableSwapStorageOpen = null;
+      });
+    }).finally(() => {
+      durableSwapStorageOpenInFlight = null;
+    });
+  }
+  try {
+    await durableSwapStorageOpenInFlight;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Durable swap storage is unavailable: ${reason}`);
+  }
+  if (durableSwapStorageBlockedReason) {
+    throw new Error(durableSwapStorageBlockedReason);
+  }
+}
 
 export async function getProofs(
   mintUrl?: string,
