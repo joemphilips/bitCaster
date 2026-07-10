@@ -9,8 +9,12 @@ public interface ITradeHubClient
     /// <summary>Relayed to the counterparty when a swap message arrives.</summary>
     Task SwapMessageReceived(Guid tradeId, string messageType, string ciphertext);
 
-    /// <summary>Broadcast to both parties when the trade state transitions.</summary>
-    Task TradeStateChanged(Guid tradeId, string newState);
+    /// <summary>
+    /// Broadcast to both parties when the trade state transitions. The optional
+    /// failure reason is a stable public code, present only for allowlisted
+    /// terminal failures that a client may safely recover from.
+    /// </summary>
+    Task TradeStateChanged(Guid tradeId, string newState, string? failureReason = null);
 
     /// <summary>Sent during JoinOrder recovery when a matched order is waiting for this party's ephemeral pubkey.</summary>
     Task PendingPubkeyRequired(Guid tradeId, string role, DateTimeOffset deadline);

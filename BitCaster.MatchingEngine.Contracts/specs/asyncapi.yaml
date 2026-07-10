@@ -591,10 +591,16 @@ components:
     TradeStateChangedArguments:
       type: array
       minItems: 2
-      maxItems: 2
+      maxItems: 3
       prefixItems:
         - type: string
           format: uuid
           description: tradeId
         - type: string
           description: newState
+        - oneOf:
+            - type: string
+            - type: 'null'
+          description: >
+            Optional stable failure code. Present only when a terminal failure
+            is safe for client recovery; currently maker-collateral-failure.
