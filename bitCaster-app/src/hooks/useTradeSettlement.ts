@@ -105,6 +105,14 @@ import {
   resumeGuiSwapSession,
   withGuiSwapSessionOwnership,
 } from "@/stores/swap-session-db";
+import {
+  loadGuiPendingSwapIntents,
+  getGuiPendingSwapIntent,
+  markGuiPendingSwapIntentSubmitted,
+  migrateLegacyGuiPendingSwapIntents,
+  persistGuiPendingSwapIntent,
+  removeGuiPendingSwapIntent,
+} from "@/stores/pending-swap-intent-db";
 import type {
   OutcomeMetadata,
   PartialLockHeldRecord,
@@ -401,9 +409,16 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
 
   useEffect(() => {
     let cancelled = false;
-    void loadRecoverableGuiSwapSessions()
-      .then((swaps) => {
+    void migrateLegacyGuiPendingSwapIntents()
+      .then(() => Promise.all([
+        loadRecoverableGuiSwapSessions(),
+        loadGuiPendingSwapIntents(),
+      ] as const))
+      .then(([swaps, intents]) => {
         if (!cancelled) useActiveSwapsStore.getState().hydrate(swaps);
+        if (!cancelled) {
+          usePendingPubkeySubmissionsStore.getState().hydratePendingPubkeys(intents);
+        }
       })
       .catch((error) => {
         console.warn("Could not restore durable swap sessions", error);
@@ -708,6 +723,7 @@ async function handleTradeCreatedOnce(
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
 ): Promise<void> {
+  await hydratePendingPubkeyForTrade(payload.tradeId);
   let swap: ActiveSwap | null =
     useActiveSwapsStore.getState().byTradeId[payload.tradeId] ?? null;
   if (swap?.role) return;
@@ -793,6 +809,8 @@ async function handleTradeCreatedOnce(
     },
   );
   await persistCurrentGuiSwap(payload.tradeId, mintUrl);
+  await removeGuiPendingSwapIntent(payload.tradeId);
+  usePendingPubkeySubmissionsStore.getState().removePendingPubkey(payload.tradeId);
 
   if (decision.role === "seller") {
     void runSellerSendOpening(payload.tradeId, sendSwapMessage, mintUrl);
@@ -871,12 +889,21 @@ function getPendingPubkeyForTrade(tradeId: string) {
   return usePendingPubkeySubmissionsStore.getState().byTradeId[tradeId];
 }
 
+async function hydratePendingPubkeyForTrade(tradeId: string): Promise<void> {
+  if (getPendingPubkeyForTrade(tradeId)) return;
+  const intent = await getGuiPendingSwapIntent(tradeId);
+  if (intent) usePendingPubkeySubmissionsStore.getState().addPendingPubkey(intent);
+}
+
+
 async function submitPendingPubkeyFromRecovery(
   pendingTrade: PendingTrade,
   tradeId: string,
   deadline: string,
 ): Promise<void> {
   const store = usePendingPubkeySubmissionsStore.getState();
+  const migrated = await migrateLegacyGuiPendingSwapIntents();
+  if (migrated.length > 0) store.hydratePendingPubkeys(migrated);
   let entry = store.byTradeId[tradeId];
   if (!entry) {
     const key = generateEphemeralKeyPair();
@@ -889,6 +916,7 @@ async function submitPendingPubkeyFromRecovery(
       deadline,
       submitted: false,
     };
+    await persistGuiPendingSwapIntent(entry);
     store.addPendingPubkey(entry);
   }
   if (entry.submitted) return;
@@ -898,6 +926,7 @@ async function submitPendingPubkeyFromRecovery(
     entry.pubkey,
     conditionIdFromMarketId(pendingTrade.marketId),
   );
+  await markGuiPendingSwapIntentSubmitted(tradeId);
   usePendingPubkeySubmissionsStore.getState().markSubmitted(tradeId);
 }
 

@@ -22,6 +22,8 @@ vi.mock('../proof-db', () => ({
 import {
   getGuiPendingSwapIntent,
   loadGuiPendingSwapIntents,
+  migrateLegacyGuiPendingSwapIntents,
+  parseLegacyPendingSwapIntents,
   markGuiPendingSwapIntentSubmitted,
   persistGuiPendingSwapIntent,
 } from '../pending-swap-intent-db'
@@ -39,9 +41,33 @@ const intent = {
 beforeEach(() => {
   rows.clear()
   storageError = null
+  window.localStorage.clear()
 })
 
 describe('GUI pending swap intent repository', () => {
+  it('accepts only valid legacy Zustand entries for durable migration', () => {
+    const parsed = parseLegacyPendingSwapIntents(JSON.stringify({
+      state: {
+        byTradeId: {
+          [intent.tradeId]: intent,
+          malformed: { ...intent, tradeId: 'malformed', privkey: 'bad' },
+        },
+      },
+    }))
+
+    expect(parsed).toEqual([intent])
+  })
+
+  it('migrates valid legacy intent records before clearing the local-storage payload', async () => {
+    window.localStorage.setItem('bitcaster-pending-pubkeys', JSON.stringify({
+      state: { byTradeId: { [intent.tradeId]: intent } },
+    }))
+
+    await expect(migrateLegacyGuiPendingSwapIntents()).resolves.toEqual([intent])
+    await expect(getGuiPendingSwapIntent(intent.tradeId)).resolves.toEqual(intent)
+    expect(window.localStorage.getItem('bitcaster-pending-pubkeys')).toBeNull()
+  })
+
   it('persists and hydrates a pre-TradeCreated private key binding', async () => {
     await persistGuiPendingSwapIntent(intent)
 

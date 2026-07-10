@@ -82,6 +82,58 @@ export async function removeGuiPendingSwapIntent(tradeId: string): Promise<void>
   await db.swapIntents.delete(tradeId)
 }
 
+/** Parses the pre-ADR local-storage shape without treating it as authoritative. */
+export function parseLegacyPendingSwapIntents(serialized: string): GuiPendingSwapIntent[] {
+  try {
+    const parsed = JSON.parse(serialized) as { state?: { byTradeId?: unknown } }
+    const entries = parsed.state?.byTradeId
+    if (!entries || typeof entries !== 'object') return []
+    return Object.values(entries).flatMap((entry) => {
+      const candidate = entry as Partial<GuiPendingSwapIntent>
+      if (
+        typeof candidate.tradeId !== 'string' ||
+        typeof candidate.orderId !== 'string' ||
+        typeof candidate.marketId !== 'string' ||
+        typeof candidate.pubkey !== 'string' ||
+        typeof candidate.privkey !== 'string' ||
+        typeof candidate.deadline !== 'string' ||
+        typeof candidate.submitted !== 'boolean'
+      ) return []
+      const intent: GuiPendingSwapIntent = {
+        tradeId: candidate.tradeId,
+        orderId: candidate.orderId,
+        marketId: candidate.marketId,
+        pubkey: candidate.pubkey,
+        privkey: candidate.privkey,
+        deadline: candidate.deadline,
+        submitted: candidate.submitted,
+      }
+      return validateLegacyGuiIntent(intent) ? [intent] : []
+    })
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Moves the legacy Zustand payload into IndexedDB before any caller creates a
+ * replacement key. It is idempotent so the root recovery hook and an order
+ * recovery callback may safely race during application startup.
+ */
+export async function migrateLegacyGuiPendingSwapIntents(): Promise<GuiPendingSwapIntent[]> {
+  if (typeof window === 'undefined') return []
+  const serialized = window.localStorage.getItem('bitcaster-pending-pubkeys')
+  if (!serialized) return []
+  const intents = parseLegacyPendingSwapIntents(serialized)
+  for (const intent of intents) {
+    if (!await getGuiPendingSwapIntent(intent.tradeId)) {
+      await persistGuiPendingSwapIntent(intent)
+    }
+  }
+  window.localStorage.removeItem('bitcaster-pending-pubkeys')
+  return intents
+}
+
 function durableIntentFromGui(input: GuiPendingSwapIntent): DurableTradePendingIntent {
   return {
     schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
@@ -109,4 +161,9 @@ function guiIntentFromRecord(record: SwapIntentRecord): GuiPendingSwapIntent | n
 
 function isPrivateKey(value: string): boolean {
   return /^[a-f0-9]{64}$/i.test(value)
+}
+
+function validateLegacyGuiIntent(input: GuiPendingSwapIntent): boolean {
+  return isPrivateKey(input.privkey) &&
+    validateDurableTradePendingIntent(durableIntentFromGui(input)) === null
 }

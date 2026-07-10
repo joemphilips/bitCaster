@@ -82,6 +82,11 @@ import {
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissions";
+import {
+  markGuiPendingSwapIntentSubmitted,
+  migrateLegacyGuiPendingSwapIntents,
+  persistGuiPendingSwapIntent,
+} from "@/stores/pending-swap-intent-db";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import { canBackOrder } from "@bitcaster/client-sdk/tradingClient";
@@ -2275,6 +2280,8 @@ async function submitPendingEphemeralPubkey(input: {
   deadline: string;
 }): Promise<void> {
   const store = usePendingPubkeySubmissionsStore.getState();
+  const migrated = await migrateLegacyGuiPendingSwapIntents();
+  if (migrated.length > 0) store.hydratePendingPubkeys(migrated);
   let entry = store.byTradeId[input.tradeId];
   if (!entry) {
     const key = generateEphemeralKeyPair();
@@ -2287,6 +2294,7 @@ async function submitPendingEphemeralPubkey(input: {
       deadline: input.deadline,
       submitted: false,
     };
+    await persistGuiPendingSwapIntent(entry);
     store.addPendingPubkey(entry);
   }
   if (entry.submitted) return;
@@ -2296,6 +2304,7 @@ async function submitPendingEphemeralPubkey(input: {
     entry.pubkey,
     conditionIdFromMarketId(input.marketId),
   );
+  await markGuiPendingSwapIntentSubmitted(input.tradeId);
   usePendingPubkeySubmissionsStore.getState().markSubmitted(input.tradeId);
 }
 

@@ -1,7 +1,4 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
-
-const PENDING_PUBKEY_TTL_MS = 60 * 60 * 1000
 
 export interface PendingPubkeyEntry {
   tradeId: string
@@ -16,16 +13,22 @@ export interface PendingPubkeyEntry {
 interface PendingPubkeyState {
   byTradeId: Record<string, PendingPubkeyEntry>
   addPendingPubkey: (entry: PendingPubkeyEntry) => void
+  hydratePendingPubkeys: (entries: PendingPubkeyEntry[]) => void
   markSubmitted: (tradeId: string) => void
   removePendingPubkey: (tradeId: string) => void
 }
 
 export const usePendingPubkeySubmissionsStore = create<PendingPubkeyState>()(
-  persist(
     (set) => ({
       byTradeId: {},
       addPendingPubkey: (entry) => set((state) => ({
         byTradeId: { ...state.byTradeId, [entry.tradeId]: entry },
+      })),
+      hydratePendingPubkeys: (entries) => set((state) => ({
+        byTradeId: {
+          ...Object.fromEntries(entries.map((entry) => [entry.tradeId, entry])),
+          ...state.byTradeId,
+        },
       })),
       markSubmitted: (tradeId) => set((state) => {
         const current = state.byTradeId[tradeId]
@@ -44,18 +47,4 @@ export const usePendingPubkeySubmissionsStore = create<PendingPubkeyState>()(
         return { byTradeId: next }
       }),
     }),
-    {
-      name: 'bitcaster-pending-pubkeys',
-      onRehydrateStorage: () => (state) => {
-        if (!state) return
-        const cutoff = Date.now() - PENDING_PUBKEY_TTL_MS
-        state.byTradeId = Object.fromEntries(
-          Object.entries(state.byTradeId).filter(([, entry]) => {
-            const deadlineMs = new Date(entry.deadline).getTime()
-            return Number.isFinite(deadlineMs) && deadlineMs >= cutoff
-          }),
-        )
-      },
-    },
-  ),
 )
