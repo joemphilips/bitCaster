@@ -21,6 +21,7 @@ type FakeConnection = {
   on: ReturnType<typeof vi.fn>
   onclose: ReturnType<typeof vi.fn>
   onreconnecting: ReturnType<typeof vi.fn>
+  onreconnected: ReturnType<typeof vi.fn>
 }
 
 vi.mock('@microsoft/signalr', () => ({
@@ -59,6 +60,7 @@ function makeConnection(failInitialStarts = 0): FakeConnection {
     on: vi.fn(),
     onclose: vi.fn(),
     onreconnecting: vi.fn(),
+    onreconnected: vi.fn(),
   }
 
   let attempts = 0
@@ -174,5 +176,20 @@ describe('useTradeHub', () => {
       divisibility: 1_000,
       tokenSide: 'Complement',
     })
+  })
+
+  it('notifies callers after SignalR reconnects', async () => {
+    const connection = makeConnection()
+    connections.push(connection)
+    const onReconnected = vi.fn()
+
+    renderHook(() => useTradeHub(true, { onReconnected }))
+
+    await waitFor(() => expect(connection.onreconnected).toHaveBeenCalledWith(expect.any(Function)))
+    const handler = connection.onreconnected.mock.calls[0]?.[0] as (() => void) | undefined
+    expect(handler).toBeTypeOf('function')
+    handler?.()
+
+    expect(onReconnected).toHaveBeenCalledTimes(1)
   })
 })

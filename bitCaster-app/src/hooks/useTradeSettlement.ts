@@ -34,7 +34,7 @@
  * the wallet — only the fresh proofs returned by the mint.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Proof } from "@cashu/cashu-ts";
 import {
   useTradeHub,
@@ -323,6 +323,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     Map<string, ReturnType<typeof setTimeout>>
   >(new Map());
   const tradeJoinAttemptsRef = useRef<Map<string, number>>(new Map());
+  const [recoveryEpoch, setRecoveryEpoch] = useState(0);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const hasActiveSwapWork = Object.values(swapsByTradeId).some(
     (swap) => swap.step !== "completed" && swap.step !== "Failed",
@@ -330,6 +331,12 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
   const pendingTrades = Object.values(pendingTradesByOrderId);
   const tradeHubEnabled =
     canAuthenticateTradeHub && (hasActiveSwapWork || pendingTrades.length > 0);
+
+  const requestRecovery = () => {
+    joinedTradeIds.clear();
+    joinedOrderKeysRef.current.clear();
+    setRecoveryEpoch((current) => current + 1);
+  };
 
   const { joinOrder, joinTrade, sendSwapMessage } = useTradeHub(
     tradeHubEnabled,
@@ -345,8 +352,17 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
         handleSwapMessage(msg, sendSwapMessage, activeMintUrl),
       onTradeStateChanged: (tradeId, newState) =>
         handleTradeStateChanged(tradeId, newState, sendSwapMessage),
+      onReconnected: requestRecovery,
     },
   );
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") requestRecovery();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   useEffect(() => {
     if (!tradeHubEnabled) return;
@@ -400,7 +416,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
       if (swap.step !== "awaiting-trade-created") continue;
       attemptJoinActiveSwap(swap);
     }
-  }, [swapsByTradeId, tradeHubEnabled, joinTrade, sendSwapMessage]);
+  }, [swapsByTradeId, tradeHubEnabled, joinTrade, sendSwapMessage, recoveryEpoch]);
 
   useEffect(() => {
     if (!tradeHubEnabled) return;
@@ -550,7 +566,7 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
     for (const trade of pendingTrades) {
       attemptJoinOrder(trade);
     }
-  }, [pendingTrades, tradeHubEnabled, joinOrder, joinTrade]);
+  }, [pendingTrades, tradeHubEnabled, joinOrder, joinTrade, recoveryEpoch]);
 
   useEffect(() => {
     if (tradeHubEnabled) return;

@@ -57,6 +57,7 @@ export interface TradeHubCallbacks {
   onSwapMessageReceived?: (msg: SwapMessage) => void
   onTradeStateChanged?: (tradeId: string, newState: string) => void
   onTradeCreated?: (payload: TradeCreatedPayload) => void
+  onReconnected?: () => void
   onError?: (err: Error) => void
 }
 
@@ -208,6 +209,10 @@ export function useTradeHub(
         callbacksRef.current.onError?.(
           err instanceof Error ? err : new Error(String(err)),
         )
+    })
+
+    connection.onreconnected(() => {
+      callbacksRef.current.onReconnected?.()
     })
 
     connectionRef.current = connection

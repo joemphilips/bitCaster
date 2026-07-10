@@ -250,6 +250,28 @@ describe("useTradeSettlement", () => {
     expect(mockJoinTrade).toHaveBeenCalledWith("trade-1");
   });
 
+  it("replays active trade recovery after a hub reconnect", async () => {
+    renderHook(() => useTradeSettlement(true));
+
+    await act(async () => {
+      useActiveSwapsStore.getState().promote({
+        tradeId: "trade-reconnect",
+        orderId: "order-reconnect",
+        marketId: "market-1",
+        ephemeralPrivkeyHex: "11".repeat(32),
+        ephemeralPubkeyHex: "22".repeat(32),
+      });
+    });
+    await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledTimes(1));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onReconnected?: () => void;
+    };
+    await act(async () => callbacks.onReconnected?.());
+
+    await waitFor(() => expect(mockJoinTrade).toHaveBeenCalledTimes(2));
+  });
+
   it("retries active swap trade joins while the trade state is not ready", async () => {
     vi.useFakeTimers();
     mockJoinTrade
