@@ -84,6 +84,10 @@
       "types": "./dist/tradePreparation.d.ts",
       "import": "./dist/tradePreparation.js"
     },
+    "./tradeRecovery": {
+      "types": "./dist/tradeRecovery.d.ts",
+      "import": "./dist/tradeRecovery.js"
+    },
     "./tradeSession": {
       "types": "./dist/tradeSession.d.ts",
       "import": "./dist/tradeSession.js"
