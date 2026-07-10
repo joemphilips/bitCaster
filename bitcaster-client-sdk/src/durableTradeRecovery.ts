@@ -6,6 +6,12 @@ import {
 
 export const DURABLE_TRADE_SESSION_SCHEMA_VERSION = 1 as const
 
+const DURABLE_OUTBOUND_MESSAGE_ORDER: readonly SwapCipherMessageType[] = [
+  'adaptor-point',
+  'locked-proofs-seller',
+  'locked-proofs-buyer',
+]
+
 export type DurableTradeSessionStage =
   | 'intent'
   | 'proof-reserved'
@@ -122,6 +128,21 @@ export interface DurableTradeRecoveryScan {
   orphanOperations: string[]
 }
 
+/** Ports required to resume an already journalled protocol outbox. */
+export interface DurableTradeResumePorts {
+  joinTrade(tradeId: string): Promise<void>
+  sendCipher(
+    tradeId: string,
+    messageType: SwapCipherMessageType,
+    ciphertext: string,
+  ): Promise<void>
+}
+
+export type DurableTradeResumeResult =
+  | { kind: 'invalid-session'; reason: string }
+  | { kind: 'ready'; session: DurableTradeSession }
+  | { kind: 'replayed'; session: DurableTradeSession; sentMessageTypes: SwapCipherMessageType[] }
+
 export interface DurableRefundSalvageEvidence {
   tradeId: string
   role: SwapRole
@@ -236,6 +257,31 @@ export async function verifyDurableTradeSessionCipherIntegrity(
     }
   }
   return null
+}
+
+/**
+ * Rejoins the trade before replaying the exact durable outbox. This deliberately
+ * never generates a new cipher, starts a mint operation, or turns a failed
+ * delivery acknowledgement into a terminal client decision.
+ */
+export async function resumeDurableTradeSession(
+  session: DurableTradeSession,
+  ports: DurableTradeResumePorts,
+): Promise<DurableTradeResumeResult> {
+  const validationError = validateDurableTradeSession(session)
+  if (validationError) return { kind: 'invalid-session', reason: validationError }
+
+  await ports.joinTrade(session.tradeId)
+  const sentMessageTypes: SwapCipherMessageType[] = []
+  for (const messageType of DURABLE_OUTBOUND_MESSAGE_ORDER) {
+    const cipher = session.outboundCiphers[messageType]
+    if (!cipher) continue
+    await ports.sendCipher(session.tradeId, messageType, cipher.ciphertext)
+    sentMessageTypes.push(messageType)
+  }
+  return sentMessageTypes.length === 0
+    ? { kind: 'ready', session }
+    : { kind: 'replayed', session, sentMessageTypes }
 }
 
 export function reduceDurableTradeSession(

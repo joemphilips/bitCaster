@@ -5,6 +5,7 @@ import {
   canSalvageDurableRefund,
   deriveDurableProofOperationId,
   isDurableTradeSessionPurgeEligible,
+  resumeDurableTradeSession,
   reduceDurableTradeSession,
   scanDurableTradeRecoveryLinks,
   validateDurableTradeSession,
@@ -240,4 +241,50 @@ test('a session remains non-purgeable until every linked operation is reconciled
     operation: preparedOperation(),
   })
   assert.equal(isDurableTradeSessionPurgeEligible(prepared), false)
+})
+
+test('recovery rejoins then replays only journalled outbound ciphers in protocol order', async () => {
+  const journaled = reduceDurableTradeSession(
+    reduceDurableTradeSession(session(), {
+      kind: 'outbound-cipher-journaled',
+      messageType: 'locked-proofs-seller',
+      ciphertext: 'seller-cipher',
+      sha256: 'a'.repeat(64),
+    }),
+    {
+      kind: 'outbound-cipher-journaled',
+      messageType: 'adaptor-point',
+      ciphertext: 'adaptor-cipher',
+      sha256: 'b'.repeat(64),
+    },
+  )
+  const calls: string[] = []
+
+  const result = await resumeDurableTradeSession(journaled, {
+    joinTrade: async (tradeId) => { calls.push(`join:${tradeId}`) },
+    sendCipher: async (_tradeId, messageType, ciphertext) => {
+      calls.push(`${messageType}:${ciphertext}`)
+    },
+  })
+
+  assert.equal(result.kind, 'replayed')
+  assert.deepEqual(calls, [
+    'join:trade-001',
+    'adaptor-point:adaptor-cipher',
+    'locked-proofs-seller:seller-cipher',
+  ])
+})
+
+test('recovery fails closed before joining or sending an invalid durable session', async () => {
+  const calls: string[] = []
+  const result = await resumeDurableTradeSession(
+    { ...session(), schemaVersion: 99 },
+    {
+      joinTrade: async () => { calls.push('join') },
+      sendCipher: async () => { calls.push('send') },
+    },
+  )
+
+  assert.equal(result.kind, 'invalid-session')
+  assert.deepEqual(calls, [])
 })
