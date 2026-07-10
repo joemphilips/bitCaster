@@ -85,7 +85,7 @@ import { usePendingPubkeySubmissionsStore } from "@/stores/pendingPubkeySubmissi
 import {
   markGuiPendingSwapIntentSubmitted,
   migrateLegacyGuiPendingSwapIntents,
-  persistGuiPendingSwapIntent,
+  getOrCreateGuiPendingSwapIntent,
 } from "@/stores/pending-swap-intent-db";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
@@ -2284,17 +2284,24 @@ async function submitPendingEphemeralPubkey(input: {
   if (migrated.length > 0) store.hydratePendingPubkeys(migrated);
   let entry = store.byTradeId[input.tradeId];
   if (!entry) {
-    const key = generateEphemeralKeyPair();
-    entry = {
+    entry = await getOrCreateGuiPendingSwapIntent({
       tradeId: input.tradeId,
       orderId: input.orderId,
       marketId: input.marketId,
-      pubkey: key.pubkey,
-      privkey: key.privkey,
       deadline: input.deadline,
-      submitted: false,
-    };
-    await persistGuiPendingSwapIntent(entry);
+      create: () => {
+        const key = generateEphemeralKeyPair()
+        return {
+          tradeId: input.tradeId,
+          orderId: input.orderId,
+          marketId: input.marketId,
+          pubkey: key.pubkey,
+          privkey: key.privkey,
+          deadline: input.deadline,
+          submitted: false,
+        }
+      },
+    })
     store.addPendingPubkey(entry);
   }
   if (entry.submitted) return;

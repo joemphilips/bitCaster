@@ -22,6 +22,7 @@ vi.mock('../proof-db', () => ({
 
 import {
   getGuiPendingSwapIntent,
+  getOrCreateGuiPendingSwapIntent,
   loadGuiPendingSwapIntents,
   migrateLegacyGuiPendingSwapIntents,
   parseLegacyPendingSwapIntents,
@@ -97,5 +98,34 @@ describe('GUI pending swap intent repository', () => {
       ...intent,
       pubkey: `02${'b'.repeat(64)}`,
     })).rejects.toThrow(/private key does not match/)
+  })
+
+  it('serializes concurrent pending-intent creation to one durable key', async () => {
+    let generated = 0
+    const create = () => {
+      generated += 1
+      return intent
+    }
+
+    const [first, second] = await Promise.all([
+      getOrCreateGuiPendingSwapIntent({
+        tradeId: intent.tradeId,
+        orderId: intent.orderId,
+        marketId: intent.marketId,
+        deadline: intent.deadline,
+        create,
+      }),
+      getOrCreateGuiPendingSwapIntent({
+        tradeId: intent.tradeId,
+        orderId: intent.orderId,
+        marketId: intent.marketId,
+        deadline: intent.deadline,
+        create,
+      }),
+    ])
+
+    expect(generated).toBe(1)
+    expect(first).toEqual(intent)
+    expect(second).toEqual(intent)
   })
 })

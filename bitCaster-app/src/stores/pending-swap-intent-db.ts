@@ -20,6 +20,8 @@ export interface GuiPendingSwapIntent {
   submitted: boolean
 }
 
+const pendingIntentCreations = new Map<string, Promise<GuiPendingSwapIntent>>()
+
 /**
  * Writes the pre-TradeCreated private key binding before the client submits
  * its public key. Zustand consumes a hydrated projection of these records.
@@ -71,6 +73,51 @@ export async function getGuiPendingSwapIntent(
   const entry = row ? guiIntentFromRecord(row) : null
   if (!entry || Date.parse(entry.deadline) < Date.now()) return null
   return entry
+}
+
+/**
+ * Serializes creation in this browser context so concurrent market/order
+ * callbacks bind a trade to one key before either can submit it to the engine.
+ */
+export function getOrCreateGuiPendingSwapIntent(input: {
+  tradeId: string
+  orderId: string
+  marketId: string
+  deadline: string
+  create: () => GuiPendingSwapIntent
+}): Promise<GuiPendingSwapIntent> {
+  const prior = pendingIntentCreations.get(input.tradeId) ?? Promise.resolve()
+  const next = prior.then(async () => {
+    const existing = await getGuiPendingSwapIntent(input.tradeId)
+    if (existing) {
+      if (
+        existing.orderId !== input.orderId ||
+        existing.marketId !== input.marketId ||
+        existing.deadline !== input.deadline
+      ) {
+        throw new Error('durable pending swap intent conflicts with the existing trade binding')
+      }
+      return existing
+    }
+    const created = input.create()
+    if (
+      created.tradeId !== input.tradeId ||
+      created.orderId !== input.orderId ||
+      created.marketId !== input.marketId ||
+      created.deadline !== input.deadline
+    ) {
+      throw new Error('durable pending swap intent creation returned a mismatched binding')
+    }
+    await persistGuiPendingSwapIntent(created)
+    return created
+  })
+  pendingIntentCreations.set(input.tradeId, next)
+  void next.finally(() => {
+    if (pendingIntentCreations.get(input.tradeId) === next) {
+      pendingIntentCreations.delete(input.tradeId)
+    }
+  }).catch(() => {})
+  return next
 }
 
 export async function markGuiPendingSwapIntentSubmitted(tradeId: string): Promise<void> {

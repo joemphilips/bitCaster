@@ -108,9 +108,9 @@ import {
 import {
   loadGuiPendingSwapIntents,
   getGuiPendingSwapIntent,
+  getOrCreateGuiPendingSwapIntent,
   markGuiPendingSwapIntentSubmitted,
   migrateLegacyGuiPendingSwapIntents,
-  persistGuiPendingSwapIntent,
   removeGuiPendingSwapIntent,
 } from "@/stores/pending-swap-intent-db";
 import type {
@@ -906,17 +906,24 @@ async function submitPendingPubkeyFromRecovery(
   if (migrated.length > 0) store.hydratePendingPubkeys(migrated);
   let entry = store.byTradeId[tradeId];
   if (!entry) {
-    const key = generateEphemeralKeyPair();
-    entry = {
+    entry = await getOrCreateGuiPendingSwapIntent({
       tradeId,
       orderId: pendingTrade.orderId,
       marketId: pendingTrade.marketId,
-      pubkey: key.pubkey,
-      privkey: key.privkey,
       deadline,
-      submitted: false,
-    };
-    await persistGuiPendingSwapIntent(entry);
+      create: () => {
+        const key = generateEphemeralKeyPair()
+        return {
+          tradeId,
+          orderId: pendingTrade.orderId,
+          marketId: pendingTrade.marketId,
+          pubkey: key.pubkey,
+          privkey: key.privkey,
+          deadline,
+          submitted: false,
+        }
+      },
+    })
     store.addPendingPubkey(entry);
   }
   if (entry.submitted) return;
