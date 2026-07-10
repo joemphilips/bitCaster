@@ -2,6 +2,7 @@ import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   resumeDurableTradeSession,
   validateDurableTradeSession,
+  validateDurableTradePrivateKeyBinding,
   verifyDurableTradeSessionCipherIntegrity,
   type DurableTradeResumePorts,
   type DurableTradeResumeResult,
@@ -232,6 +233,10 @@ function isAdapterStateBoundToSession(
 ): boolean {
   return swap.tradeId === session.tradeId &&
     swap.role === session.role &&
+    validateDurableTradePrivateKeyBinding(
+      swap.ephemeralPrivkeyHex,
+      session.localProtocolPubkey,
+    ) === null &&
     swap.ephemeralPubkeyHex.toLowerCase() === session.localProtocolPubkey &&
     swap.counterpartyPubkey?.toLowerCase() === session.counterpartyProtocolPubkey &&
     swap.sellerLocktime === session.sellerLocktimeSecs &&

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 
 const rows = new Map<string, Record<string, unknown>>()
 let storageError: Error | null = null
@@ -32,8 +33,10 @@ const intent = {
   tradeId: 'trade-001',
   orderId: 'order-001',
   marketId: 'condition-YES',
-  pubkey: `02${'a'.repeat(64)}`,
-  privkey: '1'.repeat(64),
+  pubkey: Array.from(secp256k1.getPublicKey(new Uint8Array(32).fill(1), true))
+    .map((part) => part.toString(16).padStart(2, '0'))
+    .join(''),
+  privkey: '01'.repeat(32),
   deadline: '2099-01-01T00:00:00.000Z',
   submitted: false,
 }
@@ -87,5 +90,12 @@ describe('GUI pending swap intent repository', () => {
 
     await expect(persistGuiPendingSwapIntent(intent)).rejects.toThrow(/IndexedDB unavailable/)
     expect(rows).toHaveLength(0)
+  })
+
+  it('rejects a pre-session private key that does not derive its stored public key', async () => {
+    await expect(persistGuiPendingSwapIntent({
+      ...intent,
+      pubkey: `02${'b'.repeat(64)}`,
+    })).rejects.toThrow(/private key does not match/)
   })
 })

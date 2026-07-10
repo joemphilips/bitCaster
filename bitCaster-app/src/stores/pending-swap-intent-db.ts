@@ -1,6 +1,7 @@
 import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   validateDurableTradePendingIntent,
+  validateDurableTradePrivateKeyBinding,
   type DurableTradePendingIntent,
 } from '@bitcaster/client-sdk/durableTradeRecovery'
 import {
@@ -31,6 +32,10 @@ export async function persistGuiPendingSwapIntent(
   if (validationError) throw new Error(validationError)
   if (!isPrivateKey(input.privkey)) {
     throw new Error('durable pending swap intent private key is invalid')
+  }
+  const keyBindingError = validateDurableTradePrivateKeyBinding(input.privkey, input.pubkey)
+  if (keyBindingError) {
+    throw new Error(`durable pending swap intent ${keyBindingError}`)
   }
   await ensureDurableSwapStorage()
   await db.swapIntents.put({
@@ -147,7 +152,10 @@ function durableIntentFromGui(input: GuiPendingSwapIntent): DurableTradePendingI
 
 function guiIntentFromRecord(record: SwapIntentRecord): GuiPendingSwapIntent | null {
   if (validateDurableTradePendingIntent(record.intent) !== null) return null
-  if (!isPrivateKey(record.ephemeralPrivkeyHex)) return null
+  if (validateDurableTradePrivateKeyBinding(
+    record.ephemeralPrivkeyHex,
+    record.intent.localProtocolPubkey,
+  ) !== null) return null
   return {
     tradeId: record.intent.tradeId,
     orderId: record.intent.orderId,
@@ -164,6 +172,6 @@ function isPrivateKey(value: string): boolean {
 }
 
 function validateLegacyGuiIntent(input: GuiPendingSwapIntent): boolean {
-  return isPrivateKey(input.privkey) &&
+  return validateDurableTradePrivateKeyBinding(input.privkey, input.pubkey) === null &&
     validateDurableTradePendingIntent(durableIntentFromGui(input)) === null
 }

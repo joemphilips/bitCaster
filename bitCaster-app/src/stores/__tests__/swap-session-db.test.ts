@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 import type { ActiveSwap } from '../activeSwaps'
 
 const rows = new Map<string, Record<string, unknown>>()
@@ -74,12 +75,16 @@ import {
 } from '../swap-session-db'
 
 function swap(overrides: Partial<ActiveSwap> = {}): ActiveSwap {
+  const ephemeralPrivkeyHex = '01'.repeat(32)
+  const ephemeralPubkeyHex = Array.from(
+    secp256k1.getPublicKey(new Uint8Array(32).fill(1), true),
+  ).map((part) => part.toString(16).padStart(2, '0')).join('')
   return {
     tradeId: 'trade-001',
     orderId: 'order-001',
     marketId: 'condition-YES',
-    ephemeralPrivkeyHex: '1'.repeat(64),
-    ephemeralPubkeyHex: `02${'a'.repeat(64)}`,
+    ephemeralPrivkeyHex,
+    ephemeralPubkeyHex,
     role: 'seller',
     counterpartyPubkey: `03${'b'.repeat(64)}`,
     sellerLocktime: 120,
@@ -135,6 +140,14 @@ describe('GUI durable swap session repository', () => {
       ...row.adapterState,
       counterpartyPubkey: `02${'c'.repeat(64)}`,
     }
+
+    await expect(loadRecoverableGuiSwapSessions()).resolves.toEqual([])
+  })
+
+  it('refuses a row whose private key no longer matches its protocol public key', async () => {
+    await persistGuiSwapSession(swap(), 'https://mint.example')
+    const row = rows.get('trade-001') as { adapterState: ActiveSwap }
+    row.adapterState = { ...row.adapterState, ephemeralPrivkeyHex: '02'.repeat(32) }
 
     await expect(loadRecoverableGuiSwapSessions()).resolves.toEqual([])
   })
