@@ -9,6 +9,7 @@ import {
 } from "@bitcaster/client-sdk/marketUnits";
 import { normalizeUrl } from "../lib/url";
 import type { DurableTradeSession } from "@bitcaster/client-sdk/durableTradeRecovery";
+import type { DurableTradePendingIntent } from "@bitcaster/client-sdk/durableTradeRecovery";
 
 export interface StoredProof extends Proof {
   mintUrl: string;
@@ -88,6 +89,15 @@ export interface SwapSessionRecord {
   lease?: { ownerId: string; expiresAt: number };
 }
 
+/** Adapter-owned private key material for an SDK-defined pre-session intent. */
+export interface SwapIntentRecord {
+  tradeId: string;
+  intent: DurableTradePendingIntent;
+  ephemeralPrivkeyHex: string;
+  submitted: boolean;
+  updatedAt: number;
+}
+
 let durableSwapStorageBlockedReason: string | null = null;
 let rejectDurableSwapStorageOpen: ((error: Error) => void) | null = null;
 let durableSwapStorageOpenInFlight: Promise<void> | null = null;
@@ -112,6 +122,7 @@ class BitcasterDB extends Dexie {
   proofs!: Table<StoredProof>;
   proofOperations!: Table<ProofOperationRecord>;
   swapSessions!: Table<SwapSessionRecord>;
+  swapIntents!: Table<SwapIntentRecord>;
 
   constructor() {
     super("bitcaster");
@@ -135,6 +146,13 @@ class BitcasterDB extends Dexie {
         "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
       proofOperations: "operationId, state, kind, mintUrl, updatedAt",
       swapSessions: "tradeId, updatedAt",
+    });
+    this.version(6).stores({
+      proofs:
+        "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
+      proofOperations: "operationId, state, kind, mintUrl, updatedAt",
+      swapSessions: "tradeId, updatedAt",
+      swapIntents: "tradeId, updatedAt, submitted",
     });
     this.on("blocked", () => {
       durableSwapStorageBlockedReason =
