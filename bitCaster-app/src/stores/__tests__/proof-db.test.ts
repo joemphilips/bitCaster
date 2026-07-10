@@ -22,6 +22,7 @@ type AnyProof = {
 
 const store = new Map<string, AnyProof>()
 const txCallbacks: Array<() => Promise<void>> = []
+let transactionTail = Promise.resolve()
 
 vi.mock('dexie', () => {
   class FakeTable {
@@ -93,7 +94,9 @@ vi.mock('dexie', () => {
       cb: () => Promise<void>,
     ): Promise<void> {
       txCallbacks.push(cb)
-      await cb()
+      const run = transactionTail.then(cb)
+      transactionTail = run.catch(() => undefined)
+      await run
     }
   }
 
@@ -114,11 +117,13 @@ import {
   releaseProofReservationsBySecret,
   reserveProofs,
   selectAndReserveUnitProofs,
+  tryReserveProofs,
 } from '../proof-db'
 
 beforeEach(() => {
   store.clear()
   txCallbacks.length = 0
+  transactionTail = Promise.resolve()
 })
 
 describe('proof-db normalization', () => {
@@ -465,6 +470,20 @@ describe('proof-db normalization', () => {
     expect(selected.map((proof) => proof.secret)).toEqual(['s1', 's2'])
     expect((await getReservedProofs('pay-1')).map((proof) => proof.secret)).toEqual(['s1', 's2'])
     expect((await getUnitProofs('http://m', { unit: 'msat' })).map((proof) => proof.secret)).toEqual([])
+  })
+
+  it('allows only one concurrent owner to reserve the same proof set', async () => {
+    await addProofs([
+      { secret: 'shared', amount: Amount.from(100), id: 'id1', C: 'C1', mintUrl: 'http://m', baseAsset: 'sat', unit: 'msat' },
+    ])
+
+    const [first, second] = await Promise.all([
+      tryReserveProofs(['shared'], 'trade-a'),
+      tryReserveProofs(['shared'], 'trade-b'),
+    ])
+
+    expect([first, second].filter(Boolean)).toHaveLength(1)
+    expect((await getReservedProofs('trade-a')).length + (await getReservedProofs('trade-b')).length).toBe(1)
   })
 
   it('fails atomic unit proof selection when the selected proofs cannot satisfy the requested amount', async () => {

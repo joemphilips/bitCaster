@@ -64,6 +64,7 @@ import {
   prepareProofOperation,
   removeProofs,
   replaceProofs,
+  tryReserveProofs,
   type StoredProof,
 } from "@/stores/proof-db";
 import {
@@ -945,6 +946,7 @@ async function prepareDirectSellerOpening(
           swap.outcomeFaceAmountSubunits ?? swap.outcomeFaceAmountSats ?? undefined,
           swap.marketId,
           swap.baseAsset,
+          operationId,
         );
   const amountSats =
     swap.outcomeFaceAmountSubunits ??
@@ -1346,7 +1348,13 @@ async function runBuyerRespond(
     const existingOperation = await getProofOperation(operationId);
     const proofs = existingOperation?.kind === "swap-lock"
       ? existingOperation.inputs
-      : await loadProofsForLock(mintUrl, amountSats, undefined, swap.baseAsset);
+      : await loadProofsForLock(
+          mintUrl,
+          amountSats,
+          undefined,
+          swap.baseAsset,
+          operationId,
+        );
     const out = await buyerPrepareSwap(
       ctx,
       swap.messages.adaptorPoint,
@@ -1628,43 +1636,51 @@ async function loadProofsForLock(
   targetSats?: number,
   sellerMarketId?: string,
   baseAsset?: string | null,
+  reservationId?: string,
 ): Promise<Proof[]> {
   const outcome = sellerMarketId
     ? outcomeMetadataForMarket(sellerMarketId)
     : null;
-  const proofs = outcome
-    ? await getOutcomeProofs(
-        mintUrl,
-        outcome.conditionId,
-        outcome.outcomeCollection,
-        { baseAsset },
-      )
-    : await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(baseAsset) });
-  if (proofs.length === 0) {
-    throw new Error(
-      outcome
-        ? `No ${outcome.outcomeCollection} outcome proofs available for atomic swap`
-        : "No proofs available for atomic swap — wallet is empty",
-    );
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const proofs = outcome
+      ? await getOutcomeProofs(
+          mintUrl,
+          outcome.conditionId,
+          outcome.outcomeCollection,
+          { baseAsset },
+        )
+      : await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(baseAsset) });
+    if (proofs.length === 0) {
+      throw new Error(
+        outcome
+          ? `No ${outcome.outcomeCollection} outcome proofs available for atomic swap`
+          : "No proofs available for atomic swap — wallet is empty",
+      );
+    }
+    const selected =
+      targetSats === undefined ||
+      !Number.isFinite(targetSats) ||
+      targetSats <= 0
+        ? proofs
+        : takeProofsForLock(
+            proofs,
+            targetSats,
+            await inputFeePpkByKeysetForProofs(mintUrl, proofs),
+          );
+    if (!selected) {
+      throw new Error(
+        `Insufficient proofs for atomic swap — need ${targetSats} sats`,
+      );
+    }
+    if (
+      !reservationId ||
+      await tryReserveProofs(selected.map((proof) => proof.secret), reservationId)
+    ) {
+      return selected;
+    }
   }
-  if (
-    targetSats === undefined ||
-    !Number.isFinite(targetSats) ||
-    targetSats <= 0
-  ) {
-    return proofs;
-  }
-  const selected = takeProofsForLock(
-    proofs,
-    targetSats,
-    await inputFeePpkByKeysetForProofs(mintUrl, proofs),
-  );
-  if (!selected) {
-    throw new Error(
-      `Insufficient proofs for atomic swap — need ${targetSats} sats`,
-    );
-  }
-  return selected;
+
+  throw new Error("Proofs were reserved by a concurrent atomic swap");
 }
 
 async function persistLockChange(

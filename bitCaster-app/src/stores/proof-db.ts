@@ -352,6 +352,34 @@ export async function reserveProofs(
   });
 }
 
+/**
+ * Reserve a previously selected proof set only while every member remains
+ * unreserved (or is already owned by this operation). This prevents two
+ * concurrent swap flows from spending the same IndexedDB proof pool.
+ */
+export async function tryReserveProofs(
+  secrets: string[],
+  reservedBy: string,
+): Promise<boolean> {
+  const uniqueSecrets = [...new Set(secrets)];
+  if (uniqueSecrets.length === 0) return true;
+
+  let reserved = false;
+  await db.transaction("rw", db.proofs, async () => {
+    const rows = await db.proofs.bulkGet(uniqueSecrets);
+    if (rows.some((row) => !row || (row.reservedBy && row.reservedBy !== reservedBy))) {
+      return;
+    }
+
+    await db.proofs.bulkPut(
+      rows.map((row) => normalizeStoredProof({ ...row!, reservedBy })),
+    );
+    reserved = true;
+  });
+
+  return reserved;
+}
+
 export async function releaseProofReservation(
   reservedBy: string,
 ): Promise<void> {

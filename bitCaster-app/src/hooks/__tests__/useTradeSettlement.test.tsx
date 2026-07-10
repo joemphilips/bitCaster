@@ -35,6 +35,7 @@ const {
   mockRemoveProofs,
   mockReplaceProofs,
   mockReserveProofs,
+  mockTryReserveProofs,
 } = vi.hoisted(() => ({
   mockAddProofs: vi.fn(),
   mockGetUnitProofs: vi.fn(),
@@ -47,6 +48,7 @@ const {
   mockRemoveProofs: vi.fn(),
   mockReplaceProofs: vi.fn(),
   mockReserveProofs: vi.fn(),
+  mockTryReserveProofs: vi.fn(),
 }));
 
 const {
@@ -77,6 +79,7 @@ vi.mock("@/stores/proof-db", () => ({
   removeProofs: mockRemoveProofs,
   replaceProofs: mockReplaceProofs,
   reserveProofs: mockReserveProofs,
+  tryReserveProofs: mockTryReserveProofs,
 }));
 
 vi.mock("@/lib/orderStatus", async (importOriginal) => {
@@ -136,6 +139,7 @@ beforeEach(() => {
   mockRemoveProofs.mockResolvedValue(undefined);
   mockReplaceProofs.mockResolvedValue(undefined);
   mockReserveProofs.mockResolvedValue(undefined);
+  mockTryReserveProofs.mockResolvedValue(true);
   mockBuyerPrepareSwap.mockResolvedValue({
     lockedProofsCipher: "cipher-buyer",
     lockedProofs: [proof(50, "buyer-locked-50", "base-keyset")],
@@ -1224,6 +1228,83 @@ describe("useTradeSettlement", () => {
       useActiveSwapsStore.getState().byTradeId["trade-buyer-recover"];
     expect(swap.messages.lockedProofsBuyer).toBe("cipher-buyer");
     expect(swap.buyerState?.lockedProofsCipher).toBe("cipher-buyer");
+  });
+
+  it("reserves fresh buyer proofs before the initial swap lock", async () => {
+    mockGetUnitProofs.mockResolvedValue([
+      proof(6_000, "buyer-free-6000", "keyset-YES"),
+    ]);
+    usePendingTradesStore.getState().add({
+      orderId: "order-buyer-reserve",
+      marketId: "cond-YES",
+      clientOrderId: "client-buyer-reserve",
+      side: "Buy",
+      tokenSide: "Outcome",
+      baseAsset: "sat",
+      divisibility: 10_000,
+      priceSubunits: 5_000,
+      amountSubunits: 10_000,
+      submittedAt: Date.now(),
+    });
+
+    renderHook(() => useTradeSettlement(true));
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeCreated: (payload: {
+        tradeId: string;
+        sellerPubkey: string;
+        buyerPubkey: string;
+        sellerLocktime: string;
+        buyerLocktime: string;
+        marketId?: string;
+        outcomeFaceAmountSubunits?: number;
+        quotePaymentSubunits?: number;
+        baseAsset?: string;
+        divisibility?: number;
+      }) => void;
+      onSwapMessageReceived: (message: {
+        tradeId: string;
+        messageType: string;
+        ciphertext: string;
+      }) => void;
+    };
+
+    await act(async () => {
+      seedPendingPubkey("trade-buyer-reserve", "order-buyer-reserve");
+      callbacks.onTradeCreated({
+        tradeId: "trade-buyer-reserve",
+        sellerPubkey: "02" + "33".repeat(32),
+        buyerPubkey: "02" + "22".repeat(32),
+        sellerLocktime: new Date(Date.now() + 120_000).toISOString(),
+        buyerLocktime: new Date(Date.now() + 60_000).toISOString(),
+        marketId: "cond-YES",
+        outcomeFaceAmountSubunits: 10_000,
+        quotePaymentSubunits: 5_000,
+        baseAsset: "sat",
+        divisibility: 10_000,
+      });
+    });
+    await waitFor(() =>
+      expect(useActiveSwapsStore.getState().byTradeId["trade-buyer-reserve"]?.role).toBe("buyer"),
+    );
+    await act(async () => {
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-reserve",
+        messageType: "adaptor-point",
+        ciphertext: "cipher-adaptor",
+      });
+      callbacks.onSwapMessageReceived({
+        tradeId: "trade-buyer-reserve",
+        messageType: "locked-proofs-seller",
+        ciphertext: "cipher-seller",
+      });
+    });
+
+    await waitFor(() =>
+      expect(mockTryReserveProofs).toHaveBeenCalledWith(
+        ["buyer-free-6000"],
+        "trade-buyer-reserve/browser/buyer-lock",
+      ),
+    );
   });
 
   it("persistPartialLockFromError_MultiKeyset_AttachesCorrectMetadataPerKeyset", async () => {
