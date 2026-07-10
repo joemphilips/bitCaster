@@ -48,6 +48,12 @@ export interface DurableEphemeralKeyHandle {
 
 export interface DurableTradeProofOperationLink {
   operationId: string
+  /**
+   * Client-local operation identifier bound into the SDK recovery identity.
+   * It permits a client to retain its established database key without making
+   * that key the cross-client recovery authority.
+   */
+  operationKey?: string
   tradeId: string
   role: SwapRole
   stage: DurableProofOperationStage
@@ -177,9 +183,40 @@ export function deriveDurableProofOperationId(
   tradeId: string,
   role: SwapRole,
   stage: DurableProofOperationStage,
+  operationKey?: string,
 ): string {
   if (!isIdentifier(tradeId)) throw new Error('trade id must be a durable identifier')
-  return `trade-recovery:${tradeId}:${role}:${stage}`
+  if (operationKey !== undefined && !isOperationKey(operationKey)) {
+    throw new Error('durable proof operation key is invalid')
+  }
+  const suffix = operationKey === undefined ? '' : `:${encodeURIComponent(operationKey)}`
+  return `trade-recovery:${tradeId}:${role}:${stage}${suffix}`
+}
+
+/** Builds the SDK-owned identity stored beside a client proof operation. */
+export function createDurableTradeProofOperationLink(input: {
+  tradeId: string
+  role: SwapRole
+  stage: DurableProofOperationStage
+  state: DurableProofOperationState
+  operationKey?: string
+}): DurableTradeProofOperationLink {
+  const operation: DurableTradeProofOperationLink = {
+    operationId: deriveDurableProofOperationId(
+      input.tradeId,
+      input.role,
+      input.stage,
+      input.operationKey,
+    ),
+    operationKey: input.operationKey,
+    tradeId: input.tradeId,
+    role: input.role,
+    stage: input.stage,
+    state: input.state,
+  }
+  const error = validateDurableProofOperationLink(operation)
+  if (error) throw new Error(error)
+  return operation
 }
 
 export function validateDurableTradeSession(
@@ -565,6 +602,7 @@ function validateDurableProofOperationLink(
     operation.tradeId,
     operation.role,
     operation.stage,
+    operation.operationKey,
   )
   if (operation.operationId !== expectedId) {
     return 'durable proof operation id is not bound to trade, role, and stage'
@@ -622,6 +660,10 @@ function isKeyHandleBoundToEvidence(evidence: DurableRefundSalvageEvidence): boo
 
 function isIdentifier(value: string): boolean {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
+}
+
+function isOperationKey(value: string): boolean {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512
 }
 
 function isProtocolPubkey(value: string): boolean {

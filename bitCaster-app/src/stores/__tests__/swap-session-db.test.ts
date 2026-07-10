@@ -177,11 +177,32 @@ describe('GUI durable swap session repository', () => {
       outputs: {},
     }, swap())
 
-    expect(proofOperations.has('trade-001/browser/buyer-lock')).toBe(true)
-    expect(rows.has('trade-001')).toBe(true)
+    const operation = proofOperations.get('trade-001/browser/buyer-lock') as {
+      durableTradeRecovery?: { operationKey: string; state: string }
+    }
+    const session = (rows.get('trade-001') as {
+      session: { stage: string; proofOperations: Array<{ operationKey: string; state: string }> }
+    }).session
+
+    expect(operation.durableTradeRecovery).toMatchObject({
+      operationKey: 'trade-001/browser/buyer-lock',
+      state: 'prepared',
+    })
+    expect(session.stage).toBe('proof-reserved')
+    expect(session.proofOperations).toMatchObject([{
+      operationKey: 'trade-001/browser/buyer-lock',
+      state: 'prepared',
+    }])
   })
 
   it('co-commits completed proof outputs and the durable swap session', async () => {
+    await prepareGuiProofOperationWithSession({
+      operationId: 'trade-001/browser/buyer-lock',
+      kind: 'swap-lock',
+      mintUrl: 'https://mint.example',
+      inputs: [],
+      outputs: {},
+    }, swap())
     await completeGuiProofOperationWithSession(
       'trade-001/browser/buyer-lock',
       { receive: [] },
@@ -190,7 +211,11 @@ describe('GUI durable swap session repository', () => {
     )
 
     expect(proofOperations.get('trade-001/browser/buyer-lock')?.state).toBe('completed')
-    expect(rows.has('trade-001')).toBe(true)
+    const session = (rows.get('trade-001') as {
+      session: { stage: string; proofOperations: Array<{ state: string }> }
+    }).session
+    expect(session.stage).toBe('reconciliation-complete')
+    expect(session.proofOperations[0]?.state).toBe('reconciled')
   })
 
   it('rejoins then replays the SDK-owned durable outbox without regenerating ciphers', async () => {

@@ -8,8 +8,11 @@ import {
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
 import { normalizeUrl } from "../lib/url";
-import type { DurableTradeSession } from "@bitcaster/client-sdk/durableTradeRecovery";
-import type { DurableTradePendingIntent } from "@bitcaster/client-sdk/durableTradeRecovery";
+import type {
+  DurableTradePendingIntent,
+  DurableTradeProofOperationLink,
+  DurableTradeSession,
+} from "@bitcaster/client-sdk/durableTradeRecovery";
 
 export interface StoredProof extends Proof {
   mintUrl: string;
@@ -54,6 +57,8 @@ export type ProofOperationState = "prepared" | "completed" | "Failed";
 
 export interface ProofOperationRecord {
   operationId: string;
+  /** SDK recovery identity for a swap-owned operation. */
+  durableTradeRecovery?: DurableTradeProofOperationLink;
   kind: ProofOperationKind;
   state: ProofOperationState;
   mintUrl: string;

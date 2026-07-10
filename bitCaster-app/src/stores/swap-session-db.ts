@@ -1,11 +1,14 @@
 import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
+  createDurableTradeProofOperationLink,
   resumeDurableTradeSession,
   validateDurableTradeSession,
   validateDurableTradePrivateKeyBinding,
   verifyDurableTradeSessionCipherIntegrity,
   type DurableTradeResumePorts,
   type DurableTradeResumeResult,
+  type DurableProofOperationStage,
+  type DurableTradeProofOperationLink,
   type DurableTradeSession,
   type DurableTradeSessionRecord,
 } from '@bitcaster/client-sdk/durableTradeRecovery'
@@ -16,6 +19,7 @@ import {
   markProofOperationCompleted,
   prepareProofOperation,
   type PrepareProofOperationInput,
+  type ProofOperationKind,
   type ProofOperationRecord,
   type SwapSessionRecord,
 } from './proof-db'
@@ -52,8 +56,11 @@ export async function prepareGuiProofOperationWithSession(
   await ensureDurableSwapStorage()
   return db.transaction('rw', db.proofOperations, db.swapSessions, async () => {
     const operation = await prepareProofOperation(input)
-    await putGuiSwapSessionInTransaction(swap, session)
-    return operation
+    const durableTradeRecovery = durableLinkForGuiProofOperation(swap, operation)
+    const linkedOperation = { ...operation, durableTradeRecovery }
+    await db.proofOperations.put(linkedOperation)
+    await putGuiSwapSessionInTransaction(swap, session, durableTradeRecovery)
+    return linkedOperation
   })
 }
 
@@ -69,14 +76,20 @@ export async function completeGuiProofOperationWithSession(
   await ensureDurableSwapStorage()
   return db.transaction('rw', db.proofOperations, db.swapSessions, async () => {
     const operation = await markProofOperationCompleted(operationId, resultProofs)
-    await putGuiSwapSessionInTransaction(swap, session)
-    return operation
+    const durableTradeRecovery = operation.durableTradeRecovery
+      ? { ...operation.durableTradeRecovery, state: 'reconciled' as const }
+      : undefined
+    const linkedOperation = { ...operation, durableTradeRecovery }
+    await db.proofOperations.put(linkedOperation)
+    await putGuiSwapSessionInTransaction(swap, session, durableTradeRecovery)
+    return linkedOperation
   })
 }
 
 async function putGuiSwapSessionInTransaction(
   swap: ActiveSwap,
   session: DurableTradeSession,
+  durableTradeRecovery?: DurableTradeProofOperationLink,
 ): Promise<void> {
     const existing = await db.swapSessions.toArray()
     const prior = existing.find((item) => item.tradeId === swap.tradeId)
@@ -87,14 +100,79 @@ async function putGuiSwapSessionInTransaction(
     if (!prior && activeCount >= MAX_ACTIVE_GUI_SWAP_SESSIONS) {
       throw new Error('Durable swap session capacity is exhausted')
     }
-    const revision = isGuiSwapSessionRecord(prior) ? prior.session.revision + 1 : 0
+    const priorSession = isGuiSwapSessionRecord(prior) ? prior.session : undefined
+    if (priorSession && validateDurableTradeSession(priorSession) !== null) {
+      throw new Error('Cannot update an invalid durable swap session')
+    }
+    const nextSession = mergeGuiProofOperationLink(
+      session,
+      priorSession,
+      durableTradeRecovery,
+    )
     await db.swapSessions.put({
       tradeId: swap.tradeId,
-      session: { ...session, revision },
+      session: nextSession,
       adapterState: structuredClone(swap),
       updatedAt: Date.now(),
       lease: isGuiSwapSessionRecord(prior) ? prior.lease : undefined,
     } satisfies SwapSessionRecord)
+}
+
+function durableLinkForGuiProofOperation(
+  swap: ActiveSwap,
+  operation: ProofOperationRecord,
+): DurableTradeProofOperationLink {
+  if (!swap.role) throw new Error('Cannot link a proof operation without a swap role')
+  return createDurableTradeProofOperationLink({
+    tradeId: swap.tradeId,
+    role: swap.role,
+    stage: durableStageForGuiProofOperation(operation.kind),
+    state: 'prepared',
+    operationKey: operation.operationId,
+  })
+}
+
+function durableStageForGuiProofOperation(kind: ProofOperationKind): DurableProofOperationStage {
+  switch (kind) {
+    case 'swap-lock':
+    case 'conditional-keyset-swap':
+      return 'proof-reservation'
+    case 'swap-claim':
+      return 'claim'
+    case 'swap-refund':
+      return 'refund'
+    case 'ctf-split':
+    case 'ctf-merge':
+    case 'ctf-redeem':
+    case 'ctf-condition-registration':
+    case 'regular-split':
+    case 'proof-split':
+      return 'mint-submission'
+  }
+}
+
+function mergeGuiProofOperationLink(
+  session: DurableTradeSession,
+  prior: DurableTradeSession | undefined,
+  durableTradeRecovery: DurableTradeProofOperationLink | undefined,
+): DurableTradeSession {
+  const links = new Map<string, DurableTradeProofOperationLink>()
+  for (const link of prior?.proofOperations ?? []) links.set(link.operationId, link)
+  if (durableTradeRecovery) links.set(durableTradeRecovery.operationId, durableTradeRecovery)
+  const proofOperations = [...links.values()]
+  const stage = proofOperations.some((link) => link.state === 'mint-submitted')
+    ? 'mint-submitted'
+    : proofOperations.some((link) => link.state === 'prepared')
+      ? 'proof-reserved'
+      : proofOperations.length > 0
+        ? 'reconciliation-complete'
+        : session.stage
+  return {
+    ...session,
+    revision: prior ? prior.revision + 1 : 0,
+    stage,
+    proofOperations,
+  }
 }
 
 /**

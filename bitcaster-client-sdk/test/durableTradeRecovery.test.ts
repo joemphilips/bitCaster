@@ -4,6 +4,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   canSalvageDurableRefund,
+  createDurableTradeProofOperationLink,
   deriveDurableProofOperationId,
   isDurableTradeSessionPurgeEligible,
   resumeDurableTradeSession,
@@ -92,6 +93,34 @@ test('deterministic proof-operation identifiers bind trade, role, and stage', ()
   assert.notEqual(
     sellerReservation,
     deriveDurableProofOperationId('trade-001', 'seller', 'refund'),
+  )
+})
+
+test('a client operation key is bound into the SDK recovery identity', () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'trade-001/browser/seller-lock',
+  })
+
+  assert.equal(operation.operationKey, 'trade-001/browser/seller-lock')
+  assert.equal(
+    operation.operationId,
+    deriveDurableProofOperationId(
+      'trade-001',
+      'seller',
+      'proof-reservation',
+      'trade-001/browser/seller-lock',
+    ),
+  )
+  assert.match(
+    validateDurableTradeSession(session({
+      stage: 'proof-reserved',
+      proofOperations: [{ ...operation, operationKey: 'different-operation' }],
+    })) ?? '',
+    /not bound/,
   )
 })
 
