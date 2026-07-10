@@ -108,6 +108,12 @@ export interface ActiveSwap {
   matchedAmountSubunits?: number | null
   /** Prior replacement-order count carried from the pending order. */
   recoveryAttempt?: number
+  /** Idempotency record for the maker-caused taker replacement request. */
+  takerRecovery?: {
+    clientOrderId: string
+    status: 'pending' | 'submitted'
+    replacementOrderId?: string
+  }
   quotePaymentSubunits: number | null
   settlementKind: string | null
   sellerKeepOutcomeSetId: string | null
@@ -166,6 +172,8 @@ interface ActiveSwapsState {
   ) => void
   setSellerState: (tradeId: string, state: SellerProtocolState) => void
   setBuyerState: (tradeId: string, state: BuyerProtocolState) => void
+  beginTakerRecovery: (tradeId: string, clientOrderId: string) => string | null
+  markTakerRecoverySubmitted: (tradeId: string, replacementOrderId: string) => void
   claimStep: (tradeId: string, key: SwapWorkKey) => boolean
   releaseStep: (tradeId: string, key: SwapWorkKey) => void
   clearProtocolState: (tradeId: string) => void
@@ -333,6 +341,45 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
         byTradeId: {
           ...s.byTradeId,
           [tradeId]: { ...existing, buyerState },
+        },
+      }
+    })
+  },
+
+  beginTakerRecovery: (tradeId, clientOrderId) => {
+    const existing = get().byTradeId[tradeId]
+    if (!existing || existing.takerRecovery) return null
+    set((s) => {
+      const current = s.byTradeId[tradeId]
+      if (!current || current.takerRecovery) return s
+      return {
+        byTradeId: {
+          ...s.byTradeId,
+          [tradeId]: {
+            ...current,
+            takerRecovery: { clientOrderId, status: 'pending' },
+          },
+        },
+      }
+    })
+    return get().byTradeId[tradeId]?.takerRecovery?.clientOrderId ?? null
+  },
+
+  markTakerRecoverySubmitted: (tradeId, replacementOrderId) => {
+    set((s) => {
+      const existing = s.byTradeId[tradeId]
+      if (!existing?.takerRecovery) return s
+      return {
+        byTradeId: {
+          ...s.byTradeId,
+          [tradeId]: {
+            ...existing,
+            takerRecovery: {
+              ...existing.takerRecovery,
+              status: 'submitted',
+              replacementOrderId,
+            },
+          },
         },
       }
     })

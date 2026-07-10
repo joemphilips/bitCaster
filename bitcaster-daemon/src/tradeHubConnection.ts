@@ -34,7 +34,11 @@ export interface SignalRTradeHubConnectionOptions {
     messageType: string,
     ciphertext: string,
   ) => void | Promise<void>
-  onTradeStateChanged?: (tradeId: string, newState: string) => void | Promise<void>
+  onTradeStateChanged?: (
+    tradeId: string,
+    newState: string,
+    failureReason?: string,
+  ) => void | Promise<void>
   onPendingPubkeyRequired?: (
     tradeId: string,
     orderId: string,
@@ -100,6 +104,22 @@ export function parseTradeCreatedPayload(
         : null,
     baseAsset: typeof baseAsset === 'string' ? baseAsset : null,
     divisibility: numberOrUndefined(divisibility),
+  }
+}
+
+export function parseTradeStateChangedPayload(
+  tradeId: unknown,
+  newState: unknown,
+  failureReason?: unknown,
+): { tradeId: string; newState: string; failureReason?: string } {
+  const tradeIdText = stringFromSignalR(tradeId)
+  if (!tradeIdText || typeof newState !== 'string') {
+    throw new Error('TradeStateChanged payload had unexpected shape')
+  }
+  return {
+    tradeId: tradeIdText,
+    newState,
+    ...(typeof failureReason === 'string' ? { failureReason } : {}),
   }
 }
 
@@ -240,15 +260,23 @@ export class SignalRTradeHubConnection implements TradeRuntimeConnection {
       },
     )
 
-    connection.on('TradeStateChanged', (tradeId: unknown, newState: unknown) => {
+    connection.on(
+      'TradeStateChanged',
+      (tradeId: unknown, newState: unknown, failureReason?: unknown) => {
       void this.invokeCallback(async () => {
-        const tradeIdText = stringFromSignalR(tradeId)
-        if (!tradeIdText || typeof newState !== 'string') {
-          throw new Error('TradeStateChanged payload had unexpected shape')
-        }
-        await this.callbacks.onTradeStateChanged?.(tradeIdText, newState)
+        const payload = parseTradeStateChangedPayload(
+          tradeId,
+          newState,
+          failureReason,
+        )
+        await this.callbacks.onTradeStateChanged?.(
+          payload.tradeId,
+          payload.newState,
+          payload.failureReason,
+        )
       })
-    })
+      },
+    )
 
     connection.on(
       'PendingPubkeyRequired',

@@ -7,6 +7,7 @@ import {
   emptyDaemonState,
   readState,
   recordSwapMessage,
+  recordSubmittedOrder,
   recordTradeCreated,
   recordTradeStateChanged,
   writeState,
@@ -68,6 +69,11 @@ test('TradeHub event records are durable swap state', async () => {
     await recordSwapMessage('trade-1', 'adaptor-point', 'cipher-a')
     await recordSwapMessage('trade-1', 'locked-proofs-seller', 'cipher-b')
     await recordTradeStateChanged('trade-1', 'Settling')
+    await recordTradeStateChanged(
+      'trade-1',
+      'Failed',
+      'maker-collateral-failure',
+    )
 
     const persisted = await readState()
     assert.equal(persisted?.orders['order-1'].tradeIds[0], 'trade-1')
@@ -75,12 +81,54 @@ test('TradeHub event records are durable swap state', async () => {
       adaptorPoint: 'cipher-a',
       lockedProofsSeller: 'cipher-b',
     })
-    assert.equal(persisted?.swaps['trade-1'].engineState, 'Settling')
-    assert.equal(persisted?.swaps['trade-1'].step, 'settling')
+    assert.equal(persisted?.swaps['trade-1'].engineState, 'Failed')
+    assert.equal(persisted?.swaps['trade-1'].step, 'Failed')
+    assert.equal(
+      persisted?.swaps['trade-1'].failureReason,
+      'maker-collateral-failure',
+    )
     assert.equal(persisted?.swaps['trade-1'].baseAsset, 'sat')
     assert.equal(persisted?.swaps['trade-1'].divisibility, 100)
     assert.equal(persisted?.swaps['trade-1'].outcomeFaceAmountSubunits, 100)
     assert.equal(persisted?.swaps['trade-1'].quotePaymentSubunits, 42)
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('submitted daemon taker fills retain recovery source metadata', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-taker-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    await recordSubmittedOrder(
+      'condition-YES',
+      'client-order-1',
+      {
+        orderId: 'taker-order-1',
+        status: 'filled',
+        fills: [
+          {
+            tradeId: 'taker-trade-1',
+            takerOrderId: 'taker-order-1',
+          },
+        ],
+      },
+      null,
+      'Outcome',
+      'Buy',
+      5_000,
+      10_000,
+      'FAK',
+      1,
+    )
+
+    const persisted = await readState()
+    assert.equal(persisted?.orders['taker-order-1']?.timeInForce, 'FAK')
+    assert.equal(persisted?.orders['taker-order-1']?.recoveryAttempt, 1)
+    assert.equal(persisted?.swaps['taker-trade-1']?.isTaker, true)
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome

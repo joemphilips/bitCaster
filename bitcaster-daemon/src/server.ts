@@ -788,6 +788,7 @@ export async function dispatch(
         orderParams.side,
         orderParams.price,
         amountSubunits,
+        orderParams.timeInForce,
       )
     await submitPendingEphemeralPubkeys({
       client: context.client,
@@ -1235,7 +1236,7 @@ function shouldRetryOrderValidationWithMarketUnit(
   return price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSubunits >= DEFAULT_SAT_MARKET_DIVISIBILITY
 }
 
-async function submitPendingEphemeralPubkeys(input: {
+export async function submitPendingEphemeralPubkeys(input: {
   client: EngineClientLike
   marketId: string
   conditionId?: string
@@ -1788,7 +1789,7 @@ function createEngineClient(
   })
 }
 
-function createAuthenticatedBitcasterEngineClient(options: {
+export function createAuthenticatedBitcasterEngineClient(options: {
   baseUrl: string
   nostrSecretKeyHex: string
 }): BitcasterEngineClient {

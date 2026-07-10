@@ -55,6 +55,18 @@ export type TakerFillRecoveryResult =
   | { kind: 'deadline-expired' }
   | { kind: 'resubmit-limit-reached' }
 
+export function canRecoverFailedTakerFill(input: {
+  failureReason?: string | null
+  isTaker: boolean
+  failedFillAmountSubunits: number
+}): boolean {
+  return (
+    input.failureReason === MAKER_COLLATERAL_FAILURE_REASON &&
+    input.isTaker &&
+    isPositiveSafeInteger(input.failedFillAmountSubunits)
+  )
+}
+
 export interface RetryTransientTradeOperationParams<T> {
   /** Unix milliseconds, derived from the accepted trade's earliest locktime. */
   deadlineMs: number
@@ -78,11 +90,7 @@ export type RetryTransientTradeOperationResult<T> =
 export async function recoverFailedTakerFill(
   params: TakerFillRecoveryRequest,
 ): Promise<TakerFillRecoveryResult> {
-  if (
-    params.failureReason !== MAKER_COLLATERAL_FAILURE_REASON ||
-    !params.isTaker ||
-    !isPositiveSafeInteger(params.failedFillAmountSubunits)
-  ) {
+  if (!canRecoverFailedTakerFill(params)) {
     return { kind: 'not-recoverable' }
   }
 
@@ -149,8 +157,9 @@ export async function retryTransientTradeOperation<T>(
 
 /**
  * Retry errors where the caller cannot know whether the request reached the
- * engine, plus the one idempotent DCB reservation race on the same trade. A
- * shared-condition tag conflict remains an explicit protocol failure.
+ * engine, the public rate limit reached by an idempotent replay burst, and the
+ * one idempotent DCB reservation race on the same trade. A shared-condition
+ * tag conflict remains an explicit protocol failure.
  */
 export function isRetryableTransportError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
@@ -166,6 +175,7 @@ export function isRetryableTransportError(error: unknown): boolean {
     'connection is not in the connected state',
     'invocation canceled due to the underlying connection being closed',
     'tradehub not connected',
+    'rate limit exceeded',
     'timed out',
   ].some((fragment) => message.includes(fragment))
 }

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parseTradeCreatedPayload } from '../src/tradeHubConnection.ts'
+import {
+  parseTradeCreatedPayload,
+  parseTradeStateChangedPayload,
+} from '../src/tradeHubConnection.ts'
 
 test('parseTradeCreatedPayload accepts current TradeCreated contract shape', () => {
   assert.deepEqual(
@@ -64,5 +67,20 @@ test('parseTradeCreatedPayload rejects missing marketId before local order bindi
         '   ',
       ),
     /TradeCreated payload had unexpected shape/,
+  )
+})
+
+test('parseTradeStateChangedPayload retains the allowlisted terminal failure reason', () => {
+  assert.deepEqual(
+    parseTradeStateChangedPayload(
+      'trade-1',
+      'Failed',
+      'maker-collateral-failure',
+    ),
+    {
+      tradeId: 'trade-1',
+      newState: 'Failed',
+      failureReason: 'maker-collateral-failure',
+    },
   )
 })

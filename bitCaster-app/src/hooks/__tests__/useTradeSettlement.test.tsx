@@ -1855,6 +1855,16 @@ describe("useTradeSettlement", () => {
         amountSubunits: 1_000,
         recoveryAttempt: 1,
       });
+
+    await act(async () => {
+      callbacks.onTradeStateChanged(
+        "trade-recover-taker",
+        "Failed",
+        "maker-collateral-failure",
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockSubmitOrder).toHaveBeenCalledTimes(1);
   });
 
   it("fails before locking proofs when TradeCreated outcome face is not a whole market share for sat/10000", async () => {

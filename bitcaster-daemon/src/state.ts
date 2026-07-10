@@ -114,6 +114,9 @@ export interface LocalOrderRecord {
   side?: 'Buy' | 'Sell'
   priceSubunits?: number
   amountSubunits?: number
+  timeInForce?: 'FAK' | 'FOK' | 'GTC'
+  /** Number of maker-collateral replacement attempts that produced this order. */
+  recoveryAttempt?: number
   status: string
   clientOrderId?: string
   preflightSplit?: LocalOrderPreflightSplit
@@ -163,6 +166,8 @@ export interface LocalSwapRecord {
   settlementKind?: string | null
   sellerKeepOutcomeSetId?: string | null
   sellerLockOutcomeSetId?: string | null
+  /** True when this local order was the fill's incoming taker order. */
+  isTaker?: boolean
   messages: {
     adaptorPoint?: string
     lockedProofsSeller?: string
@@ -174,6 +179,14 @@ export interface LocalSwapRecord {
   buyerLockedProofs?: CashuProofRecord[]
   sellerPreSigsHex?: string[]
   engineState?: string
+  /** Allowlisted terminal reason from TradeHub, never arbitrary server text. */
+  failureReason?: string
+  /** Durable idempotency record for a maker-caused taker replacement order. */
+  takerRecovery?: {
+    clientOrderId: string
+    status: 'pending' | 'submitted'
+    replacementOrderId?: string
+  }
   step:
     | 'awaiting-trade-created'
     | 'opened'
@@ -643,6 +656,8 @@ export async function recordSubmittedOrder(
   side?: 'Buy' | 'Sell',
   priceSubunits?: number,
   amountSubunits?: number,
+  timeInForce?: 'FAK' | 'FOK' | 'GTC',
+  recoveryAttempt?: number,
 ): Promise<LocalOrderRecord> {
   const orderId = readStringProperty(engineResponse, 'orderId')
   if (!orderId) {
@@ -658,6 +673,8 @@ export async function recordSubmittedOrder(
     side,
     priceSubunits,
     amountSubunits,
+    timeInForce,
+    recoveryAttempt,
   )
 }
 
@@ -698,6 +715,8 @@ function upsertOrderFromEngine(
   side?: 'Buy' | 'Sell',
   priceSubunits?: number,
   amountSubunits?: number,
+  timeInForce?: 'FAK' | 'FOK' | 'GTC',
+  recoveryAttempt?: number,
 ): Promise<LocalOrderRecord> {
   return updateState((state, now) => {
     const existing = state.orders[orderId]
@@ -716,6 +735,9 @@ function upsertOrderFromEngine(
     const nextSide = side ?? existing?.side
     const nextPriceSubunits = priceSubunits ?? existing?.priceSubunits
     const nextAmountSubunits = amountSubunits ?? existing?.amountSubunits
+    const nextTimeInForce = timeInForce ?? existing?.timeInForce
+    const nextRecoveryAttempt = recoveryAttempt ?? existing?.recoveryAttempt
+    const takerByTradeId = extractTakerParticipation(engineStatus, orderId)
     const record: LocalOrderRecord = {
       orderId,
       marketId,
@@ -723,6 +745,8 @@ function upsertOrderFromEngine(
       ...(nextSide ? { side: nextSide } : {}),
       ...(nextPriceSubunits != null ? { priceSubunits: nextPriceSubunits } : {}),
       ...(nextAmountSubunits != null ? { amountSubunits: nextAmountSubunits } : {}),
+      ...(nextTimeInForce ? { timeInForce: nextTimeInForce } : {}),
+      ...(nextRecoveryAttempt != null ? { recoveryAttempt: nextRecoveryAttempt } : {}),
       status,
       ...((clientOrderId ?? existing?.clientOrderId)
         ? { clientOrderId: clientOrderId ?? existing?.clientOrderId }
@@ -761,6 +785,7 @@ function upsertOrderFromEngine(
         settlementKind: swap?.settlementKind,
         sellerKeepOutcomeSetId: swap?.sellerKeepOutcomeSetId,
         sellerLockOutcomeSetId: swap?.sellerLockOutcomeSetId,
+        isTaker: takerByTradeId.get(tradeId) ?? swap?.isTaker,
         messages: swap?.messages ?? {},
         sellerAdaptorSecretHex: swap?.sellerAdaptorSecretHex,
         sellerAdaptorPointHex: swap?.sellerAdaptorPointHex,
@@ -768,6 +793,8 @@ function upsertOrderFromEngine(
         buyerLockedProofs: swap?.buyerLockedProofs,
         sellerPreSigsHex: swap?.sellerPreSigsHex,
         engineState: swap?.engineState,
+        failureReason: swap?.failureReason,
+        takerRecovery: swap?.takerRecovery,
         step: swap?.step ?? 'awaiting-trade-created',
         error: swap?.error,
         createdAt: swap?.createdAt ?? now,
@@ -863,6 +890,7 @@ export async function recordTradeCreated(
         payload.sellerKeepOutcomeSetId ?? existing?.sellerKeepOutcomeSetId ?? null,
       sellerLockOutcomeSetId:
         payload.sellerLockOutcomeSetId ?? existing?.sellerLockOutcomeSetId ?? null,
+      isTaker: existing?.isTaker,
       messages: existing?.messages ?? {},
       sellerAdaptorSecretHex: existing?.sellerAdaptorSecretHex,
       sellerAdaptorPointHex: existing?.sellerAdaptorPointHex,
@@ -870,6 +898,8 @@ export async function recordTradeCreated(
       buyerLockedProofs: existing?.buyerLockedProofs,
       sellerPreSigsHex: existing?.sellerPreSigsHex,
       engineState: existing?.engineState,
+      failureReason: existing?.failureReason,
+      takerRecovery: existing?.takerRecovery,
       step: accepted ? promoteTradeCreatedStep(existing?.step) : 'Failed',
       error: protocolError ?? existing?.error,
       createdAt: existing?.createdAt ?? now,
@@ -921,6 +951,7 @@ export async function recordSwapMessage(
 export async function recordTradeStateChanged(
   tradeId: string,
   engineState: string,
+  failureReason?: string,
 ): Promise<LocalSwapRecord | null> {
   return updateState((state, now) => {
     const existing = state.swaps[tradeId]
@@ -928,6 +959,7 @@ export async function recordTradeStateChanged(
     const next: LocalSwapRecord = {
       ...existing,
       engineState,
+      ...(failureReason !== undefined ? { failureReason } : {}),
       step: mapEngineStateToStep(engineState, existing.step),
       updatedAt: now,
     }
@@ -1196,6 +1228,24 @@ function extractTradeIds(value: unknown): string[] {
   const topLevelTradeId = typeof value.tradeId === 'string' && value.tradeId ? [value.tradeId] : []
   return [...fillTradeIds, ...pendingTradeIds, ...topLevelTradeId]
     .filter((tradeId): tradeId is string => typeof tradeId === 'string' && tradeId.length > 0)
+}
+
+function extractTakerParticipation(
+  value: unknown,
+  orderId: string,
+): Map<string, boolean> {
+  if (!isRecord(value) || !Array.isArray(value.fills)) return new Map()
+  const participation = new Map<string, boolean>()
+  for (const fill of value.fills) {
+    if (!isRecord(fill)) continue
+    const tradeId = typeof fill.tradeId === 'string' ? fill.tradeId : undefined
+    const takerOrderId =
+      typeof fill.takerOrderId === 'string' ? fill.takerOrderId : undefined
+    if (tradeId && takerOrderId) {
+      participation.set(tradeId, takerOrderId === orderId)
+    }
+  }
+  return participation
 }
 
 function readStringProperty(value: unknown, key: string): string | null {

@@ -112,6 +112,7 @@ import {
   decideTradeStateChanged,
 } from "@bitcaster/client-sdk/tradeFlow";
 import {
+  canRecoverFailedTakerFill,
   recoverFailedTakerFill,
   retryTransientTradeOperation,
 } from "@bitcaster/client-sdk/tradeRecovery";
@@ -146,8 +147,6 @@ const proofOperationStore: ProofOperationStore = {
       resultProofs,
     )) as SwapProofOperationRecord,
 };
-
-const recoveringFailedTradeIds = new Set<string>();
 
 const ctfProofOperationStore: CtfProofOperationStore = {
   getProofOperation: async (operationId) =>
@@ -1449,7 +1448,6 @@ async function resubmitMakerCausedTakerFailure(
   swap: ActiveSwap,
   failureReason: string | undefined,
 ): Promise<void> {
-  if (recoveringFailedTradeIds.has(swap.tradeId)) return;
   const sourceOrder = sourceOrderForRecovery(swap);
   const failedFillAmountSubunits = swap.matchedAmountSubunits;
   if (
@@ -1461,8 +1459,18 @@ async function resubmitMakerCausedTakerFailure(
   ) {
     return;
   }
+  if (!canRecoverFailedTakerFill({
+    failureReason,
+    isTaker: swap.isTaker === true,
+    failedFillAmountSubunits,
+  })) {
+    return;
+  }
+  const clientOrderId = useActiveSwapsStore
+    .getState()
+    .beginTakerRecovery(swap.tradeId, crypto.randomUUID());
+  if (!clientOrderId) return;
 
-  recoveringFailedTradeIds.add(swap.tradeId);
   try {
     const result = await recoverFailedTakerFill({
       failureReason,
@@ -1472,9 +1480,13 @@ async function resubmitMakerCausedTakerFailure(
       failedFillAmountSubunits,
       resubmitAttempt: swap.recoveryAttempt ?? 0,
       submitOrder,
-      newClientOrderId: () => crypto.randomUUID(),
+      newClientOrderId: () => clientOrderId,
     });
     if (result.kind !== "resubmitted") return;
+
+    useActiveSwapsStore
+      .getState()
+      .markTakerRecoverySubmitted(swap.tradeId, result.orderId);
 
     usePendingTradesStore.getState().add({
       orderId: result.orderId,
@@ -1496,8 +1508,6 @@ async function resubmitMakerCausedTakerFailure(
     });
   } catch (error) {
     console.warn("Failed to re-submit maker-caused taker fill", error);
-  } finally {
-    recoveringFailedTradeIds.delete(swap.tradeId);
   }
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import type { Server } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { profileFromPublicKey, writeProfile } from './profile.ts'
 import { ensureRpcToken } from './rpcAuth.ts'
@@ -48,15 +49,21 @@ switch (command) {
   }
   case 'run': {
     const { acquireDaemonRunLock } = await import('./runLock.ts')
-    const { startDaemonServer } = await import('./server.ts')
+    const {
+      startDaemonServer,
+      submitPendingEphemeralPubkeys,
+      createAuthenticatedBitcasterEngineClient,
+    } = await import('./server.ts')
     const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } = await import('./tradeRuntime.ts')
     const { SignalRTradeHubConnection } = await import('./tradeHubConnection.ts')
     const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
     const { DaemonSwapExecutor } = await import('./swapExecutor.ts')
+    const { DaemonTakerFillRecovery } = await import('./takerFillRecovery.ts')
     const { createRealDaemonSwapOps } = await import('./swapProtocolAdapter.ts')
     const { readProfile } = await import('./profile.ts')
     const { readSecrets } = await import('./secrets.ts')
     const { recoverPreparedWalletSends } = await import('./walletOps.ts')
+    const { conditionIdFromMarketId } = await import('@bitcaster-market/client-sdk/tradeIgnition')
     const {
       ensureState,
       recordSwapMessage,
@@ -68,6 +75,30 @@ switch (command) {
     const secrets = await readSecrets()
     let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
     let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
+    const recoveryEngineClient =
+      profile && secrets
+        ? createAuthenticatedBitcasterEngineClient({
+            baseUrl: profile.engineBaseUrl,
+            nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+          })
+        : undefined
+    const takerFillRecovery = recoveryEngineClient
+      ? new DaemonTakerFillRecovery({
+          submitOrder: (marketId, request) =>
+            recoveryEngineClient.submitOrder(marketId, request),
+          newClientOrderId: () => randomUUID(),
+          onResubmitted: async ({ marketId, orderId, response }) => {
+            await submitPendingEphemeralPubkeys({
+              client: recoveryEngineClient,
+              marketId,
+              conditionId: conditionIdFromMarketId(marketId),
+              orderId,
+              pendingPubkeySubmissions: response.pendingPubkeySubmissions,
+            })
+            await runtime?.start(await ensureState())
+          },
+        })
+      : undefined
     const tradeHub =
       profile && secrets
         ? new SignalRTradeHubConnection({
@@ -89,10 +120,14 @@ switch (command) {
                 await recordSwapMessage(tradeId, messageType, ciphertext),
               )
             },
-            onTradeStateChanged: async (tradeId, newState) => {
-              await executor?.onTradeStateChanged(
-                await recordTradeStateChanged(tradeId, newState),
+            onTradeStateChanged: async (tradeId, newState, failureReason) => {
+              const swap = await recordTradeStateChanged(
+                tradeId,
+                newState,
+                failureReason,
               )
+              await executor?.onTradeStateChanged(swap)
+              await takerFillRecovery?.recoverTrade(tradeId)
             },
             onPendingPubkeyRequired: async (tradeId, _orderId, _role, marketId, _deadline) => {
               const { signNip98 } = await import('./nostrAuth.ts')
@@ -194,6 +229,12 @@ switch (command) {
       void executor.resumeActiveSwaps(await ensureState()).catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
         process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
+      })
+    }
+    if (takerFillRecovery) {
+      void takerFillRecovery.resumePending(await ensureState()).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        process.stderr.write(`Taker fill recovery sweep failed: ${message}\n`)
       })
     }
     break

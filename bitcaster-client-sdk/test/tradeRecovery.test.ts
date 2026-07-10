@@ -97,6 +97,23 @@ test('retryTransientTradeOperation retries an idempotent same-trade tag reservat
   assert.equal(calls, 2)
 })
 
+test('retryTransientTradeOperation retries an honest TradeHub rate limit before deadline', async () => {
+  let calls = 0
+  const result = await retryTransientTradeOperation({
+    deadlineMs: 10_000,
+    operation: async () => {
+      calls += 1
+      if (calls === 1) throw new Error('Rate limit exceeded')
+      return 'sent'
+    },
+    now: () => 1_000,
+    delay: async () => undefined,
+  })
+
+  assert.deepEqual(result, { kind: 'completed', value: 'sent' })
+  assert.equal(calls, 2)
+})
+
 test('isRetryableTransportError rejects shared-tag reservation conflicts', () => {
   assert.equal(
     isRetryableTransportError(
