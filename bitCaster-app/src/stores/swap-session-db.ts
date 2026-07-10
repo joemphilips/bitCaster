@@ -8,6 +8,7 @@ import {
 import type { ActiveSwap } from './activeSwaps'
 import {
   db,
+  markProofOperationCompleted,
   prepareProofOperation,
   type PrepareProofOperationInput,
   type ProofOperationRecord,
@@ -44,6 +45,22 @@ export async function prepareGuiProofOperationWithSession(
   if (!session) throw new Error('Cannot prepare proof operation without a durable swap session')
   return db.transaction('rw', db.proofOperations, db.swapSessions, async () => {
     const operation = await prepareProofOperation(input)
+    await putGuiSwapSessionInTransaction(swap, session)
+    return operation
+  })
+}
+
+/** Atomically records fresh mint outputs and the session reconciliation cursor. */
+export async function completeGuiProofOperationWithSession(
+  operationId: string,
+  resultProofs: Record<string, import('@cashu/cashu-ts').Proof[]>,
+  swap: ActiveSwap,
+  mintUrl: string,
+): Promise<ProofOperationRecord> {
+  const session = await durableSessionFromActiveSwap(swap, mintUrl)
+  if (!session) throw new Error('Cannot complete proof operation without a durable swap session')
+  return db.transaction('rw', db.proofOperations, db.swapSessions, async () => {
+    const operation = await markProofOperationCompleted(operationId, resultProofs)
     await putGuiSwapSessionInTransaction(swap, session)
     return operation
   })

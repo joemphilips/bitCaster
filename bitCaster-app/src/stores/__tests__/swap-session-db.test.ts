@@ -22,6 +22,15 @@ vi.mock('../proof-db', () => ({
     proofOperations.set(input.operationId, record)
     return record
   },
+  markProofOperationCompleted: async (
+    operationId: string,
+    resultProofs: Record<string, unknown[]>,
+  ) => {
+    const existing = proofOperations.get(operationId) ?? { operationId }
+    const record = { ...existing, state: 'completed', resultProofs }
+    proofOperations.set(operationId, record)
+    return record
+  },
   db: {
     transaction: async (...args: unknown[]) =>
       (args.at(-1) as () => Promise<unknown>)(),
@@ -48,6 +57,7 @@ import {
   MAX_ACTIVE_GUI_SWAP_SESSIONS,
   loadRecoverableGuiSwapSessions,
   prepareGuiProofOperationWithSession,
+  completeGuiProofOperationWithSession,
   persistGuiSwapSession,
   removeGuiSwapSession,
   withGuiSwapSessionOwnership,
@@ -144,6 +154,18 @@ describe('GUI durable swap session repository', () => {
     }, swap())
 
     expect(proofOperations.has('trade-001/browser/buyer-lock')).toBe(true)
+    expect(rows.has('trade-001')).toBe(true)
+  })
+
+  it('co-commits completed proof outputs and the durable swap session', async () => {
+    await completeGuiProofOperationWithSession(
+      'trade-001/browser/buyer-lock',
+      { receive: [] },
+      swap(),
+      'https://mint.example',
+    )
+
+    expect(proofOperations.get('trade-001/browser/buyer-lock')?.state).toBe('completed')
     expect(rows.has('trade-001')).toBe(true)
   })
 
