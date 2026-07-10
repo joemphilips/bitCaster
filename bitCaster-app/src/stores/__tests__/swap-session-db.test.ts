@@ -11,6 +11,7 @@ vi.mock('../proof-db', () => ({
       callback: () => Promise<unknown>,
     ) => callback(),
     swapSessions: {
+      get: async (tradeId: string) => rows.get(tradeId),
       put: async (row: { tradeId: string }) => {
         rows.set(row.tradeId, row as Record<string, unknown>)
       },
@@ -27,6 +28,7 @@ import {
   loadRecoverableGuiSwapSessions,
   persistGuiSwapSession,
   removeGuiSwapSession,
+  withGuiSwapSessionOwnership,
 } from '../swap-session-db'
 
 function swap(overrides: Partial<ActiveSwap> = {}): ActiveSwap {
@@ -96,6 +98,15 @@ describe('GUI durable swap session repository', () => {
     await expect(loadRecoverableGuiSwapSessions()).resolves.toEqual([])
     await removeGuiSwapSession('trade-001')
     expect(rows.has('trade-001')).toBe(false)
+  })
+
+  it('uses the durable fallback lease when Web Locks are unavailable', async () => {
+    await persistGuiSwapSession(swap(), 'https://mint.example')
+    const result = await withGuiSwapSessionOwnership('trade-001', async () => 'owned')
+
+    expect(result).toBe('owned')
+    const row = rows.get('trade-001') as { lease?: unknown }
+    expect(row.lease).toBeUndefined()
   })
 
   it('fails closed instead of evicting a live durable session at capacity', async () => {

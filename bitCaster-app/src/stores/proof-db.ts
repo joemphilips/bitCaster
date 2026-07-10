@@ -85,6 +85,7 @@ export interface SwapSessionRecord {
   session: DurableTradeSession;
   adapterState: unknown;
   updatedAt: number;
+  lease?: { ownerId: string; expiresAt: number };
 }
 
 export function isCtfProof(proof: StoredProof | Proof): boolean {

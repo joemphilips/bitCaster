@@ -8,11 +8,11 @@ import {
 import type { ActiveSwap } from './activeSwaps'
 import { db, type SwapSessionRecord } from './proof-db'
 
-export type GuiSwapSessionRecord = DurableTradeSessionRecord<ActiveSwap> & {
-  tradeId: string
-}
+export type GuiSwapSessionRecord = DurableTradeSessionRecord<ActiveSwap> & SwapSessionRecord
 
 export const MAX_ACTIVE_GUI_SWAP_SESSIONS = 32
+const FALLBACK_LEASE_MS = 120_000
+const localLeaseOwnerId = globalThis.crypto?.randomUUID?.() ?? `gui-${Math.random().toString(36).slice(2)}`
 
 /**
  * Persist the GUI protocol payload with the shared SDK envelope before the
@@ -40,8 +40,30 @@ export async function persistGuiSwapSession(swap: ActiveSwap, mintUrl: string): 
       session: { ...session, revision },
       adapterState: structuredClone(swap),
       updatedAt: Date.now(),
+      lease: isGuiSwapSessionRecord(prior) ? prior.lease : undefined,
     } satisfies SwapSessionRecord)
   })
+}
+
+/**
+ * One coordinator owns a trade while it can lock/mint/send. Web Locks covers
+ * modern browsers; the durable lease keeps the same invariant for browsers
+ * without that API and releases after a crash timeout.
+ */
+export async function withGuiSwapSessionOwnership<T>(
+  tradeId: string,
+  action: () => Promise<T>,
+): Promise<T | null> {
+  if (typeof navigator !== 'undefined' && navigator.locks) {
+    return navigator.locks.request(`bitcaster-swap:${tradeId}`, { mode: 'exclusive' }, action)
+  }
+  const acquired = await acquireFallbackLease(tradeId)
+  if (!acquired) return null
+  try {
+    return await action()
+  } finally {
+    await releaseFallbackLease(tradeId)
+  }
 }
 
 export async function loadRecoverableGuiSwapSessions(): Promise<ActiveSwap[]> {
@@ -146,4 +168,28 @@ function isAdapterStateBoundToSession(
     swap.counterpartyPubkey?.toLowerCase() === session.counterpartyProtocolPubkey &&
     swap.sellerLocktime === session.sellerLocktimeSecs &&
     swap.buyerLocktime === session.buyerLocktimeSecs
+}
+
+async function acquireFallbackLease(tradeId: string): Promise<boolean> {
+  return db.transaction('rw', db.swapSessions, async () => {
+    const record = await db.swapSessions.get(tradeId)
+    if (!isGuiSwapSessionRecord(record)) return false
+    const now = Date.now()
+    if (record.lease && record.lease.ownerId !== localLeaseOwnerId && record.lease.expiresAt > now) {
+      return false
+    }
+    await db.swapSessions.put({
+      ...record,
+      lease: { ownerId: localLeaseOwnerId, expiresAt: now + FALLBACK_LEASE_MS },
+    })
+    return true
+  })
+}
+
+async function releaseFallbackLease(tradeId: string): Promise<void> {
+  await db.transaction('rw', db.swapSessions, async () => {
+    const record = await db.swapSessions.get(tradeId)
+    if (!isGuiSwapSessionRecord(record) || record.lease?.ownerId !== localLeaseOwnerId) return
+    await db.swapSessions.put({ ...record, lease: undefined })
+  })
 }

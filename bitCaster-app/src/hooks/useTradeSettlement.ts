@@ -102,6 +102,7 @@ import {
   loadRecoverableGuiSwapSessions,
   persistGuiSwapSession,
   removeGuiSwapSession,
+  withGuiSwapSessionOwnership,
 } from "@/stores/swap-session-db";
 import type {
   OutcomeMetadata,
@@ -916,6 +917,17 @@ async function runSellerSendOpening(
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
 ): Promise<void> {
+  await withGuiSwapSessionOwnership(
+    tradeId,
+    () => runSellerSendOpeningOwned(tradeId, sendSwapMessage, mintUrl),
+  );
+}
+
+async function runSellerSendOpeningOwned(
+  tradeId: string,
+  sendSwapMessage: SendSwapMessageFn,
+  mintUrl: string,
+): Promise<void> {
   if (!claimStep(tradeId, "seller-open")) return;
   try {
     const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
@@ -1393,6 +1405,17 @@ async function runBuyerRespond(
   sendSwapMessage: SendSwapMessageFn,
   mintUrl: string,
 ): Promise<void> {
+  await withGuiSwapSessionOwnership(
+    tradeId,
+    () => runBuyerRespondOwned(tradeId, sendSwapMessage, mintUrl),
+  );
+}
+
+async function runBuyerRespondOwned(
+  tradeId: string,
+  sendSwapMessage: SendSwapMessageFn,
+  mintUrl: string,
+): Promise<void> {
   if (!claimStep(tradeId, "buyer-respond")) return;
   let buyerLockOperationId: string | null = null;
   try {
@@ -1654,6 +1677,16 @@ async function sendSwapMessageWithRetry(
 }
 
 async function runSettlementClaim(
+  tradeId: string,
+  sendSwapMessage: SendSwapMessageFn,
+): Promise<void> {
+  await withGuiSwapSessionOwnership(
+    tradeId,
+    () => runSettlementClaimOwned(tradeId, sendSwapMessage),
+  );
+}
+
+async function runSettlementClaimOwned(
   tradeId: string,
   sendSwapMessage: SendSwapMessageFn,
 ): Promise<void> {
