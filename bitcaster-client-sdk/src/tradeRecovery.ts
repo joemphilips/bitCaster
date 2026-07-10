@@ -55,6 +55,20 @@ export type TakerFillRecoveryResult =
   | { kind: 'deadline-expired' }
   | { kind: 'resubmit-limit-reached' }
 
+export interface RetryTransientTradeOperationParams<T> {
+  /** Unix milliseconds, derived from the accepted trade's earliest locktime. */
+  deadlineMs: number
+  operation: () => Promise<T>
+  maxTransportRetries?: number
+  retryDelayMs?: number
+  now?: () => number
+  delay?: (milliseconds: number) => Promise<void>
+}
+
+export type RetryTransientTradeOperationResult<T> =
+  | { kind: 'completed'; value: T }
+  | { kind: 'deadline-expired' }
+
 /**
  * Re-submits a failed taker fill only when the engine supplied the one public
  * reason that proves the maker, rather than the taker, caused the failure.
@@ -87,6 +101,33 @@ export async function recoverFailedTakerFill(
     amountSubunits: params.failedFillAmountSubunits,
     clientOrderId,
   }
+  const retry = await retryTransientTradeOperation({
+    deadlineMs: params.deadlineMs,
+    operation: () => params.submitOrder(marketId, request),
+    maxTransportRetries: params.maxTransportRetries,
+    retryDelayMs: params.retryDelayMs,
+    now,
+    delay: params.delay,
+  })
+  if (retry.kind === 'deadline-expired') {
+    return retry
+  }
+  return {
+    kind: 'resubmitted',
+    orderId: retry.value.orderId,
+    clientOrderId,
+  }
+}
+
+/**
+ * Retry an idempotent client operation only when transport ambiguity leaves
+ * its delivery unknown. Logical protocol and authorization failures propagate
+ * immediately, and no attempt begins at or after the supplied deadline.
+ */
+export async function retryTransientTradeOperation<T>(
+  params: RetryTransientTradeOperationParams<T>,
+): Promise<RetryTransientTradeOperationResult<T>> {
+  const now = params.now ?? Date.now
   const maxTransportRetries = params.maxTransportRetries ?? DEFAULT_MAX_TRANSPORT_RETRIES
   const retryDelayMs = params.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS
   const wait = params.delay ?? delay
@@ -94,8 +135,7 @@ export async function recoverFailedTakerFill(
   for (let attempt = 0; ; attempt += 1) {
     if (now() >= params.deadlineMs) return { kind: 'deadline-expired' }
     try {
-      const response = await params.submitOrder(marketId, request)
-      return { kind: 'resubmitted', orderId: response.orderId, clientOrderId }
+      return { kind: 'completed', value: await params.operation() }
     } catch (error) {
       if (!isRetryableTransportError(error) || attempt >= maxTransportRetries) {
         throw error

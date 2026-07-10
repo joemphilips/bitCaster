@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   recoverFailedTakerFill,
+  retryTransientTradeOperation,
   type TakerFillRecoveryRequest,
 } from '../src/tradeRecovery.ts'
 
@@ -55,6 +56,23 @@ test('recoverFailedTakerFill retries a transient submission with one stable idem
     },
   })
   assert.deepEqual(submitted[1], submitted[0])
+})
+
+test('retryTransientTradeOperation retries only transport failures before its deadline', async () => {
+  let calls = 0
+  const result = await retryTransientTradeOperation({
+    deadlineMs: 10_000,
+    operation: async () => {
+      calls += 1
+      if (calls === 1) throw new Error('TradeHub not connected')
+      return 'sent'
+    },
+    now: () => 1_000,
+    delay: async () => undefined,
+  })
+
+  assert.deepEqual(result, { kind: 'completed', value: 'sent' })
+  assert.equal(calls, 2)
 })
 
 test('recoverFailedTakerFill never resubmits an unclassified failure or a maker fill', async () => {
