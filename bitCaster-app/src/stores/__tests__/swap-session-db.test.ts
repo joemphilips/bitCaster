@@ -2,14 +2,29 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ActiveSwap } from '../activeSwaps'
 
 const rows = new Map<string, Record<string, unknown>>()
+const proofOperations = new Map<string, Record<string, unknown>>()
 
 vi.mock('../proof-db', () => ({
+  prepareProofOperation: async (input: {
+    operationId: string
+    kind: string
+    mintUrl: string
+    inputs: unknown[]
+    outputs: Record<string, unknown>
+  }) => {
+    const record = {
+      ...input,
+      state: 'prepared',
+      metadata: {},
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    proofOperations.set(input.operationId, record)
+    return record
+  },
   db: {
-    transaction: async (
-      _mode: string,
-      _table: unknown,
-      callback: () => Promise<unknown>,
-    ) => callback(),
+    transaction: async (...args: unknown[]) =>
+      (args.at(-1) as () => Promise<unknown>)(),
     swapSessions: {
       get: async (tradeId: string) => rows.get(tradeId),
       put: async (row: { tradeId: string }) => {
@@ -20,12 +35,19 @@ vi.mock('../proof-db', () => ({
         rows.delete(tradeId)
       },
     },
+    proofOperations: {
+      get: async (operationId: string) => proofOperations.get(operationId),
+      put: async (row: { operationId: string }) => {
+        proofOperations.set(row.operationId, row as Record<string, unknown>)
+      },
+    },
   },
 }))
 
 import {
   MAX_ACTIVE_GUI_SWAP_SESSIONS,
   loadRecoverableGuiSwapSessions,
+  prepareGuiProofOperationWithSession,
   persistGuiSwapSession,
   removeGuiSwapSession,
   withGuiSwapSessionOwnership,
@@ -62,7 +84,10 @@ function swap(overrides: Partial<ActiveSwap> = {}): ActiveSwap {
   }
 }
 
-beforeEach(() => rows.clear())
+beforeEach(() => {
+  rows.clear()
+  proofOperations.clear()
+})
 
 describe('GUI durable swap session repository', () => {
   it('persists and hydrates a protocol-bound GUI session', async () => {
@@ -107,6 +132,19 @@ describe('GUI durable swap session repository', () => {
     expect(result).toBe('owned')
     const row = rows.get('trade-001') as { lease?: unknown }
     expect(row.lease).toBeUndefined()
+  })
+
+  it('co-commits the prepared proof operation and durable swap session', async () => {
+    await prepareGuiProofOperationWithSession({
+      operationId: 'trade-001/browser/buyer-lock',
+      kind: 'swap-lock',
+      mintUrl: 'https://mint.example',
+      inputs: [],
+      outputs: {},
+    }, swap())
+
+    expect(proofOperations.has('trade-001/browser/buyer-lock')).toBe(true)
+    expect(rows.has('trade-001')).toBe(true)
   })
 
   it('fails closed instead of evicting a live durable session at capacity', async () => {

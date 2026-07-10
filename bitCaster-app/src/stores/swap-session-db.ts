@@ -6,7 +6,13 @@ import {
   type DurableTradeSessionRecord,
 } from '@bitcaster/client-sdk/durableTradeRecovery'
 import type { ActiveSwap } from './activeSwaps'
-import { db, type SwapSessionRecord } from './proof-db'
+import {
+  db,
+  prepareProofOperation,
+  type PrepareProofOperationInput,
+  type ProofOperationRecord,
+  type SwapSessionRecord,
+} from './proof-db'
 
 export type GuiSwapSessionRecord = DurableTradeSessionRecord<ActiveSwap> & SwapSessionRecord
 
@@ -25,6 +31,28 @@ export async function persistGuiSwapSession(swap: ActiveSwap, mintUrl: string): 
     throw new Error('Cannot persist a swap session before trade role and locktimes are known')
   }
   await db.transaction('rw', db.swapSessions, async () => {
+    await putGuiSwapSessionInTransaction(swap, session)
+  })
+}
+
+/** Atomically writes the mint-operation intent and its GUI recovery session. */
+export async function prepareGuiProofOperationWithSession(
+  input: PrepareProofOperationInput,
+  swap: ActiveSwap,
+): Promise<ProofOperationRecord> {
+  const session = await durableSessionFromActiveSwap(swap, input.mintUrl)
+  if (!session) throw new Error('Cannot prepare proof operation without a durable swap session')
+  return db.transaction('rw', db.proofOperations, db.swapSessions, async () => {
+    const operation = await prepareProofOperation(input)
+    await putGuiSwapSessionInTransaction(swap, session)
+    return operation
+  })
+}
+
+async function putGuiSwapSessionInTransaction(
+  swap: ActiveSwap,
+  session: DurableTradeSession,
+): Promise<void> {
     const existing = await db.swapSessions.toArray()
     const prior = existing.find((item) => item.tradeId === swap.tradeId)
     const activeCount = existing.filter((item) => {
@@ -42,7 +70,6 @@ export async function persistGuiSwapSession(swap: ActiveSwap, mintUrl: string): 
       updatedAt: Date.now(),
       lease: isGuiSwapSessionRecord(prior) ? prior.lease : undefined,
     } satisfies SwapSessionRecord)
-  })
 }
 
 /**

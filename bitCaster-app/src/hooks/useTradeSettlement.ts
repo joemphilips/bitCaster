@@ -61,7 +61,6 @@ import {
   getOutcomeProofs,
   getProofOperation,
   markProofOperationCompleted,
-  prepareProofOperation,
   releaseProofReservation,
   removeProofs,
   replaceProofs,
@@ -101,6 +100,7 @@ import { usePartialLockFailuresStore } from "@/stores/partialLockFailures";
 import {
   loadRecoverableGuiSwapSessions,
   persistGuiSwapSession,
+  prepareGuiProofOperationWithSession,
   removeGuiSwapSession,
   withGuiSwapSessionOwnership,
 } from "@/stores/swap-session-db";
@@ -145,8 +145,13 @@ import { resolveGrossCtfInputPlanningKeyset } from "@/lib/ctfGrossInputPlanning"
 const proofOperationStore: ProofOperationStore = {
   getProofOperation: async (operationId) =>
     (await getProofOperation(operationId)) as SwapProofOperationRecord | null,
-  prepareProofOperation: async (input) =>
-    (await prepareProofOperation(input)) as SwapProofOperationRecord,
+  prepareProofOperation: async (input) => {
+    const swap = useActiveSwapsStore.getState().byTradeId[
+      input.operationId.split('/browser/')[0] ?? ''
+    ]
+    if (!swap) throw new Error('Proof operation has no active durable GUI swap')
+    return (await prepareGuiProofOperationWithSession(input, swap)) as SwapProofOperationRecord
+  },
   markProofOperationCompleted: async (operationId, resultProofs) =>
     (await markProofOperationCompleted(
       operationId,
@@ -157,8 +162,13 @@ const proofOperationStore: ProofOperationStore = {
 const ctfProofOperationStore: CtfProofOperationStore = {
   getProofOperation: async (operationId) =>
     (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
-  prepareProofOperation: async (input) =>
-    (await prepareProofOperation(input)) as CtfProofOperationRecord,
+  prepareProofOperation: async (input) => {
+    const swap = useActiveSwapsStore.getState().byTradeId[
+      input.operationId.split('/browser/')[0] ?? ''
+    ]
+    if (!swap) throw new Error('Proof operation has no active durable GUI swap')
+    return (await prepareGuiProofOperationWithSession(input, swap)) as CtfProofOperationRecord
+  },
   markProofOperationCompleted: async (operationId, resultProofs) =>
     (await markProofOperationCompleted(
       operationId,
