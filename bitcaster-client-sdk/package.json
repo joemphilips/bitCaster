@@ -88,6 +88,10 @@
       "types": "./dist/tradeRecovery.d.ts",
       "import": "./dist/tradeRecovery.js"
     },
+    "./durableTradeRecovery": {
+      "types": "./dist/durableTradeRecovery.d.ts",
+      "import": "./dist/durableTradeRecovery.js"
+    },
     "./tradeSession": {
       "types": "./dist/tradeSession.d.ts",
       "import": "./dist/tradeSession.js"
