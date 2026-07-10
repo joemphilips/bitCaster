@@ -95,6 +95,31 @@ describe('promoteNewFillsToActiveSwaps', () => {
       'trade-c',
     ])
   })
+
+  it('retains the taker role and exact fill amount for failed-fill recovery', () => {
+    const status = orderStatusWithTradeFills('trade-taker')
+    status.fills = [{
+      tradeId: 'trade-taker',
+      makerOrderId: 'maker-order',
+      takerOrderId: 'order-1',
+      amountSubunits: 250,
+    }] as OrderStatusResponse['fills']
+    seedPendingPubkey('trade-taker')
+
+    expect(promoteNewFillsToActiveSwaps(status, {
+      ...pendingTrade(),
+      timeInForce: 'FAK',
+      recoveryAttempt: 1,
+    }, 0)).toBe(1)
+
+    expect(useActiveSwapsStore.getState().byTradeId['trade-taker'])
+      .toMatchObject({
+        isTaker: true,
+        matchedAmountSubunits: 250,
+        timeInForce: 'FAK',
+        recoveryAttempt: 1,
+      })
+  })
 })
 
 describe('buildOrderStatusNotifications', () => {

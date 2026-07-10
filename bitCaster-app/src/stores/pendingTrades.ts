@@ -24,6 +24,9 @@ export interface PendingTrade {
   tokenSide?: 'Outcome' | 'Complement'
   priceSubunits?: number | null
   amountSubunits?: number | null
+  timeInForce?: 'FAK' | 'FOK' | 'GTC'
+  /** Number of prior replacement orders for a maker-caused failed fill. */
+  recoveryAttempt?: number
 }
 
 interface PendingTradeState {

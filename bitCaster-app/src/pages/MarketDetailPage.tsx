@@ -1707,6 +1707,7 @@ export function MarketDetailPage() {
           tokenSide: ticket.request.tokenSide,
           priceSubunits: ticket.request.price,
           amountSubunits: ticket.request.amountSubunits,
+          timeInForce: ticket.request.timeInForce,
           submittedAt: Date.now(),
         });
         for (const pending of response.pendingPubkeySubmissions ?? []) {
@@ -1727,6 +1728,7 @@ export function MarketDetailPage() {
           tokenSide: ticket.request.tokenSide,
           priceSubunits: ticket.request.price,
           amountSubunits: ticket.request.amountSubunits,
+          timeInForce: ticket.request.timeInForce,
         });
         addOrderSubmitNotifications({
           add: useNotificationsStore.getState().add,

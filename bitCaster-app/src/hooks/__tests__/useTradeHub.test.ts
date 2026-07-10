@@ -178,6 +178,30 @@ describe('useTradeHub', () => {
     })
   })
 
+  it('forwards the allowlisted failure reason with a trade state change', async () => {
+    const connection = makeConnection()
+    connections.push(connection)
+    const onTradeStateChanged = vi.fn()
+
+    renderHook(() => useTradeHub(true, { onTradeStateChanged }))
+
+    await waitFor(() => expect(connection.on).toHaveBeenCalledWith(
+      'TradeStateChanged',
+      expect.any(Function),
+    ))
+    const handler = connection.on.mock.calls.find(([event]) => event === 'TradeStateChanged')?.[1] as
+      | ((tradeId: string, state: string, failureReason?: string) => void)
+      | undefined
+    expect(handler).toBeTypeOf('function')
+    handler?.('trade-1', 'Failed', 'maker-collateral-failure')
+
+    expect(onTradeStateChanged).toHaveBeenCalledWith(
+      'trade-1',
+      'Failed',
+      'maker-collateral-failure',
+    )
+  })
+
   it('notifies callers after SignalR reconnects', async () => {
     const connection = makeConnection()
     connections.push(connection)

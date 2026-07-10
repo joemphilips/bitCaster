@@ -101,6 +101,13 @@ export interface ActiveSwap {
   tokenSide?: 'Outcome' | 'Complement'
   priceSubunits?: number | null
   amountSubunits?: number | null
+  timeInForce?: 'FAK' | 'FOK' | 'GTC'
+  /** True only when the engine fill identifies this local order as the taker. */
+  isTaker?: boolean
+  /** Exact face amount associated with this particular fill. */
+  matchedAmountSubunits?: number | null
+  /** Prior replacement-order count carried from the pending order. */
+  recoveryAttempt?: number
   quotePaymentSubunits: number | null
   settlementKind: string | null
   sellerKeepOutcomeSetId: string | null
@@ -130,6 +137,10 @@ interface ActiveSwapsState {
     tokenSide?: 'Outcome' | 'Complement'
     priceSubunits?: number | null
     amountSubunits?: number | null
+    timeInForce?: 'FAK' | 'FOK' | 'GTC'
+    isTaker?: boolean
+    matchedAmountSubunits?: number | null
+    recoveryAttempt?: number
   }) => void
   setRoleAndCounterparty: (
     tradeId: string,
@@ -186,6 +197,10 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
     tokenSide,
     priceSubunits,
     amountSubunits,
+    timeInForce,
+    isTaker,
+    matchedAmountSubunits,
+    recoveryAttempt,
   }) => {
     set((s) => {
       if (s.byTradeId[tradeId]) return s
@@ -209,6 +224,10 @@ export const useActiveSwapsStore = create<ActiveSwapsState>()((set, get) => ({
         tokenSide,
         priceSubunits: priceSubunits ?? null,
         amountSubunits: amountSubunits ?? null,
+        timeInForce,
+        isTaker,
+        matchedAmountSubunits: matchedAmountSubunits ?? null,
+        recoveryAttempt: recoveryAttempt ?? 0,
         quotePaymentSubunits: null,
         settlementKind: null,
         sellerKeepOutcomeSetId: null,

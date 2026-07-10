@@ -72,7 +72,7 @@ import {
   splitMarketId,
 } from "@/lib/orderStatus";
 import { generateEphemeralKeyPair } from "@/lib/ephemeral-key";
-import { submitEphemeralPubkey } from "@/lib/markets";
+import { submitEphemeralPubkey, submitOrder } from "@/lib/markets";
 import { hexToBytes } from "@bitcaster/swap-protocol/ecdh";
 import {
   buyerClaimSwap,
@@ -110,6 +110,10 @@ import {
   decideTradeStateChanged,
 } from "@bitcaster/client-sdk/tradeFlow";
 import {
+  recoverFailedTakerFill,
+  retryTransientTradeOperation,
+} from "@bitcaster/client-sdk/tradeRecovery";
+import {
   amountToNumber,
   takeProofsForLock,
 } from "@bitcaster/client-sdk/proofSelection";
@@ -140,6 +144,8 @@ const proofOperationStore: ProofOperationStore = {
       resultProofs,
     )) as SwapProofOperationRecord,
 };
+
+const recoveringFailedTradeIds = new Set<string>();
 
 const ctfProofOperationStore: CtfProofOperationStore = {
   getProofOperation: async (operationId) =>
@@ -350,8 +356,13 @@ export function useTradeSettlement(canAuthenticateTradeHub: boolean): void {
         ),
       onSwapMessageReceived: (msg) =>
         handleSwapMessage(msg, sendSwapMessage, activeMintUrl),
-      onTradeStateChanged: (tradeId, newState) =>
-        handleTradeStateChanged(tradeId, newState, sendSwapMessage),
+      onTradeStateChanged: (tradeId, newState, failureReason) =>
+        void handleTradeStateChanged(
+          tradeId,
+          newState,
+          sendSwapMessage,
+          failureReason,
+        ),
       onReconnected: requestRecovery,
     },
   );
@@ -884,12 +895,14 @@ async function runSellerSendOpening(
     useActiveSwapsStore
       .getState()
       .setSellerState(tradeId, { adaptorPoint: out.adaptorPoint });
-    await sendSwapMessage(
+    await sendSwapMessageWithRetry(
+      sendSwapMessage,
       tradeId,
       TRADE_MESSAGE_TYPES.adaptorPoint,
       out.adaptorPointCipher,
     );
-    await sendSwapMessage(
+    await sendSwapMessageWithRetry(
+      sendSwapMessage,
       tradeId,
       TRADE_MESSAGE_TYPES.lockedProofsSeller,
       out.lockedProofsCipher,
@@ -1307,7 +1320,8 @@ async function runBuyerRespond(
     const replayCipher =
       swap.messages.lockedProofsBuyer ?? swap.buyerState?.lockedProofsCipher;
     if (replayCipher && swap.buyerState) {
-      await sendSwapMessage(
+      await sendSwapMessageWithRetry(
+        sendSwapMessage,
         tradeId,
         TRADE_MESSAGE_TYPES.lockedProofsBuyer,
         replayCipher,
@@ -1354,7 +1368,8 @@ async function runBuyerRespond(
       lockedProofsCipher: out.lockedProofsCipher,
       sellerPreSigsHex: out.sellerPreSigsHex,
     });
-    await sendSwapMessage(
+    await sendSwapMessageWithRetry(
+      sendSwapMessage,
       tradeId,
       TRADE_MESSAGE_TYPES.lockedProofsBuyer,
       out.lockedProofsCipher,
@@ -1370,16 +1385,18 @@ async function runBuyerRespond(
 // TradeStateChanged → claim + settlement-complete
 // ---------------------------------------------------------------------------
 
-function handleTradeStateChanged(
+async function handleTradeStateChanged(
   tradeId: string,
   newState: string,
   sendSwapMessage: SendSwapMessageFn,
-): void {
+  failureReason?: string,
+): Promise<void> {
   const action = decideTradeStateChanged(newState);
   if (action === "finish-confirmed") return finishSwap(tradeId, "success");
   if (action === "finish-failed" || action === "finish-refunded") {
     const swap = useActiveSwapsStore.getState().byTradeId[tradeId];
     if (swap?.step === "completed") return finishSwap(tradeId, "Failed");
+    if (swap) void resubmitMakerCausedTakerFailure(swap, failureReason);
     if (swap && !swap.error) {
       useActiveSwapsStore
         .getState()
@@ -1393,6 +1410,115 @@ function handleTradeStateChanged(
   }
   if (action === "settlement-claim") {
     void runSettlementClaim(tradeId, sendSwapMessage);
+  }
+}
+
+async function resubmitMakerCausedTakerFailure(
+  swap: ActiveSwap,
+  failureReason: string | undefined,
+): Promise<void> {
+  if (recoveringFailedTradeIds.has(swap.tradeId)) return;
+  const sourceOrder = sourceOrderForRecovery(swap);
+  const failedFillAmountSubunits = swap.matchedAmountSubunits;
+  if (
+    !sourceOrder ||
+    swap.buyerLocktime === null ||
+    typeof failedFillAmountSubunits !== "number" ||
+    !Number.isSafeInteger(failedFillAmountSubunits) ||
+    failedFillAmountSubunits <= 0
+  ) {
+    return;
+  }
+
+  recoveringFailedTradeIds.add(swap.tradeId);
+  try {
+    const result = await recoverFailedTakerFill({
+      failureReason,
+      isTaker: swap.isTaker === true,
+      deadlineMs: swap.buyerLocktime * 1_000,
+      sourceOrder,
+      failedFillAmountSubunits,
+      resubmitAttempt: swap.recoveryAttempt ?? 0,
+      submitOrder,
+      newClientOrderId: () => crypto.randomUUID(),
+    });
+    if (result.kind !== "resubmitted") return;
+
+    usePendingTradesStore.getState().add({
+      orderId: result.orderId,
+      marketId: sourceOrder.marketId,
+      clientOrderId: result.clientOrderId,
+      submittedAt: Date.now(),
+      baseAsset: swap.baseAsset,
+      divisibility: swap.divisibility,
+      side: sourceOrder.side,
+      tokenSide: sourceOrder.tokenSide,
+      priceSubunits: sourceOrder.price,
+      amountSubunits: failedFillAmountSubunits,
+      timeInForce: sourceOrder.timeInForce,
+      recoveryAttempt: (swap.recoveryAttempt ?? 0) + 1,
+    });
+    useToastStore.getState().addToast({
+      type: "info",
+      message: "Maker collateral failed. Re-submitting the unfilled amount.",
+    });
+  } catch (error) {
+    console.warn("Failed to re-submit maker-caused taker fill", error);
+  } finally {
+    recoveringFailedTradeIds.delete(swap.tradeId);
+  }
+}
+
+function sourceOrderForRecovery(swap: ActiveSwap): {
+  marketId: string;
+  outcomeId: string;
+  tokenSide: "Outcome" | "Complement";
+  side: "Buy" | "Sell";
+  price: number;
+  timeInForce: "FAK" | "FOK" | "GTC";
+} | null {
+  const separator = swap.marketId.lastIndexOf("-");
+  if (
+    separator <= 0 ||
+    separator === swap.marketId.length - 1 ||
+    !swap.side ||
+    !swap.tokenSide ||
+    typeof swap.priceSubunits !== "number" ||
+    !Number.isSafeInteger(swap.priceSubunits) ||
+    !swap.timeInForce
+  ) {
+    return null;
+  }
+  return {
+    marketId: swap.marketId,
+    outcomeId: swap.marketId.slice(separator + 1),
+    tokenSide: swap.tokenSide,
+    side: swap.side,
+    price: swap.priceSubunits,
+    timeInForce: swap.timeInForce,
+  };
+}
+
+async function sendSwapMessageWithRetry(
+  sendSwapMessage: SendSwapMessageFn,
+  tradeId: string,
+  messageType: TradeMessageType,
+  ciphertext: string,
+): Promise<void> {
+  const deadlineSeconds = useActiveSwapsStore.getState().byTradeId[tradeId]
+    ?.buyerLocktime;
+  if (
+    typeof deadlineSeconds !== "number" ||
+    !Number.isSafeInteger(deadlineSeconds)
+  ) {
+    throw new Error("Swap message is missing a valid buyer locktime deadline");
+  }
+  const result = await retryTransientTradeOperation({
+    deadlineMs: deadlineSeconds * 1_000,
+    operation: () => sendSwapMessage(tradeId, messageType, ciphertext),
+  });
+  if (result.kind === "deadline-expired") {
+    throw new Error("Swap message retry deadline expired before delivery");
   }
 }
 
@@ -1431,7 +1557,12 @@ async function runSettlementClaim(
       await persistFreshProofs(fresh, mintUrl, null, swap.baseAsset);
     }
     useActiveSwapsStore.getState().setStep(tradeId, "awaiting-confirmation");
-    await sendSwapMessage(tradeId, TRADE_MESSAGE_TYPES.settlementComplete, "");
+    await sendSwapMessageWithRetry(
+      sendSwapMessage,
+      tradeId,
+      TRADE_MESSAGE_TYPES.settlementComplete,
+      "",
+    );
   } catch (err) {
     failSwap(tradeId, err);
   } finally {

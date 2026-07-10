@@ -55,7 +55,11 @@ export interface TradeCreatedPayload {
 
 export interface TradeHubCallbacks {
   onSwapMessageReceived?: (msg: SwapMessage) => void
-  onTradeStateChanged?: (tradeId: string, newState: string) => void
+  onTradeStateChanged?: (
+    tradeId: string,
+    newState: string,
+    failureReason?: string,
+  ) => void
   onTradeCreated?: (payload: TradeCreatedPayload) => void
   onReconnected?: () => void
   onError?: (err: Error) => void
@@ -154,9 +158,12 @@ export function useTradeHub(
       },
     )
 
-    connection.on('TradeStateChanged', (tradeId: string, newState: string) => {
-      callbacksRef.current.onTradeStateChanged?.(tradeId, newState)
-    })
+    connection.on(
+      'TradeStateChanged',
+      (tradeId: string, newState: string, failureReason?: string) => {
+        callbacksRef.current.onTradeStateChanged?.(tradeId, newState, failureReason)
+      },
+    )
 
     connection.on(
       'TradeCreated',

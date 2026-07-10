@@ -18,6 +18,11 @@ const { mockFetchOrderStatus } = vi.hoisted(() => ({
   mockFetchOrderStatus: vi.fn(),
 }));
 
+const { mockSubmitOrder, mockSubmitEphemeralPubkey } = vi.hoisted(() => ({
+  mockSubmitOrder: vi.fn(),
+  mockSubmitEphemeralPubkey: vi.fn(),
+}));
+
 const {
   mockAddProofs,
   mockGetUnitProofs,
@@ -81,6 +86,11 @@ vi.mock("@/lib/orderStatus", async (importOriginal) => {
     fetchOrderStatus: mockFetchOrderStatus,
   };
 });
+
+vi.mock("@/lib/markets", () => ({
+  submitOrder: mockSubmitOrder,
+  submitEphemeralPubkey: mockSubmitEphemeralPubkey,
+}));
 
 vi.mock("@bitcaster/swap-protocol/atomicSwap", async (importOriginal) => {
   const actual =
@@ -199,6 +209,8 @@ beforeEach(() => {
     filledAmountSubunits: 0,
     fills: [],
   });
+  mockSubmitOrder.mockResolvedValue({ orderId: "recovery-order" });
+  mockSubmitEphemeralPubkey.mockResolvedValue(undefined);
   mockUseTradeHub.mockReturnValue({
     joinOrder: mockJoinOrder,
     joinTrade: mockJoinTrade,
@@ -1168,8 +1180,8 @@ describe("useTradeSettlement", () => {
         tradeId: "trade-buyer-recover",
         sellerPubkey: "02" + "33".repeat(32),
         buyerPubkey: "02" + "22".repeat(32),
-        sellerLocktime: "2026-05-07T12:01:00Z",
-        buyerLocktime: "2026-05-07T12:00:00Z",
+        sellerLocktime: new Date(Date.now() + 120_000).toISOString(),
+        buyerLocktime: new Date(Date.now() + 60_000).toISOString(),
         marketId: "cond-YES",
         baseAsset: "sat",
         divisibility: 1_000,
@@ -1516,6 +1528,71 @@ describe("useTradeSettlement", () => {
       useActiveSwapsStore.getState().byTradeId["trade-nonparticipant-failure"]
         .step,
     ).toBe("Failed");
+  });
+
+  it("resubmits an exact taker fill after a maker collateral failure", async () => {
+    renderHook(() => useTradeSettlement(true));
+
+    await act(async () => {
+      useActiveSwapsStore.getState().promote({
+        tradeId: "trade-recover-taker",
+        orderId: "order-recover-taker",
+        marketId: "condition-YES",
+        ephemeralPrivkeyHex: "11".repeat(32),
+        ephemeralPubkeyHex: "02" + "22".repeat(32),
+        side: "Buy",
+        tokenSide: "Outcome",
+        priceSubunits: 75,
+        amountSubunits: 5_000,
+      });
+    });
+    useActiveSwapsStore.setState((state) => ({
+      byTradeId: {
+        ...state.byTradeId,
+        "trade-recover-taker": {
+          ...state.byTradeId["trade-recover-taker"]!,
+          isTaker: true,
+          matchedAmountSubunits: 1_000,
+          timeInForce: "FAK",
+          buyerLocktime: Math.floor(Date.now() / 1_000) + 60,
+          resubmitAttempt: 0,
+        },
+      },
+    } as never));
+
+    const callbacks = mockUseTradeHub.mock.calls.at(-1)?.[1] as {
+      onTradeStateChanged: (
+        tradeId: string,
+        newState: string,
+        failureReason?: string,
+      ) => void;
+    };
+
+    await act(async () => {
+      callbacks.onTradeStateChanged(
+        "trade-recover-taker",
+        "Failed",
+        "maker-collateral-failure",
+      );
+    });
+
+    await waitFor(() => expect(mockSubmitOrder).toHaveBeenCalledWith(
+      "condition-YES",
+      expect.objectContaining({
+        outcomeId: "YES",
+        tokenSide: "Outcome",
+        side: "Buy",
+        price: 75,
+        amountSubunits: 1_000,
+        timeInForce: "FAK",
+      }),
+    ));
+    expect(usePendingTradesStore.getState().byOrderId["recovery-order"])
+      .toMatchObject({
+        marketId: "condition-YES",
+        amountSubunits: 1_000,
+        recoveryAttempt: 1,
+      });
   });
 
   it("fails before locking proofs when TradeCreated outcome face is not a whole market share for sat/10000", async () => {

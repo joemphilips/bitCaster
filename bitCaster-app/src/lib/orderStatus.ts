@@ -94,10 +94,15 @@ type PendingTradeForPromotion = {
   tokenSide?: 'Outcome' | 'Complement'
   priceSubunits?: number | null
   amountSubunits?: number | null
+  timeInForce?: 'FAK' | 'FOK' | 'GTC'
+  recoveryAttempt?: number
 }
 
 type FillLike = {
   tradeId?: string
+  makerOrderId?: string
+  takerOrderId?: string
+  amountSubunits?: number
 }
 
 const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set([
@@ -168,6 +173,10 @@ export function promoteFillsToActiveSwaps(
       tokenSide: trade.tokenSide,
       priceSubunits: trade.priceSubunits,
       amountSubunits: trade.amountSubunits,
+      timeInForce: trade.timeInForce,
+      isTaker: fill.takerOrderId === trade.orderId,
+      matchedAmountSubunits: fill.amountSubunits ?? null,
+      recoveryAttempt: trade.recoveryAttempt,
     })
     promoted += 1
   }
