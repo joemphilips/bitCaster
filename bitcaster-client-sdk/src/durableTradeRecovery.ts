@@ -77,6 +77,19 @@ export interface DurableTradeSessionRecord<TAdapterState> {
   updatedAt: number
 }
 
+/**
+ * Durable pre-session binding retained after an order receives a trade id but
+ * before TradeCreated supplies role, counterparty, and locktimes.
+ */
+export interface DurableTradePendingIntent {
+  schemaVersion: number
+  tradeId: string
+  orderId: string
+  marketId: string
+  localProtocolPubkey: string
+  deadline: string
+}
+
 export interface DurableTradeSessionRepository {
   get(tradeId: string): Promise<DurableTradeSession | null>
   listRecoverable(): Promise<DurableTradeSession[]>
@@ -237,6 +250,26 @@ export function validateDurableTradeSession(
 
   return validateCipherJournal(session.receivedCiphers) ??
     validateCipherJournal(session.outboundCiphers)
+}
+
+export function validateDurableTradePendingIntent(
+  intent: DurableTradePendingIntent,
+): string | null {
+  if (intent.schemaVersion !== DURABLE_TRADE_SESSION_SCHEMA_VERSION) {
+    return `unsupported durable pending trade intent schema version '${intent.schemaVersion}'`
+  }
+  if (!isIdentifier(intent.tradeId)) return 'durable pending trade intent trade id is invalid'
+  if (!isIdentifier(intent.orderId)) return 'durable pending trade intent order id is invalid'
+  if (typeof intent.marketId !== 'string' || intent.marketId.length === 0 || intent.marketId.length > 512) {
+    return 'durable pending trade intent market id is invalid'
+  }
+  if (!isProtocolPubkey(intent.localProtocolPubkey)) {
+    return 'durable pending trade intent local protocol public key is invalid'
+  }
+  if (!Number.isFinite(Date.parse(intent.deadline))) {
+    return 'durable pending trade intent deadline is invalid'
+  }
+  return null
 }
 
 export async function verifyDurableTradeSessionCipherIntegrity(

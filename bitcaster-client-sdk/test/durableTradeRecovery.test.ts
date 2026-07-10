@@ -9,6 +9,7 @@ import {
   reduceDurableTradeSession,
   scanDurableTradeRecoveryLinks,
   validateDurableTradeSession,
+  validateDurableTradePendingIntent,
   verifyDurableTradeSessionCipherIntegrity,
   type DurableRefundSalvageEvidence,
   type DurableTradeProofOperationLink,
@@ -89,6 +90,27 @@ test('deterministic proof-operation identifiers bind trade, role, and stage', ()
   assert.notEqual(
     sellerReservation,
     deriveDurableProofOperationId('trade-001', 'seller', 'refund'),
+  )
+})
+
+test('a pending trade intent validates only the pre-TradeCreated durable binding', () => {
+  const intent = {
+    schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
+    tradeId: 'trade-001',
+    orderId: 'order-001',
+    marketId: 'condition-YES',
+    localProtocolPubkey: `02${LOCAL_PROTOCOL_PUBKEY}`,
+    deadline: '2026-07-10T12:00:00.000Z',
+  }
+
+  assert.equal(validateDurableTradePendingIntent(intent), null)
+  assert.match(
+    validateDurableTradePendingIntent({ ...intent, deadline: 'not-a-date' }) ?? '',
+    /deadline/,
+  )
+  assert.match(
+    validateDurableTradePendingIntent({ ...intent, localProtocolPubkey: 'x' }) ?? '',
+    /public key/,
   )
 })
 
