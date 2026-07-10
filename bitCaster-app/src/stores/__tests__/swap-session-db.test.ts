@@ -18,6 +18,7 @@ vi.mock('../proof-db', () => ({
 }))
 
 import {
+  MAX_ACTIVE_GUI_SWAP_SESSIONS,
   loadRecoverableGuiSwapSessions,
   persistGuiSwapSession,
   removeGuiSwapSession,
@@ -82,5 +83,22 @@ describe('GUI durable swap session repository', () => {
     await expect(loadRecoverableGuiSwapSessions()).resolves.toEqual([])
     await removeGuiSwapSession('trade-001')
     expect(rows.has('trade-001')).toBe(false)
+  })
+
+  it('fails closed instead of evicting a live durable session at capacity', async () => {
+    for (let i = 0; i < MAX_ACTIVE_GUI_SWAP_SESSIONS; i += 1) {
+      const tradeId = `trade-${i}`
+      rows.set(tradeId, {
+        tradeId,
+        session: {},
+        adapterState: swap({ tradeId }),
+        updatedAt: i,
+      })
+    }
+
+    await expect(
+      persistGuiSwapSession(swap({ tradeId: 'trade-overflow' }), 'https://mint.example'),
+    ).rejects.toThrow(/capacity is exhausted/)
+    expect(rows).toHaveLength(MAX_ACTIVE_GUI_SWAP_SESSIONS)
   })
 })

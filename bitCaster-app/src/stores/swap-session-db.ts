@@ -12,6 +12,8 @@ export type GuiSwapSessionRecord = DurableTradeSessionRecord<ActiveSwap> & {
   tradeId: string
 }
 
+export const MAX_ACTIVE_GUI_SWAP_SESSIONS = 32
+
 /**
  * Persist the GUI protocol payload with the shared SDK envelope before the
  * next irreversible protocol action. The browser record is client-local and
@@ -27,6 +29,15 @@ export async function persistGuiSwapSession(swap: ActiveSwap, mintUrl: string): 
     session,
     adapterState: swap,
     updatedAt: Date.now(),
+  }
+  const existing = await db.swapSessions.toArray()
+  const alreadyPersisted = existing.some((item) => item.tradeId === swap.tradeId)
+  const activeCount = existing.filter((item) => {
+    if (!isGuiSwapSessionRecord(item)) return false
+    return item.adapterState.step !== 'completed'
+  }).length
+  if (!alreadyPersisted && activeCount >= MAX_ACTIVE_GUI_SWAP_SESSIONS) {
+    throw new Error('Durable swap session capacity is exhausted')
   }
   await db.swapSessions.put(record satisfies SwapSessionRecord)
 }
