@@ -24,22 +24,24 @@ export async function persistGuiSwapSession(swap: ActiveSwap, mintUrl: string): 
   if (!session) {
     throw new Error('Cannot persist a swap session before trade role and locktimes are known')
   }
-  const record: GuiSwapSessionRecord = {
-    tradeId: swap.tradeId,
-    session,
-    adapterState: swap,
-    updatedAt: Date.now(),
-  }
-  const existing = await db.swapSessions.toArray()
-  const alreadyPersisted = existing.some((item) => item.tradeId === swap.tradeId)
-  const activeCount = existing.filter((item) => {
-    if (!isGuiSwapSessionRecord(item)) return false
-    return item.adapterState.step !== 'completed'
-  }).length
-  if (!alreadyPersisted && activeCount >= MAX_ACTIVE_GUI_SWAP_SESSIONS) {
-    throw new Error('Durable swap session capacity is exhausted')
-  }
-  await db.swapSessions.put(record satisfies SwapSessionRecord)
+  await db.transaction('rw', db.swapSessions, async () => {
+    const existing = await db.swapSessions.toArray()
+    const prior = existing.find((item) => item.tradeId === swap.tradeId)
+    const activeCount = existing.filter((item) => {
+      if (!isGuiSwapSessionRecord(item)) return false
+      return item.adapterState.step !== 'completed'
+    }).length
+    if (!prior && activeCount >= MAX_ACTIVE_GUI_SWAP_SESSIONS) {
+      throw new Error('Durable swap session capacity is exhausted')
+    }
+    const revision = isGuiSwapSessionRecord(prior) ? prior.session.revision + 1 : 0
+    await db.swapSessions.put({
+      tradeId: swap.tradeId,
+      session: { ...session, revision },
+      adapterState: structuredClone(swap),
+      updatedAt: Date.now(),
+    } satisfies SwapSessionRecord)
+  })
 }
 
 export async function loadRecoverableGuiSwapSessions(): Promise<ActiveSwap[]> {
@@ -125,11 +127,13 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (part) => part.toString(16).padStart(2, '0')).join('')
 }
 
-function isGuiSwapSessionRecord(value: SwapSessionRecord): value is GuiSwapSessionRecord {
-  return typeof value.tradeId === 'string' &&
-    typeof value.updatedAt === 'number' &&
-    typeof value.adapterState === 'object' &&
-    value.adapterState !== null
+function isGuiSwapSessionRecord(value: unknown): value is GuiSwapSessionRecord {
+  return typeof value === 'object' &&
+    value !== null &&
+    typeof (value as SwapSessionRecord).tradeId === 'string' &&
+    typeof (value as SwapSessionRecord).updatedAt === 'number' &&
+    typeof (value as SwapSessionRecord).adapterState === 'object' &&
+    (value as SwapSessionRecord).adapterState !== null
 }
 
 function isAdapterStateBoundToSession(

@@ -5,6 +5,11 @@ const rows = new Map<string, Record<string, unknown>>()
 
 vi.mock('../proof-db', () => ({
   db: {
+    transaction: async (
+      _mode: string,
+      _table: unknown,
+      callback: () => Promise<unknown>,
+    ) => callback(),
     swapSessions: {
       put: async (row: { tradeId: string }) => {
         rows.set(row.tradeId, row as Record<string, unknown>)
@@ -63,6 +68,14 @@ describe('GUI durable swap session repository', () => {
     await persistGuiSwapSession(active, 'https://mint.example')
 
     await expect(loadRecoverableGuiSwapSessions()).resolves.toEqual([active])
+  })
+
+  it('serializes repeated writes through a monotonic session revision', async () => {
+    await persistGuiSwapSession(swap(), 'https://mint.example')
+    await persistGuiSwapSession(swap({ step: 'driving' }), 'https://mint.example')
+
+    const row = rows.get('trade-001') as { session: { revision: number } }
+    expect(row.session.revision).toBe(1)
   })
 
   it('refuses a row whose GUI payload no longer matches its persisted protocol binding', async () => {
