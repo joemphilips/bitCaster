@@ -3,6 +3,7 @@ import {
   type SwapCipherMessageType,
   type SwapRole,
 } from './tradeSession.ts'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 
 export const DURABLE_TRADE_SESSION_SCHEMA_VERSION = 1 as const
 
@@ -270,6 +271,32 @@ export function validateDurableTradePendingIntent(
     return 'durable pending trade intent deadline is invalid'
   }
   return null
+}
+
+/** Verifies that adapter-held private material is bound to the protocol key. */
+export function validateDurableTradePrivateKeyBinding(
+  privateKeyHex: string,
+  publicKeyHex: string,
+): string | null {
+  if (!/^[a-f0-9]{64}$/i.test(privateKeyHex)) {
+    return 'durable trade private key is invalid'
+  }
+  if (!isProtocolPubkey(publicKeyHex)) {
+    return 'durable trade public key is invalid'
+  }
+  try {
+    const privateKey = Uint8Array.from(
+      privateKeyHex.match(/.{2}/g)?.map((part) => Number.parseInt(part, 16)) ?? [],
+    )
+    const actual = Array.from(secp256k1.getPublicKey(privateKey, true))
+      .map((part) => part.toString(16).padStart(2, '0'))
+      .join('')
+    return actual === publicKeyHex.toLowerCase()
+      ? null
+      : 'durable trade private key does not match its public key'
+  } catch {
+    return 'durable trade private key is invalid'
+  }
 }
 
 export async function verifyDurableTradeSessionCipherIntegrity(

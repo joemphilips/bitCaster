@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   canSalvageDurableRefund,
@@ -10,6 +11,7 @@ import {
   scanDurableTradeRecoveryLinks,
   validateDurableTradeSession,
   validateDurableTradePendingIntent,
+  validateDurableTradePrivateKeyBinding,
   verifyDurableTradeSessionCipherIntegrity,
   type DurableRefundSalvageEvidence,
   type DurableTradeProofOperationLink,
@@ -111,6 +113,19 @@ test('a pending trade intent validates only the pre-TradeCreated durable binding
   assert.match(
     validateDurableTradePendingIntent({ ...intent, localProtocolPubkey: 'x' }) ?? '',
     /public key/,
+  )
+})
+
+test('private recovery material must derive the persisted protocol public key', () => {
+  const privateKey = '01'.repeat(32)
+  const publicKey = Array.from(secp256k1.getPublicKey(new Uint8Array(32).fill(1), true))
+    .map((part) => part.toString(16).padStart(2, '0'))
+    .join('')
+
+  assert.equal(validateDurableTradePrivateKeyBinding(privateKey, publicKey), null)
+  assert.match(
+    validateDurableTradePrivateKeyBinding(privateKey, `02${'b'.repeat(64)}`) ?? '',
+    /does not match/,
   )
 })
 
