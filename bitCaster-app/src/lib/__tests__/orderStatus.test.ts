@@ -3,9 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const { mockGenerateNip98Header } = vi.hoisted(() => ({
   mockGenerateNip98Header: vi.fn(),
 }))
+const { mockGetGuiPendingSwapIntent } = vi.hoisted(() => ({
+  mockGetGuiPendingSwapIntent: vi.fn(),
+}))
 
 vi.mock('../markets', () => ({
   generateNip98Header: mockGenerateNip98Header,
+}))
+vi.mock('@/stores/pending-swap-intent-db', () => ({
+  getGuiPendingSwapIntent: mockGetGuiPendingSwapIntent,
 }))
 
 import {
@@ -73,6 +79,8 @@ describe('promoteNewFillsToActiveSwaps', () => {
   beforeEach(() => {
     useActiveSwapsStore.setState({ byTradeId: {} })
     usePendingPubkeySubmissionsStore.setState({ byTradeId: {} })
+    mockGetGuiPendingSwapIntent.mockReset()
+    mockGetGuiPendingSwapIntent.mockResolvedValue(null)
   })
 
   it('skips an unchanged fill snapshot', () => {
@@ -94,6 +102,24 @@ describe('promoteNewFillsToActiveSwaps', () => {
       'trade-b',
       'trade-c',
     ])
+  })
+
+  it('hydrates a missing pending key from the durable intent before promoting its fill', async () => {
+    const status = orderStatusWithTradeFills('trade-durable')
+    mockGetGuiPendingSwapIntent.mockResolvedValue({
+      tradeId: 'trade-durable',
+      orderId: 'order-1',
+      marketId: 'deadbeef-YES',
+      pubkey: `02${'a'.repeat(64)}`,
+      privkey: '01'.repeat(32),
+      deadline: '2099-01-01T00:00:00.000Z',
+      submitted: true,
+    })
+
+    expect(promoteNewFillsToActiveSwaps(status, pendingTrade(), 0)).toBe(0)
+    await vi.waitFor(() => {
+      expect(useActiveSwapsStore.getState().byTradeId['trade-durable']).toBeDefined()
+    })
   })
 
   it('retains the taker role and exact fill amount for failed-fill recovery', () => {

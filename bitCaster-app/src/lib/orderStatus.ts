@@ -8,6 +8,7 @@ import {
 } from '@/stores/notifications'
 import { useActiveSwapsStore } from '@/stores/activeSwaps'
 import { usePendingPubkeySubmissionsStore } from '@/stores/pendingPubkeySubmissions'
+import { getGuiPendingSwapIntent } from '@/stores/pending-swap-intent-db'
 import { useToastStore } from '@/stores/toast'
 import { generateNip98Header } from '@/lib/markets'
 import { resolveApiSigningUrl } from '@/lib/hubUrl'
@@ -159,28 +160,50 @@ export function promoteFillsToActiveSwaps(
     const tradeId = fill.tradeId
     if (!tradeId) continue
     const pendingKey = usePendingPubkeySubmissionsStore.getState().byTradeId[tradeId]
-    if (!pendingKey) continue
-    promote({
-      tradeId,
-      orderId: trade.orderId,
-      clientOrderId: trade.clientOrderId,
-      marketId: trade.marketId,
-      ephemeralPrivkeyHex: pendingKey.privkey,
-      ephemeralPubkeyHex: pendingKey.pubkey,
-      baseAsset: trade.baseAsset,
-      divisibility: trade.divisibility,
-      side: trade.side,
-      tokenSide: trade.tokenSide,
-      priceSubunits: trade.priceSubunits,
-      amountSubunits: trade.amountSubunits,
-      timeInForce: trade.timeInForce,
-      isTaker: fill.takerOrderId === trade.orderId,
-      matchedAmountSubunits: fill.amountSubunits ?? null,
-      recoveryAttempt: trade.recoveryAttempt,
-    })
+    if (!pendingKey) {
+      void getGuiPendingSwapIntent(tradeId)
+        .then((intent) => {
+          if (!intent) return
+          usePendingPubkeySubmissionsStore.getState().addPendingPubkey(intent)
+          promoteSwapFill(promote, fill, trade, intent)
+        })
+        .catch(() => {
+          // A failed durable lookup cannot create an active swap or new key.
+        })
+      continue
+    }
+    promoteSwapFill(promote, fill, trade, pendingKey)
     promoted += 1
   }
   return promoted
+}
+
+function promoteSwapFill(
+  promote: ReturnType<typeof useActiveSwapsStore.getState>['promote'],
+  fill: FillLike,
+  trade: PendingTradeForPromotion,
+  pendingKey: { pubkey: string; privkey: string },
+): void {
+  const tradeId = fill.tradeId
+  if (!tradeId) return
+  promote({
+    tradeId,
+    orderId: trade.orderId,
+    clientOrderId: trade.clientOrderId,
+    marketId: trade.marketId,
+    ephemeralPrivkeyHex: pendingKey.privkey,
+    ephemeralPubkeyHex: pendingKey.pubkey,
+    baseAsset: trade.baseAsset,
+    divisibility: trade.divisibility,
+    side: trade.side,
+    tokenSide: trade.tokenSide,
+    priceSubunits: trade.priceSubunits,
+    amountSubunits: trade.amountSubunits,
+    timeInForce: trade.timeInForce,
+    isTaker: fill.takerOrderId === trade.orderId,
+    matchedAmountSubunits: fill.amountSubunits ?? null,
+    recoveryAttempt: trade.recoveryAttempt,
+  })
 }
 
 export function buildOrderStatusNotifications(
