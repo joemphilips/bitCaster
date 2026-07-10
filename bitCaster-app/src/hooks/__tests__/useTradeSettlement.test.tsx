@@ -18,6 +18,40 @@ const { mockFetchOrderStatus } = vi.hoisted(() => ({
   mockFetchOrderStatus: vi.fn(),
 }));
 
+const {
+  mockCompleteGuiProofOperationWithSession,
+  mockLoadRecoverableGuiSwapSessions,
+  mockPersistGuiSwapSession,
+  mockPrepareGuiProofOperationWithSession,
+  mockRemoveGuiSwapSession,
+  mockResumeGuiSwapSession,
+  mockWithGuiSwapSessionOwnership,
+} = vi.hoisted(() => ({
+  mockCompleteGuiProofOperationWithSession: vi.fn(),
+  mockLoadRecoverableGuiSwapSessions: vi.fn(),
+  mockPersistGuiSwapSession: vi.fn(),
+  mockPrepareGuiProofOperationWithSession: vi.fn(),
+  mockRemoveGuiSwapSession: vi.fn(),
+  mockResumeGuiSwapSession: vi.fn(),
+  mockWithGuiSwapSessionOwnership: vi.fn(),
+}));
+
+const {
+  mockGetGuiPendingSwapIntent,
+  mockGetOrCreateGuiPendingSwapIntent,
+  mockLoadGuiPendingSwapIntents,
+  mockMarkGuiPendingSwapIntentSubmitted,
+  mockMigrateLegacyGuiPendingSwapIntents,
+  mockRemoveGuiPendingSwapIntent,
+} = vi.hoisted(() => ({
+  mockGetGuiPendingSwapIntent: vi.fn(),
+  mockGetOrCreateGuiPendingSwapIntent: vi.fn(),
+  mockLoadGuiPendingSwapIntents: vi.fn(),
+  mockMarkGuiPendingSwapIntentSubmitted: vi.fn(),
+  mockMigrateLegacyGuiPendingSwapIntents: vi.fn(),
+  mockRemoveGuiPendingSwapIntent: vi.fn(),
+}));
+
 const { mockSubmitOrder, mockSubmitEphemeralPubkey } = vi.hoisted(() => ({
   mockSubmitOrder: vi.fn(),
   mockSubmitEphemeralPubkey: vi.fn(),
@@ -85,6 +119,25 @@ vi.mock("@/stores/proof-db", () => ({
   tryReserveProofs: mockTryReserveProofs,
 }));
 
+vi.mock("@/stores/swap-session-db", () => ({
+  loadRecoverableGuiSwapSessions: mockLoadRecoverableGuiSwapSessions,
+  persistGuiSwapSession: mockPersistGuiSwapSession,
+  prepareGuiProofOperationWithSession: mockPrepareGuiProofOperationWithSession,
+  completeGuiProofOperationWithSession: mockCompleteGuiProofOperationWithSession,
+  removeGuiSwapSession: mockRemoveGuiSwapSession,
+  resumeGuiSwapSession: mockResumeGuiSwapSession,
+  withGuiSwapSessionOwnership: mockWithGuiSwapSessionOwnership,
+}));
+
+vi.mock("@/stores/pending-swap-intent-db", () => ({
+  getGuiPendingSwapIntent: mockGetGuiPendingSwapIntent,
+  getOrCreateGuiPendingSwapIntent: mockGetOrCreateGuiPendingSwapIntent,
+  loadGuiPendingSwapIntents: mockLoadGuiPendingSwapIntents,
+  markGuiPendingSwapIntentSubmitted: mockMarkGuiPendingSwapIntentSubmitted,
+  migrateLegacyGuiPendingSwapIntents: mockMigrateLegacyGuiPendingSwapIntents,
+  removeGuiPendingSwapIntent: mockRemoveGuiPendingSwapIntent,
+}));
+
 vi.mock("@/lib/orderStatus", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/orderStatus")>();
   return {
@@ -112,10 +165,14 @@ vi.mock("@bitcaster/swap-protocol/atomicSwap", async (importOriginal) => {
   };
 });
 
-vi.mock("@/stores/wallet", () => ({
-  useWalletStore: (selector: (state: { activeMintUrl: string }) => unknown) =>
-    selector({ activeMintUrl: "https://mint.example" }),
-}));
+vi.mock("@/stores/wallet", () => {
+  const state = { activeMintUrl: "https://mint.example" };
+  const useWalletStore = Object.assign(
+    (selector: (value: typeof state) => unknown) => selector(state),
+    { getState: () => state },
+  );
+  return { useWalletStore };
+});
 
 const { useTradeSettlement, persistPartialLockFromError } =
   await import("../useTradeSettlement");
@@ -217,6 +274,26 @@ beforeEach(() => {
     filledAmountSubunits: 0,
     fills: [],
   });
+  mockLoadRecoverableGuiSwapSessions.mockResolvedValue([]);
+  mockPersistGuiSwapSession.mockResolvedValue(undefined);
+  mockPrepareGuiProofOperationWithSession.mockImplementation(async (input) => ({
+    ...input,
+    state: "prepared",
+  }));
+  mockCompleteGuiProofOperationWithSession.mockImplementation(async (operationId, resultProofs) => ({
+    operationId,
+    state: "completed",
+    resultProofs,
+  }));
+  mockRemoveGuiSwapSession.mockResolvedValue(undefined);
+  mockResumeGuiSwapSession.mockResolvedValue(null);
+  mockWithGuiSwapSessionOwnership.mockImplementation(async (_tradeId, action) => action());
+  mockGetGuiPendingSwapIntent.mockResolvedValue(null);
+  mockGetOrCreateGuiPendingSwapIntent.mockImplementation(async (input) => input.create());
+  mockLoadGuiPendingSwapIntents.mockResolvedValue([]);
+  mockMarkGuiPendingSwapIntentSubmitted.mockResolvedValue(undefined);
+  mockMigrateLegacyGuiPendingSwapIntents.mockResolvedValue([]);
+  mockRemoveGuiPendingSwapIntent.mockResolvedValue(undefined);
   mockSubmitOrder.mockResolvedValue({ orderId: "recovery-order" });
   mockSubmitEphemeralPubkey.mockResolvedValue(undefined);
   mockUseTradeHub.mockReturnValue({
