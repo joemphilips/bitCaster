@@ -53,12 +53,20 @@ export type ProofOperationKind =
   | "ctf-condition-registration"
   | "regular-split"
   | "proof-split";
-export type ProofOperationState = "prepared" | "mint-submitted" | "completed" | "Failed";
+export type ProofOperationState =
+  | "prepared"
+  | "mint-submitted"
+  | "completed"
+  | "Failed";
 
 export interface ProofOperationRecord {
   operationId: string;
   /** SDK recovery identity for a swap-owned operation. */
   durableTradeRecovery?: DurableTradeProofOperationLink;
+  /** Indexed mirror of the SDK semantic operation id for exact recovery. */
+  durableOperationId?: string;
+  /** Indexed mirror that bounds recovery scans to one durable trade. */
+  durableTradeId?: string;
   kind: ProofOperationKind;
   state: ProofOperationState;
   mintUrl: string;
@@ -91,7 +99,6 @@ export interface SwapSessionRecord {
   session: DurableTradeSession;
   adapterState: unknown;
   updatedAt: number;
-  lease?: { ownerId: string; expiresAt: number };
 }
 
 /** Adapter-owned private key material for an SDK-defined pre-session intent. */
@@ -159,10 +166,28 @@ class BitcasterDB extends Dexie {
       swapSessions: "tradeId, updatedAt",
       swapIntents: "tradeId, updatedAt, submitted",
     });
+    this.version(7).stores({
+      proofs:
+        "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
+      proofOperations:
+        "operationId, state, kind, mintUrl, updatedAt, durableOperationId",
+      swapSessions: "tradeId, updatedAt",
+      swapIntents: "tradeId, updatedAt, submitted",
+    });
+    this.version(8).stores({
+      proofs:
+        "secret, id, C, amount, mintUrl, receivedAt, conditionId, outcomeCollection, [conditionId+outcomeCollection], [mintUrl+conditionId+outcomeCollection]",
+      proofOperations:
+        "operationId, state, kind, mintUrl, updatedAt, durableOperationId, durableTradeId",
+      swapSessions: "tradeId, updatedAt",
+      swapIntents: "tradeId, updatedAt, submitted",
+    });
     this.on("blocked", () => {
       durableSwapStorageBlockedReason =
         "Durable swap storage upgrade is blocked by another open tab";
-      rejectDurableSwapStorageOpen?.(new Error(durableSwapStorageBlockedReason));
+      rejectDurableSwapStorageOpen?.(
+        new Error(durableSwapStorageBlockedReason),
+      );
     });
   }
 }
@@ -184,13 +209,17 @@ export async function ensureDurableSwapStorage(): Promise<void> {
         reject(new Error("Timed out opening durable swap storage"));
       }, DURABLE_SWAP_STORAGE_OPEN_TIMEOUT_MS);
       rejectDurableSwapStorageOpen = reject;
-      void db.open().then(
-        () => resolve(),
-        (error) => reject(error instanceof Error ? error : new Error(String(error))),
-      ).finally(() => {
-        clearTimeout(timeout);
-        rejectDurableSwapStorageOpen = null;
-      });
+      void db
+        .open()
+        .then(
+          () => resolve(),
+          (error) =>
+            reject(error instanceof Error ? error : new Error(String(error))),
+        )
+        .finally(() => {
+          clearTimeout(timeout);
+          rejectDurableSwapStorageOpen = null;
+        });
     }).finally(() => {
       durableSwapStorageOpenInFlight = null;
     });
@@ -298,13 +327,19 @@ export async function selectAndReserveUnitProofs(
       throw new Error("Insufficient spendable proofs for requested amount");
     }
 
-    const currentRows = await db.proofs.bulkGet(picked.map((proof) => proof.secret));
+    const currentRows = await db.proofs.bulkGet(
+      picked.map((proof) => proof.secret),
+    );
     if (currentRows.length !== picked.length) {
       throw new Error("Selected proof reservation failed: proof set changed");
     }
-    const current = currentRows.map((row) => (row ? normalizeStoredProof(row) : undefined));
+    const current = currentRows.map((row) =>
+      row ? normalizeStoredProof(row) : undefined,
+    );
     if (current.some((row) => !row || row.reservedBy)) {
-      throw new Error("Selected proof reservation failed: proof already reserved or missing");
+      throw new Error(
+        "Selected proof reservation failed: proof already reserved or missing",
+      );
     }
 
     selected = current.filter((row): row is StoredProof => !!row);
@@ -349,8 +384,9 @@ export async function getOutcomeProofs(
     const proofOutcome =
       candidate.outcomeCollection ?? candidate.outcome_collection;
     return (
-      proofConditionId === conditionId && proofOutcome === outcomeCollection
-      && normalizeStoredProofBaseAsset(p) === baseAsset
+      proofConditionId === conditionId &&
+      proofOutcome === outcomeCollection &&
+      normalizeStoredProofBaseAsset(p) === baseAsset
     );
   });
 }
@@ -457,7 +493,11 @@ export async function tryReserveProofs(
   let reserved = false;
   await db.transaction("rw", db.proofs, async () => {
     const rows = await db.proofs.bulkGet(uniqueSecrets);
-    if (rows.some((row) => !row || (row.reservedBy && row.reservedBy !== reservedBy))) {
+    if (
+      rows.some(
+        (row) => !row || (row.reservedBy && row.reservedBy !== reservedBy),
+      )
+    ) {
       return;
     }
 
@@ -538,7 +578,9 @@ function normalizeStoredProofBaseAsset(proof: StoredProof): string {
   return normalizeMarketBaseAsset(proof.baseAsset);
 }
 
-export function normalizeStoredProofUnit(proof: StoredProof): CashuProofUnit | undefined {
+export function normalizeStoredProofUnit(
+  proof: StoredProof,
+): CashuProofUnit | undefined {
   return parseCashuProofUnit(proof.unit) ?? undefined;
 }
 
