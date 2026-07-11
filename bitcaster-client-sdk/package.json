@@ -122,6 +122,7 @@
   },
   "dependencies": {
     "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
     "@cashu/cashu-ts": "file:../cashu-ts"
   },
   "devDependencies": {
