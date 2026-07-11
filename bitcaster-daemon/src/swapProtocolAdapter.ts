@@ -5,8 +5,10 @@ import {
 } from '@cashu/cashu-ts'
 import { createP2PKWitness } from '@bitcaster-market/swap-protocol/p2pk'
 import { sha256 } from '@noble/hashes/sha2.js'
+import { createDurableTradeProofOperationLink } from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import {
   getProofOperation,
+  markProofOperationMintSubmitted,
   markProofOperationCompleted,
   prepareProofOperation,
   type CashuProofRecord,
@@ -23,6 +25,9 @@ interface ProofOperationStore {
   getProofOperation(operationId: string): Promise<ProofOperationRecord | null>
   prepareProofOperation(
     input: PrepareProofOperationInput,
+  ): Promise<ProofOperationRecord>
+  markProofOperationMintSubmitted(
+    operationId: string,
   ): Promise<ProofOperationRecord>
   markProofOperationCompleted(
     operationId: string,
@@ -229,7 +234,7 @@ export function createRealDaemonSwapOps(
         amountSats,
         {
           operationId,
-          proofOperationStore: DAEMON_PROOF_OPERATION_STORE,
+          proofOperationStore: proofOperationStoreFor(ctx),
         },
       )
     },
@@ -255,7 +260,7 @@ export function createRealDaemonSwapOps(
           sigFlag: 'SIG_INPUTS',
         },
         operationId: `${ctx.tradeId}/seller-mint-ctf-split`,
-        proofOperationStore: DAEMON_PROOF_OPERATION_STORE,
+        proofOperationStore: proofOperationStoreFor(ctx),
       })
       const prepared = await atomicSwap.sellerPreparePrelockedSwap(
         toAtomicCtx(ctx),
@@ -375,14 +380,35 @@ function proofOperationOptions(
 ): Required<ProofOperationOptions> {
   return {
     operationId: `${tradeId}/${step}`,
-    proofOperationStore: DAEMON_PROOF_OPERATION_STORE,
+    proofOperationStore: proofOperationStoreFor({ tradeId, role: step.startsWith('buyer') ? 'buyer' : 'seller' }),
   }
 }
 
 const DAEMON_PROOF_OPERATION_STORE: ProofOperationStore = {
   getProofOperation,
   prepareProofOperation,
+  markProofOperationMintSubmitted,
   markProofOperationCompleted,
+}
+
+function proofOperationStoreFor(ctx: Pick<DaemonSwapContext, 'tradeId' | 'role'>): ProofOperationStore {
+  return {
+    getProofOperation,
+    prepareProofOperation: async (input) => prepareProofOperation({
+        ...input,
+        durableTradeRecovery: createDurableTradeProofOperationLink({
+          tradeId: ctx.tradeId,
+          role: ctx.role,
+          stage: input.kind === 'swap-lock' || input.kind === 'conditional-keyset-swap'
+            ? 'proof-reservation'
+            : input.kind === 'swap-claim' ? 'claim' : input.kind === 'swap-refund' ? 'refund' : 'mint-submission',
+          state: 'prepared',
+          operationKey: input.operationId,
+        }),
+      }),
+    markProofOperationMintSubmitted,
+    markProofOperationCompleted,
+  }
 }
 
 async function defaultAtomicSwapModuleLoader(): Promise<AtomicSwapModule> {

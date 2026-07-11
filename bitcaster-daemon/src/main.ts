@@ -58,6 +58,7 @@ switch (command) {
     const { SignalRTradeHubConnection } = await import('./tradeHubConnection.ts')
     const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
     const { DaemonSwapExecutor } = await import('./swapExecutor.ts')
+    const { recoverDaemonDurableTradeSessions } = await import('./durableTradeRecovery.ts')
     const { DaemonTakerFillRecovery } = await import('./takerFillRecovery.ts')
     const { createRealDaemonSwapOps } = await import('./swapProtocolAdapter.ts')
     const { readProfile } = await import('./profile.ts')
@@ -225,8 +226,23 @@ switch (command) {
           process.stderr.write(`Wallet recovery sweep failed: ${message}\n`)
         })
     }
-    if (executor) {
-      void executor.resumeActiveSwaps(await ensureState()).catch((err: unknown) => {
+    if (executor && tradeHub) {
+      void (async () => {
+        const recovery = await recoverDaemonDurableTradeSessions({
+          executor,
+          connection: tradeHub,
+        })
+        for (const session of recovery.sessions) {
+          if (session.kind === 'failed-closed') {
+            process.stderr.write(
+              `Durable trade recovery failed closed for ${session.tradeId}: ${session.reason}\n`,
+            )
+          }
+        }
+        // The coordinator owns ambiguous persisted mint operations. The
+        // executor then progresses only swaps left without one of those rows.
+        await executor.resumeActiveSwaps(await ensureState())
+      })().catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
         process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
       })

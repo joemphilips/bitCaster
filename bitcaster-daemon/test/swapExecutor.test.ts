@@ -684,6 +684,9 @@ test('DaemonSwapExecutor retries mint-pending seller open without another event'
     )
 
     const persisted = await waitForSwapStep('trade-retry', 'seller-opened')
+    for (let attempt = 0; attempt < 20 && sent.length < 2; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
     assert.equal(lockAttempts, 2)
     assert.equal(persisted?.swaps['trade-retry'].sellerAdaptorSecretHex, 'aa')
     assert.deepEqual(sent, [

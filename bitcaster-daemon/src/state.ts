@@ -1,4 +1,5 @@
 import { readFile, rename, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import {
   decideSwapMessage,
@@ -6,15 +7,20 @@ import {
   decideTradeStateChanged,
   isSettlementCompleteMessage,
 } from '@bitcaster-market/client-sdk/tradeFlow'
+import { isSwapCipherMessageType } from '@bitcaster-market/client-sdk/tradeSession'
 import {
   normalizeMarketBaseAsset,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type {
+  DurableTradeProofOperationLink,
+  DurableTradeSession,
+} from '@bitcaster-market/client-sdk/durableTradeRecovery'
+import type {
   PartialLockHeldRecord,
   SwapFailure,
 } from '@bitcaster-market/client-sdk/swapFailure'
-import { ensureProfileDir, profileDir } from './profile.ts'
+import { ensureProfileDir, profileDir, readProfile } from './profile.ts'
 import { readSecrets } from './secrets.ts'
 
 export interface CashuProofRecord {
@@ -49,10 +55,11 @@ export type ProofOperationKind =
   | 'proof-split'
   | 'swap-refund'
 
-export type ProofOperationState = 'prepared' | 'completed' | 'Failed'
+export type ProofOperationState = 'prepared' | 'mint-submitted' | 'completed' | 'Failed'
 
 export interface ProofOperationRecord {
   operationId: string
+  durableTradeRecovery?: DurableTradeProofOperationLink
   kind: ProofOperationKind
   state: ProofOperationState
   mintUrl: string
@@ -86,6 +93,7 @@ export interface ListProofOperationsParams {
 
 export interface PrepareProofOperationInput {
   operationId: string
+  durableTradeRecovery?: DurableTradeProofOperationLink
   kind: ProofOperationKind
   mintUrl: string
   inputs: CashuProofRecord[]
@@ -230,6 +238,8 @@ export interface DaemonState {
     keysetCounters: Record<string, number>
   }
   proofOperations: Record<string, ProofOperationRecord>
+  /** SDK-owned durable recovery envelopes. Private key material remains in daemon-secrets.json. */
+  durableTradeSessions: Record<string, DurableTradeSession>
   orders: Record<string, LocalOrderRecord>
   swaps: Record<string, LocalSwapRecord>
 }
@@ -263,6 +273,7 @@ export function emptyDaemonState(): DaemonState {
     version: 1,
     wallet: { proofs: [], keysetCounters: {} },
     proofOperations: {},
+    durableTradeSessions: {},
     orders: {},
     swaps: {},
   }
@@ -507,6 +518,7 @@ export async function prepareProofOperation(
     const now = Date.now()
     const record: ProofOperationRecord = {
       operationId: input.operationId,
+      durableTradeRecovery: input.durableTradeRecovery,
       kind: input.kind,
       state: 'prepared',
       mintUrl: input.mintUrl,
@@ -519,6 +531,30 @@ export async function prepareProofOperation(
       updatedAt: now,
     }
     state.proofOperations[input.operationId] = record
+    if (record.durableTradeRecovery) {
+      const link = record.durableTradeRecovery
+      const session = state.durableTradeSessions[link.tradeId]
+      // Legacy pre-migration records may have a link without a promoted session.
+      // The SDK will fail those orphaned records closed during recovery.
+      if (!session) return record
+      if (session.role !== link.role || link.state !== 'prepared') {
+        throw new Error(`Proof operation ${input.operationId} has an invalid durable trade binding`)
+      }
+      const expected = session.expectedProofOperations ?? []
+      if (!expected.some((item) => item.operationId === link.operationId)) {
+        expected.push({
+          operationId: link.operationId,
+          operationKey: link.operationKey ?? input.operationId,
+          stage: link.stage,
+        })
+      }
+      if (!session.proofOperations.some((item) => item.operationId === link.operationId)) {
+        session.proofOperations.push(link)
+      }
+      session.expectedProofOperations = expected
+      session.stage = 'proof-reserved'
+      session.revision += 1
+    }
     return record
   })
 }
@@ -535,7 +571,36 @@ export async function markProofOperationCompleted(
     const updated: ProofOperationRecord = {
       ...existing,
       state: 'completed',
+      durableTradeRecovery: existing.durableTradeRecovery
+        ? { ...existing.durableTradeRecovery, state: 'reconciled' }
+        : undefined,
       resultProofs: normalizeProofRecordGroups(resultProofs),
+      lastError: null,
+      updatedAt: Date.now(),
+    }
+    state.proofOperations[operationId] = updated
+    return updated
+  })
+}
+
+/** Persists the recovery boundary immediately before a Cashu mint request. */
+export async function markProofOperationMintSubmitted(
+  operationId: string,
+): Promise<ProofOperationRecord> {
+  return updateState((state) => {
+    const existing = state.proofOperations[operationId]
+    if (!existing) {
+      throw new Error(`Missing proof operation ${operationId}`)
+    }
+    if (existing.state === 'completed' || existing.state === 'Failed') {
+      throw new Error(`Cannot submit terminal proof operation ${operationId}`)
+    }
+    const updated: ProofOperationRecord = {
+      ...existing,
+      state: 'mint-submitted',
+      durableTradeRecovery: existing.durableTradeRecovery
+        ? { ...existing.durableTradeRecovery, state: 'mint-submitted' }
+        : undefined,
       lastError: null,
       updatedAt: Date.now(),
     }
@@ -809,6 +874,7 @@ export async function recordTradeCreated(
   payload: DaemonTradeCreatedPayload,
 ): Promise<LocalSwapRecord | null> {
   const secrets = await readSecrets()
+  const profile = await readProfile()
   const ownEphemeralPubkey = secrets?.orderEphemeralKeys[payload.tradeId]?.publicKeyHex
   return updateState((state, now) => {
     const match = findOrderForTradeCreated(state, payload, ownEphemeralPubkey)
@@ -906,6 +972,39 @@ export async function recordTradeCreated(
       updatedAt: now,
     }
     state.swaps[payload.tradeId] = record
+    if (accepted && decision.role && decision.counterpartyPubkey && profile) {
+      const key = secrets?.orderEphemeralKeys[payload.tradeId] ??
+        (record.orderId ? secrets?.orderEphemeralKeys[record.orderId] : undefined)
+      if (key && key.publicKeyHex === match.ownEphemeralPubkey) {
+        const prior = state.durableTradeSessions[payload.tradeId]
+        state.durableTradeSessions[payload.tradeId] = prior ?? {
+          schemaVersion: 1,
+          revision: 0,
+          tradeId: payload.tradeId,
+          role: decision.role,
+          localProtocolPubkey: key.publicKeyHex,
+          counterpartyProtocolPubkey: decision.counterpartyPubkey,
+          mintUrl: profile.mintUrl,
+          sellerLocktimeSecs: Math.floor(new Date(payload.sellerLocktime).getTime() / 1000),
+          buyerLocktimeSecs: Math.floor(new Date(payload.buyerLocktime).getTime() / 1000),
+          ephemeralKeyHandle: {
+            keyId: payload.tradeId,
+            tradeId: payload.tradeId,
+            role: decision.role,
+            localProtocolPubkey: key.publicKeyHex,
+            counterpartyProtocolPubkey: decision.counterpartyPubkey,
+            mintUrl: profile.mintUrl,
+            sellerLocktimeSecs: Math.floor(new Date(payload.sellerLocktime).getTime() / 1000),
+            buyerLocktimeSecs: Math.floor(new Date(payload.buyerLocktime).getTime() / 1000),
+          },
+          stage: 'intent',
+          expectedProofOperations: [],
+          proofOperations: [],
+          receivedCiphers: {},
+          outboundCiphers: {},
+        }
+      }
+    }
     return record
   })
 }
@@ -944,8 +1043,38 @@ export async function recordSwapMessage(
       updatedAt: now,
     }
     state.swaps[tradeId] = next
+    journalDurableCipher(state.durableTradeSessions[tradeId], 'receivedCiphers', messageType, ciphertext)
     return next
   })
+}
+
+/** Journals the exact outbound ciphertext before transport delivery is attempted. */
+export async function journalOutboundSwapCipher(
+  tradeId: string,
+  messageType: string,
+  ciphertext: string,
+): Promise<void> {
+  await updateState((state) => {
+    journalDurableCipher(state.durableTradeSessions[tradeId], 'outboundCiphers', messageType, ciphertext)
+  })
+}
+
+function journalDurableCipher(
+  session: DurableTradeSession | undefined,
+  journal: 'receivedCiphers' | 'outboundCiphers',
+  messageType: string,
+  ciphertext: string,
+): void {
+  if (!session || !isSwapCipherMessageType(messageType)) return
+  const sha256 = createHash('sha256').update(ciphertext).digest('hex')
+  const existing = session[journal][messageType]
+  if (existing && (existing.ciphertext !== ciphertext || existing.sha256 !== sha256)) {
+    throw new Error(`Durable trade ${session.tradeId} has conflicting ${journal} ${messageType} ciphertext`)
+  }
+  if (!existing) {
+    session[journal][messageType] = { ciphertext, sha256 }
+    session.revision += 1
+  }
 }
 
 export async function recordTradeStateChanged(
@@ -986,6 +1115,9 @@ function normalizeState(value: unknown): DaemonState {
       : { proofs: [], keysetCounters: {} },
     proofOperations: isRecord(value.proofOperations)
       ? normalizeProofOperations(value.proofOperations)
+      : {},
+    durableTradeSessions: isRecord(value.durableTradeSessions)
+      ? value.durableTradeSessions as Record<string, DurableTradeSession>
       : {},
     orders: isRecord(value.orders)
       ? normalizeOrders(value.orders)
@@ -1063,6 +1195,9 @@ function normalizeProofOperation(
     {
       operationId:
         typeof raw.operationId === 'string' ? raw.operationId : operationId,
+      durableTradeRecovery: isRecord(raw.durableTradeRecovery)
+        ? raw.durableTradeRecovery as unknown as DurableTradeProofOperationLink
+        : undefined,
       kind,
       state,
       mintUrl,
@@ -1298,7 +1433,7 @@ function toJsonSafe(value: unknown): unknown {
 }
 
 function isProofOperationState(value: unknown): value is ProofOperationState {
-  return value === 'prepared' || value === 'completed' || value === 'Failed'
+  return value === 'prepared' || value === 'mint-submitted' || value === 'completed' || value === 'Failed'
 }
 
 function normalizeProofOperationState(value: unknown): unknown {

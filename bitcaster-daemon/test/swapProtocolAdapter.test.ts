@@ -254,6 +254,14 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       'send-secret',
     )
     assert.equal(
+      state?.proofOperations['trade-1/seller-lock'].durableTradeRecovery?.operationKey,
+      'trade-1/seller-lock',
+    )
+    assert.equal(
+      state?.proofOperations['trade-1/seller-lock'].durableTradeRecovery?.role,
+      'seller',
+    )
+    assert.equal(
       state?.proofOperations['trade-1/seller-mint-ctf-split'].state,
       'completed',
     )

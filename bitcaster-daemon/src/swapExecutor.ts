@@ -32,6 +32,7 @@ import {
   type LocalSwapRecord,
   type StoredProofRecord,
   readState,
+  journalOutboundSwapCipher,
   updateState,
 } from './state.ts'
 
@@ -235,8 +236,14 @@ export class DaemonSwapExecutor {
     activeSwaps: number
   }> {
     await this.sweepPartialLockFailures(state)
+    const durableOperationsInProgress = new Set(
+      Object.values(state.proofOperations)
+        .map((operation) => operation.durableTradeRecovery)
+        .filter((operation) => operation?.state !== 'reconciled')
+        .map((operation) => operation!.tradeId),
+    )
     const swaps = Object.values(state.swaps)
-      .filter((swap) => !isTerminal(swap))
+      .filter((swap) => !isTerminal(swap) && !durableOperationsInProgress.has(swap.tradeId))
       .sort((a, b) => a.tradeId.localeCompare(b.tradeId))
     for (const swap of swaps) {
       if (swap.step === 'settling') {
@@ -246,6 +253,33 @@ export class DaemonSwapExecutor {
       }
     }
     return { activeSwaps: swaps.length }
+  }
+
+  /**
+   * Executes the exact existing request identified by the SDK durable link.
+   * It never creates a new operation id; the underlying shared operation
+   * checks NUT-07 before resubmitting its persisted outputs.
+   */
+  async resumeDurableProofOperation(operationKey: string): Promise<void> {
+    const separator = operationKey.indexOf('/')
+    if (separator <= 0) throw new Error(`invalid durable proof operation key ${operationKey}`)
+    const tradeId = operationKey.slice(0, separator)
+    const step = operationKey.slice(separator + 1)
+    if (step.includes('seller-claim')) {
+      await this.sellerClaim(tradeId)
+    } else if (step.includes('buyer-claim')) {
+      await this.buyerClaim(tradeId)
+    } else if (step.includes('buyer-')) {
+      await this.buyerRespond(tradeId)
+    } else if (step.includes('seller-')) {
+      await this.sellerOpen(tradeId)
+    } else {
+      throw new Error(`unsupported durable proof operation key ${operationKey}`)
+    }
+    const operation = (await readState())?.proofOperations[operationKey]
+    if (!operation || operation.state !== 'completed') {
+      throw new Error(`durable proof operation ${operationKey} did not complete`)
+    }
   }
 
   private async sweepPartialLockFailures(state: DaemonState): Promise<void> {
@@ -1391,6 +1425,7 @@ export class DaemonSwapExecutor {
     messageType: string,
     ciphertext: string,
   ): Promise<void> {
+    await journalOutboundSwapCipher(tradeId, messageType, ciphertext)
     try {
       await this.connection.sendSwapMessage(tradeId, messageType, ciphertext)
     } catch {

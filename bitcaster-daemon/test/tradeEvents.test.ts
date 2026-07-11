@@ -12,6 +12,8 @@ import {
   recordTradeStateChanged,
   writeState,
 } from '../src/state.ts'
+import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
+import { createDaemonSecrets, writeSecrets } from '../src/secrets.ts'
 
 test('TradeHub event records are durable swap state', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-'))
@@ -91,6 +93,69 @@ test('TradeHub event records are durable swap state', async () => {
     assert.equal(persisted?.swaps['trade-1'].divisibility, 100)
     assert.equal(persisted?.swaps['trade-1'].outcomeFaceAmountSubunits, 100)
     assert.equal(persisted?.swaps['trade-1'].quotePaymentSubunits, 42)
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('TradeCreated promotes a local ephemeral key into an SDK durable session', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-durable-trade-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    const publicKeyHex = `02${'11'.repeat(32)}`
+    secrets.orderEphemeralKeys['trade-durable-1'] = {
+      orderId: 'order-durable-1',
+      tradeId: 'trade-durable-1',
+      marketId: 'cond-YES',
+      privateKeyHex: '1'.padStart(64, '0'),
+      publicKeyHex,
+      createdAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeSecrets(secrets)
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    await writeProfile(profile)
+    const state = emptyDaemonState()
+    state.orders['order-durable-1'] = {
+      orderId: 'order-durable-1',
+      marketId: 'cond-YES',
+      side: 'Sell',
+      tokenSide: 'Outcome',
+      priceSubunits: 42,
+      amountSubunits: 100,
+      status: 'resting',
+      ephemeralPubkey: publicKeyHex,
+      tradeIds: ['trade-durable-1'],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    await writeState(state)
+
+    await recordTradeCreated({
+      tradeId: 'trade-durable-1',
+      sellerPubkey: publicKeyHex,
+      buyerPubkey: `03${'22'.repeat(32)}`,
+      sellerLocktime: '2026-05-21T00:02:00.000Z',
+      buyerLocktime: '2026-05-21T00:01:00.000Z',
+      marketId: 'cond-YES',
+      fillAmountSubunits: 100,
+      outcomeFaceAmountSubunits: 100,
+      baseAsset: 'sat',
+      divisibility: 100,
+      quotePaymentSubunits: 42,
+      settlementKind: 'DirectSwap',
+    })
+
+    const session = (await readState())?.durableTradeSessions['trade-durable-1']
+    assert.equal(session?.role, 'seller')
+    assert.equal(session?.localProtocolPubkey, publicKeyHex)
+    assert.equal(session?.counterpartyProtocolPubkey, `03${'22'.repeat(32)}`)
+    assert.equal(session?.ephemeralKeyHandle.keyId, 'trade-durable-1')
+    assert.equal(session?.stage, 'intent')
+    assert.deepEqual(session?.proofOperations, [])
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
