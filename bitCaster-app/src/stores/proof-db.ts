@@ -130,7 +130,7 @@ export function isCtfProof(proof: StoredProof | Proof): boolean {
   );
 }
 
-class BitcasterDB extends Dexie {
+export class BitcasterDB extends Dexie {
   proofs!: Table<StoredProof>;
   proofOperations!: Table<ProofOperationRecord>;
   swapSessions!: Table<SwapSessionRecord>;
