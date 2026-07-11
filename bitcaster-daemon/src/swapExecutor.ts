@@ -11,6 +11,11 @@ import type {
 } from '@bitcaster-market/client-sdk/swapFailure'
 import { redactSwapFailureForTelemetry } from '@bitcaster-market/client-sdk/swapFailure'
 import { TRADE_MESSAGE_TYPES } from '@bitcaster-market/client-sdk/tradeSession'
+import {
+  validateDurableProofOperationLink,
+  type DurableProofOperationState,
+  type DurableTradeProofOperationLink,
+} from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import { normalizeMarketBaseAsset } from '@bitcaster-market/client-sdk/marketUnits'
 import type { DaemonProfile } from './profile.ts'
 import { readProfile } from './profile.ts'
@@ -239,8 +244,9 @@ export class DaemonSwapExecutor {
     const durableOperationsInProgress = new Set(
       Object.values(state.proofOperations)
         .map((operation) => operation.durableTradeRecovery)
-        .filter((operation) => operation?.state !== 'reconciled')
-        .map((operation) => operation!.tradeId),
+        .filter((link): link is DurableTradeProofOperationLink => link !== undefined)
+        .filter(isDurableTradeRecoveryLinkInProgress)
+        .map((link) => link.tradeId),
     )
     const swaps = Object.values(state.swaps)
       .filter((swap) => !isTerminal(swap) && !durableOperationsInProgress.has(swap.tradeId))
@@ -1432,6 +1438,34 @@ export class DaemonSwapExecutor {
       // Protocol ciphertexts are persisted before send; restart/rejoin replay will retry.
     }
   }
+}
+
+function isDurableTradeRecoveryLinkInProgress(
+  link: DurableTradeProofOperationLink,
+): boolean {
+  const validationError = validateDurableProofOperationLink(link)
+  if (validationError) {
+    throw new Error(`invalid durable trade recovery link: ${validationError}`)
+  }
+  return classifyDurableTradeRecoveryLinkState(link.state) === 'active'
+}
+
+function classifyDurableTradeRecoveryLinkState(
+  state: DurableProofOperationState,
+): 'active' | 'inactive' {
+  switch (state) {
+    case 'prepared':
+    case 'mint-submitted':
+      return 'active'
+    case 'reconciled':
+      return 'inactive'
+    default:
+      return assertNever(state)
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled durable trade recovery link state: ${String(value)}`)
 }
 
 async function selectProofs(

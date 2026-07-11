@@ -3,6 +3,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import {
+  createDurableTradeProofOperationLink,
+  type DurableTradeProofOperationLink,
+} from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
 import {
   createDaemonSecrets,
@@ -110,6 +114,129 @@ test('DaemonSwapExecutor drives seller open and claim with durable wallet state'
       true,
     )
     assert.equal(sent.at(-1), 'trade-1:settlement-complete:')
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('DaemonSwapExecutor ignores unrelated native proof operations while resuming a live swap', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-recovery-sweep-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-1'] = orderKey(secrets)
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const state = emptyDaemonState()
+    state.orders['order-1'] = {
+      orderId: 'order-1',
+      marketId: 'cond-YES',
+      status: 'resting',
+      ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...directSellerOrderEconomics(),
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.wallet.proofs.push(
+      proofRecord(profile.mintUrl, 100, 'available', {
+        kind: 'Outcome',
+        conditionId: 'cond',
+        outcomeSetId: 'YES',
+      }),
+    )
+    state.proofOperations['order-1/preflight-ctf-split'] = {
+      operationId: 'order-1/preflight-ctf-split',
+      kind: 'ctf-split',
+      state: 'mint-submitted',
+      mintUrl: profile.mintUrl,
+      inputs: [],
+      outputs: {},
+      metadata: {},
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    await writeState(state)
+
+    const created = await recordTradeCreated({
+      tradeId: 'trade-live',
+      sellerPubkey: orderKey(secrets).publicKeyHex,
+      buyerPubkey: `03${'23'.repeat(32)}`,
+      sellerLocktime: '2026-05-21T00:02:00.000Z',
+      buyerLocktime: '2026-05-21T00:01:00.000Z',
+      marketId: 'cond-YES',
+      fillAmountSubunits: 100,
+      outcomeFaceAmountSubunits: 100,
+      quotePaymentSubunits: 42,
+      settlementKind: 'DirectSwap',
+    })
+
+    const sent: string[] = []
+    const executor = newTestDaemonSwapExecutor({
+      connection: fakeConnection(sent),
+      ops: fakeOps(),
+    })
+
+    assert.deepEqual(await executor.resumeActiveSwaps(await readState() as DaemonState), {
+      activeSwaps: 1,
+    })
+
+    const persisted = await readState()
+    assert.equal(persisted?.swaps[created!.tradeId].step, 'seller-opened')
+    assert.equal(
+      persisted?.proofOperations['order-1/preflight-ctf-split'].durableTradeRecovery,
+      undefined,
+    )
+    assert.deepEqual(sent, [
+      'trade-live:adaptor-point:cipher-adaptor',
+      'trade-live:locked-proofs-seller:cipher-seller',
+    ])
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('DaemonSwapExecutor classifies each durable link state before resuming matching swaps', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-durable-link-state-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    const sent: string[] = []
+    const executor = newTestDaemonSwapExecutor({
+      connection: fakeConnection(sent),
+      ops: fakeOps(),
+    })
+
+    for (const state of ['prepared', 'mint-submitted'] as const) {
+      await writeState(stateWithLiveSwapAndDurableLink(state))
+
+      assert.deepEqual(await executor.resumeActiveSwaps(await readState() as DaemonState), {
+        activeSwaps: 0,
+      })
+      assert.equal((await readState())?.swaps['trade-live'].step, 'seller-opened')
+    }
+
+    await writeState(stateWithLiveSwapAndDurableLink('reconciled'))
+
+    assert.deepEqual(await executor.resumeActiveSwaps(await readState() as DaemonState), {
+      activeSwaps: 1,
+    })
+    assert.equal((await readState())?.swaps['trade-live'].step, 'seller-opened')
+
+    sent.length = 0
+    await writeState(stateWithLiveSwapAndDurableLink('unknown-state'))
+
+    await assert.rejects(
+      async () => executor.resumeActiveSwaps(await readState() as DaemonState),
+      /invalid durable trade recovery link: durable proof operation state is invalid/,
+    )
+    assert.deepEqual(sent, [])
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -1792,6 +1919,46 @@ function cashuProof(amount: number, secret: string): CashuProofRecord {
     secret,
     C: `c-${secret}`,
   }
+}
+
+function stateWithLiveSwapAndDurableLink(linkState: string): DaemonState {
+  const state = emptyDaemonState()
+  const tradeId = 'trade-live'
+  const operationKey = `${tradeId}/seller-lock`
+  const operation = {
+    ...createDurableTradeProofOperationLink({
+      tradeId,
+      role: 'seller',
+      stage: 'proof-reservation',
+      state: 'prepared',
+      operationKey,
+      kind: 'cashu-atomic',
+    }),
+    state: linkState,
+  }
+  state.swaps[tradeId] = {
+    tradeId,
+    orderId: 'order-live',
+    marketId: 'cond-YES',
+    role: 'seller',
+    messages: {},
+    step: 'seller-opened',
+    createdAt: '2026-05-21T00:00:00.000Z',
+    updatedAt: '2026-05-21T00:00:00.000Z',
+  }
+  state.proofOperations[operationKey] = {
+    operationId: operationKey,
+    durableTradeRecovery: operation as DurableTradeProofOperationLink,
+    kind: 'swap-lock',
+    state: 'mint-submitted',
+    mintUrl: 'https://mint.example',
+    inputs: [],
+    outputs: {},
+    metadata: {},
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  return state
 }
 
 function newTestDaemonSwapExecutor(

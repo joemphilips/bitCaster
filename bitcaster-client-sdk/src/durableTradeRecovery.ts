@@ -2097,7 +2097,7 @@ function requireOperation(
   return operation
 }
 
-function validateDurableProofOperationLink(
+export function validateDurableProofOperationLink(
   operation: DurableTradeProofOperationLink,
 ): string | null {
   if (!isObjectRecord(operation)) return 'durable proof operation is not an object'
