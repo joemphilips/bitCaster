@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { Mint as CashuMint, Wallet as CashuWallet, type MintKeys, type MintKeyset, type CounterSource, type CounterRange } from '@cashu/cashu-ts'
+import {
+  Mint as CashuMint,
+  Wallet as CashuWallet,
+  type MintKeys,
+  type MintKeyset,
+  type CounterSource,
+  type CounterRange,
+} from '@cashu/cashu-ts'
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as bip39 from '@/lib/bip39'
 import { normalizeUrl } from '@/lib/url'
@@ -64,20 +71,36 @@ interface WalletState {
   _removeMint: (url: string) => void
   _setActiveMint: (url: string) => void
   completeSetup: () => Promise<void>
-  getWallet: (mintUrl?: string, baseAsset?: MarketBaseAsset | string | null) => Promise<CashuWallet>
-  getWalletForUnit: (mintUrl: string | undefined, unit: string) => Promise<CashuWallet>
+  getWallet: (
+    mintUrl?: string,
+    baseAsset?: MarketBaseAsset | string | null,
+  ) => Promise<CashuWallet>
+  getWalletForUnit: (
+    mintUrl: string | undefined,
+    unit: string,
+    options?: { enableCtf?: boolean },
+  ) => Promise<CashuWallet>
 }
 
-export const DEFAULT_MINT_URL = normalizeUrl(import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085')
+export const DEFAULT_MINT_URL = normalizeUrl(
+  import.meta.env.VITE_MINT_URL ?? 'http://localhost:8085',
+)
 
 let _walletCache: Map<string, CashuWallet> = new Map()
 
-function walletCacheKey(mintUrl: string, baseAsset?: MarketBaseAsset | string | null): string {
+function walletCacheKey(
+  mintUrl: string,
+  baseAsset?: MarketBaseAsset | string | null,
+): string {
   return `${mintUrl}::${defaultCollateralUnit(baseAsset)}`
 }
 
-function walletUnitCacheKey(mintUrl: string, unit: string): string {
-  return `${mintUrl}::unit:${unit}`
+function walletUnitCacheKey(
+  mintUrl: string,
+  unit: string,
+  enableCtf = false,
+): string {
+  return `${mintUrl}::unit:${unit}::ctf:${enableCtf}`
 }
 
 function getSeedBytes(mnemonic: string): Uint8Array | undefined {
@@ -85,12 +108,20 @@ function getSeedBytes(mnemonic: string): Uint8Array | undefined {
   return bip39.toSeed(mnemonic.split(' '))
 }
 
-async function createWallet(url: string, unit: string, mnemonic: string): Promise<CashuWallet> {
+async function createWallet(
+  url: string,
+  unit: string,
+  mnemonic: string,
+  enableCtf = false,
+): Promise<CashuWallet> {
   const seedBytes = getSeedBytes(mnemonic)
   const mint = new CashuMint(url)
   const wallet = new CashuWallet(mint, {
     unit,
-    ...(seedBytes ? { bip39seed: seedBytes, counterSource: _counterSource } : {}),
+    ...(enableCtf ? { enableCtf: true } : {}),
+    ...(seedBytes
+      ? { bip39seed: seedBytes, counterSource: _counterSource }
+      : {}),
   })
   await wallet.loadMint()
   return wallet
@@ -145,10 +176,8 @@ const _counterSource = new ZustandCounterSource()
  */
 async function addOrUpdateMint(
   url: string,
-  set: (
-    update: (s: WalletState) => Partial<WalletState> | WalletState
-  ) => void,
-  activate: boolean
+  set: (update: (s: WalletState) => Partial<WalletState> | WalletState) => void,
+  activate: boolean,
 ): Promise<void> {
   const normalized = normalizeUrl(url)
   const mint = new CashuMint(normalized)
@@ -221,7 +250,9 @@ export const useWalletStore = create<WalletState>()(
             } else {
               await get()._addMintWithoutActivating(DEFAULT_MINT_URL)
             }
-          } catch { /* retry on next app load */ }
+          } catch {
+            /* retry on next app load */
+          }
         }
         set({ setupComplete: true })
       },
@@ -248,27 +279,44 @@ export const useWalletStore = create<WalletState>()(
         return { valid: true }
       },
 
-      testMintConnection: async (url: string): Promise<MintConnectionTestStatus> => {
+      testMintConnection: async (
+        url: string,
+      ): Promise<MintConnectionTestStatus> => {
         const normalized = normalizeUrl(url)
-        if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+        if (
+          !normalized.startsWith('http://') &&
+          !normalized.startsWith('https://')
+        ) {
           set((s) => ({
-            mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'failed' },
+            mintConnectionStatuses: {
+              ...s.mintConnectionStatuses,
+              [normalized]: 'failed',
+            },
           }))
           return 'failed'
         }
         set((s) => ({
-          mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'connecting' },
+          mintConnectionStatuses: {
+            ...s.mintConnectionStatuses,
+            [normalized]: 'connecting',
+          },
         }))
         try {
           const res = await fetch(`${normalized}/v1/info`)
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           set((s) => ({
-            mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'connected' },
+            mintConnectionStatuses: {
+              ...s.mintConnectionStatuses,
+              [normalized]: 'connected',
+            },
           }))
           return 'connected'
         } catch {
           set((s) => ({
-            mintConnectionStatuses: { ...s.mintConnectionStatuses, [normalized]: 'failed' },
+            mintConnectionStatuses: {
+              ...s.mintConnectionStatuses,
+              [normalized]: 'failed',
+            },
           }))
           return 'failed'
         }
@@ -287,7 +335,7 @@ export const useWalletStore = create<WalletState>()(
         set((s) =>
           s.mints.some((m) => m.url === normalized)
             ? { activeMintUrl: normalized }
-            : s
+            : s,
         )
       },
 
@@ -296,7 +344,10 @@ export const useWalletStore = create<WalletState>()(
         if (mints.length <= 1) return
         set((s) => ({
           mints: s.mints.filter((m) => m.url !== url),
-          activeMintUrl: s.activeMintUrl === url ? s.mints.find((m) => m.url !== url)!.url : s.activeMintUrl,
+          activeMintUrl:
+            s.activeMintUrl === url
+              ? s.mints.find((m) => m.url !== url)!.url
+              : s.activeMintUrl,
         }))
       },
 
@@ -311,7 +362,9 @@ export const useWalletStore = create<WalletState>()(
             } else {
               await get()._addMintWithoutActivating(DEFAULT_MINT_URL)
             }
-          } catch { /* retry on next app load */ }
+          } catch {
+            /* retry on next app load */
+          }
         }
         set({ setupComplete: true, walletBackupState: 'confirmed' })
       },
@@ -334,13 +387,15 @@ export const useWalletStore = create<WalletState>()(
       getWalletForUnit: async (
         mintUrl: string | undefined,
         unit: string,
+        options?: { enableCtf?: boolean },
       ): Promise<CashuWallet> => {
         const url = normalizeUrl(mintUrl ?? get().activeMintUrl)
-        const cacheKey = walletUnitCacheKey(url, unit)
+        const enableCtf = options?.enableCtf === true
+        const cacheKey = walletUnitCacheKey(url, unit, enableCtf)
         const cached = _walletCache.get(cacheKey)
         if (cached) return cached
 
-        const wallet = await createWallet(url, unit, get().mnemonic)
+        const wallet = await createWallet(url, unit, get().mnemonic, enableCtf)
         _walletCache.set(cacheKey, wallet)
         return wallet
       },
@@ -360,8 +415,8 @@ export const useWalletStore = create<WalletState>()(
         // App.tsx will correct any stale value on the next app load.
         mintConnectionStatuses: state.mintConnectionStatuses,
       }),
-    }
-  )
+    },
+  ),
 )
 
 export function useBalance(
@@ -370,14 +425,22 @@ export function useBalance(
 ): number {
   const normalized = mintUrl ? normalizeUrl(mintUrl) : undefined
   const baseAsset = normalizeMarketBaseAsset(options.baseAsset)
-  const balance = useLiveQuery(async () => {
-    const proofs = normalized
-      ? await db.proofs.where('mintUrl').equals(normalized).toArray()
-      : await db.proofs.toArray()
-    return proofs
-      .filter((p) => !isCtfProof(p) && normalizeMarketBaseAsset(p.baseAsset) === baseAsset)
-      .reduce((sum, p) => sum + amountToNumber(p.amount), 0)
-  }, [normalized, baseAsset], 0)
+  const balance = useLiveQuery(
+    async () => {
+      const proofs = normalized
+        ? await db.proofs.where('mintUrl').equals(normalized).toArray()
+        : await db.proofs.toArray()
+      return proofs
+        .filter(
+          (p) =>
+            !isCtfProof(p) &&
+            normalizeMarketBaseAsset(p.baseAsset) === baseAsset,
+        )
+        .reduce((sum, p) => sum + amountToNumber(p.amount), 0)
+    },
+    [normalized, baseAsset],
+    0,
+  )
   return balance ?? 0
 }
 
@@ -385,7 +448,9 @@ export async function getBalance(
   mintUrl?: string,
   options: { baseAsset?: MarketBaseAsset | string | null } = {},
 ): Promise<number> {
-  const proofs = await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(options.baseAsset) })
+  const proofs = await getUnitProofs(mintUrl, {
+    unit: defaultCollateralUnit(options.baseAsset),
+  })
   return proofs.reduce(
     (sum: number, p: StoredProof) => sum + amountToNumber(p.amount),
     0,

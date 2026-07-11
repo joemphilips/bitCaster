@@ -87,6 +87,7 @@ import {
   prepareGuiProofOperationWithSession,
   completeGuiProofOperationWithSession,
   recoverGuiDurableTradeSession,
+  recordGuiRecoveredProofOperationOutputs,
   persistGuiSwapSession,
   removeGuiSwapSession,
   resumeGuiSwapSession,
@@ -378,6 +379,35 @@ describe('GUI durable swap session repository', () => {
       ).session.proofOperations,
     ).toEqual([expect.objectContaining({ state: 'reconciled' })])
     expect(transactionTables.some((tables) => tables.length === 2)).toBe(true)
+  })
+
+  it('retains only byte-identical exact recovered outputs', async () => {
+    await prepareGuiProofOperationWithSession(
+      {
+        operationId: 'trade-001/browser/buyer-lock',
+        kind: 'swap-lock',
+        mintUrl: 'https://mint.example',
+        inputs: [],
+        outputs: {},
+      },
+      swap(),
+    )
+    const durableOperationId = (
+      proofOperations.get('trade-001/browser/buyer-lock') as {
+        durableOperationId: string
+      }
+    ).durableOperationId
+    const outputs = { keep: [] }
+    await recordGuiRecoveredProofOperationOutputs(
+      'trade-001',
+      durableOperationId,
+      outputs,
+    )
+    await expect(
+      recordGuiRecoveredProofOperationOutputs('trade-001', durableOperationId, {
+        keep: [{ id: 'unexpected' } as never],
+      }),
+    ).rejects.toThrow(/conflicting recovered outputs/)
   })
 
   it('rejoins then replays the SDK-owned durable outbox without regenerating ciphers', async () => {

@@ -330,6 +330,39 @@ export async function recoverGuiDurableTradeSession(
   })
 }
 
+/**
+ * Retains exact recovered mint outputs before the coordinator advances the
+ * linked operation to reconciled. Repeating this write is idempotent only for
+ * byte-identical outputs; a different response fails closed.
+ */
+export async function recordGuiRecoveredProofOperationOutputs(
+  tradeId: string,
+  durableOperationId: string,
+  resultProofs: Record<string, import('@cashu/cashu-ts').Proof[]>,
+): Promise<void> {
+  await db.transaction('rw', db.proofOperations, async () => {
+    const operation = await findGuiProofOperationByDurableId(durableOperationId)
+    if (operation?.durableTradeRecovery?.tradeId !== tradeId) {
+      throw new Error(
+        `GUI durable proof operation ${durableOperationId} is missing`,
+      )
+    }
+    if (
+      operation.resultProofs &&
+      JSON.stringify(operation.resultProofs) !== JSON.stringify(resultProofs)
+    ) {
+      throw new Error(
+        `GUI durable proof operation ${durableOperationId} has conflicting recovered outputs`,
+      )
+    }
+    await db.proofOperations.put({
+      ...operation,
+      resultProofs: structuredClone(resultProofs),
+      updatedAt: Date.now(),
+    })
+  })
+}
+
 export async function removeGuiSwapSession(tradeId: string): Promise<void> {
   await ensureDurableSwapStorage()
   await db.swapSessions.delete(tradeId)
