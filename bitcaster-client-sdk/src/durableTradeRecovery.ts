@@ -251,6 +251,22 @@ export interface DurableTradeRetryRequest {
   reason: 'pending-or-mixed' | 'mint-response-unknown' | 'rate-limited' | 'reservation-race'
 }
 
+/**
+ * Optional adapter transaction for split durable stores. When supplied, the
+ * adapter advances its session projection and proof-operation ledger in one
+ * commit; the coordinator still validates both returned records.
+ */
+export interface DurableTradeAtomicTransitionPort {
+  advance(input: {
+    session: DurableTradeSession
+    operation: DurableTradeProofOperationLink
+    state: 'mint-submitted' | 'reconciled'
+  }): Promise<{
+    session: DurableTradeSession
+    operation: DurableTradeProofOperationLink
+  } | null>
+}
+
 export interface DurableTradeRecoveryPorts {
   sessions: DurableTradeSessionRepository
   operations: DurableProofOperationRepository
@@ -261,6 +277,7 @@ export interface DurableTradeRecoveryPorts {
   clock: DurableTradeRecoveryClock
   hashCiphertext: (ciphertext: string) => Promise<string>
   scheduleRetry?: (request: DurableTradeRetryRequest) => Promise<void>
+  atomicTransition?: DurableTradeAtomicTransitionPort
 }
 
 export type DurableTradeRecoveryAction =
@@ -962,7 +979,7 @@ export async function recoverDurableTradeSessions(
       }
 
       const synchronized = await synchronizeSessionOperationState(
-        ports.sessions,
+        ports,
         activeSession,
         persistedOperation,
       )
@@ -1120,6 +1137,69 @@ type DurableProofOperationRecoveryResult =
   }
   | { kind: 'blocked'; result: DurableTradeSessionRecoveryResult }
 
+/** Returns undefined only when no adapter transaction port was supplied. */
+async function advanceAtomicallyWhenAvailable(
+  ports: DurableTradeRecoveryPorts,
+  session: DurableTradeSession,
+  operation: DurableTradeProofOperationLink,
+  state: 'mint-submitted' | 'reconciled',
+): Promise<{ session: DurableTradeSession; operation: DurableTradeProofOperationLink } | null | undefined> {
+  if (!ports.atomicTransition) return undefined
+  let advanced: { session: DurableTradeSession; operation: DurableTradeProofOperationLink } | null
+  try {
+    advanced = await ports.atomicTransition.advance({ session, operation, state })
+  } catch {
+    return null
+  }
+  if (!advanced ||
+    validateDurableTradeSession(advanced.session) !== null ||
+    validateDurableProofOperationLink(advanced.operation) !== null ||
+    advanced.operation.state !== state ||
+    !sameDurableOperationIdentity(operation, advanced.operation) ||
+    !isExactDurableTradeSessionTransition(session, operation, state, advanced.session)) {
+    return null
+  }
+  return advanced
+}
+
+/** Atomic adapters may only return the SDK reducer's exact next session. */
+function isExactDurableTradeSessionTransition(
+  session: DurableTradeSession,
+  operation: DurableTradeProofOperationLink,
+  state: 'mint-submitted' | 'reconciled',
+  candidate: DurableTradeSession,
+): boolean {
+  try {
+    const expected = reduceDurableTradeSession(
+      session,
+      state === 'mint-submitted'
+        ? { kind: 'mint-submitted', operationId: operation.operationId }
+        : {
+            kind: 'proof-operation-reconciled',
+            operationId: operation.operationId,
+          },
+    )
+    return canonicalDurableSessionJson(candidate) ===
+      canonicalDurableSessionJson(expected)
+  } catch {
+    return false
+  }
+}
+
+function canonicalDurableSessionJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalDurableSessionJson).join(',')}]`
+  }
+  if (isObjectRecord(value)) {
+    return `{${Object.keys(value)
+      .filter((key) => value[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalDurableSessionJson(value[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
 async function recoverDurableProofOperation(
   ports: DurableTradeRecoveryPorts,
   session: DurableTradeSession,
@@ -1158,12 +1238,12 @@ async function recoverDurableProofOperation(
   const disposition = classifyDurableTradeRecoveryDisposition(inspection.kind)
   switch (disposition.action) {
     case 'resume-exact-prepared-operation': {
-      const submitted = await advanceSessionToMintSubmitted(
-        ports.sessions,
-        activeSession,
-        operation.operationId,
-      )
-      if (!submitted) {
+      const atomicallySubmitted = operation.state === 'prepared'
+        ? await advanceAtomicallyWhenAvailable(
+          ports, activeSession, operation, 'mint-submitted',
+        )
+        : undefined
+      if (atomicallySubmitted === null) {
         return {
           kind: 'blocked',
           result: {
@@ -1173,30 +1253,50 @@ async function recoverDurableProofOperation(
           },
         }
       }
-      activeSession = submitted
-      if (operation.state === 'prepared') {
-        try {
-          operation = await ports.operations.markMintSubmitted(operation.operationId)
-        } catch {
+      if (atomicallySubmitted) {
+        activeSession = atomicallySubmitted.session
+        operation = atomicallySubmitted.operation
+      } else {
+        const submitted = await advanceSessionToMintSubmitted(
+          ports.sessions,
+          activeSession,
+          operation.operationId,
+        )
+        if (!submitted) {
           return {
             kind: 'blocked',
             result: {
               kind: 'failed-closed',
               tradeId: activeSession.tradeId,
-              reason: 'storage-unavailable',
+              reason: 'session-cas-conflict',
             },
           }
         }
-        if (validateDurableProofOperationLink(operation) !== null ||
-          operation.state !== 'mint-submitted' ||
-          !sameDurableOperationIdentity(initialOperation, operation)) {
-          return {
-            kind: 'blocked',
-            result: {
-              kind: 'failed-closed',
-              tradeId: activeSession.tradeId,
-              reason: 'foreign-proof-operation',
-            },
+        activeSession = submitted
+        if (operation.state === 'prepared') {
+          try {
+            operation = await ports.operations.markMintSubmitted(operation.operationId)
+          } catch {
+            return {
+              kind: 'blocked',
+              result: {
+                kind: 'failed-closed',
+                tradeId: activeSession.tradeId,
+                reason: 'storage-unavailable',
+              },
+            }
+          }
+          if (validateDurableProofOperationLink(operation) !== null ||
+            operation.state !== 'mint-submitted' ||
+            !sameDurableOperationIdentity(initialOperation, operation)) {
+            return {
+              kind: 'blocked',
+              result: {
+                kind: 'failed-closed',
+                tradeId: activeSession.tradeId,
+                reason: 'foreign-proof-operation',
+              },
+            }
           }
         }
       }
@@ -1212,6 +1312,22 @@ async function recoverDurableProofOperation(
             operationId: operation.operationId,
           },
         }
+      }
+      const atomicallyReconciled = await advanceAtomicallyWhenAvailable(
+        ports, activeSession, operation, 'reconciled',
+      )
+      if (atomicallyReconciled === null) {
+        return {
+          kind: 'blocked',
+          result: {
+            kind: 'failed-closed',
+            tradeId: activeSession.tradeId,
+            reason: 'session-cas-conflict',
+          },
+        }
+      }
+      if (atomicallyReconciled) {
+        return { kind: 'continued', session: atomicallyReconciled.session, operation: atomicallyReconciled.operation }
       }
       try {
         operation = await ports.operations.markReconciled(operation.operationId)
@@ -1257,6 +1373,33 @@ async function recoverDurableProofOperation(
     case 'restore-exact-persisted-outputs': {
       try {
         await ports.mint.restoreExactPersistedOutputs(operation)
+      } catch {
+        return {
+          kind: 'blocked',
+          result: {
+            kind: 'failed-closed',
+            tradeId: activeSession.tradeId,
+            reason: 'storage-unavailable',
+          },
+        }
+      }
+      const atomicallyReconciled = await advanceAtomicallyWhenAvailable(
+        ports, activeSession, operation, 'reconciled',
+      )
+      if (atomicallyReconciled === null) {
+        return {
+          kind: 'blocked',
+          result: {
+            kind: 'failed-closed',
+            tradeId: activeSession.tradeId,
+            reason: 'session-cas-conflict',
+          },
+        }
+      }
+      if (atomicallyReconciled) {
+        return { kind: 'continued', session: atomicallyReconciled.session, operation: atomicallyReconciled.operation }
+      }
+      try {
         operation = await ports.operations.markReconciled(operation.operationId)
       } catch {
         return {
@@ -1384,6 +1527,33 @@ async function recoverDurableProofOperation(
       }
       try {
         await ports.mint.salvageExpiredRefund(operation)
+      } catch {
+        return {
+          kind: 'blocked',
+          result: {
+            kind: 'awaiting-refund-salvage',
+            tradeId: activeSession.tradeId,
+            operationId: operation.operationId,
+          },
+        }
+      }
+      const atomicallyReconciled = await advanceAtomicallyWhenAvailable(
+        ports, activeSession, operation, 'reconciled',
+      )
+      if (atomicallyReconciled === null) {
+        return {
+          kind: 'blocked',
+          result: {
+            kind: 'failed-closed',
+            tradeId: activeSession.tradeId,
+            reason: 'session-cas-conflict',
+          },
+        }
+      }
+      if (atomicallyReconciled) {
+        return { kind: 'continued', session: atomicallyReconciled.session, operation: atomicallyReconciled.operation }
+      }
+      try {
         operation = await ports.operations.markReconciled(operation.operationId)
       } catch {
         return {
@@ -1460,7 +1630,7 @@ export function durableRecoveryBackoffMs(input: {
 }
 
 async function synchronizeSessionOperationState(
-  repository: DurableTradeSessionRepository,
+  ports: DurableTradeRecoveryPorts,
   session: DurableTradeSession,
   operation: DurableTradeProofOperationLink,
 ): Promise<DurableTradeSession | null> {
@@ -1474,6 +1644,8 @@ async function synchronizeSessionOperationState(
     // before it can make another mint request, never downgrading the session.
     return session
   }
+
+  if (operation.state === 'prepared') return null
 
   let next: DurableTradeSession
   try {
@@ -1489,8 +1661,15 @@ async function synchronizeSessionOperationState(
   } catch {
     return null
   }
+  const atomic = await advanceAtomicallyWhenAvailable(
+    ports,
+    session,
+    operation,
+    operation.state,
+  )
+  if (atomic !== undefined) return atomic?.session ?? null
   try {
-    return await repository.compareAndSwap(session.tradeId, session.revision, next)
+    return await ports.sessions.compareAndSwap(session.tradeId, session.revision, next)
   } catch {
     return null
   }

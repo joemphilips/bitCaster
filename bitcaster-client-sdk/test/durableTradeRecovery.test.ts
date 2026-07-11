@@ -759,6 +759,118 @@ test('the coordinator resumes an unspent operation exactly once and repairs a st
   assert.equal(fixture.sessions.get('trade-001')?.proofOperations[0]?.state, 'reconciled')
 })
 
+test('the coordinator uses and validates an adapter atomic transition without fallback CAS', async () => {
+  const operation = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'wallet:trade-001:atomic-lock',
+  })
+  const durableSession = reduceDurableTradeSession(session(), {
+    kind: 'proof-operation-prepared',
+    operation,
+  })
+  const fixture = recoveryFixture({ sessions: [durableSession], operations: [operation] })
+  fixture.mint.next = 'prepared-unspent'
+  let fallbackCasCalls = 0
+  const fallbackCas = fixture.ports.sessions.compareAndSwap
+  fixture.ports.sessions.compareAndSwap = async (...args) => {
+    fallbackCasCalls += 1
+    return fallbackCas(...args)
+  }
+  const transitions: string[] = []
+  fixture.ports.atomicTransition = {
+    advance: async ({ session: current, operation: currentOperation, state }) => {
+      transitions.push(state)
+      const nextOperation = { ...currentOperation, state }
+      const nextSession = reduceDurableTradeSession(current,
+        state === 'mint-submitted'
+          ? { kind: 'mint-submitted', operationId: currentOperation.operationId }
+          : { kind: 'proof-operation-reconciled', operationId: currentOperation.operationId },
+      )
+      fixture.sessions.set(nextSession.tradeId, nextSession)
+      fixture.operations.set(nextOperation.operationId, nextOperation)
+      return { session: nextSession, operation: nextOperation }
+    },
+  }
+
+  const result = await recoverDurableTradeSessions(fixture.ports)
+
+  assert.deepEqual(transitions, ['mint-submitted', 'reconciled'])
+  assert.equal(fallbackCasCalls, 0)
+  assert.deepEqual(fixture.calls, [
+    `resume:${operation.operationId}`,
+    'join:trade-001',
+  ])
+  assert.equal(result.sessions[0]?.kind, 'ready')
+  assert.equal(fixture.sessions.get('trade-001')?.proofOperations[0]?.state, 'reconciled')
+  assert.equal(fixture.operations.get(operation.operationId)?.state, 'reconciled')
+
+  const invalid = recoveryFixture({ sessions: [durableSession], operations: [operation] })
+  invalid.mint.next = 'prepared-unspent'
+  invalid.ports.atomicTransition = {
+    advance: async ({ session: current, operation: currentOperation, state }) => {
+      const nextSession = reduceDurableTradeSession(current,
+        state === 'mint-submitted'
+          ? { kind: 'mint-submitted', operationId: currentOperation.operationId }
+          : { kind: 'proof-operation-reconciled', operationId: currentOperation.operationId },
+      )
+      return {
+        session: { ...nextSession, mintUrl: 'https://foreign.example' },
+        operation: { ...currentOperation, state },
+      }
+    },
+  }
+  assert.deepEqual(await recoverDurableTradeSessions(invalid.ports).then((value) => value.sessions), [{
+    kind: 'failed-closed',
+    tradeId: 'trade-001',
+    reason: 'session-cas-conflict',
+  }])
+  assert.deepEqual(invalid.calls, [])
+
+  const submittedOperation = { ...operation, state: 'mint-submitted' as const }
+  const submittedSession = reduceDurableTradeSession(
+    reduceDurableTradeSession(session(), {
+      kind: 'proof-operation-prepared', operation,
+    }),
+    { kind: 'mint-submitted', operationId: operation.operationId },
+  )
+  const alreadySubmitted = recoveryFixture({
+    sessions: [submittedSession],
+    operations: [submittedOperation],
+  })
+  alreadySubmitted.mint.next = 'prepared-unspent'
+  let submittedFallbackCasCalls = 0
+  const submittedFallbackCas = alreadySubmitted.ports.sessions.compareAndSwap
+  alreadySubmitted.ports.sessions.compareAndSwap = async (...args) => {
+    submittedFallbackCasCalls += 1
+    return submittedFallbackCas(...args)
+  }
+  const submittedTransitions: string[] = []
+  alreadySubmitted.ports.atomicTransition = {
+    advance: async ({ session: current, operation: currentOperation, state }) => {
+      submittedTransitions.push(state)
+      assert.equal(state, 'reconciled')
+      const nextOperation = { ...currentOperation, state }
+      const nextSession = reduceDurableTradeSession(current, {
+        kind: 'proof-operation-reconciled',
+        operationId: currentOperation.operationId,
+      })
+      alreadySubmitted.sessions.set(nextSession.tradeId, nextSession)
+      alreadySubmitted.operations.set(nextOperation.operationId, nextOperation)
+      return { session: nextSession, operation: nextOperation }
+    },
+  }
+  assert.equal((await recoverDurableTradeSessions(alreadySubmitted.ports)).sessions[0]?.kind, 'ready')
+  assert.deepEqual(submittedTransitions, ['reconciled'])
+  assert.equal(submittedFallbackCasCalls, 0)
+  assert.deepEqual(alreadySubmitted.calls, [
+    `resume:${operation.operationId}`,
+    'join:trade-001',
+  ])
+})
+
 test('the coordinator relinks an expected orphan and recovers it in the same invocation without creating a replacement', async () => {
   const operation = createDurableTradeProofOperationLink({
     tradeId: 'trade-001',
