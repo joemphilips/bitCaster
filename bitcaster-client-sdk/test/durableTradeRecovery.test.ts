@@ -95,6 +95,31 @@ function expectedOperation(operation: DurableTradeProofOperationLink) {
   })
 }
 
+function dependentContext(mergeOperationKey: string, lockOperationKey: string) {
+  return {
+    contextVersion: 1 as const,
+    tradeId: 'trade-001',
+    role: 'buyer' as const,
+    localProtocolPubkey: LOCAL_PROTOCOL_PUBKEY,
+    counterpartyProtocolPubkey: COUNTERPARTY_PROTOCOL_PUBKEY,
+    mintUrl: 'https://mint.example',
+    sellerLocktimeSecs: 120,
+    buyerLocktimeSecs: 100,
+    conditionId: 'condition-001',
+    ammScopeId: 'condition-001',
+    inventoryAccountId: 'condition:001',
+    baseAsset: 'sat',
+    unit: 'sat',
+    outcomeSetCommitment: 'a'.repeat(64),
+    keysetCommitment: 'b'.repeat(64),
+    feeCommitment: 'c'.repeat(64),
+    mergeInputCommitment: 'd'.repeat(64),
+    expectedOutputCommitment: 'e'.repeat(64),
+    mergeOperationKey,
+    lockOperationKey,
+  }
+}
+
 test('deterministic proof-operation identifiers bind trade, role, and stage', () => {
   const sellerReservation = deriveDurableProofOperationId(
     'trade-001',
@@ -214,6 +239,254 @@ test('write-ahead reducer retains the operation link through mint submission and
   assert.equal(isDurableTradeSessionPurgeEligible(reconciled), true)
 })
 
+test('v2 keeps a planned buyer lock waiting after merge reconciliation, then activates and completes it', async () => {
+  const merge = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'buyer',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'condition-001:trade-001:buyer-ctf-merge',
+    kind: 'condition-ctf-merge',
+  } as never)
+  const lockOperationKey = 'condition-001:trade-001:buyer-sat-lock'
+  const lockOperationId = deriveDurableProofOperationId(
+    'trade-001',
+    'buyer',
+    'proof-reservation',
+    lockOperationKey,
+    'cashu-atomic',
+  )
+  const plannedLock = {
+    operationId: lockOperationId,
+    operationKey: lockOperationKey,
+    kind: 'cashu-atomic',
+    stage: 'proof-reservation',
+    dependsOnOperationId: merge.operationId,
+    context: dependentContext(merge.operationKey!, lockOperationKey),
+  }
+  const v2 = session({ schemaVersion: 2 as never, role: 'buyer' })
+  const planned = reduceDurableTradeSession(v2, {
+    kind: 'dependent-operations-planned',
+    active: {
+      ...createDurableTradeExpectedProofOperation({
+        tradeId: 'trade-001',
+        role: 'buyer',
+        stage: 'proof-reservation',
+        operationKey: merge.operationKey!,
+        kind: 'condition-ctf-merge',
+      } as never),
+    },
+    plan: plannedLock,
+  } as never)
+  const mergePrepared = reduceDurableTradeSession(planned, {
+    kind: 'proof-operation-prepared',
+    operation: merge,
+  })
+  const mergeSubmitted = reduceDurableTradeSession(mergePrepared, {
+    kind: 'mint-submitted', operationId: merge.operationId,
+  })
+  const waiting = reduceDurableTradeSession(mergeSubmitted, {
+    kind: 'proof-operation-reconciled', operationId: merge.operationId,
+  })
+  assert.equal(waiting.stage, 'awaiting-dependent-operation')
+  assert.equal(isDurableTradeSessionPurgeEligible(waiting), false)
+  assert.equal(waiting.plannedProofOperations?.length, 1)
+  const waitingFixture = recoveryFixture({
+    sessions: [waiting],
+    operations: [{ ...merge, state: 'reconciled' }],
+  })
+  assert.deepEqual((await recoverDurableTradeSessions(waitingFixture.ports)).sessions, [{
+    kind: 'awaiting-dependent-operation',
+    tradeId: 'trade-001',
+    operationIds: [lockOperationId],
+  }])
+  assert.deepEqual(waitingFixture.calls, [])
+
+  const activated = reduceDurableTradeSession(waiting, {
+    kind: 'dependent-operation-activated', operationId: lockOperationId,
+  } as never)
+  assert.equal(activated.stage, 'proof-reserved')
+  assert.equal(activated.plannedProofOperations?.length, 0)
+  assert.equal(activated.expectedProofOperations?.[1]?.operationId, lockOperationId)
+
+  const lock = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'buyer',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: lockOperationKey,
+    kind: 'cashu-atomic',
+  } as never)
+  const lockPrepared = reduceDurableTradeSession(activated, {
+    kind: 'proof-operation-prepared', operation: lock,
+  })
+  const lockSubmitted = reduceDurableTradeSession(lockPrepared, {
+    kind: 'mint-submitted', operationId: lock.operationId,
+  })
+  const complete = reduceDurableTradeSession(lockSubmitted, {
+    kind: 'proof-operation-reconciled', operationId: lock.operationId,
+  })
+  assert.equal(complete.stage, 'reconciliation-complete')
+  assert.equal(isDurableTradeSessionPurgeEligible(complete), true)
+})
+
+test('v2 rejects invalid dependent graphs and early activation', () => {
+  const merge = createDurableTradeProofOperationLink({
+    tradeId: 'trade-001',
+    role: 'buyer',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: 'condition-001:trade-001:buyer-ctf-merge',
+    kind: 'condition-ctf-merge',
+  } as never)
+  const early = session({
+    schemaVersion: 2 as never,
+    role: 'buyer',
+    expectedProofOperations: [createDurableTradeExpectedProofOperation({
+      tradeId: 'trade-001',
+      role: 'buyer',
+      stage: 'proof-reservation',
+      operationKey: merge.operationKey!,
+      kind: 'condition-ctf-merge',
+    } as never)],
+    proofOperations: [{ ...merge, state: 'prepared' }],
+    plannedProofOperations: [{
+      operationId: deriveDurableProofOperationId(
+        'trade-001',
+        'buyer',
+        'proof-reservation',
+        'lock',
+        'cashu-atomic',
+      ),
+      operationKey: 'lock',
+      kind: 'cashu-atomic',
+      stage: 'proof-reservation',
+      dependsOnOperationId: merge.operationId,
+      context: dependentContext(merge.operationKey!, 'lock'),
+    }],
+  } as never)
+  assert.throws(
+    () => reduceDurableTradeSession(early, {
+      kind: 'dependent-operation-activated',
+      operationId: early.plannedProofOperations![0]!.operationId,
+    } as never),
+    /waiting session/,
+  )
+  assert.match(
+    validateDurableTradeSession({
+      ...early,
+      plannedProofOperations: [{
+        ...early.plannedProofOperations![0]!,
+        dependsOnOperationId: 'missing-operation',
+      }],
+    }) ?? '',
+    /dependency/,
+  )
+  const secondPlan = {
+    ...early.plannedProofOperations![0]!,
+    operationKey: 'lock-2',
+    operationId: deriveDurableProofOperationId(
+      'trade-001',
+      'buyer',
+      'proof-reservation',
+      'lock-2',
+      'cashu-atomic',
+    ),
+    dependsOnOperationId: early.plannedProofOperations![0]!.operationId,
+    context: dependentContext(merge.operationKey!, 'lock-2'),
+  }
+  assert.match(
+    validateDurableTradeSession({
+      ...early,
+      plannedProofOperations: [{
+        ...early.plannedProofOperations![0]!,
+        dependsOnOperationId: secondPlan.operationId,
+      }, secondPlan],
+    }) ?? '',
+    /exactly one planned lock/,
+  )
+  assert.match(
+    validateDurableTradeSession({
+      ...early,
+      plannedProofOperations: [early.plannedProofOperations![0]!, secondPlan],
+    }) ?? '',
+    /exactly one planned lock/,
+  )
+  assert.match(
+    validateDurableTradeSession({
+      ...early,
+      expectedProofOperations: [
+        early.expectedProofOperations![0]!,
+        createDurableTradeExpectedProofOperation({
+          tradeId: 'trade-001',
+          role: 'buyer',
+          stage: 'proof-reservation',
+          operationKey: 'extra-active',
+          kind: 'cashu-atomic',
+        } as never),
+      ],
+    }) ?? '',
+    /exactly one active merge/,
+  )
+  assert.match(
+    validateDurableTradeSession({
+      ...early,
+      expectedProofOperations: [
+        early.expectedProofOperations![0]!,
+        createDurableTradeExpectedProofOperation({
+          tradeId: 'trade-001',
+          role: 'buyer',
+          stage: 'proof-reservation',
+          operationKey: merge.operationKey!,
+          kind: 'cashu-atomic',
+        } as never),
+      ],
+    }) ?? '',
+    /duplicate expected proof operation keys/,
+  )
+  assert.match(
+    validateDurableTradeSession({
+      ...early,
+      plannedProofOperations: [{
+        ...early.plannedProofOperations![0]!,
+        context: {
+          ...early.plannedProofOperations![0]!.context,
+          tradeId: 'foreign-trade',
+        },
+      }],
+    }) ?? '',
+    /context is invalid/,
+  )
+  assert.match(
+    validateDurableTradeSession({
+      ...early,
+      plannedProofOperations: [{
+        ...early.plannedProofOperations![0]!,
+        context: {
+          ...early.plannedProofOperations![0]!.context,
+          expectedOutputCommitment: 'not-a-commitment',
+        },
+      }],
+    }) ?? '',
+    /context is invalid/,
+  )
+  assert.throws(
+    () => reduceDurableTradeSession(session({ schemaVersion: 2 as never, role: 'buyer' }), {
+      kind: 'dependent-operations-planned',
+      active: createDurableTradeExpectedProofOperation({
+        tradeId: 'trade-001',
+        role: 'buyer',
+        stage: 'proof-reservation',
+        operationKey: merge.operationKey!,
+        kind: 'cashu-atomic',
+      } as never),
+      plan: early.plannedProofOperations![0]!,
+    } as never),
+    /dependent operation plan is invalid/,
+  )
+
+})
+
 test('outbound cipher journal replay is byte-identical and rejects replacement ciphertext', () => {
   const journaled = reduceDurableTradeSession(session(), {
     kind: 'outbound-cipher-journaled',
@@ -241,6 +514,10 @@ test('outbound cipher journal replay is byte-identical and rejects replacement c
 })
 
 test('session validation fails closed for an unknown schema or foreign protocol-key binding', () => {
+  assert.match(
+    validateDurableTradeSession({ ...session(), schemaVersion: 1 }) ?? '',
+    /schema version/,
+  )
   assert.match(
     validateDurableTradeSession({ ...session(), schemaVersion: 99 }) ?? '',
     /schema version/,

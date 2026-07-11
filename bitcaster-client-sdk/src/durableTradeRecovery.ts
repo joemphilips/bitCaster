@@ -5,7 +5,7 @@ import {
 } from './tradeSession.ts'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 
-export const DURABLE_TRADE_SESSION_SCHEMA_VERSION = 1 as const
+export const DURABLE_TRADE_SESSION_SCHEMA_VERSION = 2 as const
 
 const DURABLE_OUTBOUND_MESSAGE_ORDER: readonly SwapCipherMessageType[] = [
   'adaptor-point',
@@ -17,7 +17,13 @@ export type DurableTradeSessionStage =
   | 'intent'
   | 'proof-reserved'
   | 'mint-submitted'
+  | 'awaiting-dependent-operation'
   | 'reconciliation-complete'
+
+/** Routes an exact operation to its retained local recovery adapter. */
+export type DurableProofOperationKind =
+  | 'cashu-atomic'
+  | 'condition-ctf-merge'
 
 export type DurableProofOperationStage =
   | 'proof-reservation'
@@ -54,6 +60,8 @@ export interface DurableTradeProofOperationLink {
    * that key the cross-client recovery authority.
    */
   operationKey?: string
+  /** Present for v2 dependent-operation flows; legacy atomic links omit it. */
+  kind?: DurableProofOperationKind
   tradeId: string
   role: SwapRole
   stage: DurableProofOperationStage
@@ -69,6 +77,45 @@ export interface DurableTradeExpectedProofOperation {
   operationId: string
   operationKey: string
   stage: DurableProofOperationStage
+  kind?: DurableProofOperationKind
+}
+
+/**
+ * Immutable adapter-owned commitments for a dependent custody operation.
+ * The SDK validates its shape; adapters additionally validate the opaque
+ * commitments against their exact local ledger rows before activation.
+ */
+export interface DurableDependentOperationContext {
+  contextVersion: 1
+  tradeId: string
+  role: SwapRole
+  localProtocolPubkey: string
+  counterpartyProtocolPubkey: string
+  mintUrl: string
+  sellerLocktimeSecs: number
+  buyerLocktimeSecs: number
+  conditionId: string
+  ammScopeId: string
+  inventoryAccountId: string
+  baseAsset: string
+  unit: string
+  outcomeSetCommitment: string
+  keysetCommitment: string
+  feeCommitment: string
+  mergeInputCommitment: string
+  expectedOutputCommitment: string
+  mergeOperationKey: string
+  lockOperationKey: string
+}
+
+/** A deterministic operation that must not be queried or created yet. */
+export interface DurableTradePlannedProofOperation {
+  operationId: string
+  operationKey: string
+  kind: DurableProofOperationKind
+  stage: DurableProofOperationStage
+  dependsOnOperationId: string
+  context: DurableDependentOperationContext
 }
 
 export interface DurableTradeSession {
@@ -85,6 +132,8 @@ export interface DurableTradeSession {
   stage: DurableTradeSessionStage
   /** Required before a new adapter creates an independently persisted operation. */
   expectedProofOperations?: DurableTradeExpectedProofOperation[]
+  /** Deferred operations; never scanned as missing until explicitly activated. */
+  plannedProofOperations?: DurableTradePlannedProofOperation[]
   proofOperations: DurableTradeProofOperationLink[]
   receivedCiphers: Partial<Record<SwapCipherMessageType, DurableTradeCipher>>
   outboundCiphers: Partial<Record<SwapCipherMessageType, DurableTradeCipher>>
@@ -228,6 +277,11 @@ export type DurableTradeRecoveryAction =
 export type DurableTradeSessionRecoveryResult =
   | { kind: 'ready'; tradeId: string }
   | { kind: 'replayed'; tradeId: string; sentMessageTypes: SwapCipherMessageType[] }
+  | {
+    kind: 'awaiting-dependent-operation'
+    tradeId: string
+    operationIds: string[]
+  }
   | { kind: 'retry-scheduled'; tradeId: string; operationId: string }
   | { kind: 'awaiting-refund-salvage'; tradeId: string; operationId: string }
   | { kind: 'mint-response-unknown'; tradeId: string; operationId: string }
@@ -254,6 +308,17 @@ export interface DurableTradeRecoveryResult {
 }
 
 export type DurableTradeSessionEvent =
+  | {
+    /** Atomically records the active predecessor and its deferred successor. */
+    kind: 'dependent-operations-planned'
+    active: DurableTradeExpectedProofOperation
+    plan: DurableTradePlannedProofOperation
+  }
+  | {
+    /** Promotes one dependency-satisfied plan into an active write-ahead row. */
+    kind: 'dependent-operation-activated'
+    operationId: string
+  }
   | {
     kind: 'proof-operation-prepared'
     operation: DurableTradeProofOperationLink
@@ -320,13 +385,18 @@ export function deriveDurableProofOperationId(
   role: SwapRole,
   stage: DurableProofOperationStage,
   operationKey?: string,
+  kind?: DurableProofOperationKind,
 ): string {
   if (!isIdentifier(tradeId)) throw new Error('trade id must be a durable identifier')
   if (operationKey !== undefined && !isOperationKey(operationKey)) {
     throw new Error('durable proof operation key is invalid')
   }
+  if (kind !== undefined && !isProofOperationKind(kind)) {
+    throw new Error('durable proof operation kind is invalid')
+  }
   const suffix = operationKey === undefined ? '' : `:${encodeURIComponent(operationKey)}`
-  return `trade-recovery:${tradeId}:${role}:${stage}${suffix}`
+  const kindPrefix = kind === undefined ? '' : `:${kind}`
+  return `trade-recovery:${tradeId}:${role}:${stage}${kindPrefix}${suffix}`
 }
 
 /** Builds the SDK-owned identity stored beside a client proof operation. */
@@ -337,6 +407,7 @@ export function createDurableTradeProofOperationLink(input: {
   state: DurableProofOperationState
   /** Required for new records; absent values are accepted only when reading legacy rows. */
   operationKey: string
+  kind?: DurableProofOperationKind
 }): DurableTradeProofOperationLink {
   if (!isOperationKey(input.operationKey)) {
     throw new Error('durable proof operation key is invalid')
@@ -347,12 +418,14 @@ export function createDurableTradeProofOperationLink(input: {
       input.role,
       input.stage,
       input.operationKey,
+      input.kind,
     ),
     operationKey: input.operationKey,
     tradeId: input.tradeId,
     role: input.role,
     stage: input.stage,
     state: input.state,
+    ...(input.kind === undefined ? {} : { kind: input.kind }),
   }
   const error = validateDurableProofOperationLink(operation)
   if (error) throw new Error(error)
@@ -365,6 +438,7 @@ export function createDurableTradeExpectedProofOperation(input: {
   role: SwapRole
   stage: DurableProofOperationStage
   operationKey: string
+  kind?: DurableProofOperationKind
 }): DurableTradeExpectedProofOperation {
   if (!isOperationKey(input.operationKey)) {
     throw new Error('durable proof operation key is invalid')
@@ -375,9 +449,11 @@ export function createDurableTradeExpectedProofOperation(input: {
       input.role,
       input.stage,
       input.operationKey,
+      input.kind,
     ),
     operationKey: input.operationKey,
     stage: input.stage,
+    ...(input.kind === undefined ? {} : { kind: input.kind }),
   }
 }
 
@@ -387,6 +463,12 @@ export function validateDurableTradeSession(
   if (!isObjectRecord(session)) return 'durable trade session is not an object'
   if (!Array.isArray(session.proofOperations)) {
     return 'durable trade session proof operations are invalid'
+  }
+  if (
+    session.plannedProofOperations !== undefined &&
+    !Array.isArray(session.plannedProofOperations)
+  ) {
+    return 'durable trade session planned proof operations are invalid'
   }
   if (!isObjectRecord(session.receivedCiphers) || !isObjectRecord(session.outboundCiphers)) {
     return 'durable trade session cipher journals are invalid'
@@ -430,13 +512,18 @@ export function validateDurableTradeSession(
   if (!isSessionStage(session.stage)) return 'durable trade session stage is invalid'
 
   const expectedOperationIds = new Set<string>()
+  const operationKeys = new Set<string>()
   for (const expected of session.expectedProofOperations ?? []) {
     const error = validateExpectedProofOperation(session, expected)
     if (error) return error
     if (expectedOperationIds.has(expected.operationId)) {
       return 'durable trade session contains duplicate expected proof operation ids'
     }
+    if (operationKeys.has(expected.operationKey)) {
+      return 'durable trade session contains duplicate expected proof operation keys'
+    }
     expectedOperationIds.add(expected.operationId)
+    operationKeys.add(expected.operationKey)
   }
 
   const operationIds = new Set<string>()
@@ -449,9 +536,61 @@ export function validateDurableTradeSession(
     if (operationIds.has(operation.operationId)) {
       return 'durable trade session contains duplicate proof operation ids'
     }
+    const matchingExpected = session.expectedProofOperations?.find(
+      (expected) => sameExpectedOperationIdentity(expected, operation),
+    )
+    if (
+      operation.operationKey && operationKeys.has(operation.operationKey) &&
+      !matchingExpected
+    ) {
+      return 'durable trade session contains duplicate active proof operation keys'
+    }
     operationIds.add(operation.operationId)
+    if (operation.operationKey) operationKeys.add(operation.operationKey)
     if (session.expectedProofOperations !== undefined && !expectedOperationIds.has(operation.operationId)) {
       return 'durable proof operation is not bound by a session write-ahead identity'
+    }
+  }
+
+  const plannedOperationIds = new Set<string>()
+  const plannedOperations = session.plannedProofOperations ?? []
+  if (plannedOperations.length > 0 && plannedOperations.length !== 1) {
+    return 'durable dependent session requires exactly one planned lock'
+  }
+  if (plannedOperations.length > 0 && expectedOperationIds.size !== 1) {
+    return 'durable dependent session requires exactly one active merge'
+  }
+  for (const plan of plannedOperations) {
+    const error = validatePlannedProofOperation(session, plan)
+    if (error) return error
+    if (plannedOperationIds.has(plan.operationId) || expectedOperationIds.has(plan.operationId) ||
+      operationIds.has(plan.operationId)) {
+      return 'durable trade session contains duplicate active or planned operation ids'
+    }
+    if (operationKeys.has(plan.operationKey)) {
+      return 'durable trade session contains duplicate active or planned operation keys'
+    }
+    plannedOperationIds.add(plan.operationId)
+    operationKeys.add(plan.operationKey)
+  }
+  for (const plan of plannedOperations) {
+    if (!expectedOperationIds.has(plan.dependsOnOperationId)) {
+      return 'durable planned proof operation dependency must be active'
+    }
+    const dependency = session.expectedProofOperations?.find(
+      (expected) => expected.operationId === plan.dependsOnOperationId,
+    )
+    if (
+      dependency?.kind !== 'condition-ctf-merge' ||
+      dependency.stage !== 'proof-reservation' ||
+      plan.kind !== 'cashu-atomic' ||
+      plan.stage !== 'proof-reservation' ||
+      plan.context.mergeOperationKey !== dependency.operationKey
+    ) {
+      return 'durable planned proof operation pair is invalid'
+    }
+    if (plan.dependsOnOperationId === plan.operationId) {
+      return 'durable planned proof operation cannot depend on itself'
     }
   }
 
@@ -469,9 +608,19 @@ export function validateDurableTradeSession(
   }
   if (
     session.stage === 'reconciliation-complete' &&
-    session.proofOperations.some((operation) => operation.state !== 'reconciled')
+    (session.proofOperations.some((operation) => operation.state !== 'reconciled') ||
+      (session.plannedProofOperations?.length ?? 0) > 0)
   ) {
     return 'durable trade session completed reconciliation has pending proof operations'
+  }
+  if (
+    session.stage === 'awaiting-dependent-operation' &&
+    (plannedOperations.length !== 1 || expectedOperationIds.size !== 1 ||
+      session.proofOperations.length !== 1 ||
+      !session.proofOperations.every((operation) => operation.state === 'reconciled') ||
+      session.proofOperations[0]?.operationId !== plannedOperations[0]?.dependsOnOperationId)
+  ) {
+    return 'durable trade session awaiting dependent operation is invalid'
   }
 
   return validateCipherJournal(session.receivedCiphers) ??
@@ -842,6 +991,17 @@ export async function recoverDurableTradeSessions(
 
     if (blocked) {
       sessionResults.push(blocked)
+      continue
+    }
+
+    if (activeSession.stage === 'awaiting-dependent-operation') {
+      sessionResults.push({
+        kind: 'awaiting-dependent-operation',
+        tradeId: activeSession.tradeId,
+        operationIds: (activeSession.plannedProofOperations ?? []).map(
+          (plan) => plan.operationId,
+        ),
+      })
       continue
     }
 
@@ -1384,7 +1544,9 @@ function relinkOperationIntoSession(
   const stage = proofOperations.some((item) => item.state === 'mint-submitted')
     ? 'mint-submitted'
     : proofOperations.every((item) => item.state === 'reconciled')
-      ? 'reconciliation-complete'
+      ? (session.plannedProofOperations?.length ?? 0) > 0
+        ? 'awaiting-dependent-operation'
+        : 'reconciliation-complete'
       : 'proof-reserved'
   const next = {
     ...session,
@@ -1406,7 +1568,8 @@ function sameDurableOperationIdentity(
     left.operationKey === right.operationKey &&
     left.tradeId === right.tradeId &&
     left.role === right.role &&
-    left.stage === right.stage
+    left.stage === right.stage &&
+    left.kind === right.kind
 }
 
 function sameExpectedOperationIdentity(
@@ -1415,7 +1578,8 @@ function sameExpectedOperationIdentity(
 ): boolean {
   return expected.operationId === operation.operationId &&
     expected.operationKey === operation.operationKey &&
-    expected.stage === operation.stage
+    expected.stage === operation.stage &&
+    expected.kind === operation.kind
 }
 
 function isRefundEvidenceBoundToSession(
@@ -1451,6 +1615,10 @@ export function reduceDurableTradeSession(
   if (validationError) throw new Error(validationError)
 
   switch (event.kind) {
+    case 'dependent-operations-planned':
+      return reduceDependentOperationsPlanned(session, event.active, event.plan)
+    case 'dependent-operation-activated':
+      return reduceDependentOperationActivated(session, event.operationId)
     case 'proof-operation-prepared':
       return reducePreparedOperation(session, event.operation)
     case 'mint-submitted':
@@ -1468,7 +1636,8 @@ export function isDurableTradeSessionPurgeEligible(
   session: DurableTradeSession,
 ): boolean {
   return session.stage === 'reconciliation-complete' &&
-    session.proofOperations.every((operation) => operation.state === 'reconciled')
+    session.proofOperations.every((operation) => operation.state === 'reconciled') &&
+    (session.plannedProofOperations?.length ?? 0) === 0
 }
 
 /**
@@ -1535,6 +1704,85 @@ export function canSalvageDurableRefund(
     ? evidence.sellerLocktimeSecs
     : evidence.buyerLocktimeSecs
   return nowSecs >= ownLocktimeSecs
+}
+
+function reduceDependentOperationsPlanned(
+  session: DurableTradeSession,
+  active: DurableTradeExpectedProofOperation,
+  plan: DurableTradePlannedProofOperation,
+): DurableTradeSession {
+  if (session.stage !== 'intent' || session.proofOperations.length !== 0 ||
+    (session.expectedProofOperations?.length ?? 0) !== 0 ||
+    (session.plannedProofOperations?.length ?? 0) !== 0) {
+    throw new Error('dependent operations must be planned before custody work begins')
+  }
+  if (validateExpectedProofOperation(session, active) !== null ||
+    validatePlannedProofOperation(session, plan) !== null ||
+    active.kind !== 'condition-ctf-merge' ||
+    active.stage !== 'proof-reservation' ||
+    plan.kind !== 'cashu-atomic' ||
+    plan.stage !== 'proof-reservation' ||
+    plan.dependsOnOperationId !== active.operationId ||
+    plan.context.mergeOperationKey !== active.operationKey) {
+    throw new Error('dependent operation plan is invalid')
+  }
+  return {
+    ...session,
+    revision: session.revision + 1,
+    expectedProofOperations: [active],
+    plannedProofOperations: [plan],
+  }
+}
+
+function reduceDependentOperationActivated(
+  session: DurableTradeSession,
+  operationId: string,
+): DurableTradeSession {
+  if (session.stage !== 'awaiting-dependent-operation') {
+    throw new Error('dependent operation activation requires a waiting session')
+  }
+  if (
+    session.plannedProofOperations?.length !== 1 ||
+    session.expectedProofOperations?.length !== 1 ||
+    session.proofOperations.length !== 1
+  ) {
+    throw new Error('dependent operation activation requires one merge and one planned lock')
+  }
+  const plan = session.plannedProofOperations?.find((item) => item.operationId === operationId)
+  if (!plan) throw new Error('dependent operation plan is missing')
+  const dependency = session.proofOperations.find(
+    (item) => item.operationId === plan.dependsOnOperationId,
+  )
+  const expectedDependency = session.expectedProofOperations?.find(
+    (item) => item.operationId === plan.dependsOnOperationId,
+  )
+  if (!dependency || dependency.state !== 'reconciled') {
+    throw new Error('dependent operation activation requires a reconciled dependency')
+  }
+  if (
+    expectedDependency?.kind !== 'condition-ctf-merge' ||
+    expectedDependency.stage !== 'proof-reservation' ||
+    plan.kind !== 'cashu-atomic' ||
+    plan.stage !== 'proof-reservation' ||
+    plan.context.mergeOperationKey !== expectedDependency.operationKey
+  ) {
+    throw new Error('dependent operation activation has invalid condition binding')
+  }
+  const expected: DurableTradeExpectedProofOperation = {
+    operationId: plan.operationId,
+    operationKey: plan.operationKey,
+    stage: plan.stage,
+    kind: plan.kind,
+  }
+  return {
+    ...session,
+    revision: session.revision + 1,
+    stage: 'proof-reserved',
+    expectedProofOperations: [...(session.expectedProofOperations ?? []), expected],
+    plannedProofOperations: session.plannedProofOperations?.filter(
+      (item) => item.operationId !== operationId,
+    ),
+  }
 }
 
 function reducePreparedOperation(
@@ -1606,7 +1854,9 @@ function reduceProofOperationReconciled(
     ...session,
     revision: session.revision + 1,
     stage: proofOperations.every((item) => item.state === 'reconciled')
-      ? 'reconciliation-complete'
+      ? (session.plannedProofOperations?.length ?? 0) > 0
+        ? 'awaiting-dependent-operation'
+        : 'reconciliation-complete'
       : session.stage,
     proofOperations,
   }
@@ -1663,6 +1913,9 @@ function validateDurableProofOperationLink(
   if (!isProofOperationStage(operation.stage)) {
     return 'durable proof operation stage is invalid'
   }
+  if (operation.kind !== undefined && !isProofOperationKind(operation.kind)) {
+    return 'durable proof operation kind is invalid'
+  }
   if (!isProofOperationState(operation.state)) {
     return 'durable proof operation state is invalid'
   }
@@ -1671,6 +1924,7 @@ function validateDurableProofOperationLink(
     operation.role,
     operation.stage,
     operation.operationKey,
+    operation.kind,
   )
   if (operation.operationId !== expectedId) {
     return 'durable proof operation id is not bound to trade, role, and stage'
@@ -1688,15 +1942,77 @@ function validateExpectedProofOperation(
   if (!isProofOperationStage(expected.stage)) {
     return 'durable expected proof operation stage is invalid'
   }
+  if (expected.kind !== undefined && !isProofOperationKind(expected.kind)) {
+    return 'durable expected proof operation kind is invalid'
+  }
   const operationId = deriveDurableProofOperationId(
     session.tradeId,
     session.role,
     expected.stage,
     expected.operationKey,
+    expected.kind,
   )
   return expected.operationId === operationId
     ? null
     : 'durable expected proof operation id is not bound to session identity'
+}
+
+function validatePlannedProofOperation(
+  session: DurableTradeSession,
+  plan: DurableTradePlannedProofOperation,
+): string | null {
+  if (!isObjectRecord(plan) || !isOperationKey(plan.operationKey)) {
+    return 'durable planned proof operation key is invalid'
+  }
+  if (!isProofOperationKind(plan.kind) || !isProofOperationStage(plan.stage)) {
+    return 'durable planned proof operation kind or stage is invalid'
+  }
+  if (!isOperationKey(plan.dependsOnOperationId)) {
+    return 'durable planned proof operation dependency is invalid'
+  }
+  const expectedId = deriveDurableProofOperationId(
+    session.tradeId,
+    session.role,
+    plan.stage,
+    plan.operationKey,
+    plan.kind,
+  )
+  if (plan.operationId !== expectedId) {
+    return 'durable planned proof operation id is not bound to semantic identity'
+  }
+  return validateDurableDependentOperationContext(session, plan)
+}
+
+/**
+ * Structural validation for immutable buyer collateral context. Adapters must
+ * additionally compare the commitments with their exact local ledger rows
+ * before calling the activation reducer event.
+ */
+export function validateDurableDependentOperationContext(
+  session: DurableTradeSession,
+  plan: DurableTradePlannedProofOperation,
+): string | null {
+  const context = plan.context
+  if (!isObjectRecord(context) || context.contextVersion !== 1 ||
+    context.tradeId !== session.tradeId || context.role !== session.role ||
+    context.localProtocolPubkey !== session.localProtocolPubkey ||
+    context.counterpartyProtocolPubkey !== session.counterpartyProtocolPubkey ||
+    context.mintUrl !== session.mintUrl ||
+    context.sellerLocktimeSecs !== session.sellerLocktimeSecs ||
+    context.buyerLocktimeSecs !== session.buyerLocktimeSecs ||
+    !isIdentifier(context.conditionId) || !isIdentifier(context.ammScopeId) ||
+    !isOperationKey(context.inventoryAccountId) ||
+    !isIdentifier(context.baseAsset) || !isIdentifier(context.unit) ||
+    !isCommitment(context.outcomeSetCommitment) ||
+    !isCommitment(context.keysetCommitment) ||
+    !isCommitment(context.feeCommitment) ||
+    !isCommitment(context.mergeInputCommitment) ||
+    !isCommitment(context.expectedOutputCommitment) ||
+    !isOperationKey(context.mergeOperationKey) ||
+    context.lockOperationKey !== plan.operationKey) {
+    return 'durable planned proof operation context is invalid'
+  }
+  return null
 }
 
 function validateCipherJournal(
@@ -1787,7 +2103,16 @@ function isSessionStage(value: string): value is DurableTradeSessionStage {
   return value === 'intent' ||
     value === 'proof-reserved' ||
     value === 'mint-submitted' ||
+    value === 'awaiting-dependent-operation' ||
     value === 'reconciliation-complete'
+}
+
+function isProofOperationKind(value: unknown): value is DurableProofOperationKind {
+  return value === 'cashu-atomic' || value === 'condition-ctf-merge'
+}
+
+function isCommitment(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 }
 
 function isProofOperationStage(value: string): value is DurableProofOperationStage {
