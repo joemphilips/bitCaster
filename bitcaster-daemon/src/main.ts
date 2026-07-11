@@ -77,6 +77,8 @@ switch (command) {
     let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
     let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
     let runDurableRecovery: (() => Promise<void>) | undefined
+    let durableRecoveryRunner: ReturnType<typeof createDaemonDurableTradeRecoveryRunner> | undefined
+    let runDurableTradeEvent: ((tradeId: string, action: () => Promise<void>) => Promise<void>) | undefined
     const recoveryEngineClient =
       profile && secrets
         ? createAuthenticatedBitcasterEngineClient({
@@ -111,16 +113,25 @@ switch (command) {
               if (swap) {
                 await runtime?.start(await ensureState())
               }
-              await executor?.onTradeCreated(swap)
+              if (!runDurableTradeEvent) {
+                throw new Error('durable recovery coordinator is not available')
+              }
+              await runDurableTradeEvent(payload.tradeId, async () => {
+                await executor?.onTradeCreated(swap)
+              })
             },
             onSwapMessageReceived: async (
               tradeId,
               messageType,
               ciphertext,
             ) => {
-              await executor?.onSwapMessage(
-                await recordSwapMessage(tradeId, messageType, ciphertext),
-              )
+              const swap = await recordSwapMessage(tradeId, messageType, ciphertext)
+              if (!runDurableTradeEvent) {
+                throw new Error('durable recovery coordinator is not available')
+              }
+              await runDurableTradeEvent(tradeId, async () => {
+                await executor?.onSwapMessage(swap)
+              })
             },
             onTradeStateChanged: async (tradeId, newState, failureReason) => {
               const swap = await recordTradeStateChanged(
@@ -128,7 +139,12 @@ switch (command) {
                 newState,
                 failureReason,
               )
-              await executor?.onTradeStateChanged(swap)
+              if (!runDurableTradeEvent) {
+                throw new Error('durable recovery coordinator is not available')
+              }
+              await runDurableTradeEvent(tradeId, async () => {
+                await executor?.onTradeStateChanged(swap)
+              })
               await takerFillRecovery?.recoverTrade(tradeId)
             },
             onPendingPubkeyRequired: async (tradeId, _orderId, _role, marketId, _deadline) => {
@@ -182,6 +198,9 @@ switch (command) {
       ? new DaemonSwapExecutor({
           connection: tradeHub,
           ops: createRealDaemonSwapOps(),
+          scheduleRecovery: (tradeId) => {
+            void durableRecoveryRunner?.recoverTrade(tradeId).catch(() => undefined)
+          },
         })
       : undefined
     runtime = runtimeConnection
@@ -198,8 +217,11 @@ switch (command) {
           },
         })
       : undefined
-    const durableRecoveryRunner = executor && tradeHub
+    durableRecoveryRunner = executor && tradeHub
       ? createDaemonDurableTradeRecoveryRunner({ executor, connection: tradeHub })
+      : undefined
+    runDurableTradeEvent = durableRecoveryRunner
+      ? (tradeId, action) => durableRecoveryRunner.runTradeEvent(tradeId, action)
       : undefined
     runDurableRecovery = durableRecoveryRunner
       ? async () => {
@@ -213,6 +235,7 @@ switch (command) {
         }
       }
       : undefined
+    durableRecoveryRunner?.armBootstrap()
     try {
       const server = await startDaemonServer({
         tradeRuntime: runtime,
@@ -243,9 +266,16 @@ switch (command) {
           process.stderr.write(`Wallet recovery sweep failed: ${message}\n`)
         })
     }
-    if (runDurableRecovery) {
+    if (durableRecoveryRunner) {
       void (async () => {
-        await runDurableRecovery()
+        const recovery = await durableRecoveryRunner.finishBootstrap()
+        for (const session of recovery.durableRecovery.sessions) {
+          if (session.kind === 'failed-closed') {
+            process.stderr.write(
+              `Durable trade recovery failed closed for ${session.tradeId}: ${session.reason}\n`,
+            )
+          }
+        }
       })().catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
         process.stderr.write(`Swap recovery sweep failed: ${message}\n`)

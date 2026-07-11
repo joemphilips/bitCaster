@@ -27,6 +27,7 @@ import type {
 } from '@bitcaster-market/client-sdk/swapFailure'
 import { ensureProfileDir, profileDir, readProfile } from './profile.ts'
 import { readSecrets } from './secrets.ts'
+import { validateDaemonDurableOperationBinding } from './durableTradeBinding.ts'
 
 export interface CashuProofRecord {
   id?: string
@@ -542,8 +543,14 @@ export async function prepareProofOperation(
       if (!session) {
         throw new Error(`Proof operation ${input.operationId} has no durable trade session`)
       }
-      if (session.role !== link.role || link.state !== 'prepared') {
-        throw new Error(`Proof operation ${input.operationId} has an invalid durable trade binding`)
+      const bindingError = validateDaemonDurableOperationBinding({
+        session,
+        record,
+        operation: link,
+        allowUnlinkedSessionOperation: true,
+      })
+      if (bindingError || link.state !== 'prepared') {
+        throw new Error(`Proof operation ${input.operationId} has an invalid durable trade binding: ${bindingError ?? 'state'}`)
       }
       const expected = session.expectedProofOperations ?? []
       if (!expected.some((item) => item.operationId === link.operationId)) {

@@ -15,6 +15,7 @@ import {
   type DurableTradeProofOperationLink,
   type DurableTradeRecoveryPorts,
   type DurableTradeRecoveryResult,
+  type DurableTradeRetryRequest,
   type DurableTradeSession,
   type DurableTradeSessionRepository,
 } from '@bitcaster-market/client-sdk/durableTradeRecovery'
@@ -22,9 +23,12 @@ import {
   ensureState,
   readState,
   updateState,
+  type DaemonState,
+  type ProofOperationRecord,
 } from './state.ts'
 import type { TradeRuntimeConnection } from './tradeRuntime.ts'
 import type { DaemonSwapExecutor } from './swapExecutor.ts'
+import { validateDaemonDurableOperationBinding } from './durableTradeBinding.ts'
 
 export async function getDaemonProofOperationByDurableId(operationId: string) {
   return findOperationRecord(operationId)
@@ -47,30 +51,50 @@ export interface DaemonDurableTradeRecoveryRunner {
     durableRecovery: DurableTradeRecoveryResult
     activeSwaps: number
   }>
+  /** Arms event gating before the TradeHub can deliver recovery-sensitive events. */
+  armBootstrap(): void
+  /** Runs the first coordinator pass and releases events queued during bootstrap. */
+  finishBootstrap(): Promise<{
+    durableRecovery: DurableTradeRecoveryResult
+    activeSwaps: number
+  }>
+  /** Runs a persisted runtime event only after coordinator-owned recovery. */
+  runTradeEvent(tradeId: string, action: () => Promise<void>): Promise<void>
+  /** Re-enters the owner for a legacy swap retry after exact recovery. */
+  recoverTrade(tradeId: string): Promise<void>
+  /** Re-enters recovery for a retained exact operation, never fresh swap work. */
+  recoverTradeOperation(tradeId: string, operationId: string): Promise<void>
+}
+
+export interface DaemonDurableTradeRecoveryRunnerOptions {
+  executor: DaemonSwapExecutor
+  connection: TradeRuntimeConnection
+  /** Test-only seam; production always uses the SDK coordinator below. */
+  recoverDurableSessions?: (input: {
+    scheduleRetry: (request: DurableTradeRetryRequest) => Promise<void>
+  }) => Promise<DurableTradeRecoveryResult>
+  loadState?: () => Promise<DaemonState>
+  nowMs?: () => number
+  setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
+  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
 }
 
 /**
  * Runs coordinator-owned exact recovery before the legacy active-swap sweep.
- * Both daemon startup and the manual RPC use this one ordering so the legacy
- * executor cannot select fresh proofs while a durable link remains active.
+ * Startup, timers, manual RPC, and runtime events enter one queue so the
+ * legacy executor cannot select fresh proofs while a durable link is active.
  */
-export function createDaemonDurableTradeRecoveryRunner(input: {
-  executor: DaemonSwapExecutor
-  connection: TradeRuntimeConnection
-}): DaemonDurableTradeRecoveryRunner {
-  return {
-    async recover() {
-      const durableRecovery = await recoverDaemonDurableTradeSessions(input)
-      const { activeSwaps } = await input.executor.resumeActiveSwaps(await ensureState())
-      return { durableRecovery, activeSwaps }
-    },
-  }
+export function createDaemonDurableTradeRecoveryRunner(
+  input: DaemonDurableTradeRecoveryRunnerOptions,
+): DaemonDurableTradeRecoveryRunner {
+  return new DaemonDurableTradeRecoveryCoordinator(input)
 }
 
 /** Runs the SDK-owned recovery policy using daemon-specific storage and transport. */
 export async function recoverDaemonDurableTradeSessions(input: {
   executor: DaemonSwapExecutor
   connection: TradeRuntimeConnection
+  scheduleRetry?: (request: DurableTradeRetryRequest) => Promise<void>
 }): Promise<DurableTradeRecoveryResult> {
   const repositories = createDaemonDurableTradeRepositories()
   const ports: DurableTradeRecoveryPorts = {
@@ -78,10 +102,10 @@ export async function recoverDaemonDurableTradeSessions(input: {
     mint: {
       inspect: inspectDaemonOperation,
       restoreExactPersistedOutputs: async (operation) => {
-        await input.executor.resumeDurableProofOperation(requireOperationKey(operation))
+        await input.executor.resumeDurableProofOperation(await requireBoundOperationKey(operation))
       },
       resumeExactPreparedOperation: async (operation) => {
-        await input.executor.resumeDurableProofOperation(requireOperationKey(operation))
+        await input.executor.resumeDurableProofOperation(await requireBoundOperationKey(operation))
       },
     },
     transport: {
@@ -95,9 +119,178 @@ export async function recoverDaemonDurableTradeSessions(input: {
     clock: { nowMs: () => Date.now() },
     hashCiphertext: async (ciphertext) =>
       createHash('sha256').update(ciphertext).digest('hex'),
+    scheduleRetry: input.scheduleRetry,
     atomicTransition: daemonAtomicTransition,
   }
   return recoverDurableTradeSessions(ports)
+}
+
+class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecoveryRunner {
+  private tail: Promise<void> = Promise.resolve()
+  private bootstrap: Promise<{ durableRecovery: DurableTradeRecoveryResult; activeSwaps: number }> | null = null
+  private bootstrapArmed = false
+  private bootstrapGate: Promise<void> | null = null
+  private releaseBootstrapGate: (() => void) | null = null
+  private readonly retryTimers = new Map<string, {
+    request: DurableTradeRetryRequest
+    dueMs: number
+    timer: ReturnType<typeof setTimeout>
+  }>()
+  private readonly loadState: () => Promise<DaemonState>
+  private readonly nowMs: () => number
+  private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
+  private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void
+  private readonly recoverDurableSessions: (input: {
+    scheduleRetry: (request: DurableTradeRetryRequest) => Promise<void>
+  }) => Promise<DurableTradeRecoveryResult>
+  private readonly input: DaemonDurableTradeRecoveryRunnerOptions
+
+  constructor(input: DaemonDurableTradeRecoveryRunnerOptions) {
+    this.input = input
+    this.loadState = input.loadState ?? ensureState
+    this.nowMs = input.nowMs ?? Date.now
+    this.setTimer = input.setTimer ?? setTimeout
+    this.clearTimer = input.clearTimer ?? clearTimeout
+    this.recoverDurableSessions = input.recoverDurableSessions ??
+      ((ports) => recoverDaemonDurableTradeSessions({
+        executor: input.executor,
+        connection: input.connection,
+        scheduleRetry: ports.scheduleRetry,
+      }))
+  }
+
+  armBootstrap(): void {
+    if (this.bootstrapArmed || this.bootstrap) return
+    this.bootstrapArmed = true
+    this.bootstrapGate = new Promise<void>((resolve) => {
+      this.releaseBootstrapGate = resolve
+    })
+  }
+
+  finishBootstrap(): Promise<{ durableRecovery: DurableTradeRecoveryResult; activeSwaps: number }> {
+    if (this.bootstrap) return this.bootstrap
+    this.bootstrapArmed = true
+    this.bootstrap = this.enqueue(() => this.runCoordinator())
+    void this.bootstrap.then(
+      () => this.releaseBootstrapGate?.(),
+      () => this.releaseBootstrapGate?.(),
+    )
+    return this.bootstrap
+  }
+
+  async recover(): Promise<{ durableRecovery: DurableTradeRecoveryResult; activeSwaps: number }> {
+    await this.waitForBootstrap()
+    return this.enqueue(() => this.runCoordinator())
+  }
+
+  async runTradeEvent(tradeId: string, action: () => Promise<void>): Promise<void> {
+    await this.waitForBootstrap()
+    await this.enqueue(async () => {
+      const recovery = await this.runCoordinator()
+      if (hasFailedClosedRecovery(recovery.durableRecovery, tradeId)) return
+      await action()
+    })
+  }
+
+  async recoverTradeOperation(tradeId: string, operationId: string): Promise<void> {
+    await this.waitForBootstrap()
+    await this.enqueue(async () => {
+      if (!await this.isRetryEligible({ tradeId, operationId })) {
+        return
+      }
+      await this.runCoordinator()
+    })
+  }
+
+  async recoverTrade(_tradeId: string): Promise<void> {
+    await this.waitForBootstrap()
+    await this.enqueue(async () => {
+      await this.runCoordinator()
+    })
+  }
+
+  private async waitForBootstrap(): Promise<void> {
+    if (this.bootstrap) {
+      await this.bootstrap
+      return
+    }
+    if (this.bootstrapArmed && this.bootstrapGate) {
+      await this.bootstrapGate
+      await this.bootstrap
+    }
+  }
+
+  private enqueue<T>(action: () => Promise<T>): Promise<T> {
+    const next = this.tail.then(action, action)
+    this.tail = next.then(() => undefined, () => undefined)
+    return next
+  }
+
+  private async runCoordinator(): Promise<{
+    durableRecovery: DurableTradeRecoveryResult
+    activeSwaps: number
+  }> {
+    const durableRecovery = await this.recoverDurableSessions({
+      scheduleRetry: async (request) => this.scheduleRetry(request),
+    })
+    await this.clearTerminalRetries()
+    if (hasFailedClosedRecovery(durableRecovery)) {
+      return { durableRecovery, activeSwaps: 0 }
+    }
+    const { activeSwaps } = await this.input.executor.resumeActiveSwaps(await this.loadState())
+    await this.clearTerminalRetries()
+    return { durableRecovery, activeSwaps }
+  }
+
+  private async scheduleRetry(request: DurableTradeRetryRequest): Promise<void> {
+    if (!await this.isRetryEligible(request)) return
+    const key = retryTimerKey(request)
+    const dueMs = this.nowMs() + request.delayMs
+    const existing = this.retryTimers.get(key)
+    if (existing && existing.dueMs <= dueMs) return
+    if (existing) this.clearTimer(existing.timer)
+    const timer = this.setTimer(() => {
+      this.retryTimers.delete(key)
+      void this.recoverTradeOperation(request.tradeId, request.operationId).catch(() => undefined)
+    }, request.delayMs)
+    timer.unref?.()
+    this.retryTimers.set(key, { request, dueMs, timer })
+  }
+
+  private async clearTerminalRetries(): Promise<void> {
+    for (const [key, entry] of this.retryTimers) {
+      if (await this.isRetryEligible(entry.request)) continue
+      this.clearTimer(entry.timer)
+      this.retryTimers.delete(key)
+    }
+  }
+
+  private async isRetryEligible(request: Pick<DurableTradeRetryRequest, 'tradeId' | 'operationId'>): Promise<boolean> {
+    const state = await this.loadState()
+    const session = state.durableTradeSessions[request.tradeId]
+    const record = Object.values(state.proofOperations).find(
+      (candidate) => candidate.durableTradeRecovery?.operationId === request.operationId,
+    )
+    const operation = record?.durableTradeRecovery
+    if (!session || !record || !operation || operation.state === 'reconciled' ||
+      validateDaemonDurableOperationBinding({ session, record, operation }) !== null) {
+      return false
+    }
+    const deadlineSecs = session.role === 'seller'
+      ? session.sellerLocktimeSecs
+      : session.buyerLocktimeSecs
+    return this.nowMs() < deadlineSecs * 1_000
+  }
+}
+
+function hasFailedClosedRecovery(recovery: DurableTradeRecoveryResult, tradeId?: string): boolean {
+  return recovery.sessions.some((result) =>
+    result.kind === 'failed-closed' && (tradeId === undefined || result.tradeId === tradeId)) ||
+    recovery.orphans.some((result) => result.kind === 'failed-closed')
+}
+
+function retryTimerKey(request: Pick<DurableTradeRetryRequest, 'tradeId' | 'operationId'>): string {
+  return `${request.tradeId}\u0000${request.operationId}`
 }
 
 const daemonSessions: DurableTradeSessionRepository = {
@@ -188,7 +381,12 @@ const daemonAtomicTransition: DurableTradeAtomicTransitionPort = {
       const storedOperation = record?.durableTradeRecovery
       if (!storedSession || !record || !storedOperation ||
         validateDurableProofOperationLink(storedOperation) !== null ||
-        !sameDurableOperationIdentity(storedOperation, input.operation)) {
+        !sameDurableOperationIdentity(storedOperation, input.operation) ||
+        validateDaemonDurableOperationBinding({
+          session: storedSession,
+          record,
+          operation: input.operation,
+        }) !== null) {
         return null
       }
 
@@ -247,8 +445,16 @@ async function advanceDaemonOperationFromCurrentState(
   )
   const operation = record?.durableTradeRecovery
   const session = operation ? snapshot?.durableTradeSessions[operation.tradeId] : undefined
-  if (!operation || !session) {
+  if (!record || !operation || !session) {
     throw new Error(`Missing durable proof operation ${operationId}`)
+  }
+  const bindingError = validateDaemonDurableOperationBinding({
+    session,
+    record,
+    operation,
+  })
+  if (bindingError) {
+    throw new Error(`Durable proof operation ${operationId} has an invalid binding: ${bindingError}`)
   }
   const advanced = await daemonAtomicTransition.advance({ session, operation, state })
   if (!advanced) {
@@ -265,8 +471,9 @@ async function findOperationRecord(operationId: string) {
 }
 
 async function inspectDaemonOperation(operation: DurableTradeProofOperationLink) {
-  const record = await findOperationRecord(operation.operationId)
-  if (!record) return { kind: 'corrupt' as const }
+  const bound = await findBoundDaemonOperation(operation)
+  if (!bound) return { kind: 'foreign' as const }
+  const { record } = bound
   if (record.state === 'completed') return { kind: 'prepared-spent-restorable' as const }
   if (record.inputs.some((proof) => !proof.id)) return { kind: 'corrupt' as const }
 
@@ -288,9 +495,25 @@ async function inspectDaemonOperation(operation: DurableTradeProofOperationLink)
   return { kind: 'pending-or-mixed' as const }
 }
 
-function requireOperationKey(operation: DurableTradeProofOperationLink): string {
-  if (!operation.operationKey) throw new Error(`Durable proof operation ${operation.operationId} has no local key`)
-  return operation.operationKey
+async function requireBoundOperationKey(operation: DurableTradeProofOperationLink): Promise<string> {
+  const bound = await findBoundDaemonOperation(operation)
+  if (!bound) throw new Error(`Durable proof operation ${operation.operationId} has an invalid binding`)
+  return bound.record.operationId
+}
+
+async function findBoundDaemonOperation(
+  operation: DurableTradeProofOperationLink,
+): Promise<{ record: ProofOperationRecord; session: DurableTradeSession } | null> {
+  const snapshot = await readState()
+  const record = Object.values(snapshot?.proofOperations ?? {}).find(
+    (candidate) => candidate.durableTradeRecovery?.operationId === operation.operationId,
+  )
+  if (!record) return null
+  const session = snapshot?.durableTradeSessions[operation.tradeId]
+  if (!session || validateDaemonDurableOperationBinding({ session, record, operation }) !== null) {
+    return null
+  }
+  return { record, session }
 }
 
 function allStates(states: ProofState[], expected: string): boolean {

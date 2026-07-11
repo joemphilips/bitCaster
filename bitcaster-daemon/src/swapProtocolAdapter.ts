@@ -6,6 +6,7 @@ import {
 import { createP2PKWitness } from '@bitcaster-market/swap-protocol/p2pk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { createDurableTradeProofOperationLink } from '@bitcaster-market/client-sdk/durableTradeRecovery'
+import { durableBindingForDaemonProofOperation } from './durableTradeBinding.ts'
 import {
   getProofOperation,
   markProofOperationMintSubmitted,
@@ -399,9 +400,7 @@ function proofOperationStoreFor(ctx: Pick<DaemonSwapContext, 'tradeId' | 'role'>
         durableTradeRecovery: createDurableTradeProofOperationLink({
           tradeId: ctx.tradeId,
           role: ctx.role,
-          stage: input.kind === 'swap-lock' || input.kind === 'conditional-keyset-swap'
-            ? 'proof-reservation'
-            : input.kind === 'swap-claim' ? 'claim' : input.kind === 'swap-refund' ? 'refund' : 'mint-submission',
+          ...durableBindingForDaemonProofOperation(input.kind),
           state: 'prepared',
           operationKey: input.operationId,
         }),

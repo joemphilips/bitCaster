@@ -191,6 +191,8 @@ export interface DaemonSwapExecutorOptions {
   walletOpsDeps?: WalletOpsDependencies
   retryDelayMs?: number
   maxRetryAttempts?: number
+  /** Routes retry work back through the daemon recovery owner when configured. */
+  scheduleRecovery?: (tradeId: string) => void
 }
 
 export class DaemonSwapExecutor {
@@ -202,6 +204,7 @@ export class DaemonSwapExecutor {
   private readonly retryAttempts = new Map<string, number>()
   private readonly retryDelayMs: number
   private readonly maxRetryAttempts: number
+  private readonly scheduleRecovery?: (tradeId: string) => void
 
   constructor(options: DaemonSwapExecutorOptions) {
     this.connection = options.connection
@@ -209,6 +212,7 @@ export class DaemonSwapExecutor {
     this.walletOpsDeps = options.walletOpsDeps ?? {}
     this.retryDelayMs = options.retryDelayMs ?? RETRYABLE_SWAP_STEP_RETRY_DELAY_MS
     this.maxRetryAttempts = options.maxRetryAttempts ?? RETRYABLE_SWAP_STEP_MAX_ATTEMPTS
+    this.scheduleRecovery = options.scheduleRecovery
   }
 
   async onTradeCreated(swap: LocalSwapRecord | null): Promise<void> {
@@ -1371,6 +1375,10 @@ export class DaemonSwapExecutor {
     this.retryAttempts.set(tradeId, attempts + 1)
     const timer = setTimeout(() => {
       this.retryTimers.delete(tradeId)
+      if (this.scheduleRecovery) {
+        this.scheduleRecovery(tradeId)
+        return
+      }
       void this.retryActiveSwap(tradeId).catch(() => undefined)
     }, this.retryDelayMs)
     timer.unref?.()

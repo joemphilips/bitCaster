@@ -203,6 +203,101 @@ test("daemon durable recovery fails an invalid link before it can resume or send
   }
 });
 
+test("daemon durable recovery rejects a foreign ledger key before mint inspection or dispatch", async () => {
+  const home = await mkdtemp(
+    join(tmpdir(), "bitcaster-daemon-foreign-durable-operation-"),
+  );
+  const previousHome = process.env.BITCASTER_DAEMON_HOME;
+  process.env.BITCASTER_DAEMON_HOME = home;
+  const originalLoadMint = CashuWallet.prototype.loadMint;
+  try {
+    const operation = createDurableTradeProofOperationLink({
+      tradeId: "trade-owner",
+      role: "seller",
+      stage: "proof-reservation",
+      state: "prepared",
+      operationKey: "trade-owner/seller-lock",
+      kind: "cashu-atomic",
+    });
+    const session: DurableTradeSession = {
+      schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
+      revision: 0,
+      tradeId: operation.tradeId,
+      role: operation.role,
+      localProtocolPubkey: "a".repeat(64),
+      counterpartyProtocolPubkey: "b".repeat(64),
+      mintUrl: "https://mint.example",
+      sellerLocktimeSecs: 120,
+      buyerLocktimeSecs: 100,
+      ephemeralKeyHandle: {
+        keyId: "foreign-key",
+        tradeId: operation.tradeId,
+        role: operation.role,
+        localProtocolPubkey: "a".repeat(64),
+        counterpartyProtocolPubkey: "b".repeat(64),
+        mintUrl: "https://mint.example",
+        sellerLocktimeSecs: 120,
+        buyerLocktimeSecs: 100,
+      },
+      stage: "proof-reserved",
+      proofOperations: [operation],
+      receivedCiphers: {},
+      outboundCiphers: {},
+    };
+    const state = emptyDaemonState();
+    state.durableTradeSessions[session.tradeId] = session;
+    state.proofOperations["trade-foreign/seller-lock"] = {
+      operationId: "trade-foreign/seller-lock",
+      durableTradeRecovery: operation,
+      kind: "swap-lock",
+      state: "prepared",
+      mintUrl: session.mintUrl,
+      inputs: [{ id: "keyset-1", amount: 1, secret: "foreign-input", C: "02".padEnd(66, "1") }],
+      outputs: {},
+      metadata: { unit: "sat" },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await writeState(state);
+    let mintInspections = 0;
+    let exactResumes = 0;
+    let sentMessages = 0;
+    CashuWallet.prototype.loadMint = async () => {
+      mintInspections += 1;
+    };
+
+    const recovery = await recoverDaemonDurableTradeSessions({
+      executor: {
+        async resumeDurableProofOperation() {
+          exactResumes += 1;
+        },
+      } as never,
+      connection: {
+        async joinTrade() {
+          sentMessages += 1;
+        },
+        async sendSwapMessage() {
+          sentMessages += 1;
+        },
+      } as never,
+    });
+
+    assert.deepEqual(recovery.sessions, [{
+      kind: "failed-closed",
+      tradeId: operation.tradeId,
+      reason: "foreign-proof-operation",
+    }]);
+    assert.equal(mintInspections, 0);
+    assert.equal(exactResumes, 0);
+    assert.equal(sentMessages, 0);
+  } finally {
+    CashuWallet.prototype.loadMint = originalLoadMint;
+    await rm(home, { recursive: true, force: true });
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME;
+    else process.env.BITCASTER_DAEMON_HOME = previousHome;
+  }
+});
+
 test("daemon refuses a durable proof link before its TradeCreated session exists", async () => {
   const home = await mkdtemp(
     join(tmpdir(), "bitcaster-daemon-unbound-durable-operation-"),
