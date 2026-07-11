@@ -14,6 +14,7 @@ import {
 } from '../src/state.ts'
 import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
 import { createDaemonSecrets, writeSecrets } from '../src/secrets.ts'
+import { DURABLE_TRADE_SESSION_SCHEMA_VERSION } from '@bitcaster-market/client-sdk/durableTradeRecovery'
 
 test('TradeHub event records are durable swap state', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-events-'))
@@ -43,6 +44,7 @@ test('TradeHub event records are durable swap state', async () => {
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
+    state.durableTradeSessions['trade-1'] = durableSessionForEvent('trade-1', 'seller')
     await writeState(state)
 
     const created = await recordTradeCreated({
@@ -697,6 +699,7 @@ test('concurrent TradeHub events serialize daemon state writes', async () => {
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
+    state.durableTradeSessions['trade-1'] = durableSessionForEvent('trade-1', 'seller')
     await writeState(state)
 
     await Promise.all([
@@ -720,3 +723,37 @@ test('concurrent TradeHub events serialize daemon state writes', async () => {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+function durableSessionForEvent(tradeId: string, role: 'seller' | 'buyer') {
+  const localProtocolPubkey = role === 'seller'
+    ? `02${'11'.repeat(32)}`
+    : `03${'22'.repeat(32)}`
+  const counterpartyProtocolPubkey = role === 'seller'
+    ? `03${'22'.repeat(32)}`
+    : `02${'11'.repeat(32)}`
+  return {
+    schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
+    revision: 0,
+    tradeId,
+    role,
+    localProtocolPubkey,
+    counterpartyProtocolPubkey,
+    mintUrl: 'https://mint.example',
+    sellerLocktimeSecs: 1_779_389_200,
+    buyerLocktimeSecs: 1_779_385_600,
+    ephemeralKeyHandle: {
+      keyId: `key-${tradeId}`,
+      tradeId,
+      role,
+      localProtocolPubkey,
+      counterpartyProtocolPubkey,
+      mintUrl: 'https://mint.example',
+      sellerLocktimeSecs: 1_779_389_200,
+      buyerLocktimeSecs: 1_779_385_600,
+    },
+    stage: 'intent' as const,
+    proofOperations: [],
+    receivedCiphers: {},
+    outboundCiphers: {},
+  }
+}

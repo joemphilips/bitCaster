@@ -12,6 +12,7 @@ import type {
 import { redactSwapFailureForTelemetry } from '@bitcaster-market/client-sdk/swapFailure'
 import { TRADE_MESSAGE_TYPES } from '@bitcaster-market/client-sdk/tradeSession'
 import {
+  validateDurableTradeSession,
   validateDurableProofOperationLink,
   type DurableProofOperationState,
   type DurableTradeProofOperationLink,
@@ -245,15 +246,24 @@ export class DaemonSwapExecutor {
     activeSwaps: number
   }> {
     await this.sweepPartialLockFailures(state)
-    const durableOperationsInProgress = new Set(
+    // Once a trade has a durable proof-operation record, only the SDK exact
+    // dispatcher may advance it after restart. The legacy sweep must not
+    // re-enter proof selection merely because that record later reconciles.
+    const durableOperationTrades = new Set(
       Object.values(state.proofOperations)
         .map((operation) => operation.durableTradeRecovery)
         .filter((link): link is DurableTradeProofOperationLink => link !== undefined)
-        .filter(isDurableTradeRecoveryLinkInProgress)
+        .map((link) => {
+          isDurableTradeRecoveryLinkInProgress(link)
+          return link
+        })
         .map((link) => link.tradeId),
     )
     const swaps = Object.values(state.swaps)
-      .filter((swap) => !isTerminal(swap) && !durableOperationsInProgress.has(swap.tradeId))
+      .filter((swap) =>
+        !isTerminal(swap) &&
+        !durableOperationTrades.has(swap.tradeId) &&
+        hasValidDurableSession(state, swap.tradeId))
       .sort((a, b) => a.tradeId.localeCompare(b.tradeId))
     for (const swap of swaps) {
       if (swap.step === 'settling') {
@@ -265,37 +275,11 @@ export class DaemonSwapExecutor {
     return { activeSwaps: swaps.length }
   }
 
-  /**
-   * Executes the exact existing request identified by the SDK durable link.
-   * It never creates a new operation id; the underlying shared operation
-   * checks NUT-07 before resubmitting its persisted outputs.
-   */
-  async resumeDurableProofOperation(operationKey: string): Promise<void> {
-    const separator = operationKey.indexOf('/')
-    if (separator <= 0) throw new Error(`invalid durable proof operation key ${operationKey}`)
-    const tradeId = operationKey.slice(0, separator)
-    const step = operationKey.slice(separator + 1)
-    if (step.includes('seller-claim')) {
-      await this.sellerClaim(tradeId)
-    } else if (step.includes('buyer-claim')) {
-      await this.buyerClaim(tradeId)
-    } else if (step.includes('buyer-')) {
-      await this.buyerRespond(tradeId)
-    } else if (step.includes('seller-')) {
-      await this.sellerOpen(tradeId)
-    } else {
-      throw new Error(`unsupported durable proof operation key ${operationKey}`)
-    }
-    const operation = (await readState())?.proofOperations[operationKey]
-    if (!operation || operation.state !== 'completed') {
-      throw new Error(`durable proof operation ${operationKey} did not complete`)
-    }
-  }
-
   private async sweepPartialLockFailures(state: DaemonState): Promise<void> {
     const nowSecs = Math.floor(Date.now() / 1000)
     const swaps = Object.values(state.swaps)
       .filter((swap) =>
+        hasValidDurableSession(state, swap.tradeId) &&
         swap.failure?.kind === 'PartialLockHeld' &&
         typeof swap.failure.refundLocktime === 'number' &&
         swap.failure.refundLocktime + PARTIAL_LOCK_REFUND_MARGIN_SECS <= nowSecs)
@@ -589,9 +573,11 @@ export class DaemonSwapExecutor {
           input.ctx,
           group.rows.map(proofWithOutcomeMetadata),
           input.amount,
-          groups.length === 1
-            ? `${input.tradeId}:${input.operationStep}`
-            : `${input.tradeId}:${input.operationStep}:${encodeURIComponent(group.outcomeSetId)}`,
+          daemonTradeOperationKey(
+            input.tradeId,
+            input.operationStep,
+            groups.length === 1 ? undefined : group.outcomeSetId,
+          ),
         )
         lockedProofs.push(...locked.lockedProofs)
         changeProofs.push(...locked.changeProofs)
@@ -932,9 +918,11 @@ export class DaemonSwapExecutor {
             proofWithAssetMetadata(proof, group.asset),
           ),
           amount,
-          lockProofs.length === 1
-            ? `${tradeId}:seller-preflight-lock`
-            : `${tradeId}:seller-preflight-lock:${encodeURIComponent(group.asset.outcomeSetId)}`,
+          daemonTradeOperationKey(
+            tradeId,
+            'seller-preflight-lock',
+            lockProofs.length === 1 ? undefined : group.asset.outcomeSetId,
+          ),
         )
         lockedProofs.push(...locked.lockedProofs)
         changeProofs.push(...locked.changeProofs)
@@ -1273,7 +1261,9 @@ export class DaemonSwapExecutor {
       readState(),
     ])
     const swap = state?.swaps[tradeId]
-    if (!profile || !secrets || !swap || !swap.role || !swap.orderId) return null
+    const session = state?.durableTradeSessions[tradeId]
+    if (!profile || !secrets || !swap || !session || !swap.role || !swap.orderId ||
+      validateDurableTradeSession(session) !== null) return null
     const key = secrets.orderEphemeralKeys[tradeId] ?? secrets.orderEphemeralKeys[swap.orderId]
     if (!key) {
       await this.fail(tradeId, `missing ephemeral key for trade ${tradeId}`)
@@ -1456,6 +1446,22 @@ function isDurableTradeRecoveryLinkInProgress(
     throw new Error(`invalid durable trade recovery link: ${validationError}`)
   }
   return classifyDurableTradeRecoveryLinkState(link.state) === 'active'
+}
+
+function hasValidDurableSession(state: DaemonState, tradeId: string): boolean {
+  const session = state.durableTradeSessions[tradeId]
+  return session !== undefined && validateDurableTradeSession(session) === null
+}
+
+/** Every protected operation key stays inside the immutable trade namespace. */
+function daemonTradeOperationKey(
+  tradeId: string,
+  step: string,
+  outcomeSetId?: string,
+): string {
+  return outcomeSetId === undefined
+    ? `${tradeId}/${step}`
+    : `${tradeId}/${step}/${encodeURIComponent(outcomeSetId)}`
 }
 
 function classifyDurableTradeRecoveryLinkState(

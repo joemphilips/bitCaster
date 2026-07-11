@@ -4,6 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import {
+  CheckStateEnum,
+  Wallet as CashuWallet,
+  type ProofState,
+} from '@cashu/cashu-ts'
+import {
+  DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   createDurableTradeProofOperationLink,
   type DurableTradeProofOperationLink,
 } from '@bitcaster-market/client-sdk/durableTradeRecovery'
@@ -23,6 +29,11 @@ import {
   type CashuProofRecord,
   type DaemonState,
 } from '../src/state.ts'
+import { recoverDaemonDurableTradeSessions } from '../src/durableTradeRecovery.ts'
+import {
+  createRealDaemonSwapOps,
+  recoverExactDaemonProofOperation,
+} from '../src/swapProtocolAdapter.ts'
 import {
   DaemonSwapExecutor,
   type DaemonSwapExecutorOptions,
@@ -225,7 +236,7 @@ test('DaemonSwapExecutor classifies each durable link state before resuming matc
     await writeState(stateWithLiveSwapAndDurableLink('reconciled'))
 
     assert.deepEqual(await executor.resumeActiveSwaps(await readState() as DaemonState), {
-      activeSwaps: 1,
+      activeSwaps: 0,
     })
     assert.equal((await readState())?.swaps['trade-live'].step, 'seller-opened')
 
@@ -390,6 +401,10 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
+    state.durableTradeSessions['trade-partial-refund'] = durableSessionForTest(
+      'trade-partial-refund',
+      'seller',
+    )
     state.wallet.proofs.push({
       ...proofRecord(profile.mintUrl, 100, 'locked', {
         kind: 'Outcome',
@@ -485,6 +500,10 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
+    state.durableTradeSessions['trade-partial-multi'] = durableSessionForTest(
+      'trade-partial-multi',
+      'seller',
+    )
     state.wallet.proofs.push(
       {
         ...proofRecord(profile.mintUrl, 100, 'locked', {
@@ -579,6 +598,10 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
+    state.durableTradeSessions['trade-partial-spent'] = durableSessionForTest(
+      'trade-partial-spent',
+      'seller',
+    )
     state.wallet.proofs.push({
       ...proofRecord(profile.mintUrl, 100, 'locked', {
         kind: 'Outcome',
@@ -747,7 +770,7 @@ test('DaemonSwapExecutor keeps pending proof operations retryable', async () => 
   }
 })
 
-test('DaemonSwapExecutor retries mint-pending seller open without another event', async () => {
+test('DaemonSwapExecutor routes a mint-pending retry through the durable recovery owner', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-proof-pending-retry-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -779,10 +802,14 @@ test('DaemonSwapExecutor retries mint-pending seller open without another event'
 
     let lockAttempts = 0
     const sent: string[] = []
+    const recoverySchedules: string[] = []
     const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       retryDelayMs: 5,
       maxRetryAttempts: 3,
+      scheduleRecovery: (tradeId) => {
+        recoverySchedules.push(tradeId)
+      },
       ops: {
         ...fakeOps(),
         async sellerLockOutcomeProofs(ctx, proofs, amount, operationId) {
@@ -810,16 +837,12 @@ test('DaemonSwapExecutor retries mint-pending seller open without another event'
       }),
     )
 
-    const persisted = await waitForSwapStep('trade-retry', 'seller-opened')
-    for (let attempt = 0; attempt < 20 && sent.length < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 20 && recoverySchedules.length === 0; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 5))
     }
-    assert.equal(lockAttempts, 2)
-    assert.equal(persisted?.swaps['trade-retry'].sellerAdaptorSecretHex, 'aa')
-    assert.deepEqual(sent, [
-      'trade-retry:adaptor-point:cipher-adaptor',
-      'trade-retry:locked-proofs-seller:cipher-seller',
-    ])
+    assert.equal(lockAttempts, 1)
+    assert.deepEqual(recoverySchedules, ['trade-retry'])
+    assert.deepEqual(sent, [])
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -950,6 +973,7 @@ test('DaemonSwapExecutor resume sweep retries active claim after retryable timeo
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:30.000Z',
     }
+    state.durableTradeSessions['trade-retry'] = durableSessionForTest('trade-retry', 'buyer')
     await writeState(state)
 
     const sent: string[] = []
@@ -1391,8 +1415,8 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
       persisted?.swaps['trade-primitive-before-preflight'].error,
     )
     assert.deepEqual(lockCalls.sort(), [
-      'trade-primitive-before-preflight:seller-inventory-lock:B:primitive-b',
-      'trade-primitive-before-preflight:seller-inventory-lock:C:primitive-c',
+      'trade-primitive-before-preflight/seller-inventory-lock/B:primitive-b',
+      'trade-primitive-before-preflight/seller-inventory-lock/C:primitive-c',
     ])
     assert.equal(
       persisted?.wallet.proofs.find((row) => row.proof.secret === 'reserved-composite')?.state,
@@ -1417,6 +1441,133 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
       'trade-primitive-before-preflight:locked-proofs-seller:cipher-seller',
     ])
   } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('production CTF seller lock uses a canonical key and recovers its retained operation after restart', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-ctf-lock-restart-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  const originalLoadMint = CashuWallet.prototype.loadMint
+  const originalCheckProofsStates = CashuWallet.prototype.checkProofsStates
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-ctf'] = {
+      ...orderKey(secrets),
+      orderId: 'order-ctf',
+    }
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const state = emptyDaemonState()
+    state.orders['order-ctf'] = {
+      orderId: 'order-ctf',
+      marketId: 'cond-YES',
+      status: 'resting',
+      ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      ...directSellerOrderEconomics(),
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.wallet.proofs.push({
+      ...proofRecord(profile.mintUrl, 100, 'available', {
+        kind: 'Outcome',
+        conditionId: 'cond',
+        outcomeSetId: 'YES',
+      }),
+      proof: { ...cashuProof(100, 'ctf-retained-input'), id: 'ctf-keyset' },
+    })
+    await writeState(state)
+
+    let preparedKey: string | undefined
+    let exactResumed = 0
+    const loadAtomicSwapModule = async () => ({
+      async sellerLockOutcomeProofs(_ctx: unknown, proofs: CashuProofRecord[], _amount: number, options: {
+        operationId?: string
+        proofOperationStore?: {
+          prepareProofOperation(input: {
+            operationId: string
+            kind: 'conditional-keyset-swap'
+            mintUrl: string
+            inputs: CashuProofRecord[]
+            outputs: Record<string, never[]>
+            metadata: Record<string, unknown>
+          }): Promise<unknown>
+          markProofOperationMintSubmitted(operationId: string): Promise<unknown>
+        }
+      }) {
+        preparedKey = options.operationId
+        await options.proofOperationStore!.prepareProofOperation({
+          operationId: options.operationId!,
+          kind: 'conditional-keyset-swap',
+          mintUrl: profile.mintUrl,
+          inputs: proofs,
+          outputs: {},
+          metadata: { unit: 'sat', keysetId: 'ctf-keyset' },
+        })
+        await options.proofOperationStore!.markProofOperationMintSubmitted(options.operationId!)
+        throw new Error(`Proof operation ${options.operationId} is still pending at the mint`)
+      },
+      async resumeExactPreparedProofOperation(_wallet: unknown, entry: { inputs: CashuProofRecord[] }) {
+        exactResumed += 1
+        assert.deepEqual(entry.inputs.map((proof) => proof.secret), ['ctf-retained-input'])
+        return { lock: [{ ...entry.inputs[0]!, secret: 'ctf-recovered-lock' }] }
+      },
+      async restoreExactPreparedProofOperation() {
+        throw new Error('restore path was not expected')
+      },
+    })
+    const executor = newTestDaemonSwapExecutor({
+      connection: fakeConnection([]),
+      ops: createRealDaemonSwapOps({ loadAtomicSwapModule: loadAtomicSwapModule as never }),
+    })
+    const swap = await recordTradeCreated({
+      tradeId: 'trade-ctf',
+      sellerPubkey: orderKey(secrets).publicKeyHex,
+      buyerPubkey: `03${'58'.repeat(32)}`,
+      sellerLocktime: '2026-05-21T00:02:00.000Z',
+      buyerLocktime: '2026-05-21T00:01:00.000Z',
+      marketId: 'cond-YES',
+      fillAmountSubunits: 100,
+      outcomeFaceAmountSubunits: 100,
+      quotePaymentSubunits: 42,
+      settlementKind: 'DirectSwap',
+    })
+    await executor.onTradeCreated(swap)
+
+    assert.equal(preparedKey, 'trade-ctf/seller-lock')
+    const beforeRestart = await readState()
+    assert.equal(beforeRestart?.proofOperations[preparedKey!]?.state, 'mint-submitted')
+    assert.equal(
+      beforeRestart?.proofOperations[preparedKey!]?.durableTradeRecovery?.operationKey,
+      'trade-ctf/seller-lock',
+    )
+
+    CashuWallet.prototype.loadMint = async () => undefined
+    CashuWallet.prototype.checkProofsStates = async () =>
+      [{ state: CheckStateEnum.UNSPENT }] as ProofState[]
+    const recovery = await recoverDaemonDurableTradeSessions({
+      executor: {} as never,
+      exactOperationAdapter: (record, action) => recoverExactDaemonProofOperation(
+        record,
+        action,
+        { loadAtomicSwapModule: loadAtomicSwapModule as never },
+      ),
+      connection: { async joinTrade() {}, async sendSwapMessage() {} } as never,
+    })
+
+    assert.equal(exactResumed, 1)
+    assert.deepEqual(recovery.sessions, [{ kind: 'ready', tradeId: 'trade-ctf' }])
+    const afterRestart = await readState()
+    assert.equal(afterRestart?.proofOperations[preparedKey!]?.state, 'completed')
+    assert.equal(afterRestart?.durableTradeSessions['trade-ctf']?.stage, 'reconciliation-complete')
+  } finally {
+    CashuWallet.prototype.loadMint = originalLoadMint
+    CashuWallet.prototype.checkProofsStates = originalCheckProofsStates
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
@@ -1613,6 +1764,10 @@ test('DaemonSwapExecutor resends persisted seller opening messages after restart
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:30.000Z',
     }
+    state.durableTradeSessions['trade-resume-seller'] = durableSessionForTest(
+      'trade-resume-seller',
+      'seller',
+    )
     await writeState(state)
 
     const sent: string[] = []
@@ -1658,6 +1813,10 @@ test('DaemonSwapExecutor resends persisted buyer response and completion after r
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:30.000Z',
     }
+    state.durableTradeSessions['trade-resume-buyer'] = durableSessionForTest(
+      'trade-resume-buyer',
+      'buyer',
+    )
     await writeState(state)
 
     const sent: string[] = []
@@ -1671,6 +1830,53 @@ test('DaemonSwapExecutor resends persisted buyer response and completion after r
       'trade-resume-buyer:locked-proofs-buyer:persisted-buyer',
       'trade-resume-buyer:settlement-complete:',
     ])
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('DaemonSwapExecutor fails closed before recovery or send when its durable session is missing or corrupt', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-missing-durable-session-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    for (const sessionKind of ['missing', 'corrupt'] as const) {
+      const state = emptyDaemonState()
+      state.swaps['trade-no-session'] = {
+        tradeId: 'trade-no-session',
+        marketId: 'cond-YES',
+        orderId: 'order-no-session',
+        role: 'seller',
+        messages: {
+          adaptorPoint: 'persisted-adaptor',
+          lockedProofsSeller: 'persisted-seller',
+        },
+        step: 'seller-opened',
+        createdAt: '2026-07-11T00:00:00.000Z',
+        updatedAt: '2026-07-11T00:00:00.000Z',
+      }
+      if (sessionKind === 'corrupt') {
+        state.durableTradeSessions['trade-no-session'] = {
+          ...durableSessionForTest('trade-no-session', 'seller'),
+          schemaVersion: 1,
+        }
+      }
+      await writeState(state)
+      const sent: string[] = []
+      const executor = newTestDaemonSwapExecutor({
+        connection: fakeConnection(sent),
+        ops: fakeOps(),
+      })
+
+      assert.deepEqual(await executor.resumeActiveSwaps(state), { activeSwaps: 0 })
+      await assert.rejects(
+        () => executor.onTradeCreated(state.swaps['trade-no-session']!),
+        /Cannot journal protected swap ciphertext/,
+      )
+      assert.deepEqual(sent, [])
+    }
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -1713,19 +1919,6 @@ function mintSellerOrderEconomics() {
     priceSubunits: 58,
     amountSubunits: 100,
   }
-}
-
-async function waitForSwapStep(
-  tradeId: string,
-  step: string,
-): Promise<DaemonState | null> {
-  const deadline = Date.now() + 500
-  while (Date.now() < deadline) {
-    const state = await readState()
-    if (state?.swaps[tradeId]?.step === step) return state
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  return readState()
 }
 
 function fakeConnection(sent: string[]): TradeRuntimeConnection {
@@ -1958,7 +2151,52 @@ function stateWithLiveSwapAndDurableLink(linkState: string): DaemonState {
     createdAt: 1,
     updatedAt: 1,
   }
+  const session = durableSessionForTest(tradeId, 'seller')
+  session.proofOperations = [operation as DurableTradeProofOperationLink]
+  session.stage = linkState === 'reconciled'
+    ? 'reconciliation-complete'
+    : linkState === 'mint-submitted'
+      ? 'mint-submitted'
+      : 'proof-reserved'
+  state.durableTradeSessions[tradeId] = session
   return state
+}
+
+function durableSessionForTest(
+  tradeId: string,
+  role: 'seller' | 'buyer',
+): DaemonState['durableTradeSessions'][string] {
+  const localProtocolPubkey = role === 'seller'
+    ? `03${'66'.repeat(32)}`
+    : `02${'77'.repeat(32)}`
+  const counterpartyProtocolPubkey = role === 'seller'
+    ? `02${'77'.repeat(32)}`
+    : `03${'66'.repeat(32)}`
+  return {
+    schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
+    revision: 0,
+    tradeId,
+    role,
+    localProtocolPubkey,
+    counterpartyProtocolPubkey,
+    mintUrl: 'https://mint.example',
+    sellerLocktimeSecs: 1_779_321_720,
+    buyerLocktimeSecs: 1_779_321_660,
+    ephemeralKeyHandle: {
+      keyId: `key-${tradeId}`,
+      tradeId,
+      role,
+      localProtocolPubkey,
+      counterpartyProtocolPubkey,
+      mintUrl: 'https://mint.example',
+      sellerLocktimeSecs: 1_779_321_720,
+      buyerLocktimeSecs: 1_779_321_660,
+    },
+    stage: 'intent',
+    proofOperations: [],
+    receivedCiphers: {},
+    outboundCiphers: {},
+  }
 }
 
 function newTestDaemonSwapExecutor(

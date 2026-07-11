@@ -17,6 +17,7 @@ import type {
   DurableTradeSession,
 } from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import {
+  DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   reduceDurableTradeSession,
   validateDurableProofOperationLink,
   validateDurableTradeSession,
@@ -287,6 +288,14 @@ export function emptyDaemonState(): DaemonState {
 
 let stateUpdateQueue: Promise<unknown> = Promise.resolve()
 let stateWriteSequence = 0
+let stateWriteFaultHookForTest: ((stage: 'before-rename' | 'after-rename') => void | Promise<void>) | undefined
+
+/** Test-only fault seam for proving the atomic rename crash boundary. */
+export function setStateWriteFaultHookForTest(
+  hook: ((stage: 'before-rename' | 'after-rename') => void | Promise<void>) | undefined,
+): void {
+  stateWriteFaultHookForTest = hook
+}
 
 async function withStateUpdateLock<T>(run: () => Promise<T>): Promise<T> {
   const next = stateUpdateQueue.then(run, run)
@@ -330,7 +339,9 @@ export async function writeState(state: DaemonState): Promise<void> {
     `.daemon-state.${process.pid}.${Date.now()}.${stateWriteSequence}.tmp`,
   )
   await writeFile(tmp, `${JSON.stringify(toJsonSafe(state), null, 2)}\n`, { mode: 0o600 })
+  await stateWriteFaultHookForTest?.('before-rename')
   await rename(tmp, target)
+  await stateWriteFaultHookForTest?.('after-rename')
 }
 
 export async function updateState<T>(
@@ -1077,7 +1088,7 @@ export async function recordTradeCreated(
       if (key && key.publicKeyHex === match.ownEphemeralPubkey) {
         const prior = state.durableTradeSessions[payload.tradeId]
         state.durableTradeSessions[payload.tradeId] = prior ?? {
-          schemaVersion: 1,
+          schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
           revision: 0,
           tradeId: payload.tradeId,
           role: decision.role,
@@ -1164,7 +1175,17 @@ function journalDurableCipher(
   messageType: string,
   ciphertext: string,
 ): void {
-  if (!session || !isSwapCipherMessageType(messageType)) return
+  if (!session) {
+    throw new Error('Cannot journal protected swap ciphertext without a durable trade session')
+  }
+  const sessionError = validateDurableTradeSession(session)
+  if (sessionError) {
+    throw new Error(`Cannot journal protected swap ciphertext: ${sessionError}`)
+  }
+  // settlement-complete carries no private cipher and is not part of the
+  // SDK outbox. It still passed the session validity check above, so a send
+  // can never bypass a missing or corrupt recovery authority.
+  if (!isSwapCipherMessageType(messageType)) return
   const sha256 = createHash('sha256').update(ciphertext).digest('hex')
   const existing = session[journal][messageType]
   if (existing && (existing.ciphertext !== ciphertext || existing.sha256 !== sha256)) {

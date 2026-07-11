@@ -12,6 +12,7 @@ import {
   writeSecrets,
 } from './secrets.ts'
 import { ensureState, readState } from './state.ts'
+import type { DaemonDurableTradeRecoveryRunner } from './durableTradeRecovery.ts'
 
 const [, , command = 'run', ...args] = process.argv
 
@@ -78,7 +79,7 @@ switch (command) {
     let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
     let runDurableRecovery: (() => Promise<void>) | undefined
     let durableRecoveryRunner: ReturnType<typeof createDaemonDurableTradeRecoveryRunner> | undefined
-    let runDurableTradeEvent: ((tradeId: string, action: () => Promise<void>) => Promise<void>) | undefined
+    let runDurableTradeEvent: DaemonDurableTradeRecoveryRunner['runTradeEvent'] | undefined
     const recoveryEngineClient =
       profile && secrets
         ? createAuthenticatedBitcasterEngineClient({
@@ -109,14 +110,13 @@ switch (command) {
             engineBaseUrl: profile.engineBaseUrl,
             nostrSecretKeyHex: secrets.nostrSecretKeyHex,
             onTradeCreated: async (payload) => {
-              const swap = await recordTradeCreated(payload)
-              if (swap) {
-                await runtime?.start(await ensureState())
-              }
               if (!runDurableTradeEvent) {
                 throw new Error('durable recovery coordinator is not available')
               }
-              await runDurableTradeEvent(payload.tradeId, async () => {
+              await runDurableTradeEvent(payload.tradeId, () => recordTradeCreated(payload), async (swap) => {
+                if (swap) {
+                  await runtime?.start(await ensureState())
+                }
                 await executor?.onTradeCreated(swap)
               })
             },
@@ -125,27 +125,29 @@ switch (command) {
               messageType,
               ciphertext,
             ) => {
-              const swap = await recordSwapMessage(tradeId, messageType, ciphertext)
               if (!runDurableTradeEvent) {
                 throw new Error('durable recovery coordinator is not available')
               }
-              await runDurableTradeEvent(tradeId, async () => {
-                await executor?.onSwapMessage(swap)
-              })
+              await runDurableTradeEvent(
+                tradeId,
+                () => recordSwapMessage(tradeId, messageType, ciphertext),
+                async (swap) => {
+                  await executor?.onSwapMessage(swap)
+                },
+              )
             },
             onTradeStateChanged: async (tradeId, newState, failureReason) => {
-              const swap = await recordTradeStateChanged(
+              if (!runDurableTradeEvent) {
+                throw new Error('durable recovery coordinator is not available')
+              }
+              await runDurableTradeEvent(tradeId, () => recordTradeStateChanged(
                 tradeId,
                 newState,
                 failureReason,
-              )
-              if (!runDurableTradeEvent) {
-                throw new Error('durable recovery coordinator is not available')
-              }
-              await runDurableTradeEvent(tradeId, async () => {
+              ), async (swap) => {
                 await executor?.onTradeStateChanged(swap)
+                await takerFillRecovery?.recoverTrade(tradeId)
               })
-              await takerFillRecovery?.recoverTrade(tradeId)
             },
             onPendingPubkeyRequired: async (tradeId, _orderId, _role, marketId, _deadline) => {
               const { signNip98 } = await import('./nostrAuth.ts')
@@ -221,7 +223,7 @@ switch (command) {
       ? createDaemonDurableTradeRecoveryRunner({ executor, connection: tradeHub })
       : undefined
     runDurableTradeEvent = durableRecoveryRunner
-      ? (tradeId, action) => durableRecoveryRunner.runTradeEvent(tradeId, action)
+      ? (tradeId, persist, action) => durableRecoveryRunner.runTradeEvent(tradeId, persist, action)
       : undefined
     runDurableRecovery = durableRecoveryRunner
       ? async () => {

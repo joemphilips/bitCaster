@@ -6,6 +6,11 @@ import {
 import { createP2PKWitness } from '@bitcaster-market/swap-protocol/p2pk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { createDurableTradeProofOperationLink } from '@bitcaster-market/client-sdk/durableTradeRecovery'
+import {
+  CashuMintCtfSplitTransport,
+  restoreOutputGroups as restoreCtfOutputGroups,
+  resumeCtfSplitOperation,
+} from '@bitcaster-market/client-sdk/ctfSplit'
 import { durableBindingForDaemonProofOperation } from './durableTradeBinding.ts'
 import {
   getProofOperation,
@@ -117,6 +122,15 @@ interface AtomicSwapModule {
     sellerPreSigsHex: string[],
     options?: ProofOperationOptions,
   ): Promise<CashuProofRecord[]>
+  /** Completes only the original persisted mint request; never selects proofs. */
+  resumeExactPreparedProofOperation(
+    wallet: CashuWallet,
+    entry: ProofOperationRecord,
+  ): Promise<Record<string, CashuProofRecord[]>>
+  /** Reconstructs only the original persisted blinded outputs. */
+  restoreExactPreparedProofOperation(
+    entry: ProofOperationRecord,
+  ): Promise<Record<string, CashuProofRecord[]>>
 }
 
 interface CtfSplitModule {
@@ -164,6 +178,65 @@ export interface RealDaemonSwapOpsOptions {
   nut07PollIntervalMs?: number
   loadAtomicSwapModule?: () => Promise<AtomicSwapModule>
   loadCtfSplitModule?: () => Promise<CtfSplitModule>
+}
+
+export type ExactDaemonProofOperationAction = 'resume' | 'restore'
+
+/**
+ * The durable coordinator reaches this adapter only after it has bound the
+ * session link to this exact record. It deliberately has no swap context or
+ * proof-selection inputs: recovery may complete/restore the retained request,
+ * never choose a replacement proof pool or open another trade operation.
+ */
+export async function recoverExactDaemonProofOperation(
+  record: ProofOperationRecord,
+  action: ExactDaemonProofOperationAction,
+  options: Pick<RealDaemonSwapOpsOptions, 'loadAtomicSwapModule'> = {},
+): Promise<void> {
+  const retained = await getProofOperation(record.operationId)
+  if (!retained || retained.operationId !== record.operationId) {
+    throw new Error(`Missing retained daemon proof operation ${record.operationId}`)
+  }
+  switch (retained.kind) {
+    case 'swap-lock':
+    case 'swap-claim':
+    case 'conditional-keyset-swap':
+    case 'proof-split': {
+      const atomicSwap = await (options.loadAtomicSwapModule ?? defaultAtomicSwapModuleLoader)()
+      const unit = exactOperationUnit(retained)
+      const wallet = new CashuWallet(new CashuMint(retained.mintUrl), {
+        unit,
+        ...(retained.kind === 'conditional-keyset-swap' ? { enableCtf: true } : {}),
+      })
+      await wallet.loadMint()
+      const result = action === 'resume'
+        ? await atomicSwap.resumeExactPreparedProofOperation(wallet, retained)
+        : await atomicSwap.restoreExactPreparedProofOperation(retained)
+      await markProofOperationCompleted(retained.operationId, result)
+      return
+    }
+    case 'ctf-split': {
+      if (action === 'restore') {
+        const restored = await restoreCtfOutputGroups(retained.mintUrl, retained.outputs)
+        await markProofOperationCompleted(retained.operationId, restored)
+        return
+      }
+      await resumeCtfSplitOperation({
+        mintUrl: retained.mintUrl,
+        entry: retained as never,
+        transport: new CashuMintCtfSplitTransport(retained.mintUrl),
+        proofOperationStore: DAEMON_PROOF_OPERATION_STORE as never,
+      })
+      return
+    }
+    case 'swap-refund':
+    case 'ctf-merge':
+    case 'ctf-consolidation':
+    case 'ctf-redeem':
+    case 'regular-split':
+    case 'wallet-send':
+      throw new Error(`Unsupported exact durable recovery operation ${retained.kind}`)
+  }
 }
 
 const DEFAULT_NUT07_POLL_DEADLINE_MS = 60_000
@@ -408,6 +481,14 @@ function proofOperationStoreFor(ctx: Pick<DaemonSwapContext, 'tradeId' | 'role'>
     markProofOperationMintSubmitted,
     markProofOperationCompleted,
   }
+}
+
+function exactOperationUnit(record: ProofOperationRecord): string {
+  const unit = record.metadata.unit
+  if (typeof unit !== 'string' || unit.length === 0) {
+    throw new Error(`Retained proof operation ${record.operationId} has no mint unit`)
+  }
+  return unit
 }
 
 async function defaultAtomicSwapModuleLoader(): Promise<AtomicSwapModule> {

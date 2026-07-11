@@ -14,10 +14,13 @@ import {
   type DurableTradeSession,
 } from "@bitcaster-market/client-sdk/durableTradeRecovery";
 import { recoverDaemonDurableTradeSessions } from "../src/durableTradeRecovery.ts";
+import { recoverExactDaemonProofOperation } from "../src/swapProtocolAdapter.ts";
 import {
   emptyDaemonState,
+  markProofOperationMintSubmitted,
   prepareProofOperation,
   readState,
+  setStateWriteFaultHookForTest,
   updateState,
   writeState,
 } from "../src/state.ts";
@@ -93,14 +96,14 @@ test("daemon durable recovery resumes only the retained persisted operation afte
     const resumed: string[] = [];
 
     const recovery = await recoverDaemonDurableTradeSessions({
-      executor: {
-        async resumeDurableProofOperation(key: string) {
-          resumed.push(key);
+      executor: {} as never,
+      exactOperationAdapter: async (record, action) => {
+          assert.equal(action, 'resume');
+          resumed.push(record.operationId);
           await updateState((current) => {
-            current.proofOperations[key]!.state = "completed";
+            current.proofOperations[record.operationId]!.state = "completed";
           });
-        },
-      } as never,
+      },
       connection: {
         async joinTrade() {},
         async sendSwapMessage() {},
@@ -131,6 +134,167 @@ test("daemon durable recovery resumes only the retained persisted operation afte
   } finally {
     CashuWallet.prototype.loadMint = originalLoadMint;
     CashuWallet.prototype.checkProofsStates = originalCheckProofsStates;
+    await rm(home, { recursive: true, force: true });
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME;
+    else process.env.BITCASTER_DAEMON_HOME = previousHome;
+  }
+});
+
+test("daemon restart resumes the bound record without selecting from a changed proof pool", async () => {
+  const home = await mkdtemp(
+    join(tmpdir(), "bitcaster-daemon-exact-operation-restart-"),
+  );
+  const previousHome = process.env.BITCASTER_DAEMON_HOME;
+  process.env.BITCASTER_DAEMON_HOME = home;
+  const originalLoadMint = CashuWallet.prototype.loadMint;
+  const originalCheckProofsStates = CashuWallet.prototype.checkProofsStates;
+  try {
+    const operationKey = "trade-exact/seller-lock";
+    const operation = createDurableTradeProofOperationLink({
+      tradeId: "trade-exact",
+      role: "seller",
+      stage: "proof-reservation",
+      state: "prepared",
+      operationKey,
+      kind: "cashu-atomic",
+    });
+    const session = durableSession(operation);
+    const state = emptyDaemonState();
+    state.durableTradeSessions[session.tradeId] = session;
+    state.wallet.proofs.push({
+      mintUrl: session.mintUrl,
+      proof: {
+        id: "changed-keyset",
+        amount: 999,
+        secret: "changed-proof-pool",
+        C: "03".padEnd(66, "2"),
+      },
+      asset: { kind: "sats" },
+      state: "available",
+      createdAt: "2026-07-11T00:00:00.000Z",
+      updatedAt: "2026-07-11T00:00:00.000Z",
+    });
+    state.proofOperations[operationKey] = {
+      operationId: operationKey,
+      durableTradeRecovery: operation,
+      kind: "swap-lock",
+      state: "prepared",
+      mintUrl: session.mintUrl,
+      inputs: [{
+        id: "persisted-keyset",
+        amount: 42,
+        secret: "persisted-input-only",
+        C: "02".padEnd(66, "3"),
+      }],
+      outputs: {},
+      metadata: { unit: "sat" },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await writeState(state);
+    CashuWallet.prototype.loadMint = async () => undefined;
+    CashuWallet.prototype.checkProofsStates = async () =>
+      [{ state: CheckStateEnum.UNSPENT }] as ProofState[];
+
+    let exactDispatches = 0;
+    let selectedCurrentProofs = 0;
+    const recovery = await recoverDaemonDurableTradeSessions({
+      executor: {} as never,
+      exactOperationAdapter: async (record, action) => recoverExactDaemonProofOperation(
+        record,
+        action,
+        {
+          async loadAtomicSwapModule() {
+            return {
+              async resumeExactPreparedProofOperation(_wallet, entry) {
+                exactDispatches += 1;
+                assert.deepEqual(entry.inputs.map((proof) => proof.secret), ["persisted-input-only"]);
+                return { send: [{ ...entry.inputs[0]!, secret: "exact-result" }] };
+              },
+              async restoreExactPreparedProofOperation() {
+                throw new Error("restore path was not expected");
+              },
+              async sellerPrepareSwap() {
+                selectedCurrentProofs += 1;
+                throw new Error("normal seller proof selection must not run during recovery");
+              },
+            } as never;
+          },
+        },
+      ),
+      connection: {
+        async joinTrade() {},
+        async sendSwapMessage() {},
+      } as never,
+    });
+
+    assert.equal(exactDispatches, 1);
+    assert.equal(selectedCurrentProofs, 0);
+    assert.deepEqual(recovery.sessions, [{ kind: "ready", tradeId: operation.tradeId }]);
+    const persisted = await readState();
+    assert.equal(persisted?.proofOperations[operationKey]?.state, "completed");
+    assert.deepEqual(
+      persisted?.proofOperations[operationKey]?.resultProofs?.send.map((proof) => proof.secret),
+      ["exact-result"],
+    );
+    assert.equal(
+      persisted?.wallet.proofs.some((proof) => proof.proof.secret === "changed-proof-pool"),
+      true,
+    );
+  } finally {
+    CashuWallet.prototype.loadMint = originalLoadMint;
+    CashuWallet.prototype.checkProofsStates = originalCheckProofsStates;
+    await rm(home, { recursive: true, force: true });
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME;
+    else process.env.BITCASTER_DAEMON_HOME = previousHome;
+  }
+});
+
+test("daemon state-file atomic transition survives faults before and after rename without split session metadata", async () => {
+  const home = await mkdtemp(join(tmpdir(), "bitcaster-daemon-atomic-rename-fault-"));
+  const previousHome = process.env.BITCASTER_DAEMON_HOME;
+  process.env.BITCASTER_DAEMON_HOME = home;
+  try {
+    const operationKey = "trade-atomic/seller-lock";
+    const operation = createDurableTradeProofOperationLink({
+      tradeId: "trade-atomic",
+      role: "seller",
+      stage: "proof-reservation",
+      state: "prepared",
+      operationKey,
+      kind: "cashu-atomic",
+    });
+    const state = emptyDaemonState();
+    state.durableTradeSessions[operation.tradeId] = durableSession(operation);
+    state.proofOperations[operationKey] = {
+      operationId: operationKey,
+      durableTradeRecovery: operation,
+      kind: "swap-lock",
+      state: "prepared",
+      mintUrl: "https://mint.example",
+      inputs: [],
+      outputs: {},
+      metadata: { unit: "sat" },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await writeState(state);
+
+    setStateWriteFaultHookForTest((stage) => {
+      if (stage === "before-rename") throw new Error("fault before rename");
+    });
+    await assert.rejects(() => markProofOperationMintSubmitted(operationKey), /fault before rename/);
+    setStateWriteFaultHookForTest(undefined);
+    await assertAtomicTransitionSnapshot(operationKey, "prepared", "prepared", "proof-reserved");
+
+    setStateWriteFaultHookForTest((stage) => {
+      if (stage === "after-rename") throw new Error("fault after rename");
+    });
+    await assert.rejects(() => markProofOperationMintSubmitted(operationKey), /fault after rename/);
+    setStateWriteFaultHookForTest(undefined);
+    await assertAtomicTransitionSnapshot(operationKey, "mint-submitted", "mint-submitted", "mint-submitted");
+  } finally {
+    setStateWriteFaultHookForTest(undefined);
     await rm(home, { recursive: true, force: true });
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME;
     else process.env.BITCASTER_DAEMON_HOME = previousHome;
@@ -173,11 +337,10 @@ test("daemon durable recovery fails an invalid link before it can resume or send
     let sentMessages = 0;
 
     const recovery = await recoverDaemonDurableTradeSessions({
-      executor: {
-        async resumeDurableProofOperation() {
+      executor: {} as never,
+      exactOperationAdapter: async () => {
           exactResumes += 1;
-        },
-      } as never,
+      },
       connection: {
         async joinTrade() {
           sentMessages += 1;
@@ -267,11 +430,10 @@ test("daemon durable recovery rejects a foreign ledger key before mint inspectio
     };
 
     const recovery = await recoverDaemonDurableTradeSessions({
-      executor: {
-        async resumeDurableProofOperation() {
+      executor: {} as never,
+      exactOperationAdapter: async () => {
           exactResumes += 1;
-        },
-      } as never,
+      },
       connection: {
         async joinTrade() {
           sentMessages += 1;
@@ -332,3 +494,44 @@ test("daemon refuses a durable proof link before its TradeCreated session exists
     else process.env.BITCASTER_DAEMON_HOME = previousHome;
   }
 });
+
+function durableSession(operation: ReturnType<typeof createDurableTradeProofOperationLink>): DurableTradeSession {
+  return {
+    schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
+    revision: 0,
+    tradeId: operation.tradeId,
+    role: operation.role,
+    localProtocolPubkey: "a".repeat(64),
+    counterpartyProtocolPubkey: "b".repeat(64),
+    mintUrl: "https://mint.example",
+    sellerLocktimeSecs: 120,
+    buyerLocktimeSecs: 100,
+    ephemeralKeyHandle: {
+      keyId: `key-${operation.tradeId}`,
+      tradeId: operation.tradeId,
+      role: operation.role,
+      localProtocolPubkey: "a".repeat(64),
+      counterpartyProtocolPubkey: "b".repeat(64),
+      mintUrl: "https://mint.example",
+      sellerLocktimeSecs: 120,
+      buyerLocktimeSecs: 100,
+    },
+    stage: "proof-reserved",
+    proofOperations: [operation],
+    receivedCiphers: {},
+    outboundCiphers: {},
+  };
+}
+
+async function assertAtomicTransitionSnapshot(
+  operationKey: string,
+  recordState: "prepared" | "mint-submitted",
+  linkState: "prepared" | "mint-submitted",
+  sessionStage: "proof-reserved" | "mint-submitted",
+): Promise<void> {
+  const reloaded = await readState();
+  assert.equal(reloaded?.proofOperations[operationKey]?.state, recordState);
+  assert.equal(reloaded?.proofOperations[operationKey]?.durableTradeRecovery?.state, linkState);
+  assert.equal(reloaded?.durableTradeSessions["trade-atomic"]?.proofOperations[0]?.state, linkState);
+  assert.equal(reloaded?.durableTradeSessions["trade-atomic"]?.stage, sessionStage);
+}

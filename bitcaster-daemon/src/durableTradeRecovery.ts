@@ -29,6 +29,10 @@ import {
 import type { TradeRuntimeConnection } from './tradeRuntime.ts'
 import type { DaemonSwapExecutor } from './swapExecutor.ts'
 import { validateDaemonDurableOperationBinding } from './durableTradeBinding.ts'
+import {
+  recoverExactDaemonProofOperation,
+  type ExactDaemonProofOperationAction,
+} from './swapProtocolAdapter.ts'
 
 export async function getDaemonProofOperationByDurableId(operationId: string) {
   return findOperationRecord(operationId)
@@ -58,8 +62,15 @@ export interface DaemonDurableTradeRecoveryRunner {
     durableRecovery: DurableTradeRecoveryResult
     activeSwaps: number
   }>
-  /** Runs a persisted runtime event only after coordinator-owned recovery. */
-  runTradeEvent(tradeId: string, action: () => Promise<void>): Promise<void>
+  /**
+   * Owns the complete runtime-event transaction: durable journal first,
+   * coordinator recovery second, then the executor side effect.
+   */
+  runTradeEvent<T>(
+    tradeId: string,
+    persist: () => Promise<T>,
+    action: (persisted: T) => Promise<void>,
+  ): Promise<void>
   /** Re-enters the owner for a legacy swap retry after exact recovery. */
   recoverTrade(tradeId: string): Promise<void>
   /** Re-enters recovery for a retained exact operation, never fresh swap work. */
@@ -95,6 +106,11 @@ export async function recoverDaemonDurableTradeSessions(input: {
   executor: DaemonSwapExecutor
   connection: TradeRuntimeConnection
   scheduleRetry?: (request: DurableTradeRetryRequest) => Promise<void>
+  /** Test seam; production always dispatches to the persisted-operation adapter. */
+  exactOperationAdapter?: (
+    record: ProofOperationRecord,
+    action: ExactDaemonProofOperationAction,
+  ) => Promise<void>
 }): Promise<DurableTradeRecoveryResult> {
   const repositories = createDaemonDurableTradeRepositories()
   const ports: DurableTradeRecoveryPorts = {
@@ -102,10 +118,10 @@ export async function recoverDaemonDurableTradeSessions(input: {
     mint: {
       inspect: inspectDaemonOperation,
       restoreExactPersistedOutputs: async (operation) => {
-        await input.executor.resumeDurableProofOperation(await requireBoundOperationKey(operation))
+        await dispatchBoundDaemonOperation(operation, 'restore', input.exactOperationAdapter)
       },
       resumeExactPreparedOperation: async (operation) => {
-        await input.executor.resumeDurableProofOperation(await requireBoundOperationKey(operation))
+        await dispatchBoundDaemonOperation(operation, 'resume', input.exactOperationAdapter)
       },
     },
     transport: {
@@ -183,12 +199,20 @@ class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecover
     return this.enqueue(() => this.runCoordinator())
   }
 
-  async runTradeEvent(tradeId: string, action: () => Promise<void>): Promise<void> {
+  async runTradeEvent<T>(
+    tradeId: string,
+    persist: () => Promise<T>,
+    action: (persisted: T) => Promise<void>,
+  ): Promise<void> {
     await this.waitForBootstrap()
     await this.enqueue(async () => {
+      // Persist inbound protocol state before executor work, but keep that
+      // write under the same owner as the SDK's session CAS transition.
+      const persisted = await persist()
       const recovery = await this.runCoordinator()
-      if (hasFailedClosedRecovery(recovery.durableRecovery, tradeId)) return
-      await action()
+      if (hasFailedClosedRecovery(recovery.durableRecovery, tradeId) ||
+        !await this.hasValidDurableSession(tradeId)) return
+      await action(persisted)
     })
   }
 
@@ -280,6 +304,11 @@ class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecover
       ? session.sellerLocktimeSecs
       : session.buyerLocktimeSecs
     return this.nowMs() < deadlineSecs * 1_000
+  }
+
+  private async hasValidDurableSession(tradeId: string): Promise<boolean> {
+    const session = (await this.loadState()).durableTradeSessions[tradeId]
+    return session !== undefined && validateDurableTradeSession(session) === null
   }
 }
 
@@ -495,10 +524,17 @@ async function inspectDaemonOperation(operation: DurableTradeProofOperationLink)
   return { kind: 'pending-or-mixed' as const }
 }
 
-async function requireBoundOperationKey(operation: DurableTradeProofOperationLink): Promise<string> {
+async function dispatchBoundDaemonOperation(
+  operation: DurableTradeProofOperationLink,
+  action: ExactDaemonProofOperationAction,
+  exactOperationAdapter: ((
+    record: ProofOperationRecord,
+    action: ExactDaemonProofOperationAction,
+  ) => Promise<void>) | undefined,
+): Promise<void> {
   const bound = await findBoundDaemonOperation(operation)
   if (!bound) throw new Error(`Durable proof operation ${operation.operationId} has an invalid binding`)
-  return bound.record.operationId
+  await (exactOperationAdapter ?? recoverExactDaemonProofOperation)(bound.record, action)
 }
 
 async function findBoundDaemonOperation(
