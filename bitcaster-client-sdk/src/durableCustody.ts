@@ -205,6 +205,12 @@ export type DurableCustodyRecoveryClassification =
   | 'corrupt'
   | 'foreign'
 
+export type DurableCustodyRetryReason =
+  | 'pending-or-mixed'
+  | 'mint-response-unknown'
+  | 'rate-limited'
+  | 'reservation-race'
+
 export interface DurableCustodyOwnerAuthorization {
   ownerId: string
   ownerEpoch: number
@@ -347,6 +353,11 @@ export type DurableCustodyTransition =
   } & Pick<DurableCustodyOwnerAuthorization, 'observedAtMs'>)
   | ({ kind: 'transport-attempted' } & DurableCustodyOwnerAuthorization)
   | ({
+    kind: 'retry-scheduled'
+    reason: DurableCustodyRetryReason
+    nextAttemptAtMs: number
+  } & DurableCustodyOwnerAuthorization)
+  | ({
     kind: 'verified-result-staged'
     resultHandle: string
     resultFingerprint: string
@@ -377,6 +388,9 @@ const STATES: readonly DurableCustodyOperationState[] = [
   'dispatch-intent', 'transport-attempted', 'reconciled', 'aborted',
 ]
 const CURVES: readonly DurableCustodyCurve[] = ['secp256k1', 'bls12-381']
+const RETRY_REASONS: readonly DurableCustodyRetryReason[] = [
+  'pending-or-mixed', 'mint-response-unknown', 'rate-limited', 'reservation-race',
+]
 
 const SEMANTIC_STAGE_BINDINGS: Readonly<Record<DurableCustodySemanticKind, CustodyTradeStage>> = {
   'swap-lock': 'lock',
@@ -569,6 +583,32 @@ export function reduceDurableCustodyState(
         throw new Error('dispatch authority has expired')
       }
       nextOperation.operation.state = 'transport-attempted'
+      nextOperation.operation.retry = { attempt: 0, nextAttemptAtMs: null, reason: 'none' }
+      return { operation: nextOperation, scopeState: nextScopeState }
+    case 'retry-scheduled':
+      if (record.operation.state !== 'dispatch-intent' && record.operation.state !== 'transport-attempted') {
+        throw new Error('retry requires recoverable operation state')
+      }
+      if (record.operation.result.state !== 'none') {
+        throw new Error('retry requires no staged result')
+      }
+      requireOneOf(transition.reason, RETRY_REASONS, 'retry reason')
+      const nextAttemptAtMs = requireNonNegativeInteger(transition.nextAttemptAtMs, 'next retry time')
+      if (nextAttemptAtMs < effectiveNowMs) {
+        throw new Error('next retry time is before effective clock')
+      }
+      if (record.operation.retry.nextAttemptAtMs !== null
+        && nextAttemptAtMs < record.operation.retry.nextAttemptAtMs) {
+        throw new Error('next retry time moves backwards')
+      }
+      if (record.operation.retry.attempt >= Number.MAX_SAFE_INTEGER) {
+        throw new Error('retry attempt has overflowed')
+      }
+      nextOperation.operation.retry = {
+        attempt: record.operation.retry.attempt + 1,
+        nextAttemptAtMs,
+        reason: transition.reason,
+      }
       return { operation: nextOperation, scopeState: nextScopeState }
     case 'verified-result-staged':
       if (record.operation.state !== 'dispatch-intent' && record.operation.state !== 'transport-attempted') {
@@ -586,6 +626,7 @@ export function reduceDurableCustodyState(
         resultFingerprint: requireFingerprint(transition.resultFingerprint, 'verified result fingerprint'),
         outputPlanFingerprint: transition.outputPlanFingerprint,
       }
+      nextOperation.operation.retry = { attempt: 0, nextAttemptAtMs: null, reason: 'none' }
       return { operation: nextOperation, scopeState: nextScopeState }
     case 'abort-no-transport':
       if (!isAbortEligible(record, effectiveNowMs, transition.classification)) {
@@ -594,6 +635,7 @@ export function reduceDurableCustodyState(
           : 'abort is not eligible')
       }
       nextOperation.operation.state = 'aborted'
+      nextOperation.operation.retry = { attempt: 0, nextAttemptAtMs: null, reason: 'none' }
       return { operation: nextOperation, scopeState: nextScopeState }
     case 'reconciled':
       if (record.operation.state === 'transport-attempted'
@@ -620,6 +662,7 @@ export function reduceDurableCustodyState(
         ...record.operation.result,
         state: 'applied',
       }
+      nextOperation.operation.retry = { attempt: 0, nextAttemptAtMs: null, reason: 'none' }
       return { operation: nextOperation, scopeState: nextScopeState }
     case 'delivery-resolved':
       if (record.operation.delivery.deliveryKind !== 'outbox' || record.operation.delivery.state !== 'pending') {

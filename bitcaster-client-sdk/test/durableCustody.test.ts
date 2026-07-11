@@ -473,6 +473,58 @@ test('transaction work rejects a foreign await before an adapter can split a cus
   )
 })
 
+test('retry cursor is fenced, monotonic, and clears before a custody-changing transition', () => {
+  const initial = custodyState()
+  const scheduled = reduceDurableCustodyState(initial, {
+    kind: 'retry-scheduled',
+    reason: 'mint-response-unknown',
+    nextAttemptAtMs: 2_000,
+    ...ownerAuthorization,
+  })
+  assert.deepEqual(scheduled.operation.operation.retry, {
+    attempt: 1,
+    nextAttemptAtMs: 2_000,
+    reason: 'mint-response-unknown',
+  })
+  assert.throws(
+    () => reduceDurableCustodyState(scheduled, {
+      kind: 'retry-scheduled',
+      reason: 'rate-limited',
+      nextAttemptAtMs: 1_400,
+      ...ownerAuthorization,
+      observedAtMs: 1_600,
+    }),
+    /next retry time is before effective clock/,
+  )
+  assert.throws(
+    () => reduceDurableCustodyState(scheduled, {
+      kind: 'retry-scheduled',
+      reason: 'rate-limited',
+      nextAttemptAtMs: 1_600,
+      ...ownerAuthorization,
+    }),
+    /next retry time moves backwards/,
+  )
+  assert.throws(
+    () => reduceDurableCustodyState(scheduled, {
+      kind: 'retry-scheduled',
+      reason: 'future-reason' as never,
+      nextAttemptAtMs: 2_500,
+      ...ownerAuthorization,
+    }),
+    /retry reason is invalid/,
+  )
+  const handedOff = reduceDurableCustodyState(scheduled, {
+    kind: 'transport-attempted',
+    ...ownerAuthorization,
+  })
+  assert.deepEqual(handedOff.operation.operation.retry, {
+    attempt: 0,
+    nextAttemptAtMs: null,
+    reason: 'none',
+  })
+})
+
 test('post-handoff recovery never reissues an all-unspent exact operation', () => {
   const dispatched = reduceDurableCustodyState(custodyState(), {
     kind: 'transport-attempted',
