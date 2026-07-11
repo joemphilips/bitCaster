@@ -1632,6 +1632,22 @@ export function reduceDurableTradeSession(
   }
 }
 
+/**
+ * Promotes the single dependency-satisfied planned operation. Keeping this
+ * narrow wrapper public prevents adapters from reconstructing the dependent
+ * transition (and accidentally activating a lock before its merge is
+ * reconciled).
+ */
+export function activateDurableTradeDependentOperation(
+  session: DurableTradeSession,
+  operationId: string,
+): DurableTradeSession {
+  return reduceDurableTradeSession(session, {
+    kind: 'dependent-operation-activated',
+    operationId,
+  })
+}
+
 export function isDurableTradeSessionPurgeEligible(
   session: DurableTradeSession,
 ): boolean {
