@@ -1196,7 +1196,7 @@ async function lockProofsWithOperation(
   const existing = await proofOperationStore.getProofOperation(operationId);
   if (existing) {
     assertProofOperationMatches(existing, "swap-lock", mintUrl, sourceProofs);
-    const result = await resumeProofOperation(
+    const result = await resumePreparedProofOperation(
       wallet,
       existing,
       proofOperationStore,
@@ -1246,7 +1246,7 @@ async function splitProofsForExactSendWithOperation(
   const existing = await proofOperationStore.getProofOperation(operationId);
   if (existing) {
     assertProofOperationMatches(existing, "proof-split", mintUrl, sourceProofs);
-    const result = await resumeProofOperation(
+    const result = await resumePreparedProofOperation(
       wallet,
       existing,
       proofOperationStore,
@@ -1292,7 +1292,7 @@ async function receiveProofsWithOperation(
   const existing = await proofOperationStore.getProofOperation(operationId);
   if (existing) {
     assertProofOperationMatches(existing, "swap-claim", mintUrl, token.proofs);
-    const result = await resumeProofOperation(
+    const result = await resumePreparedProofOperation(
       wallet,
       existing,
       proofOperationStore,
@@ -1324,7 +1324,12 @@ async function receiveProofsWithOperation(
   return final.keep;
 }
 
-async function resumeProofOperation(
+/**
+ * Resume an already prepared atomic-swap mint operation from its exact stored
+ * inputs and blinded outputs. Client persistence adapters call this after
+ * NUT-07 state inspection; it never selects fresh proofs or creates outputs.
+ */
+export async function resumePreparedProofOperation(
   wallet: CashuWallet,
   entry: ProofOperationRecord,
   proofOperationStore: ProofOperationStore,
