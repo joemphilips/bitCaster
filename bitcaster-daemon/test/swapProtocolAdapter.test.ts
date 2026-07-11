@@ -5,9 +5,15 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { createRealDaemonSwapOps } from '../src/swapProtocolAdapter.ts'
 import {
+  emptyDaemonState,
   readState,
+  writeState,
   type CashuProofRecord,
 } from '../src/state.ts'
+import {
+  DURABLE_TRADE_SESSION_SCHEMA_VERSION,
+  type DurableTradeSession,
+} from '@bitcaster-market/client-sdk/durableTradeRecovery'
 
 test('real daemon swap adapter maps SDK daemon context to atomic-swap operations', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-swap-adapter-'))
@@ -15,6 +21,9 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
   process.env.BITCASTER_DAEMON_HOME = home
   const calls: string[] = []
   try {
+    const initial = emptyDaemonState()
+    initial.durableTradeSessions['trade-seller'] = durableSession('trade-seller', 'seller')
+    await writeState(initial)
     const ops = createRealDaemonSwapOps({
       nut07PollDeadlineMs: 10,
       nut07PollIntervalMs: 1,
@@ -186,18 +195,18 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       },
     })
 
-    const sellerOpen = await ops.sellerOpen(ctx('seller'), [proof(100, 'seller-input')])
+    const sellerOpen = await ops.sellerOpen(ctx('seller', 'trade-seller'), [proof(100, 'seller-input')])
     assert.equal(sellerOpen.adaptorSecretHex, 'aa')
     assert.equal(sellerOpen.adaptorPointHex, 'bb')
 
-    const sellerPrelocked = await ops.sellerOpenPrelocked(ctx('seller'), [
+    const sellerPrelocked = await ops.sellerOpenPrelocked(ctx('seller', 'trade-seller'), [
       proof(100, 'prelocked-input'),
     ])
     assert.equal(sellerPrelocked.adaptorSecretHex, 'dd')
     assert.equal(sellerPrelocked.adaptorPointHex, 'ee')
 
     const buyerRespond = await ops.buyerRespond(
-      ctx('buyer'),
+      ctx('buyer', 'trade-buyer'),
       { adaptorPoint: 'cipher-a', lockedProofsSeller: 'cipher-s' },
       [proof(42, 'buyer-input')],
       42,
@@ -205,15 +214,15 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
     assert.deepEqual(buyerRespond.preSigsHex, ['pre-b'])
 
     const sellerLockedOutcome = await ops.sellerLockOutcomeProofs(
-      ctx('seller'),
+      ctx('seller', 'trade-seller'),
       [proof(101, 'outcome-input')],
       100,
-      'trade-1/seller-inventory-lock',
+      'trade-seller/seller-inventory-lock',
     )
     assert.equal(sellerLockedOutcome.lockedProofs[0].secret, 'outcome-locked')
 
     const mint = await ops.sellerOpenMint(
-      ctx('seller'),
+      ctx('seller', 'trade-seller'),
       {
         conditionId: 'cond',
         keepOutcomeSetId: 'YES',
@@ -225,8 +234,8 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
     assert.equal(mint.adaptorSecretHex, 'dd')
     assert.equal(mint.resolvedLockOutcomeSetId, 'NO')
 
-    await ops.sellerClaim(ctx('seller'), 'aa', 'bb', 'cipher-b')
-    await ops.buyerClaim(ctx('buyer'), {
+    await ops.sellerClaim(ctx('seller', 'trade-seller'), 'aa', 'bb', 'cipher-b')
+    await ops.buyerClaim(ctx('buyer', 'trade-buyer'), {
       lockedProofs: [proof(42, 'buyer-locked')],
       preSigsHex: ['pre-b'],
       lockedProofsSellerCipher: 'cipher-s',
@@ -234,37 +243,38 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
     })
 
     assert.deepEqual(calls, [
-      'sellerPrepare:trade-1/seller-lock:32:seller-input',
-      'sellerPrelocked:trade-1:prelocked-input',
-      'buyerPrepare:trade-1/buyer-lock:buyer:42:cipher-a:cipher-s:buyer-input',
-      'sellerLockOutcome:trade-1/seller-inventory-lock:trade-1:100:outcome-input',
-      'ctfSplit:trade-1/seller-mint-ctf-split:cond:YES:NO:2',
-      'sellerPrelocked:trade-1:lock-proof',
-      'sellerClaim:trade-1/seller-claim:trade-1:170:187:cipher-b',
+      'sellerPrepare:trade-seller/seller-lock:32:seller-input',
+      'sellerPrelocked:trade-seller:prelocked-input',
+      'buyerPrepare:trade-buyer/buyer-lock:buyer:42:cipher-a:cipher-s:buyer-input',
+      'sellerLockOutcome:trade-seller/seller-inventory-lock:trade-seller:100:outcome-input',
+      'ctfSplit:trade-seller/seller-mint-ctf-split:cond:YES:NO:2',
+      'sellerPrelocked:trade-seller:lock-proof',
+      'sellerClaim:trade-seller/seller-claim:trade-seller:170:187:cipher-b',
       'buyerExtract:buyer-locked:pre-b',
-      'buyerClaim:trade-1/buyer-claim:trade-1:204:cipher-s:pre-s',
+      'buyerClaim:trade-buyer/buyer-claim:trade-buyer:204:cipher-s:pre-s',
     ])
     const state = await readState()
     assert.equal(
-      state?.proofOperations['trade-1/seller-lock'].state,
+      state?.proofOperations['trade-seller/seller-lock'].state,
       'completed',
     )
     assert.equal(
-      state?.proofOperations['trade-1/seller-lock'].outputs.send[0].secret,
+      state?.proofOperations['trade-seller/seller-lock'].outputs.send[0].secret,
       'send-secret',
     )
     assert.equal(
-      state?.proofOperations['trade-1/seller-lock'].durableTradeRecovery?.operationKey,
-      'trade-1/seller-lock',
+      state?.proofOperations['trade-seller/seller-lock'].durableTradeRecovery?.operationKey,
+      'trade-seller/seller-lock',
     )
     assert.equal(
-      state?.proofOperations['trade-1/seller-lock'].durableTradeRecovery?.role,
+      state?.proofOperations['trade-seller/seller-lock'].durableTradeRecovery?.role,
       'seller',
     )
     assert.equal(
-      state?.proofOperations['trade-1/seller-mint-ctf-split'].state,
+      state?.proofOperations['trade-seller/seller-mint-ctf-split'].state,
       'completed',
     )
+    assert.equal(state?.durableTradeSessions['trade-seller']?.stage, 'reconciliation-complete')
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -272,9 +282,9 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
   }
 })
 
-function ctx(role: 'seller' | 'buyer') {
+function ctx(role: 'seller' | 'buyer', tradeId: string) {
   return {
-    tradeId: 'trade-1',
+    tradeId,
     role,
     ephemeralKey: {
       privateKeyHex: '11'.repeat(32),
@@ -284,6 +294,40 @@ function ctx(role: 'seller' | 'buyer') {
     sellerLocktime: 120,
     buyerLocktime: 60,
     mintUrl: 'http://mint.test',
+  }
+}
+
+function durableSession(
+  tradeId: string,
+  role: 'seller' | 'buyer',
+): DurableTradeSession {
+  const localProtocolPubkey = `02${'11'.repeat(32)}`
+  const counterpartyProtocolPubkey = `03${'22'.repeat(32)}`
+  return {
+    schemaVersion: DURABLE_TRADE_SESSION_SCHEMA_VERSION,
+    revision: 0,
+    tradeId,
+    role,
+    localProtocolPubkey,
+    counterpartyProtocolPubkey,
+    mintUrl: 'http://mint.test',
+    sellerLocktimeSecs: 120,
+    buyerLocktimeSecs: 60,
+    ephemeralKeyHandle: {
+      keyId: `${tradeId}-key`,
+      tradeId,
+      role,
+      localProtocolPubkey,
+      counterpartyProtocolPubkey,
+      mintUrl: 'http://mint.test',
+      sellerLocktimeSecs: 120,
+      buyerLocktimeSecs: 60,
+    },
+    stage: 'intent',
+    expectedProofOperations: [],
+    proofOperations: [],
+    receivedCiphers: {},
+    outboundCiphers: {},
   }
 }
 

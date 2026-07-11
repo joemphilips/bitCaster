@@ -1762,7 +1762,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       assert.deepEqual(filtered.result, [state.swaps['trade-a']])
     })
 
-    await t.test('trade.recover delegates active swap recovery to daemon executor', async () => {
+    await t.test('trade.recover runs the durable coordinator before legacy swap recovery', async () => {
       const state = emptyDaemonState()
       state.swaps['trade-recover'] = {
         tradeId: 'trade-recover',
@@ -1774,26 +1774,37 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         updatedAt: '2026-05-21T00:00:00.000Z',
       }
       await writeState(state)
+      const recoveryOrder: string[] = []
       let runtimeStartSawTrade = false
-      let executorSawTrade = false
+      let legacyExecutorCalls = 0
 
-      const response = await dispatch(
-        { method: 'trade.recover' },
-        {
-          tradeRuntime: {
-            async start(runtimeState) {
-              runtimeStartSawTrade = !!runtimeState.swaps['trade-recover']
-              return { orders: [], trades: [] }
-            },
-            async stop() {},
+      const dependencies = {
+        tradeRuntime: {
+          async start(runtimeState: DaemonState) {
+            runtimeStartSawTrade = !!runtimeState.swaps['trade-recover']
+            recoveryOrder.push('runtime')
+            return { orders: [], trades: [] }
           },
-          swapExecutor: {
-            async resumeActiveSwaps(runtimeState) {
-              executorSawTrade = !!runtimeState.swaps['trade-recover']
-              return { activeSwaps: 1 }
-            },
+          async stop() {},
+        },
+        swapExecutor: {
+          async resumeActiveSwaps() {
+            legacyExecutorCalls += 1
+            recoveryOrder.push('legacy-executor')
+            return { activeSwaps: 1 }
           },
         },
+        durableTradeRecovery: {
+          async recover() {
+            recoveryOrder.push('coordinator')
+            recoveryOrder.push('executor')
+            return { activeSwaps: 1 }
+          },
+        },
+      } as unknown as Parameters<typeof dispatch>[1]
+      const response = await dispatch(
+        { method: 'trade.recover' },
+        dependencies,
       )
 
       assert.deepEqual(response, {
@@ -1801,7 +1812,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         result: { activeSwaps: 1 },
       })
       assert.equal(runtimeStartSawTrade, true)
-      assert.equal(executorSawTrade, true)
+      assert.equal(legacyExecutorCalls, 0)
+      assert.deepEqual(recoveryOrder, ['runtime', 'coordinator', 'executor'])
     })
 
     await t.test('order.list reads filtered local daemon order state', async () => {

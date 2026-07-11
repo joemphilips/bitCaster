@@ -16,6 +16,11 @@ import type {
   DurableTradeProofOperationLink,
   DurableTradeSession,
 } from '@bitcaster-market/client-sdk/durableTradeRecovery'
+import {
+  reduceDurableTradeSession,
+  validateDurableProofOperationLink,
+  validateDurableTradeSession,
+} from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import type {
   PartialLockHeldRecord,
   SwapFailure,
@@ -534,9 +539,9 @@ export async function prepareProofOperation(
     if (record.durableTradeRecovery) {
       const link = record.durableTradeRecovery
       const session = state.durableTradeSessions[link.tradeId]
-      // Legacy pre-migration records may have a link without a promoted session.
-      // The SDK will fail those orphaned records closed during recovery.
-      if (!session) return record
+      if (!session) {
+        throw new Error(`Proof operation ${input.operationId} has no durable trade session`)
+      }
       if (session.role !== link.role || link.state !== 'prepared') {
         throw new Error(`Proof operation ${input.operationId} has an invalid durable trade binding`)
       }
@@ -546,6 +551,7 @@ export async function prepareProofOperation(
           operationId: link.operationId,
           operationKey: link.operationKey ?? input.operationId,
           stage: link.stage,
+          ...(link.kind === undefined ? {} : { kind: link.kind }),
         })
       }
       if (!session.proofOperations.some((item) => item.operationId === link.operationId)) {
@@ -568,12 +574,17 @@ export async function markProofOperationCompleted(
     if (!existing) {
       throw new Error(`Missing proof operation ${operationId}`)
     }
+    const durableTradeRecovery = existing.durableTradeRecovery
+      ? advanceDurableProofOperationWithSession(
+        state,
+        existing.durableTradeRecovery,
+        'reconciled',
+      )
+      : undefined
     const updated: ProofOperationRecord = {
       ...existing,
       state: 'completed',
-      durableTradeRecovery: existing.durableTradeRecovery
-        ? { ...existing.durableTradeRecovery, state: 'reconciled' }
-        : undefined,
+      durableTradeRecovery,
       resultProofs: normalizeProofRecordGroups(resultProofs),
       lastError: null,
       updatedAt: Date.now(),
@@ -595,18 +606,99 @@ export async function markProofOperationMintSubmitted(
     if (existing.state === 'completed' || existing.state === 'Failed') {
       throw new Error(`Cannot submit terminal proof operation ${operationId}`)
     }
+    const durableTradeRecovery = existing.durableTradeRecovery
+      ? advanceDurableProofOperationWithSession(
+        state,
+        existing.durableTradeRecovery,
+        'mint-submitted',
+      )
+      : undefined
     const updated: ProofOperationRecord = {
       ...existing,
       state: 'mint-submitted',
-      durableTradeRecovery: existing.durableTradeRecovery
-        ? { ...existing.durableTradeRecovery, state: 'mint-submitted' }
-        : undefined,
+      durableTradeRecovery,
       lastError: null,
       updatedAt: Date.now(),
     }
     state.proofOperations[operationId] = updated
     return updated
   })
+}
+
+/**
+ * A durable swap session and its proof ledger live in the same daemon state
+ * file. Keep their state projections in one write so a crash cannot leave a
+ * completed mint operation paired with an older SDK recovery session.
+ */
+function advanceDurableProofOperationWithSession(
+  state: DaemonState,
+  link: DurableTradeProofOperationLink,
+  transition: 'mint-submitted' | 'reconciled',
+): DurableTradeProofOperationLink {
+  const session = state.durableTradeSessions[link.tradeId]
+  if (!session) {
+    throw new Error(`durable proof operation ${link.operationId} has no session`)
+  }
+  const sessionError = validateDurableTradeSession(session)
+  const linkError = validateDurableProofOperationLink(link)
+  if (sessionError || linkError) {
+    throw new Error(`invalid durable trade state: ${sessionError ?? linkError}`)
+  }
+  const sessionLink = session.proofOperations.find(
+    (candidate) => candidate.operationId === link.operationId,
+  )
+  if (!sessionLink || !sameDurableTradeOperationIdentity(sessionLink, link)) {
+    throw new Error(`durable proof operation ${link.operationId} is not bound to its session`)
+  }
+
+  switch (transition) {
+    case 'mint-submitted':
+      if (sessionLink.state === 'mint-submitted' && link.state === 'mint-submitted') {
+        return sessionLink
+      }
+      if (sessionLink.state !== 'prepared' ||
+        (link.state !== 'prepared' && link.state !== 'mint-submitted')) {
+        throw new Error(`durable proof operation ${link.operationId} cannot advance to mint-submitted`)
+      }
+      break
+    case 'reconciled':
+      if (sessionLink.state === 'reconciled' && link.state === 'reconciled') {
+        return sessionLink
+      }
+      if ((sessionLink.state !== 'prepared' && sessionLink.state !== 'mint-submitted') ||
+        sessionLink.state !== link.state) {
+        throw new Error(`durable proof operation ${link.operationId} cannot advance to reconciled`)
+      }
+      break
+  }
+
+  const nextSession = reduceDurableTradeSession(
+    session,
+    transition === 'mint-submitted'
+      ? { kind: 'mint-submitted', operationId: link.operationId }
+      : { kind: 'proof-operation-reconciled', operationId: link.operationId },
+  )
+  const nextLink = nextSession.proofOperations.find(
+    (candidate) => candidate.operationId === link.operationId,
+  )
+  if (!nextLink || nextLink.state !== transition ||
+    !sameDurableTradeOperationIdentity(nextLink, link)) {
+    throw new Error(`durable proof operation ${link.operationId} did not advance with its session`)
+  }
+  state.durableTradeSessions[link.tradeId] = nextSession
+  return nextLink
+}
+
+function sameDurableTradeOperationIdentity(
+  left: DurableTradeProofOperationLink,
+  right: DurableTradeProofOperationLink,
+): boolean {
+  return left.operationId === right.operationId &&
+    left.operationKey === right.operationKey &&
+    left.tradeId === right.tradeId &&
+    left.role === right.role &&
+    left.stage === right.stage &&
+    left.kind === right.kind
 }
 
 export function summarizeWalletBalance(state: DaemonState): WalletBalance {

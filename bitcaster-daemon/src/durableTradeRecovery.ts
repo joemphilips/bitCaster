@@ -7,15 +7,19 @@ import {
 import { createHash } from 'node:crypto'
 import {
   recoverDurableTradeSessions,
+  reduceDurableTradeSession,
+  validateDurableProofOperationLink,
   validateDurableTradeSession,
+  type DurableTradeAtomicTransitionPort,
   type DurableProofOperationRepository,
   type DurableTradeProofOperationLink,
   type DurableTradeRecoveryPorts,
   type DurableTradeRecoveryResult,
+  type DurableTradeSession,
   type DurableTradeSessionRepository,
 } from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import {
-  markProofOperationMintSubmitted,
+  ensureState,
   readState,
   updateState,
 } from './state.ts'
@@ -36,6 +40,31 @@ export function createDaemonDurableTradeRepositories(): {
   operations: DurableProofOperationRepository
 } {
   return { sessions: daemonSessions, operations: daemonOperations }
+}
+
+export interface DaemonDurableTradeRecoveryRunner {
+  recover(): Promise<{
+    durableRecovery: DurableTradeRecoveryResult
+    activeSwaps: number
+  }>
+}
+
+/**
+ * Runs coordinator-owned exact recovery before the legacy active-swap sweep.
+ * Both daemon startup and the manual RPC use this one ordering so the legacy
+ * executor cannot select fresh proofs while a durable link remains active.
+ */
+export function createDaemonDurableTradeRecoveryRunner(input: {
+  executor: DaemonSwapExecutor
+  connection: TradeRuntimeConnection
+}): DaemonDurableTradeRecoveryRunner {
+  return {
+    async recover() {
+      const durableRecovery = await recoverDaemonDurableTradeSessions(input)
+      const { activeSwaps } = await input.executor.resumeActiveSwaps(await ensureState())
+      return { durableRecovery, activeSwaps }
+    },
+  }
 }
 
 /** Runs the SDK-owned recovery policy using daemon-specific storage and transport. */
@@ -66,6 +95,7 @@ export async function recoverDaemonDurableTradeSessions(input: {
     clock: { nowMs: () => Date.now() },
     hashCiphertext: async (ciphertext) =>
       createHash('sha256').update(ciphertext).digest('hex'),
+    atomicTransition: daemonAtomicTransition,
   }
   return recoverDurableTradeSessions(ports)
 }
@@ -132,23 +162,71 @@ const daemonOperations: DurableProofOperationRepository = {
     throw new Error('daemon durable proof operations are prepared with their concrete Cashu request')
   },
   async markMintSubmitted(operationId) {
-    const record = await findOperationRecord(operationId)
-    if (!record) throw new Error(`Missing durable proof operation ${operationId}`)
-    const updated = await markProofOperationMintSubmitted(record.operationId)
-    if (!updated.durableTradeRecovery) throw new Error(`Missing durable proof operation ${operationId}`)
-    return updated.durableTradeRecovery
+    return advanceDaemonOperationFromCurrentState(operationId, 'mint-submitted')
   },
   async markReconciled(operationId) {
+    return advanceDaemonOperationFromCurrentState(operationId, 'reconciled')
+  },
+}
+
+/**
+ * The daemon stores sessions and proof-operation rows in one atomically
+ * renamed file. Advancing only one of those projections opens a crash window
+ * where the next recovery run can no longer prove which exact action is safe.
+ */
+const daemonAtomicTransition: DurableTradeAtomicTransitionPort = {
+  async advance(input) {
+    if (validateDurableTradeSession(input.session) !== null ||
+      validateDurableProofOperationLink(input.operation) !== null) {
+      return null
+    }
     return updateState((state) => {
+      const storedSession = state.durableTradeSessions[input.session.tradeId]
       const record = Object.values(state.proofOperations).find(
-        (candidate) => candidate.durableTradeRecovery?.operationId === operationId,
+        (candidate) => candidate.durableTradeRecovery?.operationId === input.operation.operationId,
       )
-      if (!record?.durableTradeRecovery) {
-        throw new Error(`Missing durable proof operation ${operationId}`)
+      const storedOperation = record?.durableTradeRecovery
+      if (!storedSession || !record || !storedOperation ||
+        validateDurableProofOperationLink(storedOperation) !== null ||
+        !sameDurableOperationIdentity(storedOperation, input.operation)) {
+        return null
       }
-      const link = { ...record.durableTradeRecovery, state: 'reconciled' as const }
-      record.durableTradeRecovery = link
-      return link
+
+      let expectedSession
+      try {
+        expectedSession = reduceDurableTradeSession(
+          input.session,
+          input.state === 'mint-submitted'
+            ? { kind: 'mint-submitted', operationId: input.operation.operationId }
+            : { kind: 'proof-operation-reconciled', operationId: input.operation.operationId },
+        )
+      } catch {
+        return null
+      }
+      const nextOperation = expectedSession.proofOperations.find(
+        (candidate) => candidate.operationId === input.operation.operationId,
+      )
+      if (!nextOperation || nextOperation.state !== input.state ||
+        !sameDurableOperationIdentity(nextOperation, input.operation) ||
+        !proofRecordMayAdvance(record.state, input.state)) {
+        return null
+      }
+
+      // The normal daemon execution path may have completed the same atomic
+      // file transaction while the exact mint adapter was returning. Returning
+      // that precise already-advanced snapshot makes recovery idempotent
+      // without accepting a stale or differently-bound session.
+      if (sameDurableSessionSnapshot(storedSession, expectedSession) &&
+        storedOperation.state === input.state &&
+        proofRecordHasAdvanced(record.state, input.state)) {
+        return { session: storedSession, operation: storedOperation }
+      }
+      if (!sameDurableSessionSnapshot(storedSession, input.session)) return null
+
+      state.durableTradeSessions[expectedSession.tradeId] = expectedSession
+      record.durableTradeRecovery = nextOperation
+      if (input.state === 'mint-submitted') record.state = 'mint-submitted'
+      return { session: expectedSession, operation: nextOperation }
     })
   },
 }
@@ -157,6 +235,26 @@ async function findOperation(operationId: string): Promise<DurableTradeProofOper
   const record = await findOperationRecord(operationId)
   if (!record?.durableTradeRecovery) return null
   return record.durableTradeRecovery
+}
+
+async function advanceDaemonOperationFromCurrentState(
+  operationId: string,
+  state: 'mint-submitted' | 'reconciled',
+): Promise<DurableTradeProofOperationLink> {
+  const snapshot = await readState()
+  const record = Object.values(snapshot?.proofOperations ?? {}).find(
+    (candidate) => candidate.durableTradeRecovery?.operationId === operationId,
+  )
+  const operation = record?.durableTradeRecovery
+  const session = operation ? snapshot?.durableTradeSessions[operation.tradeId] : undefined
+  if (!operation || !session) {
+    throw new Error(`Missing durable proof operation ${operationId}`)
+  }
+  const advanced = await daemonAtomicTransition.advance({ session, operation, state })
+  if (!advanced) {
+    throw new Error(`Durable proof operation ${operationId} could not advance atomically`)
+  }
+  return advanced.operation
 }
 
 async function findOperationRecord(operationId: string) {
@@ -197,4 +295,58 @@ function requireOperationKey(operation: DurableTradeProofOperationLink): string 
 
 function allStates(states: ProofState[], expected: string): boolean {
   return states.length > 0 && states.every((state) => state.state === expected)
+}
+
+function sameDurableSessionSnapshot(
+  left: DurableTradeSession,
+  right: DurableTradeSession,
+): boolean {
+  return canonicalJson(left) === canonicalJson(right)
+}
+
+function sameDurableOperationIdentity(
+  left: DurableTradeProofOperationLink,
+  right: DurableTradeProofOperationLink,
+): boolean {
+  return left.operationId === right.operationId &&
+    left.operationKey === right.operationKey &&
+    left.tradeId === right.tradeId &&
+    left.role === right.role &&
+    left.stage === right.stage &&
+    left.kind === right.kind
+}
+
+function proofRecordMayAdvance(
+  state: 'prepared' | 'mint-submitted' | 'completed' | 'Failed',
+  transition: 'mint-submitted' | 'reconciled',
+): boolean {
+  switch (transition) {
+    case 'mint-submitted':
+      return state === 'prepared' || state === 'mint-submitted'
+    case 'reconciled':
+      return state === 'completed'
+  }
+}
+
+function proofRecordHasAdvanced(
+  state: 'prepared' | 'mint-submitted' | 'completed' | 'Failed',
+  transition: 'mint-submitted' | 'reconciled',
+): boolean {
+  switch (transition) {
+    case 'mint-submitted':
+      return state === 'mint-submitted'
+    case 'reconciled':
+      return state === 'completed'
+  }
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'undefined'
 }

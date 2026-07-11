@@ -58,7 +58,7 @@ switch (command) {
     const { SignalRTradeHubConnection } = await import('./tradeHubConnection.ts')
     const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
     const { DaemonSwapExecutor } = await import('./swapExecutor.ts')
-    const { recoverDaemonDurableTradeSessions } = await import('./durableTradeRecovery.ts')
+    const { createDaemonDurableTradeRecoveryRunner } = await import('./durableTradeRecovery.ts')
     const { DaemonTakerFillRecovery } = await import('./takerFillRecovery.ts')
     const { createRealDaemonSwapOps } = await import('./swapProtocolAdapter.ts')
     const { readProfile } = await import('./profile.ts')
@@ -76,6 +76,7 @@ switch (command) {
     const secrets = await readSecrets()
     let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
     let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
+    let runDurableRecovery: (() => Promise<void>) | undefined
     const recoveryEngineClient =
       profile && secrets
         ? createAuthenticatedBitcasterEngineClient({
@@ -188,7 +189,7 @@ switch (command) {
           scheduleResumeActiveSwaps: (delayMs) => {
             setTimeout(() => {
               void (async () => {
-                await executor?.resumeActiveSwaps(await ensureState())
+                await runDurableRecovery?.()
               })().catch((err: unknown) => {
                 const message = err instanceof Error ? err.message : String(err)
                 process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
@@ -197,10 +198,26 @@ switch (command) {
           },
         })
       : undefined
+    const durableRecoveryRunner = executor && tradeHub
+      ? createDaemonDurableTradeRecoveryRunner({ executor, connection: tradeHub })
+      : undefined
+    runDurableRecovery = durableRecoveryRunner
+      ? async () => {
+        const recovery = await durableRecoveryRunner.recover()
+        for (const session of recovery.durableRecovery.sessions) {
+          if (session.kind === 'failed-closed') {
+            process.stderr.write(
+              `Durable trade recovery failed closed for ${session.tradeId}: ${session.reason}\n`,
+            )
+          }
+        }
+      }
+      : undefined
     try {
       const server = await startDaemonServer({
         tradeRuntime: runtime,
         swapExecutor: executor,
+        durableTradeRecovery: durableRecoveryRunner,
       })
       installShutdownHandlers(server, runtime, runLock.release)
     } catch (err) {
@@ -226,22 +243,9 @@ switch (command) {
           process.stderr.write(`Wallet recovery sweep failed: ${message}\n`)
         })
     }
-    if (executor && tradeHub) {
+    if (runDurableRecovery) {
       void (async () => {
-        const recovery = await recoverDaemonDurableTradeSessions({
-          executor,
-          connection: tradeHub,
-        })
-        for (const session of recovery.sessions) {
-          if (session.kind === 'failed-closed') {
-            process.stderr.write(
-              `Durable trade recovery failed closed for ${session.tradeId}: ${session.reason}\n`,
-            )
-          }
-        }
-        // The coordinator owns ambiguous persisted mint operations. The
-        // executor then progresses only swaps left without one of those rows.
-        await executor.resumeActiveSwaps(await ensureState())
+        await runDurableRecovery()
       })().catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
         process.stderr.write(`Swap recovery sweep failed: ${message}\n`)

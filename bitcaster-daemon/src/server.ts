@@ -92,6 +92,7 @@ import {
   type WalletOpsDependencies,
 } from './walletOps.ts'
 import { buildDaemonTokenHoldings } from './walletHoldings.ts'
+import type { DaemonDurableTradeRecoveryRunner } from './durableTradeRecovery.ts'
 
 export interface DaemonServerOptions {
   host?: string
@@ -99,6 +100,7 @@ export interface DaemonServerOptions {
   socketPath?: string
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
+  durableTradeRecovery?: DaemonDurableTradeRecoveryRunner
 }
 
 export interface SwapRecoveryExecutor {
@@ -226,6 +228,7 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   generateEphemeralKeypair?: typeof generateOrderEphemeralKeypair
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
+  durableTradeRecovery?: DaemonDurableTradeRecoveryRunner
 }
 
 const ctfProofOperationStore: CtfProofOperationStore = {
@@ -252,6 +255,7 @@ export async function startDaemonServer(
     void handleRequest(req, res, {
       tradeRuntime: options.tradeRuntime,
       swapExecutor: options.swapExecutor,
+      durableTradeRecovery: options.durableTradeRecovery,
     })
   })
   const socketPath =
@@ -833,13 +837,14 @@ export async function dispatch(
       if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
-      if (!deps.swapExecutor) {
-        return { ok: false, error: 'daemon swap executor is not available' }
+      if (!deps.durableTradeRecovery) {
+        return { ok: false, error: 'daemon durable recovery coordinator is not available' }
       }
       await startTradeRuntimeBestEffort(deps.tradeRuntime)
+      const recovery = await deps.durableTradeRecovery.recover()
       return {
         ok: true,
-        result: await deps.swapExecutor.resumeActiveSwaps(await ensureState()),
+        result: { activeSwaps: recovery.activeSwaps },
       }
     }
     case 'order.status': {
