@@ -527,6 +527,32 @@ export async function splitRootCompleteSetForSwap(params: {
   };
 }
 
+/**
+ * Resume one persisted CTF split using its recorded inputs and blinded
+ * outputs. The caller supplies the same durable operation store so every
+ * state transition remains bound to the original operation identity.
+ */
+export async function resumeCtfSplitOperation(params: {
+  mintUrl: string;
+  entry: CtfProofOperationRecord;
+  transport: CtfSplitTransport;
+  proofOperationStore: CtfProofOperationStore;
+  proofStateChecker?: Pick<RegularSplitWallet, "checkProofsStates">;
+  restoreOutputGroups?: (
+    mintUrl: string,
+    outputs: Record<string, StoredOutputData[]>,
+  ) => Promise<Record<string, Proof[]>>;
+}): Promise<Record<string, Proof[]>> {
+  return resumeCtfSplit(
+    params.mintUrl,
+    params.entry,
+    params.transport,
+    params.proofOperationStore,
+    params.proofStateChecker,
+    params.restoreOutputGroups,
+  );
+}
+
 export async function splitRootCompleteSetForPreflightOrder(params: {
   mintUrl: string;
   baseAsset?: CtfCollateralBaseAsset;
