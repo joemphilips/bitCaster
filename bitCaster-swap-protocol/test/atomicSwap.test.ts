@@ -12,6 +12,8 @@ import {
 import {
   assertConditionalSwapOutputsPinned,
   conditionalKeysetSwap,
+  inspectExactPreparedProofOperation,
+  resumeExactPreparedProofOperation,
   type PrepareProofOperationInput,
   type ProofOperationRecord,
   type ProofOperationStore,
@@ -177,6 +179,42 @@ test("conditional keyset swap stays resumable when completion aborts before sign
   }
 });
 
+test("exact prepared recovery inspects and completes only persisted operation data", async () => {
+  const originalCheck = CashuWallet.prototype.checkProofsStates;
+  const originalComplete = CashuWallet.prototype.completeSwap;
+  const input = proof("keyset-exact", 10, "exact-input");
+  const send = proof("keyset-exact", 6, "exact-send");
+  const keep = proof("keyset-exact", 4, "exact-keep");
+  const entry: ProofOperationRecord = {
+    operationId: "exact-operation",
+    kind: "swap-lock",
+    state: "mint-submitted",
+    mintUrl: "https://mint.example",
+    inputs: [input],
+    outputs: { send: [storedOutput("keyset-exact", 6)], keep: [storedOutput("keyset-exact", 4)] },
+    metadata: { amount: 6, fees: 0, keysetId: "keyset-exact", unit: "sat", unselectedProofs: [] },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const wallet = new CashuWallet(new CashuMint(entry.mintUrl), { unit: "sat" });
+  try {
+    CashuWallet.prototype.checkProofsStates = async () => [
+      { state: CheckStateEnum.UNSPENT },
+    ] as ProofState[];
+    CashuWallet.prototype.completeSwap = async () => ({ send: [send], keep: [keep] }) as never;
+
+    await assert.doesNotReject(() => inspectExactPreparedProofOperation(wallet, entry));
+    assert.equal(await inspectExactPreparedProofOperation(wallet, entry), "all-unspent");
+    assert.deepEqual(await resumeExactPreparedProofOperation(wallet, entry), {
+      send: [{ ...send, amount: 6 }],
+      keep: [{ ...keep, amount: 4 }],
+    });
+  } finally {
+    CashuWallet.prototype.checkProofsStates = originalCheck;
+    CashuWallet.prototype.completeSwap = originalComplete;
+  }
+});
+
 function swapContext(tradeId: string): SwapContext {
   const seller = generateEphemeralKeypair();
   const buyer = generateEphemeralKeypair();
@@ -232,6 +270,18 @@ function outputData(keysetId: string, amount: number) {
     blindingFactor: 1n,
     secret: new TextEncoder().encode(`secret-${keysetId}`),
     toProof: () => proof(keysetId, amount, `secret-${keysetId}`),
+  };
+}
+
+function storedOutput(keysetId: string, amount: number) {
+  return {
+    blindedMessage: {
+      id: keysetId,
+      amount,
+      B_: `02${keysetId}`.padEnd(66, "0").slice(0, 66),
+    },
+    blindingFactor: "01",
+    secret: Buffer.from(`stored-${keysetId}`).toString("hex"),
   };
 }
 

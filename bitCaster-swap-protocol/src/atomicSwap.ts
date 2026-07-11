@@ -158,6 +158,12 @@ export interface ProofOperationStore {
   ): Promise<ProofOperationRecord>;
 }
 
+/** Exact NUT-07 observation for a persisted operation; never selects proofs. */
+export type ExactPreparedProofOperationState =
+  | "all-unspent"
+  | "all-spent"
+  | "pending-or-mixed";
+
 interface ProofOperationOptions {
   operationId?: string;
   proofOperationStore?: ProofOperationStore;
@@ -1380,6 +1386,89 @@ export async function resumePreparedProofOperation(
   throw new Error(
     `Proof operation ${entry.operationId} is still pending at the mint`,
   );
+}
+
+/**
+ * Inspects only the persisted inputs of an operation. The caller maps this
+ * narrow observation into its durable recovery policy; no mint request is
+ * issued here.
+ */
+export async function inspectExactPreparedProofOperation(
+  wallet: CashuWallet,
+  entry: ProofOperationRecord,
+): Promise<ExactPreparedProofOperationState> {
+  if (entry.state === "completed" || entry.state === "failed") {
+    throw new Error(`Proof operation ${entry.operationId} is terminal`);
+  }
+  const states = await wallet.checkProofsStates(
+    entry.inputs.map(({ id, secret }) => ({ id, secret })),
+  );
+  if (allStates(states, CheckStateEnum.SPENT)) return "all-spent";
+  if (allStates(states, CheckStateEnum.UNSPENT)) return "all-unspent";
+  return "pending-or-mixed";
+}
+
+/** Restores the exact persisted blinded outputs without mutating a ledger. */
+export async function restoreExactPreparedProofOperation(
+  entry: ProofOperationRecord,
+): Promise<Record<string, Proof[]>> {
+  if (entry.state === "completed") {
+    return normalizeProofGroups(structuredClone(entry.resultProofs ?? {}));
+  }
+  if (entry.state === "failed") {
+    throw new Error(
+      `Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
+    );
+  }
+  const restored = entry.kind === "conditional-keyset-swap"
+    ? await restoreOutputGroups(
+        entry.mintUrl,
+        entry.outputs,
+        OutputData,
+        CashuMint,
+        normalizeCtfSignature,
+      )
+    : await restoreOutputGroups(entry.mintUrl, entry.outputs);
+  if (operationKeepsUnselectedInputs(entry.kind)) {
+    restored.keep = [
+      ...(restored.keep ?? []),
+      ...readUnselectedProofs(entry),
+    ];
+  }
+  return normalizeProofGroups(restored);
+}
+
+/** Completes only the exact persisted request without mutating a ledger. */
+export async function resumeExactPreparedProofOperation(
+  wallet: CashuWallet,
+  entry: ProofOperationRecord,
+): Promise<Record<string, Proof[]>> {
+  if (entry.state === "completed") {
+    return normalizeProofGroups(structuredClone(entry.resultProofs ?? {}));
+  }
+  if (entry.state === "failed") {
+    throw new Error(
+      `Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
+    );
+  }
+  if (entry.kind === "conditional-keyset-swap") {
+    const keysetId =
+      typeof entry.metadata.keysetId === "string"
+        ? entry.metadata.keysetId
+        : singleProofKeysetId(entry.inputs);
+    return normalizeProofGroups(
+      await completeConditionalKeysetSwapPreview(wallet, {
+        keysetId,
+        inputs: entry.inputs,
+        outputDataByLabel: deserializeOutputGroups(entry.outputs, OutputData),
+      }),
+    );
+  }
+  const result = await wallet.completeSwap(entryToSwapPreview(entry));
+  const final: Record<string, Proof[]> = operationReturnsSendProofs(entry.kind)
+    ? { send: result.send, keep: result.keep }
+    : { keep: result.keep };
+  return normalizeProofGroups(final);
 }
 
 async function resumeConditionalKeysetSwap(
