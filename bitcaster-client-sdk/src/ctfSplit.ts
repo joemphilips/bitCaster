@@ -65,7 +65,8 @@ export type CtfProofOperationKind =
   | "ctf-merge"
   | "ctf-redeem"
   | "regular-split";
-export type ProofOperationState = "prepared" | "completed" | "Failed";
+/** `failed` remains readable for records written by earlier client versions. */
+export type ProofOperationState = "prepared" | "mint-submitted" | "completed" | "Failed" | "failed";
 
 export class ProofOperationPendingError extends Error {
   constructor(operationId: string) {
@@ -104,6 +105,10 @@ export interface CtfProofOperationStore {
   ): Promise<CtfProofOperationRecord | null>;
   prepareProofOperation(
     input: CtfPrepareProofOperationInput,
+  ): Promise<CtfProofOperationRecord>;
+  /** Records the write-ahead boundary immediately before a mint request. */
+  markProofOperationMintSubmitted(
+    operationId: string,
   ): Promise<CtfProofOperationRecord>;
   markProofOperationCompleted(
     operationId: string,
@@ -207,6 +212,8 @@ export interface CtfSplitOptions {
     outputsByCollection: Record<string, CtfSplitOutputData[]>;
     requestOutputs: Record<string, SerializedBlindedMessage[]>;
   }) => Promise<void>;
+  /** Runs after preparation is durable and immediately before the mint request. */
+  onMintSubmitted?: () => Promise<void>;
 }
 
 export interface RegularSplitWallet {
@@ -307,6 +314,7 @@ export async function splitRegularProofsWithOperation(params: {
     },
   });
 
+  await params.proofOperationStore.markProofOperationMintSubmitted(params.operationId);
   const result = await params.wallet.completeSwap(preview);
   const completed = {
     send: result.send.map(normalizeProof),
@@ -781,6 +789,7 @@ export async function splitCompleteSet(
     outputsByCollection,
     requestOutputs,
   });
+  await options.onMintSubmitted?.();
 
   const response = await transport.postSplit({
     condition_id: conditionId,
@@ -969,6 +978,9 @@ export async function splitCompleteSetWithOperation(params: {
           },
         });
       },
+      onMintSubmitted: async () => {
+        await params.proofOperationStore.markProofOperationMintSubmitted(params.operationId);
+      },
     },
   );
 
@@ -1053,6 +1065,7 @@ export async function mergeCompleteSetToRegularWithOperation(params: {
     },
   });
 
+  await params.proofOperationStore.markProofOperationMintSubmitted(params.operationId);
   const regularProofs = await executeCtfMergeToRegular({
     transport: params.transport,
     conditionId: params.conditionId,
@@ -1142,7 +1155,7 @@ async function resumeCtfMergeToRegular(
   if (entry.state === "completed") {
     return (entry.resultProofs?.regular ?? []).map(normalizeProof);
   }
-  if (entry.state === "Failed") {
+  if (entry.state === "Failed" || entry.state === "failed") {
     throw new Error(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
     );
@@ -1180,6 +1193,7 @@ async function resumeCtfMergeToRegular(
       throw new Error(`proof operation ${entry.operationId} has no regular merge outputs`);
     }
     const regularKeyset = await transport.getKeys(outputData[0].blindedMessage.id);
+    await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
     completed = await executeCtfMergeToRegular({
       transport,
       conditionId: metadata.conditionId,
@@ -1265,7 +1279,7 @@ async function resumeCtfSplit(
   if (entry.state === "completed") {
     return structuredClone(entry.resultProofs ?? {});
   }
-  if (entry.state === "Failed") {
+  if (entry.state === "Failed" || entry.state === "failed") {
     throw new Error(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
     );
@@ -1323,6 +1337,9 @@ async function resumeCtfSplit(
       {
         makeOutputs: ({ collection }) =>
           outputDataByCollection[collection] ?? [],
+        onMintSubmitted: async () => {
+          await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
+        },
       },
     );
     await proofOperationStore.markProofOperationCompleted(
@@ -1364,7 +1381,7 @@ async function resumeRegularSplit(
       spent: entry.inputs.map(normalizeProof),
     };
   }
-  if (entry.state === "Failed") {
+  if (entry.state === "Failed" || entry.state === "failed") {
     throw new Error(
       `proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
     );
@@ -1393,6 +1410,7 @@ async function resumeRegularSplit(
         "Cashu wallet adapter does not support prepared split completion",
       );
     }
+    await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
     const result = await wallet.completeSwap(entryToSwapPreview(entry));
     completed = {
       send: result.send.map(normalizeProof),

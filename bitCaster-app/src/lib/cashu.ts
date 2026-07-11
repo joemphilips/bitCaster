@@ -27,6 +27,7 @@ import {
   addProofs,
   getUnitProofs,
   getProofOperation,
+  markProofOperationMintSubmitted,
   markProofOperationCompleted,
   markProofOperationFailed,
   prepareProofOperation,
@@ -1075,6 +1076,8 @@ function ctfRedeemProofOperationStore(): CtfProofOperationStore {
       (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
     prepareProofOperation: async (input) =>
       (await prepareProofOperation(input)) as CtfProofOperationRecord,
+    markProofOperationMintSubmitted: async (operationId) =>
+      (await markProofOperationMintSubmitted(operationId)) as CtfProofOperationRecord,
     markProofOperationCompleted: async (operationId, resultProofs) =>
       (await markProofOperationCompleted(
         operationId,

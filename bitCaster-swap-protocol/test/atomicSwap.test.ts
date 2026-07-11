@@ -144,7 +144,7 @@ test("conditional keyset swap stays resumable when completion aborts before sign
     );
 
     const prepared = await store.getProofOperation(operationId);
-    assert.equal(prepared?.state, "prepared");
+    assert.equal(prepared?.state, "mint-submitted");
     assert.equal(prepared?.resultProofs, undefined);
     assert.equal(prepared?.metadata.unit, "sat");
 
@@ -265,6 +265,20 @@ class MemoryProofOperationStore implements ProofOperationStore {
     };
     this.records.set(input.operationId, record);
     return record;
+  }
+
+  async markProofOperationMintSubmitted(
+    operationId: string,
+  ): Promise<ProofOperationRecord> {
+    const existing = this.records.get(operationId);
+    if (!existing) throw new Error(`missing operation ${operationId}`);
+    const submitted = {
+      ...existing,
+      state: "mint-submitted" as const,
+      updatedAt: existing.updatedAt + 1,
+    } satisfies ProofOperationRecord;
+    this.records.set(operationId, submitted);
+    return submitted;
   }
 
   async markProofOperationCompleted(

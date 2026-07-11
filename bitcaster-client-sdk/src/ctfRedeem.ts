@@ -184,7 +184,7 @@ async function resumeCtfRedeem(params: {
       losing: false,
     };
   }
-  if (entry.state === "Failed") {
+  if (entry.state === "Failed" || entry.state === "failed") {
     if (
       entry.failureCode === undefined ||
       entry.failureCode === ORACLE_NOT_ATTESTED_OUTCOME_CODE
@@ -242,6 +242,9 @@ async function executeCtfRedeem(params: {
   onLosingLeg?: (inputs: Proof[]) => Promise<void>;
 }): Promise<RedeemOutcomeLegResult> {
   try {
+    await params.proofOperationStore.markProofOperationMintSubmitted(
+      params.operationId,
+    );
     const settled = await params.wallet.redeemOutcomeProofs({
       inputs: withOracleWitness(params.inputs, params.oracleWitness),
       outputs: params.outputData,

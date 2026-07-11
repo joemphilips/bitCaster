@@ -202,6 +202,20 @@ function proofOperationStore(): CtfProofOperationStore {
         updatedAt: Date.now(),
       }),
     ),
+    markProofOperationMintSubmitted: vi.fn(
+      async (operationId): Promise<CtfProofOperationRecord> => ({
+        operationId,
+        kind: "ctf-split",
+        state: "mint-submitted",
+        mintUrl: "https://mint.example",
+        inputs: [inputProof],
+        outputs: {},
+        metadata: {},
+        lastError: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    ),
     markProofOperationCompleted: vi.fn(
       async (operationId, resultProofs): Promise<CtfProofOperationRecord> => ({
         operationId,

@@ -53,7 +53,7 @@ export type ProofOperationKind =
   | "ctf-condition-registration"
   | "regular-split"
   | "proof-split";
-export type ProofOperationState = "prepared" | "completed" | "Failed";
+export type ProofOperationState = "prepared" | "mint-submitted" | "completed" | "Failed";
 
 export interface ProofOperationRecord {
   operationId: string;
@@ -633,6 +633,25 @@ export async function markProofOperationCompleted(
     ...existing,
     state: "completed",
     resultProofs: structuredClone(resultProofs),
+    lastError: null,
+    failureCode: undefined,
+    updatedAt: Date.now(),
+  };
+  await db.proofOperations.put(updated);
+  return updated;
+}
+
+/** Persists the recovery boundary immediately before a Cashu mint request. */
+export async function markProofOperationMintSubmitted(
+  operationId: string,
+): Promise<ProofOperationRecord> {
+  const existing = await getRequiredProofOperation(operationId);
+  if (existing.state === "completed" || existing.state === "Failed") {
+    throw new Error(`Cannot submit terminal proof operation ${operationId}`);
+  }
+  const updated: ProofOperationRecord = {
+    ...existing,
+    state: "mint-submitted",
     lastError: null,
     failureCode: undefined,
     updatedAt: Date.now(),

@@ -266,6 +266,20 @@ class MemoryProofOperationStore implements CtfProofOperationStore {
     return record;
   }
 
+  async markProofOperationMintSubmitted(
+    operationId: string,
+  ): Promise<CtfProofOperationRecord> {
+    const existing = this.records.get(operationId);
+    if (!existing) throw new Error(`missing operation ${operationId}`);
+    const submitted: CtfProofOperationRecord = {
+      ...existing,
+      state: "mint-submitted",
+      updatedAt: existing.updatedAt + 1,
+    };
+    this.records.set(operationId, submitted);
+    return submitted;
+  }
+
   async markProofOperationCompleted(
     operationId: string,
     resultProofs: Record<string, Proof[]>,

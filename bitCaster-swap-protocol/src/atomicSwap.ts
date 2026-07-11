@@ -118,7 +118,7 @@ export type ProofOperationKind =
   | "ctf-split"
   | "ctf-redeem"
   | "proof-split";
-export type ProofOperationState = "prepared" | "completed" | "failed";
+export type ProofOperationState = "prepared" | "mint-submitted" | "completed" | "failed";
 
 export interface ProofOperationRecord {
   operationId: string;
@@ -147,6 +147,10 @@ export interface ProofOperationStore {
   getProofOperation(operationId: string): Promise<ProofOperationRecord | null>;
   prepareProofOperation(
     input: PrepareProofOperationInput,
+  ): Promise<ProofOperationRecord>;
+  /** Durable write-ahead boundary immediately before an irreversible mint request. */
+  markProofOperationMintSubmitted(
+    operationId: string,
   ): Promise<ProofOperationRecord>;
   markProofOperationCompleted(
     operationId: string,
@@ -565,6 +569,7 @@ export async function conditionalKeysetSwap(
       outputs: serializeOutputDataArrayByLabel(preview.outputDataByLabel),
       metadata: { keysetId: preview.keysetId, unit },
     });
+    await proofOperationStore.markProofOperationMintSubmitted(options.operationId);
     const result = await completeConditionalKeysetSwapPreview(wallet, preview);
     await proofOperationStore.markProofOperationCompleted(
       options.operationId,
@@ -1220,6 +1225,7 @@ async function lockProofsWithOperation(
     metadata: swapPreviewMetadata(preview, unit),
   });
 
+  await proofOperationStore.markProofOperationMintSubmitted(operationId);
   const result = await wallet.completeSwap(preview);
   const final = normalizeProofGroups({ send: result.send, keep: result.keep });
   await proofOperationStore.markProofOperationCompleted(operationId, final);
@@ -1269,6 +1275,7 @@ async function splitProofsForExactSendWithOperation(
     metadata: swapPreviewMetadata(preview, unit),
   });
 
+  await proofOperationStore.markProofOperationMintSubmitted(operationId);
   const result = await wallet.completeSwap(preview);
   const final = normalizeProofGroups({ send: result.send, keep: result.keep });
   await proofOperationStore.markProofOperationCompleted(operationId, final);
@@ -1310,6 +1317,7 @@ async function receiveProofsWithOperation(
     metadata: swapPreviewMetadata(preview, unit),
   });
 
+  await proofOperationStore.markProofOperationMintSubmitted(operationId);
   const result = await wallet.completeSwap(preview);
   const final = normalizeProofGroups({ keep: result.keep });
   await proofOperationStore.markProofOperationCompleted(operationId, final);
@@ -1349,6 +1357,7 @@ async function resumeProofOperation(
     return final;
   }
   if (allStates(states, CheckStateEnum.UNSPENT)) {
+    await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
     const result = await wallet.completeSwap(entryToSwapPreview(entry));
     const final: Record<string, Proof[]> = operationReturnsSendProofs(
       entry.kind,
@@ -1405,6 +1414,7 @@ async function resumeConditionalKeysetSwap(
       typeof entry.metadata.keysetId === "string"
         ? entry.metadata.keysetId
         : singleProofKeysetId(entry.inputs);
+    await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
     const result = await completeConditionalKeysetSwapPreview(wallet, {
       keysetId,
       inputs: entry.inputs,

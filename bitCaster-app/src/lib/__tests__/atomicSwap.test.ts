@@ -605,6 +605,12 @@ vi.mock('@/stores/proof-db', () => ({
     proofDbMockState.operations.set(input.operationId, record)
     return record
   }),
+  markProofOperationMintSubmitted: vi.fn(async (operationId: string) => {
+    const existing = proofDbMockState.operations.get(operationId)
+    const record = { ...existing, state: 'mint-submitted', updatedAt: Date.now() }
+    proofDbMockState.operations.set(operationId, record)
+    return record
+  }),
   markProofOperationCompleted: vi.fn(async (operationId: string, resultProofs: Record<string, Proof[]>) => {
     const existing = proofDbMockState.operations.get(operationId)
     const record = {
@@ -632,6 +638,12 @@ const proofOperationStore: ProofOperationStore = {
       updatedAt: Date.now(),
     }
     proofDbMockState.operations.set(input.operationId, record)
+    return record
+  },
+  markProofOperationMintSubmitted: async (operationId) => {
+    const existing = proofDbMockState.operations.get(operationId)
+    const record = { ...existing, state: 'mint-submitted' as const, updatedAt: Date.now() }
+    proofDbMockState.operations.set(operationId, record)
     return record
   },
   markProofOperationCompleted: async (operationId, resultProofs) => {

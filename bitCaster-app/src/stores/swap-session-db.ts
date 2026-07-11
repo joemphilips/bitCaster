@@ -16,6 +16,7 @@ import type { ActiveSwap } from './activeSwaps'
 import {
   db,
   ensureDurableSwapStorage,
+  markProofOperationMintSubmitted,
   markProofOperationCompleted,
   prepareProofOperation,
   type PrepareProofOperationInput,
@@ -78,6 +79,27 @@ export async function completeGuiProofOperationWithSession(
     const operation = await markProofOperationCompleted(operationId, resultProofs)
     const durableTradeRecovery = operation.durableTradeRecovery
       ? { ...operation.durableTradeRecovery, state: 'reconciled' as const }
+      : undefined
+    const linkedOperation = { ...operation, durableTradeRecovery }
+    await db.proofOperations.put(linkedOperation)
+    await putGuiSwapSessionInTransaction(swap, session, durableTradeRecovery)
+    return linkedOperation
+  })
+}
+
+/** Atomically advances the proof ledger and SDK session before a mint request. */
+export async function markGuiProofOperationMintSubmittedWithSession(
+  operationId: string,
+  swap: ActiveSwap,
+  mintUrl: string,
+): Promise<ProofOperationRecord> {
+  const session = await durableSessionFromActiveSwap(swap, mintUrl)
+  if (!session) throw new Error('Cannot submit proof operation without a durable swap session')
+  await ensureDurableSwapStorage()
+  return db.transaction('rw', db.proofOperations, db.swapSessions, async () => {
+    const operation = await markProofOperationMintSubmitted(operationId)
+    const durableTradeRecovery = operation.durableTradeRecovery
+      ? { ...operation.durableTradeRecovery, state: 'mint-submitted' as const }
       : undefined
     const linkedOperation = { ...operation, durableTradeRecovery }
     await db.proofOperations.put(linkedOperation)

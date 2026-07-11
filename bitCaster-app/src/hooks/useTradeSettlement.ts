@@ -101,6 +101,7 @@ import {
   persistGuiSwapSession,
   prepareGuiProofOperationWithSession,
   completeGuiProofOperationWithSession,
+  markGuiProofOperationMintSubmittedWithSession,
   removeGuiSwapSession,
   resumeGuiSwapSession,
   withGuiSwapSessionOwnership,
@@ -161,6 +162,8 @@ const proofOperationStore: ProofOperationStore = {
     if (!swap) throw new Error('Proof operation has no active durable GUI swap')
     return (await prepareGuiProofOperationWithSession(input, swap)) as SwapProofOperationRecord
   },
+  markProofOperationMintSubmitted: async (operationId) =>
+    (await markGuiProofOperationForCurrentSwap(operationId)) as SwapProofOperationRecord,
   markProofOperationCompleted: async (operationId, resultProofs) =>
     (await completeGuiProofOperationForCurrentSwap(
       operationId,
@@ -178,12 +181,22 @@ const ctfProofOperationStore: CtfProofOperationStore = {
     if (!swap) throw new Error('Proof operation has no active durable GUI swap')
     return (await prepareGuiProofOperationWithSession(input, swap)) as CtfProofOperationRecord
   },
+  markProofOperationMintSubmitted: async (operationId) =>
+    (await markGuiProofOperationForCurrentSwap(operationId)) as CtfProofOperationRecord,
   markProofOperationCompleted: async (operationId, resultProofs) =>
     (await completeGuiProofOperationForCurrentSwap(
       operationId,
       resultProofs,
     )) as CtfProofOperationRecord,
 };
+
+async function markGuiProofOperationForCurrentSwap(operationId: string) {
+  const tradeId = operationId.split('/browser/')[0] ?? ''
+  const swap = useActiveSwapsStore.getState().byTradeId[tradeId]
+  if (!swap) throw new Error('Proof operation has no active durable GUI swap')
+  const mintUrl = useWalletStore.getState().activeMintUrl
+  return markGuiProofOperationMintSubmittedWithSession(operationId, swap, mintUrl)
+}
 
 async function completeGuiProofOperationForCurrentSwap(
   operationId: string,
