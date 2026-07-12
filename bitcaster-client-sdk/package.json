@@ -92,6 +92,10 @@
       "types": "./dist/durableTradeRecovery.d.ts",
       "import": "./dist/durableTradeRecovery.js"
     },
+    "./durableCustody": {
+      "types": "./dist/durableCustody.d.ts",
+      "import": "./dist/durableCustody.js"
+    },
     "./tradeSession": {
       "types": "./dist/tradeSession.d.ts",
       "import": "./dist/tradeSession.js"
