@@ -8,6 +8,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 export const DURABLE_CUSTODY_SCHEMA_VERSION = 1 as const
+export const DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX = 16 * 1_024
 
 type CustodyScopeKind = 'profile' | 'market'
 type CustodyRole = 'buyer' | 'seller'
@@ -607,20 +608,48 @@ const SEMANTIC_HORIZON_RULES: Readonly<Record<DurableCustodySemanticKind, {
 export function deriveDurableCustodyScopeId(input: DurableCustodyScopeInput): string {
   if (input.scopeKind === 'profile') {
     requireIdentifier(input.profileId, 'profile id')
-    return `custody:profile:${encodeURIComponent(input.profileId)}`
+    return requireCompositeIdentifier(
+      `custody:profile:${encodeURIComponent(input.profileId)}`,
+      'custody scope id',
+    )
   }
   const marketId = requireIdentifier(input.marketId, 'market id')
   const inventoryAccountId = requireIdentifier(input.inventoryAccountId, 'inventory account id')
   const normalizedMint = requireNormalizedMint(input.normalizedMint)
   const unit = requireIdentifier(input.unit, 'scope unit')
-  return [
+  return requireCompositeIdentifier([
     'custody',
     'market',
     encodeURIComponent(marketId),
     encodeURIComponent(inventoryAccountId),
     encodeURIComponent(normalizedMint),
     encodeURIComponent(unit),
-  ].join(':')
+  ].join(':'), 'custody scope id')
+}
+
+/** Validates and returns one exact canonical custody scope identifier. */
+export function decodeDurableCustodyScopeId(value: unknown): string {
+  const scopeId = requireCompositeIdentifier(value, 'custody scope id')
+  const parts = scopeId.split(':')
+  try {
+    if (parts.length === 3 && parts[0] === 'custody' && parts[1] === 'profile') {
+      const profileId = decodeURIComponent(parts[2]!)
+      if (scopeId === deriveDurableCustodyScopeId({ scopeKind: 'profile', profileId })) return scopeId
+    }
+    if (parts.length === 6 && parts[0] === 'custody' && parts[1] === 'market') {
+      const input: DurableCustodyScopeInput = {
+        scopeKind: 'market',
+        marketId: decodeURIComponent(parts[2]!),
+        inventoryAccountId: decodeURIComponent(parts[3]!),
+        normalizedMint: decodeURIComponent(parts[4]!),
+        unit: decodeURIComponent(parts[5]!),
+      }
+      if (scopeId === deriveDurableCustodyScopeId(input)) return scopeId
+    }
+  } catch {
+    // Normalize all malformed components to one non-secret validation error.
+  }
+  throw new Error('custody scope id is invalid')
 }
 
 /**
@@ -656,19 +685,44 @@ export function deriveDurableCustodyOperationId(
   scopeId: string,
   identity: DurableCustodyOperationIdentity,
 ): string {
-  requireIdentifier(scopeId, 'custody scope id')
+  const canonicalScopeId = decodeDurableCustodyScopeId(scopeId)
   requireIdentifier(identity.retainedOperationKey, 'retained operation key')
   requireIdentifier(identity.trade.tradeId, 'trade id')
   requireOneOf(identity.trade.role, ROLES, 'trade role')
   requireOneOf(identity.trade.stage, STAGES, 'trade stage')
-  return [
+  return requireCompositeIdentifier([
     'custody-operation',
-    encodeURIComponent(scopeId),
+    encodeURIComponent(canonicalScopeId),
     encodeURIComponent(identity.trade.tradeId),
     identity.trade.role,
     identity.trade.stage,
     encodeURIComponent(identity.retainedOperationKey),
-  ].join(':')
+  ].join(':'), 'custody operation id')
+}
+
+/** Validates an operation identifier against its exact canonical custody scope. */
+export function decodeDurableCustodyOperationId(value: unknown, expectedScopeId: string): string {
+  const operationId = requireCompositeIdentifier(value, 'custody operation id')
+  const scopeId = decodeDurableCustodyScopeId(expectedScopeId)
+  const parts = operationId.split(':')
+  try {
+    if (parts.length === 6 && parts[0] === 'custody-operation') {
+      const encodedScopeId = decodeURIComponent(parts[1]!)
+      const identity: DurableCustodyOperationIdentity = {
+        retainedOperationKey: decodeURIComponent(parts[5]!),
+        trade: {
+          tradeId: decodeURIComponent(parts[2]!),
+          role: parts[3] as CustodyRole,
+          stage: parts[4] as CustodyTradeStage,
+        },
+      }
+      if (encodedScopeId === scopeId
+        && operationId === deriveDurableCustodyOperationId(scopeId, identity)) return operationId
+    }
+  } catch {
+    // Normalize malformed or foreign identifiers without reflecting their contents.
+  }
+  throw new Error('custody operation id is invalid')
 }
 
 /**
@@ -988,7 +1042,7 @@ function decodeScope(value: unknown): DurableCustodyScope {
   if (scopeKind === 'profile') {
     requireKnownFields(scope, ['scopeKind', 'profileId', 'scopeId'])
     const profileId = requireIdentifier(scope.profileId, 'profile id')
-    const scopeId = requireIdentifier(scope.scopeId, 'scope id')
+    const scopeId = decodeDurableCustodyScopeId(scope.scopeId)
     if (scopeId !== deriveDurableCustodyScopeId({ scopeKind, profileId })) {
       throw new Error('custody scope id is invalid')
     }
@@ -999,7 +1053,7 @@ function decodeScope(value: unknown): DurableCustodyScope {
   const inventoryAccountId = requireIdentifier(scope.inventoryAccountId, 'inventory account id')
   const normalizedMint = requireNormalizedMint(scope.normalizedMint)
   const unit = requireIdentifier(scope.unit, 'scope unit')
-  const scopeId = requireIdentifier(scope.scopeId, 'scope id')
+  const scopeId = decodeDurableCustodyScopeId(scope.scopeId)
   if (scopeId !== deriveDurableCustodyScopeId({
     scopeKind,
     marketId,
@@ -1027,7 +1081,7 @@ function decodeOperation(value: unknown): DurableCustodyRecord['operation'] {
   const state = requireString(operation.state, 'operation state') as DurableCustodyOperationState
   requireOneOf(state, STATES, 'operation state')
   const decoded = {
-    operationId: requireIdentifier(operation.operationId, 'operation id'),
+    operationId: requireCompositeIdentifier(operation.operationId, 'operation id'),
     retainedOperationKey,
     trade,
     semanticKind,
@@ -1323,6 +1377,16 @@ function validateRecordBindings(record: DurableCustodyRecord): void {
   if (record.operation.state === 'aborted' && record.operation.result.state !== 'none') {
     throw new Error('aborted operation result is invalid')
   }
+  if (record.operation.state === 'aborted'
+    && (record.operation.sessionLink.hasDependentOperation
+      || record.operation.delivery.deliveryKind !== 'none'
+      || record.operation.delivery.state !== 'none'
+      || record.operation.retry.attempt !== 0
+      || record.operation.retry.nextAttemptAtMs !== null
+      || record.operation.retry.reason !== 'none'
+      || record.terminalTombstone !== null)) {
+    throw new Error('aborted operation lifecycle is invalid')
+  }
   const reservationProofs = new Set(record.operation.reservation.inputs.map((input) => input.proofId))
   const requestProofs = new Set(record.operation.exactRequest.inputProofIds)
   if (reservationProofs.size !== record.operation.reservation.inputs.length
@@ -1547,6 +1611,14 @@ function requireIdentifier(value: unknown, name: string): string {
   const text = requireString(value, name)
   if (text.length === 0 || text.length > 512) throw new Error(`${name} is invalid`)
   return text
+}
+
+function requireCompositeIdentifier(value: unknown, name: string): string {
+  if (typeof value !== 'string' || value.length === 0
+    || value.length > DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX) {
+    throw new Error(`${name} is invalid`)
+  }
+  return value
 }
 
 function requireSecret(value: unknown): string {
