@@ -96,6 +96,10 @@
       "types": "./dist/durableCustody.d.ts",
       "import": "./dist/durableCustody.js"
     },
+    "./recoverableWalletStorage": {
+      "types": "./dist/recoverableWalletStorage.d.ts",
+      "import": "./dist/recoverableWalletStorage.js"
+    },
     "./tradeSession": {
       "types": "./dist/tradeSession.d.ts",
       "import": "./dist/tradeSession.js"

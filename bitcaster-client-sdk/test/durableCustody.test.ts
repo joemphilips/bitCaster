@@ -7,6 +7,8 @@ import {
   claimDurableCustodyScope,
   decideDurableCustodyRecovery,
   decideTerminalTombstoneDrain,
+  isDurableCustodyActiveRecoveryRecord,
+  readDurableCustodyRecoveryPage,
   deriveDurableCustodyOperationId,
   deriveDurableCustodyProofId,
   deriveDurableCustodyScopeId,
@@ -59,6 +61,7 @@ function custodyRecord(overrides: Record<string, unknown> = {}): Record<string, 
       operationId,
       semanticKind: 'swap-lock',
       state: 'dispatch-intent',
+      terminalReplayEvidenceRequired: true,
       custodyContext: {
         normalizedMint: 'https://mint.example',
         unit: 'sat',
@@ -384,6 +387,7 @@ test('canonical custody decoder requires immutable exact-operation and verificat
   const genericWithoutHorizon = custodyRecord()
   const genericWithoutHorizonOperation = genericWithoutHorizon.operation as Record<string, unknown>
   genericWithoutHorizonOperation.semanticKind = 'generic-send'
+  genericWithoutHorizonOperation.terminalReplayEvidenceRequired = false
   ;(genericWithoutHorizonOperation.trade as Record<string, unknown>).stage = 'send'
   ;(genericWithoutHorizonOperation.horizon as Record<string, unknown>).notAfterMs = null
   genericWithoutHorizonOperation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
@@ -395,6 +399,7 @@ test('canonical custody decoder requires immutable exact-operation and verificat
   const nonExpiringCtf = custodyRecord()
   const nonExpiringCtfOperation = nonExpiringCtf.operation as Record<string, unknown>
   nonExpiringCtfOperation.semanticKind = 'ctf-merge'
+  nonExpiringCtfOperation.terminalReplayEvidenceRequired = false
   ;(nonExpiringCtfOperation.trade as Record<string, unknown>).stage = 'ctf-merge'
   ;(nonExpiringCtfOperation.horizon as Record<string, unknown>).notAfterMs = null
   ;(nonExpiringCtfOperation.horizon as Record<string, unknown>).keysetExpiryMs = null
@@ -405,6 +410,34 @@ test('canonical custody decoder requires immutable exact-operation and verificat
   assert.equal(decodeDurableCustodyRecord(nonExpiringCtf).operation.semanticKind, 'ctf-merge')
 })
 
+test('terminal replay requirement is derived from semantic kind and contradictions fail closed', () => {
+  const swap = custodyRecord()
+  ;(swap.operation as Record<string, unknown>).terminalReplayEvidenceRequired = false
+  assert.throws(() => decodeDurableCustodyRecord(swap), /terminal replay requirement is invalid/)
+
+  const generic = custodyRecord()
+  const operation = generic.operation as Record<string, unknown>
+  const trade = operation.trade as Record<string, unknown>
+  trade.stage = 'send'
+  operation.semanticKind = 'generic-send'
+  operation.horizon = { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 500, keysetExpiryMs: null }
+  operation.terminalReplayEvidenceRequired = true
+  operation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
+    retainedOperationKey: operation.retainedOperationKey as string,
+    trade: trade as DurableCustodyRecord['operation']['trade'],
+  })
+  assert.throws(() => decodeDurableCustodyRecord(generic), /terminal replay requirement is invalid/)
+
+  operation.terminalReplayEvidenceRequired = false
+  generic.terminalTombstone = {
+    tombstoneId: 'tombstone-001',
+    tradeId: 'trade-001',
+    authenticatedTerminalStatus: false,
+    replayCutoffObserved: false,
+  }
+  assert.throws(() => decodeDurableCustodyRecord(generic), /terminal tombstone is not permitted/)
+})
+
 test('dispatch authority advances the effective clock and a rollback cannot reopen a horizon', () => {
   const record = decodedRecord()
   const scopeState = decodedScopeState({ effectiveClock: { highWaterMarkMs: 4_500 } })
@@ -412,6 +445,7 @@ test('dispatch authority advances the effective clock and a rollback cannot reop
     ...ownerAuthorization,
     observedAtMs: 1_000,
     classification: 'all-inputs-unspent',
+    exactRequestDisposition: 'deterministically-rejected',
     scopeId: record.scope.scopeId,
     operationId: record.operation.operationId,
     requestFingerprint: record.operation.exactRequest.requestFingerprint,
@@ -424,11 +458,44 @@ test('dispatch authority advances the effective clock and a rollback cannot reop
   })
 })
 
+test('expired all-unspent work cannot abort without deterministic pre-submission rejection', () => {
+  const record = decodedRecord()
+  const decision = decideDurableCustodyRecovery(
+    record,
+    decodedScopeState({ effectiveClock: { highWaterMarkMs: 4_500 } }),
+    {
+      ...ownerAuthorization,
+      classification: 'all-inputs-unspent',
+      exactRequestDisposition: 'unknown',
+      scopeId: record.scope.scopeId,
+      operationId: record.operation.operationId,
+      requestFingerprint: record.operation.exactRequest.requestFingerprint,
+      outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
+    },
+  )
+  assert.equal(decision.kind, 'reconcile-exact-operation')
+})
+
+test('deterministic pre-submission rejection permits safe abort independent of the dispatch horizon', () => {
+  const record = decodedRecord()
+  const decision = decideDurableCustodyRecovery(record, decodedScopeState(), {
+    ...ownerAuthorization,
+    classification: 'all-inputs-unspent',
+    exactRequestDisposition: 'deterministically-rejected',
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    requestFingerprint: record.operation.exactRequest.requestFingerprint,
+    outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
+  })
+  assert.deepEqual(decision, { kind: 'abort-no-transport', effectiveNowMs: 1_500 })
+})
+
 test('a reissue decision carries only the immutable exact-operation reference', () => {
   const record = decodedRecord()
   const decision = decideDurableCustodyRecovery(record, decodedScopeState(), {
     ...ownerAuthorization,
     classification: 'all-inputs-unspent',
+    exactRequestDisposition: 'not-rejected',
     scopeId: record.scope.scopeId,
     operationId: record.operation.operationId,
     requestFingerprint: record.operation.exactRequest.requestFingerprint,
@@ -451,6 +518,7 @@ test('not-before waits rather than aborting and an expired lease permits a fence
   const waiting = decideDurableCustodyRecovery(beforeWindow, decodedScopeState(), {
     ...ownerAuthorization,
     classification: 'all-inputs-unspent',
+    exactRequestDisposition: 'not-rejected',
     scopeId: beforeWindow.scope.scopeId,
     operationId: beforeWindow.operation.operationId,
     requestFingerprint: beforeWindow.operation.exactRequest.requestFingerprint,
@@ -584,6 +652,7 @@ test('post-handoff recovery never reissues an all-unspent exact operation', () =
   const decision = decideDurableCustodyRecovery(dispatched.operation, dispatched.scopeState, {
     ...ownerAuthorization,
     classification: 'all-inputs-unspent',
+    exactRequestDisposition: 'unknown',
     scopeId: dispatched.operation.scope.scopeId,
     operationId: dispatched.operation.operation.operationId,
     requestFingerprint: dispatched.operation.operation.exactRequest.requestFingerprint,
@@ -599,6 +668,7 @@ test('post-handoff recovery never reissues an all-unspent exact operation', () =
       kind: 'abort-no-transport',
       ...ownerAuthorization,
       classification: 'all-inputs-unspent',
+      exactRequestDisposition: 'deterministically-rejected',
     }),
     /abort is only legal before transport handoff/,
   )
@@ -652,6 +722,7 @@ test('a verified staged result cannot be aborted after the dispatch horizon clos
   const decision = decideDurableCustodyRecovery(staged.operation, staged.scopeState, {
     ...ownerAuthorization,
     classification: 'all-inputs-unspent',
+    exactRequestDisposition: 'unknown',
     scopeId: staged.operation.scope.scopeId,
     operationId: staged.operation.operation.operationId,
     requestFingerprint: staged.operation.operation.exactRequest.requestFingerprint,
@@ -667,6 +738,7 @@ test('a verified staged result cannot be aborted after the dispatch horizon clos
       kind: 'abort-no-transport',
       ...ownerAuthorization,
       classification: 'all-inputs-unspent',
+      exactRequestDisposition: 'deterministically-rejected',
     }),
     /abort is not eligible/,
   )
@@ -680,13 +752,14 @@ test('a verified staged result cannot be aborted after the dispatch horizon clos
   )
 })
 
-test('abort is limited to expired dispatch intent without a dependency or outbox', () => {
+test('safe abort transition requires deterministic rejection without dependency or outbox', () => {
   const record = decodedRecord()
   const expiredScopeState = decodedScopeState({ effectiveClock: { highWaterMarkMs: 4_500 } })
   const aborted = reduceDurableCustodyState(custodyState(record, expiredScopeState), {
     kind: 'abort-no-transport',
     ...ownerAuthorization,
     classification: 'all-inputs-unspent',
+    exactRequestDisposition: 'deterministically-rejected',
   })
   assert.equal(aborted.operation.operation.state, 'aborted')
 
@@ -697,6 +770,7 @@ test('abort is limited to expired dispatch intent without a dependency or outbox
       kind: 'abort-no-transport',
       ...ownerAuthorization,
       classification: 'all-inputs-unspent',
+      exactRequestDisposition: 'deterministically-rejected',
     }),
     /abort is not eligible/,
   )
@@ -715,6 +789,7 @@ test('abort is limited to expired dispatch intent without a dependency or outbox
       kind: 'abort-no-transport',
       ...ownerAuthorization,
       classification: 'all-inputs-unspent',
+      exactRequestDisposition: 'deterministically-rejected',
     }),
     /abort is not eligible/,
   )
@@ -817,4 +892,99 @@ test('impossible tombstone lifecycle records fail closed before replay protectio
     () => decideTerminalTombstoneDrain(corrupt as unknown as DurableCustodyRecord, decodedScopeState()),
     /terminal tombstone lifecycle is invalid/,
   )
+})
+
+test('active recovery access is cursor/limit bounded and never falls back to an unbounded scan', async () => {
+  const calls: unknown[] = []
+  const first = decodedRecord()
+  const secondRaw = custodyRecord()
+  const secondOperation = secondRaw.operation as Record<string, unknown>
+  secondOperation.retainedOperationKey = 'seller-lock-002'
+  secondOperation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
+    retainedOperationKey: 'seller-lock-002',
+    trade: secondOperation.trade as DurableCustodyRecord['operation']['trade'],
+  })
+  const second = decodeDurableCustodyRecord(secondRaw)
+  const page = await readDurableCustodyRecoveryPage({
+    listRecoverablePage: async (input) => {
+      calls.push(input)
+      return { records: [first, second], nextCursor: 'cursor-002' }
+    },
+  }, {
+    scope: profileScope(),
+    cursor: 'cursor-001',
+    limit: 2,
+  })
+
+  assert.deepEqual(calls, [{ scope: profileScope(), cursor: 'cursor-001', limit: 2 }])
+  assert.equal(page.records.length, 2)
+  assert.equal(page.nextCursor, 'cursor-002')
+
+  await assert.rejects(
+    readDurableCustodyRecoveryPage({
+      listRecoverablePage: async () => ({ records: [first, first], nextCursor: null }),
+    }, { scope: profileScope(), cursor: null, limit: 2 }),
+    /recovery page operation id is duplicated/,
+  )
+
+  await assert.rejects(
+    readDurableCustodyRecoveryPage({} as never, { scope: profileScope(), cursor: null, limit: 1 }),
+    /bounded durable custody recovery is unavailable/,
+  )
+  await assert.rejects(
+    readDurableCustodyRecoveryPage({
+      listRecoverablePage: async () => ({ records: [], nextCursor: null }),
+    }, { scope: profileScope(), cursor: null, limit: 0 }),
+    /recovery page limit is invalid/,
+  )
+  await assert.rejects(
+    readDurableCustodyRecoveryPage({
+      listRecoverablePage: async () => ({ records: [first, second], nextCursor: null }),
+    }, { scope: profileScope(), cursor: null, limit: 1 }),
+    /recovery page exceeds requested limit/,
+  )
+  const aborted = structuredClone(first)
+  aborted.operation.state = 'aborted'
+  await assert.rejects(
+    readDurableCustodyRecoveryPage({
+      listRecoverablePage: async () => ({ records: [aborted], nextCursor: null }),
+    }, { scope: profileScope(), cursor: null, limit: 1 }),
+    /recovery page contains inactive record/,
+  )
+})
+
+test('record decoding rejects oversized proof arrays before binding validation', () => {
+  const raw = custodyRecord()
+  const operation = raw.operation as Record<string, unknown>
+  const reservation = operation.reservation as { inputs: unknown[] }
+  const exactRequest = operation.exactRequest as { inputProofIds: unknown[] }
+  reservation.inputs = Array.from({ length: 257 }, (_, index) => ({
+    proofId: index.toString(16).padStart(64, '0'),
+    keysetId: 'keyset-001',
+    curve: 'secp256k1',
+  }))
+  exactRequest.inputProofIds = reservation.inputs.map((input) => (input as { proofId: string }).proofId)
+  assert.throws(() => decodeDurableCustodyRecord(raw), /reservation inputs exceed the limit/)
+})
+
+test('reconciled operation with no replay requirement leaves the active index without a tombstone', () => {
+  const raw = custodyRecord()
+  const operation = raw.operation as Record<string, unknown>
+  operation.semanticKind = 'generic-send'
+  const trade = operation.trade as Record<string, unknown>
+  trade.stage = 'send'
+  operation.horizon = { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 500, keysetExpiryMs: null }
+  operation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
+    retainedOperationKey: operation.retainedOperationKey as string,
+    trade: trade as DurableCustodyRecord['operation']['trade'],
+  })
+  operation.state = 'reconciled'
+  operation.result = {
+    state: 'applied',
+    resultHandle: 'result-001',
+    resultFingerprint: FINGERPRINT_A,
+    outputPlanFingerprint: FINGERPRINT_B,
+  }
+  operation.terminalReplayEvidenceRequired = false
+  assert.equal(isDurableCustodyActiveRecoveryRecord(decodeDurableCustodyRecord(raw)), false)
 })

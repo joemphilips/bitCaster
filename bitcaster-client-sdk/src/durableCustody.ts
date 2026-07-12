@@ -91,6 +91,7 @@ export interface DurableCustodyRecord {
     trade: DurableCustodyOperationIdentity['trade']
     semanticKind: DurableCustodySemanticKind
     state: DurableCustodyOperationState
+    terminalReplayEvidenceRequired: boolean
     custodyContext: {
       normalizedMint: string
       unit: string
@@ -206,6 +207,30 @@ export type DurableCustodyRecoveryClassification =
   | 'corrupt'
   | 'foreign'
 
+export interface DurableCustodySafeAbortEvidence {
+  operationState: DurableCustodyOperationState
+  submissionState: 'not-submitted' | 'submitted' | 'unknown'
+  exactInputStates: readonly ('unspent' | 'spent' | 'pending' | 'unknown')[]
+  exactRequestDisposition: 'deterministically-rejected' | 'not-rejected' | 'unknown'
+  hasDependentJournaledIntent: boolean
+  hasStagedResult: boolean
+  deliveryState: 'none' | 'pending' | 'acknowledged' | 'expired'
+}
+
+/** One canonical safe-abort predicate used by both decisions and transitions. */
+export function isDurableCustodySafeAbortEligible(
+  evidence: DurableCustodySafeAbortEvidence,
+): boolean {
+  return evidence.operationState === 'dispatch-intent'
+    && evidence.submissionState === 'not-submitted'
+    && evidence.exactInputStates.length > 0
+    && evidence.exactInputStates.every((state) => state === 'unspent')
+    && evidence.exactRequestDisposition === 'deterministically-rejected'
+    && evidence.hasDependentJournaledIntent === false
+    && evidence.hasStagedResult === false
+    && evidence.deliveryState === 'none'
+}
+
 export type DurableCustodyRetryReason =
   | 'pending-or-mixed'
   | 'mint-response-unknown'
@@ -224,7 +249,7 @@ export interface DurableCustodyOwnerAuthorization {
  * it enters its physical transaction, so Dexie cannot auto-commit around a
  * foreign await.
  */
-export interface DurableCustodyStore {
+export interface DurableCustodyStore extends DurableCustodyActiveRecoveryPageStore {
   /**
    * Atomically registers the scope before it owns any proof. Market adapters
    * must enforce both `marketId` uniqueness and
@@ -237,8 +262,102 @@ export interface DurableCustodyStore {
     input: DurableCustodyTransactionInput,
     apply: DurableCustodyTransactionWork<T>,
   ): Promise<T>
-  listRecoverable(scope: DurableCustodyScope): Promise<DurableCustodyRecord[]>
   rebuildActiveWorkIndex(scope: DurableCustodyScope): Promise<'rebuilt' | 'unavailable'>
+}
+
+/** Isolated compatibility surface; never accepted by canonical recovery coordinators. */
+export interface LegacyUnboundedDurableCustodyStore {
+  listRecoverable(scope: DurableCustodyScope): Promise<DurableCustodyRecord[]>
+}
+
+export const DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX = 256 as const
+export const DURABLE_CUSTODY_RECORD_MAX_BYTES = 64 * 1_024
+export const DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES = 4 * 1_024 * 1_024
+export const DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX = 256 as const
+export const DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX = 256 as const
+
+export interface DurableCustodyRecoveryPageInput {
+  scope: DurableCustodyScope
+  cursor: string | null
+  limit: number
+}
+
+export interface DurableCustodyRecoveryPage {
+  records: DurableCustodyRecord[]
+  nextCursor: string | null
+}
+
+/** Minimal canonical active-recovery capability implemented by every migrated adapter. */
+export interface DurableCustodyActiveRecoveryPageStore {
+  listRecoverablePage(input: DurableCustodyRecoveryPageInput): Promise<DurableCustodyRecoveryPage>
+}
+
+/**
+ * Reads and validates one bounded page. Missing capability throws and never
+ * invokes the deprecated unbounded scan.
+ */
+export async function readDurableCustodyRecoveryPage(
+  store: DurableCustodyActiveRecoveryPageStore,
+  input: DurableCustodyRecoveryPageInput,
+): Promise<DurableCustodyRecoveryPage> {
+  const listPage = (store as Partial<DurableCustodyActiveRecoveryPageStore>).listRecoverablePage
+  if (typeof listPage !== 'function') {
+    throw new Error('bounded durable custody recovery is unavailable')
+  }
+  const limit = requireNonNegativeInteger(input.limit, 'recovery page limit')
+  if (limit < 1 || limit > DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX) {
+    throw new Error('recovery page limit is invalid')
+  }
+  const cursor = input.cursor === null ? null : requireIdentifier(input.cursor, 'recovery page cursor')
+  const scope = decodeScope(input.scope)
+  const rawPage = requireRecord(await listPage.call(store, { scope, cursor, limit }), 'recovery page')
+  requireJsonByteLimit(rawPage, DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES, 'recovery page')
+  requireKnownFields(rawPage, ['records', 'nextCursor'])
+  if (!Array.isArray(rawPage.records)) throw new Error('recovery page records are invalid')
+  if (rawPage.records.length > limit) throw new Error('recovery page exceeds requested limit')
+  for (const rawRecord of rawPage.records) {
+    requireJsonByteLimit(rawRecord, DURABLE_CUSTODY_RECORD_MAX_BYTES, 'durable custody record')
+  }
+  const records = rawPage.records.map((record) => decodeDurableCustodyRecordWithinLimit(record, scope))
+  const operationIds = new Set(records.map((record) => record.operation.operationId))
+  if (operationIds.size !== records.length) {
+    throw new Error('recovery page operation id is duplicated')
+  }
+  if (records.some((record) => !isDecodedDurableCustodyActiveRecoveryRecord(record))) {
+    throw new Error('recovery page contains inactive record')
+  }
+  const nextCursor = rawPage.nextCursor === null
+    ? null
+    : requireIdentifier(rawPage.nextCursor, 'next recovery page cursor')
+  if (records.length === 0 && nextCursor !== null) {
+    throw new Error('empty recovery page cannot advance a cursor')
+  }
+  if (nextCursor !== null && nextCursor === cursor) {
+    throw new Error('recovery page cursor did not advance')
+  }
+  return { records, nextCursor }
+}
+
+/** True only while a record still needs recovery, delivery, or tombstone work. */
+export function isDurableCustodyActiveRecoveryRecord(record: DurableCustodyRecord): boolean {
+  const decoded = decodeDurableCustodyRecord(record)
+  return isDecodedDurableCustodyActiveRecoveryRecord(decoded)
+}
+
+function isDecodedDurableCustodyActiveRecoveryRecord(decoded: DurableCustodyRecord): boolean {
+  switch (decoded.operation.state) {
+    case 'dispatch-intent':
+    case 'transport-attempted':
+      return true
+    case 'aborted':
+      return false
+    case 'reconciled':
+      return decoded.operation.delivery.state === 'pending'
+        || (decoded.operation.terminalReplayEvidenceRequired
+          && (decoded.terminalTombstone === null
+            || !decoded.terminalTombstone.authenticatedTerminalStatus
+            || !decoded.terminalTombstone.replayCutoffObserved))
+  }
 }
 
 export interface DurableCustodyScopeClaimInput {
@@ -318,6 +437,7 @@ export function applyDurableCustodyTransaction<T>(
 
 export type DurableCustodyRecoveryInput = DurableCustodyOwnerAuthorization & {
   classification: DurableCustodyRecoveryClassification
+  exactRequestDisposition: 'not-rejected' | 'deterministically-rejected' | 'unknown'
   scopeId: string
   operationId: string
   requestFingerprint: string
@@ -378,7 +498,11 @@ export type DurableCustodyTransition =
     resultFingerprint: string
     outputPlanFingerprint: string
   } & DurableCustodyOwnerAuthorization)
-  | ({ kind: 'abort-no-transport'; classification: 'all-inputs-unspent' } & DurableCustodyOwnerAuthorization)
+  | ({
+    kind: 'abort-no-transport'
+    classification: 'all-inputs-unspent'
+    exactRequestDisposition: 'deterministically-rejected'
+  } & DurableCustodyOwnerAuthorization)
   | ({
     kind: 'reconciled'
     recoverySource: 'transport-attempted' | 'spent-restorable' | 'verified-result-staged'
@@ -404,7 +528,11 @@ export type DurableCustodyOperationTransition =
     resultFingerprint: string
     outputPlanFingerprint: string
   }
-  | { kind: 'abort-no-transport'; classification: 'all-inputs-unspent' }
+  | {
+    kind: 'abort-no-transport'
+    classification: 'all-inputs-unspent'
+    exactRequestDisposition: 'deterministically-rejected'
+  }
   | {
     kind: 'reconciled'
     recoverySource: 'transport-attempted' | 'spent-restorable' | 'verified-result-staged'
@@ -448,6 +576,17 @@ const SEMANTIC_STAGE_BINDINGS: Readonly<Record<DurableCustodySemanticKind, Custo
   'ctf-split': 'ctf-split',
   'ctf-merge': 'ctf-merge',
   'ctf-redeem': 'ctf-redeem',
+}
+
+const SEMANTIC_TERMINAL_REPLAY_REQUIREMENTS: Readonly<Record<DurableCustodySemanticKind, boolean>> = {
+  'swap-lock': true,
+  'swap-claim': true,
+  'swap-refund': true,
+  'generic-receive': false,
+  'generic-send': false,
+  'ctf-split': false,
+  'ctf-merge': false,
+  'ctf-redeem': false,
 }
 
 const SEMANTIC_HORIZON_RULES: Readonly<Record<DurableCustodySemanticKind, {
@@ -553,6 +692,14 @@ export function deriveDurableCustodyProofId(input: DurableCustodyProofIdentityIn
 
 /** Decodes the complete persisted record and rejects any ambiguous data. */
 export function decodeDurableCustodyRecord(
+  value: unknown,
+  expectedScope?: DurableCustodyScope,
+): DurableCustodyRecord {
+  requireJsonByteLimit(value, DURABLE_CUSTODY_RECORD_MAX_BYTES, 'durable custody record')
+  return decodeDurableCustodyRecordWithinLimit(value, expectedScope)
+}
+
+function decodeDurableCustodyRecordWithinLimit(
   value: unknown,
   expectedScope?: DurableCustodyScope,
 ): DurableCustodyRecord {
@@ -676,7 +823,7 @@ export function reduceDurableCustodyState(
       nextOperation.operation.retry = { attempt: 0, nextAttemptAtMs: null, reason: 'none' }
       return { operation: nextOperation, scopeState: nextScopeState }
     case 'abort-no-transport':
-      if (!isAbortEligible(record, effectiveNowMs, transition.classification)) {
+      if (!isAbortEligible(record, transition.classification, transition.exactRequestDisposition)) {
         throw new Error(record.operation.state !== 'dispatch-intent'
           ? 'abort is only legal before transport handoff'
           : 'abort is not eligible')
@@ -726,6 +873,9 @@ export function reduceDurableCustodyState(
       }
       return { operation: nextOperation, scopeState: nextScopeState }
     case 'terminal-tombstone-created':
+      if (!record.operation.terminalReplayEvidenceRequired) {
+        throw new Error('terminal tombstone is not permitted')
+      }
       if (record.operation.state !== 'reconciled') {
         throw new Error('terminal tombstone requires reconciled operation')
       }
@@ -803,13 +953,14 @@ export function decideDurableCustodyRecovery(
       if (record.operation.state !== 'dispatch-intent') {
         return { kind: 'reconcile-exact-operation', reason: 'unclassified', exact: exactOperationReference(record) }
       }
+      if (isAbortEligible(record, input.classification, input.exactRequestDisposition)) {
+        return { kind: 'abort-no-transport', effectiveNowMs }
+      }
       if (isDispatchBeforeWindow(record.operation.horizon, effectiveNowMs)) {
         return { kind: 'retry-later', effectiveNowMs }
       }
       if (!isDispatchOpen(record.operation.horizon, effectiveNowMs)) {
-        return isAbortEligible(record, effectiveNowMs, input.classification)
-          ? { kind: 'abort-no-transport', effectiveNowMs }
-          : { kind: 'reconcile-exact-operation', reason: 'unclassified', exact: exactOperationReference(record) }
+        return { kind: 'reconcile-exact-operation', reason: 'unclassified', exact: exactOperationReference(record) }
       }
       return { kind: 'reissue-exact-operation', effectiveNowMs, exact: exactOperationReference(record) }
   }
@@ -864,7 +1015,8 @@ function decodeScope(value: unknown): DurableCustodyScope {
 function decodeOperation(value: unknown): DurableCustodyRecord['operation'] {
   const operation = requireRecord(value, 'operation')
   requireKnownFields(operation, [
-    'operationId', 'retainedOperationKey', 'trade', 'semanticKind', 'state', 'custodyContext', 'reservation',
+    'operationId', 'retainedOperationKey', 'trade', 'semanticKind', 'state',
+    'terminalReplayEvidenceRequired', 'custodyContext', 'reservation',
     'exactRequest', 'outputPlan', 'privateMaterial', 'result', 'verification', 'sessionLink',
     'delivery', 'retry', 'horizon',
   ])
@@ -880,6 +1032,10 @@ function decodeOperation(value: unknown): DurableCustodyRecord['operation'] {
     trade,
     semanticKind,
     state,
+    terminalReplayEvidenceRequired: requireBoolean(
+      operation.terminalReplayEvidenceRequired,
+      'terminal replay evidence requirement',
+    ),
     custodyContext: decodeCustodyContext(operation.custodyContext),
     reservation: decodeReservation(operation.reservation),
     exactRequest: decodeExactRequest(operation.exactRequest),
@@ -920,7 +1076,11 @@ function decodeCustodyContext(value: unknown): DurableCustodyRecord['operation']
 function decodeReservation(value: unknown): DurableCustodyRecord['operation']['reservation'] {
   const reservation = requireRecord(value, 'reservation')
   requireKnownFields(reservation, ['reservationId', 'inputs'])
-  const inputs = requireArray(reservation.inputs, 'reservation inputs').map((input) => {
+  const rawInputs = requireArray(reservation.inputs, 'reservation inputs')
+  if (rawInputs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX) {
+    throw new Error('reservation inputs exceed the limit')
+  }
+  const inputs = rawInputs.map((input) => {
     const decoded = requireRecord(input, 'reservation input')
     requireKnownFields(decoded, ['proofId', 'keysetId', 'curve'])
     const curve = requireString(decoded.curve, 'curve') as DurableCustodyCurve
@@ -938,7 +1098,11 @@ function decodeReservation(value: unknown): DurableCustodyRecord['operation']['r
 function decodeExactRequest(value: unknown): DurableCustodyRecord['operation']['exactRequest'] {
   const request = requireRecord(value, 'exact request')
   requireKnownFields(request, ['requestId', 'requestFingerprint', 'payloadHandle', 'inputProofIds', 'outputPlanFingerprint'])
-  const inputProofIds = requireArray(request.inputProofIds, 'request input proof ids')
+  const rawInputProofIds = requireArray(request.inputProofIds, 'request input proof ids')
+  if (rawInputProofIds.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX) {
+    throw new Error('request input proof ids exceed the limit')
+  }
+  const inputProofIds = rawInputProofIds
     .map((proofId) => requireFingerprint(proofId, 'request input proof id'))
   if (inputProofIds.length === 0) throw new Error('request input proof ids must not be empty')
   return {
@@ -993,7 +1157,11 @@ function decodeResult(value: unknown): DurableCustodyRecord['operation']['result
 function decodeVerification(value: unknown): DurableCustodyRecord['operation']['verification'] {
   const verification = requireRecord(value, 'verification')
   requireKnownFields(verification, ['outputPlanFingerprint', 'keysetBindings'])
-  const keysetBindings = requireArray(verification.keysetBindings, 'keyset bindings').map((binding) => {
+  const rawKeysetBindings = requireArray(verification.keysetBindings, 'keyset bindings')
+  if (rawKeysetBindings.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
+    throw new Error('keyset bindings exceed the limit')
+  }
+  const keysetBindings = rawKeysetBindings.map((binding) => {
     const decoded = requireRecord(binding, 'keyset binding')
     requireKnownFields(decoded, ['keysetId', 'curve', 'keysetFingerprint', 'requireDleq'])
     const curve = requireString(decoded.curve, 'curve') as DurableCustodyCurve
@@ -1129,6 +1297,13 @@ function validateRecordBindings(record: DurableCustodyRecord): void {
   if (SEMANTIC_STAGE_BINDINGS[record.operation.semanticKind] !== record.operation.trade.stage) {
     throw new Error('operation semantic stage binding is invalid')
   }
+  if (record.operation.terminalReplayEvidenceRequired
+    !== SEMANTIC_TERMINAL_REPLAY_REQUIREMENTS[record.operation.semanticKind]) {
+    throw new Error('terminal replay requirement is invalid')
+  }
+  if (!record.operation.terminalReplayEvidenceRequired && record.terminalTombstone !== null) {
+    throw new Error('terminal tombstone is not permitted')
+  }
   validateCustodyContext(record)
   validateSemanticHorizon(record.operation.semanticKind, record.operation.horizon)
   if (record.operation.exactRequest.outputPlanFingerprint !== record.operation.outputPlan.outputPlanFingerprint
@@ -1163,9 +1338,7 @@ function validateRecordBindings(record: DurableCustodyRecord): void {
     throw new Error('keyset verification binding is duplicated')
   }
   for (const input of record.operation.reservation.inputs) {
-    if (!record.operation.verification.keysetBindings.some(
-      (binding) => binding.keysetId === input.keysetId && binding.curve === input.curve,
-    )) {
+    if (!verificationBindings.has(`${input.keysetId}:${input.curve}`)) {
       throw new Error('keyset verification binding is invalid')
     }
   }
@@ -1299,16 +1472,24 @@ function isDispatchBeforeWindow(horizon: DurableCustodyRecord['operation']['hori
 
 function isAbortEligible(
   record: DurableCustodyRecord,
-  nowMs: number,
   classification: DurableCustodyRecoveryClassification,
+  exactRequestDisposition: DurableCustodyRecoveryInput['exactRequestDisposition'],
 ): boolean {
-  return record.operation.state === 'dispatch-intent'
-    && classification === 'all-inputs-unspent'
-    && record.operation.result.state === 'none'
-    && !record.operation.sessionLink.hasDependentOperation
-    && record.operation.delivery.deliveryKind === 'none'
-    && !isDispatchBeforeWindow(record.operation.horizon, nowMs)
-    && !isDispatchOpen(record.operation.horizon, nowMs)
+  const exactInputStates: DurableCustodySafeAbortEvidence['exactInputStates'] =
+    classification === 'all-inputs-unspent'
+      ? record.operation.reservation.inputs.map(() => 'unspent' as const)
+      : record.operation.reservation.inputs.map(() => 'unknown' as const)
+  return isDurableCustodySafeAbortEligible({
+    operationState: record.operation.state,
+    submissionState: record.operation.state === 'dispatch-intent'
+      ? 'not-submitted'
+      : record.operation.state === 'transport-attempted' ? 'submitted' : 'unknown',
+    exactInputStates,
+    exactRequestDisposition,
+    hasDependentJournaledIntent: record.operation.sessionLink.hasDependentOperation,
+    hasStagedResult: record.operation.result.state !== 'none',
+    deliveryState: record.operation.delivery.state,
+  })
 }
 
 function validateDeliveryExpiry(
@@ -1408,6 +1589,18 @@ function requireNonNegativeInteger(value: unknown, name: string): number {
     throw new Error(`${name} is invalid`)
   }
   return value
+}
+
+function requireJsonByteLimit(value: unknown, limit: number, name: string): void {
+  let encoded: string | undefined
+  try {
+    encoded = JSON.stringify(value)
+  } catch {
+    throw new Error(`${name} is invalid`)
+  }
+  if (encoded === undefined || new TextEncoder().encode(encoded).byteLength > limit) {
+    throw new Error(`${name} exceeds the byte limit`)
+  }
 }
 
 function requireBoolean(value: unknown, name: string): boolean {
