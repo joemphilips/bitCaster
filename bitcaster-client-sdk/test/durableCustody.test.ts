@@ -497,6 +497,21 @@ test('scope authority is shared across operations and rejects a foreign scope ro
     }),
     /foreign custody scope/,
   )
+  const unownedForeignScopeState = decodeDurableCustodyScopeState({
+    ...custodyScopeState(),
+    scope: { ...foreign, scopeId: deriveDurableCustodyScopeId(foreign) },
+    owner: null,
+  })
+  assert.throws(
+    () => reduceDurableCustodyState(custodyState(record, unownedForeignScopeState), {
+      kind: 'owner-claimed',
+      observedAtMs: 1_000,
+      nextOwnerId: 'worker-002',
+      nextOwnerEpoch: 1,
+      nextLeaseExpiresAtMs: 10_000,
+    }),
+    /foreign custody scope/,
+  )
 })
 
 test('transaction work rejects a foreign await before an adapter can split a custody commit', () => {

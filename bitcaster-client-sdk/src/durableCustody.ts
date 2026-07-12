@@ -270,6 +270,11 @@ export interface DurableCustodyTransaction {
     reservationId: string
     proofIds: readonly string[]
   }): void
+  /** Applies one SDK-validated operation transition using this transaction's fenced owner. */
+  transitionOperation(input: {
+    operationId: string
+    transition: DurableCustodyOperationTransition
+  }): void
   stageVerifiedResult(input: {
     operationId: string
     outputPlanFingerprint: string
@@ -384,6 +389,29 @@ export type DurableCustodyTransition =
   } & DurableCustodyOwnerAuthorization)
   | ({ kind: 'terminal-tombstone-created'; tombstoneId: string } & DurableCustodyOwnerAuthorization)
   | ({ kind: 'terminal-tombstone-confirmed'; authenticatedTradeId: string } & DurableCustodyOwnerAuthorization)
+
+/** Operation transition input after the adapter has bound its fenced transaction owner. */
+export type DurableCustodyOperationTransition =
+  | { kind: 'transport-attempted' }
+  | {
+    kind: 'retry-scheduled'
+    reason: DurableCustodyRetryReason
+    nextAttemptAtMs: number
+  }
+  | {
+    kind: 'verified-result-staged'
+    resultHandle: string
+    resultFingerprint: string
+    outputPlanFingerprint: string
+  }
+  | { kind: 'abort-no-transport'; classification: 'all-inputs-unspent' }
+  | {
+    kind: 'reconciled'
+    recoverySource: 'transport-attempted' | 'spent-restorable' | 'verified-result-staged'
+  }
+  | { kind: 'delivery-resolved'; deliveryState: 'acknowledged' | 'expired' }
+  | { kind: 'terminal-tombstone-created'; tombstoneId: string }
+  | { kind: 'terminal-tombstone-confirmed'; authenticatedTradeId: string }
 
 /** Pure scope-only claim reducer used by every physical adapter. */
 export function claimDurableCustodyScope(
@@ -1203,14 +1231,14 @@ function validateScopeState(
     throw new Error('foreign custody scope')
   }
   const canonicalScope = decodeScope(scopeState.scope)
+  if (canonicalScope.scopeId !== expectedScope.scopeId) {
+    throw new Error('foreign custody scope')
+  }
+  requireNonNegativeInteger(scopeState.effectiveClock.highWaterMarkMs, 'effective clock high-water mark')
   if (scopeState.owner === null) return
   requireIdentifier(scopeState.owner.ownerId, 'custody owner id')
   requireNonNegativeInteger(scopeState.owner.epoch, 'custody owner epoch')
   requireNonNegativeInteger(scopeState.owner.leaseExpiresAtMs, 'custody owner lease expiry')
-  requireNonNegativeInteger(scopeState.effectiveClock.highWaterMarkMs, 'effective clock high-water mark')
-  if (canonicalScope.scopeId !== expectedScope.scopeId) {
-    throw new Error('foreign custody scope')
-  }
 }
 
 function claimOwner(
