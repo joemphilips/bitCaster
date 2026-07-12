@@ -4,6 +4,7 @@ import {
   decodeDurableCustodyRecord,
   decodeDurableCustodyScopeState,
   applyDurableCustodyTransaction,
+  claimDurableCustodyScope,
   decideDurableCustodyRecovery,
   decideTerminalTombstoneDrain,
   deriveDurableCustodyOperationId,
@@ -216,6 +217,38 @@ test('canonical custody decoder rejects unknown versions, fields, and foreign sc
   assert.throws(
     () => decodeDurableCustodyRecord(nestedUnknown),
     /unknown field 'future'/,
+  )
+})
+
+test('custody scope registration starts unowned and claims advance a shared fencing epoch', () => {
+  const unowned = decodeDurableCustodyScopeState({
+    schemaVersion: 1,
+    scope: profileScope(),
+    owner: null,
+    effectiveClock: { highWaterMarkMs: 1_000 },
+  })
+  const claimed = claimDurableCustodyScope(unowned, {
+    kind: 'owner-claimed',
+    nextOwnerId: 'worker-001',
+    nextOwnerEpoch: 1,
+    observedAtMs: 1_500,
+    nextLeaseExpiresAtMs: 2_000,
+  })
+  assert.deepEqual(claimed.owner, {
+    ownerId: 'worker-001',
+    epoch: 1,
+    leaseExpiresAtMs: 2_000,
+  })
+  assert.equal(claimed.effectiveClock.highWaterMarkMs, 1_500)
+  assert.throws(
+    () => claimDurableCustodyScope(claimed, {
+      kind: 'owner-claimed',
+      nextOwnerId: 'worker-002',
+      nextOwnerEpoch: 2,
+      observedAtMs: 1_600,
+      nextLeaseExpiresAtMs: 3_000,
+    }),
+    /custody owner lease has not expired/,
   )
 })
 

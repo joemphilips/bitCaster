@@ -179,7 +179,8 @@ export interface DurableCustodyRecord {
 export interface DurableCustodyScopeState {
   schemaVersion: typeof DURABLE_CUSTODY_SCHEMA_VERSION
   scope: DurableCustodyScope
-  owner: {
+  /** `null` is the only canonical state before an adapter has granted a lease. */
+  owner: null | {
     ownerId: string
     epoch: number
     leaseExpiresAtMs: number
@@ -230,12 +231,21 @@ export interface DurableCustodyStore {
    * `(normalizedMint, unit, inventoryAccountId)` uniqueness in this call.
    */
   registerScope(scope: DurableCustodyScope): Promise<DurableCustodyScopeState>
+  /** Claims an unowned or expired scope and advances its fencing epoch. */
+  claimScope(input: DurableCustodyScopeClaimInput): Promise<DurableCustodyScopeState>
   transact<T>(
     input: DurableCustodyTransactionInput,
     apply: DurableCustodyTransactionWork<T>,
   ): Promise<T>
   listRecoverable(scope: DurableCustodyScope): Promise<DurableCustodyRecord[]>
   rebuildActiveWorkIndex(scope: DurableCustodyScope): Promise<'rebuilt' | 'unavailable'>
+}
+
+export interface DurableCustodyScopeClaimInput {
+  scope: DurableCustodyScope
+  ownerId: string
+  observedAtMs: number
+  leaseExpiresAtMs: number
 }
 
 export interface DurableCustodyTransactionInput {
@@ -374,6 +384,15 @@ export type DurableCustodyTransition =
   } & DurableCustodyOwnerAuthorization)
   | ({ kind: 'terminal-tombstone-created'; tombstoneId: string } & DurableCustodyOwnerAuthorization)
   | ({ kind: 'terminal-tombstone-confirmed'; authenticatedTradeId: string } & DurableCustodyOwnerAuthorization)
+
+/** Pure scope-only claim reducer used by every physical adapter. */
+export function claimDurableCustodyScope(
+  scopeState: DurableCustodyScopeState,
+  transition: Extract<DurableCustodyTransition, { kind: 'owner-claimed' }>,
+): DurableCustodyScopeState {
+  validateScopeState(scopeState, scopeState.scope)
+  return claimOwner(scopeState, transition)
+}
 
 const SCOPE_KINDS: readonly CustodyScopeKind[] = ['profile', 'market']
 const ROLES: readonly CustodyRole[] = ['buyer', 'seller']
@@ -1040,6 +1059,7 @@ function decodeHorizon(value: unknown): DurableCustodyRecord['operation']['horiz
 }
 
 function decodeOwner(value: unknown): DurableCustodyScopeState['owner'] {
+  if (value === null) return null
   const owner = requireRecord(value, 'owner')
   requireKnownFields(owner, ['ownerId', 'epoch', 'leaseExpiresAtMs'])
   return {
@@ -1183,6 +1203,7 @@ function validateScopeState(
     throw new Error('foreign custody scope')
   }
   const canonicalScope = decodeScope(scopeState.scope)
+  if (scopeState.owner === null) return
   requireIdentifier(scopeState.owner.ownerId, 'custody owner id')
   requireNonNegativeInteger(scopeState.owner.epoch, 'custody owner epoch')
   requireNonNegativeInteger(scopeState.owner.leaseExpiresAtMs, 'custody owner lease expiry')
@@ -1201,10 +1222,11 @@ function claimOwner(
   const nextOwnerId = requireIdentifier(transition.nextOwnerId, 'next owner id')
   const nextOwnerEpoch = requireNonNegativeInteger(transition.nextOwnerEpoch, 'next owner epoch')
   const nextLeaseExpiresAtMs = requireNonNegativeInteger(transition.nextLeaseExpiresAtMs, 'next owner lease expiry')
-  if (effectiveNowMs < scopeState.owner.leaseExpiresAtMs) {
+  if (scopeState.owner !== null && effectiveNowMs < scopeState.owner.leaseExpiresAtMs) {
     throw new Error('custody owner lease has not expired')
   }
-  if (nextOwnerEpoch <= scopeState.owner.epoch) {
+  const priorEpoch = scopeState.owner?.epoch ?? 0
+  if (nextOwnerEpoch <= priorEpoch) {
     throw new Error('custody owner epoch is not monotonic')
   }
   if (nextLeaseExpiresAtMs <= effectiveNowMs) {
@@ -1225,6 +1247,9 @@ function authorizeOwner(scopeState: DurableCustodyScopeState, authorization: Dur
   const ownerEpoch = requireNonNegativeInteger(authorization.ownerEpoch, 'custody owner epoch')
   const observedAtMs = requireNonNegativeInteger(authorization.observedAtMs, 'custody owner observed time')
   const effectiveNowMs = Math.max(scopeState.effectiveClock.highWaterMarkMs, observedAtMs)
+  if (scopeState.owner === null) {
+    throw new Error('custody scope is unclaimed')
+  }
   if (ownerId !== scopeState.owner.ownerId || ownerEpoch !== scopeState.owner.epoch) {
     throw new Error('custody owner epoch is foreign')
   }
