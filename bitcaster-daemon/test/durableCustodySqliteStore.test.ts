@@ -212,12 +212,14 @@ test("SQLite custody store registers scopes with canonical market isolation cons
         tables.map((table) => table.name),
         [
           "custody_active_work",
+          "custody_operation_inputs",
           "custody_operations",
           "custody_proof_reservations",
           "custody_schema_metadata",
           "custody_scope_state",
           "custody_scopes",
           "custody_session_links",
+          "custody_verification_bindings",
         ],
       );
       assert.equal(
@@ -237,10 +239,31 @@ test("SQLite custody store registers scopes with canonical market isolation cons
         () =>
           database
             .prepare(
-              `INSERT INTO custody_operations (scope_id, operation_id, schema_version, record_payload)
-           VALUES (?, ?, ?, ?)`,
+              `INSERT INTO custody_operation_inputs (
+                scope_id, operation_id, proof_id, input_position, keyset_id, curve
+              ) VALUES (?, ?, ?, 0, 'keyset-001', 'secp256k1')`,
             )
-            .run(first.scope.scopeId, "invalid-type-operation", "one", "{}"),
+            .run(first.scope.scopeId, "foreign-operation", FINGERPRINT_A),
+        /FOREIGN KEY constraint failed/,
+      );
+      assert.throws(
+        () =>
+          database
+            .prepare(
+              `INSERT INTO custody_verification_bindings (
+                scope_id, operation_id, keyset_id, curve, keyset_fingerprint, require_dleq
+              ) VALUES (?, ?, 'keyset-001', 'secp256k1', ?, 1)`,
+            )
+            .run(first.scope.scopeId, "foreign-operation", FINGERPRINT_B),
+        /FOREIGN KEY constraint failed/,
+      );
+      assert.throws(
+        () =>
+          database
+            .prepare(
+              "UPDATE custody_schema_metadata SET schema_version = ? WHERE singleton = 1",
+            )
+            .run("one"),
         /cannot store TEXT value in INTEGER column|datatype mismatch/,
       );
     } finally {
@@ -272,6 +295,43 @@ test("SQLite custody store registers scopes with canonical market isolation cons
         ),
       /market custody scope registration conflicts/,
     );
+  });
+});
+
+test("SQLite custody schema stores canonical records in typed rows, never JSON serialized columns", async () => {
+  await withDaemonHome(async () => {
+    const store = new SqliteDurableCustodyStore();
+    await store.registerScope(profileScope());
+    const database = openProfileDatabase();
+    try {
+      const tableNames = [
+        "custody_scopes",
+        "custody_scope_state",
+        "custody_operations",
+        "custody_operation_inputs",
+        "custody_session_links",
+        "custody_proof_reservations",
+        "custody_verification_bindings",
+      ];
+      for (const tableName of tableNames) {
+        const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+          name: string;
+          type: string;
+        }>;
+        assert.equal(columns.some((column) => /json/i.test(column.name)), false);
+        assert.equal(columns.some((column) => /json/i.test(column.type)), false);
+        assert.equal(
+          columns.some((column) =>
+            ["scope_payload", "state_payload", "record_payload", "link_payload"].includes(
+              column.name,
+            ),
+          ),
+          false,
+        );
+      }
+    } finally {
+      database.close();
+    }
   });
 });
 
@@ -398,20 +458,69 @@ test("SQLite custody store rolls back foreign awaits and fails closed on corrupt
     );
     assert.deepEqual(await store.listRecoverable(scope), []);
 
+    const operation = record(scope);
+    await store.transact({ scope, owner }, (transaction) => {
+      transaction.putOperation(operation);
+      transaction.putSessionLink(operation.operation.sessionLink);
+      transaction.reserveExactInputs({
+        operationId: operation.operation.operationId,
+        reservationId: operation.operation.reservation.reservationId,
+        proofIds: operation.operation.reservation.inputs.map(
+          (input) => input.proofId,
+        ),
+      });
+      transaction.rebuildActiveWorkIndex();
+    });
+
     const database = new DatabaseSync(profileDatabasePath());
     try {
       database
         .prepare(
-          `INSERT INTO custody_operations (scope_id, operation_id, schema_version, record_payload)
-         VALUES (?, ?, 1, ?)`,
+          `UPDATE custody_operations SET result_handle = 'corrupt-result'
+         WHERE scope_id = ? AND operation_id = ?`,
         )
-        .run(scope.scopeId, "corrupt-operation", '{"schemaVersion":2}');
+        .run(scope.scopeId, operation.operation.operationId);
     } finally {
       database.close();
     }
     await assert.rejects(
       () => store.listRecoverable(scope),
-      /unsupported durable custody schema version/,
+      /result/i,
+    );
+  });
+});
+
+test("SQLite custody store fails closed when a reservation row no longer matches its exact input", async () => {
+  await withDaemonHome(async () => {
+    const { store, scope, owner } = await claimedStore();
+    const operation = record(scope);
+    await store.transact({ scope, owner }, (transaction) => {
+      transaction.putOperation(operation);
+      transaction.putSessionLink(operation.operation.sessionLink);
+      transaction.reserveExactInputs({
+        operationId: operation.operation.operationId,
+        reservationId: operation.operation.reservation.reservationId,
+        proofIds: operation.operation.reservation.inputs.map(
+          (input) => input.proofId,
+        ),
+      });
+      transaction.rebuildActiveWorkIndex();
+    });
+
+    const database = new DatabaseSync(profileDatabasePath());
+    try {
+      database
+        .prepare(
+          `UPDATE custody_proof_reservations SET keyset_id = 'foreign-keyset'
+         WHERE proof_id = ?`,
+        )
+        .run(operation.operation.reservation.inputs[0]?.proofId);
+    } finally {
+      database.close();
+    }
+    await assert.rejects(
+      () => store.listRecoverable(scope),
+      /reservation is missing or foreign/,
     );
   });
 });

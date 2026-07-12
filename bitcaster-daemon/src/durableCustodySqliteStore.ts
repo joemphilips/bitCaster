@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import {
   applyDurableCustodyTransaction,
   claimDurableCustodyScope,
@@ -25,8 +26,10 @@ const CUSTODY_TABLES = [
   "custody_scopes",
   "custody_scope_state",
   "custody_operations",
+  "custody_operation_inputs",
   "custody_session_links",
   "custody_proof_reservations",
+  "custody_verification_bindings",
   "custody_active_work",
 ] as const;
 
@@ -52,7 +55,9 @@ export class SqliteDurableCustodyStore implements DurableCustodyStore {
         if (scope.scopeKind === "market") {
           const conflictingRows = database
             .prepare(
-              `SELECT scope_payload FROM custody_scopes
+              `SELECT scope_id, schema_version, scope_kind, profile_id, market_id,
+                      inventory_account_id, normalized_mint, unit
+                 FROM custody_scopes
              WHERE market_id = ?
                 OR (normalized_mint = ? AND unit = ? AND inventory_account_id = ?)`,
             )
@@ -61,9 +66,9 @@ export class SqliteDurableCustodyStore implements DurableCustodyStore {
               scope.normalizedMint,
               scope.unit,
               scope.inventoryAccountId,
-            ) as Array<{ scope_payload?: unknown }>;
+            ) as Array<Parameters<typeof decodeScopeRow>[0]>;
           for (const row of conflictingRows) {
-            const registered = decodeScopePayload(row.scope_payload);
+            const registered = decodeScopeRow(row);
             validateDurableCustodyScopeRegistration(registered, scope);
           }
         }
@@ -146,7 +151,7 @@ export class SqliteDurableCustodyStore implements DurableCustodyStore {
       assertScopeIntegrity(database, scope);
       const rows = database
         .prepare(
-          `SELECT operation.schema_version, operation.record_payload
+          `SELECT operation.*
          FROM custody_active_work AS active
          JOIN custody_operations AS operation
            ON operation.scope_id = active.scope_id
@@ -154,11 +159,8 @@ export class SqliteDurableCustodyStore implements DurableCustodyStore {
          WHERE active.scope_id = ?
          ORDER BY active.operation_id`,
         )
-        .all(scope.scopeId) as Array<{
-        schema_version?: unknown;
-        record_payload?: unknown;
-      }>;
-      return rows.map((row) => decodeOperationRow(row, scope));
+        .all(scope.scopeId) as Array<Record<string, unknown>>;
+      return rows.map((row) => decodeOperationRow(database, row, scope));
     } finally {
       database.close();
     }
@@ -233,20 +235,18 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
   getOperation(operationId: string): DurableCustodyRecord | null {
     const row = this.database
       .prepare(
-        `SELECT schema_version, record_payload FROM custody_operations
+        `SELECT * FROM custody_operations
        WHERE scope_id = ? AND operation_id = ?`,
       )
-      .get(this.scope.scopeId, operationId) as
-      | { schema_version?: unknown; record_payload?: unknown }
-      | undefined;
-    return row === undefined ? null : decodeOperationRow(row, this.scope);
+      .get(this.scope.scopeId, operationId) as Record<string, unknown> | undefined;
+    return row === undefined ? null : decodeOperationRow(this.database, row, this.scope);
   }
 
   putOperation(record: DurableCustodyRecord): void {
     const decoded = decodeDurableCustodyRecord(record, this.scope);
     const existing = this.getOperation(decoded.operation.operationId);
     if (existing !== null) {
-      if (encode(existing) === encode(decoded)) return;
+      if (isDeepStrictEqual(existing, decoded)) return;
       throw new Error(
         "existing custody operations must advance through an SDK reducer transition",
       );
@@ -261,12 +261,18 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
 
     const currentLink = this.database
       .prepare(
-        "SELECT operation_id, link_payload FROM custody_session_links WHERE session_id = ?",
+        `SELECT session_id, operation_id, link_kind, trade_id, immutable_trade_fingerprint,
+                has_dependent_operation
+         FROM custody_session_links WHERE session_id = ?`,
       )
       .get(decoded.operation.sessionLink.sessionId) as
       | {
+          session_id?: unknown;
           operation_id?: unknown;
-          link_payload?: unknown;
+          link_kind?: unknown;
+          trade_id?: unknown;
+          immutable_trade_fingerprint?: unknown;
+          has_dependent_operation?: unknown;
         }
       | undefined;
     if (currentLink !== undefined) {
@@ -275,7 +281,7 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
           "custody session link is already owned by another operation",
         );
       }
-      assertSessionLinkMatches(decoded, currentLink.link_payload);
+      assertSessionLinkMatches(decoded, currentLink);
     }
 
     const otherSession = this.database
@@ -292,15 +298,7 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
       throw new Error("custody operation session link is immutable");
     }
 
-    this.database
-      .prepare(
-        `INSERT INTO custody_operations (scope_id, operation_id, schema_version, record_payload)
-       VALUES (?, ?, 1, ?)
-       ON CONFLICT(scope_id, operation_id) DO UPDATE SET
-         schema_version = excluded.schema_version,
-         record_payload = excluded.record_payload`,
-      )
-      .run(this.scope.scopeId, decoded.operation.operationId, encode(decoded));
+    insertOperationRow(this.database, decoded);
   }
 
   getSessionLink(
@@ -308,14 +306,20 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
   ): DurableCustodyRecord["operation"]["sessionLink"] | null {
     const row = this.database
       .prepare(
-        `SELECT scope_id, operation_id, link_payload FROM custody_session_links
+        `SELECT scope_id, session_id, operation_id, link_kind, trade_id,
+                immutable_trade_fingerprint, has_dependent_operation
+         FROM custody_session_links
        WHERE session_id = ?`,
       )
       .get(sessionId) as
       | {
           scope_id?: unknown;
+          session_id?: unknown;
           operation_id?: unknown;
-          link_payload?: unknown;
+          link_kind?: unknown;
+          trade_id?: unknown;
+          immutable_trade_fingerprint?: unknown;
+          has_dependent_operation?: unknown;
         }
       | undefined;
     if (row === undefined) return null;
@@ -328,7 +332,7 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
     const record = this.getOperation(row.operation_id);
     if (record === null)
       throw new Error("custody session link operation is missing");
-    assertSessionLinkMatches(record, row.link_payload);
+    assertSessionLinkMatches(record, row);
     return structuredClone(record.operation.sessionLink);
   }
 
@@ -345,13 +349,19 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
     }
     const existing = this.database
       .prepare(
-        "SELECT scope_id, operation_id, link_payload FROM custody_session_links WHERE session_id = ?",
+        `SELECT scope_id, session_id, operation_id, link_kind, trade_id,
+                immutable_trade_fingerprint, has_dependent_operation
+         FROM custody_session_links WHERE session_id = ?`,
       )
       .get(link.sessionId) as
       | {
           scope_id?: unknown;
+          session_id?: unknown;
           operation_id?: unknown;
-          link_payload?: unknown;
+          link_kind?: unknown;
+          trade_id?: unknown;
+          immutable_trade_fingerprint?: unknown;
+          has_dependent_operation?: unknown;
         }
       | undefined;
     if (existing !== undefined) {
@@ -363,19 +373,23 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
           "custody session link is already owned by another operation",
         );
       }
-      assertSessionLinkMatches(record, existing.link_payload);
+      assertSessionLinkMatches(record, existing);
       return;
     }
     this.database
       .prepare(
-        `INSERT INTO custody_session_links (scope_id, session_id, operation_id, schema_version, link_payload)
-       VALUES (?, ?, ?, 1, ?)`,
+        `INSERT INTO custody_session_links (
+          scope_id, session_id, operation_id, schema_version, link_kind,
+          trade_id, immutable_trade_fingerprint, has_dependent_operation
+        ) VALUES (?, ?, ?, 1, 'trade', ?, ?, ?)`,
       )
       .run(
         this.scope.scopeId,
         link.sessionId,
         record.operation.operationId,
-        encode(link),
+        link.tradeId,
+        link.immutableTradeFingerprint,
+        link.hasDependentOperation ? 1 : 0,
       );
   }
 
@@ -401,27 +415,46 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
     }
     const existingRows = this.database
       .prepare(
-        `SELECT proof_id, reservation_id FROM custody_proof_reservations
+        `SELECT proof_id, reservation_id, input_position, keyset_id, curve
+         FROM custody_proof_reservations
        WHERE scope_id = ? AND operation_id = ? ORDER BY proof_id`,
       )
       .all(this.scope.scopeId, input.operationId) as Array<{
       proof_id?: unknown;
       reservation_id?: unknown;
+      input_position?: unknown;
+      keyset_id?: unknown;
+      curve?: unknown;
     }>;
     if (existingRows.length > 0) {
       const existingProofIds = existingRows.map((row) => row.proof_id);
       if (
         !sameUnorderedStringValues(expectedProofIds, existingProofIds) ||
-        existingRows.some((row) => row.reservation_id !== input.reservationId)
+        existingRows.some((row) => {
+          const exactInput = record.operation.reservation.inputs.find(
+            (candidate) => candidate.proofId === row.proof_id,
+          );
+          return (
+            row.reservation_id !== input.reservationId ||
+            exactInput === undefined ||
+            row.input_position !==
+              record.operation.reservation.inputs.indexOf(exactInput) ||
+            row.keyset_id !== exactInput.keysetId ||
+            row.curve !== exactInput.curve
+          );
+        })
       ) {
         throw new Error("custody reservation is incomplete or foreign");
       }
       return;
     }
-    for (const proofId of expectedProofIds) {
+    for (const [inputPosition, proofId] of expectedProofIds.entries()) {
+      const exactInput = record.operation.reservation.inputs[inputPosition];
+      if (exactInput === undefined) throw new Error("custody reservation input is missing");
       const owner = this.database
         .prepare(
-          `SELECT scope_id, operation_id, reservation_id FROM custody_proof_reservations
+          `SELECT scope_id, operation_id, reservation_id, input_position, keyset_id, curve
+           FROM custody_proof_reservations
          WHERE proof_id = ?`,
         )
         .get(proofId) as
@@ -429,13 +462,19 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
             scope_id?: unknown;
             operation_id?: unknown;
             reservation_id?: unknown;
+            input_position?: unknown;
+            keyset_id?: unknown;
+            curve?: unknown;
           }
         | undefined;
       if (owner !== undefined) {
         if (
           owner.scope_id !== this.scope.scopeId ||
           owner.operation_id !== input.operationId ||
-          owner.reservation_id !== input.reservationId
+          owner.reservation_id !== input.reservationId ||
+          owner.input_position !== inputPosition ||
+          owner.keyset_id !== exactInput.keysetId ||
+          owner.curve !== exactInput.curve
         ) {
           throw new Error("proof reservation is already owned");
         }
@@ -444,14 +483,18 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
       this.database
         .prepare(
           `INSERT INTO custody_proof_reservations (
-          proof_id, scope_id, operation_id, reservation_id, schema_version
-        ) VALUES (?, ?, ?, ?, 1)`,
+          proof_id, scope_id, operation_id, reservation_id, schema_version,
+          input_position, keyset_id, curve
+        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
         )
         .run(
           proofId,
           this.scope.scopeId,
           input.operationId,
           input.reservationId,
+          inputPosition,
+          exactInput.keysetId,
+          exactInput.curve,
         );
     }
   }
@@ -590,13 +633,7 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
     const decoded = decodeDurableCustodyRecord(record, this.scope);
     const previous = this.requireOperation(decoded.operation.operationId);
     assertOperationMutation(previous, decoded);
-    const result = this.database
-      .prepare(
-        `UPDATE custody_operations SET schema_version = 1, record_payload = ?
-         WHERE scope_id = ? AND operation_id = ?`,
-      )
-      .run(encode(decoded), this.scope.scopeId, decoded.operation.operationId);
-    if (result.changes !== 1) throw new Error("custody operation is missing");
+    updateOperationRow(this.database, decoded);
   }
 }
 
@@ -659,11 +696,19 @@ function ensureSchema(database: DatabaseSync): void {
   assertForeignKey(database, "custody_operations", "custody_scopes", [
     ["scope_id", "scope_id"],
   ]);
+  assertForeignKey(database, "custody_operation_inputs", "custody_operations", [
+    ["scope_id", "scope_id"],
+    ["operation_id", "operation_id"],
+  ]);
   assertForeignKey(database, "custody_session_links", "custody_operations", [
     ["scope_id", "scope_id"],
     ["operation_id", "operation_id"],
   ]);
   assertForeignKey(database, "custody_proof_reservations", "custody_operations", [
+    ["scope_id", "scope_id"],
+    ["operation_id", "operation_id"],
+  ]);
+  assertForeignKey(database, "custody_verification_bindings", "custody_operations", [
     ["scope_id", "scope_id"],
     ["operation_id", "operation_id"],
   ]);
@@ -707,7 +752,6 @@ function createSchema(database: DatabaseSync): void {
       inventory_account_id TEXT,
       normalized_mint TEXT,
       unit TEXT,
-      scope_payload TEXT NOT NULL,
       CHECK (
         (scope_kind = 'profile'
           AND profile_id IS NOT NULL
@@ -733,7 +777,6 @@ function createSchema(database: DatabaseSync): void {
       owner_epoch INTEGER,
       lease_expires_at_ms INTEGER,
       high_water_mark_ms INTEGER NOT NULL,
-      state_payload TEXT NOT NULL,
       CHECK (
         (owner_id IS NULL AND owner_epoch IS NULL AND lease_expires_at_ms IS NULL)
         OR
@@ -745,7 +788,53 @@ function createSchema(database: DatabaseSync): void {
       scope_id TEXT NOT NULL,
       operation_id TEXT NOT NULL UNIQUE,
       schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-      record_payload TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision >= 0),
+      retained_operation_key TEXT NOT NULL,
+      trade_id TEXT NOT NULL,
+      trade_role TEXT NOT NULL CHECK (trade_role IN ('buyer', 'seller')),
+      trade_stage TEXT NOT NULL,
+      semantic_kind TEXT NOT NULL,
+      operation_state TEXT NOT NULL CHECK (operation_state IN ('dispatch-intent', 'transport-attempted', 'reconciled', 'aborted')),
+      normalized_mint TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      inventory_account_id TEXT,
+      reservation_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      request_fingerprint TEXT NOT NULL,
+      request_payload_handle TEXT NOT NULL,
+      request_output_plan_fingerprint TEXT NOT NULL,
+      output_plan_id TEXT NOT NULL,
+      output_plan_fingerprint TEXT NOT NULL,
+      output_material_handle TEXT NOT NULL,
+      private_material_handle TEXT NOT NULL,
+      private_material_use_id TEXT NOT NULL,
+      private_material_public_fingerprint TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      session_trade_id TEXT NOT NULL,
+      session_immutable_trade_fingerprint TEXT NOT NULL,
+      session_has_dependent_operation INTEGER NOT NULL CHECK (session_has_dependent_operation IN (0, 1)),
+      result_state TEXT NOT NULL CHECK (result_state IN ('none', 'verified-staged', 'applied')),
+      result_handle TEXT,
+      result_fingerprint TEXT,
+      result_output_plan_fingerprint TEXT,
+      verification_output_plan_fingerprint TEXT NOT NULL,
+      delivery_kind TEXT NOT NULL CHECK (delivery_kind IN ('none', 'outbox')),
+      delivery_id TEXT,
+      delivery_payload_handle TEXT,
+      delivery_payload_fingerprint TEXT,
+      delivery_expires_at_ms INTEGER,
+      delivery_state TEXT NOT NULL CHECK (delivery_state IN ('none', 'pending', 'acknowledged', 'expired')),
+      retry_attempt INTEGER NOT NULL CHECK (retry_attempt >= 0),
+      retry_next_attempt_at_ms INTEGER,
+      retry_reason TEXT NOT NULL,
+      not_before_ms INTEGER,
+      not_after_ms INTEGER,
+      safety_margin_ms INTEGER NOT NULL CHECK (safety_margin_ms >= 0),
+      keyset_expiry_ms INTEGER,
+      tombstone_id TEXT,
+      tombstone_trade_id TEXT,
+      tombstone_authenticated_terminal INTEGER,
+      tombstone_replay_cutoff INTEGER,
       PRIMARY KEY (scope_id, operation_id),
       FOREIGN KEY (scope_id) REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT
     ) STRICT;
@@ -755,7 +844,23 @@ function createSchema(database: DatabaseSync): void {
       session_id TEXT PRIMARY KEY,
       operation_id TEXT NOT NULL,
       schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-      link_payload TEXT NOT NULL,
+      link_kind TEXT NOT NULL CHECK (link_kind = 'trade'),
+      trade_id TEXT NOT NULL,
+      immutable_trade_fingerprint TEXT NOT NULL,
+      has_dependent_operation INTEGER NOT NULL CHECK (has_dependent_operation IN (0, 1)),
+      FOREIGN KEY (scope_id, operation_id)
+        REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS custody_operation_inputs (
+      scope_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL,
+      proof_id TEXT NOT NULL,
+      input_position INTEGER NOT NULL CHECK (input_position >= 0),
+      keyset_id TEXT NOT NULL,
+      curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
+      PRIMARY KEY (scope_id, operation_id, proof_id),
+      UNIQUE (scope_id, operation_id, input_position),
       FOREIGN KEY (scope_id, operation_id)
         REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
     ) STRICT;
@@ -766,6 +871,21 @@ function createSchema(database: DatabaseSync): void {
       operation_id TEXT NOT NULL,
       reservation_id TEXT NOT NULL,
       schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      input_position INTEGER NOT NULL CHECK (input_position >= 0),
+      keyset_id TEXT NOT NULL,
+      curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
+      FOREIGN KEY (scope_id, operation_id)
+        REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS custody_verification_bindings (
+      scope_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL,
+      keyset_id TEXT NOT NULL,
+      curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
+      keyset_fingerprint TEXT NOT NULL,
+      require_dleq INTEGER NOT NULL CHECK (require_dleq IN (0, 1)),
+      PRIMARY KEY (scope_id, operation_id, keyset_id),
       FOREIGN KEY (scope_id, operation_id)
         REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
     ) STRICT;
@@ -786,18 +906,18 @@ function insertScope(database: DatabaseSync, scope: DurableCustodyScope): void {
       .prepare(
         `INSERT INTO custody_scopes (
         scope_id, schema_version, scope_kind, profile_id, market_id,
-        inventory_account_id, normalized_mint, unit, scope_payload
-      ) VALUES (?, 1, 'profile', ?, NULL, NULL, NULL, NULL, ?)`,
+        inventory_account_id, normalized_mint, unit
+      ) VALUES (?, 1, 'profile', ?, NULL, NULL, NULL, NULL)`,
       )
-      .run(scope.scopeId, scope.profileId, encode(scope));
+      .run(scope.scopeId, scope.profileId);
     return;
   }
   database
     .prepare(
       `INSERT INTO custody_scopes (
       scope_id, schema_version, scope_kind, profile_id, market_id,
-      inventory_account_id, normalized_mint, unit, scope_payload
-    ) VALUES (?, 1, 'market', NULL, ?, ?, ?, ?, ?)`,
+      inventory_account_id, normalized_mint, unit
+    ) VALUES (?, 1, 'market', NULL, ?, ?, ?, ?)`,
     )
     .run(
       scope.scopeId,
@@ -805,7 +925,6 @@ function insertScope(database: DatabaseSync, scope: DurableCustodyScope): void {
       scope.inventoryAccountId,
       scope.normalizedMint,
       scope.unit,
-      encode(scope),
     );
 }
 
@@ -815,8 +934,8 @@ function readScope(
 ): DurableCustodyScope | null {
   const row = database
     .prepare(
-      `SELECT schema_version, scope_kind, profile_id, market_id,
-            inventory_account_id, normalized_mint, unit, scope_payload
+      `SELECT scope_id, schema_version, scope_kind, profile_id, market_id,
+            inventory_account_id, normalized_mint, unit
      FROM custody_scopes WHERE scope_id = ?`,
     )
     .get(scopeId) as
@@ -828,13 +947,13 @@ function readScope(
         inventory_account_id?: unknown;
         normalized_mint?: unknown;
         unit?: unknown;
-        scope_payload?: unknown;
+        scope_id?: unknown;
       }
     | undefined;
   if (row === undefined) return null;
   if (row.schema_version !== 1)
     throw new Error("unsupported durable custody schema version");
-  const scope = decodeScopePayload(row.scope_payload);
+  const scope = decodeScopeRow(row);
   if (scope.scopeId !== scopeId || row.scope_kind !== scope.scopeKind) {
     throw new Error("custody scope row is corrupt");
   }
@@ -876,7 +995,7 @@ function readScopeState(
   const row = database
     .prepare(
       `SELECT schema_version, owner_id, owner_epoch, lease_expires_at_ms,
-            high_water_mark_ms, state_payload
+            high_water_mark_ms
      FROM custody_scope_state WHERE scope_id = ?`,
     )
     .get(scope.scopeId) as
@@ -886,13 +1005,12 @@ function readScopeState(
         owner_epoch?: unknown;
         lease_expires_at_ms?: unknown;
         high_water_mark_ms?: unknown;
-        state_payload?: unknown;
       }
     | undefined;
   if (row === undefined) throw new Error("custody scope state is missing");
   if (row.schema_version !== 1)
     throw new Error("unsupported durable custody schema version");
-  const state = decodeScopeStatePayload(row.state_payload, scope);
+  const state = decodeScopeStateRow(row, scope);
   const owner = state.owner;
   if (
     row.owner_id !== (owner?.ownerId ?? null) ||
@@ -918,8 +1036,7 @@ function writeScopeState(
        owner_id = ?,
        owner_epoch = ?,
        lease_expires_at_ms = ?,
-       high_water_mark_ms = ?,
-       state_payload = ?
+       high_water_mark_ms = ?
      WHERE scope_id = ?`,
     )
     .run(
@@ -927,7 +1044,6 @@ function writeScopeState(
       owner?.epoch ?? null,
       owner?.leaseExpiresAtMs ?? null,
       decoded.effectiveClock.highWaterMarkMs,
-      encode(decoded),
       decoded.scope.scopeId,
     );
   if (result.changes !== 1) throw new Error("custody scope state is missing");
@@ -943,8 +1059,8 @@ function insertScopeState(
     .prepare(
       `INSERT INTO custody_scope_state (
        scope_id, schema_version, owner_id, owner_epoch, lease_expires_at_ms,
-       high_water_mark_ms, state_payload
-     ) VALUES (?, 1, ?, ?, ?, ?, ?)`,
+       high_water_mark_ms
+     ) VALUES (?, 1, ?, ?, ?, ?)`,
     )
     .run(
       decoded.scope.scopeId,
@@ -952,46 +1068,387 @@ function insertScopeState(
       owner?.epoch ?? null,
       owner?.leaseExpiresAtMs ?? null,
       decoded.effectiveClock.highWaterMarkMs,
-      encode(decoded),
     );
 }
 
-function decodeScopePayload(payload: unknown): DurableCustodyScope {
-  const parsed =
-    typeof payload === "string"
-      ? parsePayload(payload, "custody scope payload")
-      : payload;
+function decodeScopeRow(row: {
+  schema_version?: unknown;
+  scope_kind?: unknown;
+  profile_id?: unknown;
+  market_id?: unknown;
+  inventory_account_id?: unknown;
+  normalized_mint?: unknown;
+  unit?: unknown;
+  scope_id?: unknown;
+}): DurableCustodyScope {
+  if (row.schema_version !== 1) {
+    throw new Error("unsupported durable custody schema version");
+  }
   return decodeDurableCustodyScopeState({
     schemaVersion: 1,
-    scope: parsed,
+    scope: row.scope_kind === "profile"
+      ? {
+        scopeKind: "profile",
+        profileId: row.profile_id,
+        scopeId: row.scope_id,
+      }
+      : {
+        scopeKind: row.scope_kind,
+        marketId: row.market_id,
+        inventoryAccountId: row.inventory_account_id,
+        normalizedMint: row.normalized_mint,
+        unit: row.unit,
+        scopeId: row.scope_id,
+      },
     owner: null,
     effectiveClock: { highWaterMarkMs: 0 },
   }).scope;
 }
 
 function canonicalizeScope(scope: DurableCustodyScope): DurableCustodyScope {
-  return decodeScopePayload(scope);
+  return decodeDurableCustodyScopeState({
+    schemaVersion: 1,
+    scope,
+    owner: null,
+    effectiveClock: { highWaterMarkMs: 0 },
+  }).scope;
 }
 
-function decodeScopeStatePayload(
-  payload: unknown,
+function decodeScopeStateRow(
+  row: {
+    schema_version?: unknown;
+    owner_id?: unknown;
+    owner_epoch?: unknown;
+    lease_expires_at_ms?: unknown;
+    high_water_mark_ms?: unknown;
+  },
   scope: DurableCustodyScope,
 ): DurableCustodyScopeState {
   return decodeDurableCustodyScopeState(
-    parsePayload(payload, "custody scope state payload"),
+    {
+      schemaVersion: row.schema_version,
+      scope,
+      owner: row.owner_id === null && row.owner_epoch === null && row.lease_expires_at_ms === null
+        ? null
+        : {
+          ownerId: row.owner_id,
+          epoch: row.owner_epoch,
+          leaseExpiresAtMs: row.lease_expires_at_ms,
+        },
+      effectiveClock: { highWaterMarkMs: row.high_water_mark_ms },
+    },
     scope,
   );
 }
 
 function decodeOperationRow(
-  row: { schema_version?: unknown; record_payload?: unknown },
+  database: DatabaseSync,
+  row: Record<string, unknown>,
   scope: DurableCustodyScope,
 ): DurableCustodyRecord {
-  if (row.schema_version !== 1)
+  if (row.schema_version !== 1) {
     throw new Error("unsupported durable custody schema version");
-  const payload = parsePayload(row.record_payload, "custody operation payload");
-  assertPayloadSchemaVersion(payload);
-  return decodeDurableCustodyRecord(payload, scope);
+  }
+  const operationId = requireDatabaseText(row.operation_id, "custody operation id");
+  const inputRows = database.prepare(
+    `SELECT proof_id, input_position, keyset_id, curve
+       FROM custody_operation_inputs
+     WHERE scope_id = ? AND operation_id = ? ORDER BY input_position`,
+  ).all(scope.scopeId, operationId) as Array<Record<string, unknown>>;
+  for (const [position, input] of inputRows.entries()) {
+    if (input.input_position !== position) {
+      throw new Error("custody operation input position is corrupt");
+    }
+  }
+  const verificationRows = database.prepare(
+    `SELECT keyset_id, curve, keyset_fingerprint, require_dleq
+     FROM custody_verification_bindings
+     WHERE scope_id = ? AND operation_id = ? ORDER BY keyset_id`,
+  ).all(scope.scopeId, operationId) as Array<Record<string, unknown>>;
+  const tombstone = row.tombstone_id === null
+    ? null
+    : {
+      tombstoneId: row.tombstone_id,
+      tradeId: row.tombstone_trade_id,
+      authenticatedTerminalStatus: decodeDatabaseBoolean(
+        row.tombstone_authenticated_terminal,
+        "custody tombstone terminal marker",
+      ),
+      replayCutoffObserved: decodeDatabaseBoolean(
+        row.tombstone_replay_cutoff,
+        "custody tombstone cutoff marker",
+      ),
+    };
+  return decodeDurableCustodyRecord({
+    schemaVersion: row.schema_version,
+    revision: row.revision,
+    scope,
+    operation: {
+      operationId,
+      retainedOperationKey: row.retained_operation_key,
+      trade: {
+        tradeId: row.trade_id,
+        role: row.trade_role,
+        stage: row.trade_stage,
+      },
+      semanticKind: row.semantic_kind,
+      state: row.operation_state,
+      custodyContext: {
+        normalizedMint: row.normalized_mint,
+        unit: row.unit,
+        inventoryAccountId: row.inventory_account_id,
+      },
+      reservation: {
+        reservationId: row.reservation_id,
+        inputs: inputRows.map((input) => ({
+          proofId: input.proof_id,
+          keysetId: input.keyset_id,
+          curve: input.curve,
+        })),
+      },
+      exactRequest: {
+        requestId: row.request_id,
+        requestFingerprint: row.request_fingerprint,
+        payloadHandle: row.request_payload_handle,
+        inputProofIds: inputRows.map((input) => input.proof_id),
+        outputPlanFingerprint: row.request_output_plan_fingerprint,
+      },
+      outputPlan: {
+        outputPlanId: row.output_plan_id,
+        outputPlanFingerprint: row.output_plan_fingerprint,
+        outputMaterialHandle: row.output_material_handle,
+      },
+      privateMaterial: {
+        materialHandle: row.private_material_handle,
+        useId: row.private_material_use_id,
+        publicFingerprint: row.private_material_public_fingerprint,
+      },
+      result: {
+        state: row.result_state,
+        resultHandle: row.result_handle,
+        resultFingerprint: row.result_fingerprint,
+        outputPlanFingerprint: row.result_output_plan_fingerprint,
+      },
+      verification: {
+        outputPlanFingerprint: row.verification_output_plan_fingerprint,
+        keysetBindings: verificationRows.map((binding) => ({
+          keysetId: binding.keyset_id,
+          curve: binding.curve,
+          keysetFingerprint: binding.keyset_fingerprint,
+          requireDleq: decodeDatabaseBoolean(binding.require_dleq, "custody DLEQ marker"),
+        })),
+      },
+      sessionLink: {
+        linkKind: "trade",
+        sessionId: row.session_id,
+        tradeId: row.session_trade_id,
+        immutableTradeFingerprint: row.session_immutable_trade_fingerprint,
+        hasDependentOperation: decodeDatabaseBoolean(
+          row.session_has_dependent_operation,
+          "custody session dependency marker",
+        ),
+      },
+      delivery: {
+        deliveryKind: row.delivery_kind,
+        deliveryId: row.delivery_id,
+        payloadHandle: row.delivery_payload_handle,
+        payloadFingerprint: row.delivery_payload_fingerprint,
+        expiresAtMs: row.delivery_expires_at_ms,
+        state: row.delivery_state,
+      },
+      retry: {
+        attempt: row.retry_attempt,
+        nextAttemptAtMs: row.retry_next_attempt_at_ms,
+        reason: row.retry_reason,
+      },
+      horizon: {
+        notBeforeMs: row.not_before_ms,
+        notAfterMs: row.not_after_ms,
+        safetyMarginMs: row.safety_margin_ms,
+        keysetExpiryMs: row.keyset_expiry_ms,
+      },
+    },
+    terminalTombstone: tombstone,
+  }, scope);
+}
+
+function insertOperationRow(database: DatabaseSync, record: DurableCustodyRecord): void {
+  persistOperationRow(database, record);
+}
+
+function updateOperationRow(database: DatabaseSync, record: DurableCustodyRecord): void {
+  persistOperationRow(database, record);
+}
+
+function persistOperationRow(database: DatabaseSync, record: DurableCustodyRecord): void {
+  const operation = record.operation;
+  const tombstone = record.terminalTombstone;
+  database.prepare(
+    `INSERT INTO custody_operations (
+      scope_id, operation_id, schema_version, revision, retained_operation_key,
+      trade_id, trade_role, trade_stage, semantic_kind, operation_state,
+      normalized_mint, unit, inventory_account_id, reservation_id,
+      request_id, request_fingerprint, request_payload_handle, request_output_plan_fingerprint,
+      output_plan_id, output_plan_fingerprint, output_material_handle,
+      private_material_handle, private_material_use_id, private_material_public_fingerprint,
+      session_id, session_trade_id, session_immutable_trade_fingerprint, session_has_dependent_operation,
+      result_state, result_handle, result_fingerprint, result_output_plan_fingerprint,
+      verification_output_plan_fingerprint,
+      delivery_kind, delivery_id, delivery_payload_handle, delivery_payload_fingerprint,
+      delivery_expires_at_ms, delivery_state,
+      retry_attempt, retry_next_attempt_at_ms, retry_reason,
+      not_before_ms, not_after_ms, safety_margin_ms, keyset_expiry_ms,
+      tombstone_id, tombstone_trade_id, tombstone_authenticated_terminal, tombstone_replay_cutoff
+    ) VALUES (
+      ?, ?, 1, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?,
+      ?, ?, ?, ?,
+      ?, ?,
+      ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?
+    )
+    ON CONFLICT(scope_id, operation_id) DO UPDATE SET
+      schema_version = excluded.schema_version,
+      revision = excluded.revision,
+      retained_operation_key = excluded.retained_operation_key,
+      trade_id = excluded.trade_id,
+      trade_role = excluded.trade_role,
+      trade_stage = excluded.trade_stage,
+      semantic_kind = excluded.semantic_kind,
+      operation_state = excluded.operation_state,
+      normalized_mint = excluded.normalized_mint,
+      unit = excluded.unit,
+      inventory_account_id = excluded.inventory_account_id,
+      reservation_id = excluded.reservation_id,
+      request_id = excluded.request_id,
+      request_fingerprint = excluded.request_fingerprint,
+      request_payload_handle = excluded.request_payload_handle,
+      request_output_plan_fingerprint = excluded.request_output_plan_fingerprint,
+      output_plan_id = excluded.output_plan_id,
+      output_plan_fingerprint = excluded.output_plan_fingerprint,
+      output_material_handle = excluded.output_material_handle,
+      private_material_handle = excluded.private_material_handle,
+      private_material_use_id = excluded.private_material_use_id,
+      private_material_public_fingerprint = excluded.private_material_public_fingerprint,
+      session_id = excluded.session_id,
+      session_trade_id = excluded.session_trade_id,
+      session_immutable_trade_fingerprint = excluded.session_immutable_trade_fingerprint,
+      session_has_dependent_operation = excluded.session_has_dependent_operation,
+      result_state = excluded.result_state,
+      result_handle = excluded.result_handle,
+      result_fingerprint = excluded.result_fingerprint,
+      result_output_plan_fingerprint = excluded.result_output_plan_fingerprint,
+      verification_output_plan_fingerprint = excluded.verification_output_plan_fingerprint,
+      delivery_kind = excluded.delivery_kind,
+      delivery_id = excluded.delivery_id,
+      delivery_payload_handle = excluded.delivery_payload_handle,
+      delivery_payload_fingerprint = excluded.delivery_payload_fingerprint,
+      delivery_expires_at_ms = excluded.delivery_expires_at_ms,
+      delivery_state = excluded.delivery_state,
+      retry_attempt = excluded.retry_attempt,
+      retry_next_attempt_at_ms = excluded.retry_next_attempt_at_ms,
+      retry_reason = excluded.retry_reason,
+      not_before_ms = excluded.not_before_ms,
+      not_after_ms = excluded.not_after_ms,
+      safety_margin_ms = excluded.safety_margin_ms,
+      keyset_expiry_ms = excluded.keyset_expiry_ms,
+      tombstone_id = excluded.tombstone_id,
+      tombstone_trade_id = excluded.tombstone_trade_id,
+      tombstone_authenticated_terminal = excluded.tombstone_authenticated_terminal,
+      tombstone_replay_cutoff = excluded.tombstone_replay_cutoff`,
+  ).run(
+    record.scope.scopeId,
+    operation.operationId,
+    record.revision,
+    operation.retainedOperationKey,
+    operation.trade.tradeId,
+    operation.trade.role,
+    operation.trade.stage,
+    operation.semanticKind,
+    operation.state,
+    operation.custodyContext.normalizedMint,
+    operation.custodyContext.unit,
+    operation.custodyContext.inventoryAccountId,
+    operation.reservation.reservationId,
+    operation.exactRequest.requestId,
+    operation.exactRequest.requestFingerprint,
+    operation.exactRequest.payloadHandle,
+    operation.exactRequest.outputPlanFingerprint,
+    operation.outputPlan.outputPlanId,
+    operation.outputPlan.outputPlanFingerprint,
+    operation.outputPlan.outputMaterialHandle,
+    operation.privateMaterial.materialHandle,
+    operation.privateMaterial.useId,
+    operation.privateMaterial.publicFingerprint,
+    operation.sessionLink.sessionId,
+    operation.sessionLink.tradeId,
+    operation.sessionLink.immutableTradeFingerprint,
+    operation.sessionLink.hasDependentOperation ? 1 : 0,
+    operation.result.state,
+    operation.result.resultHandle,
+    operation.result.resultFingerprint,
+    operation.result.outputPlanFingerprint,
+    operation.verification.outputPlanFingerprint,
+    operation.delivery.deliveryKind,
+    operation.delivery.deliveryId,
+    operation.delivery.payloadHandle,
+    operation.delivery.payloadFingerprint,
+    operation.delivery.expiresAtMs,
+    operation.delivery.state,
+    operation.retry.attempt,
+    operation.retry.nextAttemptAtMs,
+    operation.retry.reason,
+    operation.horizon.notBeforeMs,
+    operation.horizon.notAfterMs,
+    operation.horizon.safetyMarginMs,
+    operation.horizon.keysetExpiryMs,
+    tombstone?.tombstoneId ?? null,
+    tombstone?.tradeId ?? null,
+    tombstone === null ? null : tombstone.authenticatedTerminalStatus ? 1 : 0,
+    tombstone === null ? null : tombstone.replayCutoffObserved ? 1 : 0,
+  );
+  database.prepare(
+    "DELETE FROM custody_operation_inputs WHERE scope_id = ? AND operation_id = ?",
+  ).run(record.scope.scopeId, operation.operationId);
+  for (const [inputPosition, input] of operation.reservation.inputs.entries()) {
+    database.prepare(
+      `INSERT INTO custody_operation_inputs (
+        scope_id, operation_id, proof_id, input_position, keyset_id, curve
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      record.scope.scopeId,
+      operation.operationId,
+      input.proofId,
+      inputPosition,
+      input.keysetId,
+      input.curve,
+    );
+  }
+  database.prepare(
+    "DELETE FROM custody_verification_bindings WHERE scope_id = ? AND operation_id = ?",
+  ).run(record.scope.scopeId, operation.operationId);
+  for (const binding of operation.verification.keysetBindings) {
+    database.prepare(
+      `INSERT INTO custody_verification_bindings (
+        scope_id, operation_id, keyset_id, curve, keyset_fingerprint, require_dleq
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      record.scope.scopeId,
+      operation.operationId,
+      binding.keysetId,
+      binding.curve,
+      binding.keysetFingerprint,
+      binding.requireDleq ? 1 : 0,
+    );
+  }
 }
 
 function findOperationForSession(
@@ -1001,15 +1458,12 @@ function findOperationForSession(
 ): DurableCustodyRecord | null {
   const rows = database
     .prepare(
-      `SELECT schema_version, record_payload FROM custody_operations
+      `SELECT * FROM custody_operations
      WHERE scope_id = ? ORDER BY operation_id`,
     )
-    .all(scope.scopeId) as Array<{
-    schema_version?: unknown;
-    record_payload?: unknown;
-  }>;
+    .all(scope.scopeId) as Array<Record<string, unknown>>;
   const matches = rows
-    .map((row) => decodeOperationRow(row, scope))
+    .map((row) => decodeOperationRow(database, row, scope))
     .filter((record) => record.operation.sessionLink.sessionId === sessionId);
   if (matches.length > 1) throw new Error("custody session link is ambiguous");
   return matches[0] ?? null;
@@ -1024,15 +1478,12 @@ function rebuildActiveWorkIndex(
     .run(scope.scopeId);
   const rows = database
     .prepare(
-      `SELECT schema_version, record_payload FROM custody_operations
+      `SELECT * FROM custody_operations
      WHERE scope_id = ? ORDER BY operation_id`,
     )
-    .all(scope.scopeId) as Array<{
-    schema_version?: unknown;
-    record_payload?: unknown;
-  }>;
+    .all(scope.scopeId) as Array<Record<string, unknown>>;
   for (const row of rows) {
-    const record = decodeOperationRow(row, scope);
+    const record = decodeOperationRow(database, row, scope);
     if (!isRecoverable(record)) continue;
     database
       .prepare(
@@ -1048,30 +1499,38 @@ function assertScopeIntegrity(
 ): void {
   const operationRows = database
     .prepare(
-      `SELECT schema_version, record_payload FROM custody_operations
+      `SELECT * FROM custody_operations
      WHERE scope_id = ? ORDER BY operation_id`,
     )
-    .all(scope.scopeId) as Array<{
-    schema_version?: unknown;
-    record_payload?: unknown;
-  }>;
-  const records = operationRows.map((row) => decodeOperationRow(row, scope));
+    .all(scope.scopeId) as Array<Record<string, unknown>>;
+  const records = operationRows.map((row) => decodeOperationRow(database, row, scope));
   const recordsByOperation = new Map(
     records.map((record) => [record.operation.operationId, record]),
   );
   const sessionRows = database
     .prepare(
-      `SELECT session_id, operation_id, link_payload FROM custody_session_links
+      `SELECT session_id, operation_id, link_kind, trade_id,
+              immutable_trade_fingerprint, has_dependent_operation
+       FROM custody_session_links
      WHERE scope_id = ?`,
     )
     .all(scope.scopeId) as Array<{
     session_id?: unknown;
     operation_id?: unknown;
-    link_payload?: unknown;
+    link_kind?: unknown;
+    trade_id?: unknown;
+    immutable_trade_fingerprint?: unknown;
+    has_dependent_operation?: unknown;
   }>;
   const sessionsByOperation = new Map<
     string,
-    { session_id?: unknown; link_payload?: unknown }
+    {
+      session_id?: unknown;
+      link_kind?: unknown;
+      trade_id?: unknown;
+      immutable_trade_fingerprint?: unknown;
+      has_dependent_operation?: unknown;
+    }
   >();
   for (const row of sessionRows) {
     if (
@@ -1087,7 +1546,7 @@ function assertScopeIntegrity(
     ) {
       throw new Error("custody session link is foreign");
     }
-    assertSessionLinkMatches(record, row.link_payload);
+    assertSessionLinkMatches(record, row);
     if (sessionsByOperation.has(row.operation_id))
       throw new Error("custody operation has multiple session links");
     sessionsByOperation.set(row.operation_id, row);
@@ -1095,17 +1554,27 @@ function assertScopeIntegrity(
 
   const reservationRows = database
     .prepare(
-      `SELECT proof_id, operation_id, reservation_id FROM custody_proof_reservations
+      `SELECT proof_id, operation_id, reservation_id, input_position, keyset_id, curve
+         FROM custody_proof_reservations
      WHERE scope_id = ?`,
     )
     .all(scope.scopeId) as Array<{
     proof_id?: unknown;
     operation_id?: unknown;
     reservation_id?: unknown;
+    input_position?: unknown;
+    keyset_id?: unknown;
+    curve?: unknown;
   }>;
   const reservationsByOperation = new Map<
     string,
-    Array<{ proof_id?: unknown; reservation_id?: unknown }>
+    Array<{
+      proof_id?: unknown;
+      reservation_id?: unknown;
+      input_position?: unknown;
+      keyset_id?: unknown;
+      curve?: unknown;
+    }>
   >();
   for (const row of reservationRows) {
     if (
@@ -1150,6 +1619,20 @@ function assertScopeIntegrity(
       )
     ) {
       throw new Error("custody operation reservation is missing or foreign");
+    }
+    for (const reservation of reservations) {
+      const expectedInput = record.operation.reservation.inputs.find(
+        (input) => input.proofId === reservation.proof_id,
+      );
+      if (
+        expectedInput === undefined ||
+        reservation.input_position !==
+          record.operation.reservation.inputs.indexOf(expectedInput) ||
+        reservation.keyset_id !== expectedInput.keysetId ||
+        reservation.curve !== expectedInput.curve
+      ) {
+        throw new Error("custody operation reservation is missing or foreign");
+      }
     }
     if (indexed.has(operationId) !== isRecoverable(record)) {
       throw new Error("custody active-work index is missing or stale");
@@ -1215,7 +1698,7 @@ function sameImmutableOperation(
   right: DurableCustodyRecord,
 ): boolean {
   return (
-    encode({
+    isDeepStrictEqual({
       scope: left.scope,
       operation: {
         operationId: left.operation.operationId,
@@ -1230,8 +1713,7 @@ function sameImmutableOperation(
         verification: left.operation.verification,
         sessionLink: left.operation.sessionLink,
       },
-    }) ===
-    encode({
+    }, {
       scope: right.scope,
       operation: {
         operationId: right.operation.operationId,
@@ -1296,10 +1778,9 @@ function isRecoverable(record: DurableCustodyRecord): boolean {
 
 function assertSessionLinkMatches(
   record: DurableCustodyRecord,
-  payload: unknown,
+  row: unknown,
 ): void {
-  const parsed = parsePayload(payload, "custody session link payload");
-  if (!sameSessionLink(record.operation.sessionLink, parsed)) {
+  if (!sameSessionLinkRow(record.operation.sessionLink, row)) {
     throw new Error("custody session link is foreign");
   }
 }
@@ -1319,6 +1800,22 @@ function sameSessionLink(
     candidate.hasDependentOperation === left.hasDependentOperation &&
     Object.keys(candidate).length === 5
   );
+}
+
+function sameSessionLinkRow(
+  left: DurableCustodyRecord["operation"]["sessionLink"],
+  right: unknown,
+): boolean {
+  if (typeof right !== "object" || right === null || Array.isArray(right)) {
+    return false;
+  }
+  const row = right as Record<string, unknown>;
+  return row.link_kind === left.linkKind
+    && row.session_id === left.sessionId
+    && row.trade_id === left.tradeId
+    && row.immutable_trade_fingerprint === left.immutableTradeFingerprint
+    && decodeDatabaseBoolean(row.has_dependent_operation, "custody session dependency marker")
+      === left.hasDependentOperation;
 }
 
 function sameOwner(
@@ -1358,27 +1855,21 @@ function sameUnorderedStringValues(
   return expectedValues.every((value, index) => value === actualValues[index]);
 }
 
-function encode(value: unknown): string {
-  return JSON.stringify(value);
-}
-
-function parsePayload(payload: unknown, name: string): unknown {
-  if (typeof payload !== "string") throw new Error(`${name} is corrupt`);
-  try {
-    return JSON.parse(payload) as unknown;
-  } catch {
+function requireDatabaseText(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.length === 0) {
     throw new Error(`${name} is corrupt`);
   }
+  return value;
 }
 
-function assertPayloadSchemaVersion(payload: unknown): void {
-  if (
-    typeof payload !== "object" ||
-    payload === null ||
-    Array.isArray(payload) ||
-    (payload as Record<string, unknown>).schemaVersion !== 1
-  ) {
-    throw new Error("unsupported durable custody schema version");
+function decodeDatabaseBoolean(value: unknown, name: string): boolean {
+  switch (value) {
+    case 0:
+      return false;
+    case 1:
+      return true;
+    default:
+      throw new Error(`${name} is corrupt`);
   }
 }
 
