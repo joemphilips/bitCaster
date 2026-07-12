@@ -105,10 +105,9 @@ export interface DurableWalletEncryptedBackupReceipt {
   readonly proofCommitment: string
 }
 
-const AUTHENTICATED_BACKUP_RECEIPT = Symbol('authenticated-backup-receipt')
+const AUTHENTICATED_BACKUP_RECEIPTS = new WeakMap<object, DurableWalletEncryptedBackupReceipt>()
 
 export interface DurableWalletAuthenticatedBackupReceiptEvidence {
-  readonly [AUTHENTICATED_BACKUP_RECEIPT]: true
   state: 'authenticated'
   readonly receipt: DurableWalletEncryptedBackupReceipt
 }
@@ -124,10 +123,9 @@ export interface DurableWalletAcknowledgedBackupSnapshot {
   readonly reachableChunkDigests: readonly string[]
 }
 
-const ACKNOWLEDGED_BACKUP_SNAPSHOT = Symbol('acknowledged-backup-snapshot')
+const ACKNOWLEDGED_BACKUP_SNAPSHOTS = new WeakMap<object, DurableWalletAcknowledgedBackupSnapshot>()
 
 export interface DurableWalletAcknowledgedBackupSnapshotEvidence {
-  readonly [ACKNOWLEDGED_BACKUP_SNAPSHOT]: true
   readonly state: 'acknowledged'
   readonly snapshot: DurableWalletAcknowledgedBackupSnapshot
 }
@@ -204,11 +202,12 @@ export function authenticateDurableWalletEncryptedBackupReceipt(
   if (!verifyAuthenticatedServiceResponse(receipt)) {
     throw new Error('encrypted backup receipt authentication failed')
   }
-  return Object.freeze({
-    [AUTHENTICATED_BACKUP_RECEIPT]: true as const,
+  const evidence = Object.freeze({
     state: 'authenticated' as const,
     receipt,
   })
+  AUTHENTICATED_BACKUP_RECEIPTS.set(evidence, receipt)
+  return evidence
 }
 
 export function decodeDurableWalletAcknowledgedBackupSnapshot(
@@ -270,26 +269,27 @@ export function acknowledgeDurableWalletBackupSnapshot(
   if (!verifyAcknowledgedServiceResponse(snapshot)) {
     throw new Error('acknowledged backup snapshot authentication failed')
   }
-  return Object.freeze({
-    [ACKNOWLEDGED_BACKUP_SNAPSHOT]: true as const,
+  const evidence = Object.freeze({
     state: 'acknowledged' as const,
     snapshot,
   })
+  ACKNOWLEDGED_BACKUP_SNAPSHOTS.set(evidence, snapshot)
+  return evidence
 }
 
 export function prepareDurableWalletAcknowledgedBackupSnapshot(
   evidenceInput: DurableWalletAcknowledgedBackupSnapshotEvidence,
 ): PreparedDurableWalletAcknowledgedBackupSnapshot {
-  const evidence = requireRecord(
-    evidenceInput,
-    'acknowledged backup snapshot evidence',
-  ) as unknown as DurableWalletAcknowledgedBackupSnapshotEvidence
-  if (evidence[ACKNOWLEDGED_BACKUP_SNAPSHOT] !== true || evidence.state !== 'acknowledged') {
+  const snapshotAuthority =
+    typeof evidenceInput === 'object' && evidenceInput !== null
+      ? ACKNOWLEDGED_BACKUP_SNAPSHOTS.get(evidenceInput)
+      : undefined
+  if (snapshotAuthority === undefined) {
     throw new Error('backup snapshot evidence is not acknowledged')
   }
   const snapshot = Object.freeze({
-    ...evidence.snapshot,
-    reachableChunkDigests: Object.freeze([...evidence.snapshot.reachableChunkDigests]),
+    ...snapshotAuthority,
+    reachableChunkDigests: Object.freeze([...snapshotAuthority.reachableChunkDigests]),
   })
   const prepared = {
     [PREPARED_BACKUP_SNAPSHOT]: true,
@@ -849,17 +849,14 @@ function decodeProofPins(value: unknown): {
 function decodeAuthenticatedReceiptEvidence(
   value: unknown,
 ): DurableWalletAuthenticatedBackupReceiptEvidence {
-  const evidence = requireRecord(value, 'authenticated backup receipt evidence')
-  requireKnownFields(evidence, ['state', 'receipt'])
-  if (
-    (evidence as unknown as DurableWalletAuthenticatedBackupReceiptEvidence)[
-      AUTHENTICATED_BACKUP_RECEIPT
-    ] !== true ||
-    evidence.state !== 'authenticated'
-  ) {
+  const receipt =
+    typeof value === 'object' && value !== null
+      ? AUTHENTICATED_BACKUP_RECEIPTS.get(value)
+      : undefined
+  if (receipt === undefined) {
     throw new Error('backup receipt evidence is not authenticated')
   }
-  return evidence as unknown as DurableWalletAuthenticatedBackupReceiptEvidence
+  return value as DurableWalletAuthenticatedBackupReceiptEvidence
 }
 
 function decodeProofBackupBinding(value: unknown): DurableWalletProofBackupBinding {

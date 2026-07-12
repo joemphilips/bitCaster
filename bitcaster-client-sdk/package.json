@@ -27,6 +27,10 @@
       "types": "./dist/recoverableWalletStorage.d.ts",
       "import": "./dist/recoverableWalletStorage.js"
     },
+    "./encryptedWalletBackup": {
+      "types": "./dist/encryptedWalletBackup.d.ts",
+      "import": "./dist/encryptedWalletBackup.js"
+    },
     "./managedConditionInventory": {
       "types": "./dist/managedConditionInventory.d.ts",
       "import": "./dist/managedConditionInventory.js"
@@ -236,6 +240,7 @@
     "prepack": "npm run build",
     "pretest": "npm run build",
     "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test:backup-browsers": "node scripts/test-encrypted-wallet-backup-browsers.mjs",
     "typecheck": "tsc --noEmit"
   },
   "files": [
@@ -248,9 +253,12 @@
   "dependencies": {
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
-    "@cashu/cashu-ts": "file:../cashu-ts"
+    "@cashu/cashu-ts": "file:../cashu-ts",
+    "cborg": "5.1.7"
   },
   "devDependencies": {
+    "esbuild": "0.28.1",
+    "playwright": "1.60.0",
     "typescript": "^5.7.2"
   }
 }
