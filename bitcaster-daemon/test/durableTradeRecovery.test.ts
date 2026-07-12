@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import {
   CheckStateEnum,
   Wallet as CashuWallet,
@@ -21,6 +22,7 @@ import {
   prepareProofOperation,
   readState,
   setStateWriteFaultHookForTest,
+  statePath,
   updateState,
   writeState,
 } from "../src/state.ts";
@@ -250,7 +252,7 @@ test("daemon restart resumes the bound record without selecting from a changed p
   }
 });
 
-test("daemon state-file atomic transition survives faults before and after rename without split session metadata", async () => {
+test("daemon SQLite transaction survives faults before and after commit without split session metadata", async () => {
   const home = await mkdtemp(join(tmpdir(), "bitcaster-daemon-atomic-rename-fault-"));
   const previousHome = process.env.BITCASTER_DAEMON_HOME;
   process.env.BITCASTER_DAEMON_HOME = home;
@@ -281,16 +283,16 @@ test("daemon state-file atomic transition survives faults before and after renam
     await writeState(state);
 
     setStateWriteFaultHookForTest((stage) => {
-      if (stage === "before-rename") throw new Error("fault before rename");
+      if (stage === "before-commit") throw new Error("fault before commit");
     });
-    await assert.rejects(() => markProofOperationMintSubmitted(operationKey), /fault before rename/);
+    await assert.rejects(() => markProofOperationMintSubmitted(operationKey), /fault before commit/);
     setStateWriteFaultHookForTest(undefined);
     await assertAtomicTransitionSnapshot(operationKey, "prepared", "prepared", "proof-reserved");
 
     setStateWriteFaultHookForTest((stage) => {
-      if (stage === "after-rename") throw new Error("fault after rename");
+      if (stage === "after-commit") throw new Error("fault after commit");
     });
-    await assert.rejects(() => markProofOperationMintSubmitted(operationKey), /fault after rename/);
+    await assert.rejects(() => markProofOperationMintSubmitted(operationKey), /fault after commit/);
     setStateWriteFaultHookForTest(undefined);
     await assertAtomicTransitionSnapshot(operationKey, "mint-submitted", "mint-submitted", "mint-submitted");
   } finally {
@@ -301,7 +303,7 @@ test("daemon state-file atomic transition survives faults before and after renam
   }
 });
 
-test("daemon durable recovery fails an invalid link before it can resume or send", async () => {
+test("daemon durable recovery fails closed on an invalid persisted link before it can resume or send", async () => {
   const home = await mkdtemp(
     join(tmpdir(), "bitcaster-daemon-invalid-durable-recovery-"),
   );
@@ -317,12 +319,10 @@ test("daemon durable recovery fails an invalid link before it can resume or send
       kind: "cashu-atomic",
     });
     const state = emptyDaemonState();
+    state.durableTradeSessions[valid.tradeId] = durableSession(valid);
     state.proofOperations[valid.operationKey!] = {
       operationId: valid.operationKey!,
-      durableTradeRecovery: {
-        ...valid,
-        state: "not-a-durable-state",
-      } as typeof valid,
+      durableTradeRecovery: valid,
       kind: "swap-lock",
       state: "prepared",
       mintUrl: "https://mint.example",
@@ -333,30 +333,39 @@ test("daemon durable recovery fails an invalid link before it can resume or send
       updatedAt: 1,
     };
     await writeState(state);
+    const database = new DatabaseSync(statePath());
+    try {
+      const row = database.prepare('SELECT payload FROM daemon_state WHERE singleton = 1').get() as {
+        payload: string;
+      };
+      const payload = JSON.parse(row.payload) as {
+        proofOperations: Record<string, { durableTradeRecovery: { state: string } }>;
+      };
+      payload.proofOperations[valid.operationKey!].durableTradeRecovery.state = "not-a-durable-state";
+      database.prepare('UPDATE daemon_state SET payload = ? WHERE singleton = 1').run(JSON.stringify(payload));
+    } finally {
+      database.close();
+    }
     let exactResumes = 0;
     let sentMessages = 0;
 
-    const recovery = await recoverDaemonDurableTradeSessions({
-      executor: {} as never,
-      exactOperationAdapter: async () => {
-          exactResumes += 1;
-      },
-      connection: {
-        async joinTrade() {
-          sentMessages += 1;
+    await assert.rejects(
+      () => recoverDaemonDurableTradeSessions({
+        executor: {} as never,
+        exactOperationAdapter: async () => {
+            exactResumes += 1;
         },
-        async sendSwapMessage() {
-          sentMessages += 1;
-        },
-      } as never,
-    });
-
-    assert.deepEqual(recovery.sessions, []);
-    assert.deepEqual(recovery.orphans, [{
-      kind: "failed-closed",
-      operationId: valid.operationId,
-      reason: "invalid-operation",
-    }]);
+        connection: {
+          async joinTrade() {
+            sentMessages += 1;
+          },
+          async sendSwapMessage() {
+            sentMessages += 1;
+          },
+        } as never,
+      }),
+      /durable trade recovery storage is unavailable/,
+    );
     assert.equal(exactResumes, 0);
     assert.equal(sentMessages, 0);
   } finally {
@@ -366,7 +375,7 @@ test("daemon durable recovery fails an invalid link before it can resume or send
   }
 });
 
-test("daemon durable recovery rejects a foreign ledger key before mint inspection or dispatch", async () => {
+test("daemon durable recovery rejects a foreign persisted ledger key before mint inspection or dispatch", async () => {
   const home = await mkdtemp(
     join(tmpdir(), "bitcaster-daemon-foreign-durable-operation-"),
   );
@@ -409,8 +418,8 @@ test("daemon durable recovery rejects a foreign ledger key before mint inspectio
     };
     const state = emptyDaemonState();
     state.durableTradeSessions[session.tradeId] = session;
-    state.proofOperations["trade-foreign/seller-lock"] = {
-      operationId: "trade-foreign/seller-lock",
+    state.proofOperations[operation.operationKey!] = {
+      operationId: operation.operationKey!,
       durableTradeRecovery: operation,
       kind: "swap-lock",
       state: "prepared",
@@ -422,6 +431,22 @@ test("daemon durable recovery rejects a foreign ledger key before mint inspectio
       updatedAt: 1,
     };
     await writeState(state);
+    const database = new DatabaseSync(statePath());
+    try {
+      const row = database.prepare('SELECT payload FROM daemon_state WHERE singleton = 1').get() as {
+        payload: string;
+      };
+      const payload = JSON.parse(row.payload) as {
+        proofOperations: Record<string, { operationId: string }>;
+      };
+      const record = payload.proofOperations[operation.operationKey!];
+      delete payload.proofOperations[operation.operationKey!];
+      record.operationId = "trade-foreign/seller-lock";
+      payload.proofOperations[record.operationId] = record;
+      database.prepare('UPDATE daemon_state SET payload = ? WHERE singleton = 1').run(JSON.stringify(payload));
+    } finally {
+      database.close();
+    }
     let mintInspections = 0;
     let exactResumes = 0;
     let sentMessages = 0;
@@ -429,26 +454,23 @@ test("daemon durable recovery rejects a foreign ledger key before mint inspectio
       mintInspections += 1;
     };
 
-    const recovery = await recoverDaemonDurableTradeSessions({
-      executor: {} as never,
-      exactOperationAdapter: async () => {
-          exactResumes += 1;
-      },
-      connection: {
-        async joinTrade() {
-          sentMessages += 1;
+    await assert.rejects(
+      () => recoverDaemonDurableTradeSessions({
+        executor: {} as never,
+        exactOperationAdapter: async () => {
+            exactResumes += 1;
         },
-        async sendSwapMessage() {
-          sentMessages += 1;
-        },
-      } as never,
-    });
-
-    assert.deepEqual(recovery.sessions, [{
-      kind: "failed-closed",
-      tradeId: operation.tradeId,
-      reason: "foreign-proof-operation",
-    }]);
+        connection: {
+          async joinTrade() {
+            sentMessages += 1;
+          },
+          async sendSwapMessage() {
+            sentMessages += 1;
+          },
+        } as never,
+      }),
+      /durable trade recovery storage is unavailable/,
+    );
     assert.equal(mintInspections, 0);
     assert.equal(exactResumes, 0);
     assert.equal(sentMessages, 0);
@@ -467,6 +489,7 @@ test("daemon refuses a durable proof link before its TradeCreated session exists
   const previousHome = process.env.BITCASTER_DAEMON_HOME;
   process.env.BITCASTER_DAEMON_HOME = home;
   try {
+    await writeState(emptyDaemonState());
     const operation = createDurableTradeProofOperationLink({
       tradeId: "trade-unbound",
       role: "seller",
@@ -487,7 +510,7 @@ test("daemon refuses a durable proof link before its TradeCreated session exists
       }),
       /has no durable trade session/,
     );
-    assert.equal(await readState(), null);
+    assert.deepEqual(await readState(), emptyDaemonState());
   } finally {
     await rm(home, { recursive: true, force: true });
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME;

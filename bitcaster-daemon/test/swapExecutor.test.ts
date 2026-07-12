@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { DatabaseSync } from 'node:sqlite'
 import {
   CheckStateEnum,
   Wallet as CashuWallet,
@@ -25,6 +26,7 @@ import {
   recordSwapMessage,
   recordTradeCreated,
   recordTradeStateChanged,
+  statePath,
   writeState,
   type CashuProofRecord,
   type DaemonState,
@@ -241,12 +243,22 @@ test('DaemonSwapExecutor classifies each durable link state before resuming matc
     assert.equal((await readState())?.swaps['trade-live'].step, 'seller-opened')
 
     sent.length = 0
-    await writeState(stateWithLiveSwapAndDurableLink('unknown-state'))
+    await writeState(stateWithLiveSwapAndDurableLink('prepared'))
+    const database = new DatabaseSync(statePath())
+    try {
+      const row = database.prepare('SELECT payload FROM daemon_state WHERE singleton = 1').get() as {
+        payload: string;
+      }
+      const payload = JSON.parse(row.payload) as {
+        proofOperations: Record<string, { durableTradeRecovery: { state: string } }>;
+      }
+      payload.proofOperations['trade-live/seller-lock']!.durableTradeRecovery.state = 'unknown-state'
+      database.prepare('UPDATE daemon_state SET payload = ? WHERE singleton = 1').run(JSON.stringify(payload))
+    } finally {
+      database.close()
+    }
 
-    await assert.rejects(
-      async () => executor.resumeActiveSwaps(await readState() as DaemonState),
-      /invalid durable trade recovery link: durable proof operation state is invalid/,
-    )
+    await assert.rejects(() => readState(), /durable proof operation link is invalid/)
     assert.deepEqual(sent, [])
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -859,7 +871,6 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
     secrets.orderEphemeralKeys['order-2'] = {
       ...orderKey(secrets),
       orderId: 'order-2',
-      publicKeyHex: `03${'33'.repeat(32)}`,
     }
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
     await writeProfile(profile)
@@ -869,7 +880,7 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
       orderId: 'order-2',
       marketId: 'cond-NO',
       status: 'resting',
-      ephemeralPubkey: `03${'33'.repeat(32)}`,
+      ephemeralPubkey: orderKey(secrets).publicKeyHex,
       ...directBuyerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
@@ -889,7 +900,7 @@ test('DaemonSwapExecutor drives buyer response and claim with durable wallet sta
       await recordTradeCreated({
         tradeId: 'trade-2',
         sellerPubkey: `02${'44'.repeat(32)}`,
-        buyerPubkey: `03${'33'.repeat(32)}`,
+        buyerPubkey: orderKey(secrets).publicKeyHex,
         sellerLocktime: '2026-05-21T00:02:00.000Z',
         buyerLocktime: '2026-05-21T00:01:00.000Z',
         marketId: 'cond-NO',
@@ -945,7 +956,6 @@ test('DaemonSwapExecutor resume sweep retries active claim after retryable timeo
     secrets.orderEphemeralKeys['order-retry'] = {
       ...orderKey(secrets),
       orderId: 'order-retry',
-      publicKeyHex: `03${'99'.repeat(32)}`,
     }
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
     await writeProfile(profile)
@@ -1860,10 +1870,26 @@ test('DaemonSwapExecutor fails closed before recovery or send when its durable s
       if (sessionKind === 'corrupt') {
         state.durableTradeSessions['trade-no-session'] = {
           ...durableSessionForTest('trade-no-session', 'seller'),
-          schemaVersion: 1,
         }
       }
       await writeState(state)
+      if (sessionKind === 'corrupt') {
+        const database = new DatabaseSync(statePath())
+        try {
+          const row = database.prepare('SELECT payload FROM daemon_state WHERE singleton = 1').get() as {
+            payload: string;
+          }
+          const payload = JSON.parse(row.payload) as {
+            durableTradeSessions: Record<string, { schemaVersion: number }>;
+          }
+          payload.durableTradeSessions['trade-no-session']!.schemaVersion = 1
+          database.prepare('UPDATE daemon_state SET payload = ? WHERE singleton = 1').run(JSON.stringify(payload))
+        } finally {
+          database.close()
+        }
+        await assert.rejects(() => readState(), /durable trade session is invalid/)
+        continue
+      }
       const sent: string[] = []
       const executor = newTestDaemonSwapExecutor({
         connection: fakeConnection(sent),
@@ -1889,7 +1915,7 @@ function orderKey(secrets: DaemonSecrets): DaemonSecrets['orderEphemeralKeys'][s
     orderId: 'order-1',
     marketId: 'cond-YES',
     privateKeyHex: '11'.repeat(32),
-    publicKeyHex: `02${'11'.repeat(32)}`,
+    publicKeyHex: '034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa',
     createdAt: secrets.createdAt,
   }
 }

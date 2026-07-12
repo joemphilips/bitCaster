@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import {
   emptyDaemonState,
+  initializeState,
   readState,
   recordSwapMessage,
   recordSubmittedOrder,
@@ -108,7 +109,7 @@ test('TradeCreated promotes a local ephemeral key into an SDK durable session', 
   process.env.BITCASTER_DAEMON_HOME = home
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
-    const publicKeyHex = `02${'11'.repeat(32)}`
+    const publicKeyHex = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
     secrets.orderEphemeralKeys['trade-durable-1'] = {
       orderId: 'order-durable-1',
       tradeId: 'trade-durable-1',
@@ -170,6 +171,7 @@ test('submitted daemon taker fills retain recovery source metadata', async () =>
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
   try {
+    await initializeState()
     await recordSubmittedOrder(
       'condition-YES',
       'client-order-1',

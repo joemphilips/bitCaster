@@ -5,10 +5,22 @@ import {
   randomBytes,
   scryptSync,
 } from 'node:crypto'
-import { readFile, rename, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { normalizeSecp256k1PrivateKeyHex } from './ephemeralKey.ts'
-import { ensureProfileDir, profileDir } from './profile.ts'
+import { chmod } from 'node:fs/promises'
+import { DatabaseSync } from 'node:sqlite'
+import {
+  generateOrderEphemeralKeypair,
+  normalizeSecp256k1PrivateKeyHex,
+  type OrderEphemeralKeypair,
+} from './ephemeralKey.ts'
+import {
+  ensureDaemonSecretsTable,
+  ensureProfileDir,
+  openProfileDatabase,
+  profileDatabaseExists,
+  profileDatabasePath,
+  profileInitializationIsComplete,
+  tableExists,
+} from './profile.ts'
 
 export interface DaemonSecrets {
   walletSeedHex: string
@@ -46,11 +58,10 @@ interface EncryptedSecretFile {
 type SecretFile = PlaintextSecretFile | EncryptedSecretFile
 
 export function secretsPath(): string {
-  return join(profileDir(), 'daemon-secrets.json')
+  return profileDatabasePath()
 }
 
 let secretsUpdateQueue: Promise<unknown> = Promise.resolve()
-let secretsWriteSequence = 0
 
 async function withSecretsUpdateLock<T>(run: () => Promise<T>): Promise<T> {
   const next = secretsUpdateQueue.then(run, run)
@@ -108,52 +119,174 @@ export function createDaemonSecretsFromImport(
 export async function ensureSecrets(): Promise<DaemonSecrets> {
   const existing = await readSecrets()
   if (existing) return existing
-  return withSecretsUpdateLock(async () => {
-    const latest = await readSecrets()
-    if (latest) return latest
-    const fresh = createDaemonSecrets()
-    await writeSecrets(fresh)
-    return fresh
-  })
+  throw new Error('daemon secrets are not initialized; run bitcaster-daemon init')
 }
 
 export async function readSecrets(): Promise<DaemonSecrets | null> {
+  if (!(await profileDatabaseExists())) return null
+  const database = openSecretsDatabase()
   try {
-    const file = JSON.parse(await readFile(secretsPath(), 'utf8')) as SecretFile
-    if (file.protection === 'file-mode-0600') {
-      return normalizeSecrets(file.secrets)
-    }
-    return decryptSecrets(file)
-  } catch (err) {
-    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+    if (!secretsTableExists(database)) {
+      if (profileInitializationIsComplete(database)) {
+        throw new Error('daemon secrets schema is missing')
+      }
       return null
     }
-    throw err
+    const secrets = readSecretsFromDatabase(database)
+    if (!secrets) {
+      if (profileInitializationIsComplete(database)) {
+        throw new Error('daemon secrets row is missing')
+      }
+      return null
+    }
+    return secrets
+  } finally {
+    database.close()
   }
 }
 
 export async function writeSecrets(secrets: DaemonSecrets): Promise<void> {
-  const dir = await ensureProfileDir()
-  const target = secretsPath()
-  const sequence = ++secretsWriteSequence
-  const tmp = join(
-    dir,
-    `.daemon-secrets.${process.pid}.${Date.now()}.${sequence}.tmp`,
-  )
-  const file = encodeSecrets(secrets)
-  await writeFile(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 })
-  await rename(tmp, target)
+  await ensureProfileDir()
+  const database = openSecretsDatabase()
+  try {
+    if (process.platform !== 'win32') await chmod(secretsPath(), 0o600)
+    ensureDaemonSecretsTable(database)
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      writeSecretsToDatabase(database, secrets)
+      database.exec('COMMIT')
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK')
+      } catch {
+        // The transaction may already have completed.
+      }
+      throw error
+    }
+  } finally {
+    database.close()
+  }
 }
 
 export async function updateSecrets<T>(
   update: (secrets: DaemonSecrets, now: string) => T,
 ): Promise<T> {
   return withSecretsUpdateLock(async () => {
-    const secrets = (await readSecrets()) ?? createDaemonSecrets()
-    const result = update(secrets, new Date().toISOString())
-    await writeSecrets(secrets)
-    return result
+    await ensureProfileDir()
+    const database = openSecretsDatabase()
+    try {
+      if (process.platform !== 'win32') await chmod(secretsPath(), 0o600)
+      if (!secretsTableExists(database)) {
+        throw new Error('daemon secrets are not initialized; run bitcaster-daemon init')
+      }
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const secrets = readSecretsFromDatabase(database)
+        if (!secrets) throw new Error('daemon secrets row is missing')
+        const result = update(secrets, new Date().toISOString())
+        writeSecretsToDatabase(database, secrets)
+        database.exec('COMMIT')
+        return result
+      } catch (error) {
+        try {
+          database.exec('ROLLBACK')
+        } catch {
+          // The transaction may already have completed.
+        }
+        throw error
+      }
+    } finally {
+      database.close()
+    }
   })
+}
+
+/**
+ * Persists the exact private/public protocol key before any caller can submit
+ * its public half. Repeated callbacks reuse the retained key by trade ID.
+ */
+export async function getOrCreateOrderEphemeralKeypair(input: {
+  tradeId: string
+  orderId: string
+  marketId: string
+  /** Test seam; production uses the native secp256k1 generator. */
+  generateEphemeralKeypair?: () => OrderEphemeralKeypair
+}): Promise<OrderEphemeralKeypair> {
+  let selected: OrderEphemeralSecret | undefined
+  await updateSecrets((secrets, now) => {
+    const existing = secrets.orderEphemeralKeys[input.tradeId]
+    if (existing) {
+      if (existing.tradeId !== input.tradeId
+        || existing.orderId !== input.orderId
+        || existing.marketId !== input.marketId) {
+        throw new Error('stored ephemeral key conflicts with pending pubkey request')
+      }
+      selected = existing
+      return
+    }
+    const created = input.generateEphemeralKeypair?.() ?? generateOrderEphemeralKeypair()
+    selected = {
+      orderId: input.orderId,
+      tradeId: input.tradeId,
+      marketId: input.marketId,
+      privateKeyHex: created.privateKeyHex,
+      publicKeyHex: created.publicKeyHex,
+      createdAt: now,
+    }
+    secrets.orderEphemeralKeys[input.tradeId] = selected
+  })
+  if (!selected) throw new Error('failed to retain pending pubkey keypair')
+  return {
+    privateKeyHex: selected.privateKeyHex,
+    publicKeyHex: selected.publicKeyHex,
+  }
+}
+
+/** Runs inside bootstrap's replacement transaction to protect live custody. */
+export function assertStoredSecretsHaveNoEphemeralKeysForIdentityReplacement(
+  database: DatabaseSync,
+): void {
+  const secrets = readSecretsFromDatabase(database)
+  if (!secrets) throw new Error('daemon secrets row is missing')
+  if (Object.keys(secrets.orderEphemeralKeys).length > 0) {
+    throw new Error('daemon secrets retain ephemeral protocol keys; refusing identity replacement')
+  }
+}
+
+function openSecretsDatabase(): DatabaseSync {
+  return openProfileDatabase()
+}
+
+function secretsTableExists(database: DatabaseSync): boolean {
+  return tableExists(database, 'daemon_secrets')
+}
+
+function readSecretsFromDatabase(database: DatabaseSync): DaemonSecrets | null {
+  const row = database.prepare(
+    'SELECT schema_version, payload FROM daemon_secrets WHERE singleton = 1',
+  ).get() as { schema_version?: unknown; payload?: unknown } | undefined
+  if (!row) return null
+  if (row.schema_version !== 1 || typeof row.payload !== 'string') {
+    throw new Error('daemon secrets row is invalid')
+  }
+  const file = decodeSecretFile(row.payload)
+  return file.protection === 'file-mode-0600'
+    ? normalizeSecrets(file.secrets)
+    : decryptSecrets(file)
+}
+
+function writeSecretsToDatabase(database: DatabaseSync, secrets: DaemonSecrets): void {
+  const payload = encodeDaemonSecretsForStorage(secrets)
+  database.prepare(
+    `INSERT INTO daemon_secrets (singleton, schema_version, payload)
+     VALUES (1, 1, ?)
+     ON CONFLICT(singleton) DO UPDATE SET payload = excluded.payload`,
+  ).run(payload)
+}
+
+/** Returns a validated secret envelope for the atomic profile bootstrap transaction. */
+export function encodeDaemonSecretsForStorage(secrets: DaemonSecrets): string {
+  return JSON.stringify(encodeSecrets(normalizeSecrets(secrets)))
 }
 
 function encodeSecrets(secrets: DaemonSecrets): SecretFile {
@@ -184,6 +317,65 @@ function encodeSecrets(secrets: DaemonSecrets): SecretFile {
     tag: cipher.getAuthTag().toString('hex'),
     ciphertext: ciphertext.toString('hex'),
   }
+}
+
+function decodeSecretFile(payload: string): SecretFile {
+  let value: unknown
+  try {
+    value = JSON.parse(payload) as unknown
+  } catch {
+    throw new Error('daemon secrets payload is corrupt')
+  }
+  if (!isSecretRecord(value) || value.version !== 1 || typeof value.protection !== 'string') {
+    throw new Error('daemon secrets payload is invalid')
+  }
+  if (value.protection === 'file-mode-0600') {
+    requireSecretFields(value, ['version', 'protection', 'secrets'])
+    if (!isSecretRecord(value.secrets)) throw new Error('daemon secrets payload is invalid')
+    return {
+      version: 1,
+      protection: 'file-mode-0600',
+      secrets: value.secrets as unknown as DaemonSecrets,
+    }
+  }
+  if (value.protection === 'passphrase-aes-256-gcm') {
+    requireSecretFields(value, ['version', 'protection', 'kdf', 'salt', 'iv', 'tag', 'ciphertext'])
+    if (value.kdf !== 'scrypt') throw new Error('daemon secrets payload is invalid')
+    return {
+      version: 1,
+      protection: 'passphrase-aes-256-gcm',
+      kdf: 'scrypt',
+      salt: requireSecretText(value.salt),
+      iv: requireSecretText(value.iv),
+      tag: requireSecretText(value.tag),
+      ciphertext: requireSecretText(value.ciphertext),
+    }
+  }
+  throw new Error('daemon secrets payload is invalid')
+}
+
+function isSecretRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function requireSecretFields(
+  record: Record<string, unknown>,
+  expected: readonly string[],
+  optional: readonly string[] = [],
+): void {
+  for (const key of Object.keys(record)) {
+    if (!expected.includes(key)) throw new Error('daemon secrets payload is invalid')
+  }
+  for (const key of expected) {
+    if (!optional.includes(key) && !(key in record)) {
+      throw new Error('daemon secrets payload is invalid')
+    }
+  }
+}
+
+function requireSecretText(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) throw new Error('daemon secrets payload is invalid')
+  return value
 }
 
 function decryptSecrets(file: EncryptedSecretFile): DaemonSecrets {
@@ -239,21 +431,72 @@ function normalizeNostrSecretKeyHex(value: string): string {
   return normalized
 }
 
-function normalizeSecrets(secrets: Partial<DaemonSecrets>): DaemonSecrets {
-  if (
-    !secrets.walletSeedHex ||
-    !secrets.nostrSecretKeyHex ||
-    !secrets.nostrPublicKeyHex ||
-    !secrets.createdAt
-  ) {
-    throw new Error('daemon secrets file is malformed')
+function normalizeSecrets(value: unknown): DaemonSecrets {
+  if (!isSecretRecord(value)) throw new Error('daemon secrets payload is malformed')
+  requireSecretFields(value, [
+    'walletSeedHex', 'nostrSecretKeyHex', 'nostrPublicKeyHex', 'orderEphemeralKeys', 'createdAt',
+  ])
+  const walletSeedHex = requireSecretText(value.walletSeedHex)
+  const nostrSecretKeyHex = normalizeNostrSecretKeyHex(requireSecretText(value.nostrSecretKeyHex))
+  const nostrPublicKeyHex = requireSecretText(value.nostrPublicKeyHex).toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(nostrPublicKeyHex)) {
+    throw new Error('daemon secrets payload is malformed')
   }
-  const nostrSecretKeyHex = normalizeNostrSecretKeyHex(secrets.nostrSecretKeyHex)
+  if (nostrPublicKeyHex !== compressedSecp256k1ToNostrPubkey(
+    Buffer.from(deriveCompressedPublicKeyHex(nostrSecretKeyHex), 'hex'),
+  )) {
+    throw new Error('daemon secrets payload is malformed')
+  }
+  const createdAt = requireSecretText(value.createdAt)
+  const orderEphemeralKeys = decodeOrderEphemeralSecrets(value.orderEphemeralKeys)
   return {
-    walletSeedHex: normalizeHexSecret(secrets.walletSeedHex, 'wallet seed'),
+    walletSeedHex: normalizeHexSecret(walletSeedHex, 'wallet seed'),
     nostrSecretKeyHex,
-    nostrPublicKeyHex: secrets.nostrPublicKeyHex,
-    orderEphemeralKeys: secrets.orderEphemeralKeys ?? {},
-    createdAt: secrets.createdAt,
+    nostrPublicKeyHex,
+    orderEphemeralKeys,
+    createdAt,
   }
+}
+
+function decodeOrderEphemeralSecrets(value: unknown): Record<string, OrderEphemeralSecret> {
+  if (!isSecretRecord(value)) throw new Error('daemon secrets payload is malformed')
+  return Object.fromEntries(Object.entries(value).map(([key, raw]) => {
+    if (key.length === 0 || !isSecretRecord(raw)) {
+      throw new Error('daemon secrets payload is malformed')
+    }
+    requireSecretFields(raw, [
+      'orderId', 'tradeId', 'marketId', 'privateKeyHex', 'publicKeyHex', 'createdAt',
+    ], ['tradeId'])
+    const orderId = requireSecretText(raw.orderId)
+    const tradeId = raw.tradeId === undefined ? undefined : requireSecretText(raw.tradeId)
+    if (orderId !== key && tradeId !== key) throw new Error('daemon secrets payload is malformed')
+    const privateKeyHex = normalizeSecp256k1PrivateKeyHex(
+      requireSecretText(raw.privateKeyHex),
+    )
+    const publicKeyHex = requireSecretText(raw.publicKeyHex).toLowerCase()
+    if (!/^(02|03)[0-9a-f]{64}$/.test(publicKeyHex)) {
+      throw new Error('daemon secrets payload is malformed')
+    }
+    if (publicKeyHex !== deriveCompressedPublicKeyHex(privateKeyHex)) {
+      throw new Error('daemon secrets payload is malformed')
+    }
+    return [key, {
+      orderId,
+      ...(tradeId === undefined ? {} : { tradeId }),
+      marketId: requireSecretText(raw.marketId),
+      privateKeyHex,
+      publicKeyHex,
+      createdAt: requireSecretText(raw.createdAt),
+    }]
+  }))
+}
+
+function deriveCompressedPublicKeyHex(privateKeyHex: string): string {
+  const key = createECDH('secp256k1')
+  try {
+    key.setPrivateKey(Buffer.from(privateKeyHex, 'hex'))
+  } catch {
+    throw new Error('daemon secrets payload is malformed')
+  }
+  return key.getPublicKey(undefined, 'compressed').toString('hex')
 }

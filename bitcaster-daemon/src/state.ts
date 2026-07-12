@@ -1,6 +1,6 @@
-import { readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import {
   decideSwapMessage,
   decideTradeCreated,
@@ -26,7 +26,16 @@ import type {
   PartialLockHeldRecord,
   SwapFailure,
 } from '@bitcaster-market/client-sdk/swapFailure'
-import { ensureProfileDir, profileDir, readProfile } from './profile.ts'
+import {
+  ensureDaemonStateTable,
+  ensureProfileDir,
+  openProfileDatabase,
+  profileDatabaseExists,
+  profileDatabasePath,
+  profileInitializationIsComplete,
+  readProfile,
+  tableExists,
+} from './profile.ts'
 import { readSecrets } from './secrets.ts'
 import { validateDaemonDurableOperationBinding } from './durableTradeBinding.ts'
 
@@ -37,6 +46,9 @@ export interface CashuProofRecord {
   C: string
   witness?: unknown
   dleq?: unknown
+  /** Retained CTF input metadata; it is part of the exact persisted request. */
+  conditionId?: string
+  outcomeCollection?: string
 }
 
 export interface StoredOutputData {
@@ -133,6 +145,7 @@ export interface LocalOrderRecord {
   /** Number of maker-collateral replacement attempts that produced this order. */
   recoveryAttempt?: number
   status: string
+  ephemeralPubkey?: string
   clientOrderId?: string
   preflightSplit?: LocalOrderPreflightSplit
   baseAsset?: string | null
@@ -245,7 +258,7 @@ export interface DaemonState {
     keysetCounters: Record<string, number>
   }
   proofOperations: Record<string, ProofOperationRecord>
-  /** SDK-owned durable recovery envelopes. Private key material remains in daemon-secrets.json. */
+  /** SDK-owned durable recovery envelopes; private keys live in the same SQLite profile database. */
   durableTradeSessions: Record<string, DurableTradeSession>
   orders: Record<string, LocalOrderRecord>
   swaps: Record<string, LocalSwapRecord>
@@ -272,7 +285,7 @@ export interface WalletBalance {
 }
 
 export function statePath(): string {
-  return join(profileDir(), 'daemon-state.json')
+  return profileDatabasePath()
 }
 
 export function emptyDaemonState(): DaemonState {
@@ -287,12 +300,11 @@ export function emptyDaemonState(): DaemonState {
 }
 
 let stateUpdateQueue: Promise<unknown> = Promise.resolve()
-let stateWriteSequence = 0
-let stateWriteFaultHookForTest: ((stage: 'before-rename' | 'after-rename') => void | Promise<void>) | undefined
+let stateWriteFaultHookForTest: ((stage: 'before-commit' | 'after-commit') => void) | undefined
 
-/** Test-only fault seam for proving the atomic rename crash boundary. */
+/** Test-only fault seam for proving the SQLite transaction crash boundary. */
 export function setStateWriteFaultHookForTest(
-  hook: ((stage: 'before-rename' | 'after-rename') => void | Promise<void>) | undefined,
+  hook: ((stage: 'before-commit' | 'after-commit') => void) | undefined,
 ): void {
   stateWriteFaultHookForTest = hook
 }
@@ -309,49 +321,181 @@ async function withStateUpdateLock<T>(run: () => Promise<T>): Promise<T> {
 export async function ensureState(): Promise<DaemonState> {
   const state = await readState()
   if (state) return state
+  throw new Error('daemon SQLite state is not initialized; run bitcaster-daemon init')
+}
+
+/** Creates the sole fresh state row during explicit `init`; normal recovery never recreates it. */
+export async function initializeState(): Promise<DaemonState> {
   return withStateUpdateLock(async () => {
-    const latest = await readState()
-    if (latest) return latest
-    const fresh = emptyDaemonState()
-    await writeState(fresh)
-    return fresh
+    await ensureProfileDir()
+    const database = openStateDatabase()
+    try {
+      if (process.platform !== 'win32') await chmod(statePath(), 0o600)
+      const hadStateTable = stateTableExists(database)
+      if (!hadStateTable && profileInitializationIsComplete(database)) {
+        throw new Error('daemon SQLite state schema is missing')
+      }
+      ensureDaemonStateTable(database)
+      const existing = readStoredStateFromDatabase(database)
+      if (existing) return existing
+      if (hadStateTable) {
+        throw new Error('daemon SQLite state row is missing')
+      }
+      const fresh = emptyDaemonState()
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        writeStoredStateToDatabase(database, fresh)
+        database.exec('COMMIT')
+        return fresh
+      } catch (error) {
+        try {
+          database.exec('ROLLBACK')
+        } catch {
+          // The transaction may already have completed.
+        }
+        throw error
+      }
+    } finally {
+      database.close()
+    }
   })
 }
 
 export async function readState(): Promise<DaemonState | null> {
+  if (!(await profileDatabaseExists())) return null
+  const database = openStateDatabase()
   try {
-    const parsed = JSON.parse(await readFile(statePath(), 'utf8')) as unknown
-    return normalizeState(parsed)
-  } catch (err) {
-    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
-      return null
+    if (!stateTableExists(database)) {
+      throw new Error('daemon SQLite state schema is missing')
     }
-    throw err
+    const state = readStoredStateFromDatabase(database)
+    if (!state) throw new Error('daemon SQLite state row is missing')
+    return state
+  } finally {
+    database.close()
   }
 }
 
 export async function writeState(state: DaemonState): Promise<void> {
-  const dir = await ensureProfileDir()
-  const target = statePath()
-  stateWriteSequence += 1
-  const tmp = join(
-    dir,
-    `.daemon-state.${process.pid}.${Date.now()}.${stateWriteSequence}.tmp`,
-  )
-  await writeFile(tmp, `${JSON.stringify(toJsonSafe(state), null, 2)}\n`, { mode: 0o600 })
-  await stateWriteFaultHookForTest?.('before-rename')
-  await rename(tmp, target)
-  await stateWriteFaultHookForTest?.('after-rename')
+  await ensureProfileDir()
+  const database = openStateDatabase()
+  try {
+    if (process.platform !== 'win32') await chmod(statePath(), 0o600)
+    // This exported helper is the explicit bootstrap/test seeding surface.
+    // Runtime state transitions use updateState(), which never creates a
+    // missing schema or singleton row after initialization.
+    ensureDaemonStateTable(database)
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      writeStoredStateToDatabase(database, state)
+      stateWriteFaultHookForTest?.('before-commit')
+      database.exec('COMMIT')
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK')
+      } catch {
+        // The transaction may have committed before an after-commit fault.
+      }
+      throw error
+    }
+    stateWriteFaultHookForTest?.('after-commit')
+  } finally {
+    database.close()
+  }
+}
+
+function openStateDatabase(): DatabaseSync {
+  return openProfileDatabase()
+}
+
+function stateTableExists(database: DatabaseSync): boolean {
+  return tableExists(database, 'daemon_state')
+}
+
+function decodeStoredState(payload: string): DaemonState {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(payload) as unknown
+  } catch {
+    throw new Error('daemon SQLite state payload is corrupt')
+  }
+  return decodeDaemonState(parsed)
+}
+
+function readStoredStateFromDatabase(database: DatabaseSync): DaemonState | null {
+  const row = database.prepare(
+    'SELECT schema_version, payload FROM daemon_state WHERE singleton = 1',
+  ).get() as { schema_version?: unknown; payload?: unknown } | undefined
+  if (!row) return null
+  if (row.schema_version !== 1 || typeof row.payload !== 'string') {
+    throw new Error('daemon SQLite state row is invalid')
+  }
+  return decodeStoredState(row.payload)
+}
+
+/** Runs inside bootstrap's replacement transaction to protect live custody. */
+export function assertStoredDaemonStateIsEmptyForIdentityReplacement(
+  database: DatabaseSync,
+): void {
+  const state = readStoredStateFromDatabase(database)
+  if (!state) throw new Error('daemon SQLite state row is missing')
+  if (
+    state.wallet.proofs.length !== 0 ||
+    Object.keys(state.wallet.keysetCounters).length !== 0 ||
+    Object.keys(state.proofOperations).length !== 0 ||
+    Object.keys(state.durableTradeSessions).length !== 0 ||
+    Object.keys(state.orders).length !== 0 ||
+    Object.keys(state.swaps).length !== 0
+  ) {
+    throw new Error('daemon state is not empty; refusing to replace wallet/Nostr keys')
+  }
+}
+
+function writeStoredStateToDatabase(database: DatabaseSync, state: DaemonState): void {
+  const payload = encodeDaemonStateForStorage(state)
+  database.prepare(
+    `INSERT INTO daemon_state (singleton, schema_version, payload)
+     VALUES (1, 1, ?)
+     ON CONFLICT(singleton) DO UPDATE SET
+       schema_version = excluded.schema_version,
+       payload = excluded.payload`,
+  ).run(payload)
+}
+
+/** Returns a validated state payload for the atomic profile bootstrap transaction. */
+export function encodeDaemonStateForStorage(state: DaemonState): string {
+  return JSON.stringify(decodeDaemonState(toJsonSafe(state)))
 }
 
 export async function updateState<T>(
   update: (state: DaemonState, now: string) => T,
 ): Promise<T> {
   return withStateUpdateLock(async () => {
-    const state = (await readState()) ?? emptyDaemonState()
-    const result = update(state, new Date().toISOString())
-    await writeState(state)
-    return result
+    await ensureProfileDir()
+    const database = openStateDatabase()
+    try {
+      if (process.platform !== 'win32') await chmod(statePath(), 0o600)
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const state = readStoredStateFromDatabase(database)
+        if (!state) throw new Error('daemon SQLite state row is missing')
+        const result = update(state, new Date().toISOString())
+        writeStoredStateToDatabase(database, state)
+        stateWriteFaultHookForTest?.('before-commit')
+        database.exec('COMMIT')
+        stateWriteFaultHookForTest?.('after-commit')
+        return result
+      } catch (error) {
+        try {
+          database.exec('ROLLBACK')
+        } catch {
+          // The transaction may have committed before an after-commit fault.
+        }
+        throw error
+      }
+    } finally {
+      database.close()
+    }
   })
 }
 
@@ -525,13 +669,12 @@ export async function getProofOperation(
 export async function prepareProofOperation(
   input: PrepareProofOperationInput,
 ): Promise<ProofOperationRecord> {
-  const existing = await getProofOperation(input.operationId)
-  if (existing) {
-    assertCompatibleProofOperation(existing, input)
-    return existing
-  }
-
   return updateState((state) => {
+    const existing = state.proofOperations[input.operationId]
+    if (existing) {
+      assertCompatibleProofOperation(existing, input)
+      return existing
+    }
     const now = Date.now()
     const record: ProofOperationRecord = {
       operationId: input.operationId,
@@ -1217,35 +1360,557 @@ export async function recordTradeStateChanged(
   })
 }
 
-function normalizeState(value: unknown): DaemonState {
-  if (!isRecord(value) || value.version !== 1) return emptyDaemonState()
+/**
+ * The deployed schema starts fresh. Never normalize, omit, or default a row
+ * while reading it: changing a persisted custody record is recovery work, not
+ * deserialization. A malformed existing row must stop the daemon before it can
+ * select, lock, mint, or send with a replacement proof set.
+ */
+function decodeDaemonState(value: unknown): DaemonState {
+  const root = requireStateRecord(value, 'state payload')
+  requireStateFields(root, [
+    'version', 'wallet', 'proofOperations', 'durableTradeSessions', 'orders', 'swaps',
+  ])
+  if (root.version !== 1) throw new Error('daemon SQLite state schema is unsupported')
+
+  const wallet = requireStateRecord(root.wallet, 'state wallet')
+  requireStateFields(wallet, ['proofs', 'keysetCounters'])
+  if (!Array.isArray(wallet.proofs)) throw new Error('daemon SQLite wallet proofs are invalid')
+  const proofOperations = decodeStoredProofOperations(root.proofOperations)
+  const durableTradeSessions = decodeDurableTradeSessions(root.durableTradeSessions)
+
+  for (const operation of Object.values(proofOperations)) {
+    if (!operation.durableTradeRecovery) continue
+    const session = durableTradeSessions[operation.durableTradeRecovery.tradeId]
+    if (!session) throw new Error('daemon durable proof operation session is missing')
+    const bindingError = validateDaemonDurableOperationBinding({
+      session,
+      record: operation,
+      operation: operation.durableTradeRecovery,
+    })
+    if (bindingError) throw new Error(`daemon durable proof operation is invalid: ${bindingError}`)
+  }
+
   return {
     version: 1,
-    wallet: isRecord(value.wallet) && Array.isArray(value.wallet.proofs)
-      ? {
-          proofs: (value.wallet.proofs as StoredProofRecord[]).map((record) => ({
-            ...record,
-            proof: normalizeCashuProofRecord(record.proof),
-            asset: normalizeProofAsset(record.asset),
-          })),
-          keysetCounters: isRecord(value.wallet.keysetCounters)
-            ? normalizeCounterMap(value.wallet.keysetCounters)
-            : {},
-        }
-      : { proofs: [], keysetCounters: {} },
-    proofOperations: isRecord(value.proofOperations)
-      ? normalizeProofOperations(value.proofOperations)
-      : {},
-    durableTradeSessions: isRecord(value.durableTradeSessions)
-      ? value.durableTradeSessions as Record<string, DurableTradeSession>
-      : {},
-    orders: isRecord(value.orders)
-      ? normalizeOrders(value.orders)
-      : {},
-    swaps: isRecord(value.swaps)
-      ? normalizeSwaps(value.swaps)
-      : {},
+    wallet: {
+      proofs: wallet.proofs.map((proof) => decodeStoredProofRecord(proof)),
+      keysetCounters: decodeCounterMap(wallet.keysetCounters),
+    },
+    proofOperations,
+    durableTradeSessions,
+    orders: decodeLocalOrders(root.orders),
+    swaps: decodeLocalSwaps(root.swaps),
   }
+}
+
+function decodeStoredProofRecord(value: unknown): StoredProofRecord {
+  const record = requireStateRecord(value, 'stored proof')
+  requireStateFields(record, [
+    'proof', 'mintUrl', 'state', 'asset', 'reservedBy', 'createdAt', 'updatedAt',
+  ], ['reservedBy'])
+  const state = record.state
+  if (state !== 'available' && state !== 'reserved' && state !== 'locked') {
+    throw new Error('stored proof state is invalid')
+  }
+  const reservedBy = optionalNonEmptyString(record.reservedBy, 'stored proof reservation')
+  return {
+    proof: decodeCashuProofRecord(record.proof, 'stored proof'),
+    mintUrl: requireNonEmptyString(record.mintUrl, 'stored proof mint'),
+    state,
+    asset: decodeStoredProofAsset(record.asset),
+    ...(reservedBy ? { reservedBy } : {}),
+    createdAt: requireNonEmptyString(record.createdAt, 'stored proof created time'),
+    updatedAt: requireNonEmptyString(record.updatedAt, 'stored proof updated time'),
+  }
+}
+
+function decodeStoredProofAsset(value: unknown): StoredProofAsset {
+  const asset = requireStateRecord(value, 'stored proof asset')
+  if (asset.kind === 'sats') {
+    requireStateFields(asset, ['kind', 'baseAsset'], ['baseAsset'])
+    return {
+      kind: 'sats',
+      ...(asset.baseAsset === undefined || asset.baseAsset === null
+        ? {}
+        : { baseAsset: requireNonEmptyString(asset.baseAsset, 'stored proof base asset') }),
+    }
+  }
+  if (asset.kind === 'Outcome') {
+    requireStateFields(asset, ['kind', 'conditionId', 'outcomeSetId', 'baseAsset'], ['baseAsset'])
+    return {
+      kind: 'Outcome',
+      conditionId: requireNonEmptyString(asset.conditionId, 'stored proof condition'),
+      outcomeSetId: requireNonEmptyString(asset.outcomeSetId, 'stored proof outcome set'),
+      ...(asset.baseAsset === undefined || asset.baseAsset === null
+        ? {}
+        : { baseAsset: requireNonEmptyString(asset.baseAsset, 'stored proof base asset') }),
+    }
+  }
+  throw new Error('stored proof asset is invalid')
+}
+
+function decodeCashuProofRecord(value: unknown, name: string): CashuProofRecord {
+  const proof = requireStateRecord(value, name)
+  requireStateFields(proof, [
+    'id', 'amount', 'secret', 'C', 'witness', 'dleq', 'conditionId', 'outcomeCollection',
+  ], [
+    'id', 'witness', 'dleq', 'conditionId', 'outcomeCollection',
+  ])
+  if (typeof proof.amount !== 'number' || !Number.isSafeInteger(proof.amount) || proof.amount < 0) {
+    throw new Error(`${name} amount is invalid`)
+  }
+  return {
+    ...(proof.id === undefined ? {} : { id: requireNonEmptyString(proof.id, `${name} keyset`) }),
+    amount: proof.amount,
+    secret: requireNonEmptyString(proof.secret, `${name} secret`),
+    C: requireNonEmptyString(proof.C, `${name} signature`),
+    ...(proof.witness === undefined ? {} : { witness: structuredClone(proof.witness) }),
+    ...(proof.dleq === undefined ? {} : { dleq: structuredClone(proof.dleq) }),
+    ...(proof.conditionId === undefined
+      ? {}
+      : { conditionId: requireNonEmptyString(proof.conditionId, `${name} condition`) }),
+    ...(proof.outcomeCollection === undefined
+      ? {}
+      : { outcomeCollection: requireNonEmptyString(proof.outcomeCollection, `${name} outcome collection`) }),
+  }
+}
+
+function decodeCounterMap(value: unknown): Record<string, number> {
+  const counters = requireStateRecord(value, 'keyset counters')
+  const decoded: Array<[string, number]> = []
+  for (const [key, counter] of Object.entries(counters)) {
+    if (key.length === 0 || typeof counter !== 'number'
+      || !Number.isSafeInteger(counter) || counter < 0) {
+      throw new Error('keyset counter is invalid')
+    }
+    decoded.push([key, counter])
+  }
+  return Object.fromEntries(decoded)
+}
+
+function decodeStoredProofOperations(value: unknown): Record<string, ProofOperationRecord> {
+  const operations = requireStateRecord(value, 'proof operations')
+  return Object.fromEntries(Object.entries(operations).map(([operationId, raw]) => [
+    operationId,
+    decodeStoredProofOperation(operationId, raw),
+  ]))
+}
+
+function decodeStoredProofOperation(
+  operationId: string,
+  value: unknown,
+): ProofOperationRecord {
+  const operation = requireStateRecord(value, 'proof operation')
+  requireStateFields(operation, [
+    'operationId', 'durableTradeRecovery', 'kind', 'state', 'mintUrl', 'inputs', 'outputs',
+    'metadata', 'resultProofs', 'lastError', 'createdAt', 'updatedAt',
+  ], ['durableTradeRecovery', 'resultProofs', 'lastError'])
+  if (operation.operationId !== operationId || operationId.length === 0) {
+    throw new Error('proof operation identity is invalid')
+  }
+  if (!isProofOperationKind(operation.kind) || !isProofOperationState(operation.state)) {
+    throw new Error('proof operation lifecycle is invalid')
+  }
+  if (!Array.isArray(operation.inputs)) throw new Error('proof operation inputs are invalid')
+  const outputs = decodeStoredOutputGroups(operation.outputs)
+  const resultProofs = operation.resultProofs === undefined
+    ? undefined
+    : decodeProofRecordGroups(operation.resultProofs)
+  const durableTradeRecovery = operation.durableTradeRecovery === undefined
+    ? undefined
+    : decodeDurableProofOperationLink(operation.durableTradeRecovery)
+  return {
+    operationId,
+    ...(durableTradeRecovery ? { durableTradeRecovery } : {}),
+    kind: operation.kind,
+    state: operation.state,
+    mintUrl: requireNonEmptyString(operation.mintUrl, 'proof operation mint'),
+    inputs: operation.inputs.map((proof) => decodeCashuProofRecord(proof, 'proof operation input')),
+    outputs,
+    metadata: requireStateRecord(operation.metadata, 'proof operation metadata'),
+    ...(resultProofs ? { resultProofs } : {}),
+    lastError: operation.lastError === undefined || operation.lastError === null
+      ? null
+      : requireNonEmptyString(operation.lastError, 'proof operation error'),
+    createdAt: requireTimestamp(operation.createdAt, 'proof operation creation time'),
+    updatedAt: requireTimestamp(operation.updatedAt, 'proof operation update time'),
+  }
+}
+
+function decodeDurableProofOperationLink(value: unknown): DurableTradeProofOperationLink {
+  const operation = value as DurableTradeProofOperationLink
+  const error = validateDurableProofOperationLink(operation)
+  if (error) throw new Error(`durable proof operation link is invalid: ${error}`)
+  return structuredClone(operation)
+}
+
+function decodeStoredOutputGroups(value: unknown): Record<string, StoredOutputData[]> {
+  const groups = requireStateRecord(value, 'proof operation outputs')
+  return Object.fromEntries(Object.entries(groups).map(([label, outputs]) => {
+    if (label.length === 0 || !Array.isArray(outputs)) throw new Error('proof operation outputs are invalid')
+    return [label, outputs.map((output) => decodeStoredOutputData(output))]
+  }))
+}
+
+function decodeStoredOutputData(value: unknown): StoredOutputData {
+  const output = requireStateRecord(value, 'stored output data')
+  requireStateFields(output, ['blindedMessage', 'blindingFactor', 'secret'])
+  const blindedMessage = requireStateRecord(output.blindedMessage, 'stored blinded message')
+  requireStateFields(blindedMessage, ['amount', 'id', 'B_'])
+  if (typeof blindedMessage.amount !== 'number'
+    || !Number.isSafeInteger(blindedMessage.amount)
+    || blindedMessage.amount < 0) {
+    throw new Error('stored blinded message amount is invalid')
+  }
+  return {
+    blindedMessage: {
+      amount: blindedMessage.amount,
+      id: requireNonEmptyString(blindedMessage.id, 'stored blinded message keyset'),
+      B_: requireNonEmptyString(blindedMessage.B_, 'stored blinded message point'),
+    },
+    blindingFactor: requireNonEmptyString(output.blindingFactor, 'stored output blinding factor'),
+    secret: requireNonEmptyString(output.secret, 'stored output secret'),
+  }
+}
+
+function decodeProofRecordGroups(value: unknown): Record<string, CashuProofRecord[]> {
+  const groups = requireStateRecord(value, 'proof operation result proofs')
+  return Object.fromEntries(Object.entries(groups).map(([label, proofs]) => {
+    if (label.length === 0 || !Array.isArray(proofs)) throw new Error('proof operation result proofs are invalid')
+    return [label, proofs.map((proof) => decodeCashuProofRecord(proof, 'proof operation result proof'))]
+  }))
+}
+
+function decodeDurableTradeSessions(value: unknown): Record<string, DurableTradeSession> {
+  const sessions = requireStateRecord(value, 'durable trade sessions')
+  return Object.fromEntries(Object.entries(sessions).map(([tradeId, raw]) => {
+    const session = raw as DurableTradeSession
+    const error = validateDurableTradeSession(session)
+    if (error || session.tradeId !== tradeId || tradeId.length === 0) {
+      throw new Error(`durable trade session is invalid: ${error ?? 'session identity is invalid'}`)
+    }
+    return [tradeId, structuredClone(session)]
+  }))
+}
+
+function decodeLocalOrders(value: unknown): Record<string, LocalOrderRecord> {
+  const orders = requireStateRecord(value, 'local orders')
+  return Object.fromEntries(Object.entries(orders).map(([orderId, raw]) => {
+    const order = requireStateRecord(raw, 'local order')
+    requireStateFields(order, [
+      'orderId', 'marketId', 'tokenSide', 'side', 'priceSubunits', 'amountSubunits',
+      'timeInForce', 'recoveryAttempt', 'status', 'ephemeralPubkey', 'clientOrderId',
+      'preflightSplit', 'baseAsset', 'divisibility', 'tradeIds', 'engineStatus',
+      'createdAt', 'updatedAt',
+    ], [
+      'tokenSide', 'side', 'priceSubunits', 'amountSubunits', 'timeInForce', 'recoveryAttempt',
+      'ephemeralPubkey', 'clientOrderId', 'preflightSplit', 'baseAsset', 'divisibility',
+      'engineStatus',
+    ])
+    if (order.orderId !== orderId || orderId.length === 0) throw new Error('local order is invalid')
+    const tradeIds = decodeStringArray(order.tradeIds, 'local order trades')
+    if (new Set(tradeIds).size !== tradeIds.length) throw new Error('local order trades are invalid')
+    return [orderId, {
+      orderId,
+      marketId: requireNonEmptyString(order.marketId, 'local order market'),
+      ...(order.tokenSide === undefined ? {} : { tokenSide: decodeTokenSide(order.tokenSide) }),
+      ...(order.side === undefined ? {} : { side: decodeOrderSide(order.side) }),
+      ...(order.priceSubunits === undefined ? {} : { priceSubunits: requireTimestamp(order.priceSubunits, 'local order price') }),
+      ...(order.amountSubunits === undefined ? {} : { amountSubunits: requireTimestamp(order.amountSubunits, 'local order amount') }),
+      ...(order.timeInForce === undefined ? {} : { timeInForce: decodeTimeInForce(order.timeInForce) }),
+      ...(order.recoveryAttempt === undefined ? {} : { recoveryAttempt: requireTimestamp(order.recoveryAttempt, 'local order recovery attempt') }),
+      status: requireNonEmptyString(order.status, 'local order status'),
+      ...(order.ephemeralPubkey === undefined ? {} : { ephemeralPubkey: requireNonEmptyString(order.ephemeralPubkey, 'local order ephemeral key') }),
+      ...(order.clientOrderId === undefined ? {} : { clientOrderId: requireNonEmptyString(order.clientOrderId, 'local order client id') }),
+      ...(order.preflightSplit === undefined ? {} : { preflightSplit: decodePreflightSplit(order.preflightSplit) }),
+      ...(order.baseAsset === undefined || order.baseAsset === null
+        ? {}
+        : { baseAsset: requireNonEmptyString(order.baseAsset, 'local order base asset') }),
+      ...(order.divisibility === undefined ? {} : { divisibility: requirePositiveInteger(order.divisibility, 'local order divisibility') }),
+      tradeIds,
+      ...(order.engineStatus === undefined ? {} : { engineStatus: structuredClone(order.engineStatus) }),
+      createdAt: requireNonEmptyString(order.createdAt, 'local order creation time'),
+      updatedAt: requireNonEmptyString(order.updatedAt, 'local order update time'),
+    } satisfies LocalOrderRecord] as const
+  }))
+}
+
+function decodeLocalSwaps(value: unknown): Record<string, LocalSwapRecord> {
+  const swaps = requireStateRecord(value, 'local swaps')
+  return Object.fromEntries(Object.entries(swaps).map(([tradeId, raw]) => {
+    const swap = requireStateRecord(raw, 'local swap')
+    requireStateFields(swap, [
+      'tradeId', 'marketId', 'orderId', 'role', 'counterpartyPubkey', 'sellerLocktime', 'buyerLocktime',
+      'fillAmountSats', 'fillAmountSubunits', 'outcomeFaceAmountSats', 'outcomeFaceAmountSubunits',
+      'quotePaymentSats', 'baseAsset', 'divisibility', 'quotePaymentSubunits', 'settlementKind',
+      'sellerKeepOutcomeSetId', 'sellerLockOutcomeSetId', 'isTaker', 'messages',
+      'sellerAdaptorSecretHex', 'sellerAdaptorPointHex', 'buyerPreSigsHex', 'buyerLockedProofs',
+      'sellerPreSigsHex', 'engineState', 'failureReason', 'takerRecovery', 'step', 'error', 'failure',
+      'createdAt', 'updatedAt',
+    ], [
+      'marketId', 'orderId', 'role', 'counterpartyPubkey', 'sellerLocktime', 'buyerLocktime',
+      'fillAmountSats', 'fillAmountSubunits', 'outcomeFaceAmountSats', 'outcomeFaceAmountSubunits',
+      'quotePaymentSats', 'baseAsset', 'divisibility', 'quotePaymentSubunits', 'settlementKind',
+      'sellerKeepOutcomeSetId', 'sellerLockOutcomeSetId', 'isTaker', 'sellerAdaptorSecretHex',
+      'sellerAdaptorPointHex', 'buyerPreSigsHex', 'buyerLockedProofs', 'sellerPreSigsHex',
+      'engineState', 'failureReason', 'takerRecovery', 'error', 'failure',
+    ])
+    if (swap.tradeId !== tradeId || tradeId.length === 0) throw new Error('local swap is invalid')
+    return [tradeId, {
+      tradeId,
+      ...(swap.marketId === undefined ? {} : { marketId: requireNonEmptyString(swap.marketId, 'local swap market') }),
+      ...(swap.orderId === undefined ? {} : { orderId: requireNonEmptyString(swap.orderId, 'local swap order') }),
+      ...(swap.role === undefined ? {} : { role: decodeSwapRole(swap.role) }),
+      ...(swap.counterpartyPubkey === undefined ? {} : { counterpartyPubkey: requireHex(swap.counterpartyPubkey, 'local swap counterparty key') }),
+      ...decodeOptionalSwapIntegers(swap),
+      ...(swap.baseAsset === undefined || swap.baseAsset === null
+        ? {}
+        : { baseAsset: requireNonEmptyString(swap.baseAsset, 'local swap base asset') }),
+      ...(swap.settlementKind === undefined || swap.settlementKind === null
+        ? {}
+        : { settlementKind: decodeSettlementKind(swap.settlementKind) }),
+      ...(swap.sellerKeepOutcomeSetId === undefined || swap.sellerKeepOutcomeSetId === null
+        ? {}
+        : { sellerKeepOutcomeSetId: requireNonEmptyString(swap.sellerKeepOutcomeSetId, 'local swap keep outcome') }),
+      ...(swap.sellerLockOutcomeSetId === undefined || swap.sellerLockOutcomeSetId === null
+        ? {}
+        : { sellerLockOutcomeSetId: requireNonEmptyString(swap.sellerLockOutcomeSetId, 'local swap lock outcome') }),
+      ...(swap.isTaker === undefined ? {} : { isTaker: requireBoolean(swap.isTaker, 'local swap taker flag') }),
+      messages: decodeSwapMessages(swap.messages),
+      ...(swap.sellerAdaptorSecretHex === undefined ? {} : { sellerAdaptorSecretHex: requireHex(swap.sellerAdaptorSecretHex, 'local swap adaptor secret') }),
+      ...(swap.sellerAdaptorPointHex === undefined ? {} : { sellerAdaptorPointHex: requireHex(swap.sellerAdaptorPointHex, 'local swap adaptor point') }),
+      ...(swap.buyerPreSigsHex === undefined ? {} : { buyerPreSigsHex: decodeHexArray(swap.buyerPreSigsHex, 'local swap buyer pre-signatures') }),
+      ...(swap.buyerLockedProofs === undefined ? {} : { buyerLockedProofs: decodeCashuProofArray(swap.buyerLockedProofs, 'local swap buyer locked proofs') }),
+      ...(swap.sellerPreSigsHex === undefined ? {} : { sellerPreSigsHex: decodeHexArray(swap.sellerPreSigsHex, 'local swap seller pre-signatures') }),
+      ...(swap.engineState === undefined ? {} : { engineState: requireNonEmptyString(swap.engineState, 'local swap engine state') }),
+      ...(swap.failureReason === undefined ? {} : { failureReason: requireNonEmptyString(swap.failureReason, 'local swap failure reason') }),
+      ...(swap.takerRecovery === undefined ? {} : { takerRecovery: decodeTakerRecovery(swap.takerRecovery) }),
+      step: decodeSwapStep(swap.step),
+      ...(swap.error === undefined ? {} : { error: requireNonEmptyString(swap.error, 'local swap error') }),
+      ...(swap.failure === undefined ? {} : { failure: decodeSwapFailure(swap.failure) }),
+      createdAt: requireNonEmptyString(swap.createdAt, 'local swap creation time'),
+      updatedAt: requireNonEmptyString(swap.updatedAt, 'local swap update time'),
+    } satisfies LocalSwapRecord] as const
+  }))
+}
+
+function requireStateRecord(value: unknown, name: string): Record<string, unknown> {
+  if (!isRecord(value) || Array.isArray(value)) throw new Error(`${name} is invalid`)
+  return value
+}
+
+function requireStateFields(
+  record: Record<string, unknown>,
+  expected: readonly string[],
+  optional: readonly string[] = [],
+): void {
+  for (const key of Object.keys(record)) {
+    if (!expected.includes(key)) throw new Error(`unknown daemon SQLite state field '${key}'`)
+  }
+  for (const key of expected) {
+    if (!optional.includes(key) && !(key in record)) {
+      throw new Error(`missing daemon SQLite state field '${key}'`)
+    }
+  }
+}
+
+function requireNonEmptyString(value: unknown, name: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw new Error(`${name} is invalid`)
+  return value
+}
+
+function optionalNonEmptyString(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined
+  return requireNonEmptyString(value, name)
+}
+
+function requireTimestamp(value: unknown, name: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} is invalid`)
+  }
+  return value
+}
+
+function requireBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`${name} is invalid`)
+  return value
+}
+
+function isValidSwapStep(value: unknown): value is LocalSwapRecord['step'] {
+  return value === 'awaiting-trade-created' || value === 'opened' || value === 'seller-opened'
+    || value === 'buyer-responded' || value === 'settling' || value === 'awaiting-confirmation'
+    || value === 'confirmed' || value === 'refunded' || value === 'Failed'
+}
+
+function decodeTokenSide(value: unknown): NonNullable<LocalOrderRecord['tokenSide']> {
+  if (value === 'Outcome' || value === 'Complement') return value
+  throw new Error('local order token side is invalid')
+}
+
+function decodeOrderSide(value: unknown): NonNullable<LocalOrderRecord['side']> {
+  if (value === 'Buy' || value === 'Sell') return value
+  throw new Error('local order side is invalid')
+}
+
+function decodeTimeInForce(value: unknown): NonNullable<LocalOrderRecord['timeInForce']> {
+  if (value === 'FAK' || value === 'FOK' || value === 'GTC') return value
+  throw new Error('local order time in force is invalid')
+}
+
+function decodePreflightSplit(value: unknown): LocalOrderPreflightSplit {
+  const split = requireStateRecord(value, 'local order preflight split')
+  requireStateFields(split, [
+    'reservationId', 'conditionId', 'keepOutcomeSetId', 'lockOutcomeSetId', 'amountSats',
+  ])
+  return {
+    reservationId: requireNonEmptyString(split.reservationId, 'local order preflight reservation'),
+    conditionId: requireNonEmptyString(split.conditionId, 'local order preflight condition'),
+    keepOutcomeSetId: requireNonEmptyString(split.keepOutcomeSetId, 'local order preflight keep outcome'),
+    lockOutcomeSetId: requireNonEmptyString(split.lockOutcomeSetId, 'local order preflight lock outcome'),
+    amountSats: requirePositiveInteger(split.amountSats, 'local order preflight amount'),
+  }
+}
+
+function decodeSwapRole(value: unknown): NonNullable<LocalSwapRecord['role']> {
+  if (value === 'seller' || value === 'buyer') return value
+  throw new Error('local swap role is invalid')
+}
+
+function decodeSettlementKind(value: unknown): string {
+  if (value === 'Mint' || value === 'DirectSwap') return value
+  throw new Error('local swap settlement kind is invalid')
+}
+
+function decodeSwapStep(value: unknown): LocalSwapRecord['step'] {
+  if (!isValidSwapStep(value)) throw new Error('local swap step is invalid')
+  return value
+}
+
+function decodeOptionalSwapIntegers(swap: Record<string, unknown>): Partial<LocalSwapRecord> {
+  const names = [
+    'sellerLocktime', 'buyerLocktime', 'fillAmountSats', 'fillAmountSubunits',
+    'outcomeFaceAmountSats', 'outcomeFaceAmountSubunits', 'quotePaymentSats',
+    'divisibility', 'quotePaymentSubunits',
+  ] as const
+  const decoded: Partial<LocalSwapRecord> = {}
+  for (const name of names) {
+    if (swap[name] !== undefined) {
+      ;(decoded as Record<string, number>)[name] = name === 'divisibility'
+        ? requirePositiveInteger(swap[name], `local swap ${name}`)
+        : requireTimestamp(swap[name], `local swap ${name}`)
+    }
+  }
+  return decoded
+}
+
+function decodeSwapMessages(value: unknown): LocalSwapRecord['messages'] {
+  const messages = requireStateRecord(value, 'local swap messages')
+  requireStateFields(messages, ['adaptorPoint', 'lockedProofsSeller', 'lockedProofsBuyer'], [
+    'adaptorPoint', 'lockedProofsSeller', 'lockedProofsBuyer',
+  ])
+  return {
+    ...(messages.adaptorPoint === undefined ? {} : { adaptorPoint: requireNonEmptyString(messages.adaptorPoint, 'local swap adaptor cipher') }),
+    ...(messages.lockedProofsSeller === undefined ? {} : { lockedProofsSeller: requireNonEmptyString(messages.lockedProofsSeller, 'local swap seller cipher') }),
+    ...(messages.lockedProofsBuyer === undefined ? {} : { lockedProofsBuyer: requireNonEmptyString(messages.lockedProofsBuyer, 'local swap buyer cipher') }),
+  }
+}
+
+function decodeHexArray(value: unknown, name: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${name} is invalid`)
+  return value.map((entry) => requireNonEmptyString(entry, name))
+}
+
+function decodeCashuProofArray(value: unknown, name: string): CashuProofRecord[] {
+  if (!Array.isArray(value)) throw new Error(`${name} is invalid`)
+  return value.map((proof) => decodeCashuProofRecord(proof, name))
+}
+
+function decodeTakerRecovery(value: unknown): NonNullable<LocalSwapRecord['takerRecovery']> {
+  const recovery = requireStateRecord(value, 'local swap taker recovery')
+  requireStateFields(recovery, ['clientOrderId', 'status', 'replacementOrderId'], ['replacementOrderId'])
+  if (recovery.status !== 'pending' && recovery.status !== 'submitted') {
+    throw new Error('local swap taker recovery is invalid')
+  }
+  return {
+    clientOrderId: requireNonEmptyString(recovery.clientOrderId, 'local swap replacement client id'),
+    status: recovery.status,
+    ...(recovery.replacementOrderId === undefined
+      ? {}
+      : { replacementOrderId: requireNonEmptyString(recovery.replacementOrderId, 'local swap replacement order id') }),
+  }
+}
+
+function decodeSwapFailure(value: unknown): SwapFailure | PartialLockHeldRecord {
+  const failure = requireStateRecord(value, 'local swap failure')
+  const common = ['kind', 'refundLocktime', 'affectedKeysets', 'detail']
+  if (failure.kind === 'PartialLockHeld') {
+    requireStateFields(failure, [
+      ...common, 'tradeId', 'orderId', 'mintUrl', 'outcomeByKeyset', 'lockedProofs', 'createdAt',
+    ], ['tradeId', 'orderId', 'mintUrl', 'outcomeByKeyset', 'lockedProofs', 'createdAt'])
+    const base: PartialLockHeldRecord = {
+      kind: 'PartialLockHeld',
+      tradeId: failure.tradeId === undefined || failure.tradeId === ''
+        ? ''
+        : requireNonEmptyString(failure.tradeId, 'local partial lock trade id'),
+      refundLocktime: requireTimestamp(failure.refundLocktime, 'local partial lock refund time'),
+      affectedKeysets: decodeStringArray(failure.affectedKeysets, 'local partial lock keysets'),
+      detail: requireNonEmptyString(failure.detail, 'local partial lock detail'),
+      outcomeByKeyset: failure.outcomeByKeyset === undefined
+        ? {}
+        : decodeOutcomeByKeyset(failure.outcomeByKeyset),
+      lockedProofs: failure.lockedProofs === undefined
+        ? []
+        : decodeCashuProofArray(failure.lockedProofs, 'local partial lock proofs'),
+      ...(failure.orderId === undefined ? {} : { orderId: requireNonEmptyString(failure.orderId, 'local partial lock order id') }),
+      ...(failure.mintUrl === undefined ? {} : { mintUrl: requireNonEmptyString(failure.mintUrl, 'local partial lock mint') }),
+      ...(failure.createdAt === undefined ? {} : { createdAt: requireTimestamp(failure.createdAt, 'local partial lock creation time') }),
+    }
+    return base
+  }
+  if (failure.kind !== 'InsufficientInventory' && failure.kind !== 'MintError' && failure.kind !== 'EngineRejected') {
+    throw new Error('local swap failure is invalid')
+  }
+  requireStateFields(failure, common, ['refundLocktime', 'affectedKeysets'])
+  return {
+    kind: failure.kind,
+    detail: requireNonEmptyString(failure.detail, 'local swap failure detail'),
+    ...(failure.refundLocktime === undefined ? {} : { refundLocktime: requireTimestamp(failure.refundLocktime, 'local swap refund time') }),
+    ...(failure.affectedKeysets === undefined ? {} : { affectedKeysets: decodeStringArray(failure.affectedKeysets, 'local swap failure keysets') }),
+  }
+}
+
+function decodeOutcomeByKeyset(value: unknown): PartialLockHeldRecord['outcomeByKeyset'] {
+  const mappings = requireStateRecord(value, 'local partial lock keyset outcomes')
+  return Object.fromEntries(Object.entries(mappings).map(([keysetId, raw]) => {
+    const metadata = requireStateRecord(raw, 'local partial lock outcome metadata')
+    requireStateFields(metadata, ['conditionId', 'outcomeCollection', 'marketId'])
+    return [
+      requireNonEmptyString(keysetId, 'local partial lock keyset'),
+      {
+        conditionId: requireNonEmptyString(metadata.conditionId, 'local partial lock condition'),
+        outcomeCollection: requireNonEmptyString(metadata.outcomeCollection, 'local partial lock outcome'),
+        marketId: requireNonEmptyString(metadata.marketId, 'local partial lock market'),
+      },
+    ]
+  }))
+}
+
+function decodeStringArray(value: unknown, name: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${name} is invalid`)
+  return value.map((entry) => requireNonEmptyString(entry, name))
+}
+
+function requirePositiveInteger(value: unknown, name: string): number {
+  const integer = requireTimestamp(value, name)
+  if (integer === 0) throw new Error(`${name} is invalid`)
+  return integer
+}
+
+function requireHex(value: unknown, name: string): string {
+  const text = requireNonEmptyString(value, name).toLowerCase()
+  if (!/^[0-9a-f]+$/.test(text) || text.length % 2 !== 0) throw new Error(`${name} is invalid`)
+  return text
 }
 
 function normalizeProofAsset(asset: StoredProofAsset | undefined): StoredProofAsset {
@@ -1274,72 +1939,6 @@ function normalizeProofAssetBaseAsset(asset: StoredProofAsset | undefined): stri
   return normalizeMarketBaseAsset(asset?.baseAsset)
 }
 
-function normalizeCounterMap(value: Record<string, unknown>): Record<string, number> {
-  return Object.fromEntries(
-    Object.entries(value).filter(
-      (entry): entry is [string, number] =>
-        typeof entry[1] === 'number' &&
-        Number.isInteger(entry[1]) &&
-        entry[1] >= 0,
-    ),
-  )
-}
-
-function normalizeProofOperations(
-  value: Record<string, unknown>,
-): Record<string, ProofOperationRecord> {
-  return Object.fromEntries(
-    Object.entries(value)
-      .map(([operationId, raw]) => normalizeProofOperation(operationId, raw))
-      .filter((entry): entry is [string, ProofOperationRecord] => entry !== null),
-  )
-}
-
-function normalizeProofOperation(
-  operationId: string,
-  raw: unknown,
-): [string, ProofOperationRecord] | null {
-  if (!isRecord(raw)) return null
-  const kind = raw.kind
-  const state = normalizeProofOperationState(raw.state)
-  const mintUrl = raw.mintUrl
-  if (
-    !isProofOperationKind(kind) ||
-    !isProofOperationState(state) ||
-    typeof mintUrl !== 'string'
-  ) {
-    return null
-  }
-  return [
-    operationId,
-    {
-      operationId:
-        typeof raw.operationId === 'string' ? raw.operationId : operationId,
-      durableTradeRecovery: isRecord(raw.durableTradeRecovery)
-        ? raw.durableTradeRecovery as unknown as DurableTradeProofOperationLink
-        : undefined,
-      kind,
-      state,
-      mintUrl,
-      inputs: Array.isArray(raw.inputs)
-        ? (raw.inputs as CashuProofRecord[]).map(normalizeCashuProofRecord)
-        : [],
-      outputs: isRecord(raw.outputs)
-        ? (raw.outputs as Record<string, StoredOutputData[]>)
-        : {},
-      metadata: isRecord(raw.metadata)
-        ? (raw.metadata as Record<string, unknown>)
-        : {},
-      resultProofs: isRecord(raw.resultProofs)
-        ? normalizeProofRecordGroups(raw.resultProofs as Record<string, CashuProofRecord[]>)
-        : undefined,
-      lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
-      createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
-      updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : 0,
-    },
-  ]
-}
-
 function assertCompatibleProofOperation(
   existing: ProofOperationRecord,
   input: PrepareProofOperationInput,
@@ -1353,86 +1952,6 @@ function assertCompatibleProofOperation(
       `Proof operation ${input.operationId} does not match this swap step`,
     )
   }
-}
-
-function normalizeSwaps(value: Record<string, unknown>): Record<string, LocalSwapRecord> {
-  return Object.fromEntries(
-    Object.entries(value).map(([tradeId, raw]) => {
-      const swap = raw as Partial<LocalSwapRecord>
-      return [
-        tradeId,
-        {
-          ...swap,
-          tradeId: swap.tradeId ?? tradeId,
-          messages: swap.messages ?? {},
-          step: normalizeSwapStep(swap.step),
-          createdAt: swap.createdAt ?? new Date(0).toISOString(),
-          updatedAt: swap.updatedAt ?? new Date(0).toISOString(),
-        } as LocalSwapRecord,
-      ]
-    }),
-  )
-}
-
-function normalizeOrders(value: Record<string, unknown>): Record<string, LocalOrderRecord> {
-  return Object.fromEntries(
-    Object.entries(value).map(([orderId, raw]) => {
-      const order = raw as Partial<LocalOrderRecord>
-      return [
-        orderId,
-        {
-          ...order,
-          orderId: order.orderId ?? orderId,
-          ...(normalizeTokenSide(order.tokenSide)
-            ? { tokenSide: normalizeTokenSide(order.tokenSide) }
-            : {}),
-          ...(normalizeOrderSide(order.side)
-            ? { side: normalizeOrderSide(order.side) }
-            : {}),
-          status: normalizeOrderStatus(order.status),
-          tradeIds: order.tradeIds ?? [],
-          createdAt: order.createdAt ?? new Date(0).toISOString(),
-          updatedAt: order.updatedAt ?? new Date(0).toISOString(),
-        } as LocalOrderRecord,
-      ]
-    }),
-  )
-}
-
-function normalizeTokenSide(value: unknown): LocalOrderRecord['tokenSide'] {
-  if (value === 'Outcome' || value === 'outcome') return 'Outcome'
-  if (value === 'Complement' || value === 'complement') return 'Complement'
-  return undefined
-}
-
-function normalizeOrderSide(value: unknown): LocalOrderRecord['side'] {
-  if (value === 'Buy' || value === 'buy') return 'Buy'
-  if (value === 'Sell' || value === 'sell') return 'Sell'
-  return undefined
-}
-
-function normalizeOrderStatus(value: unknown): string {
-  if (value === 'filled') return 'Filled'
-  if (value === 'failed') return 'Failed'
-  return typeof value === 'string' ? value : 'unknown'
-}
-
-function normalizeSwapStep(value: unknown): LocalSwapRecord['step'] {
-  if (value === 'failed') return 'Failed'
-  if (
-    value === 'awaiting-trade-created' ||
-    value === 'opened' ||
-    value === 'seller-opened' ||
-    value === 'buyer-responded' ||
-    value === 'settling' ||
-    value === 'awaiting-confirmation' ||
-    value === 'confirmed' ||
-    value === 'refunded' ||
-    value === 'Failed'
-  ) {
-    return value
-  }
-  return 'awaiting-trade-created'
 }
 
 function getOrCreate<K, V>(map: Map<K, V>, key: K, create: () => V): V {
@@ -1554,10 +2073,6 @@ function toJsonSafe(value: unknown): unknown {
 
 function isProofOperationState(value: unknown): value is ProofOperationState {
   return value === 'prepared' || value === 'mint-submitted' || value === 'completed' || value === 'Failed'
-}
-
-function normalizeProofOperationState(value: unknown): unknown {
-  return value === 'failed' ? 'Failed' : value
 }
 
 function findOrderForTradeCreated(

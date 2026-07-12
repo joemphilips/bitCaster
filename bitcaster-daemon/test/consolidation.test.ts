@@ -409,7 +409,7 @@ function proofRecord(
   updatedAt: string
 } {
   const asset: StoredProofAsset = outcomeSetId
-    ? { kind: 'outcome', conditionId: conditionIdForLabel(label), outcomeSetId }
+    ? { kind: 'Outcome', conditionId: conditionIdForLabel(label), outcomeSetId }
     : { kind: 'sats' }
   return {
     mintUrl: MINT_URL,

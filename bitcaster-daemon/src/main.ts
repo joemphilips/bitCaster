@@ -3,52 +3,69 @@
 import type { Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { profileFromPublicKey, writeProfile } from './profile.ts'
-import { ensureRpcToken } from './rpcAuth.ts'
 import {
+  assertDaemonProfileStorageComplete,
+  bootstrapDaemonProfile,
+  profileFromPublicKey,
+} from './profile.ts'
+import { createRpcToken, readRpcToken } from './rpcAuth.ts'
+import {
+  assertStoredSecretsHaveNoEphemeralKeysForIdentityReplacement,
+  createDaemonSecrets,
   createDaemonSecretsFromImport,
-  ensureSecrets,
+  encodeDaemonSecretsForStorage,
   readSecrets,
-  writeSecrets,
 } from './secrets.ts'
-import { ensureState, readState } from './state.ts'
+import {
+  assertStoredDaemonStateIsEmptyForIdentityReplacement,
+  emptyDaemonState,
+  encodeDaemonStateForStorage,
+} from './state.ts'
 import type { DaemonDurableTradeRecoveryRunner } from './durableTradeRecovery.ts'
 
 const [, , command = 'run', ...args] = process.argv
 
 switch (command) {
   case 'init': {
-    const initOptions = parseInitOptions(args)
-    const importedSecrets = await resolveImportedSecrets(initOptions)
-    if (importedSecrets) {
-      if ((await readSecrets()) && !initOptions.force) {
-        throw new Error('daemon secrets already exist; pass --force to replace them')
-      }
-      if (initOptions.force && !(await daemonStateIsEmpty())) {
-        throw new Error(
-          'daemon state is not empty; refusing to replace wallet/Nostr keys',
-        )
-      }
-      await writeSecrets(
-        createDaemonSecretsFromImport({
+    const { acquireDaemonRunLock } = await import('./runLock.ts')
+    const initLock = await acquireDaemonRunLock()
+    try {
+      const initOptions = parseInitOptions(args)
+      const importedSecrets = await resolveImportedSecrets(initOptions)
+      let secrets
+      if (importedSecrets) {
+        if ((await readSecrets()) && !initOptions.force) {
+          throw new Error('daemon secrets already exist; pass --force to replace them')
+        }
+        secrets = createDaemonSecretsFromImport({
           walletSeedHex: importedSecrets.walletSeedHex,
           nostrSecretKeyHex: importedSecrets.nostrSecretKeyHex,
+        })
+      } else {
+        secrets = (await readSecrets()) ?? createDaemonSecrets()
+      }
+      await bootstrapDaemonProfile({
+        profile: profileFromPublicKey(secrets.nostrPublicKeyHex, {
+          engineBaseUrl: initOptions.engineUrl,
+          mintUrl: initOptions.mintUrl,
         }),
-      )
+        secretsPayload: encodeDaemonSecretsForStorage(secrets),
+        statePayload: encodeDaemonStateForStorage(emptyDaemonState()),
+        rpcToken: createRpcToken(),
+        replaceExisting: Boolean(importedSecrets && initOptions.force),
+        assertReplacementSafe: (database) => {
+          assertStoredDaemonStateIsEmptyForIdentityReplacement(database)
+          assertStoredSecretsHaveNoEphemeralKeysForIdentityReplacement(database)
+        },
+      })
+      process.stdout.write('bitcaster-daemon profile initialized\n')
+    } finally {
+      await initLock.release()
     }
-    const secrets = await ensureSecrets()
-    await writeProfile(
-      profileFromPublicKey(secrets.nostrPublicKeyHex, {
-        engineBaseUrl: initOptions.engineUrl,
-        mintUrl: initOptions.mintUrl,
-      }),
-    )
-    await ensureRpcToken()
-    await ensureState()
-    process.stdout.write('bitcaster-daemon profile initialized\n')
     break
   }
   case 'run': {
+    await assertDaemonProfileStorageComplete()
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const {
       startDaemonServer,
@@ -73,8 +90,19 @@ switch (command) {
       recordTradeStateChanged,
     } = await import('./state.ts')
     const runLock = await acquireDaemonRunLock()
-    const profile = await readProfile()
-    const secrets = await readSecrets()
+    let listenerInstalled = false
+    try {
+      const [profile, secrets, rpcToken] = await Promise.all([
+        readProfile(),
+        readSecrets(),
+        readRpcToken(),
+      ])
+      // Decode every local custody authority before opening an RPC endpoint.
+      // A malformed row is a startup failure, never a background recovery log.
+      await ensureState()
+      if (!profile || !secrets || !rpcToken) {
+        throw new Error('daemon profile storage is incomplete')
+      }
     let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
     let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
     let runDurableRecovery: (() => Promise<void>) | undefined
@@ -149,34 +177,40 @@ switch (command) {
                 await takerFillRecovery?.recoverTrade(tradeId)
               })
             },
-            onPendingPubkeyRequired: async (tradeId, _orderId, _role, marketId, _deadline) => {
+            onPendingPubkeyRequired: async (tradeId, orderId, _role, marketId, _deadline) => {
               const { signNip98 } = await import('./nostrAuth.ts')
               const { conditionIdFromMarketId } = await import('@bitcaster-market/client-sdk/tradeIgnition')
-              const { generateOrderEphemeralKeypair } = await import('./ephemeralKey.ts')
               const { submitEphemeralPubkey: submitPubkey } = await import('@bitcaster-market/client-sdk/engineClient')
-              const keypair = generateOrderEphemeralKeypair()
+              const { submitPersistedPendingPubkey } = await import('./pendingPubkey.ts')
               type AuthorizationRequest = {
                 url: string
                 method: string
                 bodyText?: string
                 payloadHash?: string
               }
-              await submitPubkey(
-                profile.engineBaseUrl,
+              await submitPersistedPendingPubkey({
                 tradeId,
-                keypair.publicKeyHex,
-                null,
-                fetch,
-                async ({ url, method, bodyText, payloadHash }: AuthorizationRequest) =>
-                  signNip98(
-                    { privateKeyHex: secrets.nostrSecretKeyHex },
-                    url,
-                    method,
-                    bodyText,
-                    payloadHash,
-                  ),
-                conditionIdFromMarketId(marketId),
-              )
+                orderId,
+                marketId,
+                submit: async (publicKeyHex) => {
+                  await submitPubkey(
+                    profile.engineBaseUrl,
+                    tradeId,
+                    publicKeyHex,
+                    null,
+                    fetch,
+                    async ({ url, method, bodyText, payloadHash }: AuthorizationRequest) =>
+                      signNip98(
+                        { privateKeyHex: secrets.nostrSecretKeyHex },
+                        url,
+                        method,
+                        bodyText,
+                        payloadHash,
+                      ),
+                    conditionIdFromMarketId(marketId),
+                  )
+                },
+              })
             },
             onError: (err: Error) => {
               process.stderr.write(`TradeHub event error: ${err.message}\n`)
@@ -238,19 +272,14 @@ switch (command) {
       }
       : undefined
     durableRecoveryRunner?.armBootstrap()
-    try {
-      const server = await startDaemonServer({
-        tradeRuntime: runtime,
-        swapExecutor: executor,
-        durableTradeRecovery: durableRecoveryRunner,
-      })
-      installShutdownHandlers(server, runtime, runLock.release)
-    } catch (err) {
-      await runLock.release()
-      throw err
-    }
-    if (secrets) {
-      void recoverPreparedWalletSends(secrets)
+    const server = await startDaemonServer({
+      tradeRuntime: runtime,
+      swapExecutor: executor,
+      durableTradeRecovery: durableRecoveryRunner,
+    })
+    installShutdownHandlers(server, runtime, runLock.release)
+    listenerInstalled = true
+    void recoverPreparedWalletSends(secrets)
         .then((result) => {
           if (result.recovered.length > 0) {
             process.stderr.write(
@@ -267,7 +296,6 @@ switch (command) {
           const message = err instanceof Error ? err.message : String(err)
           process.stderr.write(`Wallet recovery sweep failed: ${message}\n`)
         })
-    }
     if (durableRecoveryRunner) {
       void (async () => {
         const recovery = await durableRecoveryRunner.finishBootstrap()
@@ -288,6 +316,10 @@ switch (command) {
         const message = err instanceof Error ? err.message : String(err)
         process.stderr.write(`Taker fill recovery sweep failed: ${message}\n`)
       })
+    }
+    } catch (error) {
+      if (!listenerInstalled) await runLock.release()
+      throw error
     }
     break
   }
@@ -394,18 +426,6 @@ async function readSecretHexFile(path: string, option: string): Promise<string> 
 function requiredArg(value: string | undefined, option: string): string {
   if (value) return value
   throw new Error(`Missing value for ${option}`)
-}
-
-async function daemonStateIsEmpty(): Promise<boolean> {
-  const state = await readState()
-  if (!state) return true
-  return (
-    state.wallet.proofs.length === 0 &&
-    Object.keys(state.wallet.keysetCounters).length === 0 &&
-    Object.keys(state.proofOperations).length === 0 &&
-    Object.keys(state.orders).length === 0 &&
-    Object.keys(state.swaps).length === 0
-  )
 }
 
 function installShutdownHandlers(

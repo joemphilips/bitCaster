@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Long-running wallet and atomic swap daemon for bitCaster markets",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "bin": {
     "bitcaster-daemon": "dist/main.js"

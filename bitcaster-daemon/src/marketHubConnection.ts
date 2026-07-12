@@ -1,8 +1,8 @@
 import { createRequire } from 'node:module'
 import { submitEphemeralPubkey as submitEphemeralPubkeyRequest } from '@bitcaster-market/client-sdk/engineClient'
-import { generateOrderEphemeralKeypair, type OrderEphemeralKeypair } from './ephemeralKey.ts'
+import type { OrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
-import { readSecrets, updateSecrets } from './secrets.ts'
+import { getOrCreateOrderEphemeralKeypair } from './secrets.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -102,7 +102,7 @@ export class SignalRMarketHubConnection {
           processedTradeIds: this.processedTradeIds,
           knownOrderIds: this.knownOrderIds,
           getOrCreateEphemeralKeypair: (tradeId) =>
-            getOrCreateStoredEphemeralKeypair({
+          getOrCreateOrderEphemeralKeypair({
               tradeId,
               orderId: parseMatchedDelta(delta).makerOrderId,
               marketId: parseMatchedDelta(delta).marketId,
@@ -163,33 +163,6 @@ export async function handleMatchedForMaker(input: {
     key.publicKeyHex,
     conditionIdFromMarketId(input.delta.marketId),
   )
-}
-
-async function getOrCreateStoredEphemeralKeypair(input: {
-  tradeId: string
-  orderId: string
-  marketId: string
-}): Promise<OrderEphemeralKeypair> {
-  const existing = (await readSecrets())?.orderEphemeralKeys[input.tradeId]
-  if (existing) {
-    return {
-      privateKeyHex: existing.privateKeyHex,
-      publicKeyHex: existing.publicKeyHex,
-    }
-  }
-
-  const created = generateOrderEphemeralKeypair()
-  await updateSecrets((current, now) => {
-    current.orderEphemeralKeys[input.tradeId] = {
-      orderId: input.orderId,
-      tradeId: input.tradeId,
-      marketId: input.marketId,
-      privateKeyHex: created.privateKeyHex,
-      publicKeyHex: created.publicKeyHex,
-      createdAt: now,
-    }
-  })
-  return created
 }
 
 function parseMatchedDelta(value: unknown): MarketMatchedDelta {

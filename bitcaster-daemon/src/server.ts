@@ -56,12 +56,12 @@ import {
   quotePaymentSubunits,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
-import { generateOrderEphemeralKeypair } from './ephemeralKey.ts'
+import { type generateOrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
 import { ensureProfileDir, normalizeEndpointUrl, readProfile, updateProfile } from './profile.ts'
 import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
-import { readSecrets, updateSecrets } from './secrets.ts'
+import { getOrCreateOrderEphemeralKeypair, readSecrets } from './secrets.ts'
 import {
   ensureState,
   getProofOperation,
@@ -248,9 +248,7 @@ const ctfProofOperationStore: CtfProofOperationStore = {
 export async function startDaemonServer(
   options: DaemonServerOptions = {},
 ): Promise<Server> {
-  if (options.tradeRuntime && (await readProfile())) {
-    await startTradeRuntimeBestEffort(options.tradeRuntime)
-  }
+  const startRuntimeAfterListen = Boolean(options.tradeRuntime && (await readProfile()))
   const server = createServer((req, res) => {
     void handleRequest(req, res, {
       tradeRuntime: options.tradeRuntime,
@@ -268,6 +266,7 @@ export async function startDaemonServer(
       void unlink(socketPath).catch(() => undefined)
     })
     process.stdout.write(`bitcaster-daemon listening on unix://${socketPath}\n`)
+    if (startRuntimeAfterListen) void startTradeRuntimeBestEffort(options.tradeRuntime)
     return server
   }
 
@@ -281,6 +280,10 @@ export async function startDaemonServer(
   const boundPort =
     typeof address === 'object' && address ? address.port : port
   process.stdout.write(`bitcaster-daemon listening on http://${host}:${boundPort}\n`)
+  // A dead engine must not delay local health/status or make the daemon look
+  // unavailable. Trade-runtime failure is already best-effort and bootstrap
+  // recovery remains armed before this listener is exposed.
+  if (startRuntimeAfterListen) void startTradeRuntimeBestEffort(options.tradeRuntime)
   return server
 }
 
@@ -1256,25 +1259,12 @@ export async function submitPendingEphemeralPubkeys(input: {
     if (!input.client.submitEphemeralPubkey) {
       throw new Error('engine client does not support ephemeral pubkey submission')
     }
-    const existing = (await readSecrets())?.orderEphemeralKeys[submission.tradeId]
-    const ephemeral = existing
-      ? {
-          privateKeyHex: existing.privateKeyHex,
-          publicKeyHex: existing.publicKeyHex,
-        }
-      : input.generateEphemeralKeypair?.() ?? generateOrderEphemeralKeypair()
-    if (!existing) {
-      await updateSecrets((current, now) => {
-        current.orderEphemeralKeys[submission.tradeId] = {
-          orderId: input.orderId,
-          tradeId: submission.tradeId,
-          marketId: input.marketId,
-          privateKeyHex: ephemeral.privateKeyHex,
-          publicKeyHex: ephemeral.publicKeyHex,
-          createdAt: now,
-        }
-      })
-    }
+    const ephemeral = await getOrCreateOrderEphemeralKeypair({
+      tradeId: submission.tradeId,
+      orderId: input.orderId,
+      marketId: input.marketId,
+      generateEphemeralKeypair: input.generateEphemeralKeypair,
+    })
     await input.client.submitEphemeralPubkey(
       submission.tradeId,
       ephemeral.publicKeyHex,

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createECDH } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1089,10 +1090,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             capturedOptions = options
             return engine
           },
-          generateEphemeralKeypair: () => ({
-            privateKeyHex: '11'.repeat(32),
-            publicKeyHex: `02${'22'.repeat(32)}`,
-          }),
+          generateEphemeralKeypair: () => testEphemeralKeypair('11'.repeat(32)),
           tradeRuntime: {
             async start(state) {
               runtimeStartOrderIds = Object.keys(state.orders)
@@ -1122,7 +1120,11 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
       )
       assert.deepEqual(submittedPubkeys, [
-        { tradeId: 'trade-1', pubkey: `02${'22'.repeat(32)}`, conditionId: 'cond' },
+        {
+          tradeId: 'trade-1',
+          pubkey: testEphemeralKeypair('11'.repeat(32)).publicKeyHex,
+          conditionId: 'cond',
+        },
       ])
 
       const state = await readState()
@@ -1139,7 +1141,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         tradeId: 'trade-1',
         marketId: 'cond-YES',
         privateKeyHex: '11'.repeat(32),
-        publicKeyHex: `02${'22'.repeat(32)}`,
+        publicKeyHex: testEphemeralKeypair('11'.repeat(32)).publicKeyHex,
         createdAt: updatedSecrets.orderEphemeralKeys['trade-1'].createdAt,
       })
     })
@@ -1191,10 +1193,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           createEngineClient() {
             return engine
           },
-          generateEphemeralKeypair: () => ({
-            privateKeyHex: '55'.repeat(32),
-            publicKeyHex: `02${'66'.repeat(32)}`,
-          }),
+          generateEphemeralKeypair: () => testEphemeralKeypair('55'.repeat(32)),
           tradeRuntime: {
             async start() {
               return { orders: [], trades: [] }
@@ -1322,10 +1321,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         },
         {
           createEngineClient: () => engine,
-          generateEphemeralKeypair: () => ({
-            privateKeyHex: '77'.repeat(32),
-            publicKeyHex: `02${'88'.repeat(32)}`,
-          }),
+          generateEphemeralKeypair: () => testEphemeralKeypair('77'.repeat(32)),
         },
       )
 
@@ -1386,10 +1382,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             createEngineClient() {
               return engine
             },
-            generateEphemeralKeypair: () => ({
-              privateKeyHex: '33'.repeat(32),
-              publicKeyHex: `02${'44'.repeat(32)}`,
-            }),
+            generateEphemeralKeypair: () => testEphemeralKeypair('33'.repeat(32)),
             tradeRuntime: {
               async start(state) {
                 runtimeOrder = state.orders['order-complement']
@@ -1452,10 +1445,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           createEngineClient() {
             return engine
           },
-          generateEphemeralKeypair: () => ({
-            privateKeyHex: '11'.repeat(32),
-            publicKeyHex: `02${'22'.repeat(32)}`,
-          }),
+          generateEphemeralKeypair: () => testEphemeralKeypair('11'.repeat(32)),
         },
       )
 
@@ -1554,10 +1544,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                 },
               })
             },
-            generateEphemeralKeypair: () => ({
-              privateKeyHex: '55'.repeat(32),
-              publicKeyHex: `02${'55'.repeat(32)}`,
-            }),
+            generateEphemeralKeypair: () => testEphemeralKeypair('55'.repeat(32)),
           },
         )
 
@@ -2007,10 +1994,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           createEngineClient() {
             return engine
           },
-          generateEphemeralKeypair: () => ({
-            privateKeyHex: '33'.repeat(32),
-            publicKeyHex: `02${'33'.repeat(32)}`,
-          }),
+          generateEphemeralKeypair: () => testEphemeralKeypair('33'.repeat(32)),
           tradeRuntime: {
             async start() {
               throw new Error('TradeHub unavailable')
@@ -2073,10 +2057,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
               },
             }
           },
-          generateEphemeralKeypair: () => ({
-            privateKeyHex: '44'.repeat(32),
-            publicKeyHex: `02${'44'.repeat(32)}`,
-          }),
+          generateEphemeralKeypair: () => testEphemeralKeypair('44'.repeat(32)),
           tradeRuntime: {
             async start() {
               return { orders: [], trades: [] }
@@ -2227,13 +2208,13 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
   const state = emptyDaemonState()
   state.wallet.proofs.push(
     proofRecord('mint-a', amount, 'available', {
-      kind: 'outcome',
+      kind: 'Outcome',
       conditionId,
       outcomeSetId: 'YES',
       baseAsset: 'sat',
     }, `${conditionId}-yes-vcs`),
     proofRecord('mint-a', amount, 'available', {
-      kind: 'outcome',
+      kind: 'Outcome',
       conditionId,
       outcomeSetId: 'NO',
       baseAsset: 'sat',
@@ -2366,5 +2347,14 @@ function preparedOutput(secret: string) {
     },
     blindingFactor: 1n,
     secret: new Uint8Array([secret.length]),
+  }
+}
+
+function testEphemeralKeypair(privateKeyHex: string) {
+  const key = createECDH('secp256k1')
+  key.setPrivateKey(Buffer.from(privateKeyHex, 'hex'))
+  return {
+    privateKeyHex,
+    publicKeyHex: key.getPublicKey(undefined, 'compressed').toString('hex'),
   }
 }
