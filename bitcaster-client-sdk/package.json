@@ -104,6 +104,10 @@
       "types": "./dist/durableStorageAdmission.d.ts",
       "import": "./dist/durableStorageAdmission.js"
     },
+    "./encryptedWalletBackup": {
+      "types": "./dist/encryptedWalletBackup.d.ts",
+      "import": "./dist/encryptedWalletBackup.js"
+    },
     "./tradeSession": {
       "types": "./dist/tradeSession.d.ts",
       "import": "./dist/tradeSession.js"
@@ -123,6 +127,7 @@
     "postbuild": "node ../scripts/rewrite-dts-imports.mjs dist",
     "prepack": "npm run build",
     "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test:backup-browsers": "node scripts/test-encrypted-wallet-backup-browsers.mjs",
     "typecheck": "tsc --noEmit"
   },
   "files": [
@@ -133,11 +138,14 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "@cashu/cashu-ts": "file:../cashu-ts",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
-    "@cashu/cashu-ts": "file:../cashu-ts"
+    "cborg": "5.1.7"
   },
   "devDependencies": {
+    "esbuild": "0.28.1",
+    "playwright": "1.60.0",
     "typescript": "^5.7.2"
   }
 }

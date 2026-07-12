@@ -281,6 +281,22 @@ test('global proof identity has a domain-separated canonical vector and never in
   )
 })
 
+test('global proof identity canonicalizes legacy Base64 padding and alphabet aliases', () => {
+  const identity = (keysetId: string) => deriveDurableCustodyProofId({
+    normalizedMint: 'https://mint.example',
+    unit: 'sat',
+    keysetId,
+    secret: 'proof-secret-001',
+  })
+  assert.equal(identity('AQIDBA=='), identity('AQIDBA'))
+  assert.equal(identity('+///'), identity('-___'))
+  assert.throws(() => identity('+___'), /mixes Base64 alphabets/)
+  const modern = `01${'ab'.repeat(32)}`
+  assert.equal(identity(modern), deriveDurableCustodyProofId({
+    normalizedMint: 'https://mint.example', unit: 'sat', keysetId: modern, secret: 'proof-secret-001',
+  }))
+})
+
 test('market custody scopes bind their mint, unit, and inventory domain', () => {
   const scope = marketScope()
   const raw = custodyRecord()

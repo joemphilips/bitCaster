@@ -733,7 +733,9 @@ export function decodeDurableCustodyOperationId(value: unknown, expectedScopeId:
 export function deriveDurableCustodyProofId(input: DurableCustodyProofIdentityInput): string {
   const normalizedMint = requireNormalizedMint(input.normalizedMint)
   const unit = requireIdentifier(input.unit, 'proof unit')
-  const keysetId = requireIdentifier(input.keysetId, 'proof keyset id')
+  const keysetId = canonicalDurableCustodyKeysetIdentity(
+    requireIdentifier(input.keysetId, 'proof keyset id'),
+  )
   const secret = requireSecret(input.secret)
   return bytesToHex(sha256(encodeProofIdentity([
     'bitcaster/custody-proof-id/v1',
@@ -742,6 +744,28 @@ export function deriveDurableCustodyProofId(input: DurableCustodyProofIdentityIn
     keysetId,
     secret,
   ])))
+}
+
+/** Canonicalizes Cashu legacy Base64/Base64url aliases without rewriting modern hex IDs. */
+export function canonicalDurableCustodyKeysetIdentity(keysetId: string): string {
+  if (/^[0-9a-fA-F]+$/.test(keysetId)) return keysetId
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(keysetId)) return keysetId
+  if (/[+/]/.test(keysetId) && /[-_]/.test(keysetId)) {
+    throw new Error('proof keyset id mixes Base64 alphabets')
+  }
+  const normalized = keysetId.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '')
+  if (normalized.length % 4 === 1) return keysetId
+  try {
+    const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4)
+    const decodedText = atob(padded)
+    const decoded = Uint8Array.from(decodedText, (character) => character.charCodeAt(0))
+    let standardText = ''
+    for (const byte of decoded) standardText += String.fromCharCode(byte)
+    if (btoa(standardText).replace(/=+$/, '') !== normalized) return keysetId
+    return `legacy:${bytesToHex(decoded)}`
+  } catch {
+    return keysetId
+  }
 }
 
 /** Decodes the complete persisted record and rejects any ambiguous data. */

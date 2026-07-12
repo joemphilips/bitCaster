@@ -260,6 +260,31 @@ test('authenticated receipt and prepared snapshot evidence cannot be mutated aft
   }, TypeError)
 })
 
+test('cloned or rewritten receipt and snapshot evidence has no authority', () => {
+  const receiptEvidence = authenticatedReceipt()
+  assert.throws(() => classifyDurableWalletStorage({
+    ...coldProofInput(),
+    backupReceiptEvidence: { ...receiptEvidence },
+  }), /receipt evidence is not authenticated/)
+  assert.throws(() => classifyDurableWalletStorage({
+    ...coldProofInput(),
+    backupReceiptEvidence: {
+      ...receiptEvidence,
+      receipt: { ...receiptEvidence.receipt, proofCommitment: 'aa'.repeat(32) },
+    },
+  }), /receipt evidence is not authenticated/)
+
+  const snapshotEvidence = acknowledgeDurableWalletBackupSnapshot(acknowledgedSnapshot(), () => true)
+  assert.throws(
+    () => prepareDurableWalletAcknowledgedBackupSnapshot({ ...snapshotEvidence }),
+    /snapshot evidence is not acknowledged/,
+  )
+  assert.throws(() => prepareDurableWalletAcknowledgedBackupSnapshot({
+    ...snapshotEvidence,
+    snapshot: { ...snapshotEvidence.snapshot, manifestDigest: 'aa'.repeat(32) },
+  }), /snapshot evidence is not acknowledged/)
+})
+
 test('expired CTF is audit-retained until its explicit purge boundary', () => {
   const expired = classifyDurableWalletStorage({
     ...coldProofInput(),
