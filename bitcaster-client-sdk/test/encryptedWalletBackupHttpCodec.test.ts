@@ -841,6 +841,7 @@ test('account result binding rejects mixups before the durable callback', async 
     url: 'https://backup.example.test/v1/encrypted-wallet-backup/realms/account-codec/vaults:enroll',
     operationId: OPERATION_ID,
     expectedEnrollmentEpoch: 0,
+    signal: AbortSignal.timeout(60_000),
     authorizationPort: {
       async authorizeBackupAccountOperation() {
         return { scheme: 'test', authorization: new Uint8Array([1]) }

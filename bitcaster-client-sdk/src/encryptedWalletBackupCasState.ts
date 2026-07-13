@@ -3,6 +3,7 @@ export type EncryptedWalletBackupCasState =
   | 'cas-uncertain'
   | 'retry-cas'
   | 'retry-exhausted'
+  | 'reconcile-before-retry'
   | 'acknowledged'
   | 'fork-rejected'
 
@@ -43,7 +44,16 @@ export function validateEncryptedWalletBackupCasState(input: {
         !hasRetryBoundary
       break
     case 'retry-exhausted':
-      valid = input.casAttempts === ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX && hasRetryBoundary
+      valid =
+        input.casAttempts >= 1 &&
+        input.casAttempts <= ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX &&
+        hasRetryBoundary
+      break
+    case 'reconcile-before-retry':
+      valid =
+        input.casAttempts >= 1 &&
+        input.casAttempts <= ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX &&
+        !hasRetryBoundary
       break
     case 'acknowledged':
     case 'fork-rejected':
@@ -74,7 +84,8 @@ export function validateEncryptedWalletBackupAggregateCasLifecycle(input: {
         input.state === 'sealed' ||
         input.state === 'cas-uncertain' ||
         input.state === 'retry-cas' ||
-        input.state === 'retry-exhausted'
+        input.state === 'retry-exhausted' ||
+        input.state === 'reconcile-before-retry'
       break
     case 'fork-cleanup-uncertain':
     case 'abandoned':

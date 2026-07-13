@@ -596,6 +596,7 @@ test('real child replacement peak accepts 127 chunks and rejects 128 chunks', as
       issuedAtUnixSeconds: 1_700_000_000,
       expiresAtUnixSeconds: 1_700_000_030,
       payload: new Uint8Array(),
+      signal: AbortSignal.timeout(60_000),
       runtime: deterministicCapacityRuntime([
         indexedDomainBytes(domain, 1, 16),
         indexedDomainBytes(domain + 1, 1, 32),

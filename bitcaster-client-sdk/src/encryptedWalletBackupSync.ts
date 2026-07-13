@@ -8,6 +8,7 @@ import {
   ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES,
   ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX,
   ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
+  EncryptedWalletBackupRemoteBackoffError,
   type EncryptedWalletBackupKeyHandle,
   type EncryptedWalletBackupRequestProof,
   type EncryptedWalletBackupRuntime,
@@ -37,6 +38,12 @@ import {
   preflightEncryptedBackupPutCbor,
   preflightEncryptedBackupReferenceSetCbor,
 } from './encryptedWalletBackupCbor.ts'
+import {
+  awaitEncryptedWalletBackupCycle,
+  EncryptedWalletBackupDeadlineError,
+  requireEncryptedWalletBackupCycleSignal,
+  throwIfEncryptedWalletBackupCycleAborted,
+} from './encryptedWalletBackupDeadline.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX = 16 as const
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX = 4 * 1_024 * 1_024
@@ -517,6 +524,7 @@ export interface EncryptedWalletBackupObjectRemotePort {
   putObject(input: {
     requestProof: EncryptedWalletBackupRequestProof
     canonicalPutPayload: Uint8Array
+    signal: AbortSignal
   }): Promise<
     Readonly<{
       status:
@@ -527,6 +535,7 @@ export interface EncryptedWalletBackupObjectRemotePort {
         | 'rate-limited'
         | 'overloaded'
         | 'unavailable'
+      retryAfterSeconds?: number | null
     }>
   >
 }
@@ -535,6 +544,7 @@ export interface EncryptedWalletBackupUploadAbortRemotePort {
   abortUploadAttempt(input: {
     requestProof: EncryptedWalletBackupRequestProof
     canonicalAbortPayload: Uint8Array
+    signal: AbortSignal
   }): Promise<
     Readonly<{
       status:
@@ -545,6 +555,7 @@ export interface EncryptedWalletBackupUploadAbortRemotePort {
         | 'rate-limited'
         | 'overloaded'
         | 'unavailable'
+      retryAfterSeconds?: number | null
     }>
   >
 }
@@ -846,9 +857,12 @@ export async function uploadEncryptedWalletBackupBatch(input: {
   clock: EncryptedWalletBackupClock
   objectUrl: (objectId: string) => string
   remote: EncryptedWalletBackupObjectRemotePort
+  signal: AbortSignal
   executionLeaseDurationMilliseconds?: number
   runtime?: EncryptedWalletBackupRuntime
 }): Promise<SealedEncryptedWalletBackupUploadBatch> {
+  const cycleSignal = requireEncryptedWalletBackupCycleSignal(input.signal)
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal)
   const claim = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store)
   await validateCurrentUploadAttemptClaim(input.store, claim.record, ['active'])
   let authority = requireUploadBatchAuthority(input.batch, input.keyHandle)
@@ -900,9 +914,9 @@ export async function uploadEncryptedWalletBackupBatch(input: {
   )
     throw new Error('encrypted backup clock is invalid')
   let nextIndex = 0
-  let failure: Error | null = null
+  const failures: Array<{ readonly itemIndex: number; readonly error: Error }> = []
   const worker = async (): Promise<void> => {
-    while (failure === null) {
+    while (failures.length === 0) {
       const index = nextIndex
       nextIndex += 1
       const item = authority.record.items[index]
@@ -925,19 +939,38 @@ export async function uploadEncryptedWalletBackupBatch(input: {
           issuedAtUnixSeconds: issuedAt,
           expiresAtUnixSeconds: issuedAt + 60,
           payload: item.canonicalPutPayload,
+          signal: cycleSignal,
           runtime: input.runtime,
         })
         await validateCurrentUploadBatchExecution(input.store, claim.record, authority.record)
-        const response = await input.remote.putObject({
-          requestProof,
-          canonicalPutPayload: item.canonicalPutPayload.slice(),
-        })
+        const response = await awaitEncryptedWalletBackupCycle(
+          input.remote.putObject({
+            requestProof,
+            canonicalPutPayload: item.canonicalPutPayload.slice(),
+            signal: cycleSignal,
+          }),
+          cycleSignal,
+        )
         if (response.status !== 'stored' && response.status !== 'already-stored') {
+          if (
+            response.status === 'quota-exceeded' ||
+            response.status === 'rate-limited' ||
+            response.status === 'overloaded' ||
+            response.status === 'unavailable'
+          ) {
+            throw new EncryptedWalletBackupRemoteBackoffError(
+              response.status,
+              response.retryAfterSeconds,
+            )
+          }
           throw new Error(`encrypted backup object upload failed: ${response.status}`)
         }
       } catch (error) {
-        failure =
-          error instanceof Error ? error : new Error('encrypted backup object upload failed')
+        failures.push({
+          itemIndex: index,
+          error:
+            error instanceof Error ? error : new Error('encrypted backup object upload failed'),
+        })
       }
     }
   }
@@ -949,7 +982,7 @@ export async function uploadEncryptedWalletBackupBatch(input: {
       () => worker(),
     ),
   )
-  if (failure !== null) throw failure
+  if (failures.length > 0) throw reduceUploadFailures(failures)
   return transitionUploadBatch(
     input.store,
     input.claim,
@@ -1115,8 +1148,11 @@ export async function abandonEncryptedWalletBackupUploadAttempt(input: {
   url: string
   clock: EncryptedWalletBackupClock
   remote: EncryptedWalletBackupUploadAbortRemotePort
+  signal: AbortSignal
   runtime?: EncryptedWalletBackupRuntime
 }): Promise<AbandonedEncryptedWalletBackupUploadAttempt> {
+  const cycleSignal = requireEncryptedWalletBackupCycleSignal(input.signal)
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal)
   const claim = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store)
   await validateCurrentUploadAttemptClaim(input.store, claim.record, ['active', 'abort-uncertain'])
   let currentAttempt = claim.record
@@ -1159,14 +1195,26 @@ export async function abandonEncryptedWalletBackupUploadAttempt(input: {
     issuedAtUnixSeconds: issuedAt,
     expiresAtUnixSeconds: issuedAt + 60,
     payload: canonicalAbortPayload,
+    signal: cycleSignal,
     runtime: input.runtime,
   })
   await validateCurrentUploadAttemptClaim(input.store, currentAttempt, ['abort-uncertain'])
-  const response = await input.remote.abortUploadAttempt({
-    requestProof,
-    canonicalAbortPayload: canonicalAbortPayload.slice(),
-  })
+  const response = await awaitEncryptedWalletBackupCycle(
+    input.remote.abortUploadAttempt({
+      requestProof,
+      canonicalAbortPayload: canonicalAbortPayload.slice(),
+      signal: cycleSignal,
+    }),
+    cycleSignal,
+  )
   if (response.status !== 'abandoned' && response.status !== 'already-abandoned') {
+    if (
+      response.status === 'rate-limited' ||
+      response.status === 'overloaded' ||
+      response.status === 'unavailable'
+    ) {
+      throw new EncryptedWalletBackupRemoteBackoffError(response.status, response.retryAfterSeconds)
+    }
     throw new Error(`backup upload abort failed: ${response.status}`)
   }
   const record = await persistAttemptAbortState(input.store, currentAttempt, 'abandoned')
@@ -1181,8 +1229,11 @@ export async function cleanUpRejectedEncryptedWalletBackupFork(input: {
   url: string
   clock: EncryptedWalletBackupClock
   remote: EncryptedWalletBackupUploadAbortRemotePort
+  signal: AbortSignal
   runtime?: EncryptedWalletBackupRuntime
 }): Promise<CleanedEncryptedWalletBackupFork> {
+  const cycleSignal = requireEncryptedWalletBackupCycleSignal(input.signal)
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal)
   const claim = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store).record
   requireCoordinatorStore(input.store)
   if (
@@ -1223,6 +1274,7 @@ export async function cleanUpRejectedEncryptedWalletBackupFork(input: {
     issuedAtUnixSeconds: issuedAt,
     expiresAtUnixSeconds: issuedAt + 60,
     payload: canonicalAbortPayload,
+    signal: cycleSignal,
     runtime: input.runtime,
   })
   const currentCleanupCas = await readCurrentForkCleanupCasAttempt(input.store, claim)
@@ -1233,11 +1285,16 @@ export async function cleanUpRejectedEncryptedWalletBackupFork(input: {
     ReturnType<EncryptedWalletBackupUploadAbortRemotePort['abortUploadAttempt']>
   >
   try {
-    response = await input.remote.abortUploadAttempt({
-      requestProof,
-      canonicalAbortPayload: canonicalAbortPayload.slice(),
-    })
-  } catch {
+    response = await awaitEncryptedWalletBackupCycle(
+      input.remote.abortUploadAttempt({
+        requestProof,
+        canonicalAbortPayload: canonicalAbortPayload.slice(),
+        signal: cycleSignal,
+      }),
+      cycleSignal,
+    )
+  } catch (error) {
+    if (error instanceof EncryptedWalletBackupDeadlineError) throw error
     throw new Error('backup fork cleanup is unavailable')
   }
   if (
@@ -1245,6 +1302,13 @@ export async function cleanUpRejectedEncryptedWalletBackupFork(input: {
     response.status !== 'already-abandoned' &&
     response.status !== 'already-finalized'
   ) {
+    if (
+      response.status === 'rate-limited' ||
+      response.status === 'overloaded' ||
+      response.status === 'unavailable'
+    ) {
+      throw new EncryptedWalletBackupRemoteBackoffError(response.status, response.retryAfterSeconds)
+    }
     throw new Error(`backup fork cleanup failed: ${response.status}`)
   }
   const outcome = response.status === 'already-finalized' ? 'already-finalized' : 'abandoned'
@@ -1500,6 +1564,7 @@ function decodeCoordinatorCasRecord(value: unknown): EncryptedWalletBackupSyncAt
       'cas-uncertain',
       'retry-cas',
       'retry-exhausted',
+      'reconcile-before-retry',
       'acknowledged',
       'fork-rejected',
     ] as const,
@@ -3120,6 +3185,38 @@ function requireRealm(value: unknown): string {
     throw new Error('backup realm is invalid')
   }
   return value
+}
+
+function reduceUploadFailures(
+  failures: readonly {
+    readonly itemIndex: number
+    readonly error: Error
+  }[],
+): Error {
+  const fatal = failures
+    .filter((failure) => !(failure.error instanceof EncryptedWalletBackupRemoteBackoffError))
+    .sort((left, right) => left.itemIndex - right.itemIndex)[0]
+  if (fatal !== undefined) return fatal.error
+
+  const precedence: Record<EncryptedWalletBackupRemoteBackoffError['status'], number> = {
+    'quota-exceeded': 4,
+    'rate-limited': 3,
+    overloaded: 2,
+    unavailable: 1,
+  }
+  const selected = failures
+    .map((failure) => ({
+      itemIndex: failure.itemIndex,
+      error: failure.error as EncryptedWalletBackupRemoteBackoffError,
+    }))
+    .sort(
+      (left, right) =>
+        right.error.delayMilliseconds() - left.error.delayMilliseconds() ||
+        precedence[right.error.status] - precedence[left.error.status] ||
+        left.itemIndex - right.itemIndex,
+    )[0]
+  if (selected === undefined) throw new Error('encrypted backup upload failure set is empty')
+  return selected.error
 }
 
 function requireRecord(value: unknown, name: string): Record<string, unknown> {

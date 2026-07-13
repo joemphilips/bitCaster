@@ -657,11 +657,19 @@ authenticated head read: target means acknowledged, parent permits an exact-byte
 retry within the initial-plus-two-retry allowance, and any other head is a fork.
 If the exact parent remains after the final allowance, the attempt records
 `retry-exhausted` with a durable not-before boundary atomically stamped from the
-adapter's database clock plus the fixed five-second delay; client/request clock
-skew cannot shorten it. It is not misclassified as a fork. At or after
-that boundary, the adapter atomically resumes the same exact attempt row,
-upload-attempt ID, target digest, and canonical CAS bytes. It cannot create a
-replacement target or reset the allowance early. Authenticated target
+adapter's database clock plus five seconds. An authenticated quota or
+backpressure response may suspend the same attempt earlier, after one through
+three dispatches: quota uses the five-second default, while rate-limit,
+overload, or unavailability may supply a validated 1–3,600 second delay.
+The adapter stamps that boundary before its follow-up authenticated head read;
+head backpressure, transport failure, or restart therefore cannot erase it.
+Client/request clock skew cannot shorten either boundary, and suspension is not
+misclassified as a fork. At or after that boundary, the adapter atomically
+resumes the same exact attempt row, upload-attempt ID, target digest, and
+canonical CAS bytes in `reconcile-before-retry`. It must authenticate the
+current head before another CAS dispatch: target acknowledges, parent reopens
+the exact-byte allowance, and any other head rejects the fork. It cannot create
+a replacement target or reset the allowance early. Authenticated target
 observation atomically changes the CAS row to `acknowledged` and aggregate to
 `complete`. Parent observation retries while the aggregate stays
 `cas-journaled`; a foreign head atomically changes the CAS row to
@@ -828,6 +836,17 @@ must be null for `invalid-request`, `unauthorized`, `not-found`, `conflict`,
 adapter must reject redirects, content encoding, a missing or parameterized
 `application/cbor` response media type, or any response that is not
 `Cache-Control: no-store`; those transport checks precede this codec.
+Each adapter request has a 15-second fail-safe. SDK coordinators require a
+host-supplied absolute cycle signal and do not impose the browser foreground
+quota-recovery deadline on background or native-client work. Every adopting
+host defines and validates a finite whole-cycle policy and tests that its signal
+fires; an unbounded placeholder signal is not conformant.
+
+The database-time retry boundary is a minimum. Shared SDK scheduling uses a
+persisted per-vault consecutive-failure streak, a five-second exponential base
+capped at one hour, and deterministic vault/attempt jitter of up to 20 percent.
+It never shortens a validated server hint, and only an acknowledged head resets
+the streak. Host adapters wake at or after that computed boundary.
 
 Object DELETE requires the exact delegated owner/vault/key/epoch binding and
 exact object ownership. In one service transaction it rejects a current-head-
