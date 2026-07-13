@@ -13,15 +13,25 @@ import {
   type EncryptedWalletBackupRuntime,
   type EncryptedWalletBackupClock,
   type EncryptedWalletBackupManifestHead,
-  type FinalizedEncryptedWalletBackupUploadSet,
+  type EncryptedWalletBackupSyncAttemptRecord,
+  type EncryptedWalletBackupSyncAttemptStore,
+  type SealedEncryptedWalletBackupSyncAttempt,
   prepareEncryptedWalletBackupRequestProof,
   readPreparedEncryptedWalletBackupManifestTarget,
   readPreparedEncryptedWalletBackupObject,
 } from './encryptedWalletBackup.ts'
+import { issueCoordinatedEncryptedWalletBackupCasAttempt } from './encryptedWalletBackupCasAuthority.ts'
+import {
+  ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
+  ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES,
+  validateEncryptedWalletBackupAggregateCasLifecycle,
+  validateEncryptedWalletBackupCasState,
+} from './encryptedWalletBackupCasState.ts'
+import { deriveDurableWalletBackupSnapshotId } from './recoverableWalletStorage.ts'
 import { readPreparedEncryptedWalletBackupUploadAuthority } from './encryptedWalletBackupPlanningAuthority.ts'
-import { issueFinalizedEncryptedWalletBackupUploadSet } from './encryptedWalletBackupUploadAuthority.ts'
 import {
   encodeCanonicalBackupCbor as encodeCanonical,
+  preflightEncryptedBackupCasCbor,
   preflightEncryptedBackupHeadCbor,
   preflightEncryptedBackupPutCbor,
   preflightEncryptedBackupReferenceSetCbor,
@@ -229,7 +239,12 @@ export interface EncryptedWalletBackupUploadBatchStore {
   sealActiveUploadAttempt<T>(
     candidate: Omit<
       EncryptedWalletBackupActiveUploadAttemptRecord,
-      'ownerEpoch' | 'leaseExpiresAtUnixMilliseconds' | 'batchIds' | 'activeBatchId' | 'lifecycle'
+      | 'ownerEpoch'
+      | 'leaseExpiresAtUnixMilliseconds'
+      | 'batchIds'
+      | 'activeBatchId'
+      | 'casAttemptId'
+      | 'lifecycle'
     >,
     leaseDurationMilliseconds: number,
     seal: (committed: EncryptedWalletBackupActiveUploadAttemptRecord) => T,
@@ -303,33 +318,14 @@ export interface EncryptedWalletBackupUploadBatchStore {
       }>,
     ) => T,
   ): Promise<T>
+  /**
+   * One physical transaction. Invoke the SDK callback against terminal
+   * abandoned snapshots, then delete the upload aggregate and every batch
+   * before committing. Callback failure rolls back transition and deletion.
+   */
   completeUploadAttemptAbort<T>(
     claim: EncryptedWalletBackupActiveUploadAttemptRecord,
     commit: (
-      committed: Readonly<{
-        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
-        batches: readonly EncryptedWalletBackupUploadBatchRecord[]
-      }>,
-    ) => T,
-  ): Promise<T>
-  /**
-   * Transactionally loads the complete attempt/target partition, requires every
-   * row acknowledged, transitions every row to finalized, and rolls back if
-   * the synchronous callback rejects the committed partition.
-   */
-  finalizeUploadAttempt<T>(
-    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
-    commit: (
-      committed: Readonly<{
-        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
-        batches: readonly EncryptedWalletBackupUploadBatchRecord[]
-      }>,
-    ) => T,
-  ): Promise<T>
-  /** Returns the complete attempt/target partition, including mixed states. */
-  readFinalizedUploadAttempt<T>(
-    uploadAttemptId: string,
-    read: (
       committed: Readonly<{
         attempt: EncryptedWalletBackupActiveUploadAttemptRecord
         batches: readonly EncryptedWalletBackupUploadBatchRecord[]
@@ -356,7 +352,131 @@ export interface EncryptedWalletBackupActiveUploadAttemptRecord {
   readonly localSnapshotRevision: number
   readonly batchIds: readonly string[]
   readonly activeBatchId: string | null
-  readonly lifecycle: 'active' | 'abort-uncertain' | 'finalized' | 'abandoned'
+  readonly casAttemptId: string | null
+  readonly lifecycle:
+    | 'active'
+    | 'abort-uncertain'
+    | 'cas-journaled'
+    | 'fork-cleanup-uncertain'
+    | 'abandoned'
+    | 'complete'
+}
+
+export interface EncryptedWalletBackupCoordinatorStore extends EncryptedWalletBackupUploadBatchStore {
+  /**
+   * One physical database transaction. SQLite/PostgreSQL adapters enforce a
+   * foreign key plus a unique uploadAttemptId. Dexie adapters enforce the same
+   * relation with same-transaction existence checks and a unique index.
+   * Existing rows keep their mutable retry state but must have exact immutable
+   * identity. The callback receives every row linked by uploadAttemptId so the
+   * SDK can reject missing or duplicate relations.
+   */
+  sealOrReadLinkedCasAttempt<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    candidate: EncryptedWalletBackupSyncAttemptRecord,
+    commit: (
+      committed: Readonly<{
+        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+        batches: readonly EncryptedWalletBackupUploadBatchRecord[]
+        casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+      }>,
+    ) => T,
+  ): Promise<T>
+  /** DB-time owner validation plus an exact read of every linked CAS row. */
+  readLinkedCasAttempts<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    read: (
+      committed: Readonly<{
+        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+        casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+      }>,
+    ) => T,
+  ): Promise<T>
+  validateLinkedCasAttempt<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    expected: EncryptedWalletBackupSyncAttemptRecord,
+    read: (
+      committed: Readonly<{
+        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+        casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+      }>,
+    ) => T,
+  ): Promise<T>
+  /**
+   * One physical transaction for a nonterminal CAS transition. Batch rows are
+   * intentionally not loaded on this path.
+   */
+  transitionLinkedCasAttempt<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    expected: EncryptedWalletBackupSyncAttemptRecord,
+    next: EncryptedWalletBackupSyncAttemptRecord,
+    aggregateLifecycle: 'cas-journaled' | 'fork-cleanup-uncertain',
+    commit: (
+      committed: Readonly<{
+        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+        casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+      }>,
+    ) => T,
+  ): Promise<T>
+  /**
+   * One physical transaction for an acknowledged CAS. Load the complete
+   * finalized batch partition, invoke the SDK callback against the terminal
+   * aggregate/CAS/partition snapshots, then delete all three record classes.
+   * Callback failure rolls back the transition and deletion.
+   */
+  completeLinkedCasAttempt<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    expected: EncryptedWalletBackupSyncAttemptRecord,
+    next: EncryptedWalletBackupSyncAttemptRecord,
+    commit: (
+      committed: Readonly<{
+        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+        batches: readonly EncryptedWalletBackupUploadBatchRecord[]
+        casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+      }>,
+    ) => T,
+  ): Promise<T>
+  exhaustLinkedCasAttempt<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    expected: EncryptedWalletBackupSyncAttemptRecord,
+    next: EncryptedWalletBackupSyncAttemptRecord,
+    delayMilliseconds: number,
+    commit: (
+      committed: Readonly<{
+        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+        casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+      }>,
+    ) => T,
+  ): Promise<T>
+  resumeLinkedCasAttempt<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    expected: EncryptedWalletBackupSyncAttemptRecord,
+    next: EncryptedWalletBackupSyncAttemptRecord,
+    commit: (
+      committed: Readonly<{
+        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+        casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+      }>,
+    ) => T,
+  ): Promise<Readonly<{ state: 'not-ready' }> | Readonly<{ state: 'committed'; value: T }>>
+  /**
+   * One physical transaction. Validate the exact expected CAS row, invoke the
+   * SDK callback against terminal snapshots, then delete the upload aggregate,
+   * every batch, and linked CAS row before committing. Callback failure rolls
+   * back the terminal transition and deletion.
+   */
+  completeForkCleanup<T>(
+    claim: EncryptedWalletBackupActiveUploadAttemptRecord,
+    expectedCasAttempt: EncryptedWalletBackupSyncAttemptRecord,
+    outcome: 'abandoned' | 'already-finalized',
+    commit: (
+      committed: Readonly<{
+        attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+        batches: readonly EncryptedWalletBackupUploadBatchRecord[]
+        casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+      }>,
+    ) => T,
+  ): Promise<T>
 }
 
 export interface EncryptedWalletBackupUploadAttemptClaim {
@@ -367,9 +487,15 @@ export interface AbandonedEncryptedWalletBackupUploadAttempt {
   readonly state: 'abandoned'
   readonly record: EncryptedWalletBackupActiveUploadAttemptRecord
 }
+export interface CleanedEncryptedWalletBackupFork {
+  readonly state: 'abandoned' | 'complete'
+  readonly receiptAuthority: 'none'
+  readonly record: EncryptedWalletBackupActiveUploadAttemptRecord
+}
 
 interface UploadAttemptClaimAuthority {
   readonly keyHandle: EncryptedWalletBackupKeyHandle
+  readonly store: EncryptedWalletBackupUploadBatchStore
   readonly record: EncryptedWalletBackupActiveUploadAttemptRecord
 }
 const UPLOAD_ATTEMPT_CLAIMS = new WeakMap<object, UploadAttemptClaimAuthority>()
@@ -413,6 +539,7 @@ export interface EncryptedWalletBackupUploadAbortRemotePort {
       status:
         | 'abandoned'
         | 'already-abandoned'
+        | 'already-finalized'
         | 'unauthorized'
         | 'rate-limited'
         | 'overloaded'
@@ -475,6 +602,7 @@ export async function sealEncryptedWalletBackupUploadAttempt(input: {
         record.lifecycle !== 'active' ||
         record.batchIds.length !== 0 ||
         record.activeBatchId !== null ||
+        record.casAttemptId !== null ||
         record.realm !== expectedCandidate.realm ||
         record.vaultId !== expectedCandidate.vaultId ||
         record.parentManifestDigest !== expectedCandidate.parentManifestDigest ||
@@ -495,7 +623,7 @@ export async function sealEncryptedWalletBackupUploadAttempt(input: {
       ) {
         throw new Error('sealed upload attempt changed')
       }
-      issued = issueUploadAttemptClaim(record, input.keyHandle)
+      issued = issueUploadAttemptClaim(record, input.keyHandle, input.store)
       return issued
     })
   } finally {
@@ -544,11 +672,12 @@ export async function claimEncryptedWalletBackupUploadAttempt(input: {
           record.ownerId !== ownerId ||
           (record.lifecycle !== 'active' &&
             record.lifecycle !== 'abort-uncertain' &&
-            record.lifecycle !== 'finalized')
+            record.lifecycle !== 'cas-journaled' &&
+            record.lifecycle !== 'fork-cleanup-uncertain')
         ) {
           throw new Error('upload attempt claim returned foreign authority')
         }
-        issued = issueUploadAttemptClaim(record, input.keyHandle)
+        issued = issueUploadAttemptClaim(record, input.keyHandle, input.store)
         return issued
       },
     )
@@ -568,7 +697,7 @@ export async function sealEncryptedWalletBackupUploadBatch(input: {
   store: EncryptedWalletBackupUploadBatchStore
 }): Promise<SealedEncryptedWalletBackupUploadBatch> {
   const batchId = requireLowerHex(input.batchId, 16, 'backup upload batch id')
-  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle)
+  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store)
   const attemptId = claim.record.attemptId
   const target = decodePersistedTarget(claim.record)
   const snapshotId = target.localSnapshotId
@@ -626,6 +755,7 @@ export async function sealEncryptedWalletBackupUploadBatch(input: {
   let callbackOpen = true
   let callbackCalls = 0
   let issued: object | undefined
+  let committedAttemptAuthority: EncryptedWalletBackupActiveUploadAttemptRecord | undefined
   let returned: unknown
   try {
     returned = await input.store.sealUploadBatch(
@@ -652,10 +782,7 @@ export async function sealEncryptedWalletBackupUploadBatch(input: {
         ) {
           throw new Error('sealed backup upload attempt changed')
         }
-        UPLOAD_ATTEMPT_CLAIMS.set(input.claim, {
-          keyHandle: input.keyHandle,
-          record: committedAttempt,
-        })
+        committedAttemptAuthority = committedAttempt
         const evidence = authorizeUploadBatch(committed, input.keyHandle)
         issued = evidence
         return evidence
@@ -667,6 +794,13 @@ export async function sealEncryptedWalletBackupUploadBatch(input: {
   if (isThenable(returned) || issued === undefined || returned !== issued || callbackCalls !== 1) {
     throw new Error('backup upload seal must be synchronous and exact')
   }
+  if (committedAttemptAuthority === undefined)
+    throw new Error('backup upload seal omitted aggregate authority')
+  UPLOAD_ATTEMPT_CLAIMS.set(input.claim, {
+    keyHandle: input.keyHandle,
+    store: input.store,
+    record: committedAttemptAuthority,
+  })
   plannedAuthority.boundBatchId = batchId
   return issued as SealedEncryptedWalletBackupUploadBatch
 }
@@ -714,7 +848,7 @@ export async function uploadEncryptedWalletBackupBatch(input: {
   executionLeaseDurationMilliseconds?: number
   runtime?: EncryptedWalletBackupRuntime
 }): Promise<SealedEncryptedWalletBackupUploadBatch> {
-  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle)
+  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store)
   await validateCurrentUploadAttemptClaim(input.store, claim.record, ['active'])
   let authority = requireUploadBatchAuthority(input.batch, input.keyHandle)
   requireSameAttempt(authority.record, claim.record)
@@ -832,228 +966,139 @@ export async function uploadEncryptedWalletBackupBatch(input: {
   )
 }
 
-export async function finalizeEncryptedWalletBackupUploadSet(input: {
-  keyHandle: EncryptedWalletBackupKeyHandle
+export function deriveEncryptedWalletBackupCasAttemptId(input: {
+  realm: string
+  vaultId: string
+  uploadAttemptId: string
+  targetManifestDigest: string
+}): string {
+  const canonical = encodeCanonical([
+    1,
+    'backup-cas-attempt-id',
+    requireRealm(input.realm),
+    hexToBytes(requireLowerHex(input.vaultId, 32, 'backup CAS vault id')),
+    hexToBytes(requireLowerHex(input.uploadAttemptId, 16, 'backup upload attempt id')),
+    hexToBytes(requireLowerHex(input.targetManifestDigest, 32, 'backup target manifest digest')),
+  ])
+  return bytesToHex(sha256(canonical).slice(0, 16))
+}
+
+/**
+ * Atomically finalizes the acknowledged upload partition and journals the
+ * deterministic CAS row. Calling this again after restart rehydrates only the
+ * exact linked row; callers cannot supply a CAS id, snapshot, or target.
+ */
+export async function sealOrRehydrateEncryptedWalletBackupCasAttempt(input: {
   claim: EncryptedWalletBackupUploadAttemptClaim
-  store: EncryptedWalletBackupUploadBatchStore
-}): Promise<FinalizedEncryptedWalletBackupUploadSet> {
-  requireUploadStore(input.store)
-  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle)
-  let callbackOpen = true
-  let callbackCalls = 0
-  let issued: FinalizedEncryptedWalletBackupUploadSet | undefined
+  keyHandle: EncryptedWalletBackupKeyHandle
+  store: EncryptedWalletBackupCoordinatorStore
+}): Promise<SealedEncryptedWalletBackupSyncAttempt> {
+  const claimAuthority = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store)
+  requireCoordinatorStore(input.store)
+  const claimed = claimAuthority.record
+  if (claimed.activeBatchId !== null)
+    throw new Error('backup upload attempt has an active foreground batch')
+  if (claimed.lifecycle !== 'active' && claimed.lifecycle !== 'cas-journaled')
+    throw new Error('backup upload attempt cannot journal CAS from this state')
+  const target = manifestHeadFromUploadAttempt(claimed)
+  const attemptId = deriveEncryptedWalletBackupCasAttemptId({
+    realm: claimed.realm,
+    vaultId: claimed.vaultId,
+    uploadAttemptId: claimed.attemptId,
+    targetManifestDigest: claimed.targetManifestDigest,
+  })
+  if (claimed.lifecycle === 'cas-journaled' && claimed.casAttemptId !== attemptId) {
+    throw new Error('persisted backup CAS link is not deterministic')
+  }
+  const canonicalCasPayload = encodeCanonical([
+    1,
+    'head-cas',
+    hexToBytes(claimed.attemptId),
+    claimed.parentManifestDigest === null ? null : hexToBytes(claimed.parentManifestDigest),
+    claimed.canonicalTargetHead,
+    claimed.canonicalTargetReferenceSet,
+  ])
+  if (canonicalCasPayload.byteLength > ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES) {
+    throw new Error('backup CAS payload exceeds the byte limit')
+  }
+  const candidate: EncryptedWalletBackupSyncAttemptRecord = Object.freeze({
+    schemaVersion: 1,
+    realm: claimed.realm,
+    vaultId: claimed.vaultId,
+    attemptId,
+    uploadAttemptId: claimed.attemptId,
+    localSnapshotId: claimed.localSnapshotId,
+    localSnapshotRevision: claimed.localSnapshotRevision,
+    expectedHeadDigest: claimed.parentManifestDigest,
+    targetHead: target,
+    canonicalCasPayload: canonicalCasPayload.slice(),
+    casPayloadDigest: bytesToHex(sha256(canonicalCasPayload)),
+    casAttempts: 0,
+    retryNotBeforeUnixMilliseconds: null,
+    state: 'sealed',
+  })
+  let boundStore: EncryptedWalletBackupSyncAttemptStore | undefined
+  let committedAttempt: EncryptedWalletBackupActiveUploadAttemptRecord | undefined
+  let calls = 0
+  let open = true
+  let issued: SealedEncryptedWalletBackupSyncAttempt | undefined
   let returned: unknown
   try {
-    returned = await input.store.finalizeUploadAttempt(
-      cloneActiveUploadAttemptRecord(claim.record),
+    returned = await input.store.sealOrReadLinkedCasAttempt(
+      cloneActiveUploadAttemptRecord(claimed),
+      cloneCoordinatorCasRecord(candidate),
       (raw) => {
-        if (!callbackOpen || callbackCalls++ !== 0)
-          throw new Error('backup upload finalization callback is invalid')
+        if (!open || calls++ !== 0) throw new Error('backup CAS handoff callback is invalid')
         const attempt = decodeActiveUploadAttemptRecord(raw.attempt)
+        if (!Array.isArray(raw.batches) || raw.batches.length > 64)
+          throw new Error('backup CAS handoff partition is invalid')
+        const batches = raw.batches.map(decodeUploadBatchRecord)
+        const casAttempt = decodeExactLinkedCasAttempt(attempt, raw.casAttempts)
+        validateAggregatePartition(attempt, batches, 'finalized')
         if (
-          attempt.lifecycle !== 'finalized' ||
-          attempt.attemptId !== claim.record.attemptId ||
+          attempt.lifecycle !== 'cas-journaled' ||
+          attempt.casAttemptId !== attemptId ||
+          attempt.activeBatchId !== null ||
           !equalActiveUploadAttempt(
             {
-              ...claim.record,
+              ...claimed,
               activeBatchId: null,
-              lifecycle: 'finalized',
+              casAttemptId: attemptId,
+              lifecycle: 'cas-journaled',
             },
             attempt,
           ) ||
-          !Array.isArray(raw.batches) ||
-          raw.batches.length > 64
+          !(claimed.lifecycle === 'active'
+            ? equalCoordinatorCasRecord(candidate, casAttempt)
+            : equalCoordinatorCasIdentity(candidate, casAttempt))
         ) {
-          throw new Error('finalized backup upload batch set changed')
+          throw new Error('backup CAS handoff changed persisted authority')
         }
-        const committed = raw.batches.map(decodeUploadBatchRecord)
-        validateAggregatePartition(attempt, committed, 'finalized')
-        if (committed.length === 0) {
-          issued = issueFinalizedZeroDeltaRecord(attempt, input.keyHandle)
-        } else {
-          issued = issueFinalizedUploadSet(attempt, committed, input.keyHandle)
-        }
+        validateFinalizedTargetDelta(attempt, batches)
+        committedAttempt = attempt
+        boundStore = bindCoordinatorCasStore(input.store, input.claim, input.keyHandle, attempt)
+        issued = issueCoordinatedEncryptedWalletBackupCasAttempt(
+          casAttempt,
+          input.keyHandle,
+          boundStore,
+        )
         return issued
       },
     )
   } finally {
-    callbackOpen = false
+    open = false
   }
-  if (isThenable(returned) || issued === undefined || returned !== issued || callbackCalls !== 1) {
-    throw new Error('backup upload finalization must be synchronous and exact')
+  if (isThenable(returned) || issued === undefined || returned !== issued || calls !== 1) {
+    throw new Error('backup CAS handoff must be synchronous and exact')
   }
-  return issued
-}
-
-export async function rehydrateFinalizedEncryptedWalletBackupUploadSet(input: {
-  uploadAttemptId: string
-  keyHandle: EncryptedWalletBackupKeyHandle
-  store: EncryptedWalletBackupUploadBatchStore
-}): Promise<FinalizedEncryptedWalletBackupUploadSet> {
-  const uploadAttemptId = requireLowerHex(input.uploadAttemptId, 16, 'backup upload attempt id')
-  requireUploadStore(input.store)
-  let callbackOpen = true
-  let callbackCalls = 0
-  let issued: FinalizedEncryptedWalletBackupUploadSet | undefined
-  let returned: unknown
-  try {
-    returned = await input.store.readFinalizedUploadAttempt(uploadAttemptId, (raw) => {
-      if (!callbackOpen || callbackCalls++ !== 0) {
-        throw new Error('finalized backup upload read callback is invalid')
-      }
-      const attempt = decodeActiveUploadAttemptRecord(raw.attempt)
-      if (
-        attempt.lifecycle !== 'finalized' ||
-        attempt.attemptId !== uploadAttemptId ||
-        !Array.isArray(raw.batches) ||
-        raw.batches.length > 64
-      ) {
-        throw new Error('finalized backup upload batch set is invalid')
-      }
-      const committed = raw.batches.map(decodeUploadBatchRecord)
-      validateAggregatePartition(attempt, committed, 'finalized')
-      if (
-        committed.some(
-          (record) => record.state !== 'finalized' || record.attemptId !== uploadAttemptId,
-        )
-      ) {
-        throw new Error('finalized backup upload batch set is invalid')
-      }
-      issued =
-        committed.length === 0
-          ? issueFinalizedZeroDeltaRecord(attempt, input.keyHandle)
-          : issueFinalizedUploadSet(attempt, committed, input.keyHandle)
-      return issued
-    })
-  } finally {
-    callbackOpen = false
-  }
-  if (isThenable(returned) || issued === undefined || returned !== issued || callbackCalls !== 1) {
-    throw new Error('finalized backup upload read must be synchronous and exact')
-  }
-  return issued
-}
-
-export async function finalizeZeroDeltaEncryptedWalletBackupUploadAttempt(input: {
-  claim: EncryptedWalletBackupUploadAttemptClaim
-  keyHandle: EncryptedWalletBackupKeyHandle
-  store: EncryptedWalletBackupUploadBatchStore
-}): Promise<FinalizedEncryptedWalletBackupUploadSet> {
-  return finalizeEncryptedWalletBackupUploadSet(input)
-}
-
-export async function rehydrateFinalizedZeroDeltaEncryptedWalletBackupUploadAttempt(input: {
-  attemptId: string
-  keyHandle: EncryptedWalletBackupKeyHandle
-  store: EncryptedWalletBackupUploadBatchStore
-}): Promise<FinalizedEncryptedWalletBackupUploadSet> {
-  return rehydrateFinalizedEncryptedWalletBackupUploadSet({
-    uploadAttemptId: input.attemptId,
+  if (committedAttempt === undefined)
+    throw new Error('backup CAS handoff did not commit aggregate authority')
+  UPLOAD_ATTEMPT_CLAIMS.set(input.claim, {
     keyHandle: input.keyHandle,
     store: input.store,
+    record: committedAttempt,
   })
-}
-
-function issueFinalizedZeroDeltaRecord(
-  record: EncryptedWalletBackupActiveUploadAttemptRecord,
-  keyHandle: EncryptedWalletBackupKeyHandle,
-): FinalizedEncryptedWalletBackupUploadSet {
-  if (record.realm !== keyHandle.realm || record.vaultId !== keyHandle.vaultId) {
-    throw new Error('zero-delta target belongs to foreign vault')
-  }
-  const decodedHead = decode(record.canonicalTargetHead)
-  if (
-    !Array.isArray(decodedHead) ||
-    bytesToHex(requireBytes(decodedHead[4], 32, 'zero-delta request public key')) !==
-      keyHandle.requestAuthPublicKey
-  ) {
-    throw new Error('zero-delta target belongs to foreign backup key')
-  }
-  const target = validateTargetHead(
-    record.canonicalTargetHead,
-    record.canonicalTargetReferenceSet,
-    record.targetManifestDigest,
-  )
-  if (target.references.size !== 0 || record.batchIds.length !== 0)
-    throw new Error('zero-delta target is not empty')
-  return issueFinalizedEncryptedWalletBackupUploadSet(
-    Object.freeze({
-      state: 'finalized' as const,
-      targetManifestDigest: record.targetManifestDigest,
-      uploadAttemptId: record.attemptId,
-      localSnapshotId: record.localSnapshotId,
-      localSnapshotRevision: record.localSnapshotRevision,
-      objectCount: 0,
-    }),
-    keyHandle,
-    {
-      canonicalTargetHead: record.canonicalTargetHead,
-      canonicalTargetReferenceSet: record.canonicalTargetReferenceSet,
-    },
-  )
-}
-
-function issueFinalizedUploadSet(
-  attempt: EncryptedWalletBackupActiveUploadAttemptRecord,
-  records: readonly EncryptedWalletBackupUploadBatchRecord[],
-  keyHandle: EncryptedWalletBackupKeyHandle,
-): FinalizedEncryptedWalletBackupUploadSet {
-  const first = records[0]!
-  validateUploadBatchKey(first, keyHandle)
-  const targetReferences = decodeReferenceSet(attempt.canonicalTargetReferenceSet)
-  const inheritedReferences = decodeReferenceSet(attempt.canonicalInheritedReferenceSet)
-  if ([...inheritedReferences].some((reference) => !targetReferences.has(reference))) {
-    throw new Error('backup inherited reference is not present in target')
-  }
-  const requiredUploads = new Set(
-    [...targetReferences].filter((reference) => !inheritedReferences.has(reference)),
-  )
-  const acknowledged = new Set<string>()
-  for (const record of records) {
-    validateUploadBatchKey(record, keyHandle)
-    if (
-      record.state !== 'finalized' ||
-      record.targetManifestDigest !== attempt.targetManifestDigest ||
-      !equalBytes(record.canonicalTargetHead, attempt.canonicalTargetHead) ||
-      !equalBytes(record.canonicalTargetReferenceSet, attempt.canonicalTargetReferenceSet) ||
-      !equalBytes(record.canonicalInheritedReferenceSet, attempt.canonicalInheritedReferenceSet)
-    ) {
-      throw new Error('backup upload batch is not finalized for one target')
-    }
-    if (record.attemptId !== attempt.attemptId) {
-      throw new Error('backup upload batches belong to different attempts')
-    }
-    if (
-      record.localSnapshotId !== attempt.localSnapshotId ||
-      record.localSnapshotRevision !== attempt.localSnapshotRevision
-    ) {
-      throw new Error('backup upload batches belong to different local snapshots')
-    }
-    for (const item of record.items) {
-      const reference = `${item.objectId}:${item.objectDigest}`
-      if (acknowledged.has(reference))
-        throw new Error('backup upload acknowledgement is duplicated')
-      acknowledged.add(reference)
-    }
-  }
-  if (
-    acknowledged.size !== requiredUploads.size ||
-    [...requiredUploads].some((reference) => !acknowledged.has(reference))
-  ) {
-    throw new Error('backup upload acknowledgements do not cover the target head')
-  }
-  const evidence = Object.freeze({
-    state: 'finalized' as const,
-    targetManifestDigest: attempt.targetManifestDigest,
-    uploadAttemptId: attempt.attemptId,
-    localSnapshotId: attempt.localSnapshotId,
-    localSnapshotRevision: attempt.localSnapshotRevision,
-    objectCount: acknowledged.size,
-  })
-  return issueFinalizedEncryptedWalletBackupUploadSet(evidence, keyHandle, {
-    canonicalTargetHead: attempt.canonicalTargetHead,
-    canonicalTargetReferenceSet: attempt.canonicalTargetReferenceSet,
-  })
+  return issued
 }
 
 /**
@@ -1071,7 +1116,7 @@ export async function abandonEncryptedWalletBackupUploadAttempt(input: {
   remote: EncryptedWalletBackupUploadAbortRemotePort
   runtime?: EncryptedWalletBackupRuntime
 }): Promise<AbandonedEncryptedWalletBackupUploadAttempt> {
-  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle)
+  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store)
   await validateCurrentUploadAttemptClaim(input.store, claim.record, ['active', 'abort-uncertain'])
   let currentAttempt = claim.record
   if (
@@ -1114,6 +1159,7 @@ export async function abandonEncryptedWalletBackupUploadAttempt(input: {
     payload: canonicalAbortPayload,
     runtime: input.runtime,
   })
+  await validateCurrentUploadAttemptClaim(input.store, currentAttempt, ['abort-uncertain'])
   const response = await input.remote.abortUploadAttempt({
     requestProof,
     canonicalAbortPayload: canonicalAbortPayload.slice(),
@@ -1123,6 +1169,162 @@ export async function abandonEncryptedWalletBackupUploadAttempt(input: {
   }
   const record = await persistAttemptAbortState(input.store, currentAttempt, 'abandoned')
   return Object.freeze({ state: 'abandoned', record })
+}
+
+export async function cleanUpRejectedEncryptedWalletBackupFork(input: {
+  claim: EncryptedWalletBackupUploadAttemptClaim
+  store: EncryptedWalletBackupCoordinatorStore
+  keyHandle: EncryptedWalletBackupKeyHandle
+  enrollmentEpoch: number
+  url: string
+  clock: EncryptedWalletBackupClock
+  remote: EncryptedWalletBackupUploadAbortRemotePort
+  runtime?: EncryptedWalletBackupRuntime
+}): Promise<CleanedEncryptedWalletBackupFork> {
+  const claim = requireUploadAttemptClaim(input.claim, input.keyHandle, input.store).record
+  requireCoordinatorStore(input.store)
+  if (
+    typeof input.remote !== 'object' ||
+    input.remote === null ||
+    typeof input.remote.abortUploadAttempt !== 'function' ||
+    typeof input.clock !== 'object' ||
+    input.clock === null ||
+    typeof input.clock.nowUnixSeconds !== 'function'
+  ) {
+    throw new Error('backup fork cleanup port is invalid')
+  }
+  if (claim.casAttemptId === null) throw new Error('fork cleanup has no linked CAS attempt')
+  const cleanupCas = await readCurrentForkCleanupCasAttempt(input.store, claim)
+  const canonicalAbortPayload = encodeCanonical([
+    1,
+    'upload-attempt-abort',
+    hexToBytes(claim.attemptId),
+    hexToBytes(claim.targetManifestDigest),
+  ])
+  const issuedAt = requireInteger(
+    input.clock.nowUnixSeconds(),
+    0,
+    Number.MAX_SAFE_INTEGER,
+    'request issue time',
+  )
+  const requestProof = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle: input.keyHandle,
+    enrollmentEpoch: requireInteger(
+      input.enrollmentEpoch,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      'enrollment epoch',
+    ),
+    method: 'DELETE',
+    url: input.url,
+    issuedAtUnixSeconds: issuedAt,
+    expiresAtUnixSeconds: issuedAt + 60,
+    payload: canonicalAbortPayload,
+    runtime: input.runtime,
+  })
+  const currentCleanupCas = await readCurrentForkCleanupCasAttempt(input.store, claim)
+  if (!equalCoordinatorCasRecord(cleanupCas, currentCleanupCas)) {
+    throw new Error('backup fork cleanup authority changed while signing')
+  }
+  let response: Awaited<
+    ReturnType<EncryptedWalletBackupUploadAbortRemotePort['abortUploadAttempt']>
+  >
+  try {
+    response = await input.remote.abortUploadAttempt({
+      requestProof,
+      canonicalAbortPayload: canonicalAbortPayload.slice(),
+    })
+  } catch {
+    throw new Error('backup fork cleanup is unavailable')
+  }
+  if (
+    response.status !== 'abandoned' &&
+    response.status !== 'already-abandoned' &&
+    response.status !== 'already-finalized'
+  ) {
+    throw new Error(`backup fork cleanup failed: ${response.status}`)
+  }
+  const outcome = response.status === 'already-finalized' ? 'already-finalized' : 'abandoned'
+  let calls = 0
+  let open = true
+  let committed: EncryptedWalletBackupActiveUploadAttemptRecord | undefined
+  let returned: unknown
+  try {
+    returned = await input.store.completeForkCleanup(
+      cloneActiveUploadAttemptRecord(claim),
+      cloneCoordinatorCasRecord(cleanupCas),
+      outcome,
+      (raw) => {
+        if (!open || calls++ !== 0) throw new Error('backup fork cleanup callback is invalid')
+        const attempt = decodeActiveUploadAttemptRecord(raw.attempt)
+        const casAttempt = decodeExactLinkedCasAttempt(attempt, raw.casAttempts)
+        if (!Array.isArray(raw.batches) || raw.batches.length > 64)
+          throw new Error('backup fork cleanup partition is invalid')
+        const rows = raw.batches.map(decodeUploadBatchRecord)
+        const expectedLifecycle = outcome === 'already-finalized' ? 'complete' : 'abandoned'
+        if (
+          attempt.lifecycle !== expectedLifecycle ||
+          attempt.casAttemptId !== casAttempt.attemptId ||
+          casAttempt.state !== 'fork-rejected' ||
+          !equalCoordinatorCasRecord(cleanupCas, casAttempt)
+        ) {
+          throw new Error('backup fork cleanup changed terminal authority')
+        }
+        validateAggregatePartition(
+          attempt,
+          rows,
+          outcome === 'already-finalized' ? 'finalized' : 'abandoned',
+        )
+        committed = attempt
+        return attempt
+      },
+    )
+  } finally {
+    open = false
+  }
+  if (isThenable(returned) || committed === undefined || returned !== committed || calls !== 1) {
+    throw new Error('backup fork cleanup must be synchronous and exact')
+  }
+  UPLOAD_ATTEMPT_CLAIMS.set(input.claim, {
+    keyHandle: input.keyHandle,
+    store: input.store,
+    record: committed,
+  })
+  return Object.freeze({
+    state: committed.lifecycle === 'complete' ? 'complete' : 'abandoned',
+    receiptAuthority: 'none' as const,
+    record: committed,
+  })
+}
+
+async function readCurrentForkCleanupCasAttempt(
+  store: EncryptedWalletBackupCoordinatorStore,
+  expectedAttempt: EncryptedWalletBackupActiveUploadAttemptRecord,
+): Promise<EncryptedWalletBackupSyncAttemptRecord> {
+  let calls = 0
+  let open = true
+  let committed: EncryptedWalletBackupSyncAttemptRecord | undefined
+  let returned: unknown
+  try {
+    returned = await store.readLinkedCasAttempts(
+      cloneActiveUploadAttemptRecord(expectedAttempt),
+      (raw) => {
+        if (!open || calls++ !== 0) throw new Error('backup fork cleanup read callback is invalid')
+        const attempt = decodeActiveUploadAttemptRecord(raw.attempt)
+        if (!equalActiveUploadAttempt(expectedAttempt, attempt)) {
+          throw new Error('backup fork cleanup aggregate authority changed')
+        }
+        committed = decodeExactLinkedCasAttempt(attempt, raw.casAttempts)
+        return committed
+      },
+    )
+  } finally {
+    open = false
+  }
+  if (isThenable(returned) || committed === undefined || returned !== committed || calls !== 1) {
+    throw new Error('backup fork cleanup read must be synchronous and exact')
+  }
+  return committed
 }
 
 async function persistAttemptAbortState(
@@ -1204,6 +1406,578 @@ function validateAggregatePartition(
   }
 }
 
+function validateFinalizedTargetDelta(
+  attempt: EncryptedWalletBackupActiveUploadAttemptRecord,
+  records: readonly EncryptedWalletBackupUploadBatchRecord[],
+): void {
+  const targetReferences = decodeReferenceSet(attempt.canonicalTargetReferenceSet)
+  const inheritedReferences = decodeReferenceSet(attempt.canonicalInheritedReferenceSet)
+  if ([...inheritedReferences].some((reference) => !targetReferences.has(reference))) {
+    throw new Error('backup inherited reference is not present in target')
+  }
+  const requiredUploads = new Set(
+    [...targetReferences].filter((reference) => !inheritedReferences.has(reference)),
+  )
+  const acknowledged = new Set<string>()
+  for (const record of records) {
+    for (const item of record.items) {
+      const reference = `${item.objectId}:${item.objectDigest}`
+      if (acknowledged.has(reference))
+        throw new Error('backup upload acknowledgement is duplicated')
+      acknowledged.add(reference)
+    }
+  }
+  if (
+    acknowledged.size !== requiredUploads.size ||
+    [...requiredUploads].some((reference) => !acknowledged.has(reference))
+  ) {
+    throw new Error('backup upload acknowledgements do not cover the target head')
+  }
+}
+
+function manifestHeadFromUploadAttempt(
+  attempt: EncryptedWalletBackupActiveUploadAttemptRecord,
+): EncryptedWalletBackupManifestHead {
+  return validateTargetHead(
+    attempt.canonicalTargetHead,
+    attempt.canonicalTargetReferenceSet,
+    attempt.targetManifestDigest,
+  ).manifestHead
+}
+
+function decodeCoordinatorCasRecord(value: unknown): EncryptedWalletBackupSyncAttemptRecord {
+  const raw = requireRecord(value, 'coordinated backup CAS attempt')
+  requireKnownFields(raw, [
+    'schemaVersion',
+    'realm',
+    'vaultId',
+    'attemptId',
+    'uploadAttemptId',
+    'localSnapshotId',
+    'localSnapshotRevision',
+    'expectedHeadDigest',
+    'targetHead',
+    'canonicalCasPayload',
+    'casPayloadDigest',
+    'casAttempts',
+    'retryNotBeforeUnixMilliseconds',
+    'state',
+  ])
+  if (raw.schemaVersion !== 1) throw new Error('unsupported coordinated backup CAS attempt version')
+  const targetHeadRaw = requireRecord(raw.targetHead, 'coordinated CAS target')
+  requireKnownFields(targetHeadRaw, [
+    'formatVersion',
+    'realm',
+    'vaultId',
+    'backupPublicKey',
+    'generation',
+    'parent',
+    'snapshotNonce',
+    'snapshotId',
+    'manifestDigest',
+    'referenceSetDigest',
+    'objectCount',
+    'storedBytes',
+    'proofCount',
+  ])
+  const targetParentRaw =
+    targetHeadRaw.parent === null ? null : requireRecord(targetHeadRaw.parent, 'target parent')
+  if (targetParentRaw !== null)
+    requireKnownFields(targetParentRaw, ['generation', 'manifestDigest'])
+  const canonicalCasPayload = requireBytesRange(
+    raw.canonicalCasPayload,
+    1,
+    ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES,
+    'coordinated CAS payload',
+  ).slice()
+  const state = requireOneOf(
+    raw.state,
+    [
+      'sealed',
+      'cas-uncertain',
+      'retry-cas',
+      'retry-exhausted',
+      'acknowledged',
+      'fork-rejected',
+    ] as const,
+    'coordinated CAS state',
+  )
+  const record: EncryptedWalletBackupSyncAttemptRecord = Object.freeze({
+    schemaVersion: 1,
+    realm: requireRealm(raw.realm),
+    vaultId: requireLowerHex(raw.vaultId, 32, 'coordinated CAS vault id'),
+    attemptId: requireLowerHex(raw.attemptId, 16, 'coordinated CAS id'),
+    uploadAttemptId: requireLowerHex(raw.uploadAttemptId, 16, 'coordinated CAS upload attempt id'),
+    localSnapshotId: requireBoundedText(raw.localSnapshotId, 128, 'coordinated CAS snapshot id'),
+    localSnapshotRevision: requireInteger(
+      raw.localSnapshotRevision,
+      0,
+      Number.MAX_SAFE_INTEGER,
+      'coordinated CAS snapshot revision',
+    ),
+    expectedHeadDigest:
+      raw.expectedHeadDigest === null
+        ? null
+        : requireLowerHex(raw.expectedHeadDigest, 32, 'coordinated CAS expected head'),
+    targetHead: Object.freeze({
+      formatVersion: requireInteger(
+        targetHeadRaw.formatVersion,
+        1,
+        1,
+        'coordinated target version',
+      ) as 1,
+      realm: requireRealm(targetHeadRaw.realm),
+      vaultId: requireLowerHex(targetHeadRaw.vaultId, 32, 'target vault id'),
+      backupPublicKey: requireLowerHex(
+        targetHeadRaw.backupPublicKey,
+        32,
+        'target backup public key',
+      ),
+      generation: requireInteger(
+        targetHeadRaw.generation,
+        1,
+        Number.MAX_SAFE_INTEGER,
+        'target generation',
+      ),
+      parent:
+        targetParentRaw === null
+          ? null
+          : Object.freeze({
+              generation: requireInteger(
+                targetParentRaw.generation,
+                1,
+                Number.MAX_SAFE_INTEGER,
+                'target parent generation',
+              ),
+              manifestDigest: requireLowerHex(
+                targetParentRaw.manifestDigest,
+                32,
+                'target parent digest',
+              ),
+            }),
+      snapshotNonce: requireLowerHex(targetHeadRaw.snapshotNonce, 16, 'target snapshot nonce'),
+      snapshotId: requireLowerHex(targetHeadRaw.snapshotId, 32, 'target snapshot id'),
+      manifestDigest: requireLowerHex(targetHeadRaw.manifestDigest, 32, 'target manifest digest'),
+      referenceSetDigest: requireLowerHex(
+        targetHeadRaw.referenceSetDigest,
+        32,
+        'target reference digest',
+      ),
+      objectCount: requireInteger(
+        targetHeadRaw.objectCount,
+        0,
+        ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX,
+        'target object count',
+      ),
+      storedBytes: requireInteger(
+        targetHeadRaw.storedBytes,
+        0,
+        ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
+        'target stored bytes',
+      ),
+      proofCount: requireInteger(targetHeadRaw.proofCount, 0, 512 * 1_024, 'target proof count'),
+    }),
+    canonicalCasPayload,
+    casPayloadDigest: requireLowerHex(raw.casPayloadDigest, 32, 'coordinated CAS payload digest'),
+    casAttempts: requireInteger(
+      raw.casAttempts,
+      0,
+      ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
+      'CAS attempts',
+    ),
+    retryNotBeforeUnixMilliseconds:
+      raw.retryNotBeforeUnixMilliseconds === null
+        ? null
+        : requireInteger(
+            raw.retryNotBeforeUnixMilliseconds,
+            1,
+            Number.MAX_SAFE_INTEGER,
+            'CAS retry boundary',
+          ),
+    state,
+  })
+  if (record.casPayloadDigest !== bytesToHex(sha256(canonicalCasPayload)))
+    throw new Error('coordinated CAS payload digest does not match')
+  validateEncryptedWalletBackupCasState(record)
+  const deterministicId = deriveEncryptedWalletBackupCasAttemptId({
+    realm: record.realm,
+    vaultId: record.vaultId,
+    uploadAttemptId: record.uploadAttemptId,
+    targetManifestDigest: record.targetHead.manifestDigest,
+  })
+  if (record.attemptId !== deterministicId)
+    throw new Error('coordinated CAS id is not deterministic')
+  preflightEncryptedBackupCasCbor(canonicalCasPayload)
+  const payload = decode(canonicalCasPayload)
+  if (
+    !equalBytes(canonicalCasPayload, encodeCanonical(payload)) ||
+    !Array.isArray(payload) ||
+    payload.length !== 6 ||
+    payload[0] !== 1 ||
+    payload[1] !== 'head-cas' ||
+    bytesToHex(requireBytes(payload[2], 16, 'CAS upload attempt id')) !== record.uploadAttemptId ||
+    (payload[3] === null ? null : bytesToHex(requireBytes(payload[3], 32, 'CAS parent digest'))) !==
+      record.expectedHeadDigest
+  ) {
+    throw new Error('coordinated CAS payload does not match attempt')
+  }
+  const payloadTarget = validateTargetHead(
+    requireBytesRange(payload[4], 1, 65_536, 'CAS target head'),
+    requireBytesRange(payload[5], 1, 65_536, 'CAS target references'),
+    record.targetHead.manifestDigest,
+  )
+  if (
+    JSON.stringify(payloadTarget.manifestHead) !== JSON.stringify(record.targetHead) ||
+    record.targetHead.realm !== record.realm ||
+    record.targetHead.vaultId !== record.vaultId ||
+    (record.targetHead.parent?.manifestDigest ?? null) !== record.expectedHeadDigest
+  ) {
+    throw new Error('coordinated CAS target does not match scope')
+  }
+  return record
+}
+
+function cloneCoordinatorCasRecord(
+  record: EncryptedWalletBackupSyncAttemptRecord,
+): EncryptedWalletBackupSyncAttemptRecord {
+  return structuredClone(record)
+}
+
+function equalCoordinatorCasRecord(
+  left: EncryptedWalletBackupSyncAttemptRecord,
+  right: EncryptedWalletBackupSyncAttemptRecord,
+): boolean {
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.realm === right.realm &&
+    left.vaultId === right.vaultId &&
+    left.attemptId === right.attemptId &&
+    left.uploadAttemptId === right.uploadAttemptId &&
+    left.localSnapshotId === right.localSnapshotId &&
+    left.localSnapshotRevision === right.localSnapshotRevision &&
+    left.expectedHeadDigest === right.expectedHeadDigest &&
+    JSON.stringify(left.targetHead) === JSON.stringify(right.targetHead) &&
+    equalBytes(left.canonicalCasPayload, right.canonicalCasPayload) &&
+    left.casPayloadDigest === right.casPayloadDigest &&
+    left.casAttempts === right.casAttempts &&
+    left.retryNotBeforeUnixMilliseconds === right.retryNotBeforeUnixMilliseconds &&
+    left.state === right.state
+  )
+}
+
+function equalCoordinatorCasIdentity(
+  left: EncryptedWalletBackupSyncAttemptRecord,
+  right: EncryptedWalletBackupSyncAttemptRecord,
+): boolean {
+  return (
+    left.realm === right.realm &&
+    left.vaultId === right.vaultId &&
+    left.attemptId === right.attemptId &&
+    left.uploadAttemptId === right.uploadAttemptId &&
+    left.localSnapshotId === right.localSnapshotId &&
+    left.localSnapshotRevision === right.localSnapshotRevision &&
+    left.expectedHeadDigest === right.expectedHeadDigest &&
+    JSON.stringify(left.targetHead) === JSON.stringify(right.targetHead) &&
+    equalBytes(left.canonicalCasPayload, right.canonicalCasPayload) &&
+    left.casPayloadDigest === right.casPayloadDigest
+  )
+}
+
+function decodeExactLinkedCasAttempt(
+  aggregate: EncryptedWalletBackupActiveUploadAttemptRecord,
+  value: unknown,
+): EncryptedWalletBackupSyncAttemptRecord {
+  if (!Array.isArray(value) || value.length !== 1) {
+    throw new Error('backup aggregate must have exactly one linked CAS row')
+  }
+  const record = decodeCoordinatorCasRecord(value[0])
+  if (
+    aggregate.casAttemptId !== record.attemptId ||
+    aggregate.attemptId !== record.uploadAttemptId ||
+    aggregate.realm !== record.realm ||
+    aggregate.vaultId !== record.vaultId ||
+    aggregate.targetManifestDigest !== record.targetHead.manifestDigest ||
+    aggregate.parentManifestDigest !== record.expectedHeadDigest ||
+    aggregate.localSnapshotId !== record.localSnapshotId ||
+    aggregate.localSnapshotRevision !== record.localSnapshotRevision
+  ) {
+    throw new Error('linked backup CAS immutable identity changed')
+  }
+  const canonicalAggregateTarget = manifestHeadFromUploadAttempt(aggregate)
+  if (JSON.stringify(canonicalAggregateTarget) !== JSON.stringify(record.targetHead)) {
+    throw new Error('linked backup CAS target does not match canonical aggregate target')
+  }
+  validateEncryptedWalletBackupAggregateCasLifecycle({
+    lifecycle: aggregate.lifecycle,
+    state: record.state,
+  })
+  return record
+}
+
+function bindCoordinatorCasStore(
+  coordinator: EncryptedWalletBackupCoordinatorStore,
+  claimEvidence: EncryptedWalletBackupUploadAttemptClaim,
+  keyHandle: EncryptedWalletBackupKeyHandle,
+  initialClaim: EncryptedWalletBackupActiveUploadAttemptRecord,
+): EncryptedWalletBackupSyncAttemptStore {
+  requireUploadAttemptClaim(claimEvidence, keyHandle, coordinator)
+  let currentClaim = cloneActiveUploadAttemptRecord(initialClaim)
+  const validateAggregate = (
+    raw: unknown,
+    allowed: readonly EncryptedWalletBackupActiveUploadAttemptRecord['lifecycle'][],
+  ) => {
+    const aggregate = decodeActiveUploadAttemptRecord(raw)
+    const lifecycleMatches = allowed.includes(aggregate.lifecycle)
+    const exactExpected = lifecycleMatches
+      ? { ...currentClaim, lifecycle: aggregate.lifecycle }
+      : currentClaim
+    if (
+      aggregate.casAttemptId === null ||
+      !lifecycleMatches ||
+      !equalActiveUploadAttempt(exactExpected, aggregate)
+    ) {
+      throw new Error('linked backup aggregate authority changed')
+    }
+    return aggregate
+  }
+  const commitAggregate = (aggregate: EncryptedWalletBackupActiveUploadAttemptRecord) => {
+    currentClaim = aggregate
+    UPLOAD_ATTEMPT_CLAIMS.set(claimEvidence, {
+      keyHandle,
+      store: coordinator,
+      record: aggregate,
+    })
+  }
+  const store: EncryptedWalletBackupSyncAttemptStore = {
+    async validatePreparedAttempt<T>(
+      expected: EncryptedWalletBackupSyncAttemptRecord,
+      read: (committed: EncryptedWalletBackupSyncAttemptRecord) => T,
+    ): Promise<T> {
+      let calls = 0
+      let open = true
+      let callbackValue: T | undefined
+      let returned: unknown
+      try {
+        returned = await coordinator.validateLinkedCasAttempt(
+          cloneActiveUploadAttemptRecord(currentClaim),
+          cloneCoordinatorCasRecord(expected),
+          (raw) => {
+            if (!open || calls++ !== 0) throw new Error('linked CAS read callback is invalid')
+            const aggregate = validateAggregate(raw.attempt, ['cas-journaled'])
+            const record = decodeExactLinkedCasAttempt(aggregate, raw.casAttempts)
+            if (
+              aggregate.casAttemptId !== record.attemptId ||
+              !equalCoordinatorCasRecord(expected, record)
+            ) {
+              throw new Error('linked backup CAS authority changed')
+            }
+            callbackValue = read(record)
+            return callbackValue
+          },
+        )
+      } finally {
+        open = false
+      }
+      if (
+        isThenable(returned) ||
+        callbackValue === undefined ||
+        returned !== callbackValue ||
+        calls !== 1
+      ) {
+        throw new Error('linked CAS read must be synchronous and exact')
+      }
+      return callbackValue
+    },
+    async transitionPreparedAttempt<T>(
+      expected: EncryptedWalletBackupSyncAttemptRecord,
+      next: EncryptedWalletBackupSyncAttemptRecord,
+      commit: (committed: EncryptedWalletBackupSyncAttemptRecord) => T,
+    ): Promise<T> {
+      const lifecycle =
+        next.state === 'fork-rejected'
+          ? 'fork-cleanup-uncertain'
+          : next.state === 'acknowledged'
+            ? 'complete'
+            : 'cas-journaled'
+      let calls = 0
+      let open = true
+      let committedAggregate: EncryptedWalletBackupActiveUploadAttemptRecord | undefined
+      let callbackValue: T | undefined
+      let returned: unknown
+      try {
+        const validateCommit = (raw: {
+          attempt: EncryptedWalletBackupActiveUploadAttemptRecord
+          batches?: readonly EncryptedWalletBackupUploadBatchRecord[]
+          casAttempts: readonly EncryptedWalletBackupSyncAttemptRecord[]
+        }) => {
+          if (!open || calls++ !== 0) throw new Error('linked CAS transition callback is invalid')
+          const aggregate = validateAggregate(raw.attempt, [lifecycle])
+          const record = decodeExactLinkedCasAttempt(aggregate, raw.casAttempts)
+          if (
+            aggregate.casAttemptId !== record.attemptId ||
+            !equalCoordinatorCasRecord(next, record)
+          ) {
+            throw new Error('linked backup CAS transition changed')
+          }
+          if (lifecycle === 'complete') {
+            if (!Array.isArray(raw.batches) || raw.batches.length > 64) {
+              throw new Error('linked CAS terminal partition is invalid')
+            }
+            const rows = raw.batches.map(decodeUploadBatchRecord)
+            validateAggregatePartition(aggregate, rows, 'finalized')
+            validateFinalizedTargetDelta(aggregate, rows)
+          }
+          committedAggregate = aggregate
+          callbackValue = commit(record)
+          return callbackValue
+        }
+        returned =
+          lifecycle === 'complete'
+            ? await coordinator.completeLinkedCasAttempt(
+                cloneActiveUploadAttemptRecord(currentClaim),
+                cloneCoordinatorCasRecord(expected),
+                cloneCoordinatorCasRecord(next),
+                validateCommit,
+              )
+            : await coordinator.transitionLinkedCasAttempt(
+                cloneActiveUploadAttemptRecord(currentClaim),
+                cloneCoordinatorCasRecord(expected),
+                cloneCoordinatorCasRecord(next),
+                lifecycle,
+                validateCommit,
+              )
+      } finally {
+        open = false
+      }
+      if (
+        isThenable(returned) ||
+        callbackValue === undefined ||
+        returned !== callbackValue ||
+        calls !== 1 ||
+        committedAggregate === undefined
+      ) {
+        throw new Error('linked CAS transition must be synchronous and exact')
+      }
+      commitAggregate(committedAggregate)
+      return callbackValue
+    },
+    async exhaustPreparedAttempt<T>(
+      expected: EncryptedWalletBackupSyncAttemptRecord,
+      next: EncryptedWalletBackupSyncAttemptRecord,
+      delayMilliseconds: number,
+      commit: (committed: EncryptedWalletBackupSyncAttemptRecord) => T,
+    ): Promise<T> {
+      let calls = 0
+      let open = true
+      let committedAggregate: EncryptedWalletBackupActiveUploadAttemptRecord | undefined
+      let callbackValue: T | undefined
+      let returned: unknown
+      try {
+        returned = await coordinator.exhaustLinkedCasAttempt(
+          cloneActiveUploadAttemptRecord(currentClaim),
+          cloneCoordinatorCasRecord(expected),
+          cloneCoordinatorCasRecord(next),
+          delayMilliseconds,
+          (raw) => {
+            if (!open || calls++ !== 0) throw new Error('linked CAS exhaustion callback is invalid')
+            const aggregate = validateAggregate(raw.attempt, ['cas-journaled'])
+            const record = decodeExactLinkedCasAttempt(aggregate, raw.casAttempts)
+            if (aggregate.casAttemptId !== record.attemptId)
+              throw new Error('linked exhausted CAS attempt changed')
+            committedAggregate = aggregate
+            callbackValue = commit(record)
+            return callbackValue
+          },
+        )
+      } finally {
+        open = false
+      }
+      if (
+        isThenable(returned) ||
+        callbackValue === undefined ||
+        returned !== callbackValue ||
+        calls !== 1 ||
+        committedAggregate === undefined
+      ) {
+        throw new Error('linked CAS exhaustion must be synchronous and exact')
+      }
+      commitAggregate(committedAggregate)
+      return callbackValue
+    },
+    async resumeRetryExhaustedAttempt<T>(
+      expected: EncryptedWalletBackupSyncAttemptRecord,
+      next: EncryptedWalletBackupSyncAttemptRecord,
+      commit: (committed: EncryptedWalletBackupSyncAttemptRecord) => T,
+    ): Promise<Readonly<{ state: 'not-ready' }> | Readonly<{ state: 'committed'; value: T }>> {
+      let calls = 0
+      let open = true
+      let committedAggregate: EncryptedWalletBackupActiveUploadAttemptRecord | undefined
+      let callbackValue: T | undefined
+      let returned: Awaited<
+        ReturnType<EncryptedWalletBackupSyncAttemptStore['resumeRetryExhaustedAttempt']>
+      >
+      try {
+        returned = await coordinator.resumeLinkedCasAttempt(
+          cloneActiveUploadAttemptRecord(currentClaim),
+          cloneCoordinatorCasRecord(expected),
+          cloneCoordinatorCasRecord(next),
+          (raw) => {
+            if (!open || calls++ !== 0) throw new Error('linked CAS resume callback is invalid')
+            const aggregate = validateAggregate(raw.attempt, ['cas-journaled'])
+            const record = decodeExactLinkedCasAttempt(aggregate, raw.casAttempts)
+            if (
+              aggregate.casAttemptId !== record.attemptId ||
+              !equalCoordinatorCasRecord(next, record)
+            ) {
+              throw new Error('linked resumed CAS attempt changed')
+            }
+            committedAggregate = aggregate
+            callbackValue = commit(record)
+            return callbackValue
+          },
+        )
+      } finally {
+        open = false
+      }
+      if (returned.state === 'not-ready') {
+        if (calls !== 0 || callbackValue !== undefined)
+          throw new Error('linked CAS not-ready resume invoked its callback')
+        return returned
+      }
+      if (
+        callbackValue === undefined ||
+        returned.value !== callbackValue ||
+        calls !== 1 ||
+        committedAggregate === undefined
+      ) {
+        throw new Error('linked CAS resume must be synchronous and exact')
+      }
+      commitAggregate(committedAggregate)
+      return { state: 'committed', value: callbackValue }
+    },
+  }
+  return Object.freeze(store)
+}
+
+function requireCoordinatorStore(
+  value: unknown,
+): asserts value is EncryptedWalletBackupCoordinatorStore {
+  requireUploadStore(value)
+  const store = value as EncryptedWalletBackupCoordinatorStore
+  if (
+    typeof store.sealOrReadLinkedCasAttempt !== 'function' ||
+    typeof store.readLinkedCasAttempts !== 'function' ||
+    typeof store.validateLinkedCasAttempt !== 'function' ||
+    typeof store.transitionLinkedCasAttempt !== 'function' ||
+    typeof store.completeLinkedCasAttempt !== 'function' ||
+    typeof store.exhaustLinkedCasAttempt !== 'function' ||
+    typeof store.resumeLinkedCasAttempt !== 'function' ||
+    typeof store.completeForkCleanup !== 'function'
+  ) {
+    throw new Error('encrypted backup coordinator store is invalid')
+  }
+}
+
 function decodeReferenceSet(canonical: Uint8Array): Set<string> {
   preflightEncryptedBackupReferenceSetCbor(canonical)
   const decoded = decode(canonical)
@@ -1252,6 +2026,7 @@ function validateTargetHead(
   objectCount: number
   storedBytes: number
   proofCount: number
+  manifestHead: EncryptedWalletBackupManifestHead
 }> {
   preflightEncryptedBackupHeadCbor(canonicalHead)
   preflightEncryptedBackupReferenceSetCbor(canonicalReferenceSet)
@@ -1279,8 +2054,10 @@ function validateTargetHead(
   const vaultId = bytesToHex(requireBytes(head[3], 32, 'target vault id'))
   const backupPublicKey = bytesToHex(requireBytes(head[4], 32, 'target request public key'))
   const generation = requireInteger(head[5], 1, Number.MAX_SAFE_INTEGER, 'target generation')
+  let parent: EncryptedWalletBackupManifestHead['parent']
   if (head[6] === null) {
     if (generation !== 1) throw new Error('persisted backup target parent is invalid')
+    parent = null
   } else if (
     !Array.isArray(head[6]) ||
     head[6].length !== 2 ||
@@ -1289,9 +2066,12 @@ function validateTargetHead(
   ) {
     throw new Error('persisted backup target parent is invalid')
   } else {
-    requireBytes(head[6][1], 32, 'target parent digest')
+    parent = Object.freeze({
+      generation: generation - 1,
+      manifestDigest: bytesToHex(requireBytes(head[6][1], 32, 'target parent digest')),
+    })
   }
-  requireBytes(head[7], 16, 'target snapshot nonce')
+  const snapshotNonce = bytesToHex(requireBytes(head[7], 16, 'target snapshot nonce'))
   const pageReferences = decodeTargetReferenceArray(head[8], 'target manifest page references')
   const chunkReferences = decodeTargetReferenceArray(head[9], 'target proof chunk references')
   if (
@@ -1335,6 +2115,28 @@ function validateTargetHead(
   if (storedBytes !== expectedStoredBytes) {
     throw new Error('persisted backup stored bytes do not match references')
   }
+  const referenceSetDigest = bytesToHex(requireBytes(head[12], 32, 'target reference set digest'))
+  const manifestHead: EncryptedWalletBackupManifestHead = Object.freeze({
+    formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+    realm,
+    vaultId,
+    backupPublicKey,
+    generation,
+    parent,
+    snapshotNonce,
+    snapshotId: deriveDurableWalletBackupSnapshotId({
+      formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
+      realm,
+      backupPublicKey,
+      generation,
+      manifestDigest: expectedManifestDigest,
+    }),
+    manifestDigest: expectedManifestDigest,
+    referenceSetDigest,
+    objectCount: allReferences.length,
+    storedBytes,
+    proofCount,
+  })
   return Object.freeze({
     references: decodeReferenceSet(canonicalReferenceSet),
     pageReferences: Object.freeze(pageReferences),
@@ -1346,6 +2148,7 @@ function validateTargetHead(
     objectCount: allReferences.length,
     storedBytes,
     proofCount,
+    manifestHead,
   })
 }
 
@@ -1698,6 +2501,7 @@ function decodeActiveUploadAttemptRecord(
     'localSnapshotRevision',
     'batchIds',
     'activeBatchId',
+    'casAttemptId',
     'lifecycle',
   ]
   requireKnownFields(raw, fields)
@@ -1800,13 +2604,33 @@ function decodeActiveUploadAttemptRecord(
       : requireLowerHex(raw.activeBatchId, 16, 'active foreground batch id')
   if (activeBatchId !== null && !batchIds.includes(activeBatchId))
     throw new Error('active foreground batch is outside the attempt ledger')
+  const casAttemptId =
+    raw.casAttemptId === null
+      ? null
+      : requireLowerHex(raw.casAttemptId, 16, 'linked CAS attempt id')
   const lifecycle = requireOneOf(
     raw.lifecycle,
-    ['active', 'abort-uncertain', 'finalized', 'abandoned'] as const,
+    [
+      'active',
+      'abort-uncertain',
+      'cas-journaled',
+      'fork-cleanup-uncertain',
+      'abandoned',
+      'complete',
+    ] as const,
     'active lifecycle',
   )
   if (lifecycle !== 'active' && activeBatchId !== null)
     throw new Error('terminal upload attempt retains an active batch')
+  if (
+    ((lifecycle === 'cas-journaled' ||
+      lifecycle === 'fork-cleanup-uncertain' ||
+      lifecycle === 'complete') &&
+      casAttemptId === null) ||
+    ((lifecycle === 'active' || lifecycle === 'abort-uncertain') && casAttemptId !== null)
+  ) {
+    throw new Error('upload attempt CAS link does not match lifecycle')
+  }
   const realm = requireRealm(raw.realm)
   const vaultId = requireLowerHex(raw.vaultId, 32, 'active vault id')
   if (realm !== target.realm || vaultId !== target.vaultId)
@@ -1839,6 +2663,7 @@ function decodeActiveUploadAttemptRecord(
     ),
     batchIds: Object.freeze(batchIds),
     activeBatchId,
+    casAttemptId,
     lifecycle,
   })
 }
@@ -1846,6 +2671,7 @@ function decodeActiveUploadAttemptRecord(
 function issueUploadAttemptClaim(
   record: EncryptedWalletBackupActiveUploadAttemptRecord,
   keyHandle: EncryptedWalletBackupKeyHandle,
+  store: EncryptedWalletBackupUploadBatchStore,
 ): EncryptedWalletBackupUploadAttemptClaim {
   if (record.realm !== keyHandle.realm || record.vaultId !== keyHandle.vaultId)
     throw new Error('upload attempt belongs to foreign vault')
@@ -1858,17 +2684,18 @@ function issueUploadAttemptClaim(
     throw new Error('upload attempt belongs to foreign backup key')
   }
   const claim = Object.freeze({ state: 'claimed' as const, record })
-  UPLOAD_ATTEMPT_CLAIMS.set(claim, { keyHandle, record })
+  UPLOAD_ATTEMPT_CLAIMS.set(claim, { keyHandle, store, record })
   return claim
 }
 
 function requireUploadAttemptClaim(
   value: unknown,
   keyHandle: EncryptedWalletBackupKeyHandle,
+  store: EncryptedWalletBackupUploadBatchStore,
 ): UploadAttemptClaimAuthority {
   const authority =
     typeof value === 'object' && value !== null ? UPLOAD_ATTEMPT_CLAIMS.get(value) : undefined
-  if (authority === undefined || authority.keyHandle !== keyHandle)
+  if (authority === undefined || authority.keyHandle !== keyHandle || authority.store !== store)
     throw new Error('backup upload attempt claim is invalid')
   return authority
 }
@@ -1956,11 +2783,21 @@ function freezeUploadBatch(
 function cloneUploadAttemptCandidate(
   value: Omit<
     EncryptedWalletBackupActiveUploadAttemptRecord,
-    'ownerEpoch' | 'leaseExpiresAtUnixMilliseconds' | 'batchIds' | 'activeBatchId' | 'lifecycle'
+    | 'ownerEpoch'
+    | 'leaseExpiresAtUnixMilliseconds'
+    | 'batchIds'
+    | 'activeBatchId'
+    | 'casAttemptId'
+    | 'lifecycle'
   >,
 ): Omit<
   EncryptedWalletBackupActiveUploadAttemptRecord,
-  'ownerEpoch' | 'leaseExpiresAtUnixMilliseconds' | 'batchIds' | 'activeBatchId' | 'lifecycle'
+  | 'ownerEpoch'
+  | 'leaseExpiresAtUnixMilliseconds'
+  | 'batchIds'
+  | 'activeBatchId'
+  | 'casAttemptId'
+  | 'lifecycle'
 > {
   return {
     ...value,
@@ -2016,7 +2853,7 @@ async function claimUploadBatchExecution(
   leaseDurationMilliseconds: number,
   keyHandle: EncryptedWalletBackupKeyHandle,
 ): Promise<SealedEncryptedWalletBackupUploadBatch> {
-  const claim = requireUploadAttemptClaim(claimEvidence, keyHandle).record
+  const claim = requireUploadAttemptClaim(claimEvidence, keyHandle, store).record
   let callbackOpen = true
   let callbackCalls = 0
   let issued: SealedEncryptedWalletBackupUploadBatch | undefined
@@ -2108,12 +2945,13 @@ async function transitionUploadBatch(
   next: EncryptedWalletBackupUploadBatchRecord,
   keyHandle: EncryptedWalletBackupKeyHandle,
 ): Promise<SealedEncryptedWalletBackupUploadBatch> {
-  const claim = requireUploadAttemptClaim(claimEvidence, keyHandle).record
+  const claim = requireUploadAttemptClaim(claimEvidence, keyHandle, store).record
   requireUploadStore(store)
   validateUploadBatchTransition(expected, next)
   let callbackOpen = true
   let callbackCalls = 0
   let issued: object | undefined
+  let committedAttemptAuthority: EncryptedWalletBackupActiveUploadAttemptRecord | undefined
   let returned: unknown
   try {
     returned = await store.transitionUploadBatch(
@@ -2131,10 +2969,7 @@ async function transitionUploadBatch(
           next.state === 'acknowledged' ? { ...claim, activeBatchId: null } : claim
         if (!equalActiveUploadAttempt(expectedAttempt, committedAttempt))
           throw new Error('committed backup upload attempt changed')
-        UPLOAD_ATTEMPT_CLAIMS.set(claimEvidence, {
-          keyHandle,
-          record: committedAttempt,
-        })
+        committedAttemptAuthority = committedAttempt
         const evidence = authorizeUploadBatch(committed, keyHandle)
         issued = evidence
         return evidence
@@ -2146,6 +2981,13 @@ async function transitionUploadBatch(
   if (isThenable(returned) || issued === undefined || returned !== issued || callbackCalls !== 1) {
     throw new Error('backup upload transition must be synchronous and exact')
   }
+  if (committedAttemptAuthority === undefined)
+    throw new Error('backup upload transition omitted aggregate authority')
+  UPLOAD_ATTEMPT_CLAIMS.set(claimEvidence, {
+    keyHandle,
+    store,
+    record: committedAttemptAuthority,
+  })
   return issued as SealedEncryptedWalletBackupUploadBatch
 }
 
@@ -2235,6 +3077,7 @@ function equalActiveUploadAttempt(
     expected.localSnapshotId === actual.localSnapshotId &&
     expected.localSnapshotRevision === actual.localSnapshotRevision &&
     expected.activeBatchId === actual.activeBatchId &&
+    expected.casAttemptId === actual.casAttemptId &&
     expected.lifecycle === actual.lifecycle &&
     expected.batchIds.length === actual.batchIds.length &&
     expected.batchIds.every((batchId, index) => batchId === actual.batchIds[index])
@@ -2263,9 +3106,6 @@ function requireUploadStore(
     typeof (value as EncryptedWalletBackupUploadBatchStore).fenceUploadAttemptForAbort !==
       'function' ||
     typeof (value as EncryptedWalletBackupUploadBatchStore).completeUploadAttemptAbort !==
-      'function' ||
-    typeof (value as EncryptedWalletBackupUploadBatchStore).finalizeUploadAttempt !== 'function' ||
-    typeof (value as EncryptedWalletBackupUploadBatchStore).readFinalizedUploadAttempt !==
       'function'
   ) {
     throw new Error('backup upload batch store is invalid')

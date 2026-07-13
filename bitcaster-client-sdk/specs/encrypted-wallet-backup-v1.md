@@ -508,15 +508,16 @@ head must prove the same realm, vault, backup key, target-minus-one generation,
 reference digest, reference counts, and stored-byte formula. The child peak is
 then recomputed from that persisted parent and the exact inherited chunk
 intersection during every restart decode.
-Exactly one nonterminal staged attempt exists for an exact `(realm,vault)`;
-sealing another fails while the prior attempt is active, abort-uncertain, or
-finalized-awaiting-CAS. Abandoned and later complete attempts release that slot.
+Exactly one live staged attempt exists for an exact `(realm,vault)`; sealing
+another fails while the prior attempt is `active`, `abort-uncertain`,
+`cas-journaled`, or `fork-cleanup-uncertain`. Only `abandoned` and `complete`
+release that slot.
 Restart uses one scope-bound attempt-or-null claim without a caller-known
 attempt ID; an adapter rejects multiple or foreign records rather than choosing
 one. A mutation requires the SDK-issued owner claim
 `(ownerId,ownerEpoch,leaseExpiresAt)`; the adapter checks the current epoch and
 its own database clock atomically with every batch seal, PUT-state transition,
-finalize, and abort. A different owner may take over only after database-time
+CAS handoff/transition, and abort. A different owner may take over only after database-time
 lease expiry. Every explicit claim or renewal grant, including one to the same
 owner, increments the epoch and replaces prior authority. Batch IDs are
 insert-only or exact-idempotent. Object IDs and object digests are each
@@ -532,7 +533,7 @@ so adapter mutation cannot rewrite the authority used for comparison.
 
 At most one payload-bearing foreground batch is active. Batch seal atomically
 sets `activeBatchId`; a different sibling cannot seal until acknowledgement
-atomically clears it. Abort and finalize fence and clear it. Upload execution
+atomically clears it. Abort and CAS handoff fence and clear it. Upload execution
 has a separate database-time lease and monotonically increasing execution epoch,
 so two coordinators cannot concurrently resume the same `put-uncertain` batch.
 An unexpired execution lease rejects another runner; after expiry, restart claims
@@ -541,9 +542,12 @@ the attempt and active batch consistently. The client validates both the owner
 claim and execution epoch/lease after constructing each request proof and
 immediately before every PUT dispatch. A request already in flight when an epoch
 changes remains harmless because the server accepts it only while the remote
-attempt is active and rejects it after the attempt-wide abort/finalize fence.
-The aggregate lifecycle is `active`, `abort-uncertain`, `finalized`, or
-`abandoned`; fencing and tombstoning apply to every sibling batch.
+attempt is active and rejects it after the attempt-wide abort/handoff fence.
+The aggregate lifecycle is `active -> abort-uncertain -> abandoned` or
+`active -> cas-journaled -> complete`. A foreign authenticated head changes
+`cas-journaled` to `fork-cleanup-uncertain`; the exact upload-attempt abort then
+resumes to `abandoned` or `complete`. Fencing and tombstoning apply to every
+sibling batch.
 
 One SDK foreground upload cycle persists exact PUT bytes before I/O and enforces
 all of these independently:
@@ -572,7 +576,7 @@ exceeds that ceiling, whose parent-plus-new-delta lower bound exceeds that
 ceiling, or whose capability omits the new-object delta;
 canonical PUT payload bytes are counted
 separately against each cycle's 4 MiB transport limit.
-Finalization separately validates the complete target-wide batch ledger,
+CAS handoff separately validates the complete target-wide batch ledger,
 reference delta, independent ID/digest uniqueness, and quota-bound target;
 per-cycle bounds never weaken those whole-target checks. Each post-expiry
 execution claim is a new bounded cycle over the same exact persisted batch, not
@@ -581,11 +585,13 @@ persisted bytes. Acknowledged batches compact away ciphertext while retaining
 their bounded reference/length ledger. Before issuing DELETE, abandonment
 durably and exclusively transitions a batch from `sealed`, `put-uncertain`, or
 `acknowledged` to `abort-uncertain`; restart retries the exact abort and records
-`abandoned` only after remote acknowledgement. Finalization atomically
-transitions the complete acknowledged batch set to terminal `finalized`. These
-transitions are mutually exclusive: a stale abort capability cannot cross a
-completed finalize, and finalization cannot cross an `abort-uncertain` or
-`abandoned` record. The adapter, not the caller, loads the complete
+`abandoned` only after remote acknowledgement. CAS handoff atomically
+transitions the complete acknowledged batch set to locally `finalized`, inserts
+or reads the exact deterministic CAS row, links it from the aggregate, and
+commits `cas-journaled`. Local batch finalization is not remote finalization;
+there is no separately committed finalized-awaiting-CAS state. These transitions
+are mutually exclusive: stale abort authority cannot cross handoff, and handoff
+cannot cross `abort-uncertain` or `abandoned`. The adapter, not the caller, loads the complete
 `(uploadAttemptId,targetManifestDigest)` partition inside that transaction,
 rejects any mixed or duplicate row, and rolls the transition back if the SDK's
 synchronous validation callback rejects. Reads used for restart likewise return
@@ -602,18 +608,33 @@ rehydration.
 If a crash loses an unprepared remainder, the delegated client tombstones the
 attempt through its idempotent abort endpoint; the service rejects late PUTs and
 queues unpinned objects for bounded garbage collection before the client
-rebuilds from the still-authoritative local snapshot. Only after atomically
-persisted finalized rows cover every non-inherited target reference derived
-from the attempt aggregate (never from a caller-selected or first batch) may the SDK mint CAS
-authority. After process restart, the SDK reconstructs that authority under a
-newly derived key handle from the persisted canonical target head, reference
-set, snapshot identity, and complete finalized rows; it does not depend on an
-in-memory prepared target or a pre-crash capability. Target realm, vault,
-generation, and attempt ID are revalidated against every persisted PUT.
-Snapshot metadata and the CAS target are always derived from this persisted
-prepared target and are never accepted from the caller.
+rebuilds from the still-authoritative local snapshot. Only the combined
+coordinator transaction may mint CAS authority. Its CAS ID is the first 16
+bytes of
+`SHA256(CBOR([1,"backup-cas-attempt-id",realm,vaultId32,uploadAttemptId16,targetManifestDigest32]))`.
+The caller supplies no CAS ID, target, snapshot identity, finalized capability,
+or independent CAS store. The coordinator uses one physical database
+transaction and enforces transactional referential integrity plus a unique
+upload-to-CAS relation, so orphan or multiple linked rows cannot exist. SQLite
+and PostgreSQL adapters use a physical foreign key and unique constraint. Dexie
+adapters use a same-transaction upload-attempt existence check plus a unique
+index.
+After restart, one scope-bound aggregate claim discovers the work: `active`
+resumes its exact batch or handoff, `cas-journaled` loads only its exact linked
+CAS row, and `fork-cleanup-uncertain` resumes only its exact abort. Missing,
+multiple, foreign, or mismatched links fail closed. Snapshot metadata and the
+CAS target are derived from the persisted aggregate and never accepted from the
+caller. One canonical parser derives every duplicated target summary field from
+the aggregate's canonical head and reference-set bytes, including parent
+generation/digest, snapshot nonce, derived snapshot ID, reference-set digest,
+counts, and byte totals. Restart and fork cleanup reject any linked CAS summary
+that differs from that derivation before signing or dispatch.
 
-CAS dispatch is durably recorded before I/O. A lost CAS response is resolved by
+Every CAS transition revalidates the current aggregate owner epoch and
+database-time lease. After asynchronous request signing, the SDK immediately
+revalidates that exact aggregate claim and linked CAS row before dispatch; it
+does not claim that an already-sent request can be recalled. CAS dispatch is
+durably recorded before I/O. A lost CAS response is resolved by
 authenticated head read: target means acknowledged, parent permits an exact-byte
 retry within the initial-plus-two-retry allowance, and any other head is a fork.
 If the exact parent remains after the final allowance, the attempt records
@@ -622,9 +643,32 @@ adapter's database clock plus the fixed five-second delay; client/request clock
 skew cannot shorten it. It is not misclassified as a fork. At or after
 that boundary, the adapter atomically resumes the same exact attempt row,
 upload-attempt ID, target digest, and canonical CAS bytes. It cannot create a
-replacement target or reset the allowance early. Adapters enforce at most one
-active `(uploadAttemptId,targetManifestDigest)` pair across `sealed`,
-`cas-uncertain`, `retry-cas`, and `retry-exhausted` rows.
+replacement target or reset the allowance early. Authenticated target
+observation atomically changes the CAS row to `acknowledged` and aggregate to
+`complete`. Parent observation retries while the aggregate stays
+`cas-journaled`; a foreign head atomically changes the CAS row to
+`fork-rejected` and aggregate to `fork-cleanup-uncertain`. Remote CAS and abort
+serialize: late CAS after abort sees abandoned/conflict, while late abort after
+CAS receives authenticated `already-finalized`. That cleanup result completes
+the aggregate but never creates current-head or proof-eviction receipt authority.
+Coordinator persistence is bounded at every terminal path. When an authenticated
+target observation would change the CAS row to `acknowledged` and the aggregate
+to `complete`, the adapter first invokes the SDK validation callback against
+those terminal snapshots and the complete finalized batch partition. The SDK
+validates exact partition membership and immutable batch identity before the
+adapter deletes the upload aggregate, every batch, and the linked CAS row in
+that same transaction. Nonterminal CAS transitions do not load the batch
+partition. Fork cleanup does the same
+after validating the exact immutable `fork-rejected` CAS identity and the
+terminal `abandoned` or `complete` partition. Callback rejection rolls back the
+terminal transition and deletion. Terminal coordinator rows are not receipt or
+restart authority and are never retained as history; durable current-head state
+and authenticated backup receipts remain separate authorities.
+The pre-CAS abort path is bounded by the same rule: after the remote attempt is
+authenticated as abandoned, the adapter invokes the SDK callback against the
+terminal aggregate and all abandoned batches, then deletes that aggregate and
+partition in the same transaction. Callback rejection rolls back both the
+terminal transition and deletion.
 An SDK-created current-head capability plus a decrypted current manifest-page
 membership is the only source of a per-proof backup receipt. Arbitrary callbacks,
 cloned evidence, old heads, or merely existing blobs cannot authorize local
