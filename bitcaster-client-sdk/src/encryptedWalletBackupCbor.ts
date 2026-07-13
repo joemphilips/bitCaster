@@ -1,4 +1,7 @@
 import { encode, rfc8949EncodeOptions } from 'cborg'
+import {
+  ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES,
+} from './encryptedWalletBackupCasState.ts'
 
 const PROOF_CBOR_MAX_BYTES = 245_760
 const PROOF_COUNT_MAX = 512
@@ -6,7 +9,6 @@ const TOKEN_LIMIT = 16_384
 const DEPTH_LIMIT = 6
 const MANIFEST_CBOR_MAX_BYTES = 65_532
 const PUBLIC_METADATA_MAX_BYTES = 65_536
-const CAS_PAYLOAD_MAX_BYTES = 196_608
 const REQUEST_PROOF_MAX_BYTES = 4_096
 const PUT_PAYLOAD_MAX_BYTES = 4 * 1_024 * 1_024
 
@@ -194,7 +196,13 @@ export function preflightEncryptedBackupReferenceSetCbor(bytes: Uint8Array): voi
 }
 
 export function preflightEncryptedBackupCasCbor(bytes: Uint8Array): void {
-  const root = scanBoundedEnvelope(bytes, CAS_PAYLOAD_MAX_BYTES, 3, 32, 6)
+  const root = scanBoundedEnvelope(
+    bytes,
+    ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES,
+    3,
+    32,
+    6,
+  )
   if (root.major !== 4 || root.value !== 6
     || root.children[0]?.major !== 0 || root.children[0]?.value !== 1) {
     throw new Error('CAS shape')
@@ -207,7 +215,6 @@ export function preflightEncryptedBackupCasCbor(bytes: Uint8Array): void {
   requireBytes(root.children[4], 1, PUBLIC_METADATA_MAX_BYTES, 'CAS head')
   requireBytes(root.children[5], 1, PUBLIC_METADATA_MAX_BYTES, 'CAS reference set')
 }
-
 export function preflightEncryptedBackupPutCbor(bytes: Uint8Array): void {
   const root = scanBoundedEnvelope(bytes, PUT_PAYLOAD_MAX_BYTES, 2, 32, 12)
   if (root.major !== 4 || root.value !== 12

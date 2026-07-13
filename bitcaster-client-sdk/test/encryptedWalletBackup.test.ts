@@ -28,20 +28,22 @@ import {
   prepareEncryptedWalletBackupProof,
   prepareEncryptedWalletBackupRequestProof,
   prepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof,
-  sealEncryptedWalletBackupSyncAttempt,
   synchronizeEncryptedWalletBackupManifestHead,
   verifyEncryptedWalletBackupConditionalKeyset,
   readPreparedEncryptedWalletBackupObject,
   readPreparedEncryptedWalletBackupManifestHead,
   readAuthenticatedEncryptedWalletBackupHead,
   resumeEncryptedWalletBackupSyncAttempt,
-  rehydrateEncryptedWalletBackupSyncAttempt,
   verifyEncryptedWalletBackupRequestProof,
   type EncryptedWalletBackupProofInput,
   type VerifiedEncryptedWalletBackupConditionalKeyset,
   type EncryptedWalletBackupRuntime,
 } from "../src/encryptedWalletBackup.ts";
 import { preflightEncryptedProofChunkCbor } from "../src/encryptedWalletBackupCbor.ts";
+import {
+  validateEncryptedWalletBackupAggregateCasLifecycle,
+  validateEncryptedWalletBackupCasState,
+} from "../src/encryptedWalletBackupCasState.ts";
 import { prepareDurableWalletAcknowledgedBackupSnapshot } from "../src/recoverableWalletStorage.ts";
 import {
   executeEncryptedWalletBackupAccountOperation,
@@ -51,18 +53,87 @@ import {
 import {
   abandonEncryptedWalletBackupUploadAttempt,
   claimEncryptedWalletBackupUploadAttempt,
-  finalizeEncryptedWalletBackupUploadSet,
-  finalizeZeroDeltaEncryptedWalletBackupUploadAttempt,
+  deriveEncryptedWalletBackupCasAttemptId,
   ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX,
   prepareEncryptedWalletBackupUploadPlan,
-  rehydrateFinalizedEncryptedWalletBackupUploadSet,
-  rehydrateFinalizedZeroDeltaEncryptedWalletBackupUploadAttempt,
+  sealOrRehydrateEncryptedWalletBackupCasAttempt,
   rehydrateEncryptedWalletBackupUploadBatch,
   sealEncryptedWalletBackupUploadAttempt,
   sealEncryptedWalletBackupUploadBatch,
   uploadEncryptedWalletBackupBatch,
   type EncryptedWalletBackupUploadBatchRecord,
 } from "../src/encryptedWalletBackupSync.ts";
+
+type CasHandoffFixture = Readonly<{
+  state: "cas-journaled";
+  targetManifestDigest: string;
+  uploadAttemptId: string;
+  localSnapshotId: string;
+  localSnapshotRevision: number;
+  objectCount: number;
+  casAttempt: Awaited<
+    ReturnType<typeof sealOrRehydrateEncryptedWalletBackupCasAttempt>
+  >;
+  claim: Awaited<ReturnType<typeof sealEncryptedWalletBackupUploadAttempt>>;
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>;
+  store: ReturnType<typeof inMemoryUploadBatchStore>;
+}>;
+
+async function journalEncryptedWalletBackupCasHandoffForTest(input: {
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>;
+  claim: Awaited<ReturnType<typeof sealEncryptedWalletBackupUploadAttempt>>;
+  store: ReturnType<typeof inMemoryUploadBatchStore>;
+}): Promise<CasHandoffFixture> {
+  const casAttempt =
+    await sealOrRehydrateEncryptedWalletBackupCasAttempt(input);
+  return Object.freeze({
+    state: "cas-journaled" as const,
+    targetManifestDigest: input.claim.record.targetManifestDigest,
+    uploadAttemptId: input.claim.record.attemptId,
+    localSnapshotId: input.claim.record.localSnapshotId,
+    localSnapshotRevision: input.claim.record.localSnapshotRevision,
+    objectCount: casAttempt.record.targetHead.objectCount,
+    casAttempt,
+    claim: input.claim,
+    keyHandle: input.keyHandle,
+    store: input.store,
+  });
+}
+
+const journalZeroDeltaEncryptedWalletBackupCasHandoffForTest =
+  journalEncryptedWalletBackupCasHandoffForTest;
+
+async function rehydrateEncryptedWalletBackupCasHandoffForTest(input: {
+  uploadAttemptId: string;
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>;
+  store: ReturnType<typeof inMemoryUploadBatchStore>;
+}): Promise<CasHandoffFixture> {
+  const claim = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "test-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: input.keyHandle,
+    store: input.store,
+  });
+  if (claim === null || claim.record.attemptId !== input.uploadAttemptId)
+    throw new Error("missing linked upload aggregate");
+  return journalEncryptedWalletBackupCasHandoffForTest({
+    claim,
+    keyHandle: input.keyHandle,
+    store: input.store,
+  });
+}
+
+async function rehydrateZeroDeltaEncryptedWalletBackupCasHandoffForTest(input: {
+  attemptId: string;
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>;
+  store: ReturnType<typeof inMemoryUploadBatchStore>;
+}): Promise<CasHandoffFixture> {
+  return rehydrateEncryptedWalletBackupCasHandoffForTest({
+    uploadAttemptId: input.attemptId,
+    keyHandle: input.keyHandle,
+    store: input.store,
+  });
+}
 
 const vector = JSON.parse(
   await readFile(
@@ -160,9 +231,13 @@ test("account lifecycle authorization is scheme-neutral and exact-vault scoped",
     operation: enrolled,
     remote: {
       async executeAccountOperation({ canonicalRequest }) {
-        assert.deepEqual(
-          canonicalRequest,
-          readPreparedEncryptedWalletBackupAccountOperation(enrolled),
+        assert.equal(
+          isDeepStrictEqual(
+            canonicalRequest,
+            readPreparedEncryptedWalletBackupAccountOperation(enrolled),
+          ),
+          true,
+          "account operation must dispatch exact canonical bytes",
         );
         return {
           status: "committed" as const,
@@ -682,7 +757,7 @@ test("incremental manifests and upload-ledger recovery remain exact", async () =
         },
         store: inMemoryUploadBatchStore(),
       }),
-    /prepared backup upload batch is invalid/,
+    /backup upload attempt claim is invalid/,
   );
   await assert.rejects(
     () =>
@@ -833,8 +908,15 @@ test("incremental manifests and upload-ledger recovery remain exact", async () =
     emptyAttemptStore,
     "69".repeat(16),
   );
+  const directEmptyCas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: emptyAttemptClaim,
+    keyHandle,
+    store: emptyAttemptStore,
+  });
+  assert.equal(directEmptyCas.record.targetHead.proofCount, 0);
+  assert.equal(directEmptyCas.record.targetHead.objectCount, 0);
   const finalizedEmpty =
-    await finalizeZeroDeltaEncryptedWalletBackupUploadAttempt({
+    await journalZeroDeltaEncryptedWalletBackupCasHandoffForTest({
       claim: emptyAttemptClaim,
       keyHandle,
       store: emptyAttemptStore,
@@ -845,30 +927,30 @@ test("incremental manifests and upload-ledger recovery remain exact", async () =
     realm: keyHandle.realm,
   });
   const restartedEmpty =
-    await rehydrateFinalizedZeroDeltaEncryptedWalletBackupUploadAttempt({
+    await rehydrateZeroDeltaEncryptedWalletBackupCasHandoffForTest({
       attemptId: emptyAttemptClaim.record.attemptId,
       keyHandle: emptyRestartKey,
       store: emptyAttemptStore,
     });
   await assert.rejects(
     () =>
-      rehydrateFinalizedZeroDeltaEncryptedWalletBackupUploadAttempt({
+      rehydrateZeroDeltaEncryptedWalletBackupCasHandoffForTest({
         attemptId: "67".repeat(16),
         keyHandle: emptyRestartKey,
         store: {
           ...emptyAttemptStore,
-          async readFinalizedUploadAttempt<T>(
+          async inspectUploadAttemptPartition<T>(
             _attemptId: string,
             read: (raw: never) => T,
           ) {
-            return emptyAttemptStore.readFinalizedUploadAttempt(
+            return emptyAttemptStore.inspectUploadAttemptPartition(
               emptyAttemptClaim.record.attemptId,
               read,
             );
           },
         },
       }),
-    /attempt id|batch set is invalid/,
+    /attempt id|batch set is invalid|missing linked upload aggregate/,
   );
   const foreignEmptyKey = await createEncryptedWalletBackupKeyHandle({
     seed: new Uint8Array(SEED).fill(0x42),
@@ -876,53 +958,62 @@ test("incremental manifests and upload-ledger recovery remain exact", async () =
   });
   await assert.rejects(
     () =>
-      rehydrateFinalizedZeroDeltaEncryptedWalletBackupUploadAttempt({
+      rehydrateZeroDeltaEncryptedWalletBackupCasHandoffForTest({
         attemptId: emptyAttemptClaim.record.attemptId,
         keyHandle: foreignEmptyKey,
         store: emptyAttemptStore,
       }),
-    /foreign vault|foreign backup key/,
+    /foreign vault|foreign backup key|missing linked upload aggregate/,
   );
-  const emptyFinalizedRaw = await emptyAttemptStore.readFinalizedUploadAttempt(
-    emptyAttemptClaim.record.attemptId,
-    (raw: unknown) =>
-      structuredClone(raw) as {
-        attempt: Record<string, unknown>;
-        batches: Record<string, unknown>[];
-      },
-  );
+  const emptyFinalizedRaw =
+    await emptyAttemptStore.inspectUploadAttemptPartition(
+      emptyAttemptClaim.record.attemptId,
+      (raw: unknown) =>
+        structuredClone(raw) as {
+          attempt: Record<string, unknown>;
+          batches: Record<string, unknown>[];
+        },
+    );
   await assert.rejects(
     () =>
-      rehydrateFinalizedZeroDeltaEncryptedWalletBackupUploadAttempt({
+      rehydrateZeroDeltaEncryptedWalletBackupCasHandoffForTest({
         attemptId: emptyAttemptClaim.record.attemptId,
         keyHandle: emptyRestartKey,
         store: {
           ...emptyAttemptStore,
-          async readFinalizedUploadAttempt<T>(
-            _attemptId: string,
+          async sealOrReadLinkedCasAttempt<T>(
+            _claim: Record<string, unknown>,
+            _candidate: Record<string, unknown>,
             read: (raw: never) => T,
           ) {
             return read({
               attempt: structuredClone(emptyFinalizedRaw.attempt),
               batches: [structuredClone(carriedUpload.record)],
+              casAttempts: [structuredClone(restartedEmpty.casAttempt.record)],
             } as never);
           },
         },
       }),
     /aggregate batch partition|batch set is invalid/,
   );
-  const emptySyncStore = inMemorySyncAttemptStore();
-  const emptySyncAttempt = await sealEncryptedWalletBackupSyncAttempt({
-    attemptId: "68".repeat(16),
+  const currentEmptyClaim = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "test-owner",
+    leaseDurationMilliseconds: 60_000,
     keyHandle: emptyRestartKey,
-    finalizedUploads: restartedEmpty,
-    store: emptySyncStore,
+    store: emptyAttemptStore,
   });
+  assert.notEqual(currentEmptyClaim, null);
+  const emptySyncAttempt = await sealOrRehydrateEncryptedWalletBackupCasAttempt(
+    {
+      claim: currentEmptyClaim!,
+      keyHandle: emptyRestartKey,
+      store: emptyAttemptStore,
+    },
+  );
   assert.equal(emptySyncAttempt.record.targetHead.proofCount, 0);
   const acknowledgedEmptyCas =
     await synchronizeEncryptedWalletBackupManifestHead({
       attempt: emptySyncAttempt,
-      store: emptySyncStore,
       keyHandle: emptyRestartKey,
       enrollmentEpoch: 1,
       casUrl: "https://backup.example.test/v1/empty/head:compare-and-swap",
@@ -1348,6 +1439,11 @@ test("upload ledger execution, retry, abort, and rehydration are durable", async
     },
   });
   assert.equal(abandoned.record.lifecycle, "abandoned");
+  assert.deepEqual(abandonedStore.coordinatorRecordCounts(), {
+    attempts: 0,
+    batches: 0,
+    casAttempts: 0,
+  });
   await assert.rejects(
     () =>
       sealEncryptedWalletBackupUploadBatch({
@@ -1364,7 +1460,7 @@ test("upload ledger execution, retry, abort, and rehydration are durable", async
         },
         store: inMemoryUploadBatchStore(),
       }),
-    /prepared backup upload batch is invalid/,
+    /backup upload attempt claim is invalid/,
   );
   assert.equal(
     page.entries.every((entry) => entry.mint === vector.inputs.proof.mint),
@@ -1579,17 +1675,12 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
     realm: keyHandle.realm,
   });
   const restartedFinalizedUploads =
-    await rehydrateFinalizedEncryptedWalletBackupUploadSet({
+    await rehydrateEncryptedWalletBackupCasHandoffForTest({
       uploadAttemptId: finalizedNextUploads.uploadAttemptId,
       keyHandle: restartedKeyHandle,
       store: finalizedBundle.store,
     });
-  const restartFinalizedAttempt = await sealEncryptedWalletBackupSyncAttempt({
-    attemptId: "90".repeat(16),
-    keyHandle: restartedKeyHandle,
-    finalizedUploads: restartedFinalizedUploads,
-    store: inMemorySyncAttemptStore(),
-  });
+  const restartFinalizedAttempt = restartedFinalizedUploads.casAttempt;
   assert.equal(
     restartFinalizedAttempt.record.targetHead.manifestDigest,
     nextHead.manifestDigest,
@@ -1607,7 +1698,7 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
     attemptId: "ec".repeat(16),
   });
   const duplicateDigestRaw =
-    await duplicateDigestBundle.store.readFinalizedUploadAttempt(
+    await duplicateDigestBundle.store.inspectUploadAttemptPartition(
       duplicateDigestBundle.finalized.uploadAttemptId,
       (raw: unknown) =>
         structuredClone(raw) as {
@@ -1656,16 +1747,24 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
   }
   await assert.rejects(
     () =>
-      rehydrateFinalizedEncryptedWalletBackupUploadSet({
+      rehydrateEncryptedWalletBackupCasHandoffForTest({
         uploadAttemptId: duplicateDigestBundle.finalized.uploadAttemptId,
         keyHandle,
         store: {
           ...duplicateDigestBundle.store,
-          async readFinalizedUploadAttempt<T>(
-            _attemptId: string,
+          async sealOrReadLinkedCasAttempt<T>(
+            _claim: Record<string, unknown>,
+            _candidate: Record<string, unknown>,
             read: (raw: never) => T,
           ) {
-            return read(structuredClone(duplicateDigestRaw) as never);
+            return read({
+              ...structuredClone(duplicateDigestRaw),
+              casAttempts: [
+                structuredClone(
+                  duplicateDigestBundle.finalized.casAttempt.record,
+                ),
+              ],
+            } as never);
           },
         },
       }),
@@ -1673,7 +1772,7 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
   );
 
   const inheritedPageRaw =
-    await finalizedBundle.store.readFinalizedUploadAttempt(
+    await finalizedBundle.store.inspectUploadAttemptPartition(
       finalizedBundle.finalized.uploadAttemptId,
       (raw: unknown) =>
         structuredClone(raw) as {
@@ -1693,16 +1792,22 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
     batch.canonicalInheritedReferenceSet = inheritedPageBytes;
   await assert.rejects(
     () =>
-      rehydrateFinalizedEncryptedWalletBackupUploadSet({
+      rehydrateEncryptedWalletBackupCasHandoffForTest({
         uploadAttemptId: finalizedBundle.finalized.uploadAttemptId,
         keyHandle,
         store: {
           ...finalizedBundle.store,
-          async readFinalizedUploadAttempt<T>(
-            _attemptId: string,
+          async sealOrReadLinkedCasAttempt<T>(
+            _claim: Record<string, unknown>,
+            _candidate: Record<string, unknown>,
             read: (raw: never) => T,
           ) {
-            return read(structuredClone(inheritedPageRaw) as never);
+            return read({
+              ...structuredClone(inheritedPageRaw),
+              casAttempts: [
+                structuredClone(finalizedBundle.finalized.casAttempt.record),
+              ],
+            } as never);
           },
         },
       }),
@@ -1714,37 +1819,40 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
     batchId: "ef".repeat(16),
     attemptId: "ee".repeat(16),
   });
-  const substitutedFinalizeStore = {
-    ...substitutedFinalize.store,
-    async finalizeUploadAttempt<T>(
-      claim: Record<string, unknown>,
-      commit: (value: never) => T,
-    ): Promise<T> {
-      return substitutedFinalize.store.finalizeUploadAttempt(
-        claim,
-        (raw: {
-          attempt: Record<string, unknown>;
-          batches: Record<string, unknown>[];
-        }) => {
-          const changed = structuredClone(raw);
-          changed.attempt.canonicalInheritedReferenceSet = encode(
-            [1, "reference-set", [], []],
-            rfc8949EncodeOptions,
-          );
-          return commit(changed as never);
-        },
-      );
-    },
+  const originalSubstitutedHandoff =
+    substitutedFinalize.store.sealOrReadLinkedCasAttempt;
+  substitutedFinalize.store.sealOrReadLinkedCasAttempt = async function <T>(
+    claim: Record<string, unknown>,
+    candidate: Record<string, unknown>,
+    commit: (value: never) => T,
+  ): Promise<T> {
+    return originalSubstitutedHandoff(
+      claim,
+      candidate,
+      (raw: {
+        attempt: Record<string, unknown>;
+        batches: Record<string, unknown>[];
+      }) => {
+        const changed = structuredClone(raw);
+        changed.attempt.canonicalInheritedReferenceSet = encode(
+          [1, "reference-set", [], []],
+          rfc8949EncodeOptions,
+        );
+        return commit(changed as never);
+      },
+    );
   };
   await assert.rejects(
     () =>
-      finalizeEncryptedWalletBackupUploadSet({
+      journalEncryptedWalletBackupCasHandoffForTest({
         keyHandle,
         claim: substitutedFinalize.claim,
-        store: substitutedFinalizeStore,
+        store: substitutedFinalize.store,
       }),
     /finalized backup upload batch set changed|aggregate batch partition/,
   );
+  substitutedFinalize.store.sealOrReadLinkedCasAttempt =
+    originalSubstitutedHandoff;
   const rolledBackFinalize = await rehydrateEncryptedWalletBackupUploadBatch({
     batchId: substitutedFinalize.batchId,
     keyHandle,
@@ -1753,13 +1861,13 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
   assert.equal(rolledBackFinalize.record.state, "acknowledged");
   assert.equal(
     (
-      await finalizeEncryptedWalletBackupUploadSet({
+      await journalEncryptedWalletBackupCasHandoffForTest({
         keyHandle,
         claim: substitutedFinalize.claim,
         store: substitutedFinalize.store,
       })
     ).state,
-    "finalized",
+    "cas-journaled",
   );
   let finalizedAbortCalls = 0;
   await assert.rejects(
@@ -1789,7 +1897,7 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
     attemptId: "f2".repeat(16),
   });
   let staleAbortCalls = 0;
-  const finalizeFirst = finalizeEncryptedWalletBackupUploadSet({
+  const finalizeFirst = journalEncryptedWalletBackupCasHandoffForTest({
     keyHandle,
     claim: finalizeWins.claim,
     store: finalizeWins.store,
@@ -1845,11 +1953,12 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
   });
   await Promise.resolve();
   await Promise.resolve();
-  const finalizeAfterAbortJournal = finalizeEncryptedWalletBackupUploadSet({
-    keyHandle,
-    claim: abortWins.claim,
-    store: abortWins.store,
-  });
+  const finalizeAfterAbortJournal =
+    journalEncryptedWalletBackupCasHandoffForTest({
+      keyHandle,
+      claim: abortWins.claim,
+      store: abortWins.store,
+    });
   const [abortFirstResult, finalizeAfterAbortResult] = await Promise.allSettled(
     [abortFirst, finalizeAfterAbortJournal],
   );
@@ -2011,7 +2120,7 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
     multiBatchTarget.objects.map((object) => object.objectId).sort(),
   );
   let crossRowAbortCalls = 0;
-  const partitionFinalize = finalizeEncryptedWalletBackupUploadSet({
+  const partitionFinalize = journalEncryptedWalletBackupCasHandoffForTest({
     keyHandle: partitionRestartKey,
     claim: partitionRestartClaim!,
     store: partitionStore,
@@ -2075,7 +2184,7 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
   });
   await Promise.resolve();
   await Promise.resolve();
-  const crossRowFinalizeSecond = finalizeEncryptedWalletBackupUploadSet({
+  const crossRowFinalizeSecond = journalEncryptedWalletBackupCasHandoffForTest({
     keyHandle,
     claim: abortPartitionFirst.claim,
     store: abortPartitionStore,
@@ -2118,23 +2227,27 @@ test("finalization, abort races, aggregate partitions, and CAS recovery fail clo
   const mixedAcknowledged = structuredClone(abortWins.acknowledged.record);
   mixedAcknowledged.attemptId = mixedFinalized.attemptId;
   mixedAcknowledged.targetManifestDigest = mixedFinalized.targetManifestDigest;
-  const mixedAttempt = structuredClone(finalizedBundle.claim.record);
-  mixedAttempt.lifecycle = "finalized";
-  mixedAttempt.batchIds = [mixedFinalized.batchId, mixedAcknowledged.batchId];
   await assert.rejects(
     () =>
-      rehydrateFinalizedEncryptedWalletBackupUploadSet({
+      rehydrateEncryptedWalletBackupCasHandoffForTest({
         uploadAttemptId: mixedFinalized.attemptId,
         keyHandle: restartedKeyHandle,
         store: {
-          ...inMemoryUploadBatchStore(),
-          async readFinalizedUploadAttempt<T>(
-            _attempt: string,
+          ...finalizedBundle.store,
+          async sealOrReadLinkedCasAttempt<T>(
+            claim: Record<string, unknown>,
+            candidate: Record<string, unknown>,
             read: (value: never) => T,
           ) {
             return read({
-              attempt: mixedAttempt,
+              attempt: {
+                ...structuredClone(claim),
+                lifecycle: "cas-journaled",
+                casAttemptId: candidate.attemptId,
+                batchIds: [mixedFinalized.batchId, mixedAcknowledged.batchId],
+              },
               batches: [mixedFinalized, mixedAcknowledged],
+              casAttempts: [structuredClone(candidate)],
             } as never);
           },
         },
@@ -2507,450 +2620,1203 @@ test("upload ownership and execution leases survive takeover boundaries", async 
   );
 });
 
-test("sync-attempt CAS retry and exhaustion recovery remain exact", async () => {
+test("delayed CAS and abort signing cannot dispatch after owner takeover", async () => {
+  const casFixture = await createCasRecoveryFixtureForTest();
+  const casDelay = delayedSigningRuntimeForTest();
+  let casDispatches = 0;
+  const casWork = synchronizeEncryptedWalletBackupManifestHead({
+    attempt: casFixture.finalizedNextUploads.casAttempt,
+    keyHandle: casFixture.keyHandle,
+    enrollmentEpoch: 1,
+    casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+    headUrl: "https://backup.example.test/v1/head",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: casDelay.runtime,
+    remote: {
+      async compareAndSwapCurrentHead() {
+        casDispatches += 1;
+        return { status: "committed" as const };
+      },
+      async readCurrentHead() {
+        assert.fail("stale CAS owner must fail before head observation");
+      },
+    },
+  });
+  await casDelay.signingStarted;
+  casFixture.finalizedBundle.store.setNowUnixMilliseconds(
+    casFixture.finalizedNextUploads.claim.record.leaseExpiresAtUnixMilliseconds,
+  );
+  const casTakeover = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "cas-takeover",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: casFixture.keyHandle,
+    store: casFixture.finalizedBundle.store,
+  });
+  assert.notEqual(casTakeover, null);
+  casDelay.releaseSigning();
+  await assert.rejects(() => casWork, /stale backup upload owner claim/);
+  assert.equal(casDispatches, 0);
+
+  const preAbort = await createSealedUploadMutationFixtureForTest("89");
+  const preAbortDelay = delayedSigningRuntimeForTest();
+  let preAbortDispatches = 0;
+  const preAbortWork = abandonEncryptedWalletBackupUploadAttempt({
+    claim: preAbort.claim,
+    keyHandle: preAbort.keyHandle,
+    store: preAbort.store,
+    enrollmentEpoch: 1,
+    url: "https://backup.example.test/v1/upload-attempts/abort",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: preAbortDelay.runtime,
+    remote: {
+      async abortUploadAttempt() {
+        preAbortDispatches += 1;
+        return { status: "abandoned" as const };
+      },
+    },
+  });
+  await preAbortDelay.signingStarted;
+  preAbort.store.setNowUnixMilliseconds(
+    preAbort.claim.record.leaseExpiresAtUnixMilliseconds,
+  );
+  const abortTakeover = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "abort-takeover",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: preAbort.keyHandle,
+    store: preAbort.store,
+  });
+  assert.notEqual(abortTakeover, null);
+  preAbortDelay.releaseSigning();
+  await assert.rejects(() => preAbortWork, /stale backup upload owner claim/);
+  assert.equal(preAbortDispatches, 0);
+
+  const cleanupFixture = await createRejectedCasFixtureForTest();
+  const cleanupDelay = delayedSigningRuntimeForTest();
+  let cleanupDispatches = 0;
+  const cleanupWork = BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork(
+    {
+      claim: cleanupFixture.finalizedNextUploads.claim,
+      keyHandle: cleanupFixture.keyHandle,
+      store: cleanupFixture.finalizedBundle.store,
+      enrollmentEpoch: 1,
+      url: "https://backup.example.test/v1/upload-attempts/abort",
+      clock: { nowUnixSeconds: () => 1_700_000_000 },
+      runtime: cleanupDelay.runtime,
+      remote: {
+        async abortUploadAttempt() {
+          cleanupDispatches += 1;
+          return { status: "abandoned" as const };
+        },
+      },
+    },
+  );
+  await cleanupDelay.signingStarted;
+  cleanupFixture.finalizedBundle.store.setNowUnixMilliseconds(
+    cleanupFixture.finalizedNextUploads.claim.record
+      .leaseExpiresAtUnixMilliseconds,
+  );
+  const cleanupTakeover = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "cleanup-takeover",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle: cleanupFixture.keyHandle,
+    store: cleanupFixture.finalizedBundle.store,
+  });
+  assert.notEqual(cleanupTakeover, null);
+  cleanupDelay.releaseSigning();
+  await assert.rejects(() => cleanupWork, /stale backup upload owner claim/);
+  assert.equal(cleanupDispatches, 0);
+});
+
+test("coordinator atomically journals deterministic CAS work and completes the aggregate", async () => {
+  const { keyHandle, head } = await createManifestUploadFixtureForTest();
+  const acknowledged = await acknowledgeTargetUploadsForTest({
+    keyHandle,
+    targetHead: head,
+    batchId: "6a".repeat(16),
+    attemptId: "6b".repeat(16),
+  });
+  const expectedCasId = deriveEncryptedWalletBackupCasAttemptId({
+    realm: acknowledged.claim.record.realm,
+    vaultId: acknowledged.claim.record.vaultId,
+    uploadAttemptId: acknowledged.claim.record.attemptId,
+    targetManifestDigest: acknowledged.claim.record.targetManifestDigest,
+  });
+  assert.equal(expectedCasId, "628d1774a899d09fe08806077bc61f07");
+  const separatedIds = new Set([
+    expectedCasId,
+    deriveEncryptedWalletBackupCasAttemptId({
+      realm: `${acknowledged.claim.record.realm}-other`,
+      vaultId: acknowledged.claim.record.vaultId,
+      uploadAttemptId: acknowledged.claim.record.attemptId,
+      targetManifestDigest: acknowledged.claim.record.targetManifestDigest,
+    }),
+    deriveEncryptedWalletBackupCasAttemptId({
+      realm: acknowledged.claim.record.realm,
+      vaultId: "01".repeat(32),
+      uploadAttemptId: acknowledged.claim.record.attemptId,
+      targetManifestDigest: acknowledged.claim.record.targetManifestDigest,
+    }),
+    deriveEncryptedWalletBackupCasAttemptId({
+      realm: acknowledged.claim.record.realm,
+      vaultId: acknowledged.claim.record.vaultId,
+      uploadAttemptId: "01".repeat(16),
+      targetManifestDigest: acknowledged.claim.record.targetManifestDigest,
+    }),
+    deriveEncryptedWalletBackupCasAttemptId({
+      realm: acknowledged.claim.record.realm,
+      vaultId: acknowledged.claim.record.vaultId,
+      uploadAttemptId: acknowledged.claim.record.attemptId,
+      targetManifestDigest: "01".repeat(32),
+    }),
+  ]);
+  assert.equal(separatedIds.size, 5);
+  const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: acknowledged.claim,
+    keyHandle,
+    store: acknowledged.store,
+  });
+  assert.equal(cas.record.attemptId, expectedCasId);
+  const journaled = await acknowledged.store.readUploadAttempt(
+    acknowledged.claim.record.attemptId,
+    (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+  );
+  assert.equal(journaled.lifecycle, "cas-journaled");
+  assert.equal(journaled.casAttemptId, expectedCasId);
+  assert.equal(
+    (
+      await rehydrateEncryptedWalletBackupUploadBatch({
+        batchId: acknowledged.batchId,
+        keyHandle,
+        store: acknowledged.store,
+      })
+    ).record.state,
+    "finalized",
+  );
+  await assert.rejects(
+    () =>
+      sealEncryptedWalletBackupUploadAttempt({
+        attemptId: "6c".repeat(16),
+        ownerId: "other-owner",
+        leaseDurationMilliseconds: 60_000,
+        keyHandle,
+        targetHead: head,
+        store: acknowledged.store,
+      }),
+    /live backup upload attempt already exists/,
+  );
+  const restartedClaim = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "test-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    store: acknowledged.store,
+  });
+  assert.notEqual(restartedClaim, null);
+  const rehydrated = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: restartedClaim!,
+    keyHandle,
+    store: acknowledged.store,
+  });
+  assert.equal(rehydrated.record.attemptId, expectedCasId);
+  assert.equal(rehydrated.record.state, "sealed");
+  const completed = await synchronizeEncryptedWalletBackupManifestHead({
+    attempt: rehydrated,
+    keyHandle,
+    enrollmentEpoch: 1,
+    casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+    headUrl: "https://backup.example.test/v1/head",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    remote: {
+      async compareAndSwapCurrentHead() {
+        return { status: "committed" as const };
+      },
+      async readCurrentHead() {
+        return {
+          status: "found" as const,
+          enrollmentEpoch: 1,
+          head: readPreparedEncryptedWalletBackupManifestHead(head),
+        };
+      },
+    },
+  });
+  assert.equal(completed.record.state, "acknowledged");
+  assert.deepEqual(acknowledged.store.coordinatorRecordCounts(), {
+    attempts: 0,
+    batches: 0,
+    casAttempts: 0,
+  });
+  await sealEncryptedWalletBackupUploadAttempt({
+    attemptId: "6c".repeat(16),
+    ownerId: "other-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    targetHead: head,
+    store: acknowledged.store,
+  });
+});
+
+test("CAS signing and dispatch use only private persisted payload bytes", async () => {
+  const { keyHandle, head } = await createManifestUploadFixtureForTest();
+  const fixture = await acknowledgeTargetUploadsForTest({
+    keyHandle,
+    targetHead: head,
+    batchId: "7a".repeat(16),
+    attemptId: "7b".repeat(16),
+  });
+  const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: fixture.claim,
+    keyHandle,
+    store: fixture.store,
+  });
+  const expectedPayload = cas.record.canonicalCasPayload.slice();
+  cas.record.canonicalCasPayload.fill(0x41);
+  const delayed = delayedSigningRuntimeForTest();
+  let dispatches = 0;
+  const synchronization = synchronizeEncryptedWalletBackupManifestHead({
+    attempt: cas,
+    keyHandle,
+    enrollmentEpoch: 1,
+    casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+    headUrl: "https://backup.example.test/v1/head",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: delayed.runtime,
+    remote: {
+      async compareAndSwapCurrentHead({ canonicalCasPayload }) {
+        dispatches += 1;
+        assert.equal(
+          isDeepStrictEqual(canonicalCasPayload, expectedPayload),
+          true,
+          "CAS dispatch must use the exact private persisted payload",
+        );
+        return { status: "committed" as const };
+      },
+      async readCurrentHead() {
+        return {
+          status: "found" as const,
+          enrollmentEpoch: 1,
+          head: readPreparedEncryptedWalletBackupManifestHead(head),
+        };
+      },
+    },
+  });
+  await delayed.signingStarted;
+  cas.record.canonicalCasPayload.fill(0x42);
+  delayed.releaseSigning();
+  const completed = await synchronization;
+  assert.equal(completed.record.state, "acknowledged");
+  assert.equal(dispatches, 1);
+});
+
+test("acknowledged CAS completion validates the exact finalized batch partition before deletion", async () => {
+  const { keyHandle, head } = await createManifestUploadFixtureForTest();
+  const fixture = await acknowledgeTargetUploadsForTest({
+    keyHandle,
+    targetHead: head,
+    batchId: "7e".repeat(16),
+    attemptId: "7f".repeat(16),
+  });
+  const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: fixture.claim,
+    keyHandle,
+    store: fixture.store,
+  });
+  const retained = fixture.store.coordinatorRecordCounts();
+  await assert.rejects(
+    () =>
+      synchronizeEncryptedWalletBackupManifestHead({
+        attempt: cas,
+        keyHandle,
+        enrollmentEpoch: 1,
+        casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+        headUrl: "https://backup.example.test/v1/head",
+        clock: { nowUnixSeconds: () => 1_700_000_000 },
+        remote: {
+          async compareAndSwapCurrentHead() {
+            fixture.store.mutateUploadBatch(fixture.batchId, (batch) => {
+              batch.targetManifestDigest = "ff".repeat(32);
+            });
+            return { status: "committed" as const };
+          },
+          async readCurrentHead() {
+            return {
+              status: "found" as const,
+              enrollmentEpoch: 1,
+              head: readPreparedEncryptedWalletBackupManifestHead(head),
+            };
+          },
+        },
+      }),
+    /batch partition (?:changed|is incomplete)/,
+  );
+  assert.deepEqual(fixture.store.coordinatorRecordCounts(), retained);
+  const persistedCas = await fixture.store.readCasAttempt(
+    cas.record.attemptId,
+    (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+  );
+  assert.equal(persistedCas.state, "cas-uncertain");
+});
+
+test("terminal CAS adapter callback faults roll back transition and deletion", async (t) => {
+  const modes = ["wrong", "incomplete", "corrupt", "multiple", "late"] as const;
+  for (const mode of modes) {
+    await t.test(mode, async () => {
+      const { keyHandle, head } = await createManifestUploadFixtureForTest();
+      const fixture = await acknowledgeTargetUploadsForTest({
+        keyHandle,
+        targetHead: head,
+        batchId: "8c".repeat(16),
+        attemptId: "8d".repeat(16),
+      });
+      const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+        claim: fixture.claim,
+        keyHandle,
+        store: fixture.store,
+      });
+      const retained = fixture.store.coordinatorRecordCounts();
+      const original = fixture.store.completeLinkedCasAttempt;
+      let lateCallback: ((value: never) => unknown) | undefined;
+      let lateRaw: never | undefined;
+      fixture.store.completeLinkedCasAttempt = async function <T>(
+        claim: Record<string, unknown>,
+        expected: Record<string, unknown>,
+        next: Record<string, unknown>,
+        commit: (value: never) => T,
+      ): Promise<T> {
+        try {
+          return await original(claim, expected, next, (raw: never) => {
+            if (mode === "multiple") {
+              const first = commit(raw);
+              commit(raw);
+              return first;
+            }
+            if (mode === "late") {
+              lateCallback = commit;
+              lateRaw = raw;
+              throw new Error("capture late terminal callback");
+            }
+            const changed = structuredClone(raw) as {
+              batches: Array<Record<string, unknown>>;
+              casAttempts: Array<Record<string, unknown>>;
+            };
+            if (mode === "wrong")
+              changed.casAttempts[0]!.state = "cas-uncertain";
+            else if (mode === "incomplete") changed.batches.length = 0;
+            else changed.batches[0]!.localSnapshotRevision = -1;
+            return commit(changed as never);
+          });
+        } catch (error) {
+          if (mode === "late") return {} as T;
+          throw error;
+        }
+      };
+      await assert.rejects(
+        () =>
+          synchronizeEncryptedWalletBackupManifestHead({
+            attempt: cas,
+            keyHandle,
+            enrollmentEpoch: 1,
+            casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+            headUrl: "https://backup.example.test/v1/head",
+            clock: { nowUnixSeconds: () => 1_700_000_000 },
+            remote: {
+              async compareAndSwapCurrentHead() {
+                return { status: "committed" as const };
+              },
+              async readCurrentHead() {
+                return {
+                  status: "found" as const,
+                  enrollmentEpoch: 1,
+                  head: readPreparedEncryptedWalletBackupManifestHead(head),
+                };
+              },
+            },
+          }),
+        /callback is invalid|synchronous and exact|lifecycles are inconsistent|partition|snapshot revision/,
+      );
+      assert.deepEqual(fixture.store.coordinatorRecordCounts(), retained);
+      const persistedCas = await fixture.store.readCasAttempt(
+        cas.record.attemptId,
+        (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+      );
+      assert.equal(persistedCas.state, "cas-uncertain");
+      if (mode === "late")
+        assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/);
+    });
+  }
+});
+
+test("removed two-step upload/CAS APIs are absent from public modules", () => {
+  for (const name of [
+    "finalizeEncryptedWalletBackupUploadSet",
+    "rehydrateFinalizedEncryptedWalletBackupUploadSet",
+    "finalizeZeroDeltaEncryptedWalletBackupUploadAttempt",
+    "rehydrateFinalizedZeroDeltaEncryptedWalletBackupUploadAttempt",
+  ]) {
+    assert.equal(name in BackupSyncModule, false);
+  }
+  for (const name of [
+    "sealEncryptedWalletBackupSyncAttempt",
+    "rehydrateEncryptedWalletBackupSyncAttempt",
+  ]) {
+    assert.equal(name in BackupModule, false);
+  }
+});
+
+test("coordinator handoff rolls back and deterministic CAS collisions fail closed", async () => {
+  const { keyHandle, head } = await createManifestUploadFixtureForTest();
+  const rollback = await acknowledgeTargetUploadsForTest({
+    keyHandle,
+    targetHead: head,
+    batchId: "6d".repeat(16),
+    attemptId: "6e".repeat(16),
+  });
+  const originalRollbackHandoff = rollback.store.sealOrReadLinkedCasAttempt;
+  rollback.store.sealOrReadLinkedCasAttempt = async function <T>(
+    claim: Record<string, unknown>,
+    candidate: Record<string, unknown>,
+    commit: (raw: never) => T,
+  ): Promise<T> {
+    return originalRollbackHandoff(claim, candidate, (raw: never) => {
+      const first = commit(raw);
+      commit(raw);
+      return first;
+    });
+  };
+  await assert.rejects(
+    () =>
+      sealOrRehydrateEncryptedWalletBackupCasAttempt({
+        claim: rollback.claim,
+        keyHandle,
+        store: rollback.store,
+      }),
+    /callback is invalid/,
+  );
+  rollback.store.sealOrReadLinkedCasAttempt = originalRollbackHandoff;
+  assert.equal(
+    (
+      await rehydrateEncryptedWalletBackupUploadBatch({
+        batchId: rollback.batchId,
+        keyHandle,
+        store: rollback.store,
+      })
+    ).record.state,
+    "acknowledged",
+  );
+  const afterRollback = await rollback.store.readUploadAttempt(
+    rollback.claim.record.attemptId,
+    (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+  );
+  assert.equal(afterRollback.lifecycle, "active");
+  assert.equal(afterRollback.casAttemptId, null);
+
+  const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: rollback.claim,
+    keyHandle,
+    store: rollback.store,
+  });
+  rollback.store.mutateCasAttempt(cas.record.attemptId, (record) => {
+    record.localSnapshotRevision = Number(record.localSnapshotRevision) + 1;
+  });
+  const restartedClaim = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "test-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    store: rollback.store,
+  });
+  assert.notEqual(restartedClaim, null);
+  await assert.rejects(
+    () =>
+      sealOrRehydrateEncryptedWalletBackupCasAttempt({
+        claim: restartedClaim!,
+        keyHandle,
+        store: rollback.store,
+      }),
+    /deterministic backup CAS id collision/,
+  );
+});
+
+test("coordinator rejects aggregate authority mutation during a linked CAS transition", async () => {
+  const { keyHandle, head } = await createManifestUploadFixtureForTest();
+  const fixture = await acknowledgeTargetUploadsForTest({
+    keyHandle,
+    targetHead: head,
+    batchId: "71".repeat(16),
+    attemptId: "72".repeat(16),
+  });
+  const originalHostileTransition = fixture.store.transitionLinkedCasAttempt;
+  fixture.store.transitionLinkedCasAttempt = async function <T>(
+    claim: Record<string, unknown>,
+    expected: Record<string, unknown>,
+    next: Record<string, unknown>,
+    lifecycle: string,
+    commit: (value: never) => T,
+  ): Promise<T> {
+    return originalHostileTransition(
+      claim,
+      expected,
+      next,
+      lifecycle,
+      (raw: {
+        attempt: Record<string, unknown>;
+        casAttempts: Record<string, unknown>[];
+      }) => {
+        const hostile = structuredClone(raw);
+        hostile.attempt.ownerEpoch = Number(hostile.attempt.ownerEpoch) + 1;
+        return commit(hostile as never);
+      },
+    );
+  };
+  const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: fixture.claim,
+    keyHandle,
+    store: fixture.store,
+  });
+  await assert.rejects(
+    () =>
+      advanceEncryptedWalletBackupSyncAttempt({
+        attempt: cas,
+        event: { type: "cas-dispatched" },
+      }),
+    /aggregate authority changed/,
+  );
+  const aggregate = await fixture.store.readUploadAttempt(
+    fixture.claim.record.attemptId,
+    (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+  );
+  assert.equal(aggregate.lifecycle, "cas-journaled");
+  const persistedCas = await fixture.store.readCasAttempt(
+    cas.record.attemptId,
+    (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+  );
+  assert.equal(persistedCas.state, "sealed");
+  fixture.store.transitionLinkedCasAttempt = originalHostileTransition;
+});
+
+test("foreign-head cleanup retains the slot and already-finalized releases it without receipt", async () => {
   const {
     keyHandle,
-    authenticated,
-    nextHead,
-    targetObservation,
     foreignObservation,
     finalizedNextUploads,
     finalizedBundle,
+    nextHead,
   } = await createCasRecoveryFixtureForTest();
-  const attemptStore = inMemorySyncAttemptStore();
-  const sealedAttempt = await sealEncryptedWalletBackupSyncAttempt({
-    attemptId: "91".repeat(16),
-    keyHandle,
-    finalizedUploads: finalizedNextUploads,
-    store: attemptStore,
-  });
-  await advanceEncryptedWalletBackupSyncAttempt({
-    attempt: sealedAttempt,
-    store: attemptStore,
-    event: { type: "cas-dispatched" },
-  });
-  const restarted = await rehydrateEncryptedWalletBackupSyncAttempt({
-    attemptId: "91".repeat(16),
-    keyHandle,
-    finalizedUploads: finalizedNextUploads,
-    store: attemptStore,
-  });
-  restarted.record.canonicalCasPayload[0] ^= 1;
-  const acknowledged = await advanceEncryptedWalletBackupSyncAttempt({
-    attempt: restarted,
-    store: attemptStore,
-    event: { type: "head-observed", observation: targetObservation },
-  });
-  assert.equal(acknowledged.record.state, "acknowledged");
-  assert.equal(acknowledged.record.casAttempts, 1);
-  const retryStore = inMemorySyncAttemptStore();
-  const retryAttempt = await sealEncryptedWalletBackupSyncAttempt({
-    attemptId: "92".repeat(16),
-    keyHandle,
-    finalizedUploads: finalizedNextUploads,
-    store: retryStore,
-  });
   const uncertain = await advanceEncryptedWalletBackupSyncAttempt({
-    attempt: retryAttempt,
-    store: retryStore,
+    attempt: finalizedNextUploads.casAttempt,
     event: { type: "cas-dispatched" },
   });
-  const retry = await advanceEncryptedWalletBackupSyncAttempt({
+  const rejected = await advanceEncryptedWalletBackupSyncAttempt({
     attempt: uncertain,
-    store: retryStore,
-    event: { type: "head-observed", observation: authenticated },
-  });
-  assert.equal(retry.record.state, "retry-cas");
-  const uncertainAgain = await advanceEncryptedWalletBackupSyncAttempt({
-    attempt: retry,
-    store: retryStore,
-    event: { type: "cas-dispatched" },
-  });
-  const fork = await advanceEncryptedWalletBackupSyncAttempt({
-    attempt: uncertainAgain,
-    store: retryStore,
     event: { type: "head-observed", observation: foreignObservation },
   });
-  assert.equal(fork.record.state, "fork-rejected");
-
-  const prepareExhaustionBoundary = async (
-    store: ReturnType<typeof inMemorySyncAttemptStore>,
-    attemptId: string,
-  ) => {
-    let value = await sealEncryptedWalletBackupSyncAttempt({
-      attemptId,
-      keyHandle,
-      finalizedUploads: finalizedNextUploads,
-      store,
-    });
-    for (let attemptNumber = 1; attemptNumber < 3; attemptNumber += 1) {
-      value = await advanceEncryptedWalletBackupSyncAttempt({
-        attempt: value,
-        store,
-        event: { type: "cas-dispatched" },
-      });
-      value = await advanceEncryptedWalletBackupSyncAttempt({
-        attempt: value,
-        store,
-        event: { type: "head-observed", observation: authenticated },
-      });
-    }
-    return advanceEncryptedWalletBackupSyncAttempt({
-      attempt: value,
-      store,
-      event: { type: "cas-dispatched" },
-    });
-  };
-
-  const substitutedExhaustionStore = inMemorySyncAttemptStore();
-  substitutedExhaustionStore.setNowUnixMilliseconds(1_810_000_000_000);
-  const substitutedExhaustion = await prepareExhaustionBoundary(
-    substitutedExhaustionStore,
-    "97".repeat(16),
+  assert.equal(rejected.record.state, "fork-rejected");
+  const fenced = await finalizedBundle.store.readUploadAttempt(
+    finalizedNextUploads.uploadAttemptId,
+    (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
   );
+  assert.equal(fenced.lifecycle, "fork-cleanup-uncertain");
   await assert.rejects(
     () =>
-      advanceEncryptedWalletBackupSyncAttempt({
-        attempt: substitutedExhaustion,
-        store: {
-          ...substitutedExhaustionStore,
-          async exhaustPreparedAttempt<T>(
-            expected: Record<string, unknown>,
-            next: Record<string, unknown>,
-            delay: number,
-            commit: (value: never) => T,
-          ): Promise<T> {
-            return substitutedExhaustionStore.exhaustPreparedAttempt(
-              expected,
-              next,
-              delay,
-              (raw: Record<string, unknown>) => {
-                const changed = structuredClone(raw);
-                changed.uploadAttemptId = "00".repeat(16);
-                return commit(changed as never);
-              },
-            );
-          },
-        },
-        event: { type: "head-observed", observation: authenticated },
-      }),
-    /exhaustion stamp is invalid/,
-  );
-  const rolledBackExhaustion = await rehydrateEncryptedWalletBackupSyncAttempt({
-    attemptId: substitutedExhaustion.record.attemptId,
-    keyHandle,
-    finalizedUploads: finalizedNextUploads,
-    store: substitutedExhaustionStore,
-  });
-  assert.equal(rolledBackExhaustion.record.state, "cas-uncertain");
-
-  const multipleExhaustionStore = inMemorySyncAttemptStore();
-  multipleExhaustionStore.setNowUnixMilliseconds(1_820_000_000_000);
-  const multipleExhaustion = await prepareExhaustionBoundary(
-    multipleExhaustionStore,
-    "98".repeat(16),
-  );
-  await assert.rejects(
-    () =>
-      advanceEncryptedWalletBackupSyncAttempt({
-        attempt: multipleExhaustion,
-        store: {
-          ...multipleExhaustionStore,
-          async exhaustPreparedAttempt<T>(
-            expected: Record<string, unknown>,
-            next: Record<string, unknown>,
-            delay: number,
-            commit: (value: never) => T,
-          ): Promise<T> {
-            return multipleExhaustionStore.exhaustPreparedAttempt(
-              expected,
-              next,
-              delay,
-              (raw: Record<string, unknown>) => {
-                const first = commit(structuredClone(raw) as never);
-                commit(structuredClone(raw) as never);
-                return first;
-              },
-            );
-          },
-        },
-        event: { type: "head-observed", observation: authenticated },
-      }),
-    /exhaustion callback is invalid/,
-  );
-  assert.equal(
-    (
-      await rehydrateEncryptedWalletBackupSyncAttempt({
-        attemptId: multipleExhaustion.record.attemptId,
+      sealEncryptedWalletBackupUploadAttempt({
+        attemptId: "73".repeat(16),
+        ownerId: "other-owner",
+        leaseDurationMilliseconds: 60_000,
         keyHandle,
-        finalizedUploads: finalizedNextUploads,
-        store: multipleExhaustionStore,
-      })
-    ).record.state,
-    "cas-uncertain",
-  );
-
-  const lateExhaustionStore = inMemorySyncAttemptStore();
-  const lateExhaustion = await prepareExhaustionBoundary(
-    lateExhaustionStore,
-    "99".repeat(16),
-  );
-  let lateExhaustionCallback: ((value: never) => unknown) | undefined;
-  await assert.rejects(
-    () =>
-      advanceEncryptedWalletBackupSyncAttempt({
-        attempt: lateExhaustion,
-        store: {
-          ...lateExhaustionStore,
-          async exhaustPreparedAttempt<T>(
-            _expected: Record<string, unknown>,
-            _next: Record<string, unknown>,
-            _delay: number,
-            commit: (value: never) => T,
-          ): Promise<T> {
-            lateExhaustionCallback = commit;
-            return Object.freeze({}) as T;
-          },
-        },
-        event: { type: "head-observed", observation: authenticated },
+        targetHead: nextHead,
+        store: finalizedBundle.store,
       }),
-    /exhaustion must be synchronous and exact/,
-  );
-  assert.throws(
-    () =>
-      lateExhaustionCallback!({
-        ...structuredClone(lateExhaustion.record),
-        state: "retry-exhausted",
-        retryNotBeforeUnixMilliseconds: 1,
-      } as never),
-    /exhaustion callback is invalid/,
-  );
-
-  const wrongReturnExhaustionStore = inMemorySyncAttemptStore();
-  const wrongReturnExhaustion = await prepareExhaustionBoundary(
-    wrongReturnExhaustionStore,
-    "9a".repeat(16),
+    /live backup upload attempt already exists/,
   );
   await assert.rejects(
     () =>
-      advanceEncryptedWalletBackupSyncAttempt({
-        attempt: wrongReturnExhaustion,
-        store: {
-          ...wrongReturnExhaustionStore,
-          async exhaustPreparedAttempt<T>(
-            _expected: Record<string, unknown>,
-            next: Record<string, unknown>,
-            _delay: number,
-            commit: (value: never) => T,
-          ): Promise<T> {
-            commit({
-              ...structuredClone(next),
-              retryNotBeforeUnixMilliseconds: 1_830_000_005_000,
-            } as never);
-            return Object.freeze({}) as T;
+      BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+        claim: finalizedNextUploads.claim,
+        store: finalizedBundle.store,
+        keyHandle,
+        enrollmentEpoch: 1,
+        url: "https://backup.example.test/v1/upload-attempts/cleanup",
+        clock: { nowUnixSeconds: () => 1_700_000_000 },
+        remote: {} as never,
+      }),
+    /cleanup port is invalid/,
+  );
+  const retainedCounts = finalizedBundle.store.coordinatorRecordCounts();
+  await assert.rejects(
+    () =>
+      BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+        claim: finalizedNextUploads.claim,
+        store: finalizedBundle.store,
+        keyHandle,
+        enrollmentEpoch: 1,
+        url: "https://backup.example.test/v1/upload-attempts/cleanup",
+        clock: { nowUnixSeconds: () => 1_700_000_000 },
+        remote: {
+          async abortUploadAttempt() {
+            throw new Error("network unavailable");
           },
         },
-        event: { type: "head-observed", observation: authenticated },
       }),
-    /exhaustion must be synchronous and exact/,
+    /cleanup is unavailable/,
   );
-
-  const exhaustionStore = inMemorySyncAttemptStore();
-  exhaustionStore.setNowUnixMilliseconds(1_800_000_000_000);
-  let exhausted = await sealEncryptedWalletBackupSyncAttempt({
-    attemptId: "95".repeat(16),
-    keyHandle,
-    finalizedUploads: finalizedNextUploads,
-    store: exhaustionStore,
-  });
-  for (let attemptNumber = 1; attemptNumber <= 3; attemptNumber += 1) {
-    exhausted = await advanceEncryptedWalletBackupSyncAttempt({
-      attempt: exhausted,
-      store: exhaustionStore,
-      event: { type: "cas-dispatched" },
-    });
-    exhausted = await advanceEncryptedWalletBackupSyncAttempt({
-      attempt: exhausted,
-      store: exhaustionStore,
-      event: {
-        type: "head-observed",
-        observation: authenticated,
+  assert.deepEqual(
+    finalizedBundle.store.coordinatorRecordCounts(),
+    retainedCounts,
+  );
+  const retained = await finalizedBundle.store.readUploadAttempt(
+    finalizedNextUploads.uploadAttemptId,
+    (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+  );
+  assert.equal(retained.lifecycle, "fork-cleanup-uncertain");
+  const cleaned =
+    await BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+      claim: finalizedNextUploads.claim,
+      store: finalizedBundle.store,
+      keyHandle,
+      enrollmentEpoch: 1,
+      url: "https://backup.example.test/v1/upload-attempts/cleanup",
+      clock: { nowUnixSeconds: () => 1_700_000_000 },
+      remote: {
+        async abortUploadAttempt() {
+          return { status: "already-finalized" as const };
+        },
       },
     });
-  }
-  assert.equal(exhausted.record.state, "retry-exhausted");
-  assert.equal(
-    exhausted.record.retryNotBeforeUnixMilliseconds,
-    1_800_000_005_000,
-  );
-  exhaustionStore.setNowUnixMilliseconds(1_800_000_004_999);
-  const notReady = await resumeEncryptedWalletBackupSyncAttempt({
-    attempt: exhausted,
-    store: exhaustionStore,
+  assert.equal(cleaned.state, "complete");
+  assert.equal(cleaned.receiptAuthority, "none");
+  await sealEncryptedWalletBackupUploadAttempt({
+    attemptId: "73".repeat(16),
+    ownerId: "other-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    targetHead: nextHead,
+    store: finalizedBundle.store,
   });
-  assert.equal(notReady, exhausted);
-  exhaustionStore.setNowUnixMilliseconds(1_800_000_005_000);
+});
+
+test("fork cleanup binds immutable CAS identity and rejects callback protocol faults", async () => {
+  const identityFixture = await createRejectedCasFixtureForTest();
+  const identityStore = identityFixture.finalizedBundle.store;
+  const identityCasId = identityFixture.rejected.record.attemptId;
+  const baselineCas = await identityStore.readCasAttempt(
+    identityCasId,
+    (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+  );
+  const delayed = delayedSigningRuntimeForTest();
+  let remoteCalls = 0;
+  const cleanup = BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+    claim: identityFixture.finalizedNextUploads.claim,
+    keyHandle: identityFixture.keyHandle,
+    store: identityStore,
+    enrollmentEpoch: 1,
+    url: "https://backup.example.test/v1/upload-attempts/cleanup",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: delayed.runtime,
+    remote: {
+      async abortUploadAttempt() {
+        remoteCalls += 1;
+        return { status: "abandoned" as const };
+      },
+    },
+  });
+  await delayed.signingStarted;
+  identityStore.mutateCasAttempt(identityCasId, (record) => {
+    record.localSnapshotRevision = Number(record.localSnapshotRevision) + 1;
+  });
+  delayed.releaseSigning();
+  await assert.rejects(
+    () => cleanup,
+    /immutable identity changed|authority changed/,
+  );
+  assert.equal(remoteCalls, 0);
+  identityStore.replaceCasAttempt(identityCasId, baselineCas);
+
+  const repeatedFixture = await createRejectedCasFixtureForTest();
+  const repeatedStore = repeatedFixture.finalizedBundle.store;
+  const retainedCounts = repeatedStore.coordinatorRecordCounts();
+  const originalCompletion = repeatedStore.completeForkCleanup;
+  repeatedStore.completeForkCleanup = async function <T>(
+    claim: Record<string, unknown>,
+    expected: Record<string, unknown>,
+    outcome: string,
+    commit: (value: never) => T,
+  ): Promise<T> {
+    return originalCompletion(claim, expected, outcome, (raw: never) => {
+      const first = commit(raw);
+      commit(raw);
+      return first;
+    });
+  };
+  await assert.rejects(
+    () =>
+      BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+        claim: repeatedFixture.finalizedNextUploads.claim,
+        keyHandle: repeatedFixture.keyHandle,
+        store: repeatedStore,
+        enrollmentEpoch: 1,
+        url: "https://backup.example.test/v1/upload-attempts/cleanup",
+        clock: { nowUnixSeconds: () => 1_700_000_000 },
+        remote: {
+          async abortUploadAttempt() {
+            return { status: "abandoned" as const };
+          },
+        },
+      }),
+    /callback is invalid/,
+  );
+  assert.deepEqual(repeatedStore.coordinatorRecordCounts(), retainedCounts);
+  repeatedStore.completeForkCleanup = originalCompletion;
+
+  let lateCallback: ((value: never) => unknown) | undefined;
+  let lateRaw: never | undefined;
+  repeatedStore.completeForkCleanup = async function <T>(
+    claim: Record<string, unknown>,
+    expected: Record<string, unknown>,
+    outcome: string,
+    commit: (value: never) => T,
+  ): Promise<T> {
+    lateCallback = commit;
+    try {
+      await originalCompletion(claim, expected, outcome, (raw: never) => {
+        lateRaw = raw;
+        throw new Error("capture terminal cleanup callback");
+      });
+    } catch {
+      return {} as T;
+    }
+    throw new Error("missing cleanup rollback");
+  };
+  await assert.rejects(
+    () =>
+      BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+        claim: repeatedFixture.finalizedNextUploads.claim,
+        keyHandle: repeatedFixture.keyHandle,
+        store: repeatedStore,
+        enrollmentEpoch: 1,
+        url: "https://backup.example.test/v1/upload-attempts/cleanup",
+        clock: { nowUnixSeconds: () => 1_700_000_000 },
+        remote: {
+          async abortUploadAttempt() {
+            return { status: "abandoned" as const };
+          },
+        },
+      }),
+    /synchronous and exact/,
+  );
+  assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/);
+  assert.deepEqual(repeatedStore.coordinatorRecordCounts(), retainedCounts);
+  repeatedStore.completeForkCleanup = originalCompletion;
+});
+
+test("zero-delta fork cleanup is automatic and deletes terminal coordinator rows", async () => {
+  const fixture = await createManifestUploadFixtureForTest();
+  const prepareEmptyChild = async (nonce: number) => {
+    const manifest = await prepareIncrementalEncryptedWalletBackupManifest({
+      keyHandle: fixture.keyHandle,
+      generation: 2,
+      snapshotNonce: new Uint8Array(16).fill(nonce),
+      parentEvidence: fixture.authenticated,
+      parentPages: [fixture.page],
+      chunks: [],
+      removedProofIds: fixture.page.entries.map((entry) => entry.proofId),
+      snapshot: { snapshotId: `empty-${nonce}`, snapshotRevision: nonce },
+      snapshotStore: acceptingSnapshotSealStore(),
+    });
+    return prepareEncryptedWalletBackupManifestHead({
+      keyHandle: fixture.keyHandle,
+      manifest,
+      parent: fixture.authenticated.head,
+    });
+  };
+  const targetHead = await prepareEmptyChild(91);
+  const foreignHead = await prepareEmptyChild(92);
+  assert.equal(targetHead.objectCount, 0);
+  const foreignObservation = await readAuthenticatedEncryptedWalletBackupHead({
+    keyHandle: fixture.keyHandle,
+    enrollmentEpoch: 1,
+    requestProof: fixture.headRequest,
+    remote: {
+      async readCurrentHead() {
+        return {
+          status: "found" as const,
+          enrollmentEpoch: 1,
+          head: readPreparedEncryptedWalletBackupManifestHead(foreignHead),
+        };
+      },
+    },
+  });
+  const store = inMemoryUploadBatchStore();
+  const claim = await uploadAttemptClaimForTest(
+    fixture.keyHandle,
+    targetHead,
+    store,
+    "8b".repeat(16),
+  );
+  const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim,
+    keyHandle: fixture.keyHandle,
+    store,
+  });
+  const uncertain = await advanceEncryptedWalletBackupSyncAttempt({
+    attempt: cas,
+    event: { type: "cas-dispatched" },
+  });
+  await advanceEncryptedWalletBackupSyncAttempt({
+    attempt: uncertain,
+    event: { type: "head-observed", observation: foreignObservation },
+  });
+  const cleaned =
+    await BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+      claim,
+      keyHandle: fixture.keyHandle,
+      store,
+      enrollmentEpoch: 1,
+      url: "https://backup.example.test/v1/upload-attempts/cleanup",
+      clock: { nowUnixSeconds: () => 1_700_000_000 },
+      remote: {
+        async abortUploadAttempt() {
+          return { status: "abandoned" as const };
+        },
+      },
+    });
+  assert.equal(cleaned.state, "abandoned");
+  assert.deepEqual(store.coordinatorRecordCounts(), {
+    attempts: 0,
+    batches: 0,
+    casAttempts: 0,
+  });
+});
+
+test("fork cleanup binds every duplicated CAS head field to canonical aggregate bytes before dispatch", async (t) => {
+  const mutations = [
+    {
+      name: "snapshot nonce",
+      mutate(target: Record<string, unknown>) {
+        target.snapshotNonce = "11".repeat(16);
+      },
+    },
+    {
+      name: "derived snapshot id",
+      mutate(target: Record<string, unknown>) {
+        target.snapshotId = "22".repeat(32);
+      },
+    },
+    {
+      name: "reference-set digest",
+      mutate(target: Record<string, unknown>) {
+        target.referenceSetDigest = "33".repeat(32);
+      },
+    },
+    {
+      name: "parent generation",
+      mutate(target: Record<string, unknown>) {
+        const parent = target.parent as Record<string, unknown>;
+        parent.generation = Number(parent.generation) + 1;
+      },
+    },
+  ] as const;
+  for (const mutation of mutations) {
+    await t.test(mutation.name, async () => {
+      const fixture = await createRejectedCasFixtureForTest();
+      const store = fixture.finalizedBundle.store;
+      store.mutateCasAttempt(fixture.rejected.record.attemptId, (record) => {
+        mutation.mutate(record.targetHead as Record<string, unknown>);
+      });
+      let remoteCalls = 0;
+      await assert.rejects(
+        () =>
+          BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+            claim: fixture.finalizedNextUploads.claim,
+            keyHandle: fixture.keyHandle,
+            store,
+            enrollmentEpoch: 1,
+            url: "https://backup.example.test/v1/upload-attempts/cleanup",
+            clock: { nowUnixSeconds: () => 1_700_000_000 },
+            remote: {
+              async abortUploadAttempt() {
+                remoteCalls += 1;
+                return { status: "abandoned" as const };
+              },
+            },
+          }),
+        /canonical aggregate target|target does not match/,
+      );
+      assert.equal(remoteCalls, 0);
+    });
+  }
+});
+
+test("linked CAS retry, crash rehydration, and DB-time exhaustion remain exact", async () => {
+  const { keyHandle, authenticated, finalizedNextUploads, finalizedBundle } =
+    await createCasRecoveryFixtureForTest();
+  let value = await advanceEncryptedWalletBackupSyncAttempt({
+    attempt: finalizedNextUploads.casAttempt,
+    event: { type: "cas-dispatched" },
+  });
+  const restartClaim = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "test-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    store: finalizedBundle.store,
+  });
+  assert.notEqual(restartClaim, null);
+  value = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: restartClaim!,
+    keyHandle,
+    store: finalizedBundle.store,
+  });
+  assert.equal(value.record.state, "cas-uncertain");
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    value = await advanceEncryptedWalletBackupSyncAttempt({
+      attempt: value,
+      event: { type: "head-observed", observation: authenticated },
+    });
+    if (attempt < 3) {
+      assert.equal(value.record.state, "retry-cas");
+      value = await advanceEncryptedWalletBackupSyncAttempt({
+        attempt: value,
+        event: { type: "cas-dispatched" },
+      });
+    }
+  }
+  assert.equal(value.record.state, "retry-exhausted");
+  const notReady = await resumeEncryptedWalletBackupSyncAttempt({
+    attempt: value,
+  });
+  assert.equal(notReady.record.state, "retry-exhausted");
+  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_005_000);
   const resumed = await resumeEncryptedWalletBackupSyncAttempt({
-    attempt: exhausted,
-    store: exhaustionStore,
+    attempt: value,
   });
   assert.equal(resumed.record.state, "sealed");
   assert.equal(resumed.record.casAttempts, 0);
-  assert.equal(resumed.record.attemptId, exhausted.record.attemptId);
-  assert.equal(
-    resumed.record.uploadAttemptId,
-    exhausted.record.uploadAttemptId,
-  );
-  assert.equal(
-    resumed.record.targetHead.manifestDigest,
-    exhausted.record.targetHead.manifestDigest,
-  );
-  await assert.rejects(
-    () =>
-      sealEncryptedWalletBackupSyncAttempt({
-        attemptId: "96".repeat(16),
-        keyHandle,
-        finalizedUploads: finalizedNextUploads,
-        store: exhaustionStore,
-      }),
-    /active backup sync attempt already exists/,
-  );
+});
 
-  const coordinatorStore = inMemorySyncAttemptStore();
-  const coordinatorAttempt = await sealEncryptedWalletBackupSyncAttempt({
-    attemptId: "93".repeat(16),
+test("persisted CAS state/count and aggregate lifecycle combinations are exhaustive", async () => {
+  const { keyHandle, head } = await createManifestUploadFixtureForTest();
+  const fixture = await acknowledgeTargetUploadsForTest({
     keyHandle,
-    finalizedUploads: finalizedNextUploads,
-    store: coordinatorStore,
+    targetHead: head,
+    batchId: "7c".repeat(16),
+    attemptId: "7d".repeat(16),
   });
-  const corruptedCasRecord = structuredClone(coordinatorAttempt.record);
-  corruptedCasRecord.canonicalCasPayload = Uint8Array.of(0x9f, 0xff);
-  corruptedCasRecord.casPayloadDigest = toHex(
-    nobleSha256(corruptedCasRecord.canonicalCasPayload),
-  );
-  await assert.rejects(
-    () =>
-      rehydrateEncryptedWalletBackupSyncAttempt({
-        attemptId: "93".repeat(16),
-        keyHandle,
-        finalizedUploads: finalizedNextUploads,
-        store: {
-          async readPreparedAttempt<T>(
-            _id: string,
-            read: (value: never) => T,
-          ): Promise<T> {
-            return read(corruptedCasRecord as never);
-          },
-        } as never,
-      }),
-    /CBOR|CAS|payload/i,
-  );
-  let remoteCalls = 0;
-  const coordinated = await synchronizeEncryptedWalletBackupManifestHead({
-    attempt: coordinatorAttempt,
-    store: coordinatorStore,
+  const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: fixture.claim,
     keyHandle,
-    enrollmentEpoch: 1,
-    casUrl: "https://backup.example.test/v1/vault/head:compare-and-swap",
-    headUrl: "https://backup.example.test/v1/vault/head",
-    clock: { nowUnixSeconds: () => 1_700_000_000 },
-    runtime: deterministicRuntime([
-      new Uint8Array(16).fill(101),
-      new Uint8Array(32).fill(102),
-      new Uint8Array(16).fill(103),
-      new Uint8Array(32).fill(104),
-    ]),
-    remote: {
-      async compareAndSwapCurrentHead({ canonicalCasPayload }) {
-        remoteCalls += 1;
-        const persisted = await rehydrateEncryptedWalletBackupSyncAttempt({
-          attemptId: "93".repeat(16),
-          keyHandle,
-          finalizedUploads: finalizedNextUploads,
-          store: coordinatorStore,
-        });
-        assert.equal(persisted.record.state, "cas-uncertain");
-        assert.equal(
-          isDeepStrictEqual(
-            canonicalCasPayload,
-            coordinatorAttempt.record.canonicalCasPayload,
-          ),
-          true,
-          "CAS retry payload must be byte-exact",
-        );
-        return { status: "unavailable" as const };
-      },
-      async readCurrentHead() {
-        remoteCalls += 1;
-        return {
-          status: "found" as const,
-          enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(nextHead),
-        };
-      },
-    },
+    store: fixture.store,
   });
-  assert.equal(coordinated.record.state, "acknowledged");
-  assert.equal(coordinated.record.casAttempts, 1);
-  assert.equal(remoteCalls, 2);
+  const baseline = await fixture.store.readCasAttempt(
+    cas.record.attemptId,
+    (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+  );
+  const states = [
+    "sealed",
+    "cas-uncertain",
+    "retry-cas",
+    "retry-exhausted",
+    "acknowledged",
+    "fork-rejected",
+  ] as const;
+  const lifecycles = [
+    "active",
+    "abort-uncertain",
+    "cas-journaled",
+    "fork-cleanup-uncertain",
+    "abandoned",
+    "complete",
+  ] as const;
+  for (const lifecycle of lifecycles) {
+    for (const state of states) {
+      for (let count = 0; count <= 3; count += 1) {
+        for (const retryBoundary of [null, 1_700_000_005_000] as const) {
+          const validState =
+            retryBoundary === null &&
+            ((state === "sealed" && count === 0) ||
+              (state === "cas-uncertain" && count >= 1) ||
+              (state === "retry-cas" && count >= 1 && count < 3) ||
+              ((state === "acknowledged" || state === "fork-rejected") &&
+                count >= 1))
+              ? true
+              : state === "retry-exhausted" &&
+                count === 3 &&
+                retryBoundary !== null;
+          const validLifecycle =
+            (lifecycle === "cas-journaled" &&
+              [
+                "sealed",
+                "cas-uncertain",
+                "retry-cas",
+                "retry-exhausted",
+              ].includes(state)) ||
+            ((lifecycle === "fork-cleanup-uncertain" ||
+              lifecycle === "abandoned") &&
+              state === "fork-rejected") ||
+            (lifecycle === "complete" &&
+              (state === "acknowledged" || state === "fork-rejected"));
+          const validate = () => {
+            validateEncryptedWalletBackupCasState({
+              state,
+              casAttempts: count,
+              retryNotBeforeUnixMilliseconds: retryBoundary,
+            });
+            validateEncryptedWalletBackupAggregateCasLifecycle({
+              lifecycle,
+              state,
+            });
+          };
+          if (validState && validLifecycle) assert.doesNotThrow(validate);
+          else assert.throws(validate);
+        }
+      }
+    }
+  }
 
-  const restartStore = inMemorySyncAttemptStore();
-  const beforeCrash = await sealEncryptedWalletBackupSyncAttempt({
-    attemptId: "94".repeat(16),
-    keyHandle,
-    finalizedUploads: finalizedNextUploads,
-    store: restartStore,
-  });
-  const dispatchedBeforeCrash = await advanceEncryptedWalletBackupSyncAttempt({
-    attempt: beforeCrash,
-    store: restartStore,
-    event: { type: "cas-dispatched" },
-  });
-  assert.equal(dispatchedBeforeCrash.record.state, "cas-uncertain");
-  const processRestartKeyHandle = await createEncryptedWalletBackupKeyHandle({
-    seed: SEED,
-    realm: keyHandle.realm,
-  });
-  const processRestartFinalized =
-    await rehydrateFinalizedEncryptedWalletBackupUploadSet({
-      uploadAttemptId: finalizedNextUploads.uploadAttemptId,
-      keyHandle: processRestartKeyHandle,
-      store: finalizedBundle.store,
+  for (const state of states) {
+    fixture.store.replaceCasAttempt(cas.record.attemptId, {
+      ...baseline,
+      state,
+      casAttempts: state === "sealed" ? 0 : 1,
+      retryNotBeforeUnixMilliseconds: null,
     });
-  const processRestartAttempt = await rehydrateEncryptedWalletBackupSyncAttempt(
-    {
-      attemptId: beforeCrash.record.attemptId,
-      keyHandle: processRestartKeyHandle,
-      finalizedUploads: processRestartFinalized,
-      store: restartStore,
+    const operation = sealOrRehydrateEncryptedWalletBackupCasAttempt({
+      claim: fixture.claim,
+      keyHandle,
+      store: fixture.store,
+    });
+    if (
+      state === "sealed" ||
+      state === "cas-uncertain" ||
+      state === "retry-cas"
+    ) {
+      assert.equal((await operation).record.state, state);
+    } else {
+      await assert.rejects(
+        () => operation,
+        /state and attempt count|lifecycles are inconsistent/,
+      );
+    }
+  }
+  fixture.store.replaceCasAttempt(cas.record.attemptId, baseline);
+});
+
+test("CAS rehydration rejects missing, foreign, and multiple persisted links", async () => {
+  const { keyHandle, head } = await createManifestUploadFixtureForTest();
+  const makeFixture = async (suffix: string) => {
+    const fixture = await acknowledgeTargetUploadsForTest({
+      keyHandle,
+      targetHead: head,
+      batchId: suffix.repeat(16),
+      attemptId: (Number.parseInt(suffix, 16) + 1)
+        .toString(16)
+        .padStart(2, "0")
+        .repeat(16),
+    });
+    const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+      claim: fixture.claim,
+      keyHandle,
+      store: fixture.store,
+    });
+    return { fixture, cas };
+  };
+
+  const missing = await makeFixture("81");
+  missing.fixture.store.deleteCasAttempt(missing.cas.record.attemptId);
+  await assert.rejects(
+    () =>
+      sealOrRehydrateEncryptedWalletBackupCasAttempt({
+        claim: missing.fixture.claim,
+        keyHandle,
+        store: missing.fixture.store,
+      }),
+    /invalid linked CAS rows/,
+  );
+
+  const foreign = await makeFixture("83");
+  foreign.fixture.store.mutateUploadAttempt(
+    foreign.fixture.claim.record.attemptId,
+    (attempt) => {
+      attempt.casAttemptId = "ff".repeat(16);
     },
   );
-  const recovered = await synchronizeEncryptedWalletBackupManifestHead({
-    attempt: processRestartAttempt,
-    store: restartStore,
-    keyHandle: processRestartKeyHandle,
-    enrollmentEpoch: 1,
-    casUrl: "https://backup.example.test/v1/vault/head:compare-and-swap",
-    headUrl: "https://backup.example.test/v1/vault/head",
-    clock: { nowUnixSeconds: () => 1_700_000_000 },
-    runtime: deterministicRuntime([
-      new Uint8Array(16).fill(105),
-      new Uint8Array(32).fill(106),
-    ]),
-    remote: {
-      async compareAndSwapCurrentHead() {
-        assert.fail("uncertain restart must observe head before retrying CAS");
-      },
-      async readCurrentHead() {
-        return {
-          status: "found" as const,
-          enrollmentEpoch: 1,
-          head: readPreparedEncryptedWalletBackupManifestHead(nextHead),
-        };
-      },
-    },
+  const foreignClaim = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "test-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    store: foreign.fixture.store,
   });
-  assert.equal(recovered.record.state, "acknowledged");
+  assert.notEqual(foreignClaim, null);
+  await assert.rejects(
+    () =>
+      sealOrRehydrateEncryptedWalletBackupCasAttempt({
+        claim: foreignClaim!,
+        keyHandle,
+        store: foreign.fixture.store,
+      }),
+    /CAS link is not deterministic/,
+  );
+
+  const multiple = await makeFixture("85");
+  multiple.fixture.store.duplicateCasAttempt(
+    multiple.cas.record.attemptId,
+    "fe".repeat(16),
+  );
+  await assert.rejects(
+    () =>
+      sealOrRehydrateEncryptedWalletBackupCasAttempt({
+        claim: multiple.fixture.claim,
+        keyHandle,
+        store: multiple.fixture.store,
+      }),
+    /invalid linked CAS rows|exactly one linked CAS row/,
+  );
+});
+
+test("upload claim capabilities are bound to their exact originating store", async () => {
+  const { keyHandle, head } = await createManifestUploadFixtureForTest();
+  const originatingStore = inMemoryUploadBatchStore();
+  const claim = await uploadAttemptClaimForTest(
+    keyHandle,
+    head,
+    originatingStore,
+    "87".repeat(16),
+  );
+  let delegatedCalls = 0;
+  const foreignStore = {
+    ...originatingStore,
+    async sealOrReadLinkedCasAttempt<T>(...args: never[]): Promise<T> {
+      delegatedCalls += 1;
+      return originatingStore.sealOrReadLinkedCasAttempt(...args) as Promise<T>;
+    },
+    async validateUploadAttemptClaim<T>(...args: never[]): Promise<T> {
+      delegatedCalls += 1;
+      return originatingStore.validateUploadAttemptClaim(...args) as Promise<T>;
+    },
+  };
+  await assert.rejects(
+    () =>
+      sealOrRehydrateEncryptedWalletBackupCasAttempt({
+        claim,
+        keyHandle,
+        store: foreignStore,
+      }),
+    /upload attempt claim is invalid/,
+  );
+  assert.equal(delegatedCalls, 0);
+  await assert.rejects(
+    () =>
+      abandonEncryptedWalletBackupUploadAttempt({
+        claim,
+        keyHandle,
+        store: foreignStore,
+        enrollmentEpoch: 1,
+        url: "https://backup.example.test/v1/upload-attempts/abort",
+        clock: { nowUnixSeconds: () => 1_700_000_000 },
+        remote: {
+          async abortUploadAttempt() {
+            assert.fail("foreign store must be rejected before dispatch");
+          },
+        },
+      }),
+    /upload attempt claim is invalid/,
+  );
+  assert.equal(delegatedCalls, 0);
 });
 
 test("rehydration rejects impossible execution history and quota-sized hostile heads", async () => {
@@ -3013,6 +3879,44 @@ test("rehydration rejects impossible execution history and quota-sized hostile h
   );
 });
 
+test("coordinator rejects unknown persisted target and parent fields", async () => {
+  const fixture = await createCasRecoveryFixtureForTest();
+  const store = fixture.finalizedBundle.store;
+  const claim = fixture.finalizedNextUploads.claim;
+  const original = store.sealOrReadLinkedCasAttempt;
+  for (const nested of ["target", "parent"] as const) {
+    store.sealOrReadLinkedCasAttempt = async function <T>(
+      claimRecord: Record<string, unknown>,
+      candidate: Record<string, unknown>,
+      commit: (value: never) => T,
+    ): Promise<T> {
+      return original(claimRecord, candidate, (raw: never) => {
+        const changed = structuredClone(raw) as {
+          casAttempts: Array<{
+            targetHead: Record<string, unknown> & {
+              parent: Record<string, unknown>;
+            };
+          }>;
+        };
+        if (nested === "target")
+          changed.casAttempts[0]!.targetHead.unknownField = true;
+        else changed.casAttempts[0]!.targetHead.parent.unknownField = true;
+        return commit(changed as never);
+      });
+    };
+    await assert.rejects(
+      () =>
+        sealOrRehydrateEncryptedWalletBackupCasAttempt({
+          claim,
+          keyHandle: fixture.keyHandle,
+          store,
+        }),
+      /unknown field/,
+    );
+  }
+  store.sealOrReadLinkedCasAttempt = original;
+});
+
 test("persisted child parent authority is exact and rejects corruption", async () => {
   const fixture = await createManifestUploadFixtureForTest();
   const childManifest = await prepareIncrementalEncryptedWalletBackupManifest({
@@ -3042,9 +3946,13 @@ test("persisted child parent authority is exact and rejects corruption", async (
     store,
     "3f".repeat(16),
   );
-  assert.deepEqual(
-    claim.record.canonicalParentHead,
-    fixture.headWire.canonicalHead,
+  assert.equal(
+    isDeepStrictEqual(
+      claim.record.canonicalParentHead,
+      fixture.headWire.canonicalHead,
+    ),
+    true,
+    "persisted parent head must match exact canonical bytes",
   );
   await assert.rejects(
     () =>
@@ -3234,6 +4142,7 @@ test("upload mutation adapters reject mutation, repeated, late, and wrong callba
               leaseExpiresAtUnixMilliseconds: 1_700_000_000_000 + lease,
               batchIds: [],
               activeBatchId: null,
+              casAttemptId: null,
               lifecycle: "active",
             };
             seal(committed as never);
@@ -3256,6 +4165,20 @@ test("upload mutation adapters reject mutation, repeated, late, and wrong callba
     head,
     batchClaim.record.attemptId,
   );
+  const originalHostileSeal = batchBase.sealUploadBatch;
+  batchBase.sealUploadBatch = async function <T>(
+    claimRecord: Record<string, unknown>,
+    batch: Record<string, unknown>,
+    seal: (value: never) => T,
+  ): Promise<T> {
+    return originalHostileSeal(claimRecord, batch, (raw: never) => {
+      const changed = structuredClone(raw) as {
+        batch: Record<string, unknown>;
+      };
+      changed.batch.state = "finalized";
+      return seal(changed as never);
+    });
+  };
   await assert.rejects(
     () =>
       sealEncryptedWalletBackupUploadBatch({
@@ -3263,29 +4186,11 @@ test("upload mutation adapters reject mutation, repeated, late, and wrong callba
         claim: batchClaim,
         keyHandle,
         plannedBatch,
-        store: {
-          ...batchBase,
-          async sealUploadBatch<T>(
-            claimRecord: Record<string, unknown>,
-            batch: Record<string, unknown>,
-            seal: (value: never) => T,
-          ): Promise<T> {
-            return batchBase.sealUploadBatch(
-              claimRecord,
-              batch,
-              (raw: never) => {
-                const changed = structuredClone(raw) as {
-                  batch: Record<string, unknown>;
-                };
-                changed.batch.state = "finalized";
-                return seal(changed as never);
-              },
-            );
-          },
-        },
+        store: batchBase,
       }),
     /execution history is invalid/,
   );
+  batchBase.sealUploadBatch = originalHostileSeal;
   const retriedAfterRollback = await sealEncryptedWalletBackupUploadBatch({
     batchId: "48".repeat(16),
     claim: batchClaim,
@@ -3344,29 +4249,23 @@ test("every upload mutation callback port fails closed and rolls back", async (t
       async run() {
         const fixture = await createSealedUploadMutationFixtureForTest("52");
         let remoteCalls = 0;
+        const originalExecutionClaim = fixture.store.claimUploadBatchExecution;
+        fixture.store.claimUploadBatchExecution = async function <T>(
+          claim: Record<string, unknown>,
+          batch: Record<string, unknown>,
+          lease: number,
+          commit: (value: never) => T,
+        ): Promise<T> {
+          batch.executionEpoch = 99;
+          return originalExecutionClaim(claim, batch, lease, commit);
+        };
         await assert.rejects(
           () =>
             uploadEncryptedWalletBackupBatch({
               batch: fixture.batch,
               claim: fixture.claim,
               keyHandle: fixture.keyHandle,
-              store: {
-                ...fixture.store,
-                async claimUploadBatchExecution<T>(
-                  claim: Record<string, unknown>,
-                  batch: Record<string, unknown>,
-                  lease: number,
-                  commit: (value: never) => T,
-                ): Promise<T> {
-                  batch.executionEpoch = 99;
-                  return fixture.store.claimUploadBatchExecution(
-                    claim,
-                    batch,
-                    lease,
-                    commit,
-                  );
-                },
-              },
+              store: fixture.store,
               enrollmentEpoch: 1,
               clock: { nowUnixSeconds: () => 1_700_000_000 },
               objectUrl: (objectId) =>
@@ -3380,6 +4279,7 @@ test("every upload mutation callback port fails closed and rolls back", async (t
             }),
           /read only property/,
         );
+        fixture.store.claimUploadBatchExecution = originalExecutionClaim;
         assert.equal(remoteCalls, 0);
         assert.equal(
           (
@@ -3397,27 +4297,26 @@ test("every upload mutation callback port fails closed and rolls back", async (t
       name: "transition rejects a wrong callback return",
       async run() {
         const fixture = await createSealedUploadMutationFixtureForTest("53");
+        const originalTransition = fixture.store.transitionUploadBatch;
+        fixture.store.transitionUploadBatch = async function <T>(
+          claim: Record<string, unknown>,
+          _expected: Record<string, unknown>,
+          next: Record<string, unknown>,
+          commit: (value: never) => T,
+        ): Promise<T> {
+          commit({
+            attempt: { ...claim, activeBatchId: null },
+            batch: next,
+          } as never);
+          return {} as T;
+        };
         await assert.rejects(
           () =>
             uploadEncryptedWalletBackupBatch({
               batch: fixture.batch,
               claim: fixture.claim,
               keyHandle: fixture.keyHandle,
-              store: {
-                ...fixture.store,
-                async transitionUploadBatch<T>(
-                  claim: Record<string, unknown>,
-                  _expected: Record<string, unknown>,
-                  next: Record<string, unknown>,
-                  commit: (value: never) => T,
-                ): Promise<T> {
-                  commit({
-                    attempt: { ...claim, activeBatchId: null },
-                    batch: next,
-                  } as never);
-                  return {} as T;
-                },
-              },
+              store: fixture.store,
               enrollmentEpoch: 1,
               clock: { nowUnixSeconds: () => 1_700_000_000 },
               objectUrl: (objectId) =>
@@ -3430,6 +4329,7 @@ test("every upload mutation callback port fails closed and rolls back", async (t
             }),
           /synchronous and exact/,
         );
+        fixture.store.transitionUploadBatch = originalTransition;
         assert.equal(
           (
             await rehydrateEncryptedWalletBackupUploadBatch({
@@ -3447,29 +4347,25 @@ test("every upload mutation callback port fails closed and rolls back", async (t
       async run() {
         const fixture = await createSealedUploadMutationFixtureForTest("54");
         let remoteCalls = 0;
+        const originalAbortFence = fixture.store.fenceUploadAttemptForAbort;
+        fixture.store.fenceUploadAttemptForAbort = async function <T>(
+          claim: Record<string, unknown>,
+          commit: (value: never) => T,
+        ): Promise<T> {
+          return originalAbortFence(claim, (raw: never) => {
+            const changed = structuredClone(raw) as {
+              batches: Array<Record<string, unknown>>;
+            };
+            changed.batches[0]!.state = "finalized";
+            return commit(changed as never);
+          });
+        };
         await assert.rejects(
           () =>
             abandonEncryptedWalletBackupUploadAttempt({
               claim: fixture.claim,
               keyHandle: fixture.keyHandle,
-              store: {
-                ...fixture.store,
-                async fenceUploadAttemptForAbort<T>(
-                  claim: Record<string, unknown>,
-                  commit: (value: never) => T,
-                ): Promise<T> {
-                  return fixture.store.fenceUploadAttemptForAbort(
-                    claim,
-                    (raw: never) => {
-                      const changed = structuredClone(raw) as {
-                        batches: Array<Record<string, unknown>>;
-                      };
-                      changed.batches[0]!.state = "finalized";
-                      return commit(changed as never);
-                    },
-                  );
-                },
-              },
+              store: fixture.store,
               enrollmentEpoch: 1,
               url: "https://backup.example.test/attempt:abort",
               clock: { nowUnixSeconds: () => 1_700_000_000 },
@@ -3482,6 +4378,7 @@ test("every upload mutation callback port fails closed and rolls back", async (t
             }),
           /execution history is invalid/,
         );
+        fixture.store.fenceUploadAttemptForAbort = originalAbortFence;
         assert.equal(remoteCalls, 0);
         assert.equal(
           (
@@ -3523,38 +4420,35 @@ test("every upload mutation callback port fails closed and rolls back", async (t
           store: fixture.store,
         });
         const abortUncertainPartition =
-          await fixture.store.readFinalizedUploadAttempt(
+          await fixture.store.inspectUploadAttemptPartition(
             reclaimed!.record.attemptId,
             (raw: never) => structuredClone(raw),
           );
         let lateCommit: ((value: never) => unknown) | undefined;
         let lateRaw: never | undefined;
+        const originalAbortCompletion =
+          fixture.store.completeUploadAttemptAbort;
+        fixture.store.completeUploadAttemptAbort = async function <T>(
+          claim: Record<string, unknown>,
+          commit: (value: never) => T,
+        ): Promise<T> {
+          lateCommit = commit;
+          try {
+            await originalAbortCompletion(claim, (raw: never) => {
+              lateRaw = raw;
+              throw new Error("capture late abort completion");
+            });
+          } catch {
+            return {} as T;
+          }
+          throw new Error("missing abort rollback");
+        };
         await assert.rejects(
           () =>
             abandonEncryptedWalletBackupUploadAttempt({
               claim: reclaimed!,
               keyHandle: fixture.keyHandle,
-              store: {
-                ...fixture.store,
-                async completeUploadAttemptAbort<T>(
-                  claim: Record<string, unknown>,
-                  commit: (value: never) => T,
-                ): Promise<T> {
-                  lateCommit = commit;
-                  try {
-                    await fixture.store.completeUploadAttemptAbort(
-                      claim,
-                      (raw: never) => {
-                        lateRaw = raw;
-                        throw new Error("capture late abort completion");
-                      },
-                    );
-                  } catch {
-                    return {} as T;
-                  }
-                  throw new Error("missing abort rollback");
-                },
-              },
+              store: fixture.store,
               enrollmentEpoch: 1,
               url: "https://backup.example.test/attempt:abort",
               clock: { nowUnixSeconds: () => 1_700_000_001 },
@@ -3566,14 +4460,19 @@ test("every upload mutation callback port fails closed and rolls back", async (t
             }),
           /synchronous and exact/,
         );
+        fixture.store.completeUploadAttemptAbort = originalAbortCompletion;
         const durableAbortUncertainPartition =
-          await fixture.store.readFinalizedUploadAttempt(
+          await fixture.store.inspectUploadAttemptPartition(
             reclaimed!.record.attemptId,
             (raw: never) => structuredClone(raw),
           );
-        assert.deepEqual(
-          durableAbortUncertainPartition,
-          abortUncertainPartition,
+        assert.equal(
+          isDeepStrictEqual(
+            durableAbortUncertainPartition,
+            abortUncertainPartition,
+          ),
+          true,
+          "abort rollback must restore the exact bounded partition",
         );
         const durableAbortRecord = durableAbortUncertainPartition as {
           attempt: Record<string, unknown>;
@@ -3620,30 +4519,28 @@ test("every upload mutation callback port fails closed and rolls back", async (t
             },
           },
         });
+        const originalHandoff = fixture.store.sealOrReadLinkedCasAttempt;
+        fixture.store.sealOrReadLinkedCasAttempt = async function <T>(
+          claim: Record<string, unknown>,
+          candidate: Record<string, unknown>,
+          commit: (value: never) => T,
+        ): Promise<T> {
+          return originalHandoff(claim, candidate, (raw: never) => {
+            const first = commit(raw);
+            commit(raw);
+            return first;
+          });
+        };
         await assert.rejects(
           () =>
-            finalizeEncryptedWalletBackupUploadSet({
+            journalEncryptedWalletBackupCasHandoffForTest({
               keyHandle: fixture.keyHandle,
               claim: fixture.claim,
-              store: {
-                ...fixture.store,
-                async finalizeUploadAttempt<T>(
-                  claim: Record<string, unknown>,
-                  commit: (value: never) => T,
-                ): Promise<T> {
-                  return fixture.store.finalizeUploadAttempt(
-                    claim,
-                    (raw: never) => {
-                      const first = commit(raw);
-                      commit(raw);
-                      return first;
-                    },
-                  );
-                },
-              },
+              store: fixture.store,
             }),
           /callback is invalid/,
         );
+        fixture.store.sealOrReadLinkedCasAttempt = originalHandoff;
         assert.equal(
           (
             await rehydrateEncryptedWalletBackupUploadBatch({
@@ -3658,6 +4555,297 @@ test("every upload mutation callback port fails closed and rolls back", async (t
     },
   ];
   for (const fault of faults) await t.test(fault.name, fault.run);
+});
+
+test("every linked CAS callback port rejects wrong, multiple, and late callbacks", async (t) => {
+  const modes = ["wrong", "multiple", "late"] as const;
+
+  for (const mode of modes) {
+    await t.test(
+      `validateLinkedCasAttempt rejects ${mode} callback`,
+      async () => {
+        const { keyHandle, head } = await createManifestUploadFixtureForTest();
+        const fixture = await acknowledgeTargetUploadsForTest({
+          keyHandle,
+          targetHead: head,
+          batchId: "91".repeat(16),
+          attemptId: "92".repeat(16),
+        });
+        const cas = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+          claim: fixture.claim,
+          keyHandle,
+          store: fixture.store,
+        });
+        const original = fixture.store.validateLinkedCasAttempt;
+        let lateCallback: ((value: never) => unknown) | undefined;
+        let lateRaw: never | undefined;
+        fixture.store.validateLinkedCasAttempt = async function <T>(
+          claim: Record<string, unknown>,
+          expected: Record<string, unknown>,
+          read: (value: never) => T,
+        ): Promise<T> {
+          try {
+            return await original(claim, expected, (raw: never) => {
+              if (mode === "wrong") {
+                const changed = structuredClone(raw) as {
+                  casAttempts: Array<Record<string, unknown>>;
+                };
+                changed.casAttempts[0]!.casAttempts = 0;
+                return read(changed as never);
+              }
+              if (mode === "multiple") {
+                const first = read(raw);
+                read(raw);
+                return first;
+              }
+              lateCallback = read;
+              lateRaw = raw;
+              throw new Error("capture late linked CAS validation");
+            });
+          } catch (error) {
+            if (mode === "late") return {} as T;
+            throw error;
+          }
+        };
+        let remoteCalls = 0;
+        await assert.rejects(
+          () =>
+            synchronizeEncryptedWalletBackupManifestHead({
+              attempt: cas,
+              keyHandle,
+              enrollmentEpoch: 1,
+              casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+              headUrl: "https://backup.example.test/v1/head",
+              clock: { nowUnixSeconds: () => 1_700_000_000 },
+              remote: {
+                async compareAndSwapCurrentHead() {
+                  remoteCalls += 1;
+                  return { status: "committed" as const };
+                },
+                async readCurrentHead() {
+                  assert.fail("validation fault must prevent head observation");
+                },
+              },
+            }),
+          /state and attempt count|callback is invalid|synchronous and exact/,
+        );
+        assert.equal(remoteCalls, 0);
+        if (mode === "late")
+          assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/);
+      },
+    );
+  }
+
+  for (const mode of modes) {
+    await t.test(`readLinkedCasAttempts rejects ${mode} callback`, async () => {
+      const fixture = await createRejectedCasFixtureForTest();
+      const store = fixture.finalizedBundle.store;
+      const original = store.readLinkedCasAttempts;
+      let lateCallback: ((value: never) => unknown) | undefined;
+      let lateRaw: never | undefined;
+      store.readLinkedCasAttempts = async function <T>(
+        claim: Record<string, unknown>,
+        read: (value: never) => T,
+      ): Promise<T> {
+        try {
+          return await original(claim, (raw: never) => {
+            if (mode === "wrong") {
+              const changed = structuredClone(raw) as {
+                casAttempts: Array<Record<string, unknown>>;
+              };
+              changed.casAttempts.length = 0;
+              return read(changed as never);
+            }
+            if (mode === "multiple") {
+              const first = read(raw);
+              read(raw);
+              return first;
+            }
+            lateCallback = read;
+            lateRaw = raw;
+            throw new Error("capture late linked CAS read");
+          });
+        } catch (error) {
+          if (mode === "late") return {} as T;
+          throw error;
+        }
+      };
+      let remoteCalls = 0;
+      await assert.rejects(
+        () =>
+          BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+            claim: fixture.finalizedNextUploads.claim,
+            keyHandle: fixture.keyHandle,
+            store,
+            enrollmentEpoch: 1,
+            url: "https://backup.example.test/v1/upload-attempts/cleanup",
+            clock: { nowUnixSeconds: () => 1_700_000_000 },
+            remote: {
+              async abortUploadAttempt() {
+                remoteCalls += 1;
+                return { status: "abandoned" as const };
+              },
+            },
+          }),
+        /exactly one linked CAS row|callback is invalid|synchronous and exact/,
+      );
+      assert.equal(remoteCalls, 0);
+      if (mode === "late")
+        assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/);
+    });
+  }
+
+  const prepareExhaustion = async () => {
+    const fixture = await createCasRecoveryFixtureForTest();
+    let attempt = fixture.finalizedNextUploads.casAttempt;
+    for (let index = 0; index < 3; index += 1) {
+      attempt = await advanceEncryptedWalletBackupSyncAttempt({
+        attempt,
+        event: { type: "cas-dispatched" },
+      });
+      if (index < 2) {
+        attempt = await advanceEncryptedWalletBackupSyncAttempt({
+          attempt,
+          event: {
+            type: "head-observed",
+            observation: fixture.authenticated,
+          },
+        });
+      }
+    }
+    return { fixture, attempt };
+  };
+
+  for (const mode of modes) {
+    await t.test(
+      `exhaustLinkedCasAttempt rejects ${mode} callback`,
+      async () => {
+        const { fixture, attempt } = await prepareExhaustion();
+        const store = fixture.finalizedBundle.store;
+        const original = store.exhaustLinkedCasAttempt.bind(store);
+        let lateCallback: ((value: never) => unknown) | undefined;
+        let lateRaw: never | undefined;
+        store.exhaustLinkedCasAttempt = async function <T>(
+          claim: Record<string, unknown>,
+          expected: Record<string, unknown>,
+          next: Record<string, unknown>,
+          delay: number,
+          commit: (value: never) => T,
+        ): Promise<T> {
+          try {
+            return await original(
+              claim,
+              expected,
+              next,
+              delay,
+              (raw: never) => {
+                if (mode === "wrong") {
+                  const changed = structuredClone(raw) as {
+                    casAttempts: Array<Record<string, unknown>>;
+                  };
+                  changed.casAttempts[0]!.retryNotBeforeUnixMilliseconds = null;
+                  return commit(changed as never);
+                }
+                if (mode === "multiple") {
+                  const first = commit(raw);
+                  commit(raw);
+                  return first;
+                }
+                lateCallback = commit;
+                lateRaw = raw;
+                throw new Error("capture late CAS exhaustion");
+              },
+            );
+          } catch (error) {
+            if (mode === "late") return {} as T;
+            throw error;
+          }
+        };
+        await assert.rejects(
+          () =>
+            advanceEncryptedWalletBackupSyncAttempt({
+              attempt,
+              event: {
+                type: "head-observed",
+                observation: fixture.authenticated,
+              },
+            }),
+          /state and attempt count|callback is invalid|synchronous and exact/,
+        );
+        if (mode === "late")
+          assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/);
+        const persisted = await store.readCasAttempt(
+          attempt.record.attemptId,
+          (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+        );
+        assert.equal(persisted.state, "cas-uncertain");
+      },
+    );
+  }
+
+  for (const mode of modes) {
+    await t.test(
+      `resumeLinkedCasAttempt rejects ${mode} callback`,
+      async () => {
+        const { fixture, attempt } = await prepareExhaustion();
+        const exhausted = await advanceEncryptedWalletBackupSyncAttempt({
+          attempt,
+          event: {
+            type: "head-observed",
+            observation: fixture.authenticated,
+          },
+        });
+        const store = fixture.finalizedBundle.store;
+        store.setNowUnixMilliseconds(1_700_000_005_000);
+        const original = store.resumeLinkedCasAttempt.bind(store);
+        let lateCallback: ((value: never) => unknown) | undefined;
+        let lateRaw: never | undefined;
+        store.resumeLinkedCasAttempt = async function <T>(
+          claim: Record<string, unknown>,
+          expected: Record<string, unknown>,
+          next: Record<string, unknown>,
+          commit: (value: never) => T,
+        ) {
+          try {
+            return await original(claim, expected, next, (raw: never) => {
+              if (mode === "wrong") {
+                const changed = structuredClone(raw) as {
+                  casAttempts: Array<Record<string, unknown>>;
+                };
+                changed.casAttempts[0]!.state = "retry-exhausted";
+                changed.casAttempts[0]!.casAttempts = 3;
+                changed.casAttempts[0]!.retryNotBeforeUnixMilliseconds = 1_700_000_005_000;
+                return commit(changed as never);
+              }
+              if (mode === "multiple") {
+                const first = commit(raw);
+                commit(raw);
+                return first;
+              }
+              lateCallback = commit;
+              lateRaw = raw;
+              throw new Error("capture late CAS resume");
+            });
+          } catch (error) {
+            if (mode === "late")
+              return { state: "committed" as const, value: {} as T };
+            throw error;
+          }
+        };
+        await assert.rejects(
+          () => resumeEncryptedWalletBackupSyncAttempt({ attempt: exhausted }),
+          /resumed CAS attempt changed|callback is invalid|synchronous and exact/,
+        );
+        if (mode === "late")
+          assert.throws(() => lateCallback!(lateRaw!), /callback is invalid/);
+        const persisted = await store.readCasAttempt(
+          exhausted.record.attemptId,
+          (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
+        );
+        assert.equal(persisted.state, "retry-exhausted");
+      },
+    );
+  }
 });
 
 test("generation-one empty wallet is canonical and transactionally snapshot-sealed", async () => {
@@ -5137,6 +6325,44 @@ function deterministicRuntime(
   };
 }
 
+function delayedSigningRuntimeForTest(): {
+  runtime: EncryptedWalletBackupRuntime;
+  signingStarted: Promise<void>;
+  releaseSigning(): void;
+} {
+  let releaseSigning!: () => void;
+  const signingGate = new Promise<void>((resolve) => {
+    releaseSigning = resolve;
+  });
+  let observeSigning!: () => void;
+  const signingStarted = new Promise<void>((resolve) => {
+    observeSigning = resolve;
+  });
+  const subtle = new Proxy(webcrypto.subtle, {
+    get(target, property) {
+      if (property === "deriveBits") {
+        return async (...args: Parameters<SubtleCrypto["deriveBits"]>) => {
+          observeSigning();
+          await signingGate;
+          return target.deriveBits(...args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as SubtleCrypto;
+  return {
+    runtime: {
+      subtle,
+      getRandomValues(target) {
+        return webcrypto.getRandomValues(target);
+      },
+    },
+    signingStarted,
+    releaseSigning,
+  };
+}
+
 function acceptingSnapshotSealStore() {
   return {
     async sealCommittedBackupSnapshot<T>(
@@ -5157,7 +6383,7 @@ async function finalizeTargetUploadsForTest(input: {
     batchId: "e1".repeat(16),
     attemptId: "e2".repeat(16),
   });
-  const finalized = await finalizeEncryptedWalletBackupUploadSet({
+  const finalized = await journalEncryptedWalletBackupCasHandoffForTest({
     keyHandle: input.keyHandle,
     claim: acknowledgedBundle.claim,
     store: acknowledgedBundle.store,
@@ -5620,6 +6846,19 @@ async function createCasRecoveryFixtureForTest() {
   };
 }
 
+async function createRejectedCasFixtureForTest() {
+  const fixture = await createCasRecoveryFixtureForTest();
+  const uncertain = await advanceEncryptedWalletBackupSyncAttempt({
+    attempt: fixture.finalizedNextUploads.casAttempt,
+    event: { type: "cas-dispatched" },
+  });
+  const rejected = await advanceEncryptedWalletBackupSyncAttempt({
+    attempt: uncertain,
+    event: { type: "head-observed", observation: fixture.foreignObservation },
+  });
+  return { ...fixture, rejected };
+}
+
 function assertExactPersistedRecord(
   actual: unknown,
   expected: unknown,
@@ -5630,121 +6869,10 @@ function assertExactPersistedRecord(
   }
 }
 
-function inMemorySyncAttemptStore() {
-  const attempts = new Map<string, Record<string, unknown>>();
-  let databaseNowUnixMilliseconds = 0;
-  const isActive = (record: Record<string, unknown>) =>
-    ["sealed", "cas-uncertain", "retry-cas", "retry-exhausted"].includes(
-      String(record.state),
-    );
-  return {
-    setNowUnixMilliseconds(value: number) {
-      databaseNowUnixMilliseconds = value;
-    },
-    async sealPreparedAttempt<T>(
-      _snapshot: unknown,
-      attempt: Record<string, unknown>,
-      seal: (value: never) => T,
-    ): Promise<T> {
-      const copy = structuredClone(attempt);
-      if (
-        [...attempts.values()].some(
-          (existing) =>
-            isActive(existing) &&
-            existing.uploadAttemptId === copy.uploadAttemptId &&
-            (existing.targetHead as { manifestDigest?: unknown })
-              .manifestDigest ===
-              (copy.targetHead as { manifestDigest?: unknown }).manifestDigest,
-        )
-      ) {
-        throw new Error("active backup sync attempt already exists");
-      }
-      attempts.set(String(copy.attemptId), copy);
-      return seal(structuredClone(copy) as never);
-    },
-    async readPreparedAttempt<T>(
-      attemptId: string,
-      read: (value: never) => T,
-    ): Promise<T> {
-      const record = attempts.get(attemptId);
-      if (record === undefined) throw new Error("missing attempt");
-      return read(structuredClone(record) as never);
-    },
-    async transitionPreparedAttempt<T>(
-      expected: Record<string, unknown>,
-      next: Record<string, unknown>,
-      commit: (value: never) => T,
-    ): Promise<T> {
-      const current = attempts.get(String(expected.attemptId));
-      assertExactPersistedRecord(current, expected, "backup sync transition");
-      const copy = structuredClone(next);
-      attempts.set(String(copy.attemptId), copy);
-      return commit(structuredClone(copy) as never);
-    },
-    async exhaustPreparedAttempt<T>(
-      expected: Record<string, unknown>,
-      next: Record<string, unknown>,
-      delayMilliseconds: number,
-      commit: (value: never) => T,
-    ): Promise<T> {
-      assertExactPersistedRecord(
-        attempts.get(String(expected.attemptId)),
-        expected,
-        "backup sync exhaustion",
-      );
-      const before = structuredClone(attempts.get(String(expected.attemptId)));
-      const copy = structuredClone(next);
-      copy.retryNotBeforeUnixMilliseconds =
-        databaseNowUnixMilliseconds + delayMilliseconds;
-      attempts.set(String(copy.attemptId), copy);
-      try {
-        return commit(structuredClone(copy) as never);
-      } catch (error) {
-        attempts.set(String(expected.attemptId), before);
-        throw error;
-      }
-    },
-    async resumeRetryExhaustedAttempt<T>(
-      expected: Record<string, unknown>,
-      next: Record<string, unknown>,
-      commit: (value: never) => T,
-    ): Promise<
-      | Readonly<{ state: "not-ready" }>
-      | Readonly<{ state: "committed"; value: T }>
-    > {
-      const current = attempts.get(String(expected.attemptId));
-      assertExactPersistedRecord(current, expected, "backup sync resume");
-      assert.equal(current?.state, "retry-exhausted");
-      if (
-        databaseNowUnixMilliseconds <
-        Number(current?.retryNotBeforeUnixMilliseconds)
-      ) {
-        return { state: "not-ready" };
-      }
-      assert.equal(next.attemptId, expected.attemptId);
-      assert.equal(next.uploadAttemptId, expected.uploadAttemptId);
-      assert.equal(
-        (next.targetHead as { manifestDigest?: unknown }).manifestDigest,
-        (expected.targetHead as { manifestDigest?: unknown }).manifestDigest,
-      );
-      const copy = structuredClone(next);
-      attempts.set(String(copy.attemptId), copy);
-      try {
-        return {
-          state: "committed",
-          value: commit(structuredClone(copy) as never),
-        };
-      } catch (error) {
-        attempts.set(String(expected.attemptId), structuredClone(current));
-        throw error;
-      }
-    },
-  };
-}
-
 function inMemoryUploadBatchStore() {
   const batches = new Map<string, Record<string, unknown>>();
   const attempts = new Map<string, Record<string, unknown>>();
+  const casAttempts = new Map<string, Record<string, unknown>>();
   let databaseNow = 1_700_000_000_000;
   const partition = (attemptId: unknown, targetManifestDigest: unknown) =>
     [...batches.values()].filter(
@@ -5766,7 +6894,8 @@ function inMemoryUploadBatchStore() {
           (value) =>
             value.realm === candidate.realm &&
             value.vaultId === candidate.vaultId &&
-            value.lifecycle !== "abandoned",
+            value.lifecycle !== "abandoned" &&
+            value.lifecycle !== "complete",
         )
       ) {
         throw new Error("live backup upload attempt already exists");
@@ -5777,6 +6906,7 @@ function inMemoryUploadBatchStore() {
         leaseExpiresAtUnixMilliseconds: databaseNow + lease,
         batchIds: [],
         activeBatchId: null,
+        casAttemptId: null,
         lifecycle: "active",
       };
       const attemptId = String(record.attemptId);
@@ -5796,9 +6926,12 @@ function inMemoryUploadBatchStore() {
         (record) =>
           record.realm === query.realm &&
           record.vaultId === query.vaultId &&
-          ["active", "abort-uncertain", "finalized"].includes(
-            String(record.lifecycle),
-          ),
+          [
+            "active",
+            "abort-uncertain",
+            "cas-journaled",
+            "fork-cleanup-uncertain",
+          ].includes(String(record.lifecycle)),
       );
       if (eligible.length > 1)
         throw new Error("multiple live backup upload attempts");
@@ -5826,7 +6959,12 @@ function inMemoryUploadBatchStore() {
       claimRecord: Record<string, unknown>,
       read: (value: never) => T,
     ): Promise<T> {
-      validateClaim(claimRecord, ["active", "abort-uncertain"]);
+      validateClaim(claimRecord, [
+        "active",
+        "abort-uncertain",
+        "cas-journaled",
+        "fork-cleanup-uncertain",
+      ]);
       return read(
         structuredClone(attempts.get(String(claimRecord.attemptId))) as never,
       );
@@ -6062,52 +7200,20 @@ function inMemoryUploadBatchStore() {
       attempts.get(String(claimRecord.attemptId))!.lifecycle = "abandoned";
       attempts.get(String(claimRecord.attemptId))!.activeBatchId = null;
       try {
-        return commit({
+        const result = commit({
           attempt: structuredClone(attempts.get(String(claimRecord.attemptId))),
           batches: structuredClone(next),
         } as never);
+        attempts.delete(String(claimRecord.attemptId));
+        for (const row of next) batches.delete(String(row.batchId));
+        return result;
       } catch (error) {
         attempts.set(String(claimRecord.attemptId), beforeAttempt);
         for (const row of beforeRows) batches.set(String(row.batchId), row);
         throw error;
       }
     },
-    async finalizeUploadAttempt<T>(
-      claimRecord: Record<string, unknown>,
-      commit: (value: never) => T,
-    ): Promise<T> {
-      validateClaim(claimRecord, ["active"]);
-      const uploadAttemptId = String(claimRecord.attemptId);
-      const targetManifestDigest = String(claimRecord.targetManifestDigest);
-      const current = partition(uploadAttemptId, targetManifestDigest);
-      if (current.some((record) => record.state !== "acknowledged")) {
-        throw new Error("complete backup upload attempt is not acknowledged");
-      }
-      const before = current.map((record) => structuredClone(record));
-      const beforeAttempt = structuredClone(attempts.get(uploadAttemptId));
-      const next = current.map((record) => ({
-        ...structuredClone(record),
-        state: "finalized",
-        executionLeaseExpiresAtUnixMilliseconds: null,
-      }));
-      for (const record of next)
-        batches.set(String(record.batchId), structuredClone(record));
-      try {
-        attempts.get(uploadAttemptId)!.lifecycle = "finalized";
-        attempts.get(uploadAttemptId)!.activeBatchId = null;
-        const result = commit({
-          attempt: structuredClone(attempts.get(uploadAttemptId)),
-          batches: structuredClone(next),
-        } as never);
-        return result;
-      } catch (error) {
-        attempts.set(uploadAttemptId, beforeAttempt);
-        for (const record of before)
-          batches.set(String(record.batchId), record);
-        throw error;
-      }
-    },
-    async readFinalizedUploadAttempt<T>(
+    async inspectUploadAttemptPartition<T>(
       uploadAttemptId: string,
       read: (value: never) => T,
     ): Promise<T> {
@@ -6122,19 +7228,335 @@ function inMemoryUploadBatchStore() {
         batches: structuredClone(records),
       } as never);
     },
+    async sealOrReadLinkedCasAttempt<T>(
+      claimRecord: Record<string, unknown>,
+      candidate: Record<string, unknown>,
+      commit: (value: never) => T,
+    ): Promise<T> {
+      validateClaim(claimRecord, ["active", "cas-journaled"]);
+      const attemptId = String(claimRecord.attemptId);
+      const attempt = attempts.get(attemptId)!;
+      const rows = partition(
+        claimRecord.attemptId,
+        claimRecord.targetManifestDigest,
+      );
+      if (attempt.activeBatchId !== null)
+        throw new Error("backup upload batch remains active");
+      const rehydrate = attempt.lifecycle === "cas-journaled";
+      if (rehydrate && attempt.casAttemptId !== String(candidate.attemptId)) {
+        throw new Error("persisted backup CAS link is foreign");
+      }
+      if (
+        rows.some((row) =>
+          rehydrate ? row.state !== "finalized" : row.state !== "acknowledged",
+        )
+      ) {
+        throw new Error("backup upload partition is incomplete");
+      }
+      const linkedBefore = linkedCasRows(attemptId);
+      if (
+        (rehydrate && linkedBefore.length !== 1) ||
+        (!rehydrate && linkedBefore.length !== 0)
+      ) {
+        throw new Error("backup upload attempt has invalid linked CAS rows");
+      }
+      const existing = casAttempts.get(String(candidate.attemptId));
+      if (existing !== undefined) {
+        const immutableExisting = {
+          ...structuredClone(existing),
+          casAttempts: 0,
+          retryNotBeforeUnixMilliseconds: null,
+          state: "sealed",
+        };
+        if (!isDeepStrictEqual(immutableExisting, candidate))
+          throw new Error("deterministic backup CAS id collision");
+      }
+      const beforeAttempt = structuredClone(attempt);
+      const beforeRows = rows.map((row) => structuredClone(row));
+      const beforeCas =
+        existing === undefined ? undefined : structuredClone(existing);
+      const nextRows = rows.map((row) => ({
+        ...structuredClone(row),
+        state: "finalized",
+        executionLeaseExpiresAtUnixMilliseconds: null,
+      }));
+      for (const row of nextRows) batches.set(String(row.batchId), row);
+      if (existing === undefined)
+        casAttempts.set(
+          String(candidate.attemptId),
+          structuredClone(candidate),
+        );
+      if (!rehydrate) {
+        attempt.activeBatchId = null;
+        attempt.casAttemptId = candidate.attemptId;
+        attempt.lifecycle = "cas-journaled";
+      }
+      try {
+        return commit({
+          attempt: structuredClone(attempt),
+          batches: structuredClone(nextRows),
+          casAttempts: structuredClone(linkedCasRows(attemptId)),
+        } as never);
+      } catch (error) {
+        attempts.set(attemptId, beforeAttempt);
+        for (const row of beforeRows) batches.set(String(row.batchId), row);
+        if (beforeCas === undefined)
+          casAttempts.delete(String(candidate.attemptId));
+        else casAttempts.set(String(candidate.attemptId), beforeCas);
+        throw error;
+      }
+    },
+    async readLinkedCasAttempts<T>(
+      claimRecord: Record<string, unknown>,
+      read: (value: never) => T,
+    ): Promise<T> {
+      validateClaim(claimRecord, ["cas-journaled", "fork-cleanup-uncertain"]);
+      const attempt = attempts.get(String(claimRecord.attemptId))!;
+      return read({
+        attempt: structuredClone(attempt),
+        casAttempts: structuredClone(linkedCasRows(String(attempt.attemptId))),
+      } as never);
+    },
+    async validateLinkedCasAttempt<T>(
+      claimRecord: Record<string, unknown>,
+      expected: Record<string, unknown>,
+      read: (value: never) => T,
+    ): Promise<T> {
+      validateClaim(claimRecord, ["cas-journaled"]);
+      const attempt = attempts.get(String(claimRecord.attemptId))!;
+      const current = casAttempts.get(String(attempt.casAttemptId));
+      assertExactPersistedRecord(current, expected, "linked CAS validation");
+      return read({
+        attempt: structuredClone(attempt),
+        casAttempts: structuredClone(linkedCasRows(String(attempt.attemptId))),
+      } as never);
+    },
+    async transitionLinkedCasAttempt<T>(
+      claimRecord: Record<string, unknown>,
+      expected: Record<string, unknown>,
+      next: Record<string, unknown>,
+      lifecycle: string,
+      commit: (value: never) => T,
+    ): Promise<T> {
+      validateClaim(claimRecord, ["cas-journaled"]);
+      const attemptId = String(claimRecord.attemptId);
+      const attempt = attempts.get(attemptId)!;
+      const casId = String(attempt.casAttemptId);
+      const current = casAttempts.get(casId);
+      assertExactPersistedRecord(current, expected, "linked CAS transition");
+      const beforeAttempt = structuredClone(attempt);
+      const beforeCas = structuredClone(current);
+      const copy = structuredClone(next);
+      casAttempts.set(casId, copy);
+      attempt.lifecycle = lifecycle;
+      try {
+        const result = commit({
+          attempt: structuredClone(attempt),
+          casAttempts: structuredClone(linkedCasRows(attemptId)),
+        } as never);
+        return result;
+      } catch (error) {
+        attempts.set(attemptId, beforeAttempt);
+        casAttempts.set(casId, beforeCas);
+        throw error;
+      }
+    },
+    async completeLinkedCasAttempt<T>(
+      claimRecord: Record<string, unknown>,
+      expected: Record<string, unknown>,
+      next: Record<string, unknown>,
+      commit: (value: never) => T,
+    ): Promise<T> {
+      validateClaim(claimRecord, ["cas-journaled"]);
+      const attemptId = String(claimRecord.attemptId);
+      const attempt = attempts.get(attemptId)!;
+      const casId = String(attempt.casAttemptId);
+      const current = casAttempts.get(casId);
+      assertExactPersistedRecord(current, expected, "linked CAS completion");
+      const rows = partition(attemptId, attempt.targetManifestDigest);
+      const beforeAttempt = structuredClone(attempt);
+      const beforeCas = structuredClone(current);
+      casAttempts.set(casId, structuredClone(next));
+      attempt.lifecycle = "complete";
+      try {
+        const result = commit({
+          attempt: structuredClone(attempt),
+          batches: structuredClone(rows),
+          casAttempts: structuredClone(linkedCasRows(attemptId)),
+        } as never);
+        attempts.delete(attemptId);
+        casAttempts.delete(casId);
+        for (const row of rows) batches.delete(String(row.batchId));
+        return result;
+      } catch (error) {
+        attempts.set(attemptId, beforeAttempt);
+        casAttempts.set(casId, beforeCas);
+        throw error;
+      }
+    },
+    async exhaustLinkedCasAttempt<T>(
+      claimRecord: Record<string, unknown>,
+      expected: Record<string, unknown>,
+      next: Record<string, unknown>,
+      delayMilliseconds: number,
+      commit: (value: never) => T,
+    ): Promise<T> {
+      const stamped = {
+        ...structuredClone(next),
+        retryNotBeforeUnixMilliseconds: databaseNow + delayMilliseconds,
+      };
+      return this.transitionLinkedCasAttempt(
+        claimRecord,
+        expected,
+        stamped,
+        "cas-journaled",
+        commit,
+      );
+    },
+    async resumeLinkedCasAttempt<T>(
+      claimRecord: Record<string, unknown>,
+      expected: Record<string, unknown>,
+      next: Record<string, unknown>,
+      commit: (value: never) => T,
+    ): Promise<
+      | Readonly<{ state: "not-ready" }>
+      | Readonly<{ state: "committed"; value: T }>
+    > {
+      validateClaim(claimRecord, ["cas-journaled"]);
+      if (databaseNow < Number(expected.retryNotBeforeUnixMilliseconds))
+        return { state: "not-ready" };
+      return {
+        state: "committed",
+        value: await this.transitionLinkedCasAttempt(
+          claimRecord,
+          expected,
+          next,
+          "cas-journaled",
+          commit,
+        ),
+      };
+    },
+    async completeForkCleanup<T>(
+      claimRecord: Record<string, unknown>,
+      expectedCasAttempt: Record<string, unknown>,
+      outcome: string,
+      commit: (value: never) => T,
+    ): Promise<T> {
+      validateClaim(claimRecord, ["fork-cleanup-uncertain"]);
+      const attemptId = String(claimRecord.attemptId);
+      const attempt = attempts.get(attemptId)!;
+      const casAttempt = casAttempts.get(String(attempt.casAttemptId))!;
+      assertExactPersistedRecord(
+        casAttempt,
+        expectedCasAttempt,
+        "fork cleanup CAS authority",
+      );
+      const rows = partition(
+        claimRecord.attemptId,
+        claimRecord.targetManifestDigest,
+      );
+      const beforeAttempt = structuredClone(attempt);
+      const beforeRows = rows.map((row) => structuredClone(row));
+      const nextRows = rows.map((row) =>
+        outcome === "already-finalized"
+          ? structuredClone(row)
+          : {
+              ...structuredClone(row),
+              state: "abandoned",
+              items: (row.items as Array<Record<string, unknown>>).map(
+                (item) => ({ ...item, canonicalPutPayload: null }),
+              ),
+            },
+      );
+      for (const row of nextRows) batches.set(String(row.batchId), row);
+      attempt.lifecycle =
+        outcome === "already-finalized" ? "complete" : "abandoned";
+      try {
+        const result = commit({
+          attempt: structuredClone(attempt),
+          batches: structuredClone(nextRows),
+          casAttempts: structuredClone(linkedCasRows(attemptId)),
+        } as never);
+        attempts.delete(attemptId);
+        casAttempts.delete(String(attempt.casAttemptId));
+        for (const row of nextRows) batches.delete(String(row.batchId));
+        return result;
+      } catch (error) {
+        attempts.set(attemptId, beforeAttempt);
+        for (const row of beforeRows) batches.set(String(row.batchId), row);
+        throw error;
+      }
+    },
     async readUploadAttempt<T>(
       attemptId: string,
       read: (value: never) => T,
     ): Promise<T> {
-      return read(structuredClone(attempts.get(attemptId)) as never);
+      const record = attempts.get(attemptId);
+      if (record === undefined) throw new Error("missing upload attempt");
+      return read(structuredClone(record) as never);
+    },
+    async readCasAttempt<T>(
+      attemptId: string,
+      read: (value: never) => T,
+    ): Promise<T> {
+      const record = casAttempts.get(attemptId);
+      if (record === undefined) throw new Error("missing CAS attempt");
+      return read(structuredClone(record) as never);
+    },
+    mutateCasAttempt(
+      attemptId: string,
+      mutate: (value: Record<string, unknown>) => void,
+    ) {
+      const record = casAttempts.get(attemptId);
+      if (record === undefined) throw new Error("missing CAS attempt");
+      mutate(record);
+    },
+    replaceCasAttempt(attemptId: string, replacement: Record<string, unknown>) {
+      if (!casAttempts.has(attemptId)) throw new Error("missing CAS attempt");
+      casAttempts.set(attemptId, structuredClone(replacement));
+    },
+    mutateUploadAttempt(
+      attemptId: string,
+      mutate: (value: Record<string, unknown>) => void,
+    ) {
+      const record = attempts.get(attemptId);
+      if (record === undefined) throw new Error("missing upload attempt");
+      mutate(record);
+    },
+    mutateUploadBatch(
+      batchId: string,
+      mutate: (value: Record<string, unknown>) => void,
+    ) {
+      const record = batches.get(batchId);
+      if (record === undefined) throw new Error("missing upload batch");
+      mutate(record);
+    },
+    deleteCasAttempt(attemptId: string) {
+      casAttempts.delete(attemptId);
+    },
+    duplicateCasAttempt(attemptId: string, duplicateId: string) {
+      const record = casAttempts.get(attemptId);
+      if (record === undefined) throw new Error("missing CAS attempt");
+      casAttempts.set(duplicateId, structuredClone(record));
+    },
+    coordinatorRecordCounts() {
+      return {
+        attempts: attempts.size,
+        batches: batches.size,
+        casAttempts: casAttempts.size,
+      };
     },
   };
+  function linkedCasRows(uploadAttemptId: string) {
+    return [...casAttempts.values()].filter(
+      (record) => record.uploadAttemptId === uploadAttemptId,
+    );
+  }
   function validateClaim(claim: Record<string, unknown>, lifecycles: string[]) {
     const current = attempts.get(String(claim.attemptId));
     if (
       current === undefined ||
-      current.ownerId !== claim.ownerId ||
-      current.ownerEpoch !== claim.ownerEpoch ||
+      !isDeepStrictEqual(current, claim) ||
       databaseNow >= Number(current.leaseExpiresAtUnixMilliseconds) ||
       !lifecycles.includes(String(current.lifecycle))
     )
@@ -6175,12 +7597,6 @@ function uploadBatchReadOnlyStore(record: Record<string, unknown>) {
       throw new Error("unused");
     },
     async completeUploadAttemptAbort() {
-      throw new Error("unused");
-    },
-    async finalizeUploadAttempt() {
-      throw new Error("unused");
-    },
-    async readFinalizedUploadAttempt() {
       throw new Error("unused");
     },
     async readUploadAttempt() {

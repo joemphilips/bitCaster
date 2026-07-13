@@ -7,7 +7,6 @@ import { deriveDurableCustodyProofId } from "./durableCustody.ts";
 import {
   encodeCanonicalBackupCbor as encodeCanonical,
   measureCanonicalBackupCbor as measureCanonicalCbor,
-  preflightEncryptedBackupCasCbor,
   preflightEncryptedBackupHeadCbor,
   preflightEncryptedBackupReferenceSetCbor,
   preflightEncryptedBackupRequestProofCbor,
@@ -30,11 +29,20 @@ import {
   registerEncryptedWalletBackupKeyHandle,
   requireIssuedEncryptedWalletBackupKeyHandle,
 } from "./encryptedWalletBackupKeyAuthority.ts";
-import {
-  readFinalizedEncryptedWalletBackupUploadAuthority,
-  requireFinalizedEncryptedWalletBackupUploadSet,
-} from "./encryptedWalletBackupUploadAuthority.ts";
 import { issuePreparedEncryptedWalletBackupUploadAuthority } from "./encryptedWalletBackupPlanningAuthority.ts";
+import {
+  issueCoordinatedEncryptedWalletBackupCasAttempt,
+  readCoordinatedEncryptedWalletBackupCasAuthority,
+} from "./encryptedWalletBackupCasAuthority.ts";
+import {
+  ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
+  ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES,
+  validateEncryptedWalletBackupCasState,
+} from "./encryptedWalletBackupCasState.ts";
+export {
+  ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
+  ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES,
+} from "./encryptedWalletBackupCasState.ts";
 
 export const ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION = 1 as const;
 export const ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND = 1 as const;
@@ -136,7 +144,6 @@ const PREPARED_BACKUP_REQUESTS = new WeakMap<object, KeyAuthority>();
 
 export const ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES =
   4 * 1_024 * 1_024;
-export const ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES = 196_608;
 
 interface KeyAuthority {
   readonly realm: string;
@@ -503,6 +510,8 @@ export interface EncryptedWalletBackupCasRemotePort extends EncryptedWalletBacku
 
 export interface EncryptedWalletBackupSyncAttemptRecord {
   readonly schemaVersion: 1;
+  readonly realm: string;
+  readonly vaultId: string;
   readonly attemptId: string;
   readonly uploadAttemptId: string;
   readonly localSnapshotId: string;
@@ -523,17 +532,9 @@ export interface EncryptedWalletBackupSyncAttemptRecord {
 }
 
 export interface EncryptedWalletBackupSyncAttemptStore {
-  /** Must reject a second active row for the same (uploadAttemptId, targetManifestDigest). */
-  sealPreparedAttempt<T>(
-    expectedSnapshot: Readonly<{
-      snapshotId: string;
-      snapshotRevision: number;
-    }>,
-    attempt: EncryptedWalletBackupSyncAttemptRecord,
-    seal: (committed: EncryptedWalletBackupSyncAttemptRecord) => T,
-  ): Promise<T>;
-  readPreparedAttempt<T>(
-    attemptId: string,
+  /** Revalidates the exact linked aggregate owner lease using database time. */
+  validatePreparedAttempt<T>(
+    expected: EncryptedWalletBackupSyncAttemptRecord,
     read: (committed: EncryptedWalletBackupSyncAttemptRecord) => T,
   ): Promise<T>;
   transitionPreparedAttempt<T>(
@@ -563,26 +564,6 @@ export interface SealedEncryptedWalletBackupSyncAttempt {
   readonly state: "sealed";
   readonly record: EncryptedWalletBackupSyncAttemptRecord;
 }
-
-export interface FinalizedEncryptedWalletBackupUploadSet {
-  readonly state: "finalized";
-  readonly targetManifestDigest: string;
-  readonly uploadAttemptId: string;
-  readonly localSnapshotId: string;
-  readonly localSnapshotRevision: number;
-  readonly objectCount: number;
-}
-
-interface SealedSyncAttemptAuthority {
-  readonly keyAuthority: KeyAuthority;
-  readonly record: EncryptedWalletBackupSyncAttemptRecord;
-}
-
-const SEALED_BACKUP_SYNC_ATTEMPTS = new WeakMap<
-  object,
-  SealedSyncAttemptAuthority
->();
-export const ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX = 3 as const;
 
 interface PreparedManifestHeadAuthority {
   readonly head: EncryptedWalletBackupManifestHead;
@@ -2639,114 +2620,12 @@ export function readPreparedEncryptedWalletBackupManifestTarget(input: {
   });
 }
 
-export async function sealEncryptedWalletBackupSyncAttempt(input: {
-  attemptId: string;
-  keyHandle: EncryptedWalletBackupKeyHandle;
-  finalizedUploads: FinalizedEncryptedWalletBackupUploadSet;
-  store: EncryptedWalletBackupSyncAttemptStore;
-}): Promise<SealedEncryptedWalletBackupSyncAttempt> {
-  const attemptId = requireLowerHex(input.attemptId, 16, "backup attempt id");
-  const keyAuthority = requireKeyAuthority(input.keyHandle);
-  const finalized = readFinalizedEncryptedWalletBackupUploadAuthority(
-    input.finalizedUploads,
-    input.keyHandle,
-  );
-  const decodedTarget = decodeManifestHeadWire(
-    {
-      canonicalHead: finalized.canonicalTargetHead,
-      canonicalReferenceSet: finalized.canonicalTargetReferenceSet,
-    },
-    keyAuthority,
-    input.keyHandle.requestAuthPublicKey,
-  );
-  const targetHead = decodedTarget.head;
-  requireFinalizedEncryptedWalletBackupUploadSet(
-    input.finalizedUploads,
-    input.keyHandle,
-    targetHead.manifestDigest,
-    finalized.uploadAttemptId,
-    finalized.localSnapshotId,
-    finalized.localSnapshotRevision,
-  );
-  const localSnapshotId = finalized.localSnapshotId;
-  const localSnapshotRevision = finalized.localSnapshotRevision;
-  const expectedHeadDigest = targetHead.parent?.manifestDigest ?? null;
-  const canonicalCasPayload = encodeCanonical([
-    1,
-    "head-cas",
-    hexToBytes(finalized.uploadAttemptId),
-    expectedHeadDigest === null ? null : hexToBytes(expectedHeadDigest),
-    finalized.canonicalTargetHead,
-    finalized.canonicalTargetReferenceSet,
-  ]);
-  if (
-    canonicalCasPayload.byteLength >
-    ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES
-  ) {
-    throw new Error("backup CAS payload exceeds the byte limit");
-  }
-  const record = Object.freeze({
-    schemaVersion: 1 as const,
-    attemptId,
-    uploadAttemptId: finalized.uploadAttemptId,
-    localSnapshotId,
-    localSnapshotRevision,
-    expectedHeadDigest,
-    targetHead,
-    canonicalCasPayload,
-    casPayloadDigest: bytesToHex(sha256(canonicalCasPayload)),
-    casAttempts: 0,
-    retryNotBeforeUnixMilliseconds: null,
-    state: "sealed" as const,
-  });
-  if (
-    typeof input.store !== "object" ||
-    input.store === null ||
-    typeof input.store.sealPreparedAttempt !== "function"
-  ) {
-    throw new Error("backup sync attempt store is invalid");
-  }
-  let callbackOpen = true;
-  let callbackCalls = 0;
-  let issued: object | undefined;
-  let returned: unknown;
-  try {
-    returned = await input.store.sealPreparedAttempt(
-      { snapshotId: localSnapshotId, snapshotRevision: localSnapshotRevision },
-      record,
-      (rawRecord) => {
-        if (!callbackOpen || callbackCalls++ !== 0)
-          throw new Error("backup attempt callback is invalid");
-        const committed = decodeSyncAttemptRecord(rawRecord);
-        if (!equalSyncAttemptRecord(committed, record))
-          throw new Error("prepared backup attempt changed");
-        const evidence = authorizeSyncAttempt(committed, keyAuthority);
-        issued = evidence;
-        return evidence;
-      },
-    );
-  } finally {
-    callbackOpen = false;
-  }
-  if (
-    isThenable(returned) ||
-    issued === undefined ||
-    returned !== issued ||
-    callbackCalls !== 1 ||
-    SEALED_BACKUP_SYNC_ATTEMPTS.get(issued) === undefined
-  ) {
-    throw new Error("backup attempt seal must be synchronous and exact");
-  }
-  return issued as SealedEncryptedWalletBackupSyncAttempt;
-}
-
 export async function resumeEncryptedWalletBackupSyncAttempt(input: {
   attempt: SealedEncryptedWalletBackupSyncAttempt;
-  store: EncryptedWalletBackupSyncAttemptStore;
 }): Promise<SealedEncryptedWalletBackupSyncAttempt> {
   const authority =
     typeof input.attempt === "object" && input.attempt !== null
-      ? SEALED_BACKUP_SYNC_ATTEMPTS.get(input.attempt)
+      ? readCoordinatedEncryptedWalletBackupCasAuthority(input.attempt)
       : undefined;
   if (
     authority === undefined ||
@@ -2755,11 +2634,7 @@ export async function resumeEncryptedWalletBackupSyncAttempt(input: {
   ) {
     throw new Error("backup sync attempt is not retry-exhausted");
   }
-  if (
-    typeof input.store !== "object" ||
-    input.store === null ||
-    typeof input.store.resumeRetryExhaustedAttempt !== "function"
-  ) {
+  if (typeof authority.store.resumeRetryExhaustedAttempt !== "function") {
     throw new Error("backup sync attempt store is invalid");
   }
   const next = freezeSyncAttempt({
@@ -2773,7 +2648,7 @@ export async function resumeEncryptedWalletBackupSyncAttempt(input: {
   let issued: object | undefined;
   let returned: unknown;
   try {
-    returned = await input.store.resumeRetryExhaustedAttempt(
+    returned = await authority.store.resumeRetryExhaustedAttempt(
       authority.record,
       next,
       (rawRecord) => {
@@ -2782,9 +2657,10 @@ export async function resumeEncryptedWalletBackupSyncAttempt(input: {
         const committed = decodeSyncAttemptRecord(rawRecord);
         if (!equalSyncAttemptRecord(committed, next))
           throw new Error("resumed backup attempt changed");
-        const evidence = authorizeSyncAttempt(
+        const evidence = issueCoordinatedEncryptedWalletBackupCasAttempt(
           committed,
-          authority.keyAuthority,
+          authority.keyHandle,
+          authority.store,
         );
         issued = evidence;
         return evidence;
@@ -2819,67 +2695,8 @@ export async function resumeEncryptedWalletBackupSyncAttempt(input: {
   return issued as SealedEncryptedWalletBackupSyncAttempt;
 }
 
-export async function rehydrateEncryptedWalletBackupSyncAttempt(input: {
-  attemptId: string;
-  keyHandle: EncryptedWalletBackupKeyHandle;
-  finalizedUploads: FinalizedEncryptedWalletBackupUploadSet;
-  store: EncryptedWalletBackupSyncAttemptStore;
-}): Promise<SealedEncryptedWalletBackupSyncAttempt> {
-  const attemptId = requireLowerHex(input.attemptId, 16, "backup attempt id");
-  const keyAuthority = requireKeyAuthority(input.keyHandle);
-  if (
-    typeof input.store !== "object" ||
-    input.store === null ||
-    typeof input.store.readPreparedAttempt !== "function"
-  ) {
-    throw new Error("backup sync attempt store is invalid");
-  }
-  let callbackOpen = true;
-  let callbackCalls = 0;
-  let issued: object | undefined;
-  let returned: unknown;
-  try {
-    returned = await input.store.readPreparedAttempt(attemptId, (rawRecord) => {
-      if (!callbackOpen || callbackCalls++ !== 0)
-        throw new Error("backup attempt read callback is invalid");
-      const record = decodeSyncAttemptRecord(rawRecord);
-      if (record.attemptId !== attemptId)
-        throw new Error("backup attempt id does not match");
-      requireFinalizedEncryptedWalletBackupUploadSet(
-        input.finalizedUploads,
-        input.keyHandle,
-        record.targetHead.manifestDigest,
-        record.uploadAttemptId,
-        record.localSnapshotId,
-        record.localSnapshotRevision,
-      );
-      validateSyncAttemptCasPayload(
-        record,
-        keyAuthority,
-        input.keyHandle.requestAuthPublicKey,
-      );
-      const evidence = authorizeSyncAttempt(record, keyAuthority);
-      issued = evidence;
-      return evidence;
-    });
-  } finally {
-    callbackOpen = false;
-  }
-  if (
-    isThenable(returned) ||
-    issued === undefined ||
-    returned !== issued ||
-    callbackCalls !== 1 ||
-    SEALED_BACKUP_SYNC_ATTEMPTS.get(issued) === undefined
-  ) {
-    throw new Error("backup attempt read must be synchronous and exact");
-  }
-  return issued as SealedEncryptedWalletBackupSyncAttempt;
-}
-
 export async function advanceEncryptedWalletBackupSyncAttempt(input: {
   attempt: SealedEncryptedWalletBackupSyncAttempt;
-  store: EncryptedWalletBackupSyncAttemptStore;
   event:
     | Readonly<{ type: "cas-dispatched" }>
     | Readonly<{
@@ -2889,7 +2706,7 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
 }): Promise<SealedEncryptedWalletBackupSyncAttempt> {
   const attemptAuthority =
     typeof input.attempt === "object" && input.attempt !== null
-      ? SEALED_BACKUP_SYNC_ATTEMPTS.get(input.attempt)
+      ? readCoordinatedEncryptedWalletBackupCasAuthority(input.attempt)
       : undefined;
   if (attemptAuthority === undefined)
     throw new Error("backup sync attempt is not sealed");
@@ -2920,7 +2737,8 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
           : undefined;
       if (
         observation === undefined ||
-        observation.keyAuthority !== attemptAuthority.keyAuthority
+        observation.keyAuthority !==
+          requireKeyAuthority(attemptAuthority.keyHandle)
       ) {
         throw new Error("backup head observation is not authenticated");
       }
@@ -2937,10 +2755,10 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
             retryNotBeforeUnixMilliseconds: 1,
           });
           return persistExhaustedSyncAttempt(
-            input.store,
+            attemptAuthority.store,
             current,
             exhaustedCandidate,
-            attemptAuthority.keyAuthority,
+            attemptAuthority.keyHandle,
           );
         }
       } else {
@@ -2952,10 +2770,10 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
       return assertNeverSyncEvent(input.event);
   }
   return persistSyncAttemptTransition(
-    input.store,
+    attemptAuthority.store,
     current,
     next,
-    attemptAuthority.keyAuthority,
+    attemptAuthority.keyHandle,
   );
 }
 
@@ -2963,7 +2781,7 @@ async function persistExhaustedSyncAttempt(
   store: EncryptedWalletBackupSyncAttemptStore,
   expected: EncryptedWalletBackupSyncAttemptRecord,
   candidate: EncryptedWalletBackupSyncAttemptRecord,
-  keyAuthority: KeyAuthority,
+  keyHandle: EncryptedWalletBackupKeyHandle,
 ): Promise<SealedEncryptedWalletBackupSyncAttempt> {
   if (typeof store.exhaustPreparedAttempt !== "function")
     throw new Error("backup exhaustion store is invalid");
@@ -2993,7 +2811,11 @@ async function persistExhaustedSyncAttempt(
           )
         )
           throw new Error("backup exhaustion stamp is invalid");
-        issued = authorizeSyncAttempt(committed, keyAuthority);
+        issued = issueCoordinatedEncryptedWalletBackupCasAttempt(
+          committed,
+          keyHandle,
+          store,
+        );
         return issued;
       },
     );
@@ -3017,7 +2839,6 @@ async function persistExhaustedSyncAttempt(
  */
 export async function synchronizeEncryptedWalletBackupManifestHead(input: {
   attempt: SealedEncryptedWalletBackupSyncAttempt;
-  store: EncryptedWalletBackupSyncAttemptStore;
   keyHandle: EncryptedWalletBackupKeyHandle;
   enrollmentEpoch: number;
   casUrl: string;
@@ -3027,7 +2848,8 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
   runtime?: EncryptedWalletBackupRuntime;
 }): Promise<SealedEncryptedWalletBackupSyncAttempt> {
   const keyAuthority = requireKeyAuthority(input.keyHandle);
-  let attempt = requireSealedSyncAttempt(input.attempt, keyAuthority);
+  requireSealedSyncAttempt(input.attempt, input.keyHandle);
+  let attempt = input.attempt;
   const epoch = requireInteger(
     input.enrollmentEpoch,
     1,
@@ -3059,7 +2881,6 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
   if (attempt.record.state === "retry-exhausted") {
     attempt = await resumeEncryptedWalletBackupSyncAttempt({
       attempt,
-      store: input.store,
     });
   }
 
@@ -3087,7 +2908,6 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
       });
       return advanceEncryptedWalletBackupSyncAttempt({
         attempt,
-        store: input.store,
         event: {
           type: "head-observed",
           observation,
@@ -3102,12 +2922,11 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
     attempt.record.state === "sealed" ||
     attempt.record.state === "retry-cas"
   ) {
-    const privateAttempt = requireSealedSyncAttempt(attempt, keyAuthority);
     attempt = await advanceEncryptedWalletBackupSyncAttempt({
       attempt,
-      store: input.store,
       event: { type: "cas-dispatched" },
     });
+    const privateAttempt = requireSealedSyncAttempt(attempt, input.keyHandle);
     const issuedAt = requireNonNegativeSafeInteger(
       input.clock.nowUnixSeconds(),
       "request issue time",
@@ -3122,6 +2941,7 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
       payload: privateAttempt.record.canonicalCasPayload,
       runtime,
     });
+    await validateCurrentCoordinatedCasAttempt(attempt);
     let response: Awaited<
       ReturnType<
         EncryptedWalletBackupCasRemotePort["compareAndSwapCurrentHead"]
@@ -3163,6 +2983,46 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
     attempt = await observeHead();
   }
   return attempt;
+}
+
+async function validateCurrentCoordinatedCasAttempt(
+  attempt: SealedEncryptedWalletBackupSyncAttempt,
+): Promise<void> {
+  const authority = readCoordinatedEncryptedWalletBackupCasAuthority(attempt);
+  if (
+    authority === undefined ||
+    typeof authority.store.validatePreparedAttempt !== "function"
+  ) {
+    throw new Error("backup CAS authority is invalid");
+  }
+  let calls = 0;
+  let open = true;
+  let marker: object | undefined;
+  let returned: unknown;
+  try {
+    returned = await authority.store.validatePreparedAttempt(
+      authority.record,
+      (raw) => {
+        if (!open || calls++ !== 0)
+          throw new Error("backup CAS validation callback is invalid");
+        const current = decodeSyncAttemptRecord(raw);
+        if (!equalSyncAttemptRecord(authority.record, current))
+          throw new Error("backup CAS authority changed");
+        marker = Object.freeze({});
+        return marker;
+      },
+    );
+  } finally {
+    open = false;
+  }
+  if (
+    isThenable(returned) ||
+    marker === undefined ||
+    returned !== marker ||
+    calls !== 1
+  ) {
+    throw new Error("backup CAS validation must be synchronous and exact");
+  }
 }
 
 export async function readAuthenticatedEncryptedWalletBackupHead(input: {
@@ -4670,16 +4530,15 @@ function requireManifestHeadAuthority(
 
 function requireSealedSyncAttempt(
   value: unknown,
-  keyAuthority: KeyAuthority,
-): SealedEncryptedWalletBackupSyncAttempt {
-  const authority =
-    typeof value === "object" && value !== null
-      ? SEALED_BACKUP_SYNC_ATTEMPTS.get(value)
-      : undefined;
-  if (authority === undefined || authority.keyAuthority !== keyAuthority) {
+  keyHandle: EncryptedWalletBackupKeyHandle,
+): NonNullable<
+  ReturnType<typeof readCoordinatedEncryptedWalletBackupCasAuthority>
+> {
+  const authority = readCoordinatedEncryptedWalletBackupCasAuthority(value);
+  if (authority === undefined || authority.keyHandle !== keyHandle) {
     throw new Error("backup sync attempt is not sealed for this key");
   }
-  return value as SealedEncryptedWalletBackupSyncAttempt;
+  return authority;
 }
 
 function decodeManifestHeadWire(
@@ -4993,6 +4852,8 @@ function decodeSyncAttemptRecord(
   const record = requireRecord(value, "backup sync attempt");
   requireKnownFields(record, [
     "schemaVersion",
+    "realm",
+    "vaultId",
     "attemptId",
     "uploadAttemptId",
     "localSnapshotId",
@@ -5047,11 +4908,6 @@ function decodeSyncAttemptRecord(
     ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
     "CAS attempts",
   );
-  if (
-    (state === "sealed" && casAttempts !== 0) ||
-    (state !== "sealed" && casAttempts === 0)
-  )
-    throw new Error("backup sync attempt state is invalid");
   const retryNotBeforeUnixMilliseconds =
     record.retryNotBeforeUnixMilliseconds === null
       ? null
@@ -5061,14 +4917,15 @@ function decodeSyncAttemptRecord(
           Number.MAX_SAFE_INTEGER,
           "backup retry-not-before time",
         );
-  if (
-    (state === "retry-exhausted") !==
-    (retryNotBeforeUnixMilliseconds !== null)
-  ) {
-    throw new Error("backup retry-not-before state is invalid");
-  }
+  validateEncryptedWalletBackupCasState({
+    state,
+    casAttempts,
+    retryNotBeforeUnixMilliseconds,
+  });
   return freezeSyncAttempt({
     schemaVersion: 1,
+    realm: requireRealm(record.realm),
+    vaultId: requireLowerHex(record.vaultId, 32, "backup CAS vault id"),
     attemptId: requireLowerHex(record.attemptId, 16, "backup attempt id"),
     uploadAttemptId: requireLowerHex(
       record.uploadAttemptId,
@@ -5214,28 +5071,14 @@ function freezeSyncAttempt(
   });
 }
 
-function authorizeSyncAttempt(
-  record: EncryptedWalletBackupSyncAttemptRecord,
-  keyAuthority: KeyAuthority,
-): SealedEncryptedWalletBackupSyncAttempt {
-  const privateRecord = freezeSyncAttempt(record);
-  const evidence = Object.freeze({
-    state: "sealed" as const,
-    record: freezeSyncAttempt(privateRecord),
-  });
-  SEALED_BACKUP_SYNC_ATTEMPTS.set(evidence, {
-    keyAuthority,
-    record: privateRecord,
-  });
-  return evidence;
-}
-
 function equalSyncAttemptRecord(
   left: EncryptedWalletBackupSyncAttemptRecord,
   right: EncryptedWalletBackupSyncAttemptRecord,
 ): boolean {
   return (
     left.schemaVersion === right.schemaVersion &&
+    left.realm === right.realm &&
+    left.vaultId === right.vaultId &&
     left.attemptId === right.attemptId &&
     left.uploadAttemptId === right.uploadAttemptId &&
     left.localSnapshotId === right.localSnapshotId &&
@@ -5255,7 +5098,7 @@ async function persistSyncAttemptTransition(
   store: EncryptedWalletBackupSyncAttemptStore,
   expected: EncryptedWalletBackupSyncAttemptRecord,
   next: EncryptedWalletBackupSyncAttemptRecord,
-  keyAuthority: KeyAuthority,
+  keyHandle: EncryptedWalletBackupKeyHandle,
 ): Promise<SealedEncryptedWalletBackupSyncAttempt> {
   if (
     typeof store !== "object" ||
@@ -5278,7 +5121,11 @@ async function persistSyncAttemptTransition(
         const committed = decodeSyncAttemptRecord(rawRecord);
         if (!equalSyncAttemptRecord(committed, next))
           throw new Error("committed backup transition changed");
-        const evidence = authorizeSyncAttempt(committed, keyAuthority);
+        const evidence = issueCoordinatedEncryptedWalletBackupCasAttempt(
+          committed,
+          keyHandle,
+          store,
+        );
         issued = evidence;
         return evidence;
       },
@@ -5291,59 +5138,11 @@ async function persistSyncAttemptTransition(
     issued === undefined ||
     returned !== issued ||
     callbackCalls !== 1 ||
-    SEALED_BACKUP_SYNC_ATTEMPTS.get(issued) === undefined
+    readCoordinatedEncryptedWalletBackupCasAuthority(issued) === undefined
   ) {
     throw new Error("backup transition must be synchronous and exact");
   }
   return issued as SealedEncryptedWalletBackupSyncAttempt;
-}
-
-function validateSyncAttemptCasPayload(
-  record: EncryptedWalletBackupSyncAttemptRecord,
-  keyAuthority: KeyAuthority,
-  expectedPublicKey: string,
-): void {
-  preflightEncryptedBackupCasCbor(record.canonicalCasPayload);
-  const decoded = decode(record.canonicalCasPayload);
-  if (
-    !equalBytes(record.canonicalCasPayload, encodeCanonical(decoded)) ||
-    !Array.isArray(decoded) ||
-    decoded.length !== 6 ||
-    decoded[0] !== 1 ||
-    decoded[1] !== "head-cas"
-  ) {
-    throw new Error("persisted backup CAS payload is invalid");
-  }
-  if (
-    bytesToHex(requireBytes(decoded[2], 16, "persisted upload attempt id")) !==
-    record.uploadAttemptId
-  ) {
-    throw new Error("persisted backup CAS upload attempt does not match");
-  }
-  const expectedDigest =
-    decoded[3] === null
-      ? null
-      : bytesToHex(
-          requireBytes(decoded[3], 32, "persisted expected head digest"),
-        );
-  if (
-    expectedDigest !== record.expectedHeadDigest ||
-    !(decoded[4] instanceof Uint8Array) ||
-    !(decoded[5] instanceof Uint8Array)
-  ) {
-    throw new Error("persisted backup CAS payload does not match attempt");
-  }
-  const head = decodeManifestHeadWire(
-    {
-      canonicalHead: decoded[4],
-      canonicalReferenceSet: decoded[5],
-    },
-    keyAuthority,
-    expectedPublicKey,
-  ).head;
-  if (JSON.stringify(head) !== JSON.stringify(record.targetHead)) {
-    throw new Error("persisted backup CAS target does not match attempt");
-  }
 }
 
 function assertNeverSyncEvent(value: never): never {
