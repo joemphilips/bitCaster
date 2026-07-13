@@ -1,6 +1,6 @@
 ---
-title: "Encrypted wallet backup"
-description: "How browser wallet recovery works and what the backup service can observe"
+title: 'Encrypted wallet backup'
+description: 'How browser wallet recovery works and what the backup service can observe'
 sidebar:
   order: 3
 ---
@@ -45,6 +45,11 @@ The service retains one current snapshot for each vault, not a history of old
 wallet states. Old snapshots could contain proofs that have since been spent,
 so they are not presented as recoverable wallet versions.
 
+The initial encrypted-storage allowance is shared by all vaults under the same
+authenticated account. If a recovery phrase is permanently lost, its encrypted
+vault cannot be identified or deleted in this release and continues to use part
+of that allowance. Keep every phrase for a wallet you may want to reopen.
+
 ## Keep your recovery phrase
 
 Encrypted backup is a convenience and continuity feature, not a replacement
@@ -58,4 +63,3 @@ conditional proofs used by an active P2PK/HTLC swap remain local while the swap
 is in progress. Closing a browser wallet in the middle of such a swap can
 therefore prevent seamless trade continuation even when the ordinary balance
 can later be recovered.
-

@@ -4,6 +4,11 @@ const PROOF_CBOR_MAX_BYTES = 245_760
 const PROOF_COUNT_MAX = 512
 const TOKEN_LIMIT = 16_384
 const DEPTH_LIMIT = 6
+const MANIFEST_CBOR_MAX_BYTES = 65_532
+const PUBLIC_METADATA_MAX_BYTES = 65_536
+const CAS_PAYLOAD_MAX_BYTES = 196_608
+const REQUEST_PROOF_MAX_BYTES = 4_096
+const PUT_PAYLOAD_MAX_BYTES = 4 * 1_024 * 1_024
 
 export function encodeCanonicalBackupCbor(value: unknown): Uint8Array {
   return encode(value, rfc8949EncodeOptions)
@@ -32,7 +37,12 @@ export function measureCanonicalBackupCbor(value: unknown): number {
 export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
   if (bytes.byteLength < 1 || bytes.byteLength > PROOF_CBOR_MAX_BYTES) throw new Error('cbor input')
   const state = { offset: 0, tokens: 0 }
-  const root = scanCbor(bytes, state, 0)
+  const root = scanCbor(bytes, state, 0, {
+    depth: DEPTH_LIMIT,
+    tokens: TOKEN_LIMIT,
+    itemLength: PROOF_CBOR_MAX_BYTES,
+    arrayLength: PROOF_COUNT_MAX,
+  })
   if (state.offset !== bytes.byteLength) throw new Error('trailing cbor')
   if (
     root.major !== 4 ||
@@ -106,6 +116,219 @@ export function preflightEncryptedProofChunkCbor(bytes: Uint8Array): void {
   }
 }
 
+export function preflightEncryptedManifestPageCbor(bytes: Uint8Array): void {
+  if (bytes.byteLength < 1 || bytes.byteLength > MANIFEST_CBOR_MAX_BYTES)
+    throw new Error('cbor input')
+  const state = { offset: 0, tokens: 0 }
+  const root = scanCbor(bytes, state, 0, {
+    depth: 6,
+    tokens: TOKEN_LIMIT,
+    itemLength: MANIFEST_CBOR_MAX_BYTES,
+    arrayLength: PROOF_COUNT_MAX,
+  })
+  if (state.offset !== bytes.byteLength) throw new Error('trailing cbor')
+  if (
+    root.major !== 4 ||
+    root.value !== 7 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1 ||
+    root.children[1]?.major !== 0 ||
+    root.children[1]?.value !== 2
+  )
+    throw new Error('root shape')
+  requireUnsigned(root.children[2], 'generation')
+  requireBytes(root.children[3], 16, 16, 'snapshot nonce')
+  requireUnsigned(root.children[4], 'page index')
+  requireUnsigned(root.children[5], 'page count')
+  const entries = root.children[6]
+  if (
+    entries?.major !== 4 ||
+    entries.value === null ||
+    entries.value < 1 ||
+    entries.value > PROOF_COUNT_MAX
+  ) {
+    throw new Error('manifest entry count')
+  }
+  for (const entry of entries.children) {
+    if (entry.major !== 4 || entry.value !== 11) throw new Error('manifest entry shape')
+    requireBytes(entry.children[0], 32, 32, 'proof id')
+    requireBytes(entry.children[1], 32, 32, 'commitment')
+    requireBytes(entry.children[2], 16, 16, 'chunk object id')
+    requireBytes(entry.children[3], 32, 32, 'chunk digest')
+    requireText(entry.children[4], 1, 2_048, 'mint')
+    requireText(entry.children[5], 1, 64, 'unit')
+    requireText(entry.children[6], 1, 20, 'amount')
+    const proofKind = entry.children[7]
+    if (proofKind?.major !== 0 || (proofKind.value !== 0 && proofKind.value !== 1)) {
+      throw new Error('proof kind')
+    }
+    const ctf = entry.children[8]
+    if (
+      ctf === undefined ||
+      !((ctf.major === 7 && ctf.value === 22) || (ctf.major === 4 && ctf.value === 5))
+    )
+      throw new Error('ctf shape')
+    if (ctf.major === 4) {
+      requireBytes(ctf.children[0], 32, 32, 'condition id')
+      requireText(ctf.children[1], 1, 256, 'outcome label')
+      requireBytes(ctf.children[2], 32, 32, 'outcome collection id')
+      requireUnsigned(ctf.children[3], 'registration')
+      requireUnsigned(ctf.children[4], 'expiry')
+    }
+    requireUnsigned(entry.children[9], 'created')
+    requireUnsigned(entry.children[10], 'updated')
+  }
+}
+
+export function preflightEncryptedBackupRequestProofCbor(bytes: Uint8Array): void {
+  const root = scanBoundedEnvelope(bytes, REQUEST_PROOF_MAX_BYTES, 2, 32, 14)
+  if (
+    root.major !== 4 ||
+    root.value !== 14 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1
+  ) {
+    throw new Error('request proof shape')
+  }
+  requireText(root.children[1], 20, 20, 'request proof discriminator')
+  requireText(root.children[2], 1, 64, 'request realm')
+  requireBytes(root.children[3], 32, 32, 'request vault id')
+  requireBytes(root.children[4], 32, 32, 'request public key')
+  requireUnsigned(root.children[5], 'request epoch')
+  requireText(root.children[6], 3, 6, 'request method')
+  requireText(root.children[7], 1, 2_048, 'request URL')
+  requireUnsigned(root.children[8], 'request issue time')
+  requireUnsigned(root.children[9], 'request expiry time')
+  requireBytes(root.children[10], 16, 16, 'request nonce')
+  requireUnsigned(root.children[11], 'request payload length')
+  requireBytes(root.children[12], 32, 32, 'request payload digest')
+  requireBytes(root.children[13], 64, 64, 'request signature')
+}
+
+export function preflightEncryptedBackupHeadCbor(bytes: Uint8Array): void {
+  const root = scanBoundedEnvelope(bytes, PUBLIC_METADATA_MAX_BYTES, 5, 8_192, 1_024)
+  if (
+    root.major !== 4 ||
+    root.value !== 13 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1
+  ) {
+    throw new Error('head shape')
+  }
+  requireText(root.children[1], 13, 13, 'head discriminator')
+  requireText(root.children[2], 1, 64, 'head realm')
+  requireBytes(root.children[3], 32, 32, 'head vault id')
+  requireBytes(root.children[4], 32, 32, 'head public key')
+  requireUnsigned(root.children[5], 'head generation')
+  const parent = root.children[6]
+  if (
+    parent === undefined ||
+    !((parent.major === 7 && parent.value === 22) || (parent.major === 4 && parent.value === 2))
+  )
+    throw new Error('head parent shape')
+  requireBytes(root.children[7], 16, 16, 'head snapshot nonce')
+  requireObjectReferenceArray(root.children[8], 'head page references')
+  requireObjectReferenceArray(root.children[9], 'head chunk references')
+  requireUnsigned(root.children[10], 'head proof count')
+  requireUnsigned(root.children[11], 'head stored bytes')
+  requireBytes(root.children[12], 32, 32, 'head reference digest')
+}
+
+export function preflightEncryptedBackupReferenceSetCbor(bytes: Uint8Array): void {
+  const root = scanBoundedEnvelope(bytes, PUBLIC_METADATA_MAX_BYTES, 4, 8_192, 1_024)
+  if (
+    root.major !== 4 ||
+    root.value !== 4 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1
+  ) {
+    throw new Error('reference set shape')
+  }
+  requireText(root.children[1], 13, 13, 'reference set discriminator')
+  requireObjectReferenceArray(root.children[2], 'page references')
+  requireObjectReferenceArray(root.children[3], 'chunk references')
+}
+
+export function preflightEncryptedBackupCasCbor(bytes: Uint8Array): void {
+  const root = scanBoundedEnvelope(bytes, CAS_PAYLOAD_MAX_BYTES, 3, 32, 6)
+  if (
+    root.major !== 4 ||
+    root.value !== 6 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1
+  ) {
+    throw new Error('CAS shape')
+  }
+  requireText(root.children[1], 8, 8, 'CAS discriminator')
+  requireBytes(root.children[2], 16, 16, 'CAS upload attempt id')
+  const expected = root.children[3]
+  if (
+    expected === undefined ||
+    !(
+      (expected.major === 7 && expected.value === 22) ||
+      (expected.major === 2 && expected.value === 32)
+    )
+  )
+    throw new Error('CAS parent shape')
+  requireBytes(root.children[4], 1, PUBLIC_METADATA_MAX_BYTES, 'CAS head')
+  requireBytes(root.children[5], 1, PUBLIC_METADATA_MAX_BYTES, 'CAS reference set')
+}
+
+export function preflightEncryptedBackupPutCbor(bytes: Uint8Array): void {
+  const root = scanBoundedEnvelope(bytes, PUT_PAYLOAD_MAX_BYTES, 2, 32, 12)
+  if (
+    root.major !== 4 ||
+    root.value !== 12 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1
+  ) {
+    throw new Error('PUT shape')
+  }
+  requireText(root.children[1], 10, 10, 'PUT discriminator')
+  requireBytes(root.children[2], 16, 16, 'PUT attempt id')
+  requireUnsigned(root.children[3], 'PUT kind')
+  requireText(root.children[4], 1, 64, 'PUT realm')
+  requireBytes(root.children[5], 32, 32, 'PUT vault id')
+  requireBytes(root.children[6], 16, 16, 'PUT object id')
+  requireUnsigned(root.children[7], 'PUT generation')
+  requireUnsigned(root.children[8], 'PUT padded length')
+  requireBytes(root.children[9], 32, 32, 'PUT digest')
+  requireBytes(root.children[10], 1, 4_096, 'PUT AAD')
+  requireBytes(root.children[11], 65_564, 262_172, 'PUT body')
+}
+
+function scanBoundedEnvelope(
+  bytes: Uint8Array,
+  maximumBytes: number,
+  depth: number,
+  tokens: number,
+  arrayLength: number,
+): CborShape {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > maximumBytes) {
+    throw new Error('CBOR envelope size')
+  }
+  const state = { offset: 0, tokens: 0 }
+  const root = scanCbor(bytes, state, 0, {
+    depth,
+    tokens,
+    itemLength: maximumBytes,
+    arrayLength,
+  })
+  if (state.offset !== bytes.byteLength) throw new Error('trailing CBOR envelope')
+  return root
+}
+
+function requireObjectReferenceArray(shape: CborShape | undefined, name: string): void {
+  if (shape?.major !== 4 || shape.value === null || shape.value > 1_024) {
+    throw new Error(`${name} shape`)
+  }
+  for (const reference of shape.children) {
+    if (reference.major !== 4 || reference.value !== 2) throw new Error(`${name} shape`)
+    requireBytes(reference.children[0], 16, 16, 'referenced object id')
+    requireBytes(reference.children[1], 32, 32, 'referenced object digest')
+  }
+}
+
 function requireBytes(shape: CborShape | undefined, min: number, max: number, name: string): void {
   if (shape?.major !== 2 || shape.value === null || shape.value < min || shape.value > max) {
     throw new Error(`${name} shape`)
@@ -140,8 +363,9 @@ function scanCbor(
   bytes: Uint8Array,
   state: { offset: number; tokens: number },
   depth: number,
+  limits: { depth: number; tokens: number; itemLength: number; arrayLength: number },
 ): CborShape {
-  if (depth > DEPTH_LIMIT || ++state.tokens > TOKEN_LIMIT || state.offset >= bytes.length) {
+  if (depth > limits.depth || ++state.tokens > limits.tokens || state.offset >= bytes.length) {
     throw new Error('cbor bounds')
   }
   const first = bytes[state.offset++]!
@@ -155,7 +379,7 @@ function scanCbor(
   if (major !== 0 && major !== 2 && major !== 3 && major !== 4) throw new Error('cbor major')
   const value = readCborArgument(bytes, state, additional)
   if (major === 0) return { major, value, children: [] }
-  if (value > PROOF_CBOR_MAX_BYTES) throw new Error('cbor item length')
+  if (value > limits.itemLength) throw new Error('cbor item length')
   if (major === 2 || major === 3) {
     if (state.offset + value > bytes.length) throw new Error('cbor truncation')
     if (major === 3) {
@@ -166,9 +390,11 @@ function scanCbor(
     state.offset += value
     return { major, value, children: [] }
   }
-  if (value > PROOF_COUNT_MAX && depth > 1) throw new Error('cbor array length')
+  if (value > limits.arrayLength && depth > 1) throw new Error('cbor array length')
   const children: CborShape[] = []
-  for (let index = 0; index < value; index += 1) children.push(scanCbor(bytes, state, depth + 1))
+  for (let index = 0; index < value; index += 1) {
+    children.push(scanCbor(bytes, state, depth + 1, limits))
+  }
   return { major, value, children }
 }
 

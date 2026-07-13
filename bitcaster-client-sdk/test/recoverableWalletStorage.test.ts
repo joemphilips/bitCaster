@@ -3,15 +3,19 @@ import { test } from 'node:test'
 import {
   DURABLE_WALLET_STORAGE_CLASSES,
   DURABLE_WALLET_STORAGE_PIN_REASONS,
-  acknowledgeDurableWalletBackupSnapshot,
-  authenticateDurableWalletEncryptedBackupReceipt,
   classifyDurableWalletStorage,
+  decodeDurableWalletAcknowledgedBackupSnapshot,
+  decodeDurableWalletEncryptedBackupReceipt,
   decodeDurableWalletStorageClassification,
   decideDurableWalletStoragePurge,
   deriveDurableWalletBackupSnapshotId,
   isDurableCustodySafeAbortEligible,
   prepareDurableWalletAcknowledgedBackupSnapshot,
 } from '../src/recoverableWalletStorage.ts'
+import {
+  issueDurableWalletAcknowledgedBackupSnapshot,
+  issueDurableWalletAuthenticatedBackupReceipt,
+} from '../src/encryptedWalletBackupAuthority.ts'
 
 const RECORD_ID = '01'.repeat(32)
 
@@ -219,8 +223,12 @@ test('proof condition and proof-level pins remain exhaustive and receipt cannot 
 
 test('receipt encodings are canonical and persisted commitment mismatch fails closed', () => {
   assert.throws(
-    () => authenticateDurableWalletEncryptedBackupReceipt(backupReceipt(), () => false),
-    /receipt authentication failed/,
+    () =>
+      classifyDurableWalletStorage({
+        ...coldProofInput(),
+        backupReceiptEvidence: { state: 'authenticated', receipt: backupReceipt() },
+      }),
+    /receipt evidence is not authenticated/,
   )
   assert.throws(
     () =>
@@ -232,10 +240,10 @@ test('receipt encodings are canonical and persisted commitment mismatch fails cl
   )
   assert.throws(
     () =>
-      authenticateDurableWalletEncryptedBackupReceipt(
-        { ...backupReceipt(), chunkDigest: 'AA'.repeat(32) },
-        () => true,
-      ),
+      decodeDurableWalletEncryptedBackupReceipt({
+        ...backupReceipt(),
+        chunkDigest: 'AA'.repeat(32),
+      }),
     /backup chunk digest is invalid/,
   )
 
@@ -253,7 +261,7 @@ test('receipt encodings are canonical and persisted commitment mismatch fails cl
   )
 })
 
-test('active CTF can be remotely backed and prepared snapshot state is byte bounded', () => {
+test('active CTF can be remotely backed and prepared snapshot state is count bounded', () => {
   const activeCtf = classifyDurableWalletStorage({
     ...coldProofInput(),
     proofKind: 'ctf-active',
@@ -262,16 +270,13 @@ test('active CTF can be remotely backed and prepared snapshot state is byte boun
   assert.equal(activeCtf.storageClass, 'remotely-backed-deterministic-proof')
   assert.throws(
     () =>
-      acknowledgeDurableWalletBackupSnapshot(
-        {
-          ...acknowledgedSnapshot(),
-          reachableChunkDigests: Array.from({ length: 1_024 }, (_, index) =>
-            index.toString(16).padStart(64, '0'),
-          ),
-        },
-        () => true,
-      ),
-    /snapshot exceeds the byte limit/,
+      decodeDurableWalletAcknowledgedBackupSnapshot({
+        ...acknowledgedSnapshot(),
+        reachableChunkDigests: Array.from({ length: 1_025 }, (_, index) =>
+          index.toString(16).padStart(64, '0'),
+        ),
+      }),
+    /snapshot exceeds the chunk limit/,
   )
 })
 
@@ -285,8 +290,7 @@ test('snapshot identity binds every canonical head field', () => {
     { manifestDigest: 'bb'.repeat(32) },
   ]) {
     assert.throws(
-      () =>
-        acknowledgeDurableWalletBackupSnapshot({ ...snapshot, ...override } as never, () => true),
+      () => decodeDurableWalletAcknowledgedBackupSnapshot({ ...snapshot, ...override } as never),
       /snapshot id|format version/,
     )
   }
@@ -331,10 +335,7 @@ test('cloned or rewritten receipt and snapshot evidence has no authority', () =>
     /receipt evidence is not authenticated/,
   )
 
-  const snapshotEvidence = acknowledgeDurableWalletBackupSnapshot(
-    acknowledgedSnapshot(),
-    () => true,
-  )
+  const snapshotEvidence = acknowledgedEvidence(acknowledgedSnapshot())
   assert.throws(
     () => prepareDurableWalletAcknowledgedBackupSnapshot({ ...snapshotEvidence }),
     /snapshot evidence is not acknowledged/,
@@ -537,7 +538,9 @@ function backupHead() {
 }
 
 function authenticatedReceipt() {
-  return authenticateDurableWalletEncryptedBackupReceipt(backupReceipt(), () => true)
+  return issueDurableWalletAuthenticatedBackupReceipt(
+    Object.freeze(decodeDurableWalletEncryptedBackupReceipt(backupReceipt())),
+  )
 }
 
 function preparedSnapshot() {
@@ -545,7 +548,11 @@ function preparedSnapshot() {
 }
 
 function prepareSnapshot(snapshot: ReturnType<typeof acknowledgedSnapshot>) {
-  return prepareDurableWalletAcknowledgedBackupSnapshot(
-    acknowledgeDurableWalletBackupSnapshot(snapshot, () => true),
+  return prepareDurableWalletAcknowledgedBackupSnapshot(acknowledgedEvidence(snapshot))
+}
+
+function acknowledgedEvidence(snapshot: ReturnType<typeof acknowledgedSnapshot>) {
+  return issueDurableWalletAcknowledgedBackupSnapshot(
+    Object.freeze(decodeDurableWalletAcknowledgedBackupSnapshot(snapshot)),
   )
 }

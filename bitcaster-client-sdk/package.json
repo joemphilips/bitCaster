@@ -31,6 +31,14 @@
       "types": "./dist/encryptedWalletBackup.d.ts",
       "import": "./dist/encryptedWalletBackup.js"
     },
+    "./encryptedWalletBackupEnrollment": {
+      "types": "./dist/encryptedWalletBackupEnrollment.d.ts",
+      "import": "./dist/encryptedWalletBackupEnrollment.js"
+    },
+    "./encryptedWalletBackupSync": {
+      "types": "./dist/encryptedWalletBackupSync.d.ts",
+      "import": "./dist/encryptedWalletBackupSync.js"
+    },
     "./managedConditionInventory": {
       "types": "./dist/managedConditionInventory.d.ts",
       "import": "./dist/managedConditionInventory.js"

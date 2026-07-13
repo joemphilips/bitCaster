@@ -5,6 +5,10 @@
 
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
+import {
+  requireDurableWalletAcknowledgedBackupSnapshot,
+  requireDurableWalletAuthenticatedBackupReceipt,
+} from './encryptedWalletBackupAuthority.ts'
 
 export interface DurableCustodySafeAbortEvidence {
   operationState: 'dispatch-intent' | 'transport-attempted' | 'reconciled' | 'aborted'
@@ -105,8 +109,6 @@ export interface DurableWalletEncryptedBackupReceipt {
   readonly proofCommitment: string
 }
 
-const AUTHENTICATED_BACKUP_RECEIPTS = new WeakMap<object, DurableWalletEncryptedBackupReceipt>()
-
 export interface DurableWalletAuthenticatedBackupReceiptEvidence {
   state: 'authenticated'
   readonly receipt: DurableWalletEncryptedBackupReceipt
@@ -123,8 +125,6 @@ export interface DurableWalletAcknowledgedBackupSnapshot {
   readonly reachableChunkDigests: readonly string[]
 }
 
-const ACKNOWLEDGED_BACKUP_SNAPSHOTS = new WeakMap<object, DurableWalletAcknowledgedBackupSnapshot>()
-
 export interface DurableWalletAcknowledgedBackupSnapshotEvidence {
   readonly state: 'acknowledged'
   readonly snapshot: DurableWalletAcknowledgedBackupSnapshot
@@ -137,8 +137,6 @@ export interface PreparedDurableWalletAcknowledgedBackupSnapshot {
   readonly [PREPARED_BACKUP_SNAPSHOT]: true
   readonly snapshot: DurableWalletAcknowledgedBackupSnapshot
 }
-
-export const DURABLE_WALLET_ACKNOWLEDGED_SNAPSHOT_MAX_BYTES = 64 * 1_024
 
 export function deriveDurableWalletBackupSnapshotId(input: {
   formatVersion: typeof DURABLE_WALLET_ENCRYPTED_BACKUP_FORMAT_VERSION
@@ -194,22 +192,6 @@ export function decodeDurableWalletEncryptedBackupReceipt(
   return decoded
 }
 
-export function authenticateDurableWalletEncryptedBackupReceipt(
-  value: unknown,
-  verifyAuthenticatedServiceResponse: (receipt: DurableWalletEncryptedBackupReceipt) => boolean,
-): DurableWalletAuthenticatedBackupReceiptEvidence {
-  const receipt = Object.freeze({ ...decodeDurableWalletEncryptedBackupReceipt(value) })
-  if (!verifyAuthenticatedServiceResponse(receipt)) {
-    throw new Error('encrypted backup receipt authentication failed')
-  }
-  const evidence = Object.freeze({
-    state: 'authenticated' as const,
-    receipt,
-  })
-  AUTHENTICATED_BACKUP_RECEIPTS.set(evidence, receipt)
-  return evidence
-}
-
 export function decodeDurableWalletAcknowledgedBackupSnapshot(
   value: unknown,
 ): DurableWalletAcknowledgedBackupSnapshot {
@@ -251,42 +233,10 @@ export function decodeDurableWalletAcknowledgedBackupSnapshot(
   return decoded
 }
 
-export function acknowledgeDurableWalletBackupSnapshot(
-  value: unknown,
-  verifyAcknowledgedServiceResponse: (snapshot: DurableWalletAcknowledgedBackupSnapshot) => boolean,
-): DurableWalletAcknowledgedBackupSnapshotEvidence {
-  if (
-    jsonByteLength(value, 'acknowledged backup snapshot') >
-    DURABLE_WALLET_ACKNOWLEDGED_SNAPSHOT_MAX_BYTES
-  ) {
-    throw new Error('acknowledged backup snapshot exceeds the byte limit')
-  }
-  const decoded = decodeDurableWalletAcknowledgedBackupSnapshot(value)
-  const snapshot = Object.freeze({
-    ...decoded,
-    reachableChunkDigests: decoded.reachableChunkDigests,
-  })
-  if (!verifyAcknowledgedServiceResponse(snapshot)) {
-    throw new Error('acknowledged backup snapshot authentication failed')
-  }
-  const evidence = Object.freeze({
-    state: 'acknowledged' as const,
-    snapshot,
-  })
-  ACKNOWLEDGED_BACKUP_SNAPSHOTS.set(evidence, snapshot)
-  return evidence
-}
-
 export function prepareDurableWalletAcknowledgedBackupSnapshot(
   evidenceInput: DurableWalletAcknowledgedBackupSnapshotEvidence,
 ): PreparedDurableWalletAcknowledgedBackupSnapshot {
-  const snapshotAuthority =
-    typeof evidenceInput === 'object' && evidenceInput !== null
-      ? ACKNOWLEDGED_BACKUP_SNAPSHOTS.get(evidenceInput)
-      : undefined
-  if (snapshotAuthority === undefined) {
-    throw new Error('backup snapshot evidence is not acknowledged')
-  }
+  const snapshotAuthority = requireDurableWalletAcknowledgedBackupSnapshot(evidenceInput).snapshot
   const snapshot = Object.freeze({
     ...snapshotAuthority,
     reachableChunkDigests: Object.freeze([...snapshotAuthority.reachableChunkDigests]),
@@ -849,14 +799,7 @@ function decodeProofPins(value: unknown): {
 function decodeAuthenticatedReceiptEvidence(
   value: unknown,
 ): DurableWalletAuthenticatedBackupReceiptEvidence {
-  const receipt =
-    typeof value === 'object' && value !== null
-      ? AUTHENTICATED_BACKUP_RECEIPTS.get(value)
-      : undefined
-  if (receipt === undefined) {
-    throw new Error('backup receipt evidence is not authenticated')
-  }
-  return value as DurableWalletAuthenticatedBackupReceiptEvidence
+  return requireDurableWalletAuthenticatedBackupReceipt(value)
 }
 
 function decodeProofBackupBinding(value: unknown): DurableWalletProofBackupBinding {
@@ -931,17 +874,6 @@ function requireLowerHex32(value: unknown, name: string): string {
     throw new Error(`${name} is invalid`)
   }
   return value
-}
-
-function jsonByteLength(value: unknown, name: string): number {
-  let encoded: string | undefined
-  try {
-    encoded = JSON.stringify(value)
-  } catch {
-    throw new Error(`${name} is invalid`)
-  }
-  if (encoded === undefined) throw new Error(`${name} is invalid`)
-  return new TextEncoder().encode(encoded).byteLength
 }
 
 function requireArray(value: unknown, name: string): unknown[] {

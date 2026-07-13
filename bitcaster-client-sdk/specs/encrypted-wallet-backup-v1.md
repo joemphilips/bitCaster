@@ -1,9 +1,9 @@
 # Encrypted Wallet Backup Object Format v1
 
 This document freezes the byte-level format implemented by
-`@bitcaster-market/client-sdk`. It defines opaque encrypted objects only. HTTP
-request authentication, enrollment, manifest contents, manifest CAS, and
-receipts are separate protocol layers.
+`@bitcaster-market/client-sdk`. It defines encrypted proof objects, private
+manifest pages, public head/reference metadata, request authentication,
+account-authorized enrollment lifecycle, bounded object transfer, and head CAS.
 
 ## Constants
 
@@ -14,14 +14,16 @@ receipts are separate protocol layers.
 - HKDF: SHA-256.
 - Root HKDF salt: UTF-8 `bitcaster/encrypted-wallet-backup/hkdf-salt/v1`.
 - Proof chunk kind code: `1`.
-- Reserved manifest kind code: `2`. No v1 manifest codec is defined here.
-- Plaintext frame: exactly 262144 bytes.
-- Maximum canonical proof-chunk CBOR: 245760 bytes.
+- Manifest-page kind code: `2`.
+- Proof plaintext frame: exactly 262144 bytes; canonical CBOR at most 245760
+  bytes; encrypted body exactly 262172 bytes.
+- Manifest plaintext frame: exactly 65536 bytes; canonical CBOR at most 65532
+  bytes; encrypted body exactly 65564 bytes.
 - Maximum records per proof chunk: 512.
 - Object identifier: 16 random bytes; retry a collision at most eight times.
 - AES key: 32 bytes. Nonce: 12 random bytes. GCM tag: 128 bits.
-- Encrypted body: `nonce[12] || ciphertext[262144] || tag[16]`, exactly
-  262172 bytes.
+- Manifest entries per page: at most 512. Manifest pages and total referenced
+  objects: at most 1024 each. Total manifest entries: at most 524288.
 - Generation: a positive JavaScript safe integer.
 
 All CBOR is deterministic RFC 8949 encoding: shortest integers and lengths,
@@ -98,7 +100,7 @@ Fields are:
    - `1`: deprecated v0 lowercase keyset ID, exactly 16 hex characters total,
      beginning `00`;
    - `2`: lowercase `01` or `02` plus 64 lowercase hex characters.
-   Unresolved 16-hex modern IDs are forbidden.
+     Unresolved 16-hex modern IDs are forbidden.
 6. `amount`: canonical unsigned decimal text (`[1-9][0-9]*`) not exceeding
    `18446744073709551615`.
 7. `secret`: exactly 64 ASCII bytes containing the lowercase-hex encoding of
@@ -205,9 +207,456 @@ exact body and digest. Decryption failures, tampering, truncation, invalid
 padding, invalid CBOR, and identity/commitment mismatches return a generic
 `corrupt encrypted wallet backup object` error and never include secret data.
 
-## Reserved manifest framing
+## Private manifest pages
 
-Kind `2` reserves a distinct 65536-byte frame and a 65532-byte maximum
-canonical CBOR payload for a future manifest protocol. Its future body length
-would be 65564 bytes (`12 + 65536 + 16`), and its AAD would carry padded length
-65536. This document defines no usable generic manifest encoder or decoder.
+A manifest page is the closed tuple:
+
+```text
+[
+  1, 2, generation, snapshotNonce16, pageIndex, pageCount, entries
+]
+```
+
+`generation` is positive. `snapshotNonce` is random and shared by every page in
+one snapshot. Page indexes start at zero and are contiguous; `pageCount` is
+`1..1024`. Each page contains 1..512 entries, and the complete manifest
+contains at most 524288 entries. Entries are strictly ordered by proof ID within
+each page; the bounded restore coordinator additionally rejects gaps, overlap,
+duplicate IDs/commitments, noncontiguous page indexes, mixed nonce/generation,
+or a total inconsistent with the authenticated head.
+
+Each entry is the closed 11-item tuple:
+
+```text
+[
+  proofId32,
+  proofCommitment32,
+  chunkObjectId16,
+  chunkDigest32,
+  mint,
+  unit,
+  amount,
+  proofKind,
+  ctfMetadata,
+  createdAtUnixSeconds,
+  updatedAtUnixSeconds
+]
+```
+
+`proofKind` is `0` for ordinary or `1` for active CTF. Its CTF tuple and all
+mint/unit/amount/time bounds are identical to the proof record. Ordinary
+entries require null CTF metadata. These encrypted summaries rebuild ordinary
+mint/unit balances and CTF positions without loading every proof body; they do
+not establish spendability. Each entry binds exactly one proof commitment to
+one immutable chunk. Independently packed chunks may interleave; pages flatten
+all bindings into proof-ID order and may refer to the same chunk from different
+pages.
+
+Manifest pages use the same object-key derivation with kind `2`, a 65536-byte
+zero-padded frame, and AAD:
+
+```text
+[1,2,realm,vaultId32,objectId16,generation,65536]
+```
+
+The digest algorithm is unchanged. A changed page receives a fresh object ID
+and nonce. The service sees only the encrypted object and public reference.
+
+## Public reference set and head
+
+A public object reference is `[objectId16, objectDigest32]`. The reference set
+is:
+
+```text
+[1,"reference-set",manifestPageReferences,proofChunkReferences]
+```
+
+Page references remain in page-index order. Chunk references are sorted by
+object ID. IDs and digests are each independently unique across both arrays.
+The set has at most 1024 objects,
+its canonical encoding is at most 65536 bytes, and contains no proof ID,
+commitment, mint, market, condition, balance, or position.
+
+The canonical head is the closed tuple:
+
+```text
+[
+  1,
+  "manifest-head",
+  realm,
+  vaultId32,
+  backupPublicKey32,
+  generation,
+  null | [parentGeneration,parentManifestDigest32],
+  snapshotNonce16,
+  manifestPageReferences,
+  proofChunkReferences,
+  proofCount,
+  storedBytes,
+  referenceSetDigest32
+]
+```
+
+`manifestDigest = SHA256(canonicalHead)` and
+`referenceSetDigest = SHA256(canonicalReferenceSet)`. `storedBytes` is exactly
+`pageCount*65564 + chunkCount*262172`. Generation one has null parent; every
+later generation is exactly parent generation plus one. The local snapshot ID
+is derived from version, realm, backup public key, generation, and manifest
+digest as specified by the SDK storage contract.
+
+The complete target is rejected when this exact stored-byte total exceeds 64
+MiB. A non-empty target has at least one page and chunk, page/chunk counts obey
+their 512-entry bounds against `proofCount`, and the empty target has no
+references. These relationships are checked independently while preparing a
+head and whenever an attempt, batch, finalized partition, or restored head is
+decoded.
+
+The client also enforces the conservative staged-child lower bound before any
+child upload is sealed:
+
+```text
+parentReachableStoredBytes + nonInheritedTargetDeltaStoredBytes <= 67108864
+```
+
+The delta contains every new child manifest page plus every target proof chunk
+whose exact `(objectId,digest)` is not inherited from the exact parent. Genesis
+uses zero parent bytes; an empty child has a zero delta. No caller-provided peak
+or delta scalar is authoritative. The service's authenticated-account-wide
+quota remains authoritative and may still reject an upload that passes this
+per-vault client lower bound.
+
+Every non-empty child writes new manifest pages at exactly the child generation.
+The parentless manifest builder is a generation-one-only capability. Every
+later generation, including a full one-for-one replacement, must be constructed
+through the authenticated-parent incremental builder, and the resulting head
+accepts only the exact authenticated parent captured by that builder.
+Proof-chunk generation may be less than or equal to the child generation. An
+exact `(objectId,digest)` found in the authenticated exact parent is inherited;
+every other chunk is part of the current attempt's uploaded delta. The child
+reference set is the union of its new pages, newly packed chunks, and the
+selected intersection with the exact parent chunk references. Removed or
+repacked proofs remove their old chunk reference when no retained entry uses it. The final transactional
+snapshot seal authenticates the exact union of new prepared proof bindings and
+selected inherited `(proofId,commitment)` stubs; inherited metadata never creates
+a spendable or selectable proof capability.
+
+An empty wallet is a canonical head with zero proofs, pages, chunks, objects,
+and stored bytes. It is valid both at generation one and as the exact child that
+removes the last proof. The empty child pins nothing, so every object reachable
+only from its parent becomes eligible for bounded garbage collection after the
+head transition and retention rules permit it.
+
+The CAS body is the immutable canonical tuple:
+
+```text
+[
+  1,
+  "head-cas",
+  uploadAttemptId16,
+  expectedManifestDigest32OrNull,
+  canonicalHeadBytes,
+  canonicalReferenceSetBytes
+]
+```
+
+The service recomputes both digests, object count, kinds, generations, ownership,
+and stored bytes from immutable object metadata. In the same atomic transaction
+as the head comparison, it requires `uploadAttemptId16` to identify the exact
+active, non-abandoned remote attempt; validates that its uploaded objects are
+exactly all new pages plus only the chunk-reference delta not inherited from the
+exact current parent; finalizes that attempt; pins the target union; unpins
+removals; and advances the head. There is no separate remote finalize endpoint.
+An abandoned attempt cannot authorize CAS, even when its objects still exist,
+and an unknown attempt normally conflicts. There is one narrow zero-delta
+exception: CAS may atomically create and finalize an absent attempt only when
+the service recomputes an exact zero-object target delta, the target is the
+canonical empty vault, all expected-parent/current-head checks pass, the vault's
+staged-attempt slot is empty, and no conflicting or abandoned tombstone exists.
+Every other unknown attempt conflicts. This exception grants no authority to an
+object-bearing or non-empty target. The service accepts generation one from no
+head, an exact current-plus-one child, or an exact idempotent retry already at the target.
+Same-generation different bytes, a skipped generation, a wrong parent, altered
+references, or an attempt-state mismatch is a conflict/fork.
+
+## Delegated request proof
+
+Subsequent vault operations use BIP340 Schnorr. The signed preimage is:
+
+```text
+[
+  1,
+  "backup-request",
+  realm,
+  vaultId32,
+  requestAuthPublicKey32,
+  enrollmentEpoch,
+  method,
+  exactHttpsUrl,
+  issuedAtUnixSeconds,
+  expiresAtUnixSeconds,
+  replayNonce16,
+  payloadLength,
+  SHA256(exactRequestBody)
+]
+```
+
+The signature is `BIP340_SIGN(SHA256(preimage), requestScalar, auxRand32)`.
+Methods are exactly `GET`, `PUT`, `POST`, or `DELETE`. The signed URL is the
+exact ASCII serialization (absolute HTTPS, no credentials or fragment, at most
+2048 bytes); query ordering is not normalized. Payloads are at most 4 MiB. The
+freshness window is `1..60` seconds; verification accepts issue time at most 30
+seconds in the future and requires current time not after expiry. Replay nonce
+scope is `(realm,vault,key,epoch,nonce)`, retained through expiry plus the
+server clock-skew allowance. Revocation/epoch validation happens before replay
+lookup. Durable object/CAS idempotency is independent of the short-lived nonce.
+Bounded coordinators read their injected clock immediately before each remote
+dispatch; they do not reuse one timestamp across a slow upload or retry loop.
+
+The ordinary proof builder requires `enrollmentEpoch >= 1`. A separate
+seed-derived epoch-discovery GET uses epoch zero only at the discovery endpoint.
+It reveals either the active epoch or one common `not-enrolled` result for
+absent/revoked/foreign bindings; it never lists vaults. This permits a seed to
+recover its active epoch after local-origin loss without account-auth prompts.
+
+An HTTP adapter serializes the proof as deterministic CBOR:
+
+```text
+[
+  1,"backup-request-proof",realm,vaultId32,requestAuthPublicKey32,
+  enrollmentEpoch,method,url,issuedAt,expiresAt,replayNonce16,
+  payloadLength,payloadDigest32,signature64
+]
+```
+
+and sends it as unpadded Base64url after `Authorization: BackupV1 `. Responses
+and request-proof headers use `Cache-Control: no-store`.
+
+## Account-authorized vault lifecycle
+
+The SDK account port is authentication-scheme neutral. Its initial web adapter
+may use NIP-98, but the canonical SDK intent contains no Nostr type or key:
+
+```text
+[
+  1,"backup-account-operation",action,exactHttpMethod,exactHttpsUrl,realm,vaultId32,
+  requestAuthPublicKey32,expectedEnrollmentEpoch,operationId16
+]
+```
+
+`action` is `enroll`, `revoke`, or `delete`; method is `POST`, `POST`, or
+`DELETE` respectively, and the absolute URL is serialized exactly as for a
+delegated request. There is no key/vault replacement
+operation. The port receives the exact intent and its SHA-256 digest and returns
+a lowercase scheme identifier plus at most 16 KiB of opaque authorization. The
+transport body is:
+
+```text
+[
+  1,"backup-account-request",canonicalIntentBytes,intentDigest32,
+  authorizationScheme,opaqueAuthorizationBytes
+]
+```
+
+An enroll at expected epoch zero creates an absent vault at epoch one. An exact
+retry is idempotent. An already-active identical vault is reopened without
+mutation through epoch discovery. Revoke/delete require a positive exact epoch
+and advance the monotonic tombstone epoch; an old delegated key fails
+immediately. The closed authenticated response is either
+`[1,"committed",epoch,lifecycle]`, `[1,"conflict",epoch,lifecycle]`, or the
+common bounded error tuple. The client persists that exact observation before
+returning authority. Because the response is account-authenticated and scoped
+to one seed-derived vault, a conflict may reveal its current tombstone epoch;
+this lets origin-loss recovery explicitly re-enroll a revoked or deleted vault.
+Re-enrollment is an owner-authorized CAS that advances the epoch and starts an
+empty active backup; deleted ciphertext is never restored. It is not an
+implicit key replacement. A different seed produces a different vault
+ID and key and starts an independent empty vault. One account may own multiple
+vaults; quota is aggregated by authenticated account, not preallocated per
+vault.
+
+## Object PUT and bounded client cycles
+
+The exact signed PUT body is:
+
+```text
+[
+  1,"object-put",uploadAttemptId16,kind,realm,vaultId32,objectId16,generation,
+  paddedLength,objectDigest32,aadBytes,encryptedBodyBytes
+]
+```
+
+The exact signed attempt-abort body is:
+
+```text
+[1,"upload-attempt-abort",uploadAttemptId16,targetManifestDigest32]
+```
+
+The service accepts an exact idempotent retry or stores the immutable object;
+the same ID with different bytes fails. It reserves declared bytes before
+reading/buffering the body and recomputes AAD, length, and digest before
+finalizing. The attempt ID groups bounded batches into one per-vault staged
+update. An incomplete target that has not gained CAS authority can be abandoned;
+its objects become bounded garbage rather than a partially acknowledged head.
+
+Before any batch exists, the client durably seals one active-upload-attempt
+aggregate containing the exact realm, vault, attempt ID, target and parent
+digests, canonical target, canonical parent head, and inherited-delta bytes,
+local snapshot identity, bounded insert-only batch IDs, current foreground
+batch ID, and lifecycle. Genesis persists a null canonical parent. For a child,
+`SHA256(canonicalParentHead)` equals the parent digest and decoding that exact
+head must prove the same realm, vault, backup key, target-minus-one generation,
+reference digest, reference counts, and stored-byte formula. The child peak is
+then recomputed from that persisted parent and the exact inherited chunk
+intersection during every restart decode.
+Exactly one nonterminal staged attempt exists for an exact `(realm,vault)`;
+sealing another fails while the prior attempt is active, abort-uncertain, or
+finalized-awaiting-CAS. Abandoned and later complete attempts release that slot.
+Restart uses one scope-bound attempt-or-null claim without a caller-known
+attempt ID; an adapter rejects multiple or foreign records rather than choosing
+one. A mutation requires the SDK-issued owner claim
+`(ownerId,ownerEpoch,leaseExpiresAt)`; the adapter checks the current epoch and
+its own database clock atomically with every batch seal, PUT-state transition,
+finalize, and abort. A different owner may take over only after database-time
+lease expiry. Every explicit claim or renewal grant, including one to the same
+owner, increments the epoch and replaces prior authority. Batch IDs are
+insert-only or exact-idempotent. Object IDs and object digests are each
+independently unique across the complete attempt partition. Every batch carries
+byte-exact copies of the aggregate target and inherited reference sets;
+inherited references contain proof chunks only, never manifest pages.
+
+Every mutation port is a database transaction: it invokes its SDK validation
+callback synchronously exactly once, returns the callback's exact value, and
+rolls back every write if validation rejects. The SDK retains an immutable
+expected record and gives adapters separate byte-array and collection copies,
+so adapter mutation cannot rewrite the authority used for comparison.
+
+At most one payload-bearing foreground batch is active. Batch seal atomically
+sets `activeBatchId`; a different sibling cannot seal until acknowledgement
+atomically clears it. Abort and finalize fence and clear it. Upload execution
+has a separate database-time lease and monotonically increasing execution epoch,
+so two coordinators cannot concurrently resume the same `put-uncertain` batch.
+An unexpired execution lease rejects another runner; after expiry, restart claims
+a new execution epoch and reuses the exact persisted PUT bytes. Recovery claims
+the attempt and active batch consistently. The client validates both the owner
+claim and execution epoch/lease after constructing each request proof and
+immediately before every PUT dispatch. A request already in flight when an epoch
+changes remains harmless because the server accepts it only while the remote
+attempt is active and rejects it after the attempt-wide abort/finalize fence.
+The aggregate lifecycle is `active`, `abort-uncertain`, `finalized`, or
+`abandoned`; fencing and tombstoning apply to every sibling batch.
+
+One SDK foreground upload cycle persists exact PUT bytes before I/O and enforces
+all of these independently:
+
+- at most 16 remote requests;
+- at most 4194304 uploaded bytes, counting canonical PUT payloads;
+- at most four concurrent requests;
+- at most four distinct parent chunks used as repack sources.
+
+Fifteen maximum proof-chunk PUTs fit the byte budget; the request-count limit
+does not weaken the byte limit. These are per-cycle limits, not cumulative
+limits for the target. Planning consumes an SDK-issued prepared-head
+capability, not caller-provided object descriptors, byte counts, target totals,
+or repack flags. The capability contains the real prepared page/chunk objects
+and exact non-inherited delta. For each newly prepared chunk, incremental
+manifest construction records the distinct exact-parent chunk IDs from which
+retained proofs moved; genesis and wholly new proofs have no repack source. A
+cycle's repack count is the union of those source IDs across its selected
+chunks. The stable planner greedily fills every nonfinal cycle until no
+remaining prepared object can fit its request, byte, and source-union
+capacities, and creates at most 64 cycles. The 64-cycle ledger limit is defense
+in depth: 256 maximum proof chunks already exceed the 64 MiB stored-object
+ceiling, while 255 proof chunks plus three manifest pages fit. The planner
+rejects a target whose exact head `storedBytes` (including inherited objects)
+exceeds that ceiling, whose parent-plus-new-delta lower bound exceeds that
+ceiling, or whose capability omits the new-object delta;
+canonical PUT payload bytes are counted
+separately against each cycle's 4 MiB transport limit.
+Finalization separately validates the complete target-wide batch ledger,
+reference delta, independent ID/digest uniqueness, and quota-bound target;
+per-cycle bounds never weaken those whole-target checks. Each post-expiry
+execution claim is a new bounded cycle over the same exact persisted batch, not
+an unbounded continuation counter. A crash in `put-uncertain` retries the exact
+persisted bytes. Acknowledged batches compact away ciphertext while retaining
+their bounded reference/length ledger. Before issuing DELETE, abandonment
+durably and exclusively transitions a batch from `sealed`, `put-uncertain`, or
+`acknowledged` to `abort-uncertain`; restart retries the exact abort and records
+`abandoned` only after remote acknowledgement. Finalization atomically
+transitions the complete acknowledged batch set to terminal `finalized`. These
+transitions are mutually exclusive: a stale abort capability cannot cross a
+completed finalize, and finalization cannot cross an `abort-uncertain` or
+`abandoned` record. The adapter, not the caller, loads the complete
+`(uploadAttemptId,targetManifestDigest)` partition inside that transaction,
+rejects any mixed or duplicate row, and rolls the transition back if the SDK's
+synchronous validation callback rejects. Reads used for restart likewise return
+the complete partition rather than filtering out non-finalized rows.
+
+Persisted execution history is closed: `sealed` is epoch zero with payloads;
+`put-uncertain` is epoch one or later with a live lease and payloads;
+`acknowledged` and `finalized` are epoch one or later with no payloads;
+`abandoned` has no payloads; and `abort-uncertain` has no lease and permits only
+the complete pre-compaction or complete post-acknowledgement payload form.
+Mixed per-item payload presence and impossible state/epoch substitutions fail
+rehydration.
+
+If a crash loses an unprepared remainder, the delegated client tombstones the
+attempt through its idempotent abort endpoint; the service rejects late PUTs and
+queues unpinned objects for bounded garbage collection before the client
+rebuilds from the still-authoritative local snapshot. Only after atomically
+persisted finalized rows cover every non-inherited target reference derived
+from the attempt aggregate (never from a caller-selected or first batch) may the SDK mint CAS
+authority. After process restart, the SDK reconstructs that authority under a
+newly derived key handle from the persisted canonical target head, reference
+set, snapshot identity, and complete finalized rows; it does not depend on an
+in-memory prepared target or a pre-crash capability. Target realm, vault,
+generation, and attempt ID are revalidated against every persisted PUT.
+Snapshot metadata and the CAS target are always derived from this persisted
+prepared target and are never accepted from the caller.
+
+CAS dispatch is durably recorded before I/O. A lost CAS response is resolved by
+authenticated head read: target means acknowledged, parent permits an exact-byte
+retry within the initial-plus-two-retry allowance, and any other head is a fork.
+If the exact parent remains after the final allowance, the attempt records
+`retry-exhausted` with a durable not-before boundary atomically stamped from the
+adapter's database clock plus the fixed five-second delay; client/request clock
+skew cannot shorten it. It is not misclassified as a fork. At or after
+that boundary, the adapter atomically resumes the same exact attempt row,
+upload-attempt ID, target digest, and canonical CAS bytes. It cannot create a
+replacement target or reset the allowance early. Adapters enforce at most one
+active `(uploadAttemptId,targetManifestDigest)` pair across `sealed`,
+`cas-uncertain`, `retry-cas`, and `retry-exhausted` rows.
+An SDK-created current-head capability plus a decrypted current manifest-page
+membership is the only source of a per-proof backup receipt. Arbitrary callbacks,
+cloned evidence, old heads, or merely existing blobs cannot authorize local
+proof eviction.
+
+## HTTP resources and bounded errors
+
+All paths are relative to one configured HTTPS origin. `{realm}`, `{vaultId}`,
+and `{objectId}` use the canonical values above.
+
+```text
+POST   /v1/encrypted-wallet-backup/realms/{realm}/vaults:enroll
+GET    /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/enrollment-epoch
+POST   /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}:revoke
+DELETE /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}
+DELETE /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/upload-attempts/{attemptId}
+PUT    /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/objects/{objectId}
+GET    /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/objects/{objectId}
+GET    /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/head
+POST   /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/head:compare-and-swap
+```
+
+CBOR request/response media type is `application/cbor`. Success bodies are
+closed versioned tuples specific to the operation. Error bodies are always:
+
+```text
+[1,"error",code,retryAfterSecondsOrNull]
+```
+
+The closed v1 code set is `invalid-request`, `unauthorized`, `not-found`,
+`conflict`, `replay-rejected`, `quota-exceeded`, `rate-limited`, `overloaded`,
+and `unavailable`. Authentication errors do not distinguish account, vault,
+key, epoch, revoked, or missing state. Error text, URLs, owner/vault/object IDs,
+ciphertext, proof identifiers, and digests are never returned in diagnostic
+bodies or emitted as log/metric labels.
