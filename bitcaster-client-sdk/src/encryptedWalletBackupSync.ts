@@ -44,6 +44,7 @@ import {
   requireEncryptedWalletBackupCycleSignal,
   throwIfEncryptedWalletBackupCycleAborted,
 } from './encryptedWalletBackupDeadline.ts'
+import { ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX } from './encryptedWalletBackupRetrySchedule.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX = 16 as const
 export const ENCRYPTED_WALLET_BACKUP_CYCLE_UPLOAD_BYTES_MAX = 4 * 1_024 * 1_024
@@ -1068,6 +1069,7 @@ export async function sealOrRehydrateEncryptedWalletBackupCasAttempt(input: {
     canonicalCasPayload: canonicalCasPayload.slice(),
     casPayloadDigest: bytesToHex(sha256(canonicalCasPayload)),
     casAttempts: 0,
+    retryStreak: 0,
     retryNotBeforeUnixMilliseconds: null,
     state: 'sealed',
   })
@@ -1527,6 +1529,7 @@ function decodeCoordinatorCasRecord(value: unknown): EncryptedWalletBackupSyncAt
     'canonicalCasPayload',
     'casPayloadDigest',
     'casAttempts',
+    'retryStreak',
     'retryNotBeforeUnixMilliseconds',
     'state',
   ])
@@ -1653,6 +1656,12 @@ function decodeCoordinatorCasRecord(value: unknown): EncryptedWalletBackupSyncAt
       ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
       'CAS attempts',
     ),
+    retryStreak: requireInteger(
+      raw.retryStreak,
+      0,
+      ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX,
+      'CAS retry streak',
+    ),
     retryNotBeforeUnixMilliseconds:
       raw.retryNotBeforeUnixMilliseconds === null
         ? null
@@ -1728,6 +1737,7 @@ function equalCoordinatorCasRecord(
     equalBytes(left.canonicalCasPayload, right.canonicalCasPayload) &&
     left.casPayloadDigest === right.casPayloadDigest &&
     left.casAttempts === right.casAttempts &&
+    left.retryStreak === right.retryStreak &&
     left.retryNotBeforeUnixMilliseconds === right.retryNotBeforeUnixMilliseconds &&
     left.state === right.state
   )

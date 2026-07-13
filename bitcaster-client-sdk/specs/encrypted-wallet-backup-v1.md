@@ -657,7 +657,8 @@ authenticated head read: target means acknowledged, parent permits an exact-byte
 retry within the initial-plus-two-retry allowance, and any other head is a fork.
 If the exact parent remains after the final allowance, the attempt records
 `retry-exhausted` with a durable not-before boundary atomically stamped from the
-adapter's database clock plus five seconds. An authenticated quota or
+adapter's database clock plus the shared bounded retry schedule. An authenticated
+quota or
 backpressure response may suspend the same attempt earlier, after one through
 three dispatches: quota uses the five-second default, while rate-limit,
 overload, or unavailability may supply a validated 1–3,600 second delay.
@@ -842,11 +843,23 @@ quota-recovery deadline on background or native-client work. Every adopting
 host defines and validates a finite whole-cycle policy and tests that its signal
 fires; an unbounded placeholder signal is not conformant.
 
-The database-time retry boundary is a minimum. Shared SDK scheduling uses a
-persisted per-vault consecutive-failure streak, a five-second exponential base
-capped at one hour, and deterministic vault/attempt jitter of up to 20 percent.
-It never shortens a validated server hint, and only an acknowledged head resets
-the streak. Host adapters wake at or after that computed boundary.
+The database-time retry boundary is a minimum. The one live CAS row for a vault
+persists a consecutive-failure streak. Shared SDK scheduling increments that
+streak, applies a five-second exponential base capped at one hour, and then
+adds deterministic jitter of up to 20 percent without crossing the cap. The
+unjittered delay is the greater of the exponential delay and a validated server
+hint, so scheduling never shortens the hint. Only an acknowledged target head
+resets the streak. Restart reloads the same row and cannot reset it; a terminal
+fork ends the attempt. Host adapters wake at or after the computed boundary.
+
+The cross-client jitter input is UTF-8
+`bitcaster/encrypted-wallet-backup-retry/v1`, NUL, realm, NUL, lowercase
+64-hex vault ID, NUL, lowercase 32-hex attempt ID, NUL, and the decimal
+post-increment streak. Interpret the first four SHA-256 bytes as an unsigned
+big-endian integer. The jitter room is the lesser of floor(unjittered delay / 5)
+and the remaining milliseconds below the one-hour cap; the jitter is that
+integer modulo `(jitter room + 1)`. Implementations reject a persisted streak
+outside `0..32`; increment saturates at 32.
 
 Object DELETE requires the exact delegated owner/vault/key/epoch binding and
 exact object ownership. In one service transaction it rejects a current-head-

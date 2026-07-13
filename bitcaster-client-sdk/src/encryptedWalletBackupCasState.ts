@@ -10,6 +10,7 @@ export type EncryptedWalletBackupCasState =
 /** Dependency-neutral persisted CAS policy shared by every decoder. */
 export const ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX = 3 as const
 export const ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES = 196_608 as const
+export const ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX = 32 as const
 
 export type EncryptedWalletBackupAggregateLifecycle =
   | 'active'
@@ -23,8 +24,16 @@ export type EncryptedWalletBackupAggregateLifecycle =
 export function validateEncryptedWalletBackupCasState(input: {
   state: EncryptedWalletBackupCasState
   casAttempts: number
+  retryStreak: number
   retryNotBeforeUnixMilliseconds: number | null
 }): void {
+  if (
+    !Number.isSafeInteger(input.retryStreak) ||
+    input.retryStreak < 0 ||
+    input.retryStreak > ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX
+  ) {
+    throw new Error('backup CAS retry streak is invalid')
+  }
   const hasRetryBoundary = input.retryNotBeforeUnixMilliseconds !== null
   let valid = false
   switch (input.state) {
@@ -47,15 +56,23 @@ export function validateEncryptedWalletBackupCasState(input: {
       valid =
         input.casAttempts >= 1 &&
         input.casAttempts <= ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX &&
+        input.retryStreak >= 1 &&
         hasRetryBoundary
       break
     case 'reconcile-before-retry':
       valid =
         input.casAttempts >= 1 &&
         input.casAttempts <= ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX &&
+        input.retryStreak >= 1 &&
         !hasRetryBoundary
       break
     case 'acknowledged':
+      valid =
+        input.casAttempts >= 1 &&
+        input.casAttempts <= ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX &&
+        input.retryStreak === 0 &&
+        !hasRetryBoundary
+      break
     case 'fork-rejected':
       valid =
         input.casAttempts >= 1 &&

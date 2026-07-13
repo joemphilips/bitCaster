@@ -48,6 +48,7 @@ import {
   validateEncryptedWalletBackupCasState,
 } from '../src/encryptedWalletBackupCasState.ts'
 import { prepareDurableWalletAcknowledgedBackupSnapshot } from '../src/recoverableWalletStorage.ts'
+import { planEncryptedWalletBackupRetry } from '../src/encryptedWalletBackupRetrySchedule.ts'
 import {
   executeEncryptedWalletBackupAccountOperation,
   prepareEncryptedWalletBackupAccountOperation as sdkPrepareEncryptedWalletBackupAccountOperation,
@@ -3470,16 +3471,71 @@ test('linked CAS retry, crash rehydration, and DB-time exhaustion remain exact',
     }
   }
   assert.equal(value.record.state, 'retry-exhausted')
+  assert.equal(value.record.retryStreak, 1)
+  const firstBoundary = value.record.retryNotBeforeUnixMilliseconds!
   const notReady = await resumeEncryptedWalletBackupSyncAttempt({
     attempt: value,
   })
   assert.equal(notReady.record.state, 'retry-exhausted')
-  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_005_000)
-  const resumed = await resumeEncryptedWalletBackupSyncAttempt({
+  finalizedBundle.store.setNowUnixMilliseconds(firstBoundary)
+  let resumed = await resumeEncryptedWalletBackupSyncAttempt({
     attempt: value,
   })
   assert.equal(resumed.record.state, 'reconcile-before-retry')
   assert.equal(resumed.record.casAttempts, 3)
+  resumed = await advanceEncryptedWalletBackupSyncAttempt({
+    attempt: resumed,
+    event: { type: 'head-observed', observation: authenticated },
+  })
+  assert.equal(resumed.record.state, 'sealed')
+  assert.equal(resumed.record.retryStreak, 1)
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    resumed = await advanceEncryptedWalletBackupSyncAttempt({
+      attempt: resumed,
+      event: { type: 'cas-dispatched' },
+    })
+    resumed = await advanceEncryptedWalletBackupSyncAttempt({
+      attempt: resumed,
+      event: { type: 'head-observed', observation: authenticated },
+    })
+  }
+  assert.equal(resumed.record.state, 'retry-exhausted')
+  assert.equal(resumed.record.retryStreak, 2)
+  const secondBoundary = resumed.record.retryNotBeforeUnixMilliseconds!
+  assert.equal(
+    secondBoundary,
+    firstBoundary +
+      planEncryptedWalletBackupRetry({
+        realm: resumed.record.realm,
+        vaultId: resumed.record.vaultId,
+        attemptId: resumed.record.attemptId,
+        currentStreak: 1,
+        minimumDelayMilliseconds: 5_000,
+      }).delayMilliseconds,
+  )
+  assert.ok(secondBoundary > firstBoundary + 5_000)
+
+  const secondRestartClaim = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: 'test-owner',
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    store: finalizedBundle.store,
+  })
+  assert.notEqual(secondRestartClaim, null)
+  const secondRestart = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: secondRestartClaim!,
+    keyHandle,
+    store: finalizedBundle.store,
+  })
+  assert.equal(secondRestart.record.retryStreak, 2)
+  assert.equal(secondRestart.record.retryNotBeforeUnixMilliseconds, secondBoundary)
+  finalizedBundle.store.setNowUnixMilliseconds(secondBoundary)
+  const secondResumed = await resumeEncryptedWalletBackupSyncAttempt({
+    attempt: secondRestart,
+  })
+  assert.equal(secondResumed.record.state, 'reconcile-before-retry')
+  assert.equal(secondResumed.record.retryStreak, 2)
 })
 
 test('head-CAS quota rejection persists backoff before observing the head', async () => {
@@ -3513,7 +3569,19 @@ test('head-CAS quota rejection persists backoff before observing the head', asyn
   assert.equal(headCalls, 1)
   assert.equal(value.record.state, 'retry-exhausted')
   assert.equal(value.record.casAttempts, 1)
-  assert.equal(value.record.retryNotBeforeUnixMilliseconds, 1_700_000_005_000)
+  const boundary = value.record.retryNotBeforeUnixMilliseconds!
+  assert.equal(value.record.retryStreak, 1)
+  assert.equal(
+    boundary,
+    1_700_000_000_000 +
+      planEncryptedWalletBackupRetry({
+        realm: value.record.realm,
+        vaultId: value.record.vaultId,
+        attemptId: value.record.attemptId,
+        currentStreak: 0,
+        minimumDelayMilliseconds: 5_000,
+      }).delayMilliseconds,
+  )
   const notReady = await resumeEncryptedWalletBackupSyncAttempt({
     attempt: value,
   })
@@ -3533,8 +3601,9 @@ test('head-CAS quota rejection persists backoff before observing the head', asyn
   })
   assert.equal(restarted.record.state, 'retry-exhausted')
   assert.equal(restarted.record.casAttempts, 1)
-  assert.equal(restarted.record.retryNotBeforeUnixMilliseconds, 1_700_000_005_000)
-  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_005_000)
+  assert.equal(restarted.record.retryNotBeforeUnixMilliseconds, boundary)
+  assert.equal(restarted.record.retryStreak, 1)
+  finalizedBundle.store.setNowUnixMilliseconds(boundary)
   const ready = await resumeEncryptedWalletBackupSyncAttempt({
     attempt: restarted,
   })
@@ -3570,13 +3639,16 @@ test('head-CAS rate limit persists the validated server hint using DB time', asy
   })
   assert.equal(value.record.state, 'retry-exhausted')
   assert.equal(value.record.casAttempts, 1)
-  assert.equal(value.record.retryNotBeforeUnixMilliseconds, 1_700_000_017_000)
-  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_016_999)
+  const boundary = value.record.retryNotBeforeUnixMilliseconds!
+  assert.equal(value.record.retryStreak, 1)
+  assert.ok(boundary >= 1_700_000_017_000)
+  assert.ok(boundary <= 1_700_000_020_400)
+  finalizedBundle.store.setNowUnixMilliseconds(boundary - 1)
   assert.equal(
     (await resumeEncryptedWalletBackupSyncAttempt({ attempt: value })).record.state,
     'retry-exhausted',
   )
-  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_017_000)
+  finalizedBundle.store.setNowUnixMilliseconds(boundary)
   const ready = await resumeEncryptedWalletBackupSyncAttempt({
     attempt: value,
   })
@@ -3604,7 +3676,10 @@ test('CAS backoff survives a failed head read and restart reconciles before redi
     },
   })
   assert.equal(deferred.record.state, 'retry-exhausted')
-  assert.equal(deferred.record.retryNotBeforeUnixMilliseconds, 1_700_000_017_000)
+  const boundary = deferred.record.retryNotBeforeUnixMilliseconds!
+  assert.equal(deferred.record.retryStreak, 1)
+  assert.ok(boundary >= 1_700_000_017_000)
+  assert.ok(boundary <= 1_700_000_020_400)
 
   const restartClaim = await claimEncryptedWalletBackupUploadAttempt({
     ownerId: 'test-owner',
@@ -3618,7 +3693,7 @@ test('CAS backoff survives a failed head read and restart reconciles before redi
     keyHandle,
     store: finalizedBundle.store,
   })
-  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_016_999)
+  finalizedBundle.store.setNowUnixMilliseconds(boundary - 1)
   let earlyCalls = 0
   const notReady = await synchronizeEncryptedWalletBackupManifestHead({
     attempt: restarted,
@@ -3641,7 +3716,7 @@ test('CAS backoff survives a failed head read and restart reconciles before redi
   assert.equal(notReady.record.state, 'retry-exhausted')
   assert.equal(earlyCalls, 0)
 
-  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_017_000)
+  finalizedBundle.store.setNowUnixMilliseconds(boundary)
   const order: string[] = []
   let headCalls = 0
   const acknowledged = await synchronizeEncryptedWalletBackupManifestHead({
@@ -3669,6 +3744,7 @@ test('CAS backoff survives a failed head read and restart reconciles before redi
   })
   assert.deepEqual(order, ['head', 'cas', 'head'])
   assert.equal(acknowledged.record.state, 'acknowledged')
+  assert.equal(acknowledged.record.retryStreak, 0)
 })
 
 test('delayed CAS reconciliation accepts target and foreign heads', async (t) => {
@@ -3683,7 +3759,9 @@ test('delayed CAS reconciliation accepts target and foreign heads', async (t) =>
         attempt: uncertain,
         event: { type: 'retry-deferred', delayMilliseconds: 5_000 },
       })
-      fixture.finalizedBundle.store.setNowUnixMilliseconds(1_700_000_005_000)
+      fixture.finalizedBundle.store.setNowUnixMilliseconds(
+        deferred.record.retryNotBeforeUnixMilliseconds!,
+      )
       const resumed = await resumeEncryptedWalletBackupSyncAttempt({
         attempt: deferred,
       })
@@ -3793,40 +3871,49 @@ test('persisted CAS state/count and aggregate lifecycle combinations are exhaust
     for (const state of states) {
       for (let count = 0; count <= 3; count += 1) {
         for (const retryBoundary of [null, 1_700_000_005_000] as const) {
-          const validState =
-            retryBoundary === null &&
-            ((state === 'sealed' && count === 0) ||
-              (state === 'cas-uncertain' && count >= 1) ||
-              (state === 'retry-cas' && count >= 1 && count < 3) ||
-              (state === 'reconcile-before-retry' && count >= 1) ||
-              ((state === 'acknowledged' || state === 'fork-rejected') && count >= 1))
-              ? true
-              : state === 'retry-exhausted' && count >= 1 && count <= 3 && retryBoundary !== null
-          const validLifecycle =
-            (lifecycle === 'cas-journaled' &&
-              [
-                'sealed',
-                'cas-uncertain',
-                'retry-cas',
-                'retry-exhausted',
-                'reconcile-before-retry',
-              ].includes(state)) ||
-            ((lifecycle === 'fork-cleanup-uncertain' || lifecycle === 'abandoned') &&
-              state === 'fork-rejected') ||
-            (lifecycle === 'complete' && (state === 'acknowledged' || state === 'fork-rejected'))
-          const validate = () => {
-            validateEncryptedWalletBackupCasState({
-              state,
-              casAttempts: count,
-              retryNotBeforeUnixMilliseconds: retryBoundary,
-            })
-            validateEncryptedWalletBackupAggregateCasLifecycle({
-              lifecycle,
-              state,
-            })
+          for (const retryStreak of [0, 1] as const) {
+            const validShape =
+              retryBoundary === null &&
+              ((state === 'sealed' && count === 0) ||
+                (state === 'cas-uncertain' && count >= 1) ||
+                (state === 'retry-cas' && count >= 1 && count < 3) ||
+                (state === 'reconcile-before-retry' && count >= 1) ||
+                ((state === 'acknowledged' || state === 'fork-rejected') && count >= 1))
+                ? true
+                : state === 'retry-exhausted' && count >= 1 && count <= 3 && retryBoundary !== null
+            const validStreak =
+              state === 'acknowledged'
+                ? retryStreak === 0
+                : state === 'retry-exhausted' || state === 'reconcile-before-retry'
+                  ? retryStreak >= 1
+                  : true
+            const validLifecycle =
+              (lifecycle === 'cas-journaled' &&
+                [
+                  'sealed',
+                  'cas-uncertain',
+                  'retry-cas',
+                  'retry-exhausted',
+                  'reconcile-before-retry',
+                ].includes(state)) ||
+              ((lifecycle === 'fork-cleanup-uncertain' || lifecycle === 'abandoned') &&
+                state === 'fork-rejected') ||
+              (lifecycle === 'complete' && (state === 'acknowledged' || state === 'fork-rejected'))
+            const validate = () => {
+              validateEncryptedWalletBackupCasState({
+                state,
+                casAttempts: count,
+                retryStreak,
+                retryNotBeforeUnixMilliseconds: retryBoundary,
+              })
+              validateEncryptedWalletBackupAggregateCasLifecycle({
+                lifecycle,
+                state,
+              })
+            }
+            if (validShape && validStreak && validLifecycle) assert.doesNotThrow(validate)
+            else assert.throws(validate)
           }
-          if (validState && validLifecycle) assert.doesNotThrow(validate)
-          else assert.throws(validate)
         }
       }
     }
@@ -3837,6 +3924,7 @@ test('persisted CAS state/count and aggregate lifecycle combinations are exhaust
       ...baseline,
       state,
       casAttempts: state === 'sealed' ? 0 : 1,
+      retryStreak: state === 'reconcile-before-retry' ? 1 : 0,
       retryNotBeforeUnixMilliseconds: null,
     })
     const operation = sealOrRehydrateEncryptedWalletBackupCasAttempt({
@@ -3854,6 +3942,38 @@ test('persisted CAS state/count and aggregate lifecycle combinations are exhaust
     } else {
       await assert.rejects(() => operation, /state and attempt count|lifecycles are inconsistent/)
     }
+  }
+  fixture.store.replaceCasAttempt(cas.record.attemptId, baseline)
+
+  const invalidRetryRecords: Record<string, unknown>[] = []
+  const missingRetryStreak = structuredClone(baseline)
+  delete missingRetryStreak.retryStreak
+  invalidRetryRecords.push(missingRetryStreak)
+  invalidRetryRecords.push({ ...baseline, retryStreak: 33 })
+  invalidRetryRecords.push({
+    ...baseline,
+    state: 'retry-exhausted',
+    casAttempts: 1,
+    retryStreak: 0,
+    retryNotBeforeUnixMilliseconds: 1_700_000_005_000,
+  })
+  invalidRetryRecords.push({
+    ...baseline,
+    state: 'acknowledged',
+    casAttempts: 1,
+    retryStreak: 1,
+  })
+  for (const invalid of invalidRetryRecords) {
+    fixture.store.replaceCasAttempt(cas.record.attemptId, invalid)
+    await assert.rejects(
+      () =>
+        sealOrRehydrateEncryptedWalletBackupCasAttempt({
+          claim: fixture.claim,
+          keyHandle,
+          store: fixture.store,
+        }),
+      /retry streak|state and attempt count/,
+    )
   }
   fixture.store.replaceCasAttempt(cas.record.attemptId, baseline)
 })
@@ -4940,7 +5060,7 @@ test('every linked CAS callback port rejects wrong, multiple, and late callbacks
         },
       })
       const store = fixture.finalizedBundle.store
-      store.setNowUnixMilliseconds(1_700_000_005_000)
+      store.setNowUnixMilliseconds(exhausted.record.retryNotBeforeUnixMilliseconds!)
       const original = store.resumeLinkedCasAttempt.bind(store)
       let lateCallback: ((value: never) => unknown) | undefined
       let lateRaw: never | undefined
@@ -7183,6 +7303,7 @@ function inMemoryUploadBatchStore() {
         const immutableExisting = {
           ...structuredClone(existing),
           casAttempts: 0,
+          retryStreak: 0,
           retryNotBeforeUnixMilliseconds: null,
           state: 'sealed',
         }
