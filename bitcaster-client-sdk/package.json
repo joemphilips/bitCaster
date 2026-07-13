@@ -35,6 +35,10 @@
       "types": "./dist/encryptedWalletBackupEnrollment.d.ts",
       "import": "./dist/encryptedWalletBackupEnrollment.js"
     },
+    "./encryptedWalletBackupHttpCodec": {
+      "types": "./dist/encryptedWalletBackupHttpCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupHttpCodec.js"
+    },
     "./encryptedWalletBackupSync": {
       "types": "./dist/encryptedWalletBackupSync.d.ts",
       "import": "./dist/encryptedWalletBackupSync.js"

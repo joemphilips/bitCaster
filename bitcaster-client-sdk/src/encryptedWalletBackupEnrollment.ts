@@ -2,7 +2,10 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import type { EncryptedWalletBackupKeyHandle } from './encryptedWalletBackup.ts'
 import { requireIssuedEncryptedWalletBackupKeyHandle } from './encryptedWalletBackupKeyAuthority.ts'
-import { encodeCanonicalBackupCbor as encodeCanonical } from './encryptedWalletBackupCbor.ts'
+import {
+  encodeCanonicalBackupCbor as encodeCanonical,
+  structurallyPreflightEncryptedBackupAccountRequestCbor,
+} from './encryptedWalletBackupCbor.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_ACCOUNT_AUTHORIZATION_MAX_BYTES = 16 * 1_024
 
@@ -43,6 +46,7 @@ interface AccountOperationAuthority {
   readonly canonicalRequest: Uint8Array
   readonly action: EncryptedWalletBackupAccountOperationAction
   readonly operationId: string
+  readonly intentDigest: string
   readonly expectedEnrollmentEpoch: number
   readonly realm: string
   readonly vaultId: string
@@ -122,6 +126,7 @@ export async function prepareEncryptedWalletBackupAccountOperation(input: {
     authorizationScheme,
     authorization,
   ])
+  structurallyPreflightEncryptedBackupAccountRequestCbor(canonicalRequest)
   const prepared = Object.freeze({
     formatVersion: 1 as const,
     action,
@@ -140,6 +145,7 @@ export async function prepareEncryptedWalletBackupAccountOperation(input: {
     canonicalRequest,
     action,
     operationId,
+    intentDigest,
     expectedEnrollmentEpoch,
     realm: keyHandle.realm,
     vaultId: keyHandle.vaultId,
@@ -164,6 +170,7 @@ export type EncryptedWalletBackupEnrollmentLifecycle = 'active' | 'revoked' | 'd
 export interface EncryptedWalletBackupAccountOperationResultRecord {
   readonly schemaVersion: 1
   readonly operationId: string
+  readonly intentDigest: string
   readonly action: EncryptedWalletBackupAccountOperationAction
   readonly realm: string
   readonly vaultId: string
@@ -188,6 +195,8 @@ export interface EncryptedWalletBackupAccountOperationRemotePort {
   }): Promise<
     | Readonly<{
         status: 'committed' | 'conflict'
+        operationId: string
+        intentDigest: string
         enrollmentEpoch: number
         lifecycle: EncryptedWalletBackupEnrollmentLifecycle
       }>
@@ -248,6 +257,22 @@ export async function executeEncryptedWalletBackupAccountOperation(input: {
   if (response.status !== 'committed' && response.status !== 'conflict') {
     throw new Error('backup account operation response is invalid')
   }
+  const responseOperationId = requireLowerHex(
+    response.operationId,
+    16,
+    'backup account response operation id',
+  )
+  if (responseOperationId !== authority.operationId) {
+    throw new Error('backup account response operation id is invalid')
+  }
+  const responseIntentDigest = requireLowerHex(
+    response.intentDigest,
+    32,
+    'backup account response intent digest',
+  )
+  if (responseIntentDigest !== authority.intentDigest) {
+    throw new Error('backup account response intent digest is invalid')
+  }
   const observedEnrollmentEpoch = requireInteger(
     response.enrollmentEpoch,
     1,
@@ -272,6 +297,7 @@ export async function executeEncryptedWalletBackupAccountOperation(input: {
   const record = Object.freeze({
     schemaVersion: 1 as const,
     operationId: authority.operationId,
+    intentDigest: responseIntentDigest,
     action: authority.action,
     realm: authority.realm,
     vaultId: authority.vaultId,
@@ -317,6 +343,7 @@ function decodeAccountOperationResult(
   const fields = [
     'schemaVersion',
     'operationId',
+    'intentDigest',
     'action',
     'realm',
     'vaultId',
@@ -332,6 +359,7 @@ function decodeAccountOperationResult(
   return Object.freeze({
     schemaVersion: 1,
     operationId: requireLowerHex(raw.operationId, 16, 'backup account operation id'),
+    intentDigest: requireLowerHex(raw.intentDigest, 32, 'backup account intent digest'),
     action: requireAction(raw.action),
     realm: requireRealm(raw.realm),
     vaultId: requireLowerHex(raw.vaultId, 32, 'backup vault id'),

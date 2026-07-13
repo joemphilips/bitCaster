@@ -1,4 +1,4 @@
-import { encode, rfc8949EncodeOptions } from 'cborg'
+import { decode, encode, rfc8949EncodeOptions } from 'cborg'
 import { ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES } from './encryptedWalletBackupCasState.ts'
 
 const PROOF_CBOR_MAX_BYTES = 245_760
@@ -9,6 +9,8 @@ const MANIFEST_CBOR_MAX_BYTES = 65_532
 const PUBLIC_METADATA_MAX_BYTES = 65_536
 const REQUEST_PROOF_MAX_BYTES = 4_096
 const PUT_PAYLOAD_MAX_BYTES = 4 * 1_024 * 1_024
+const ACCOUNT_REQUEST_MAX_BYTES = 20 * 1_024
+const ATTEMPT_ABORT_MAX_BYTES = 128
 
 export function encodeCanonicalBackupCbor(value: unknown): Uint8Array {
   return encode(value, rfc8949EncodeOptions)
@@ -294,6 +296,86 @@ export function preflightEncryptedBackupPutCbor(bytes: Uint8Array): void {
   requireBytes(root.children[9], 32, 32, 'PUT digest')
   requireBytes(root.children[10], 1, 4_096, 'PUT AAD')
   requireBytes(root.children[11], 65_564, 262_172, 'PUT body')
+}
+
+/** Allocation-bounded structural scan; the account builder owns semantic validation. */
+export function structurallyPreflightEncryptedBackupAccountRequestCbor(bytes: Uint8Array): void {
+  const root = scanBoundedEnvelope(bytes, ACCOUNT_REQUEST_MAX_BYTES, 2, 16, 6)
+  if (
+    root.major !== 4 ||
+    root.value !== 6 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1
+  ) {
+    throw new Error('account request shape')
+  }
+  requireText(root.children[1], 22, 22, 'account request discriminator')
+  requireBytes(root.children[2], 1, 4_096, 'account canonical intent')
+  requireBytes(root.children[3], 32, 32, 'account intent digest')
+  requireText(root.children[4], 1, 64, 'account authorization scheme')
+  requireBytes(root.children[5], 1, 16 * 1_024, 'account authorization')
+  const tuple = decode(bytes)
+  if (!Array.isArray(tuple) || tuple[1] !== 'backup-account-request') {
+    throw new Error('account request discriminator')
+  }
+}
+
+/** Allocation-bounded structural scan; the abort builder owns semantic validation. */
+export function structurallyPreflightEncryptedBackupAttemptAbortCbor(bytes: Uint8Array): void {
+  const root = scanBoundedEnvelope(bytes, ATTEMPT_ABORT_MAX_BYTES, 1, 8, 4)
+  if (
+    root.major !== 4 ||
+    root.value !== 4 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1
+  ) {
+    throw new Error('attempt abort shape')
+  }
+  requireText(root.children[1], 20, 20, 'attempt abort discriminator')
+  requireBytes(root.children[2], 16, 16, 'attempt abort id')
+  requireBytes(root.children[3], 32, 32, 'attempt abort target digest')
+  const tuple = decode(bytes)
+  if (!Array.isArray(tuple) || tuple[1] !== 'upload-attempt-abort') {
+    throw new Error('attempt abort discriminator')
+  }
+}
+
+export function preflightEncryptedBackupObjectAadCbor(bytes: Uint8Array): void {
+  const root = scanBoundedEnvelope(bytes, 256, 1, 12, 7)
+  if (
+    root.major !== 4 ||
+    root.value !== 7 ||
+    root.children[0]?.major !== 0 ||
+    root.children[0]?.value !== 1
+  ) {
+    throw new Error('object AAD shape')
+  }
+  requireUnsigned(root.children[1], 'object AAD kind')
+  requireText(root.children[2], 1, 64, 'object AAD realm')
+  requireBytes(root.children[3], 32, 32, 'object AAD vault id')
+  requireBytes(root.children[4], 16, 16, 'object AAD object id')
+  requireUnsigned(root.children[5], 'object AAD generation')
+  requireUnsigned(root.children[6], 'object AAD padded length')
+}
+
+/**
+ * Performs allocation-bounded structural scanning before a response is
+ * materialized. All v1 response tuples are flat definite arrays.
+ */
+export function preflightEncryptedBackupHttpResponseCbor(
+  bytes: Uint8Array,
+  maximumBytes: number,
+): void {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+    throw new Error('response CBOR limit')
+  }
+  const root = scanBoundedEnvelope(bytes, maximumBytes, 1, 16, 13)
+  if (root.major !== 4 || root.value === null || root.value < 4 || root.value > 13) {
+    throw new Error('response tuple shape')
+  }
+  if (root.children.some((child) => child.major === 4)) {
+    throw new Error('response tuple must be flat')
+  }
 }
 
 function scanBoundedEnvelope(
