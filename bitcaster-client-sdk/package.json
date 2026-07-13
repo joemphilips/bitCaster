@@ -108,6 +108,14 @@
       "types": "./dist/encryptedWalletBackup.d.ts",
       "import": "./dist/encryptedWalletBackup.js"
     },
+    "./encryptedWalletBackupEnrollment": {
+      "types": "./dist/encryptedWalletBackupEnrollment.d.ts",
+      "import": "./dist/encryptedWalletBackupEnrollment.js"
+    },
+    "./encryptedWalletBackupSync": {
+      "types": "./dist/encryptedWalletBackupSync.d.ts",
+      "import": "./dist/encryptedWalletBackupSync.js"
+    },
     "./tradeSession": {
       "types": "./dist/tradeSession.d.ts",
       "import": "./dist/tradeSession.js"
@@ -126,7 +134,7 @@
     "build": "tsc -p tsconfig.build.json",
     "postbuild": "node ../scripts/rewrite-dts-imports.mjs dist",
     "prepack": "npm run build",
-    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test": "node --experimental-strip-types --test --test-concurrency=1 test/*.test.ts",
     "test:backup-browsers": "node scripts/test-encrypted-wallet-backup-browsers.mjs",
     "typecheck": "tsc --noEmit"
   },

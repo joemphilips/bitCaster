@@ -3,10 +3,15 @@ import * as Cashu from '@cashu/cashu-ts'
 import {
   createEncryptedWalletBackupKeyHandle,
   decryptEncryptedWalletBackupProofChunk,
+  encodeEncryptedWalletBackupRequestProof,
   packEncryptedWalletBackupProofChunk,
+  prepareEncryptedWalletBackupManifest,
+  prepareEncryptedWalletBackupManifestHead,
   prepareEncryptedWalletBackupObject,
   prepareEncryptedWalletBackupProof,
+  prepareEncryptedWalletBackupRequestProof,
   verifyEncryptedWalletBackupConditionalKeyset,
+  readPreparedEncryptedWalletBackupManifestHead,
   readPreparedEncryptedWalletBackupObject,
   type EncryptedWalletBackupProofInput,
   type EncryptedWalletBackupRuntime,
@@ -61,6 +66,25 @@ async function run(): Promise<{ legacyRestoreMs: number; modeledChunks: number; 
   })
   equal(keyHandle.vaultId, expected.vaultIdHex, 'vaultIdHex')
   equal(keyHandle.requestAuthPublicKey, expected.requestAuthPublicKeyHex, 'requestAuthPublicKeyHex')
+  const requestProof = await prepareEncryptedWalletBackupRequestProof({
+    keyHandle,
+    enrollmentEpoch: input.request.enrollmentEpoch,
+    method: input.request.method as 'POST',
+    url: input.request.url,
+    issuedAtUnixSeconds: input.request.issuedAtUnixSeconds,
+    expiresAtUnixSeconds: input.request.expiresAtUnixSeconds,
+    payload: fromHex(input.request.payloadHex),
+    runtime: deterministicRuntime([
+      fromHex(input.request.replayNonceHex), fromHex(input.request.auxiliaryRandomnessHex),
+    ]),
+  })
+  equal(requestProof.payloadDigest, expected.requestPayloadDigestHex, 'request payload digest')
+  equal(requestProof.signature, expected.requestSignatureHex, 'request signature')
+  equal(
+    toHex(encodeEncryptedWalletBackupRequestProof(requestProof)),
+    expected.requestProofCborHex,
+    'request proof CBOR',
+  )
   const proofHandle = await prepareEncryptedWalletBackupProof(
     await bindProofStore(baseProofInput(seed, keyHandle)),
   )
@@ -85,9 +109,76 @@ async function run(): Promise<{ legacyRestoreMs: number; modeledChunks: number; 
   equal(restored.recordCount, 1, 'decoded record count')
   equal(JSON.stringify(restored).includes(expected.derivedSecretHex), false, 'decoded opacity')
 
+  await exerciseManifestVector(seed, keyHandle)
   await exerciseBlsAndCtf(seed, keyHandle)
   await exerciseFailureCases(seed, keyHandle, prepared, wire)
   return exerciseMaxLegacyRestoreScheduling(seed, keyHandle)
+}
+
+async function exerciseManifestVector(
+  seed: Uint8Array,
+  keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupKeyHandle>>,
+): Promise<void> {
+  const input = vector.inputs
+  const derive = (Cashu as unknown as {
+    createSecretAndBlindingFactorDeriver(seed: Uint8Array, keyset: string):
+      (counter: number) => { secret: Uint8Array }
+  }).createSecretAndBlindingFactorDeriver(seed, input.proof.keysetId)
+  const proofs = []
+  for (let counter = 0; counter < 4; counter += 1) {
+    const base = baseProofInput(seed, keyHandle)
+    proofs.push(await prepareEncryptedWalletBackupProof(await bindProofStore({
+      ...base,
+      counter,
+      proof: { ...base.proof, secret: toHex(derive(counter).secret) },
+    })))
+  }
+  proofs.sort((left, right) => left.proofId.localeCompare(right.proofId))
+  const chunks = [
+    packEncryptedWalletBackupProofChunk([proofs[0]!, proofs[2]!]),
+    packEncryptedWalletBackupProofChunk([proofs[1]!, proofs[3]!]),
+  ]
+  const chunkObjects = await Promise.all(chunks.map((chunk, index) =>
+    prepareEncryptedWalletBackupObject({
+      keyHandle,
+      chunk,
+      generation: 1,
+      runtime: deterministicRuntime([
+        new Uint8Array(16).fill(index + 1),
+        new Uint8Array(12).fill(index + 11),
+      ]),
+    })))
+  const manifest = await prepareEncryptedWalletBackupManifest({
+    keyHandle,
+    generation: 1,
+    snapshotNonce: new Uint8Array(16).fill(33),
+    chunks: chunks.map((chunk, index) => ({ chunk, object: chunkObjects[index]! })),
+    snapshotStore: {
+      async sealCommittedBackupSnapshot<T>(expected: unknown, seal: (value: never) => T): Promise<T> {
+        return seal(expected as never)
+      },
+    },
+    runtime: deterministicRuntime([
+      new Uint8Array(16).fill(21), new Uint8Array(12).fill(31),
+    ]),
+  })
+  const head = prepareEncryptedWalletBackupManifestHead({ keyHandle, manifest, parent: null })
+  const headWire = readPreparedEncryptedWalletBackupManifestHead(head)
+  const pageWire = readPreparedEncryptedWalletBackupObject(manifest.pages[0]!)
+  equal(toHex(headWire.canonicalHead), vector.expected.manifestCanonicalHeadHex, 'manifest head')
+  equal(
+    toHex(headWire.canonicalReferenceSet),
+    vector.expected.manifestCanonicalReferenceSetHex,
+    'manifest reference set',
+  )
+  equal(pageWire.objectId, vector.expected.manifestPageObjectIdHex, 'manifest page object id')
+  equal(pageWire.digest, vector.expected.manifestPageDigestHex, 'manifest page digest')
+  equal(toHex(pageWire.aad), vector.expected.manifestPageAadHex, 'manifest page AAD')
+  equal(
+    toHex(await digest(pageWire.body)),
+    vector.expected.manifestPageBodySha256Hex,
+    'manifest page body digest',
+  )
 }
 
 async function exerciseBlsAndCtf(
