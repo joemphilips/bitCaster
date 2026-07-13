@@ -9,7 +9,10 @@ sidebar:
 
 bitCaster is a prediction market platform built on [Bitcoin](https://bitcoin.org/) and [Cashu](https://cashu.space/). You buy and sell tokens that represent outcomes of real-world events — elections, sports, weather, anything. If your prediction is correct, the price of your tokens rises; if not, it falls.
 
-At its core, it is fully open-spec and open-source. No user information is stored on the server side. Your tokens are yours — stored locally in your browser, settled instantly over Lightning or Cashu.
+At its core, it is fully open-spec and open-source. Your live wallet and tokens
+stay local to your browser. The web app can store an encrypted recovery copy
+that the server cannot decrypt; see [Encrypted wallet backup](./wallet-backup/)
+for its privacy boundary.
 
 For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https://bitcoin.design/guide/how-it-works/ecash/introduction/).
 
@@ -52,13 +55,16 @@ When the event resolves, winning tokens are redeemable for their full share valu
 
 ## Your assets, your responsibility[^1]
 
-Your tokens are just signed data. They live in your browser's local storage, not on a server.
+Your tokens are just signed data. The live wallet database is in your browser's
+local storage. The default web app also keeps an encrypted recovery copy whose
+contents the server cannot read.
 
-This means the server holds as little user information as possible. There is no account to create, no password to remember, and no personal information to hand over.
+This minimizes the wallet information held by the server. The encrypted-backup
+service can still observe limited account, size, and activity metadata. It
+cannot decrypt or spend your funds.
 
-**This completely eliminates risks such as personal information leaks or having only specific individuals' assets frozen.**
-
-In return, like any other cryptocurrency wallet, you are responsible for managing your own keys. Back up your 12-word mnemonic and keep it safe.
+Like any other cryptocurrency wallet, you are responsible for managing your own
+keys. Back up your 12-word mnemonic and keep it safe.
 
 When you first open the portfolio page or try to trade, bitCaster asks you to set up a wallet. You can create a new wallet (auto-generated locally in your browser) or import an existing wallet using your 12-word recovery phrase. A Nostr signing key is also created or connected at this point. These are separate secrets. Back up both the wallet recovery phrase and the Nostr secret key shown in the app. If you already use a Nostr account, connect it instead of generating a new one.
 
