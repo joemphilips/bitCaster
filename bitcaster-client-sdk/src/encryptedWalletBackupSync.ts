@@ -31,6 +31,7 @@ import { deriveDurableWalletBackupSnapshotId } from "./recoverableWalletStorage.
 import { readPreparedEncryptedWalletBackupUploadAuthority } from "./encryptedWalletBackupPlanningAuthority.ts";
 import {
   encodeCanonicalBackupCbor as encodeCanonical,
+  structurallyPreflightEncryptedBackupAttemptAbortCbor,
   preflightEncryptedBackupCasCbor,
   preflightEncryptedBackupHeadCbor,
   preflightEncryptedBackupPutCbor,
@@ -1292,6 +1293,7 @@ export async function abandonEncryptedWalletBackupUploadAttempt(input: {
     hexToBytes(currentAttempt.attemptId),
     hexToBytes(currentAttempt.targetManifestDigest),
   ]);
+  structurallyPreflightEncryptedBackupAttemptAbortCbor(canonicalAbortPayload);
   const issuedAt = requireInteger(
     input.clock.nowUnixSeconds(),
     0,
@@ -1369,6 +1371,7 @@ export async function cleanUpRejectedEncryptedWalletBackupFork(input: {
     hexToBytes(claim.attemptId),
     hexToBytes(claim.targetManifestDigest),
   ]);
+  structurallyPreflightEncryptedBackupAttemptAbortCbor(canonicalAbortPayload);
   const issuedAt = requireInteger(
     input.clock.nowUnixSeconds(),
     0,

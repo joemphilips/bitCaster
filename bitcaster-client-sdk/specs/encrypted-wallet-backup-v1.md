@@ -57,7 +57,8 @@ candidate(counter) = HKDF(requestRoot, rootSalt,
 Counters are unsigned integers `0..255`. The first big-endian candidate `x`
 with `0 < x < secp256k1_n` is the scalar. Exhaustion is an error. The public
 key is the 32-byte x-only secp256k1 public key. Request signing and request
-preimages are intentionally not defined by this version of the object codec.
+preimages are separate from the object-encryption codec and are defined by the
+delegated-request and account-lifecycle sections below.
 
 A public key handle exposes only version, realm, lowercase-hex vault ID, and
 lowercase-hex request-authentication public key. Seed and derived roots remain
@@ -412,6 +413,20 @@ lookup. Durable object/CAS idempotency is independent of the short-lived nonce.
 Bounded coordinators read their injected clock immediately before each remote
 dispatch; they do not reuse one timestamp across a slow upload or retry loop.
 
+Delegated GET requests and object DELETE requests have an exactly empty HTTP
+body. Their signed `payloadLength` is exactly zero and their signed body digest
+is `SHA256(empty)`. Upload-attempt DELETE is different: it carries and signs the
+canonical abort body defined below. Account lifecycle requests also carry their
+canonical account request body and are not delegated requests.
+
+This delegated proof is used only for enrollment-epoch discovery, object
+PUT/GET/DELETE, upload-attempt abort, head GET, and head compare-and-swap. It is
+not used for account-authorized enroll, revoke, or whole-vault deletion. Those
+three lifecycle operations use only the scheme-neutral account authorization
+envelope below; an HTTP adapter must not attach `Authorization: BackupV1` to
+them. Conversely, delegated endpoints do not accept the account authorization
+envelope as a substitute for the exact request proof.
+
 The ordinary proof builder requires `enrollmentEpoch >= 1`. A separate
 seed-derived epoch-discovery GET uses epoch zero only at the discovery endpoint.
 It reveals either the active epoch or one common `not-enrolled` result for
@@ -461,10 +476,13 @@ An enroll at expected epoch zero creates an absent vault at epoch one. An exact
 retry is idempotent. An already-active identical vault is reopened without
 mutation through epoch discovery. Revoke/delete require a positive exact epoch
 and advance the monotonic tombstone epoch; an old delegated key fails
-immediately. The closed authenticated response is either
-`[1,"committed",epoch,lifecycle]`, `[1,"conflict",epoch,lifecycle]`, or the
-common bounded error tuple. The client persists that exact observation before
-returning authority. Because the response is account-authenticated and scoped
+immediately. The closed TLS-authenticated response is either
+`[1,"account-result",operationId16,intentDigest32,"committed",epoch,lifecycle]`,
+`[1,"account-result",operationId16,intentDigest32,"conflict",epoch,lifecycle]`,
+or the common bounded error tuple. The operation id and intent digest must equal
+the exact request before the response can be persisted. The client persists
+those bindings with the exact observation before returning authority. Because
+the response is account-authenticated and scoped
 to one seed-derived vault, a conflict may reveal its current tombstone epoch;
 this lets origin-loss recovery explicitly re-enroll a revoked or deleted vault.
 Re-enrollment is an owner-authorized CAS that advances the epoch and starts an
@@ -687,12 +705,97 @@ DELETE /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}
 DELETE /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/upload-attempts/{attemptId}
 PUT    /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/objects/{objectId}
 GET    /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/objects/{objectId}
+DELETE /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/objects/{objectId}
 GET    /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/head
 POST   /v1/encrypted-wallet-backup/realms/{realm}/vaults/{vaultId}/head:compare-and-swap
 ```
 
 CBOR request/response media type is `application/cbor`. Success bodies are
-closed versioned tuples specific to the operation. Error bodies are always:
+closed RFC 8949 deterministic-CBOR definite arrays specific to the operation:
+
+```text
+account lifecycle:
+  [1,"account-result",operationId16,intentDigest32,"committed"|"conflict",
+     epoch,"active"|"revoked"|"deleted"]
+
+enrollment epoch:
+  [1,"enrollment-epoch-result",requestDigest32,"active",epoch]
+  [1,"enrollment-epoch-result",requestDigest32,"not-enrolled"]
+
+current head:
+  [1,"head-result",requestDigest32,"found",epoch,
+     canonicalHeadBytes,canonicalReferenceSetBytes]
+  [1,"head-result",requestDigest32,"not-found",epoch]
+
+object GET:
+  [1,"object-result",requestDigest32,"found",kindCode,realm,vaultId32,
+     objectId16,generation,paddedLength,objectDigest32,aadBytes,
+     encryptedBodyBytes]
+  [1,"object-result",requestDigest32,"not-found"]
+
+object PUT:
+  [1,"object-put-result",requestDigest32,"stored"|"already-stored"]
+
+object DELETE:
+  [1,"object-delete-result",requestDigest32,"deleted"|"already-deleted"]
+
+upload-attempt abort:
+  [1,"upload-attempt-abort-result",requestDigest32,
+     "abandoned"|"already-abandoned"|"already-finalized"]
+
+head compare-and-swap:
+  [1,"head-cas-result",requestDigest32,"committed"|"conflict"]
+```
+
+`requestDigest32` is `SHA256` of the exact delegated request-proof preimage.
+It binds the TLS response to the request that produced it and prevents a client
+or adapter from swapping concurrent responses. It is not a server signature,
+receipt, or proof of future storage. Server authentication is normal platform
+TLS using the operating system/browser PKI, hostname verification, and the
+configured HTTPS origin. V1 adds no application-layer server signing or custom
+certificate-pinning protocol.
+
+The `not-enrolled` and both `not-found` tuples are semantic absence results.
+They are successful HTTP 200 responses bound to the exact request. A generic
+HTTP 404 `not-found` error is unbound, fatal/non-authoritative transport
+evidence and must never be converted into enrollment, empty-head, object-
+absence, deletion, receipt, or eviction authority. Account and head-CAS
+`conflict` are likewise bound HTTP 200 semantic results; generic HTTP 409
+`conflict` remains an error.
+
+Before materializing a response, the client enforces these inclusive operation-
+specific body limits:
+
+| response operation | maximum bytes |
+| --- | ---: |
+| account lifecycle | 256 |
+| enrollment epoch | 128 |
+| current head | 132096 |
+| object GET | 266272 |
+| object PUT/DELETE, attempt abort, head CAS | 128 |
+| any error | 128 |
+
+Every response must be one exact flat tuple. Maps, tags, floats, negative
+integers, indefinite items, non-minimal integer/length encodings, invalid UTF-8,
+unknown versions/discriminators/values, wrong arity/types/ranges, trailing
+bytes, and over-cap bodies fail before semantic decoding. Embedded head,
+reference-set, and AAD byte strings are independently bounded, preflighted,
+strictly decoded, and required to re-encode byte-for-byte canonically.
+
+For object GET, the decoding context supplies the expected realm, vault id,
+object id, object digest, kind, and current authenticated head generation. The
+response and strictly decoded AAD must bind all of those object identity fields,
+and the client recomputes
+`SHA256(uint32be(aadLength) || aad || encryptedBody)` before accepting the
+object. Padded length is 262144 for a proof chunk and 65536 for a manifest page;
+the encrypted body is exactly padded length plus the 12-byte nonce and 16-byte
+tag. Generation is positive. A manifest page must equal the current head
+generation. An inherited proof chunk may be older, but must be at most the
+current head generation. Future-generation objects, old manifest pages, or any
+response/AAD mismatch fail closed. This rule does not expand the public
+reference format.
+
+Error bodies are always:
 
 ```text
 [1,"error",code,retryAfterSecondsOrNull]
@@ -704,3 +807,32 @@ and `unavailable`. Authentication errors do not distinguish account, vault,
 key, epoch, revoked, or missing state. Error text, URLs, owner/vault/object IDs,
 ciphertext, proof identifiers, and digests are never returned in diagnostic
 bodies or emitted as log/metric labels.
+
+The HTTP status, error code, and operation matrix is closed:
+
+| HTTP | permitted code | permitted operations |
+| ---: | --- | --- |
+| 200 | exact operation-specific success tuple above | only its named operation |
+| 400 | `invalid-request` | all operations |
+| 401 | `unauthorized` | all operations |
+| 404 | `not-found` | all operations; always fatal/non-authoritative |
+| 409 | `conflict`, `replay-rejected` | all operations |
+| 429 | `rate-limited` | all operations |
+| 429 | `quota-exceeded` | object PUT and head CAS only |
+| 503 | `overloaded`, `unavailable` | all operations |
+
+No other operation/status/code combination is valid. `retryAfterSecondsOrNull`
+must be null for `invalid-request`, `unauthorized`, `not-found`, `conflict`,
+`replay-rejected`, and `quota-exceeded`. For `rate-limited`, `overloaded`, and
+`unavailable`, it is either null or an unsigned integer in `1..3600`. An HTTP
+adapter must reject redirects, content encoding, a missing or parameterized
+`application/cbor` response media type, or any response that is not
+`Cache-Control: no-store`; those transport checks precede this codec.
+
+Object DELETE requires the exact delegated owner/vault/key/epoch binding and
+exact object ownership. In one service transaction it rejects a current-head-
+reachable, staged, reserved, or pinned object; those cases and a same-ID/
+different-object conflict use HTTP 409 `conflict`. A genuinely missing object
+is idempotent `already-deleted`. A successful DELETE result is only remote
+garbage-maintenance evidence. It is never current-head, backup-receipt,
+reachability, proof-eviction, proof-deletion, or local-custody authority.

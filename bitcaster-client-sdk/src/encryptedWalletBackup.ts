@@ -7,8 +7,6 @@ import { deriveDurableCustodyProofId } from "./durableCustody.ts";
 import {
   encodeCanonicalBackupCbor as encodeCanonical,
   measureCanonicalBackupCbor as measureCanonicalCbor,
-  preflightEncryptedBackupHeadCbor,
-  preflightEncryptedBackupReferenceSetCbor,
   preflightEncryptedBackupRequestProofCbor,
   preflightEncryptedManifestPageCbor as preflightManifestPage,
   preflightEncryptedProofChunkCbor as preflightProofChunk,
@@ -39,10 +37,31 @@ import {
   ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES,
   validateEncryptedWalletBackupCasState,
 } from "./encryptedWalletBackupCasState.ts";
+import {
+  ENCRYPTED_WALLET_BACKUP_BODY_BYTES,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES,
+  ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
+  validateEncryptedWalletBackupManifestHeadUnit,
+} from "./encryptedWalletBackupManifestHead.ts";
 export {
   ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
   ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES,
 } from "./encryptedWalletBackupCasState.ts";
+export {
+  ENCRYPTED_WALLET_BACKUP_BODY_BYTES,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX,
+  ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES,
+  ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
+} from "./encryptedWalletBackupManifestHead.ts";
 
 export const ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION = 1 as const;
 export const ENCRYPTED_WALLET_BACKUP_PROOF_CHUNK_KIND = 1 as const;
@@ -57,14 +76,6 @@ export const ENCRYPTED_WALLET_BACKUP_PROOF_CBOR_MAX_BYTES = 245_760 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES = 65_532 as const;
 export const ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES_RESERVED =
   ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES;
-export const ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX = 512 as const;
-export const ENCRYPTED_WALLET_BACKUP_BODY_BYTES = 262_172 as const;
-export const ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES = 65_564 as const;
-export const ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX = 512 as const;
-export const ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX =
-  512 * 1_024;
-export const ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX =
-  64 * 1_024 * 1_024;
 
 const ROOT_SALT = new TextEncoder().encode(
   "bitcaster/encrypted-wallet-backup/hkdf-salt/v1",
@@ -582,10 +593,6 @@ const PREPARED_MANIFEST_HEADS = new WeakMap<
   object,
   PreparedManifestHeadAuthority
 >();
-
-export const ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX = 1_024 as const;
-export const ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES =
-  65_536 as const;
 
 export interface DecryptedEncryptedWalletBackupManifestPage {
   readonly formatVersion: typeof ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION;
@@ -4560,27 +4567,24 @@ function decodeManifestHeadWire(
     ENCRYPTED_WALLET_BACKUP_REFERENCE_METADATA_MAX_BYTES,
     "canonical manifest reference set",
   ).slice();
-  preflightEncryptedBackupHeadCbor(canonicalHead);
-  preflightEncryptedBackupReferenceSetCbor(canonicalReferenceSet);
-  const headValue = decode(canonicalHead);
-  const referenceValue = decode(canonicalReferenceSet);
-  if (
-    !equalBytes(canonicalHead, encodeCanonical(headValue)) ||
-    !equalBytes(canonicalReferenceSet, encodeCanonical(referenceValue)) ||
-    !Array.isArray(headValue) ||
-    headValue.length !== 13 ||
-    headValue[0] !== 1 ||
-    headValue[1] !== "manifest-head"
-  ) {
-    throw new Error("manifest head encoding is invalid");
-  }
-  const realm = requireRealm(headValue[2]);
-  const vaultId = bytesToHex(
-    requireBytes(headValue[3], 32, "manifest vault id"),
-  );
-  const backupPublicKey = bytesToHex(
-    requireBytes(headValue[4], 32, "manifest public key"),
-  );
+  const validated = validateEncryptedWalletBackupManifestHeadUnit({
+    canonicalHead,
+    canonicalReferenceSet,
+  });
+  const {
+    realm,
+    vaultId,
+    backupPublicKey,
+    generation,
+    parent,
+    snapshotNonce,
+    pageReferences,
+    chunkReferences,
+    proofCount,
+    storedBytes,
+    referenceSetDigest,
+    manifestDigest,
+  } = validated;
   if (
     realm !== keyAuthority.realm ||
     vaultId !== bytesToHex(keyAuthority.vaultIdBytes) ||
@@ -4589,128 +4593,6 @@ function decodeManifestHeadWire(
   ) {
     throw new Error("manifest head belongs to a foreign vault");
   }
-  const generation = requireInteger(
-    headValue[5],
-    1,
-    Number.MAX_SAFE_INTEGER,
-    "manifest generation",
-  );
-  let parent: EncryptedWalletBackupManifestHead["parent"];
-  if (headValue[6] === null) {
-    if (generation !== 1) throw new Error("manifest parent is invalid");
-    parent = null;
-  } else {
-    if (!Array.isArray(headValue[6]) || headValue[6].length !== 2) {
-      throw new Error("manifest parent is invalid");
-    }
-    const parentGeneration = requireInteger(
-      headValue[6][0],
-      1,
-      Number.MAX_SAFE_INTEGER,
-      "parent generation",
-    );
-    if (parentGeneration !== generation - 1)
-      throw new Error("manifest parent is invalid");
-    parent = Object.freeze({
-      generation: parentGeneration,
-      manifestDigest: bytesToHex(
-        requireBytes(headValue[6][1], 32, "parent digest"),
-      ),
-    });
-  }
-  const snapshotNonce = bytesToHex(
-    requireBytes(headValue[7], 16, "manifest snapshot nonce"),
-  );
-  const pageReferences = decodeObjectReferences(
-    headValue[8],
-    "manifest page references",
-  );
-  const chunkReferences = decodeObjectReferences(
-    headValue[9],
-    "manifest chunk references",
-  );
-  if (
-    pageReferences.length + chunkReferences.length >
-    ENCRYPTED_WALLET_BACKUP_REFERENCE_COUNT_MAX
-  ) {
-    throw new Error("manifest reference count is invalid");
-  }
-  for (let index = 1; index < chunkReferences.length; index += 1) {
-    if (
-      compareHex(
-        chunkReferences[index - 1]!.objectId,
-        chunkReferences[index]!.objectId,
-      ) >= 0
-    ) {
-      throw new Error("manifest chunk references are not canonical");
-    }
-  }
-  const allIds = [...pageReferences, ...chunkReferences].map(
-    (reference) => reference.objectId,
-  );
-  if (new Set(allIds).size !== allIds.length)
-    throw new Error("manifest object id is duplicated");
-  const allDigests = [...pageReferences, ...chunkReferences].map(
-    (reference) => reference.digest,
-  );
-  if (new Set(allDigests).size !== allDigests.length) {
-    throw new Error("manifest object digest is duplicated");
-  }
-  const proofCount = requireInteger(
-    headValue[10],
-    0,
-    ENCRYPTED_WALLET_BACKUP_MANIFEST_TOTAL_ENTRY_COUNT_MAX,
-    "manifest proof count",
-  );
-  if (
-    (proofCount === 0 &&
-      (chunkReferences.length !== 0 || pageReferences.length !== 0)) ||
-    (proofCount > 0 &&
-      (pageReferences.length === 0 || chunkReferences.length === 0)) ||
-    chunkReferences.length <
-      Math.ceil(proofCount / ENCRYPTED_WALLET_BACKUP_PROOF_COUNT_MAX) ||
-    chunkReferences.length > proofCount ||
-    pageReferences.length <
-      Math.ceil(
-        proofCount / ENCRYPTED_WALLET_BACKUP_MANIFEST_ENTRY_COUNT_MAX,
-      ) ||
-    pageReferences.length > proofCount
-  ) {
-    throw new Error("manifest proof count does not match reference bounds");
-  }
-  const storedBytes = requireNonNegativeSafeInteger(
-    headValue[11],
-    "manifest stored bytes",
-  );
-  const expectedStoredBytes =
-    pageReferences.length * ENCRYPTED_WALLET_BACKUP_MANIFEST_BODY_BYTES +
-    chunkReferences.length * ENCRYPTED_WALLET_BACKUP_BODY_BYTES;
-  if (storedBytes !== expectedStoredBytes)
-    throw new Error("manifest stored bytes do not match references");
-  if (storedBytes > ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX) {
-    throw new Error("manifest target exceeds the stored byte quota");
-  }
-  const referenceSetDigest = bytesToHex(
-    requireBytes(headValue[12], 32, "reference set digest"),
-  );
-  if (
-    !Array.isArray(referenceValue) ||
-    referenceValue.length !== 4 ||
-    referenceValue[0] !== 1 ||
-    referenceValue[1] !== "reference-set" ||
-    !equalBytes(
-      encodeCanonical(referenceValue[2]),
-      encodeCanonical(headValue[8]),
-    ) ||
-    !equalBytes(
-      encodeCanonical(referenceValue[3]),
-      encodeCanonical(headValue[9]),
-    ) ||
-    referenceSetDigest !== bytesToHex(sha256(canonicalReferenceSet))
-  ) {
-    throw new Error("manifest reference set does not match head");
-  }
-  const manifestDigest = bytesToHex(sha256(canonicalHead));
   const head = Object.freeze({
     formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
     realm,
@@ -4728,7 +4610,7 @@ function decodeManifestHeadWire(
     }),
     manifestDigest,
     referenceSetDigest,
-    objectCount: allIds.length,
+    objectCount: pageReferences.length + chunkReferences.length,
     storedBytes,
     proofCount,
   });

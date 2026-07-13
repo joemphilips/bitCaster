@@ -241,6 +241,8 @@ test("account lifecycle authorization is scheme-neutral and exact-vault scoped",
         );
         return {
           status: "committed" as const,
+          operationId: enrolled.operationId,
+          intentDigest: enrolled.intentDigest,
           enrollmentEpoch: 1,
           lifecycle: "active" as const,
         };
@@ -256,6 +258,8 @@ test("account lifecycle authorization is scheme-neutral and exact-vault scoped",
     },
   });
   assert.equal(committed.record.result, "committed");
+  assert.equal(committed.record.operationId, enrolled.operationId);
+  assert.equal(committed.record.intentDigest, enrolled.intentDigest);
   assert.equal(committed.record.observedEnrollmentEpoch, 1);
   await assert.rejects(
     () =>
