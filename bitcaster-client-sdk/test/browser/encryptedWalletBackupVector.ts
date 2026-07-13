@@ -74,6 +74,7 @@ async function run(): Promise<{ legacyRestoreMs: number; modeledChunks: number; 
     issuedAtUnixSeconds: input.request.issuedAtUnixSeconds,
     expiresAtUnixSeconds: input.request.expiresAtUnixSeconds,
     payload: fromHex(input.request.payloadHex),
+    signal: AbortSignal.timeout(60_000),
     runtime: deterministicRuntime([
       fromHex(input.request.replayNonceHex), fromHex(input.request.auxiliaryRandomnessHex),
     ]),

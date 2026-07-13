@@ -48,6 +48,13 @@ import {
   ENCRYPTED_WALLET_BACKUP_VAULT_STORED_BYTES_MAX,
   validateEncryptedWalletBackupManifestHeadUnit,
 } from "./encryptedWalletBackupManifestHead.ts";
+import {
+  awaitEncryptedWalletBackupCycle,
+  EncryptedWalletBackupDeadlineError,
+  requireEncryptedWalletBackupCycleSignal,
+  throwIfEncryptedWalletBackupCycleAborted,
+} from "./encryptedWalletBackupDeadline.ts";
+export { EncryptedWalletBackupDeadlineError } from "./encryptedWalletBackupDeadline.ts";
 export {
   ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
   ENCRYPTED_WALLET_BACKUP_CAS_PAYLOAD_MAX_BYTES,
@@ -98,6 +105,65 @@ export interface EncryptedWalletBackupRuntime {
 
 export interface EncryptedWalletBackupClock {
   nowUnixSeconds(): number;
+}
+
+export type EncryptedWalletBackupRemoteBackoffStatus =
+  | "quota-exceeded"
+  | "rate-limited"
+  | "overloaded"
+  | "unavailable";
+
+/** Base class for redacted remote failures that are safe to schedule. */
+export class EncryptedWalletBackupRemoteFailureError extends Error {}
+
+/** A redacted, typed handoff that lets the host durably schedule maintenance. */
+export class EncryptedWalletBackupRemoteBackoffError extends EncryptedWalletBackupRemoteFailureError {
+  readonly status: EncryptedWalletBackupRemoteBackoffStatus;
+  readonly retryAfterSeconds: number | null;
+
+  constructor(
+    status: EncryptedWalletBackupRemoteBackoffStatus,
+    retryAfterSeconds?: number | null,
+  ) {
+    if (
+      status !== "quota-exceeded" &&
+      status !== "rate-limited" &&
+      status !== "overloaded" &&
+      status !== "unavailable"
+    ) {
+      throw new Error("encrypted backup backoff status is invalid");
+    }
+    if (status === "quota-exceeded" && retryAfterSeconds != null) {
+      throw new Error(
+        "encrypted backup quota backoff must not include retry-after",
+      );
+    }
+    if (
+      retryAfterSeconds !== undefined &&
+      retryAfterSeconds !== null &&
+      (!Number.isSafeInteger(retryAfterSeconds) ||
+        retryAfterSeconds < 1 ||
+        retryAfterSeconds > 3_600)
+    ) {
+      throw new Error("encrypted backup retry-after is invalid");
+    }
+    super(`encrypted backup remote backoff: ${status}`);
+    this.name = "EncryptedWalletBackupRemoteBackoffError";
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds ?? null;
+  }
+
+  delayMilliseconds(defaultMilliseconds = 5_000): number {
+    const fallback = requireInteger(
+      defaultMilliseconds,
+      1,
+      3_600_000,
+      "encrypted backup default backoff",
+    );
+    return this.retryAfterSeconds === null
+      ? fallback
+      : this.retryAfterSeconds * 1_000;
+  }
 }
 
 export interface EncryptedWalletBackupKeyHandle {
@@ -152,6 +218,7 @@ const AUTHENTICATED_BACKUP_REQUESTS = new WeakMap<
   EncryptedWalletBackupRequestProof
 >();
 const PREPARED_BACKUP_REQUESTS = new WeakMap<object, KeyAuthority>();
+const PREPARED_BACKUP_REQUEST_SIGNALS = new WeakMap<object, AbortSignal>();
 
 export const ENCRYPTED_WALLET_BACKUP_REQUEST_PAYLOAD_MAX_BYTES =
   4 * 1_024 * 1_024;
@@ -475,6 +542,7 @@ const AUTHENTICATED_MANIFEST_HEAD_VALUES = new WeakMap<
 export interface EncryptedWalletBackupHeadRemotePort {
   readCurrentHead(input: {
     requestProof: EncryptedWalletBackupRequestProof;
+    signal: AbortSignal;
   }): Promise<
     | Readonly<{
         status: "found";
@@ -484,6 +552,7 @@ export interface EncryptedWalletBackupHeadRemotePort {
     | Readonly<{ status: "not-found" }>
     | Readonly<{
         status: "unauthorized" | "rate-limited" | "overloaded" | "unavailable";
+        retryAfterSeconds?: number | null;
       }>
   >;
 }
@@ -491,10 +560,14 @@ export interface EncryptedWalletBackupHeadRemotePort {
 export interface EncryptedWalletBackupEnrollmentEpochRemotePort {
   discoverEnrollmentEpoch(input: {
     requestProof: EncryptedWalletBackupRequestProof;
+    signal: AbortSignal;
   }): Promise<
     | Readonly<{ status: "active"; enrollmentEpoch: number }>
     | Readonly<{ status: "not-enrolled" }>
-    | Readonly<{ status: "rate-limited" | "overloaded" | "unavailable" }>
+    | Readonly<{
+        status: "rate-limited" | "overloaded" | "unavailable";
+        retryAfterSeconds?: number | null;
+      }>
   >;
 }
 
@@ -506,15 +579,18 @@ export interface EncryptedWalletBackupCasRemotePort extends EncryptedWalletBacku
   compareAndSwapCurrentHead(input: {
     requestProof: EncryptedWalletBackupRequestProof;
     canonicalCasPayload: Uint8Array;
+    signal: AbortSignal;
   }): Promise<
     Readonly<{
       status:
         | "committed"
         | "conflict"
+        | "quota-exceeded"
         | "unauthorized"
         | "rate-limited"
         | "overloaded"
         | "unavailable";
+      retryAfterSeconds?: number | null;
     }>
   >;
 }
@@ -538,6 +614,7 @@ export interface EncryptedWalletBackupSyncAttemptRecord {
     | "cas-uncertain"
     | "retry-cas"
     | "retry-exhausted"
+    | "reconcile-before-retry"
     | "acknowledged"
     | "fork-rejected";
 }
@@ -714,6 +791,7 @@ export async function prepareEncryptedWalletBackupRequestProof(input: {
   issuedAtUnixSeconds: number;
   expiresAtUnixSeconds: number;
   payload: Uint8Array;
+  signal: AbortSignal;
   runtime?: EncryptedWalletBackupRuntime;
 }): Promise<EncryptedWalletBackupRequestProof> {
   return prepareEncryptedWalletBackupRequestProofForEpoch(input, 1);
@@ -725,6 +803,7 @@ export async function prepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof(
   url: string;
   issuedAtUnixSeconds: number;
   expiresAtUnixSeconds: number;
+  signal: AbortSignal;
   runtime?: EncryptedWalletBackupRuntime;
 }): Promise<EncryptedWalletBackupRequestProof> {
   return prepareEncryptedWalletBackupRequestProofForEpoch(
@@ -747,10 +826,13 @@ async function prepareEncryptedWalletBackupRequestProofForEpoch(
     issuedAtUnixSeconds: number;
     expiresAtUnixSeconds: number;
     payload: Uint8Array;
+    signal: AbortSignal;
     runtime?: EncryptedWalletBackupRuntime;
   },
   minimumEpoch: 0 | 1,
 ): Promise<EncryptedWalletBackupRequestProof> {
+  const cycleSignal = requireEncryptedWalletBackupCycleSignal(input.signal);
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
   const authority = requireKeyAuthority(input.keyHandle);
   const epoch = requireInteger(
     input.enrollmentEpoch,
@@ -798,11 +880,15 @@ async function prepareEncryptedWalletBackupRequestProofForEpoch(
     payloadLength: payload.byteLength,
     payloadDigest,
   });
-  const scalar = await deriveRequestAuthScalar(
-    runtime.subtle,
-    authority.requestAuthRoot,
-    authority.realm,
+  const scalar = await awaitEncryptedWalletBackupCycle(
+    deriveRequestAuthScalar(
+      runtime.subtle,
+      authority.requestAuthRoot,
+      authority.realm,
+    ),
+    cycleSignal,
   );
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
   const signature = schnorr.sign(sha256(preimage), scalar, auxiliaryRandomness);
   const proof = Object.freeze({
     formatVersion: ENCRYPTED_WALLET_BACKUP_FORMAT_VERSION,
@@ -820,6 +906,7 @@ async function prepareEncryptedWalletBackupRequestProofForEpoch(
     signature: bytesToHex(signature),
   });
   PREPARED_BACKUP_REQUESTS.set(proof, authority);
+  PREPARED_BACKUP_REQUEST_SIGNALS.set(proof, cycleSignal);
   return proof;
 }
 
@@ -912,6 +999,34 @@ export function encodeEncryptedWalletBackupRequestProof(
     hexToBytes(proof.payloadDigest),
     hexToBytes(proof.signature),
   ]);
+}
+
+/**
+ * Returns the response-binding digest for the exact delegated request proof.
+ * This deliberately hashes the signed preimage, not the proof envelope that
+ * also carries the signature.
+ */
+export function encryptedWalletBackupRequestDigest(
+  value: EncryptedWalletBackupRequestProof,
+): string {
+  const proof = decodeBackupRequestProof(value);
+  return bytesToHex(
+    sha256(
+      encodeBackupRequestPreimage({
+        realm: proof.realm,
+        vaultId: hexToBytes(proof.vaultId),
+        requestAuthPublicKey: hexToBytes(proof.requestAuthPublicKey),
+        enrollmentEpoch: proof.enrollmentEpoch,
+        method: proof.method,
+        url: proof.url,
+        issuedAtUnixSeconds: proof.issuedAtUnixSeconds,
+        expiresAtUnixSeconds: proof.expiresAtUnixSeconds,
+        replayNonce: hexToBytes(proof.replayNonce),
+        payloadLength: proof.payloadLength,
+        payloadDigest: hexToBytes(proof.payloadDigest),
+      }),
+    ),
+  );
 }
 
 export async function authenticateEncryptedWalletBackupRequest(input: {
@@ -2646,9 +2761,8 @@ export async function resumeEncryptedWalletBackupSyncAttempt(input: {
   }
   const next = freezeSyncAttempt({
     ...authority.record,
-    casAttempts: 0,
     retryNotBeforeUnixMilliseconds: null,
-    state: "sealed",
+    state: "reconcile-before-retry",
   });
   let callbackOpen = true;
   let callbackCalls = 0;
@@ -2706,6 +2820,7 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
   attempt: SealedEncryptedWalletBackupSyncAttempt;
   event:
     | Readonly<{ type: "cas-dispatched" }>
+    | Readonly<{ type: "retry-deferred"; delayMilliseconds: number }>
     | Readonly<{
         type: "head-observed";
         observation: AuthenticatedEncryptedWalletBackupHeadEvidence;
@@ -2734,8 +2849,33 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
       });
       break;
     }
-    case "head-observed": {
+    case "retry-deferred": {
       if (current.state !== "cas-uncertain")
+        throw new Error("backup CAS retry deferral is out of order");
+      const exhaustedCandidate = freezeSyncAttempt({
+        ...current,
+        state: "retry-exhausted",
+        retryNotBeforeUnixMilliseconds: 1,
+      });
+      return persistExhaustedSyncAttempt(
+        attemptAuthority.store,
+        current,
+        exhaustedCandidate,
+        attemptAuthority.keyHandle,
+        requireInteger(
+          input.event.delayMilliseconds,
+          1,
+          3_600_000,
+          "backup retry deferral delay",
+        ),
+      );
+    }
+    case "head-observed": {
+      if (
+        current.state !== "cas-uncertain" &&
+        current.state !== "retry-exhausted" &&
+        current.state !== "reconcile-before-retry"
+      )
         throw new Error("backup head observation is out of order");
       const observation =
         typeof input.event.observation === "object" &&
@@ -2751,9 +2891,23 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
       }
       const observed = observation.head?.manifestDigest ?? null;
       if (observed === current.targetHead.manifestDigest) {
-        next = freezeSyncAttempt({ ...current, state: "acknowledged" });
+        next = freezeSyncAttempt({
+          ...current,
+          state: "acknowledged",
+          retryNotBeforeUnixMilliseconds: null,
+        });
       } else if (observed === current.expectedHeadDigest) {
-        if (current.casAttempts < ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX) {
+        if (current.state === "retry-exhausted") {
+          return input.attempt;
+        } else if (current.state === "reconcile-before-retry") {
+          next = freezeSyncAttempt({
+            ...current,
+            casAttempts: 0,
+            state: "sealed",
+          });
+        } else if (
+          current.casAttempts < ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX
+        ) {
           next = freezeSyncAttempt({ ...current, state: "retry-cas" });
         } else {
           const exhaustedCandidate = freezeSyncAttempt({
@@ -2769,7 +2923,11 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
           );
         }
       } else {
-        next = freezeSyncAttempt({ ...current, state: "fork-rejected" });
+        next = freezeSyncAttempt({
+          ...current,
+          state: "fork-rejected",
+          retryNotBeforeUnixMilliseconds: null,
+        });
       }
       break;
     }
@@ -2789,6 +2947,7 @@ async function persistExhaustedSyncAttempt(
   expected: EncryptedWalletBackupSyncAttemptRecord,
   candidate: EncryptedWalletBackupSyncAttemptRecord,
   keyHandle: EncryptedWalletBackupKeyHandle,
+  delayMilliseconds = 5_000,
 ): Promise<SealedEncryptedWalletBackupSyncAttempt> {
   if (typeof store.exhaustPreparedAttempt !== "function")
     throw new Error("backup exhaustion store is invalid");
@@ -2800,7 +2959,12 @@ async function persistExhaustedSyncAttempt(
     returned = await store.exhaustPreparedAttempt(
       expected,
       candidate,
-      5_000,
+      requireInteger(
+        delayMilliseconds,
+        1,
+        3_600_000,
+        "backup exhaustion delay",
+      ),
       (raw) => {
         if (!open || calls++ !== 0)
           throw new Error("backup exhaustion callback is invalid");
@@ -2852,8 +3016,11 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
   headUrl: string;
   clock: EncryptedWalletBackupClock;
   remote: EncryptedWalletBackupCasRemotePort;
+  signal: AbortSignal;
   runtime?: EncryptedWalletBackupRuntime;
 }): Promise<SealedEncryptedWalletBackupSyncAttempt> {
+  const cycleSignal = requireEncryptedWalletBackupCycleSignal(input.signal);
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
   const keyAuthority = requireKeyAuthority(input.keyHandle);
   requireSealedSyncAttempt(input.attempt, input.keyHandle);
   let attempt = input.attempt;
@@ -2905,6 +3072,7 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
         issuedAtUnixSeconds: issuedAt,
         expiresAtUnixSeconds: issuedAt + 60,
         payload: new Uint8Array(),
+        signal: cycleSignal,
         runtime,
       });
       const observation = await readAuthenticatedEncryptedWalletBackupHead({
@@ -2922,7 +3090,10 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
       });
     };
 
-  if (attempt.record.state === "cas-uncertain") {
+  if (
+    attempt.record.state === "cas-uncertain" ||
+    attempt.record.state === "reconcile-before-retry"
+  ) {
     attempt = await observeHead();
   }
   while (
@@ -2946,6 +3117,7 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
       issuedAtUnixSeconds: issuedAt,
       expiresAtUnixSeconds: issuedAt + 60,
       payload: privateAttempt.record.canonicalCasPayload,
+      signal: cycleSignal,
       runtime,
     });
     await validateCurrentCoordinatedCasAttempt(attempt);
@@ -2954,13 +3126,21 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
         EncryptedWalletBackupCasRemotePort["compareAndSwapCurrentHead"]
       >
     > | null;
+    let retryDelayMilliseconds: number | undefined;
     try {
-      response = await input.remote.compareAndSwapCurrentHead({
-        requestProof,
-        canonicalCasPayload: privateAttempt.record.canonicalCasPayload.slice(),
-      });
-    } catch {
+      response = await awaitEncryptedWalletBackupCycle(
+        input.remote.compareAndSwapCurrentHead({
+          requestProof,
+          canonicalCasPayload:
+            privateAttempt.record.canonicalCasPayload.slice(),
+          signal: cycleSignal,
+        }),
+        cycleSignal,
+      );
+    } catch (error) {
+      if (error instanceof EncryptedWalletBackupDeadlineError) throw error;
       response = null;
+      retryDelayMilliseconds = 5_000;
     }
     if (response !== null) {
       if (
@@ -2970,24 +3150,65 @@ export async function synchronizeEncryptedWalletBackupManifestHead(input: {
       ) {
         throw new Error("encrypted backup CAS response is invalid");
       }
-      if (
-        response.status === "unauthorized" ||
-        response.status === "rate-limited" ||
-        response.status === "overloaded"
-      ) {
+      if (response.status === "unauthorized") {
         throw new Error(`encrypted backup CAS failed: ${response.status}`);
       }
       if (
         response.status !== "committed" &&
         response.status !== "conflict" &&
+        response.status !== "quota-exceeded" &&
+        response.status !== "rate-limited" &&
+        response.status !== "overloaded" &&
         response.status !== "unavailable"
       ) {
         throw new Error("encrypted backup CAS response is invalid");
       }
+      if (
+        response.status === "quota-exceeded" ||
+        response.status === "rate-limited" ||
+        response.status === "overloaded" ||
+        response.status === "unavailable"
+      ) {
+        retryDelayMilliseconds = new EncryptedWalletBackupRemoteBackoffError(
+          response.status,
+          response.retryAfterSeconds,
+        ).delayMilliseconds();
+      }
     }
-    // A thrown transport error or an explicit availability response is
-    // uncertain; the head read below is the only acknowledgement authority.
-    attempt = await observeHead();
+    // Backpressure and transport uncertainty are durable before the
+    // acknowledgement read. A failed read therefore cannot erase the
+    // database-time boundary or permit an immediate restart loop.
+    if (retryDelayMilliseconds !== undefined) {
+      throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
+      attempt = await advanceEncryptedWalletBackupSyncAttempt({
+        attempt,
+        event: {
+          type: "retry-deferred",
+          delayMilliseconds: retryDelayMilliseconds,
+        },
+      });
+      try {
+        attempt = await observeHead();
+      } catch (error) {
+        if (error instanceof EncryptedWalletBackupDeadlineError) throw error;
+        if (!(error instanceof EncryptedWalletBackupRemoteFailureError))
+          throw error;
+        return attempt;
+      }
+    } else {
+      try {
+        attempt = await observeHead();
+      } catch (error) {
+        if (error instanceof EncryptedWalletBackupDeadlineError) throw error;
+        if (!(error instanceof EncryptedWalletBackupRemoteFailureError))
+          throw error;
+        throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
+        attempt = await advanceEncryptedWalletBackupSyncAttempt({
+          attempt,
+          event: { type: "retry-deferred", delayMilliseconds: 5_000 },
+        });
+      }
+    }
   }
   return attempt;
 }
@@ -3039,6 +3260,14 @@ export async function readAuthenticatedEncryptedWalletBackupHead(input: {
   remote: EncryptedWalletBackupHeadRemotePort;
 }): Promise<AuthenticatedEncryptedWalletBackupHeadEvidence> {
   const keyAuthority = requireKeyAuthority(input.keyHandle);
+  const preparedSignal =
+    typeof input.requestProof === "object" && input.requestProof !== null
+      ? PREPARED_BACKUP_REQUEST_SIGNALS.get(input.requestProof)
+      : undefined;
+  if (preparedSignal === undefined)
+    throw new Error("prepared head request is invalid");
+  const cycleSignal = preparedSignal;
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
   const epoch = requireInteger(
     input.enrollmentEpoch,
     1,
@@ -3061,9 +3290,13 @@ export async function readAuthenticatedEncryptedWalletBackupHead(input: {
   ) {
     throw new Error("encrypted backup remote port is invalid");
   }
-  const response = await input.remote.readCurrentHead({
-    requestProof: input.requestProof,
-  });
+  const response = await awaitEncryptedWalletBackupCycle(
+    input.remote.readCurrentHead({
+      requestProof: input.requestProof,
+      signal: cycleSignal,
+    }),
+    cycleSignal,
+  );
   if (
     typeof response !== "object" ||
     response === null ||
@@ -3086,10 +3319,14 @@ export async function readAuthenticatedEncryptedWalletBackupHead(input: {
       return evidence;
     }
     case "unauthorized":
+      throw new Error(`encrypted backup head read failed: ${response.status}`);
     case "rate-limited":
     case "overloaded":
     case "unavailable":
-      throw new Error(`encrypted backup head read failed: ${response.status}`);
+      throw new EncryptedWalletBackupRemoteBackoffError(
+        response.status,
+        response.retryAfterSeconds,
+      );
     case "found": {
       if (response.enrollmentEpoch !== epoch)
         throw new Error("encrypted backup head epoch is stale");
@@ -3140,6 +3377,14 @@ export async function discoverEncryptedWalletBackupEnrollmentEpoch(input: {
   remote: EncryptedWalletBackupEnrollmentEpochRemotePort;
 }): Promise<EncryptedWalletBackupEnrollmentEpochDiscovery> {
   const keyAuthority = requireKeyAuthority(input.keyHandle);
+  const preparedSignal =
+    typeof input.requestProof === "object" && input.requestProof !== null
+      ? PREPARED_BACKUP_REQUEST_SIGNALS.get(input.requestProof)
+      : undefined;
+  if (preparedSignal === undefined)
+    throw new Error("prepared epoch discovery request is invalid");
+  const cycleSignal = preparedSignal;
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal);
   if (
     typeof input.requestProof !== "object" ||
     input.requestProof === null ||
@@ -3157,9 +3402,13 @@ export async function discoverEncryptedWalletBackupEnrollmentEpoch(input: {
   ) {
     throw new Error("encrypted backup epoch discovery remote port is invalid");
   }
-  const response = await input.remote.discoverEnrollmentEpoch({
-    requestProof: input.requestProof,
-  });
+  const response = await awaitEncryptedWalletBackupCycle(
+    input.remote.discoverEnrollmentEpoch({
+      requestProof: input.requestProof,
+      signal: cycleSignal,
+    }),
+    cycleSignal,
+  );
   if (
     typeof response !== "object" ||
     response === null ||
@@ -3183,8 +3432,9 @@ export async function discoverEncryptedWalletBackupEnrollmentEpoch(input: {
     case "rate-limited":
     case "overloaded":
     case "unavailable":
-      throw new Error(
-        `encrypted backup epoch discovery failed: ${response.status}`,
+      throw new EncryptedWalletBackupRemoteBackoffError(
+        response.status,
+        response.retryAfterSeconds,
       );
     default:
       throw new Error("encrypted backup epoch discovery response is invalid");
@@ -4779,6 +5029,7 @@ function decodeSyncAttemptRecord(
       "cas-uncertain",
       "retry-cas",
       "retry-exhausted",
+      "reconcile-before-retry",
       "acknowledged",
       "fork-rejected",
     ] as const,

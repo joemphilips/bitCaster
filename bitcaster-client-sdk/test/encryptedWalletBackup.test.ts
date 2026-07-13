@@ -12,6 +12,8 @@ import {
   acknowledgeDurableWalletBackupSnapshot,
   authenticateEncryptedWalletBackupRequest,
   advanceEncryptedWalletBackupSyncAttempt,
+  EncryptedWalletBackupDeadlineError,
+  EncryptedWalletBackupRemoteBackoffError,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_CBOR_MAX_BYTES_RESERVED,
   ENCRYPTED_WALLET_BACKUP_MANIFEST_FRAME_BYTES_RESERVED,
   encodeEncryptedWalletBackupRequestProof,
@@ -26,9 +28,9 @@ import {
   prepareEncryptedWalletBackupManifestHead,
   prepareEncryptedWalletBackupObject,
   prepareEncryptedWalletBackupProof,
-  prepareEncryptedWalletBackupRequestProof,
-  prepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof,
-  synchronizeEncryptedWalletBackupManifestHead,
+  prepareEncryptedWalletBackupRequestProof as sdkPrepareEncryptedWalletBackupRequestProof,
+  prepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof as sdkPrepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof,
+  synchronizeEncryptedWalletBackupManifestHead as sdkSynchronizeEncryptedWalletBackupManifestHead,
   verifyEncryptedWalletBackupConditionalKeyset,
   readPreparedEncryptedWalletBackupObject,
   readPreparedEncryptedWalletBackupManifestHead,
@@ -47,12 +49,13 @@ import {
 import { prepareDurableWalletAcknowledgedBackupSnapshot } from "../src/recoverableWalletStorage.ts";
 import {
   executeEncryptedWalletBackupAccountOperation,
-  prepareEncryptedWalletBackupAccountOperation,
+  prepareEncryptedWalletBackupAccountOperation as sdkPrepareEncryptedWalletBackupAccountOperation,
   readPreparedEncryptedWalletBackupAccountOperation,
 } from "../src/encryptedWalletBackupEnrollment.ts";
 import {
-  abandonEncryptedWalletBackupUploadAttempt,
+  abandonEncryptedWalletBackupUploadAttempt as sdkAbandonEncryptedWalletBackupUploadAttempt,
   claimEncryptedWalletBackupUploadAttempt,
+  cleanUpRejectedEncryptedWalletBackupFork as sdkCleanUpRejectedEncryptedWalletBackupFork,
   deriveEncryptedWalletBackupCasAttemptId,
   ENCRYPTED_WALLET_BACKUP_CYCLE_REQUEST_MAX,
   prepareEncryptedWalletBackupUploadPlan,
@@ -60,9 +63,74 @@ import {
   rehydrateEncryptedWalletBackupUploadBatch,
   sealEncryptedWalletBackupUploadAttempt,
   sealEncryptedWalletBackupUploadBatch,
-  uploadEncryptedWalletBackupBatch,
+  uploadEncryptedWalletBackupBatch as sdkUploadEncryptedWalletBackupBatch,
   type EncryptedWalletBackupUploadBatchRecord,
 } from "../src/encryptedWalletBackupSync.ts";
+
+type OptionalTestSignal<T extends { signal: AbortSignal }> = Omit<
+  T,
+  "signal"
+> & {
+  signal?: AbortSignal;
+};
+
+function withTestCycleSignal<T extends { signal: AbortSignal }>(
+  input: OptionalTestSignal<T>,
+): T {
+  return {
+    ...input,
+    signal: input.signal ?? AbortSignal.timeout(60_000),
+  } as T;
+}
+
+const prepareEncryptedWalletBackupRequestProof = (
+  input: OptionalTestSignal<
+    Parameters<typeof sdkPrepareEncryptedWalletBackupRequestProof>[0]
+  >,
+) => sdkPrepareEncryptedWalletBackupRequestProof(withTestCycleSignal(input));
+
+const prepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof = (
+  input: OptionalTestSignal<
+    Parameters<
+      typeof sdkPrepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof
+    >[0]
+  >,
+) =>
+  sdkPrepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof(
+    withTestCycleSignal(input),
+  );
+
+const synchronizeEncryptedWalletBackupManifestHead = (
+  input: OptionalTestSignal<
+    Parameters<typeof sdkSynchronizeEncryptedWalletBackupManifestHead>[0]
+  >,
+) =>
+  sdkSynchronizeEncryptedWalletBackupManifestHead(withTestCycleSignal(input));
+
+const prepareEncryptedWalletBackupAccountOperation = (
+  input: OptionalTestSignal<
+    Parameters<typeof sdkPrepareEncryptedWalletBackupAccountOperation>[0]
+  >,
+) =>
+  sdkPrepareEncryptedWalletBackupAccountOperation(withTestCycleSignal(input));
+
+const uploadEncryptedWalletBackupBatch = (
+  input: OptionalTestSignal<
+    Parameters<typeof sdkUploadEncryptedWalletBackupBatch>[0]
+  >,
+) => sdkUploadEncryptedWalletBackupBatch(withTestCycleSignal(input));
+
+const abandonEncryptedWalletBackupUploadAttempt = (
+  input: OptionalTestSignal<
+    Parameters<typeof sdkAbandonEncryptedWalletBackupUploadAttempt>[0]
+  >,
+) => sdkAbandonEncryptedWalletBackupUploadAttempt(withTestCycleSignal(input));
+
+const cleanUpRejectedEncryptedWalletBackupFork = (
+  input: OptionalTestSignal<
+    Parameters<typeof sdkCleanUpRejectedEncryptedWalletBackupFork>[0]
+  >,
+) => sdkCleanUpRejectedEncryptedWalletBackupFork(withTestCycleSignal(input));
 
 type CasHandoffFixture = Readonly<{
   state: "cas-journaled";
@@ -261,6 +329,32 @@ test("account lifecycle authorization is scheme-neutral and exact-vault scoped",
   assert.equal(committed.record.operationId, enrolled.operationId);
   assert.equal(committed.record.intentDigest, enrolled.intentDigest);
   assert.equal(committed.record.observedEnrollmentEpoch, 1);
+  let backoffStoreCalls = 0;
+  await assert.rejects(
+    () =>
+      executeEncryptedWalletBackupAccountOperation({
+        operation: enrolled,
+        remote: {
+          async executeAccountOperation() {
+            return {
+              status: "overloaded" as const,
+              retryAfterSeconds: 23,
+            };
+          },
+        },
+        store: {
+          async commitAccountOperationResult<T>(): Promise<T> {
+            backoffStoreCalls += 1;
+            throw new Error("backoff must not commit an account result");
+          },
+        },
+      }),
+    (error) =>
+      error instanceof EncryptedWalletBackupRemoteBackoffError &&
+      error.status === "overloaded" &&
+      error.retryAfterSeconds === 23,
+  );
+  assert.equal(backoffStoreCalls, 0);
   await assert.rejects(
     () =>
       prepareEncryptedWalletBackupAccountOperation({
@@ -296,6 +390,89 @@ test("account lifecycle authorization is scheme-neutral and exact-vault scoped",
       }),
     /authorization is invalid/,
   );
+});
+
+test("account authorization and request signing share the caller-owned cycle deadline", async () => {
+  const keyHandle = await createEncryptedWalletBackupKeyHandle({
+    seed: SEED,
+    realm: "cycle-deadline",
+  });
+  await assert.rejects(
+    sdkPrepareEncryptedWalletBackupRequestProof({
+      keyHandle,
+      enrollmentEpoch: 1,
+      method: "GET",
+      url: "https://backup.example.test/v1/head",
+      issuedAtUnixSeconds: 1_700_000_000,
+      expiresAtUnixSeconds: 1_700_000_030,
+      payload: new Uint8Array(),
+      signal: undefined as never,
+    }),
+    /abort signal is invalid/,
+  );
+  const authorizationAbort = new AbortController();
+  await assert.rejects(
+    prepareEncryptedWalletBackupAccountOperation({
+      keyHandle,
+      action: "enroll",
+      url: "https://backup.example.test/v1/vaults:enroll",
+      operationId: "15".repeat(16),
+      expectedEnrollmentEpoch: 0,
+      signal: authorizationAbort.signal,
+      authorizationPort: {
+        async authorizeBackupAccountOperation() {
+          authorizationAbort.abort();
+          return new Promise<never>(() => undefined);
+        },
+      },
+    }),
+    EncryptedWalletBackupDeadlineError,
+  );
+
+  const signingAbort = new AbortController();
+  const delayed = delayedSigningRuntimeForTest();
+  const signing = prepareEncryptedWalletBackupRequestProof({
+    keyHandle,
+    enrollmentEpoch: 1,
+    method: "GET",
+    url: "https://backup.example.test/v1/head",
+    issuedAtUnixSeconds: 1_700_000_000,
+    expiresAtUnixSeconds: 1_700_000_030,
+    payload: new Uint8Array(),
+    signal: signingAbort.signal,
+    runtime: delayed.runtime,
+  });
+  await delayed.signingStarted;
+  signingAbort.abort();
+  await assert.rejects(signing, EncryptedWalletBackupDeadlineError);
+  delayed.releaseSigning();
+});
+
+test("every public backup coordinator requires a host cycle signal", async () => {
+  const cases: ReadonlyArray<
+    readonly [string, (input: never) => Promise<unknown>]
+  > = [
+    ["request proof", sdkPrepareEncryptedWalletBackupRequestProof],
+    [
+      "epoch discovery proof",
+      sdkPrepareEncryptedWalletBackupEnrollmentEpochDiscoveryProof,
+    ],
+    ["account operation", sdkPrepareEncryptedWalletBackupAccountOperation],
+    [
+      "manifest synchronization",
+      sdkSynchronizeEncryptedWalletBackupManifestHead,
+    ],
+    ["object upload", sdkUploadEncryptedWalletBackupBatch],
+    ["upload abandonment", sdkAbandonEncryptedWalletBackupUploadAttempt],
+    ["fork cleanup", sdkCleanUpRejectedEncryptedWalletBackupFork],
+  ];
+  for (const [name, invoke] of cases) {
+    await assert.rejects(
+      () => invoke({ signal: undefined } as never),
+      /abort signal is invalid/,
+      name,
+    );
+  }
 });
 
 test("origin-loss enrollment epoch discovery is signed and non-mutating", async () => {
@@ -354,6 +531,26 @@ test("origin-loss enrollment epoch discovery is signed and non-mutating", async 
     },
   });
   assert.deepEqual(discovered, { state: "active", enrollmentEpoch: 7 });
+  await assert.rejects(
+    () =>
+      discoverEncryptedWalletBackupEnrollmentEpoch({
+        keyHandle,
+        requestProof: proof,
+        remote: {
+          async discoverEnrollmentEpoch() {
+            return {
+              status: "rate-limited" as const,
+              retryAfterSeconds: 19,
+            };
+          },
+        },
+      }),
+    (error) =>
+      error instanceof EncryptedWalletBackupRemoteBackoffError &&
+      error.status === "rate-limited" &&
+      error.retryAfterSeconds === 19 &&
+      error.delayMilliseconds() === 19_000,
+  );
   await assert.rejects(
     () =>
       prepareEncryptedWalletBackupRequestProof({
@@ -2697,23 +2894,21 @@ test("delayed CAS and abort signing cannot dispatch after owner takeover", async
   const cleanupFixture = await createRejectedCasFixtureForTest();
   const cleanupDelay = delayedSigningRuntimeForTest();
   let cleanupDispatches = 0;
-  const cleanupWork = BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork(
-    {
-      claim: cleanupFixture.finalizedNextUploads.claim,
-      keyHandle: cleanupFixture.keyHandle,
-      store: cleanupFixture.finalizedBundle.store,
-      enrollmentEpoch: 1,
-      url: "https://backup.example.test/v1/upload-attempts/abort",
-      clock: { nowUnixSeconds: () => 1_700_000_000 },
-      runtime: cleanupDelay.runtime,
-      remote: {
-        async abortUploadAttempt() {
-          cleanupDispatches += 1;
-          return { status: "abandoned" as const };
-        },
+  const cleanupWork = cleanUpRejectedEncryptedWalletBackupFork({
+    claim: cleanupFixture.finalizedNextUploads.claim,
+    keyHandle: cleanupFixture.keyHandle,
+    store: cleanupFixture.finalizedBundle.store,
+    enrollmentEpoch: 1,
+    url: "https://backup.example.test/v1/upload-attempts/abort",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    runtime: cleanupDelay.runtime,
+    remote: {
+      async abortUploadAttempt() {
+        cleanupDispatches += 1;
+        return { status: "abandoned" as const };
       },
     },
-  );
+  });
   await cleanupDelay.signingStarted;
   cleanupFixture.finalizedBundle.store.setNowUnixMilliseconds(
     cleanupFixture.finalizedNextUploads.claim.record
@@ -3231,7 +3426,7 @@ test("foreign-head cleanup retains the slot and already-finalized releases it wi
   );
   await assert.rejects(
     () =>
-      BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+      cleanUpRejectedEncryptedWalletBackupFork({
         claim: finalizedNextUploads.claim,
         store: finalizedBundle.store,
         keyHandle,
@@ -3245,7 +3440,7 @@ test("foreign-head cleanup retains the slot and already-finalized releases it wi
   const retainedCounts = finalizedBundle.store.coordinatorRecordCounts();
   await assert.rejects(
     () =>
-      BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+      cleanUpRejectedEncryptedWalletBackupFork({
         claim: finalizedNextUploads.claim,
         store: finalizedBundle.store,
         keyHandle,
@@ -3269,20 +3464,19 @@ test("foreign-head cleanup retains the slot and already-finalized releases it wi
     (raw: unknown) => structuredClone(raw) as Record<string, unknown>,
   );
   assert.equal(retained.lifecycle, "fork-cleanup-uncertain");
-  const cleaned =
-    await BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
-      claim: finalizedNextUploads.claim,
-      store: finalizedBundle.store,
-      keyHandle,
-      enrollmentEpoch: 1,
-      url: "https://backup.example.test/v1/upload-attempts/cleanup",
-      clock: { nowUnixSeconds: () => 1_700_000_000 },
-      remote: {
-        async abortUploadAttempt() {
-          return { status: "already-finalized" as const };
-        },
+  const cleaned = await cleanUpRejectedEncryptedWalletBackupFork({
+    claim: finalizedNextUploads.claim,
+    store: finalizedBundle.store,
+    keyHandle,
+    enrollmentEpoch: 1,
+    url: "https://backup.example.test/v1/upload-attempts/cleanup",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    remote: {
+      async abortUploadAttempt() {
+        return { status: "already-finalized" as const };
       },
-    });
+    },
+  });
   assert.equal(cleaned.state, "complete");
   assert.equal(cleaned.receiptAuthority, "none");
   await sealEncryptedWalletBackupUploadAttempt({
@@ -3305,7 +3499,7 @@ test("fork cleanup binds immutable CAS identity and rejects callback protocol fa
   );
   const delayed = delayedSigningRuntimeForTest();
   let remoteCalls = 0;
-  const cleanup = BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+  const cleanup = cleanUpRejectedEncryptedWalletBackupFork({
     claim: identityFixture.finalizedNextUploads.claim,
     keyHandle: identityFixture.keyHandle,
     store: identityStore,
@@ -3350,7 +3544,7 @@ test("fork cleanup binds immutable CAS identity and rejects callback protocol fa
   };
   await assert.rejects(
     () =>
-      BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+      cleanUpRejectedEncryptedWalletBackupFork({
         claim: repeatedFixture.finalizedNextUploads.claim,
         keyHandle: repeatedFixture.keyHandle,
         store: repeatedStore,
@@ -3389,7 +3583,7 @@ test("fork cleanup binds immutable CAS identity and rejects callback protocol fa
   };
   await assert.rejects(
     () =>
-      BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+      cleanUpRejectedEncryptedWalletBackupFork({
         claim: repeatedFixture.finalizedNextUploads.claim,
         keyHandle: repeatedFixture.keyHandle,
         store: repeatedStore,
@@ -3466,20 +3660,19 @@ test("zero-delta fork cleanup is automatic and deletes terminal coordinator rows
     attempt: uncertain,
     event: { type: "head-observed", observation: foreignObservation },
   });
-  const cleaned =
-    await BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
-      claim,
-      keyHandle: fixture.keyHandle,
-      store,
-      enrollmentEpoch: 1,
-      url: "https://backup.example.test/v1/upload-attempts/cleanup",
-      clock: { nowUnixSeconds: () => 1_700_000_000 },
-      remote: {
-        async abortUploadAttempt() {
-          return { status: "abandoned" as const };
-        },
+  const cleaned = await cleanUpRejectedEncryptedWalletBackupFork({
+    claim,
+    keyHandle: fixture.keyHandle,
+    store,
+    enrollmentEpoch: 1,
+    url: "https://backup.example.test/v1/upload-attempts/cleanup",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    remote: {
+      async abortUploadAttempt() {
+        return { status: "abandoned" as const };
       },
-    });
+    },
+  });
   assert.equal(cleaned.state, "abandoned");
   assert.deepEqual(store.coordinatorRecordCounts(), {
     attempts: 0,
@@ -3526,7 +3719,7 @@ test("fork cleanup binds every duplicated CAS head field to canonical aggregate 
       let remoteCalls = 0;
       await assert.rejects(
         () =>
-          BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+          cleanUpRejectedEncryptedWalletBackupFork({
             claim: fixture.finalizedNextUploads.claim,
             keyHandle: fixture.keyHandle,
             store,
@@ -3589,8 +3782,292 @@ test("linked CAS retry, crash rehydration, and DB-time exhaustion remain exact",
   const resumed = await resumeEncryptedWalletBackupSyncAttempt({
     attempt: value,
   });
-  assert.equal(resumed.record.state, "sealed");
-  assert.equal(resumed.record.casAttempts, 0);
+  assert.equal(resumed.record.state, "reconcile-before-retry");
+  assert.equal(resumed.record.casAttempts, 3);
+});
+
+test("head-CAS quota rejection persists backoff before observing the head", async () => {
+  const { keyHandle, head, finalizedNextUploads, finalizedBundle } =
+    await createCasRecoveryFixtureForTest();
+  let casCalls = 0;
+  let headCalls = 0;
+  const value = await synchronizeEncryptedWalletBackupManifestHead({
+    attempt: finalizedNextUploads.casAttempt,
+    keyHandle,
+    enrollmentEpoch: 1,
+    casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+    headUrl: "https://backup.example.test/v1/head",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    remote: {
+      async compareAndSwapCurrentHead() {
+        casCalls += 1;
+        return { status: "quota-exceeded" as const };
+      },
+      async readCurrentHead() {
+        headCalls += 1;
+        return {
+          status: "found" as const,
+          enrollmentEpoch: 1,
+          head: readPreparedEncryptedWalletBackupManifestHead(head),
+        };
+      },
+    },
+  });
+  assert.equal(casCalls, 1);
+  assert.equal(headCalls, 1);
+  assert.equal(value.record.state, "retry-exhausted");
+  assert.equal(value.record.casAttempts, 1);
+  assert.equal(value.record.retryNotBeforeUnixMilliseconds, 1_700_000_005_000);
+  const notReady = await resumeEncryptedWalletBackupSyncAttempt({
+    attempt: value,
+  });
+  assert.equal(notReady.record.state, "retry-exhausted");
+  assert.equal(notReady.record.casAttempts, 1);
+  const restartClaim = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "test-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    store: finalizedBundle.store,
+  });
+  assert.notEqual(restartClaim, null);
+  const restarted = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: restartClaim!,
+    keyHandle,
+    store: finalizedBundle.store,
+  });
+  assert.equal(restarted.record.state, "retry-exhausted");
+  assert.equal(restarted.record.casAttempts, 1);
+  assert.equal(
+    restarted.record.retryNotBeforeUnixMilliseconds,
+    1_700_000_005_000,
+  );
+  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_005_000);
+  const ready = await resumeEncryptedWalletBackupSyncAttempt({
+    attempt: restarted,
+  });
+  assert.equal(ready.record.state, "reconcile-before-retry");
+  assert.equal(ready.record.casAttempts, 1);
+});
+
+test("head-CAS rate limit persists the validated server hint using DB time", async () => {
+  const { keyHandle, head, finalizedNextUploads, finalizedBundle } =
+    await createCasRecoveryFixtureForTest();
+  const value = await synchronizeEncryptedWalletBackupManifestHead({
+    attempt: finalizedNextUploads.casAttempt,
+    keyHandle,
+    enrollmentEpoch: 1,
+    casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+    headUrl: "https://backup.example.test/v1/head",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    remote: {
+      async compareAndSwapCurrentHead() {
+        return {
+          status: "rate-limited" as const,
+          retryAfterSeconds: 17,
+        };
+      },
+      async readCurrentHead() {
+        return {
+          status: "found" as const,
+          enrollmentEpoch: 1,
+          head: readPreparedEncryptedWalletBackupManifestHead(head),
+        };
+      },
+    },
+  });
+  assert.equal(value.record.state, "retry-exhausted");
+  assert.equal(value.record.casAttempts, 1);
+  assert.equal(value.record.retryNotBeforeUnixMilliseconds, 1_700_000_017_000);
+  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_016_999);
+  assert.equal(
+    (await resumeEncryptedWalletBackupSyncAttempt({ attempt: value })).record
+      .state,
+    "retry-exhausted",
+  );
+  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_017_000);
+  const ready = await resumeEncryptedWalletBackupSyncAttempt({
+    attempt: value,
+  });
+  assert.equal(ready.record.state, "reconcile-before-retry");
+  assert.equal(ready.record.casAttempts, 1);
+});
+
+test("CAS backoff survives a failed head read and restart reconciles before redispatch", async () => {
+  const { keyHandle, head, nextHead, finalizedNextUploads, finalizedBundle } =
+    await createCasRecoveryFixtureForTest();
+  const deferred = await synchronizeEncryptedWalletBackupManifestHead({
+    attempt: finalizedNextUploads.casAttempt,
+    keyHandle,
+    enrollmentEpoch: 1,
+    casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+    headUrl: "https://backup.example.test/v1/head",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    remote: {
+      async compareAndSwapCurrentHead() {
+        return { status: "rate-limited" as const, retryAfterSeconds: 17 };
+      },
+      async readCurrentHead() {
+        return { status: "unavailable" as const };
+      },
+    },
+  });
+  assert.equal(deferred.record.state, "retry-exhausted");
+  assert.equal(
+    deferred.record.retryNotBeforeUnixMilliseconds,
+    1_700_000_017_000,
+  );
+
+  const restartClaim = await claimEncryptedWalletBackupUploadAttempt({
+    ownerId: "test-owner",
+    leaseDurationMilliseconds: 60_000,
+    keyHandle,
+    store: finalizedBundle.store,
+  });
+  assert.notEqual(restartClaim, null);
+  const restarted = await sealOrRehydrateEncryptedWalletBackupCasAttempt({
+    claim: restartClaim!,
+    keyHandle,
+    store: finalizedBundle.store,
+  });
+  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_016_999);
+  let earlyCalls = 0;
+  const notReady = await synchronizeEncryptedWalletBackupManifestHead({
+    attempt: restarted,
+    keyHandle,
+    enrollmentEpoch: 1,
+    casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+    headUrl: "https://backup.example.test/v1/head",
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    remote: {
+      async compareAndSwapCurrentHead() {
+        earlyCalls += 1;
+        throw new Error("not-before boundary was bypassed");
+      },
+      async readCurrentHead() {
+        earlyCalls += 1;
+        throw new Error("not-before boundary was bypassed");
+      },
+    },
+  });
+  assert.equal(notReady.record.state, "retry-exhausted");
+  assert.equal(earlyCalls, 0);
+
+  finalizedBundle.store.setNowUnixMilliseconds(1_700_000_017_000);
+  const order: string[] = [];
+  let headCalls = 0;
+  const acknowledged = await synchronizeEncryptedWalletBackupManifestHead({
+    attempt: notReady,
+    keyHandle,
+    enrollmentEpoch: 1,
+    casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+    headUrl: "https://backup.example.test/v1/head",
+    clock: { nowUnixSeconds: () => 1_700_000_017 },
+    remote: {
+      async compareAndSwapCurrentHead() {
+        order.push("cas");
+        return { status: "committed" as const };
+      },
+      async readCurrentHead() {
+        order.push("head");
+        headCalls += 1;
+        return {
+          status: "found" as const,
+          enrollmentEpoch: 1,
+          head: readPreparedEncryptedWalletBackupManifestHead(
+            headCalls === 1 ? head : nextHead,
+          ),
+        };
+      },
+    },
+  });
+  assert.deepEqual(order, ["head", "cas", "head"]);
+  assert.equal(acknowledged.record.state, "acknowledged");
+});
+
+test("delayed CAS reconciliation accepts target and foreign heads", async (t) => {
+  for (const expected of ["acknowledged", "fork-rejected"] as const) {
+    await t.test(expected, async () => {
+      const fixture = await createCasRecoveryFixtureForTest();
+      const uncertain = await advanceEncryptedWalletBackupSyncAttempt({
+        attempt: fixture.finalizedNextUploads.casAttempt,
+        event: { type: "cas-dispatched" },
+      });
+      const deferred = await advanceEncryptedWalletBackupSyncAttempt({
+        attempt: uncertain,
+        event: { type: "retry-deferred", delayMilliseconds: 5_000 },
+      });
+      fixture.finalizedBundle.store.setNowUnixMilliseconds(1_700_000_005_000);
+      const resumed = await resumeEncryptedWalletBackupSyncAttempt({
+        attempt: deferred,
+      });
+      assert.equal(resumed.record.state, "reconcile-before-retry");
+      assert.equal(resumed.record.casAttempts, 1);
+      const reconciled = await advanceEncryptedWalletBackupSyncAttempt({
+        attempt: resumed,
+        event: {
+          type: "head-observed",
+          observation:
+            expected === "acknowledged"
+              ? fixture.targetObservation
+              : fixture.foreignObservation,
+        },
+      });
+      assert.equal(reconciled.record.state, expected);
+      assert.equal(reconciled.record.casAttempts, 1);
+    });
+  }
+});
+
+test("one cycle deadline covers signing and every request across a CAS retry", async () => {
+  const { keyHandle, head, finalizedNextUploads, finalizedBundle } =
+    await createCasRecoveryFixtureForTest();
+  const controller = new AbortController();
+  const observedSignals: AbortSignal[] = [];
+  let casCalls = 0;
+  let headCalls = 0;
+  await assert.rejects(
+    synchronizeEncryptedWalletBackupManifestHead({
+      attempt: finalizedNextUploads.casAttempt,
+      keyHandle,
+      enrollmentEpoch: 1,
+      casUrl: "https://backup.example.test/v1/head:compare-and-swap",
+      headUrl: "https://backup.example.test/v1/head",
+      clock: { nowUnixSeconds: () => 1_700_000_000 },
+      signal: controller.signal,
+      remote: {
+        async compareAndSwapCurrentHead(input) {
+          observedSignals.push(input.signal!);
+          casCalls += 1;
+          if (casCalls === 1) return { status: "conflict" as const };
+          controller.abort();
+          return new Promise<never>(() => undefined);
+        },
+        async readCurrentHead(input) {
+          observedSignals.push(input.signal!);
+          headCalls += 1;
+          return {
+            status: "found" as const,
+            enrollmentEpoch: 1,
+            head: readPreparedEncryptedWalletBackupManifestHead(head),
+          };
+        },
+      },
+    }),
+    EncryptedWalletBackupDeadlineError,
+  );
+  assert.equal(casCalls, 2);
+  assert.equal(headCalls, 1);
+  assert.equal(observedSignals.length, 3);
+  assert.ok(observedSignals.every((signal) => signal === observedSignals[0]));
+  assert.equal(
+    (
+      await finalizedBundle.store.readCasAttempt(
+        finalizedNextUploads.casAttempt.record.attemptId,
+        (raw: unknown) => structuredClone(raw) as { state: string },
+      )
+    ).state,
+    "cas-uncertain",
+  );
 });
 
 test("persisted CAS state/count and aggregate lifecycle combinations are exhaustive", async () => {
@@ -3615,6 +4092,7 @@ test("persisted CAS state/count and aggregate lifecycle combinations are exhaust
     "cas-uncertain",
     "retry-cas",
     "retry-exhausted",
+    "reconcile-before-retry",
     "acknowledged",
     "fork-rejected",
   ] as const;
@@ -3635,11 +4113,13 @@ test("persisted CAS state/count and aggregate lifecycle combinations are exhaust
             ((state === "sealed" && count === 0) ||
               (state === "cas-uncertain" && count >= 1) ||
               (state === "retry-cas" && count >= 1 && count < 3) ||
+              (state === "reconcile-before-retry" && count >= 1) ||
               ((state === "acknowledged" || state === "fork-rejected") &&
                 count >= 1))
               ? true
               : state === "retry-exhausted" &&
-                count === 3 &&
+                count >= 1 &&
+                count <= 3 &&
                 retryBoundary !== null;
           const validLifecycle =
             (lifecycle === "cas-journaled" &&
@@ -3648,6 +4128,7 @@ test("persisted CAS state/count and aggregate lifecycle combinations are exhaust
                 "cas-uncertain",
                 "retry-cas",
                 "retry-exhausted",
+                "reconcile-before-retry",
               ].includes(state)) ||
             ((lifecycle === "fork-cleanup-uncertain" ||
               lifecycle === "abandoned") &&
@@ -3687,7 +4168,8 @@ test("persisted CAS state/count and aggregate lifecycle combinations are exhaust
     if (
       state === "sealed" ||
       state === "cas-uncertain" ||
-      state === "retry-cas"
+      state === "retry-cas" ||
+      state === "reconcile-before-retry"
     ) {
       assert.equal((await operation).record.state, state);
     } else {
@@ -4004,7 +4486,11 @@ test("authoritative service quota refusal remains fail-closed after local planni
           },
         },
       }),
-    /quota-exceeded/,
+    (error) =>
+      error instanceof EncryptedWalletBackupRemoteBackoffError &&
+      error.status === "quota-exceeded" &&
+      error.retryAfterSeconds === null &&
+      error.delayMilliseconds() === 5_000,
   );
   assert.ok(remoteCalls >= 1);
   assert.equal(
@@ -4017,6 +4503,76 @@ test("authoritative service quota refusal remains fail-closed after local planni
     ).record.state,
     "put-uncertain",
   );
+});
+
+test("parallel upload failures reduce deterministically without hiding fatal errors or shorter backoff", async () => {
+  assert.throws(
+    () => new EncryptedWalletBackupRemoteBackoffError("quota-exceeded", 1),
+    /must not include retry-after/,
+  );
+
+  const backoffFixture = await createSealedUploadMutationFixtureForTest("59");
+  const backoffResolvers: Array<
+    (
+      value:
+        | { status: "overloaded"; retryAfterSeconds: 7 }
+        | { status: "rate-limited"; retryAfterSeconds: 31 }
+        | { status: "unavailable"; retryAfterSeconds: null },
+    ) => void
+  > = [];
+  const backoffUpload = uploadEncryptedWalletBackupBatch({
+    batch: backoffFixture.batch,
+    claim: backoffFixture.claim,
+    keyHandle: backoffFixture.keyHandle,
+    store: backoffFixture.store,
+    enrollmentEpoch: 1,
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
+    remote: {
+      async putObject() {
+        return new Promise((resolve) => backoffResolvers.push(resolve));
+      },
+    },
+  });
+  await waitForArrayLength(backoffResolvers, 3);
+  backoffResolvers[2]!({ status: "unavailable", retryAfterSeconds: null });
+  backoffResolvers[0]!({ status: "overloaded", retryAfterSeconds: 7 });
+  backoffResolvers[1]!({ status: "rate-limited", retryAfterSeconds: 31 });
+  await assert.rejects(
+    backoffUpload,
+    (error) =>
+      error instanceof EncryptedWalletBackupRemoteBackoffError &&
+      error.status === "rate-limited" &&
+      error.delayMilliseconds() === 31_000,
+  );
+
+  const fatalFixture = await createSealedUploadMutationFixtureForTest("69");
+  const fatalResolvers: Array<
+    (
+      value:
+        | { status: "overloaded"; retryAfterSeconds: 31 }
+        | { status: "forged" },
+    ) => void
+  > = [];
+  const fatalUpload = uploadEncryptedWalletBackupBatch({
+    batch: fatalFixture.batch,
+    claim: fatalFixture.claim,
+    keyHandle: fatalFixture.keyHandle,
+    store: fatalFixture.store,
+    enrollmentEpoch: 1,
+    clock: { nowUnixSeconds: () => 1_700_000_000 },
+    objectUrl: (objectId) => `https://backup.example.test/${objectId}`,
+    remote: {
+      async putObject() {
+        return new Promise((resolve) => fatalResolvers.push(resolve)) as never;
+      },
+    },
+  });
+  await waitForArrayLength(fatalResolvers, 3);
+  fatalResolvers[0]!({ status: "overloaded", retryAfterSeconds: 31 });
+  fatalResolvers[2]!({ status: "overloaded", retryAfterSeconds: 31 });
+  fatalResolvers[1]!({ status: "forged" });
+  await assert.rejects(fatalUpload, /object upload failed: forged/);
 });
 
 test("upload mutation adapters reject mutation, repeated, late, and wrong callbacks", async () => {
@@ -4677,7 +5233,7 @@ test("every linked CAS callback port rejects wrong, multiple, and late callbacks
       let remoteCalls = 0;
       await assert.rejects(
         () =>
-          BackupSyncModule.cleanUpRejectedEncryptedWalletBackupFork({
+          cleanUpRejectedEncryptedWalletBackupFork({
             claim: fixture.finalizedNextUploads.claim,
             keyHandle: fixture.keyHandle,
             store,
@@ -6327,6 +6883,19 @@ function deterministicRuntime(
       return target;
     },
   };
+}
+
+async function waitForArrayLength(
+  values: readonly unknown[],
+  expected: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (values.length === expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(
+    `expected ${expected} concurrent calls, observed ${values.length}`,
+  );
 }
 
 function delayedSigningRuntimeForTest(): {

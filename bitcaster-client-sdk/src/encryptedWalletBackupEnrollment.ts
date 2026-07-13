@@ -1,11 +1,19 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
-import type { EncryptedWalletBackupKeyHandle } from './encryptedWalletBackup.ts'
+import {
+  EncryptedWalletBackupRemoteBackoffError,
+  type EncryptedWalletBackupKeyHandle,
+} from './encryptedWalletBackup.ts'
 import { requireIssuedEncryptedWalletBackupKeyHandle } from './encryptedWalletBackupKeyAuthority.ts'
 import {
   encodeCanonicalBackupCbor as encodeCanonical,
   structurallyPreflightEncryptedBackupAccountRequestCbor,
 } from './encryptedWalletBackupCbor.ts'
+import {
+  awaitEncryptedWalletBackupCycle,
+  requireEncryptedWalletBackupCycleSignal,
+  throwIfEncryptedWalletBackupCycleAborted,
+} from './encryptedWalletBackupDeadline.ts'
 
 export const ENCRYPTED_WALLET_BACKUP_ACCOUNT_AUTHORIZATION_MAX_BYTES = 16 * 1_024
 
@@ -19,6 +27,7 @@ export interface EncryptedWalletBackupAccountAuthorizationPort {
     operationId: string
     intentDigest: string
     canonicalIntent: Uint8Array
+    signal: AbortSignal
   }): Promise<Readonly<{
     scheme: string
     authorization: Uint8Array
@@ -49,6 +58,7 @@ interface AccountOperationAuthority {
   readonly realm: string
   readonly vaultId: string
   readonly requestAuthPublicKey: string
+  readonly cycleSignal: AbortSignal
 }
 
 const ACCOUNT_OPERATION_AUTHORITIES = new WeakMap<object, AccountOperationAuthority>()
@@ -66,7 +76,10 @@ export async function prepareEncryptedWalletBackupAccountOperation(input: {
   operationId: string
   expectedEnrollmentEpoch: number
   authorizationPort: EncryptedWalletBackupAccountAuthorizationPort
+  signal: AbortSignal
 }): Promise<PreparedEncryptedWalletBackupAccountOperation> {
+  const cycleSignal = requireEncryptedWalletBackupCycleSignal(input.signal)
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal)
   const keyHandle = requireKeyHandle(input.keyHandle)
   const action = requireAction(input.action)
   const method = action === 'delete' ? 'DELETE' as const : 'POST' as const
@@ -95,14 +108,18 @@ export async function prepareEncryptedWalletBackupAccountOperation(input: {
     hexToBytes(operationId),
   ])
   const intentDigest = bytesToHex(sha256(canonicalIntent))
-  const authorized = await input.authorizationPort.authorizeBackupAccountOperation({
-    action,
-    method,
-    url,
-    operationId,
-    intentDigest,
-    canonicalIntent: canonicalIntent.slice(),
-  })
+  const authorized = await awaitEncryptedWalletBackupCycle(
+    input.authorizationPort.authorizeBackupAccountOperation({
+      action,
+      method,
+      url,
+      operationId,
+      intentDigest,
+      canonicalIntent: canonicalIntent.slice(),
+      signal: cycleSignal,
+    }),
+    cycleSignal,
+  )
   if (typeof authorized !== 'object' || authorized === null) {
     throw new Error('backup account authorization is invalid')
   }
@@ -145,6 +162,7 @@ export async function prepareEncryptedWalletBackupAccountOperation(input: {
     realm: keyHandle.realm,
     vaultId: keyHandle.vaultId,
     requestAuthPublicKey: keyHandle.requestAuthPublicKey,
+    cycleSignal,
   })
   return prepared
 }
@@ -186,6 +204,7 @@ export interface EncryptedWalletBackupAccountOperationRemotePort {
   executeAccountOperation(input: {
     operation: PreparedEncryptedWalletBackupAccountOperation
     canonicalRequest: Uint8Array
+    signal: AbortSignal
   }): Promise<
     | Readonly<{
         status: 'committed' | 'conflict'
@@ -194,7 +213,10 @@ export interface EncryptedWalletBackupAccountOperationRemotePort {
         enrollmentEpoch: number
         lifecycle: EncryptedWalletBackupEnrollmentLifecycle
       }>
-    | Readonly<{ status: 'unauthorized' | 'rate-limited' | 'overloaded' | 'unavailable' }>
+    | Readonly<{
+        status: 'unauthorized' | 'rate-limited' | 'overloaded' | 'unavailable'
+        retryAfterSeconds?: number | null
+      }>
   >
 }
 
@@ -215,6 +237,8 @@ export async function executeEncryptedWalletBackupAccountOperation(input: {
     ? ACCOUNT_OPERATION_AUTHORITIES.get(input.operation)
     : undefined
   if (authority === undefined) throw new Error('backup account operation is not prepared')
+  const cycleSignal = authority.cycleSignal
+  throwIfEncryptedWalletBackupCycleAborted(cycleSignal)
   if (typeof input.remote !== 'object' || input.remote === null
     || typeof input.remote.executeAccountOperation !== 'function') {
     throw new Error('backup account operation remote port is invalid')
@@ -223,15 +247,25 @@ export async function executeEncryptedWalletBackupAccountOperation(input: {
     || typeof input.store.commitAccountOperationResult !== 'function') {
     throw new Error('backup account operation result store is invalid')
   }
-  const response = await input.remote.executeAccountOperation({
-    operation: input.operation,
-    canonicalRequest: authority.canonicalRequest.slice(),
-  })
+  const response = await awaitEncryptedWalletBackupCycle(
+    input.remote.executeAccountOperation({
+      operation: input.operation,
+      canonicalRequest: authority.canonicalRequest.slice(),
+      signal: cycleSignal,
+    }),
+    cycleSignal,
+  )
   if (typeof response !== 'object' || response === null || typeof response.status !== 'string') {
     throw new Error('backup account operation response is invalid')
   }
-  if (response.status === 'unauthorized' || response.status === 'rate-limited'
+  if (response.status === 'rate-limited'
     || response.status === 'overloaded' || response.status === 'unavailable') {
+    throw new EncryptedWalletBackupRemoteBackoffError(
+      response.status,
+      response.retryAfterSeconds,
+    )
+  }
+  if (response.status === 'unauthorized') {
     throw new Error(`backup account operation failed: ${response.status}`)
   }
   if (response.status !== 'committed' && response.status !== 'conflict') {
