@@ -54,6 +54,11 @@ import {
   requireEncryptedWalletBackupCycleSignal,
   throwIfEncryptedWalletBackupCycleAborted,
 } from "./encryptedWalletBackupDeadline.ts";
+import {
+  ENCRYPTED_WALLET_BACKUP_RETRY_BASE_MILLISECONDS,
+  ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX,
+  planEncryptedWalletBackupRetry,
+} from "./encryptedWalletBackupRetrySchedule.ts";
 export { EncryptedWalletBackupDeadlineError } from "./encryptedWalletBackupDeadline.ts";
 export {
   ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
@@ -608,6 +613,7 @@ export interface EncryptedWalletBackupSyncAttemptRecord {
   readonly canonicalCasPayload: Uint8Array;
   readonly casPayloadDigest: string;
   readonly casAttempts: number;
+  readonly retryStreak: number;
   readonly retryNotBeforeUnixMilliseconds: number | null;
   readonly state:
     | "sealed"
@@ -2852,8 +2858,16 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
     case "retry-deferred": {
       if (current.state !== "cas-uncertain")
         throw new Error("backup CAS retry deferral is out of order");
+      const schedule = planEncryptedWalletBackupRetry({
+        realm: current.realm,
+        vaultId: current.vaultId,
+        attemptId: current.attemptId,
+        currentStreak: current.retryStreak,
+        minimumDelayMilliseconds: input.event.delayMilliseconds,
+      });
       const exhaustedCandidate = freezeSyncAttempt({
         ...current,
+        retryStreak: schedule.streak,
         state: "retry-exhausted",
         retryNotBeforeUnixMilliseconds: 1,
       });
@@ -2863,7 +2877,7 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
         exhaustedCandidate,
         attemptAuthority.keyHandle,
         requireInteger(
-          input.event.delayMilliseconds,
+          schedule.delayMilliseconds,
           1,
           3_600_000,
           "backup retry deferral delay",
@@ -2893,6 +2907,7 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
       if (observed === current.targetHead.manifestDigest) {
         next = freezeSyncAttempt({
           ...current,
+          retryStreak: 0,
           state: "acknowledged",
           retryNotBeforeUnixMilliseconds: null,
         });
@@ -2910,8 +2925,17 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
         ) {
           next = freezeSyncAttempt({ ...current, state: "retry-cas" });
         } else {
+          const schedule = planEncryptedWalletBackupRetry({
+            realm: current.realm,
+            vaultId: current.vaultId,
+            attemptId: current.attemptId,
+            currentStreak: current.retryStreak,
+            minimumDelayMilliseconds:
+              ENCRYPTED_WALLET_BACKUP_RETRY_BASE_MILLISECONDS,
+          });
           const exhaustedCandidate = freezeSyncAttempt({
             ...current,
+            retryStreak: schedule.streak,
             state: "retry-exhausted",
             retryNotBeforeUnixMilliseconds: 1,
           });
@@ -2920,6 +2944,7 @@ export async function advanceEncryptedWalletBackupSyncAttempt(input: {
             current,
             exhaustedCandidate,
             attemptAuthority.keyHandle,
+            schedule.delayMilliseconds,
           );
         }
       } else {
@@ -4995,6 +5020,7 @@ function decodeSyncAttemptRecord(
     "canonicalCasPayload",
     "casPayloadDigest",
     "casAttempts",
+    "retryStreak",
     "retryNotBeforeUnixMilliseconds",
     "state",
   ]);
@@ -5041,6 +5067,12 @@ function decodeSyncAttemptRecord(
     ENCRYPTED_WALLET_BACKUP_CAS_ATTEMPT_MAX,
     "CAS attempts",
   );
+  const retryStreak = requireInteger(
+    record.retryStreak,
+    0,
+    ENCRYPTED_WALLET_BACKUP_RETRY_STREAK_MAX,
+    "backup retry streak",
+  );
   const retryNotBeforeUnixMilliseconds =
     record.retryNotBeforeUnixMilliseconds === null
       ? null
@@ -5053,6 +5085,7 @@ function decodeSyncAttemptRecord(
   validateEncryptedWalletBackupCasState({
     state,
     casAttempts,
+    retryStreak,
     retryNotBeforeUnixMilliseconds,
   });
   return freezeSyncAttempt({
@@ -5079,6 +5112,7 @@ function decodeSyncAttemptRecord(
     canonicalCasPayload,
     casPayloadDigest,
     casAttempts,
+    retryStreak,
     retryNotBeforeUnixMilliseconds,
     state,
   });
@@ -5221,6 +5255,7 @@ function equalSyncAttemptRecord(
     equalBytes(left.canonicalCasPayload, right.canonicalCasPayload) &&
     left.casPayloadDigest === right.casPayloadDigest &&
     left.casAttempts === right.casAttempts &&
+    left.retryStreak === right.retryStreak &&
     left.retryNotBeforeUnixMilliseconds ===
       right.retryNotBeforeUnixMilliseconds &&
     left.state === right.state
