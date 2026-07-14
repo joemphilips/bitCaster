@@ -7,13 +7,13 @@ import { createRealDaemonSwapOps } from '../src/swapProtocolAdapter.ts'
 import {
   emptyDaemonState,
   readState,
-  writeState,
   type CashuProofRecord,
 } from '../src/state.ts'
 import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
   type DurableTradeSession,
 } from '@bitcaster-market/client-sdk/durableTradeRecovery'
+import { writeStateWithDurableSessionKeys } from './durableSessionTestStore.ts'
 
 test('real daemon swap adapter maps SDK daemon context to atomic-swap operations', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-swap-adapter-'))
@@ -22,8 +22,11 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
   const calls: string[] = []
   try {
     const initial = emptyDaemonState()
-    initial.durableTradeSessions['trade-seller'] = durableSession('trade-seller', 'seller')
-    await writeState(initial)
+    initial.durableTradeSessions['trade-seller'] = durableSession(
+      'trade-seller',
+      'seller',
+    )
+    await writeStateWithDurableSessionKeys(initial)
     const ops = createRealDaemonSwapOps({
       nut07PollDeadlineMs: 10,
       nut07PollIntervalMs: 1,
@@ -42,7 +45,12 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
                 send: [output('split-send-secret')],
                 keep: [output('split-keep-secret')],
               },
-              metadata: { amount: params.amountSats, fees: 0, keysetId: 'keyset-100' },
+              metadata: {
+                amount: params.amountSats,
+                fees: 0,
+                keysetId: 'keyset-100',
+                unselectedProofs: [],
+              },
             })
             await params.proofOperationStore?.markProofOperationCompleted(
               params.operationId ?? 'missing',
@@ -68,12 +76,21 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
               inputs: proofs,
               outputs: {
                 send: [output('send-secret')],
+                keep: [output('keep-secret')],
               },
-              metadata: { amount: 100, fees: 0, keysetId: 'keyset-100' },
+              metadata: {
+                amount: 100,
+                fees: 0,
+                keysetId: 'keyset-100',
+                unselectedProofs: [],
+              },
             })
             await options?.proofOperationStore?.markProofOperationCompleted(
               options.operationId ?? 'missing',
-              { send: [proof(100, 'seller-locked')] },
+              {
+                send: [proof(100, 'seller-locked')],
+                keep: [proof(1, 'seller-change')],
+              },
             )
             return {
               adaptorPointCipher: 'cipher-a',
@@ -101,7 +118,12 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
               changeProofs: [],
             }
           },
-          async sellerLockOutcomeProofs(ctx, outcomeProofs, amountSats, options) {
+          async sellerLockOutcomeProofs(
+            ctx,
+            outcomeProofs,
+            amountSats,
+            options,
+          ) {
             calls.push(
               `sellerLockOutcome:${options?.operationId}:${ctx.tradeId}:${amountSats}:${outcomeProofs[0].secret}`,
             )
@@ -129,7 +151,12 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
               sellerPreSigsHex: ['pre-s'],
             }
           },
-          async sellerClaimSwap(ctx, adaptorPoint, lockedProofsBuyerCipher, options) {
+          async sellerClaimSwap(
+            ctx,
+            adaptorPoint,
+            lockedProofsBuyerCipher,
+            options,
+          ) {
             calls.push(
               `sellerClaim:${options?.operationId}:${ctx.tradeId}:${adaptorPoint.secret[0]}:${adaptorPoint.point[0]}:${lockedProofsBuyerCipher}`,
             )
@@ -195,13 +222,16 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       },
     })
 
-    const sellerOpen = await ops.sellerOpen(ctx('seller', 'trade-seller'), [proof(100, 'seller-input')])
+    const sellerOpen = await ops.sellerOpen(ctx('seller', 'trade-seller'), [
+      proof(100, 'seller-input'),
+    ])
     assert.equal(sellerOpen.adaptorSecretHex, 'aa')
     assert.equal(sellerOpen.adaptorPointHex, 'bb')
 
-    const sellerPrelocked = await ops.sellerOpenPrelocked(ctx('seller', 'trade-seller'), [
-      proof(100, 'prelocked-input'),
-    ])
+    const sellerPrelocked = await ops.sellerOpenPrelocked(
+      ctx('seller', 'trade-seller'),
+      [proof(100, 'prelocked-input')],
+    )
     assert.equal(sellerPrelocked.adaptorSecretHex, 'dd')
     assert.equal(sellerPrelocked.adaptorPointHex, 'ee')
 
@@ -263,24 +293,123 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       'send-secret',
     )
     assert.equal(
-      state?.proofOperations['trade-seller/seller-lock'].durableTradeRecovery?.operationKey,
+      state?.proofOperations['trade-seller/seller-lock'].durableTradeRecovery
+        ?.operationKey,
       'trade-seller/seller-lock',
     )
     assert.equal(
-      state?.proofOperations['trade-seller/seller-lock'].durableTradeRecovery?.role,
+      state?.proofOperations['trade-seller/seller-lock'].durableTradeRecovery
+        ?.role,
       'seller',
     )
     assert.equal(
       state?.proofOperations['trade-seller/seller-mint-ctf-split'].state,
       'completed',
     )
-    assert.equal(state?.durableTradeSessions['trade-seller']?.stage, 'reconciliation-complete')
+    assert.equal(
+      state?.durableTradeSessions['trade-seller']?.stage,
+      'reconciliation-complete',
+    )
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('refund restart reuses the exact output plan persisted before mint handoff', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-refund-restart-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  const tradeId = 'trade-refund'
+  const operationId = `${tradeId}/seller-refund`
+  let preparationCount = 0
+  try {
+    const initial = emptyDaemonState()
+    initial.durableTradeSessions[tradeId] = durableSession(tradeId, 'seller')
+    await writeStateWithDurableSessionKeys(initial)
+    const first = createRefundTestOps({
+      onPrepare: () => { preparationCount += 1 },
+      onComplete: () => { throw new Error('simulated crash after mint handoff') },
+    })
+    await assert.rejects(
+      first.refundLockedProofs(
+        ctx('seller', tradeId),
+        [modernProof(100, 'locked-refund')],
+        operationId,
+      ),
+      /simulated crash/,
+    )
+    const submitted = (await readState())?.proofOperations[operationId]
+    assert.equal(submitted?.state, 'mint-submitted')
+    assert.equal(submitted?.outputs.refund[0]?.secret, '44')
+
+    const recoveredProof = modernProof(100, 'recovered-refund')
+    const restarted = createRefundTestOps({
+      onPrepare: () => { preparationCount += 1 },
+      classification: 'all-unspent',
+      resumed: { keep: [recoveredProof] },
+    })
+    const recovered = await restarted.refundLockedProofs(
+      ctx('seller', tradeId),
+      [modernProof(100, 'locked-refund')],
+      operationId,
+    )
+    assert.deepEqual(recovered, [recoveredProof])
+    assert.equal(preparationCount, 1)
+    assert.deepEqual(
+      (await readState())?.proofOperations[operationId]?.resultProofs?.refund,
+      [recoveredProof],
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+function createRefundTestOps(input: {
+  onPrepare(): void
+  onComplete?: () => never
+  classification?: 'all-unspent' | 'all-spent' | 'pending-or-mixed'
+  resumed?: Record<string, CashuProofRecord[]>
+}) {
+  return createRealDaemonSwapOps({
+    loadAtomicSwapModule: async () => ({
+      inspectExactPreparedProofOperation: async () => input.classification!,
+      resumeExactPreparedProofOperation: async () => input.resumed!,
+      restoreExactPreparedProofOperation: async () => input.resumed!,
+    }) as never,
+    createRefundWallet: () => ({
+      loadMint: async () => undefined,
+      prepareSwapToReceive: async () => {
+        input.onPrepare()
+        return refundPreview()
+      },
+      completeSwap: async () => {
+        input.onComplete?.()
+        return { keep: [modernProof(100, 'fresh-refund')] as never[], send: [] }
+      },
+      checkProofsStates: async () => [],
+    }),
+  })
+}
+
+function refundPreview() {
+  return {
+    amount: 100,
+    fees: 0,
+    keysetId: '0011223344556677',
+    unit: 'sat',
+    inputs: [modernProof(100, 'witnessed-refund')],
+    keepOutputs: [{
+      blindedMessage: { amount: 100, id: '0011223344556677', B_: 'refund-B_' },
+      blindingFactor: 3n,
+      secret: new Uint8Array([0x44]),
+    }],
+    unselectedProofs: [],
+  } as never
+}
 
 function ctx(role: 'seller' | 'buyer', tradeId: string) {
   return {
@@ -337,6 +466,14 @@ function proof(amount: number, secret: string): CashuProofRecord {
     amount,
     secret,
     C: `c-${secret}`,
+  }
+}
+
+function modernProof(amount: number, secret: string): CashuProofRecord {
+  return {
+    ...proof(amount, secret),
+    id: '0011223344556677',
+    C: `02${'33'.repeat(32)}`,
   }
 }
 

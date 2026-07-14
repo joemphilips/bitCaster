@@ -209,6 +209,23 @@ test("exact prepared recovery inspects and completes only persisted operation da
       send: [{ ...send, amount: 6 }],
       keep: [{ ...keep, amount: 4 }],
     });
+    const refundEntry: ProofOperationRecord = {
+      ...entry,
+      operationId: "exact-refund",
+      kind: "swap-refund",
+      outputs: { refund: [storedOutput("keyset-exact", 10)] },
+      metadata: {
+        amount: 10,
+        fees: 0,
+        keysetId: "keyset-exact",
+        unit: "sat",
+        unselectedProofs: [],
+      },
+    };
+    assert.deepEqual(
+      await resumeExactPreparedProofOperation(wallet, refundEntry),
+      { refund: [{ ...keep, amount: 4 }] },
+    );
   } finally {
     CashuWallet.prototype.checkProofsStates = originalCheck;
     CashuWallet.prototype.completeSwap = originalComplete;

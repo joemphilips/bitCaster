@@ -114,6 +114,7 @@ export interface StoredOutputData {
 export type ProofOperationKind =
   | "swap-lock"
   | "swap-claim"
+  | "swap-refund"
   | "conditional-keyset-swap"
   | "ctf-split"
   | "ctf-redeem"
@@ -1370,11 +1371,7 @@ export async function resumePreparedProofOperation(
   if (allStates(states, CheckStateEnum.UNSPENT)) {
     await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
     const result = await wallet.completeSwap(entryToSwapPreview(entry));
-    const final: Record<string, Proof[]> = operationReturnsSendProofs(
-      entry.kind,
-    )
-      ? { send: result.send, keep: result.keep }
-      : { keep: result.keep };
+    const final = exactResultGroups(entry.kind, result);
     const normalized = normalizeProofGroups(final);
     await proofOperationStore.markProofOperationCompleted(
       entry.operationId,
@@ -1465,10 +1462,20 @@ export async function resumeExactPreparedProofOperation(
     );
   }
   const result = await wallet.completeSwap(entryToSwapPreview(entry));
-  const final: Record<string, Proof[]> = operationReturnsSendProofs(entry.kind)
-    ? { send: result.send, keep: result.keep }
-    : { keep: result.keep };
+  const final = exactResultGroups(entry.kind, result);
   return normalizeProofGroups(final);
+}
+
+function exactResultGroups(
+  kind: ProofOperationKind,
+  result: { send: Proof[]; keep: Proof[] },
+): Record<string, Proof[]> {
+  if (operationReturnsSendProofs(kind)) {
+    return { send: result.send, keep: result.keep };
+  }
+  return kind === "swap-refund"
+    ? { refund: result.keep }
+    : { keep: result.keep };
 }
 
 async function resumeConditionalKeysetSwap(
@@ -1832,6 +1839,7 @@ function swapPreviewMetadata(preview: SwapPreview, unit: string): Record<string,
 }
 
 function entryToSwapPreview(entry: ProofOperationRecord): SwapPreview {
+  const keepLabel = entry.kind === "swap-refund" ? "refund" : "keep";
   return {
     amount: readNumberMetadata(entry, "amount"),
     fees: readNumberMetadata(entry, "fees"),
@@ -1841,7 +1849,7 @@ function entryToSwapPreview(entry: ProofOperationRecord): SwapPreview {
     sendOutputs:
       deserializeOutputGroups({ send: entry.outputs.send ?? [] }).send ?? [],
     keepOutputs:
-      deserializeOutputGroups({ keep: entry.outputs.keep ?? [] }).keep ?? [],
+      deserializeOutputGroups({ keep: entry.outputs[keepLabel] ?? [] }).keep ?? [],
     unselectedProofs: readUnselectedProofs(entry),
   } as unknown as SwapPreview;
 }

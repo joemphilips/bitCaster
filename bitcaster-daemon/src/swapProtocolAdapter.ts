@@ -1,7 +1,9 @@
 import {
+  Amount,
   Mint as CashuMint,
   Wallet as CashuWallet,
   getEncodedToken,
+  type SwapPreview,
 } from '@cashu/cashu-ts'
 import { createP2PKWitness } from '@bitcaster-market/swap-protocol/p2pk'
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -127,6 +129,10 @@ interface AtomicSwapModule {
     wallet: CashuWallet,
     entry: ProofOperationRecord,
   ): Promise<Record<string, CashuProofRecord[]>>
+  inspectExactPreparedProofOperation?(
+    wallet: CashuWallet,
+    entry: ProofOperationRecord,
+  ): Promise<'all-unspent' | 'all-spent' | 'pending-or-mixed'>
   /** Reconstructs only the original persisted blinded outputs. */
   restoreExactPreparedProofOperation(
     entry: ProofOperationRecord,
@@ -178,7 +184,13 @@ export interface RealDaemonSwapOpsOptions {
   nut07PollIntervalMs?: number
   loadAtomicSwapModule?: () => Promise<AtomicSwapModule>
   loadCtfSplitModule?: () => Promise<CtfSplitModule>
+  createRefundWallet?: (mintUrl: string) => RefundWallet
 }
+
+type RefundWallet = Pick<
+  CashuWallet,
+  'loadMint' | 'prepareSwapToReceive' | 'completeSwap' | 'checkProofsStates'
+>
 
 export type ExactDaemonProofOperationAction = 'resume' | 'restore'
 
@@ -253,6 +265,8 @@ export function createRealDaemonSwapOps(
     options.nut07PollDeadlineMs ?? DEFAULT_NUT07_POLL_DEADLINE_MS
   const nut07PollIntervalMs =
     options.nut07PollIntervalMs ?? DEFAULT_NUT07_POLL_INTERVAL_MS
+  const createRefundWallet = options.createRefundWallet ?? ((mintUrl: string) =>
+    new CashuWallet(new CashuMint(mintUrl), { unit: 'sat' }))
 
   return {
     async splitProofsForExactSend(params) {
@@ -414,18 +428,19 @@ export function createRealDaemonSwapOps(
 
     async refundLockedProofs(ctx, lockedProofs, operationId) {
       if (lockedProofs.length === 0) return []
-      await prepareProofOperation({
-        operationId,
-        kind: 'swap-refund',
-        mintUrl: ctx.mintUrl,
-        inputs: lockedProofs,
-        outputs: {},
-        metadata: {
-          tradeId: ctx.tradeId,
-          role: ctx.role,
-          refundLocktime: ctx.sellerLocktime,
-        },
-      })
+      const store = proofOperationStoreFor(ctx)
+      const atomicSwap = await loadAtomicSwapModule()
+      const wallet = createRefundWallet(ctx.mintUrl)
+      await wallet.loadMint()
+      const existing = await store.getProofOperation(operationId)
+      if (existing) {
+        return recoverExactRefund(
+          atomicSwap,
+          wallet,
+          existing,
+          store,
+        )
+      }
       const witnessed = lockedProofs.map((proof) => ({
         ...proof,
         witness: createP2PKWitness(
@@ -433,19 +448,83 @@ export function createRealDaemonSwapOps(
           sha256(new TextEncoder().encode(proof.secret)),
         ),
       }))
-      const mint = new CashuMint(ctx.mintUrl)
-      const wallet = new CashuWallet(mint)
-      await wallet.loadMint()
       const token = getEncodedToken({
         mint: ctx.mintUrl,
         unit: 'sat',
         proofs: witnessed as never,
       })
-      const fresh = await wallet.receive(token)
-      await markProofOperationCompleted(operationId, { refund: fresh })
+      const preview = await wallet.prepareSwapToReceive(
+        token,
+        { proofsWeHave: [] },
+        { type: 'random' },
+      )
+      await store.prepareProofOperation({
+        operationId,
+        kind: 'swap-refund',
+        mintUrl: ctx.mintUrl,
+        inputs: preview.inputs as CashuProofRecord[],
+        outputs: { refund: serializeRefundOutputs(preview) },
+        metadata: {
+          tradeId: ctx.tradeId,
+          role: ctx.role,
+          refundLocktime: ctx.sellerLocktime,
+          amount: Amount.from(preview.amount).toNumber(),
+          fees: Amount.from(preview.fees).toNumber(),
+          keysetId: preview.keysetId,
+          unit: 'sat',
+          unselectedProofs: preview.unselectedProofs ?? [],
+        },
+      })
+      await store.markProofOperationMintSubmitted(operationId)
+      const result = await wallet.completeSwap(preview)
+      const fresh = result.keep as CashuProofRecord[]
+      await store.markProofOperationCompleted(operationId, { refund: fresh })
       return fresh
     },
   }
+}
+
+async function recoverExactRefund(
+  atomicSwap: AtomicSwapModule,
+  wallet: RefundWallet,
+  existing: ProofOperationRecord,
+  store: ProofOperationStore,
+): Promise<CashuProofRecord[]> {
+  if (existing.kind !== 'swap-refund') {
+    throw new Error('retained refund operation has a foreign kind')
+  }
+  if (existing.state === 'completed') {
+    return existing.resultProofs?.refund ?? existing.resultProofs?.keep ?? []
+  }
+  const inspect = atomicSwap.inspectExactPreparedProofOperation
+  if (!inspect) throw new Error('exact refund state classifier is unavailable')
+  const state = await inspect(wallet as CashuWallet, existing)
+  if (state === 'pending-or-mixed') {
+    throw new Error(`Proof operation ${existing.operationId} is still pending at the mint`)
+  }
+  const result = state === 'all-unspent'
+    ? await atomicSwap.resumeExactPreparedProofOperation(
+        wallet as CashuWallet,
+        existing,
+      )
+    : await atomicSwap.restoreExactPreparedProofOperation(existing)
+  const refund = result.refund ?? result.keep ?? []
+  await store.markProofOperationCompleted(existing.operationId, { refund })
+  return refund
+}
+
+function serializeRefundOutputs(
+  preview: SwapPreview,
+): PrepareProofOperationInput['outputs']['refund'] {
+  return (preview.keepOutputs ?? []).map((output) => ({
+    blindedMessage: {
+      amount: Amount.from(output.blindedMessage.amount).toNumber(),
+      id: output.blindedMessage.id,
+      B_: output.blindedMessage.B_,
+    },
+    blindingFactor: output.blindingFactor.toString(16),
+    secret: bytesToHex(output.secret),
+  }))
 }
 
 function proofOperationOptions(
