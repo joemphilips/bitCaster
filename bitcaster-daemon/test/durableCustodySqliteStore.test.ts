@@ -8,6 +8,7 @@ import {
   decodeDurableCustodyRecord,
   deriveDurableCustodyOperationId,
   deriveDurableCustodyScopeId,
+  readDurableCustodyRecoveryPage,
   type DurableCustodyRecord,
   type DurableCustodyScope,
 } from "@bitcaster-market/client-sdk/durableCustody";
@@ -16,6 +17,7 @@ import { SqliteDurableCustodyStore } from "../src/durableCustodySqliteStore.ts";
 
 const FINGERPRINT_A = "a".repeat(64);
 const FINGERPRINT_B = "b".repeat(64);
+const FINGERPRINT_C = "c".repeat(64);
 
 async function withDaemonHome(run: () => Promise<void>): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), "bitcaster-daemon-custody-store-"));
@@ -91,6 +93,7 @@ function record(
       trade: { tradeId, role: "seller", stage: "lock" },
       semanticKind: "swap-lock",
       state: "dispatch-intent",
+      terminalReplayEvidenceRequired: true,
       custodyContext: context,
       reservation: {
         reservationId: `reservation-${tradeId}`,
@@ -432,6 +435,77 @@ test("SQLite custody transaction commits canonical operation, session, reservati
     );
     assert.equal(await store.rebuildActiveWorkIndex(scope), "rebuilt");
     assert.equal((await store.listRecoverable(scope)).length, 1);
+  });
+});
+
+test("SQLite custody recovery pages use an exclusive bounded operation cursor", async () => {
+  await withDaemonHome(async () => {
+    const { store, scope, owner } = await claimedStore();
+    const operations = [
+      record(scope, {
+        tradeId: "trade-page-a",
+        retainedOperationKey: "seller-lock-page-a",
+        sessionId: "session-page-a",
+        proofId: FINGERPRINT_A,
+      }),
+      record(scope, {
+        tradeId: "trade-page-b",
+        retainedOperationKey: "seller-lock-page-b",
+        sessionId: "session-page-b",
+        proofId: FINGERPRINT_B,
+      }),
+      record(scope, {
+        tradeId: "trade-page-c",
+        retainedOperationKey: "seller-lock-page-c",
+        sessionId: "session-page-c",
+        proofId: FINGERPRINT_C,
+      }),
+    ];
+    await store.transact({ scope, owner }, (transaction) => {
+      for (const operation of operations) {
+        transaction.putOperation(operation);
+        transaction.putSessionLink(operation.operation.sessionLink);
+        transaction.reserveExactInputs({
+          operationId: operation.operation.operationId,
+          reservationId: operation.operation.reservation.reservationId,
+          proofIds: operation.operation.reservation.inputs.map(
+            (input) => input.proofId,
+          ),
+        });
+      }
+      transaction.rebuildActiveWorkIndex();
+    });
+
+    const first = await readDurableCustodyRecoveryPage(store, {
+      scope,
+      cursor: null,
+      limit: 2,
+    });
+    assert.equal(first.records.length, 2);
+    assert.notEqual(first.nextCursor, null);
+    assert.deepEqual(
+      first.records.map((item) => item.operation.operationId),
+      [...first.records]
+        .map((item) => item.operation.operationId)
+        .sort(),
+    );
+    const second = await readDurableCustodyRecoveryPage(store, {
+      scope,
+      cursor: first.nextCursor,
+      limit: 2,
+    });
+    assert.equal(second.records.length, 1);
+    assert.equal(second.nextCursor, null);
+    assert.deepEqual(
+      [...first.records, ...second.records]
+        .map((item) => item.operation.operationId)
+        .sort(),
+      operations.map((item) => item.operation.operationId).sort(),
+    );
+    await assert.rejects(
+      () => store.listRecoverablePage({ scope, cursor: null, limit: 257 }),
+      /page limit is invalid/,
+    );
   });
 });
 

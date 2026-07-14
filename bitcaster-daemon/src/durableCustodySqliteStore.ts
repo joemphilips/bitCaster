@@ -10,6 +10,8 @@ import {
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyOperationTransition,
   type DurableCustodyRecord,
+  type DurableCustodyRecoveryPage,
+  type DurableCustodyRecoveryPageInput,
   type DurableCustodyScope,
   type DurableCustodyScopeClaimInput,
   type DurableCustodyScopeState,
@@ -17,6 +19,7 @@ import {
   type DurableCustodyTransaction,
   type DurableCustodyTransactionInput,
   type DurableCustodyTransactionWork,
+  DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX,
 } from "@bitcaster-market/client-sdk/durableCustody";
 import { openProfileDatabase, tableExists } from "./profile.ts";
 
@@ -39,6 +42,61 @@ const CUSTODY_TABLES = [
  * single physical transaction that makes logical rows visible together.
  */
 export class SqliteDurableCustodyStore implements DurableCustodyStore {
+  async listRecoverablePage(
+    input: DurableCustodyRecoveryPageInput,
+  ): Promise<DurableCustodyRecoveryPage> {
+    const scope = canonicalizeScope(input.scope);
+    if (
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX
+    ) {
+      throw new Error("custody recovery page limit is invalid");
+    }
+    if (
+      input.cursor !== null &&
+      (typeof input.cursor !== "string" || input.cursor.length === 0)
+    ) {
+      throw new Error("custody recovery page cursor is invalid");
+    }
+    const database = this.openDatabase();
+    try {
+      assertRegisteredScope(database, scope);
+      const rows = database
+        .prepare(
+          `SELECT operation.*
+             FROM custody_active_work AS active
+             JOIN custody_operations AS operation
+               ON operation.scope_id = active.scope_id
+              AND operation.operation_id = active.operation_id
+            WHERE active.scope_id = ?
+              AND (? IS NULL OR active.operation_id > ?)
+            ORDER BY active.operation_id
+            LIMIT ?`,
+        )
+        .all(
+          scope.scopeId,
+          input.cursor,
+          input.cursor,
+          input.limit + 1,
+        ) as Array<Record<string, unknown>>;
+      const hasMore = rows.length > input.limit;
+      const pageRows = hasMore ? rows.slice(0, input.limit) : rows;
+      const records = pageRows.map((row) =>
+        decodeOperationRow(database, row, scope),
+      );
+      return {
+        records,
+        nextCursor:
+          hasMore && records.length > 0
+            ? records[records.length - 1]!.operation.operationId
+            : null,
+      };
+    } finally {
+      database.close();
+    }
+  }
+
   async registerScope(
     scope: DurableCustodyScope,
   ): Promise<DurableCustodyScopeState> {
@@ -795,6 +853,7 @@ function createSchema(database: DatabaseSync): void {
       trade_stage TEXT NOT NULL,
       semantic_kind TEXT NOT NULL,
       operation_state TEXT NOT NULL CHECK (operation_state IN ('dispatch-intent', 'transport-attempted', 'reconciled', 'aborted')),
+      terminal_replay_evidence_required INTEGER NOT NULL CHECK (terminal_replay_evidence_required IN (0, 1)),
       normalized_mint TEXT NOT NULL,
       unit TEXT NOT NULL,
       inventory_account_id TEXT,
@@ -1193,6 +1252,10 @@ function decodeOperationRow(
       },
       semanticKind: row.semantic_kind,
       state: row.operation_state,
+      terminalReplayEvidenceRequired: decodeDatabaseBoolean(
+        row.terminal_replay_evidence_required,
+        "custody terminal replay requirement",
+      ),
       custodyContext: {
         normalizedMint: row.normalized_mint,
         unit: row.unit,
@@ -1287,6 +1350,7 @@ function persistOperationRow(database: DatabaseSync, record: DurableCustodyRecor
     `INSERT INTO custody_operations (
       scope_id, operation_id, schema_version, revision, retained_operation_key,
       trade_id, trade_role, trade_stage, semantic_kind, operation_state,
+      terminal_replay_evidence_required,
       normalized_mint, unit, inventory_account_id, reservation_id,
       request_id, request_fingerprint, request_payload_handle, request_output_plan_fingerprint,
       output_plan_id, output_plan_fingerprint, output_material_handle,
@@ -1302,6 +1366,7 @@ function persistOperationRow(database: DatabaseSync, record: DurableCustodyRecor
     ) VALUES (
       ?, ?, 1, ?, ?,
       ?, ?, ?, ?, ?,
+      ?,
       ?, ?, ?, ?,
       ?, ?, ?, ?,
       ?, ?, ?,
@@ -1324,6 +1389,7 @@ function persistOperationRow(database: DatabaseSync, record: DurableCustodyRecor
       trade_stage = excluded.trade_stage,
       semantic_kind = excluded.semantic_kind,
       operation_state = excluded.operation_state,
+      terminal_replay_evidence_required = excluded.terminal_replay_evidence_required,
       normalized_mint = excluded.normalized_mint,
       unit = excluded.unit,
       inventory_account_id = excluded.inventory_account_id,
@@ -1374,6 +1440,7 @@ function persistOperationRow(database: DatabaseSync, record: DurableCustodyRecor
     operation.trade.stage,
     operation.semanticKind,
     operation.state,
+    operation.terminalReplayEvidenceRequired ? 1 : 0,
     operation.custodyContext.normalizedMint,
     operation.custodyContext.unit,
     operation.custodyContext.inventoryAccountId,
@@ -1705,6 +1772,8 @@ function sameImmutableOperation(
         retainedOperationKey: left.operation.retainedOperationKey,
         trade: left.operation.trade,
         semanticKind: left.operation.semanticKind,
+        terminalReplayEvidenceRequired:
+          left.operation.terminalReplayEvidenceRequired,
         custodyContext: left.operation.custodyContext,
         reservation: left.operation.reservation,
         exactRequest: left.operation.exactRequest,
@@ -1720,6 +1789,8 @@ function sameImmutableOperation(
         retainedOperationKey: right.operation.retainedOperationKey,
         trade: right.operation.trade,
         semanticKind: right.operation.semanticKind,
+        terminalReplayEvidenceRequired:
+          right.operation.terminalReplayEvidenceRequired,
         custodyContext: right.operation.custodyContext,
         reservation: right.operation.reservation,
         exactRequest: right.operation.exactRequest,
