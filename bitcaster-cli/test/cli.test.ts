@@ -6,6 +6,7 @@ import { once } from 'node:events'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
+import { DatabaseSync } from 'node:sqlite'
 import { promisify } from 'node:util'
 import { ensureRpcToken } from '@bitcaster-market/daemon/rpcAuth'
 import { isNetworkFailure } from '../src/rpc.ts'
@@ -712,61 +713,36 @@ test('bitcaster-cli trade watch --wait exits non-zero on timeout', async () => {
   }
 })
 
-test('bitcaster-cli daemon init delegates setup/import to bitcaster-daemon', async () => {
+test('bitcaster-cli daemon init rejects secrets passed through argv', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-daemon-init-'))
-  const walletSeedHex = 'ab'.repeat(32)
-  const nostrSecretKeyHex = '01'.padStart(64, '0')
   try {
-    const result = await execFileAsync(
-      process.execPath,
-      [
-        '--experimental-strip-types',
-        join(import.meta.dirname, '..', 'src', 'main.ts'),
-        'daemon',
-        'init',
-        '--wallet-seed-hex',
-        walletSeedHex,
-        '--nostr-secret-key-hex',
-        nostrSecretKeyHex,
-        '--engine-url',
-        'http://engine.example',
-        '--mint-url',
-        'http://mint.example',
-      ],
-      {
-        env: {
-          ...process.env,
-          BITCASTER_DAEMON_HOME: home,
+    await assert.rejects(
+      () => execFileAsync(
+        process.execPath,
+        [
+          '--experimental-strip-types',
+          join(import.meta.dirname, '..', 'src', 'main.ts'),
+          'daemon',
+          'init',
+          '--wallet-seed-hex',
+          'ab'.repeat(32),
+        ],
+        {
+          env: {
+            ...process.env,
+            BITCASTER_DAEMON_HOME: home,
+          },
         },
+      ),
+      (error: unknown) => {
+        const output = error as { stdout?: string; stderr?: string }
+        assert.match(
+          `${output.stdout ?? ''}${output.stderr ?? ''}`,
+          /unknown option '--wallet-seed-hex'/,
+        )
+        return true
       },
     )
-
-    assert.match(result.stdout, /bitcaster-daemon profile initialized/)
-    const secrets = JSON.parse(
-      await readFile(join(home, 'daemon-secrets.json'), 'utf8'),
-    ) as {
-      protection: string
-      secrets: {
-        walletSeedHex: string
-        nostrSecretKeyHex: string
-        nostrPublicKeyHex: string
-      }
-    }
-    assert.equal(secrets.protection, 'file-mode-0600')
-    assert.equal(secrets.secrets.walletSeedHex, walletSeedHex)
-    assert.equal(secrets.secrets.nostrSecretKeyHex, nostrSecretKeyHex)
-    assert.equal(
-      secrets.secrets.nostrPublicKeyHex,
-      '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
-    )
-    const profile = JSON.parse(
-      await readFile(join(home, 'daemon-profile.json'), 'utf8'),
-    ) as {
-      engineBaseUrl: string
-      mintUrl: string
-    }
-    assert.equal(profile.engineBaseUrl, 'http://engine.example')
-    assert.equal(profile.mintUrl, 'http://mint.example')
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -780,8 +756,10 @@ test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-d
   const nostrSecretKeyFile = join(home, 'nostr-secret-key.hex')
 
   try {
-    await writeFile(walletSeedFile, `${walletSeedHex}\n`)
-    await writeFile(nostrSecretKeyFile, `${nostrSecretKeyHex}\n`)
+    await writeFile(walletSeedFile, `${walletSeedHex}\n`, { mode: 0o600 })
+    await writeFile(nostrSecretKeyFile, `${nostrSecretKeyHex}\n`, {
+      mode: 0o600,
+    })
     const result = await execFileAsync(
       process.execPath,
       [
@@ -807,16 +785,18 @@ test('bitcaster-cli daemon init delegates file-based setup/import to bitcaster-d
     )
 
     assert.match(result.stdout, /bitcaster-daemon profile initialized/)
-    const secrets = JSON.parse(
-      await readFile(join(home, 'daemon-secrets.json'), 'utf8'),
-    ) as {
-      secrets: {
-        walletSeedHex: string
-        nostrSecretKeyHex: string
-      }
+    const database = new DatabaseSync(join(home, 'daemon-state.sqlite'))
+    try {
+      const secrets = database.prepare(
+        `SELECT wallet_seed_hex, nostr_secret_key_hex
+           FROM daemon_identity_secrets
+          WHERE singleton = 1`,
+      ).get()
+      assert.equal(secrets.wallet_seed_hex, walletSeedHex)
+      assert.equal(secrets.nostr_secret_key_hex, nostrSecretKeyHex)
+    } finally {
+      database.close()
     }
-    assert.equal(secrets.secrets.walletSeedHex, walletSeedHex)
-    assert.equal(secrets.secrets.nostrSecretKeyHex, nostrSecretKeyHex)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -1026,7 +1006,8 @@ test('P47-1: bitcaster-cli daemon init --help shows help text (not an error)', a
     { env: process.env },
   )
   assert.match(result.stdout, /daemon init/)
-  assert.match(result.stdout, /wallet-seed-hex/)
+  assert.match(result.stdout, /wallet-seed-hex-file/)
+  assert.doesNotMatch(result.stdout, /--wallet-seed-hex <hex>/)
 })
 
 test('P47-1: bitcaster-cli config is a top-level command', async () => {

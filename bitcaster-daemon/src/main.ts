@@ -2,7 +2,8 @@
 
 import type { Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { open } from 'node:fs/promises'
 import {
   assertDaemonProfileStorageComplete,
   bootstrapDaemonProfile,
@@ -487,8 +488,8 @@ switch (command) {
   default:
     process.stderr.write(`Unknown command: ${command}\n`)
     process.stderr.write(`Usage:
-  bitcaster-daemon init [--wallet-seed-hex <hex>|--wallet-seed-hex-file <path>]
-                         [--nostr-secret-key-hex <hex>|--nostr-secret-key-hex-file <path>]
+  bitcaster-daemon init [--wallet-seed-hex-file <path>]
+                         [--nostr-secret-key-hex-file <path>]
                          [--force]
                          [--engine-url <url>] [--mint-url <url>]
   bitcaster-daemon run
@@ -501,8 +502,6 @@ async function readTradeRuntimeState() {
 }
 
 function parseInitOptions(args: string[]): {
-  walletSeedHex?: string
-  nostrSecretKeyHex?: string
   walletSeedHexFile?: string
   nostrSecretKeyHexFile?: string
   engineUrl?: string
@@ -510,8 +509,6 @@ function parseInitOptions(args: string[]): {
   force: boolean
 } {
   const options: {
-    walletSeedHex?: string
-    nostrSecretKeyHex?: string
     walletSeedHexFile?: string
     nostrSecretKeyHexFile?: string
     engineUrl?: string
@@ -520,17 +517,10 @@ function parseInitOptions(args: string[]): {
   } = { force: false }
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
-    if (arg === '--wallet-seed-hex') {
-      options.walletSeedHex = requiredArg(args[++i], '--wallet-seed-hex')
-    } else if (arg === '--wallet-seed-hex-file') {
+    if (arg === '--wallet-seed-hex-file') {
       options.walletSeedHexFile = requiredArg(
         args[++i],
         '--wallet-seed-hex-file',
-      )
-    } else if (arg === '--nostr-secret-key-hex') {
-      options.nostrSecretKeyHex = requiredArg(
-        args[++i],
-        '--nostr-secret-key-hex',
       )
     } else if (arg === '--nostr-secret-key-hex-file') {
       options.nostrSecretKeyHexFile = requiredArg(
@@ -551,41 +541,27 @@ function parseInitOptions(args: string[]): {
 }
 
 async function resolveImportedSecrets(options: {
-  walletSeedHex?: string
-  nostrSecretKeyHex?: string
   walletSeedHexFile?: string
   nostrSecretKeyHexFile?: string
 }): Promise<{ walletSeedHex: string; nostrSecretKeyHex: string } | null> {
-  if (options.walletSeedHex && options.walletSeedHexFile) {
-    throw new Error(
-      '--wallet-seed-hex and --wallet-seed-hex-file are mutually exclusive',
-    )
-  }
-  if (options.nostrSecretKeyHex && options.nostrSecretKeyHexFile) {
-    throw new Error(
-      '--nostr-secret-key-hex and --nostr-secret-key-hex-file are mutually exclusive',
-    )
-  }
   const walletSeedHex =
-    options.walletSeedHex ??
-    (options.walletSeedHexFile
+    options.walletSeedHexFile
       ? await readSecretHexFile(
           options.walletSeedHexFile,
           '--wallet-seed-hex-file',
         )
-      : undefined)
+      : undefined
   const nostrSecretKeyHex =
-    options.nostrSecretKeyHex ??
-    (options.nostrSecretKeyHexFile
+    options.nostrSecretKeyHexFile
       ? await readSecretHexFile(
           options.nostrSecretKeyHexFile,
           '--nostr-secret-key-hex-file',
         )
-      : undefined)
+      : undefined
   if (!walletSeedHex && !nostrSecretKeyHex) return null
   if (!walletSeedHex || !nostrSecretKeyHex) {
     throw new Error(
-      '--wallet-seed-hex/--wallet-seed-hex-file and --nostr-secret-key-hex/--nostr-secret-key-hex-file must be supplied together',
+      '--wallet-seed-hex-file and --nostr-secret-key-hex-file must be supplied together',
     )
   }
   return { walletSeedHex, nostrSecretKeyHex }
@@ -595,9 +571,20 @@ async function readSecretHexFile(
   path: string,
   option: string,
 ): Promise<string> {
-  const value = (await readFile(path, 'utf8')).trim()
-  if (!value) throw new Error(`${option} was empty`)
-  return value
+  const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW
+  const file = await open(path, constants.O_RDONLY | noFollow)
+  try {
+    const metadata = await file.stat()
+    if (!metadata.isFile()) throw new Error(`${option} must name a regular file`)
+    if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) {
+      throw new Error(`${option} must not be accessible by group or other users`)
+    }
+    const value = (await file.readFile('utf8')).trim()
+    if (!value) throw new Error(`${option} was empty`)
+    return value
+  } finally {
+    await file.close()
+  }
 }
 
 function requiredArg(value: string | undefined, option: string): string {
