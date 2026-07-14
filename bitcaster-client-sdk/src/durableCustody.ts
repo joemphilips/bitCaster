@@ -369,6 +369,7 @@ export interface LegacyUnboundedDurableCustodyStore {
 export const DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX = 256 as const
 export const DURABLE_CUSTODY_RECORD_MAX_BYTES = 64 * 1_024
 export const DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES = 4 * 1_024 * 1_024
+export const DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX = 256 as const
 export const DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX = 256 as const
 export const DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX = 256 as const
 
@@ -477,6 +478,27 @@ export interface DurableCustodyScopeReleaseInput
 export interface DurableCustodyTransactionInput {
   scope: DurableCustodyScope
   owner: DurableCustodyOwnerAuthorization
+  /** Exact bounded operation rows the synchronous callback may read or write. */
+  operationIds: readonly string[]
+}
+
+/** Validates the bounded operation row set before an adapter enters storage. */
+export function decodeDurableCustodyTransactionOperationIds(
+  value: unknown,
+): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error('custody transaction operation ids are invalid')
+  }
+  if (value.length > DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX) {
+    throw new Error('custody transaction operation limit is exceeded')
+  }
+  const operationIds = value.map((operationId) =>
+    requireIdentifier(operationId, 'custody transaction operation id'),
+  )
+  if (new Set(operationIds).size !== operationIds.length) {
+    throw new Error('custody transaction operation id is duplicated')
+  }
+  return operationIds
 }
 
 /**

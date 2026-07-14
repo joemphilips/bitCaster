@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   decodeDurableCustodyRecord,
   decodeDurableCustodyScopeState,
+  decodeDurableCustodyTransactionOperationIds,
   applyDurableCustodyTransaction,
   claimDurableCustodyScope,
   createDurableCustodyDispatchIntent,
@@ -24,6 +25,7 @@ import {
   type DurableCustodyRecord,
   type DurableCustodyScopeState,
   type DurableCustodyState,
+  DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX,
 } from '../src/durableCustody.ts'
 
 const FINGERPRINT_A = 'a'.repeat(64)
@@ -49,6 +51,25 @@ function marketScope() {
   }
   return { ...scope, scopeId: deriveDurableCustodyScopeId(scope) }
 }
+
+test('custody transaction operation access is exact and bounded', () => {
+  assert.deepEqual(
+    decodeDurableCustodyTransactionOperationIds(['operation-a', 'operation-b']),
+    ['operation-a', 'operation-b'],
+  )
+  assert.deepEqual(decodeDurableCustodyTransactionOperationIds([]), [])
+  assert.throws(
+    () => decodeDurableCustodyTransactionOperationIds(['operation-a', 'operation-a']),
+    /operation id is duplicated/,
+  )
+  assert.throws(
+    () => decodeDurableCustodyTransactionOperationIds(Array.from(
+      { length: DURABLE_CUSTODY_TRANSACTION_OPERATION_LIMIT_MAX + 1 },
+      (_, index) => `operation-${index}`,
+    )),
+    /operation limit is exceeded/,
+  )
+})
 
 test('exact proof facts bind real public keys and explicit keyset usage', () => {
   const binding = {

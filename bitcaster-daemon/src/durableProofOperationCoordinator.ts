@@ -125,7 +125,10 @@ export class DaemonProofOperationCoordinator
       facts,
     )
     return this.unitOfWork.transact(
-      this.transactionInput(stateScopeFor(input)),
+      this.transactionInput(
+        stateScopeFor(input),
+        custodyRecord.operation.operationId,
+      ),
       ({ database, custody, state, now }) => {
         const parentPinId = input.walletProofReservation
           ?.parentOrderCollateralPinId
@@ -170,9 +173,12 @@ export class DaemonProofOperationCoordinator
     redeemBinding?: CtfRedeemMintSubmissionBinding,
   ): Promise<ProofOperationRecord> {
     this.authority.assertActive()
-    const stateScope = await existingOperationScope(operationId)
+    const context = await existingOperationContext(
+      this.authority.scope.scopeId,
+      operationId,
+    )
     return this.unitOfWork.transact(
-      this.transactionInput(stateScope),
+      this.transactionInput(context.stateScope, context.custodyOperationId),
       ({ custody, state, now }) => {
         const existing = requireStateOperation(state, operationId)
         const custodyId = custodyOperationId(this.authority.scope.scopeId, existing)
@@ -216,9 +222,12 @@ export class DaemonProofOperationCoordinator
 
   async assertRecoveryBound(operation: ProofOperationRecord): Promise<void> {
     this.authority.assertActive()
-    const stateScope = await existingOperationScope(operation.operationId)
+    const context = await existingOperationContext(
+      this.authority.scope.scopeId,
+      operation.operationId,
+    )
     await this.unitOfWork.transact(
-      this.transactionInput(stateScope),
+      this.transactionInput(context.stateScope, context.custodyOperationId),
       ({ custody, state }) => {
         const current = requireStateOperation(state, operation.operationId)
         if (!isDeepStrictEqual(current, operation)) {
@@ -241,10 +250,18 @@ export class DaemonProofOperationCoordinator
     classification: DurableCustodyRecoveryClassification,
   ): Promise<DurableCustodyRecoveryDecision> {
     this.authority.assertActive()
-    const stateScope = await existingOperationScope(operation.operationId)
+    const context = await existingOperationContext(
+      this.authority.scope.scopeId,
+      operation.operationId,
+    )
     const owner = this.authority.authorization()
     return this.unitOfWork.transact(
-      { scope: this.authority.scope, owner, stateScope },
+      {
+        scope: this.authority.scope,
+        owner,
+        operationIds: [context.custodyOperationId],
+        stateScope: context.stateScope,
+      },
       ({ custody, state }) => {
         const current = requireStateOperation(state, operation.operationId)
         if (!isDeepStrictEqual(current, operation)) {
@@ -280,12 +297,13 @@ export class DaemonProofOperationCoordinator
   }): Promise<ProofOperationRecord> {
     this.authority.assertActive()
     const resultProofs = normalizeProofRecordGroups(input.resultProofs)
-    const stateScope = await existingOperationScope(
+    const context = await existingOperationContext(
+      this.authority.scope.scopeId,
       input.operationId,
       input.walletProofs,
     )
     return this.unitOfWork.transact(
-      this.transactionInput(stateScope),
+      this.transactionInput(context.stateScope, context.custodyOperationId),
       ({ custody, state, now }) => completeInTransaction({
         custody,
         state,
@@ -297,10 +315,14 @@ export class DaemonProofOperationCoordinator
     )
   }
 
-  private transactionInput(stateScope: DaemonStateRowScope) {
+  private transactionInput(
+    stateScope: DaemonStateRowScope,
+    custodyOperationId: string,
+  ) {
     return {
       scope: this.authority.scope,
       owner: this.authority.authorization(),
+      operationIds: [custodyOperationId],
       stateScope,
     }
   }
@@ -698,17 +720,24 @@ function stateScopeFor(input: PrepareProofOperationInput): DaemonStateRowScope {
   }
 }
 
-async function existingOperationScope(
+async function existingOperationContext(
+  custodyScopeId: string,
   operationId: string,
   walletProofs?: CompleteProofOperationWithWalletUpdateInput['walletProofs'],
-): Promise<DaemonStateRowScope> {
+): Promise<{
+  custodyOperationId: string
+  stateScope: DaemonStateRowScope
+}> {
   const operation = await getProofOperation(operationId)
   if (operation === null) throw new Error('missing proof operation')
   const tradeId = operation.durableTradeRecovery?.tradeId
   return {
-    proofOperationIds: [operationId],
-    ...(tradeId === undefined ? {} : { tradeIds: [tradeId] }),
-    ...(walletProofs === undefined ? {} : { walletProofs }),
+    custodyOperationId: custodyOperationId(custodyScopeId, operation),
+    stateScope: {
+      proofOperationIds: [operationId],
+      ...(tradeId === undefined ? {} : { tradeIds: [tradeId] }),
+      ...(walletProofs === undefined ? {} : { walletProofs }),
+    },
   }
 }
 

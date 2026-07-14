@@ -204,7 +204,11 @@ test('installed daemon coordinator commits custody, operation, and wallet proof 
         },
       })
       const canonical = await store.transact(
-        { scope, owner: lease.authorization() },
+        {
+          scope,
+          owner: lease.authorization(),
+          operationIds: [custodyId],
+        },
         (transaction) => transaction.getOperation(custodyId),
       )
       assert.equal(canonical?.operation.state, 'reconciled')
@@ -701,7 +705,7 @@ async function readCanonical(
   operationId: string,
 ) {
   return store.transact(
-    { scope, owner: lease.authorization() },
+    { scope, owner: lease.authorization(), operationIds: [operationId] },
     (transaction) => transaction.getOperation(operationId),
   )
 }

@@ -5,6 +5,7 @@ import {
   claimDurableCustodyScope,
   decodeDurableCustodyRecord,
   decodeDurableCustodyScopeState,
+  decodeDurableCustodyTransactionOperationIds,
   releaseDurableCustodyScope,
   reduceDurableCustodyState,
   renewDurableCustodyScope,
@@ -81,6 +82,9 @@ export function applyDurableCustodyWorkInDatabase<T>(
   apply: DurableCustodyTransactionWork<T>,
 ): T {
   const scope = canonicalizeScope(input.scope)
+  const operationIds = decodeDurableCustodyTransactionOperationIds(
+    input.operationIds,
+  )
   assertForeignKeysEnabled(database)
   assertSchema(database)
   assertRegisteredScope(database, scope)
@@ -94,6 +98,7 @@ export function applyDurableCustodyWorkInDatabase<T>(
     scope,
     authorizedState,
     input.owner,
+    operationIds,
   )
   const result = applyDurableCustodyTransaction(transaction, apply)
   transaction.assertIntegrity()
@@ -349,6 +354,7 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
   private readonly scope: DurableCustodyScope
   private scopeState: DurableCustodyScopeState
   private readonly owner: DurableCustodyOwnerAuthorization
+  private readonly selectedOperationIds: ReadonlySet<string>
   private readonly touchedOperationIds = new Set<string>()
 
   constructor(
@@ -356,11 +362,13 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
     scope: DurableCustodyScope,
     scopeState: DurableCustodyScopeState,
     owner: DurableCustodyOwnerAuthorization,
+    operationIds: readonly string[],
   ) {
     this.database = database
     this.scope = scope
     this.scopeState = scopeState
     this.owner = owner
+    this.selectedOperationIds = new Set(operationIds)
   }
 
   getScopeState(): DurableCustodyScopeState {
@@ -383,6 +391,7 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
   }
 
   getOperation(operationId: string): DurableCustodyRecord | null {
+    this.assertOperationSelected(operationId)
     const row = this.database
       .prepare(
         `SELECT * FROM custody_operations
@@ -433,6 +442,7 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
     sessionId: string,
     operationId: string,
   ): Extract<DurableCustodyBinding, { kind: 'trade' }> | null {
+    this.assertOperationSelected(operationId)
     const row = readSessionLinkRow(
       this.database,
       this.scope.scopeId,
@@ -738,6 +748,12 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
     const record = this.getOperation(operationId)
     if (record === null) throw new Error('custody operation is missing')
     return record
+  }
+
+  private assertOperationSelected(operationId: string): void {
+    if (!this.selectedOperationIds.has(operationId)) {
+      throw new Error('custody transaction operation was not selected')
+    }
   }
 
   private reduceOperation(

@@ -355,6 +355,7 @@ export class DaemonOrderCollateralCoordinator {
           {
             scope: this.authority.scope,
             owner: this.authority.authorization(),
+            operationIds: [],
           },
           () => work(database),
         )

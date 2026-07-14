@@ -9,6 +9,7 @@ import {
   deriveDurableCustodyOperationId,
   deriveDurableCustodyScopeId,
   readDurableCustodyRecoveryPage,
+  type DurableCustodyOwnerAuthorization,
   type DurableCustodyRecord,
   type DurableCustodyScope,
   type DurableCustodyTransaction,
@@ -58,6 +59,22 @@ function marketScope(input: {
     unit: 'sat',
   }
   return { ...value, scopeId: deriveDurableCustodyScopeId(value) }
+}
+
+function custodyTransactionInput(
+  scope: DurableCustodyScope,
+  owner: DurableCustodyOwnerAuthorization,
+  ...operations: Array<DurableCustodyRecord | string>
+) {
+  return {
+    scope,
+    owner,
+    operationIds: operations.map((operation) =>
+      typeof operation === 'string'
+        ? operation
+        : operation.operation.operationId,
+    ),
+  }
 }
 
 function record(
@@ -481,7 +498,7 @@ test('SQLite custody transaction commits canonical operation, session, reservati
     const { store, scope, owner } = await claimedStore()
     const operation = record(scope)
 
-    await store.transact({ scope, owner }, (transaction) => {
+    await store.transact(custodyTransactionInput(scope, owner, operation), (transaction) => {
       transaction.putOperation(operation)
       transaction.putSessionLink(operation.operation.operationId, tradeBinding(operation))
       transaction.reserveExactInputs({
@@ -522,27 +539,18 @@ test('SQLite custody transaction commits canonical operation, session, reservati
     } finally {
       database.close()
     }
+    const conflicting = record(scope, {
+      tradeId: 'trade-002',
+      retainedOperationKey: 'seller-lock-002',
+      sessionId: 'session-trade-002',
+      proofId: FINGERPRINT_A,
+    })
     await assert.rejects(
       () =>
-        store.transact({ scope, owner }, (transaction) => {
-          transaction.putOperation(
-            record(scope, {
-              tradeId: 'trade-002',
-              retainedOperationKey: 'seller-lock-002',
-              sessionId: 'session-trade-002',
-              proofId: FINGERPRINT_A,
-            }),
-          )
+        store.transact(custodyTransactionInput(scope, owner, conflicting), (transaction) => {
+          transaction.putOperation(conflicting)
           transaction.reserveExactInputs({
-            operationId: deriveDurableCustodyOperationId(scope.scopeId, {
-              retainedOperationKey: 'seller-lock-002',
-              binding: {
-                kind: 'trade',
-                tradeId: 'trade-002',
-                role: 'seller',
-                stage: 'lock',
-              },
-            }),
+            operationId: conflicting.operation.operationId,
             reservationId: 'reservation-trade-002',
             proofIds: [FINGERPRINT_A],
           })
@@ -554,14 +562,18 @@ test('SQLite custody transaction commits canonical operation, session, reservati
       'different-persisted-request'
     await assert.rejects(
       () =>
-        store.transact({ scope, owner }, (transaction) => {
+        store.transact(custodyTransactionInput(scope, owner, operation), (transaction) => {
           transaction.putOperation(forgedExactRequest)
         }),
       /existing custody operations must advance through an SDK reducer transition/,
     )
     const handoffOwner = { ...owner, observedAtMs: 3 }
     let effectiveClock = -1
-    await store.transact({ scope, owner: handoffOwner }, (transaction) => {
+    await store.transact(custodyTransactionInput(
+      scope,
+      handoffOwner,
+      operation,
+    ), (transaction) => {
       transaction.transitionOperation({
         operationId: operation.operation.operationId,
         transition: { kind: 'transport-attempted' },
@@ -577,7 +589,11 @@ test('SQLite custody transaction commits canonical operation, session, reservati
     )
     await assert.rejects(
       () =>
-        store.transact({ scope, owner: handoffOwner }, (transaction) => {
+        store.transact(custodyTransactionInput(
+          scope,
+          handoffOwner,
+          operation,
+        ), (transaction) => {
           transaction.transitionOperation({
             operationId: operation.operation.operationId,
             transition: {
@@ -620,7 +636,7 @@ test('SQLite custody session owns multiple exact proof operations', async () => 
     const second = decodeDurableCustodyRecord(secondRaw)
 
     for (const operation of [first, second]) {
-      await store.transact({ scope, owner }, (transaction) => {
+      await store.transact(custodyTransactionInput(scope, owner, operation), (transaction) => {
         transaction.putOperation(operation)
         transaction.reserveExactInputs({
           operationId: operation.operation.operationId,
@@ -633,7 +649,7 @@ test('SQLite custody session owns multiple exact proof operations', async () => 
       })
     }
 
-    await store.transact({ scope, owner }, (transaction) => {
+    await store.transact(custodyTransactionInput(scope, owner, first, second), (transaction) => {
       assert.deepEqual(
         transaction.getSessionLink(
           tradeBinding(first).sessionId,
@@ -672,7 +688,7 @@ test('SQLite custody stores wallet work without fabricating a trade session', as
     operation.horizon.notAfterMs = null
     const walletOperation = decodeDurableCustodyRecord(raw)
 
-    await store.transact({ scope, owner }, (transaction) => {
+    await store.transact(custodyTransactionInput(scope, owner, walletOperation), (transaction) => {
       transaction.putOperation(walletOperation)
       transaction.reserveExactInputs({
         operationId: walletOperation.operation.operationId,
@@ -683,7 +699,11 @@ test('SQLite custody stores wallet work without fabricating a trade session', as
     })
 
     assert.equal((await store.listRecoverable(scope))[0]?.operation.binding.kind, 'wallet')
-    assert.equal(await store.transact({ scope, owner }, (transaction) =>
+    assert.equal(await store.transact(custodyTransactionInput(
+      scope,
+      owner,
+      walletOperation,
+    ), (transaction) =>
       transaction.getSessionLink(
         'activity-001',
         walletOperation.operation.operationId,
@@ -711,6 +731,7 @@ test('daemon custody UoW commits and rolls back canonical custody with exact dae
       {
         scope,
         owner,
+        operationIds: [committed.operation.operationId],
         stateScope: {
           proofOperationIds: [committed.operation.operationId],
         },
@@ -744,6 +765,7 @@ test('daemon custody UoW commits and rolls back canonical custody with exact dae
             {
               scope,
               owner: { ...owner, observedAtMs: 3 },
+              operationIds: [rolledBack.operation.operationId],
               stateScope: {
                 proofOperationIds: [rolledBack.operation.operationId],
               },
@@ -834,7 +856,7 @@ test('SQLite custody recovery pages use an exclusive bounded operation cursor', 
         proofId: FINGERPRINT_C,
       }),
     ]
-    await store.transact({ scope, owner }, (transaction) => {
+    await store.transact(custodyTransactionInput(scope, owner, ...operations), (transaction) => {
       for (const operation of operations) {
         transaction.putOperation(operation)
         transaction.putSessionLink(operation.operation.operationId, tradeBinding(operation))
@@ -975,7 +997,12 @@ test('SQLite custody transaction validates only operations touched under its wri
       sessionId: 'session-current',
       proofId: FINGERPRINT_B,
     })
-    await store.transact({ scope, owner }, (transaction) => {
+    await store.transact(custodyTransactionInput(
+      scope,
+      owner,
+      historical,
+      current,
+    ), (transaction) => {
       for (const operation of [historical, current]) {
         transaction.putOperation(operation)
         transaction.putSessionLink(operation.operation.operationId, tradeBinding(operation))
@@ -1017,7 +1044,7 @@ test('SQLite custody transaction validates only operations touched under its wri
       database.close()
     }
 
-    await store.transact({ scope, owner }, (transaction) => {
+    await store.transact(custodyTransactionInput(scope, owner, current), (transaction) => {
       transaction.transitionOperation({
         operationId: current.operation.operationId,
         transition: { kind: 'transport-attempted' },
@@ -1065,12 +1092,12 @@ test('SQLite custody store rolls back foreign awaits and fails closed on corrupt
   await withDaemonHome(async () => {
     const { store, scope, owner } = await claimedStore()
     await assert.rejects(
-      () => store.transact({ scope, owner }, async () => undefined),
+      () => store.transact(custodyTransactionInput(scope, owner), async () => undefined),
       /transaction callback must not await/,
     )
     await assert.rejects(
       () =>
-        store.transact({ scope, owner }, (transaction) => {
+        store.transact(custodyTransactionInput(scope, owner), (transaction) => {
           transaction.putScopeState({
             ...transaction.getScopeState(),
             owner: {
@@ -1084,7 +1111,7 @@ test('SQLite custody store rolls back foreign awaits and fails closed on corrupt
     assert.deepEqual(await store.listRecoverable(scope), [])
 
     const operation = record(scope)
-    await store.transact({ scope, owner }, (transaction) => {
+    await store.transact(custodyTransactionInput(scope, owner, operation), (transaction) => {
       transaction.putOperation(operation)
       transaction.putSessionLink(operation.operation.operationId, tradeBinding(operation))
       transaction.reserveExactInputs({
@@ -1096,6 +1123,15 @@ test('SQLite custody store rolls back foreign awaits and fails closed on corrupt
       })
       transaction.rebuildActiveWorkIndex()
     })
+    await assert.rejects(
+      () => store.transact(
+        custodyTransactionInput(scope, owner),
+        (transaction) => transaction.getOperation(
+          operation.operation.operationId,
+        ),
+      ),
+      /operation was not selected/,
+    )
 
     const database = new DatabaseSync(profileDatabasePath())
     try {
@@ -1125,7 +1161,7 @@ test('SQLite custody store fails closed when a reservation row no longer matches
   await withDaemonHome(async () => {
     const { store, scope, owner } = await claimedStore()
     const operation = record(scope)
-    await store.transact({ scope, owner }, (transaction) => {
+    await store.transact(custodyTransactionInput(scope, owner, operation), (transaction) => {
       transaction.putOperation(operation)
       transaction.putSessionLink(operation.operation.operationId, tradeBinding(operation))
       transaction.reserveExactInputs({
@@ -1160,7 +1196,7 @@ test('SQLite custody store never repairs a partial schema and retains pending de
   await withDaemonHome(async () => {
     const { store, scope, owner } = await claimedStore()
     const operation = record(scope)
-    await store.transact({ scope, owner }, (transaction) => {
+    await store.transact(custodyTransactionInput(scope, owner, operation), (transaction) => {
       transaction.putOperation(operation)
       transaction.putSessionLink(operation.operation.operationId, tradeBinding(operation))
       transaction.reserveExactInputs({
@@ -1197,7 +1233,7 @@ test('SQLite custody store never repairs a partial schema and retains pending de
     assert.equal((await store.listRecoverable(scope)).length, 1)
     await assert.rejects(
       () =>
-        store.transact({ scope, owner }, (transaction) => {
+        store.transact(custodyTransactionInput(scope, owner, operation), (transaction) => {
           transaction.putDelivery({
             operationId: operation.operation.operationId,
             deliveryKind: 'cipher',
