@@ -96,6 +96,10 @@
       "types": "./dist/durableCustody.d.ts",
       "import": "./dist/durableCustody.js"
     },
+    "./durableCustodyProofOperation": {
+      "types": "./dist/durableCustodyProofOperation.d.ts",
+      "import": "./dist/durableCustodyProofOperation.js"
+    },
     "./durableOrderCollateral": {
       "types": "./dist/durableOrderCollateral.d.ts",
       "import": "./dist/durableOrderCollateral.js"
