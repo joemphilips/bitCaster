@@ -48,10 +48,11 @@ function custodyRecord(overrides: Record<string, unknown> = {}): Record<string, 
   const scope = profileScope()
   const identity = {
     retainedOperationKey: 'seller-lock-001',
-    trade: {
+    binding: {
+      kind: 'trade' as const,
       tradeId: 'trade-001',
-      role: 'seller',
-      stage: 'lock',
+      role: 'seller' as const,
+      stage: 'lock' as const,
     },
   }
   const operationId = deriveDurableCustodyOperationId(scope.scopeId, identity)
@@ -61,6 +62,12 @@ function custodyRecord(overrides: Record<string, unknown> = {}): Record<string, 
     scope,
     operation: {
       ...identity,
+      binding: {
+        ...identity.binding,
+        sessionId: 'session-001',
+        immutableTradeFingerprint: FINGERPRINT_A,
+        hasDependentOperation: false,
+      },
       operationId,
       semanticKind: 'swap-lock',
       state: 'dispatch-intent',
@@ -107,13 +114,7 @@ function custodyRecord(overrides: Record<string, unknown> = {}): Record<string, 
             requireDleq: true,
           },
         ],
-      },
-      sessionLink: {
-        linkKind: 'trade',
-        sessionId: 'session-001',
-        tradeId: 'trade-001',
-        immutableTradeFingerprint: FINGERPRINT_A,
-        hasDependentOperation: false,
+        outputKeysets: [{ keysetId: 'keyset-001', curve: 'secp256k1' }],
       },
       delivery: {
         deliveryKind: 'none',
@@ -138,6 +139,29 @@ function custodyRecord(overrides: Record<string, unknown> = {}): Record<string, 
 
 function decodedRecord(overrides: Record<string, unknown> = {}): DurableCustodyRecord {
   return decodeDurableCustodyRecord(custodyRecord(overrides))
+}
+
+function operationIdFor(
+  scopeId: string,
+  operation: Record<string, unknown>,
+): string {
+  const binding = operation.binding as DurableCustodyRecord['operation']['binding']
+  const identityBinding = binding.kind === 'trade'
+    ? {
+        kind: binding.kind,
+        tradeId: binding.tradeId,
+        role: binding.role,
+        stage: binding.stage,
+      }
+    : {
+        kind: binding.kind,
+        activityId: binding.activityId,
+        stage: binding.stage,
+      }
+  return deriveDurableCustodyOperationId(scopeId, {
+    retainedOperationKey: operation.retainedOperationKey as string,
+    binding: identityBinding,
+  })
 }
 
 function custodyScopeState(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -358,10 +382,7 @@ test('market custody scopes bind their mint, unit, and inventory domain', () => 
     unit: scope.unit,
     inventoryAccountId: scope.inventoryAccountId,
   }
-  operation.operationId = deriveDurableCustodyOperationId(scope.scopeId, {
-    retainedOperationKey: operation.retainedOperationKey as string,
-    trade: operation.trade as { tradeId: string; role: 'buyer' | 'seller'; stage: 'lock' },
-  })
+  operation.operationId = operationIdFor(scope.scopeId, operation)
   assert.equal(decodeDurableCustodyRecord(raw).scope.scopeId, scope.scopeId)
 
   const otherAccount = { ...scope, inventoryAccountId: 'inventory-002' }
@@ -415,6 +436,22 @@ test('canonical custody decoder requires immutable exact-operation and verificat
     /output plan binding is invalid/,
   )
 
+  const missingOutputKeysets = custodyRecord()
+  ;((missingOutputKeysets.operation as Record<string, unknown>).verification as Record<string, unknown>)
+    .outputKeysets = []
+  assert.throws(
+    () => decodeDurableCustodyRecord(missingOutputKeysets),
+    /output keysets must not be empty/,
+  )
+
+  const foreignOutputKeyset = custodyRecord()
+  ;((foreignOutputKeyset.operation as Record<string, unknown>).verification as Record<string, unknown>)
+    .outputKeysets = [{ keysetId: 'foreign-keyset', curve: 'secp256k1' }]
+  assert.throws(
+    () => decodeDurableCustodyRecord(foreignOutputKeyset),
+    /output keyset verification binding is invalid/,
+  )
+
   const duplicateInput = custodyRecord()
   ;((duplicateInput.operation as Record<string, unknown>).exactRequest as Record<string, unknown>)
     .inputProofIds = [FINGERPRINT_A, FINGERPRINT_A]
@@ -433,11 +470,8 @@ test('canonical custody decoder requires immutable exact-operation and verificat
   const refundMissingNotBefore = custodyRecord()
   const refundOperation = refundMissingNotBefore.operation as Record<string, unknown>
   refundOperation.semanticKind = 'swap-refund'
-  ;(refundOperation.trade as Record<string, unknown>).stage = 'refund'
-  refundOperation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
-    retainedOperationKey: refundOperation.retainedOperationKey as string,
-    trade: refundOperation.trade as { tradeId: string; role: 'buyer' | 'seller'; stage: 'refund' },
-  })
+  ;(refundOperation.binding as Record<string, unknown>).stage = 'refund'
+  refundOperation.operationId = operationIdFor(profileScope().scopeId, refundOperation)
   assert.throws(
     () => decodeDurableCustodyRecord(refundMissingNotBefore),
     /operation semantic horizon requires not-before/,
@@ -455,26 +489,34 @@ test('canonical custody decoder requires immutable exact-operation and verificat
   const genericWithoutHorizonOperation = genericWithoutHorizon.operation as Record<string, unknown>
   genericWithoutHorizonOperation.semanticKind = 'generic-send'
   genericWithoutHorizonOperation.terminalReplayEvidenceRequired = false
-  ;(genericWithoutHorizonOperation.trade as Record<string, unknown>).stage = 'send'
+  genericWithoutHorizonOperation.binding = {
+    kind: 'wallet',
+    activityId: 'wallet-send-001',
+    stage: 'send',
+  }
   ;(genericWithoutHorizonOperation.horizon as Record<string, unknown>).notAfterMs = null
-  genericWithoutHorizonOperation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
-    retainedOperationKey: genericWithoutHorizonOperation.retainedOperationKey as string,
-    trade: genericWithoutHorizonOperation.trade as { tradeId: string; role: 'buyer' | 'seller'; stage: 'send' },
-  })
+  genericWithoutHorizonOperation.operationId = operationIdFor(
+    profileScope().scopeId,
+    genericWithoutHorizonOperation,
+  )
   assert.equal(decodeDurableCustodyRecord(genericWithoutHorizon).operation.semanticKind, 'generic-send')
 
   const nonExpiringCtf = custodyRecord()
   const nonExpiringCtfOperation = nonExpiringCtf.operation as Record<string, unknown>
   nonExpiringCtfOperation.semanticKind = 'ctf-merge'
   nonExpiringCtfOperation.terminalReplayEvidenceRequired = false
-  ;(nonExpiringCtfOperation.trade as Record<string, unknown>).stage = 'ctf-merge'
+  ;(nonExpiringCtfOperation.binding as Record<string, unknown>).stage = 'ctf-merge'
   ;(nonExpiringCtfOperation.horizon as Record<string, unknown>).notAfterMs = null
   ;(nonExpiringCtfOperation.horizon as Record<string, unknown>).keysetExpiryMs = null
-  nonExpiringCtfOperation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
-    retainedOperationKey: nonExpiringCtfOperation.retainedOperationKey as string,
-    trade: nonExpiringCtfOperation.trade as { tradeId: string; role: 'buyer' | 'seller'; stage: 'ctf-merge' },
-  })
+  nonExpiringCtfOperation.operationId = operationIdFor(profileScope().scopeId, nonExpiringCtfOperation)
   assert.equal(decodeDurableCustodyRecord(nonExpiringCtf).operation.semanticKind, 'ctf-merge')
+
+  const conditionalSwap = custodyRecord()
+  ;(conditionalSwap.operation as Record<string, unknown>).semanticKind = 'conditional-keyset-swap'
+  assert.equal(
+    decodeDurableCustodyRecord(conditionalSwap).operation.semanticKind,
+    'conditional-keyset-swap',
+  )
 })
 
 test('terminal replay requirement is derived from semantic kind and contradictions fail closed', () => {
@@ -484,15 +526,11 @@ test('terminal replay requirement is derived from semantic kind and contradictio
 
   const generic = custodyRecord()
   const operation = generic.operation as Record<string, unknown>
-  const trade = operation.trade as Record<string, unknown>
-  trade.stage = 'send'
+  operation.binding = { kind: 'wallet', activityId: 'wallet-send-001', stage: 'send' }
   operation.semanticKind = 'generic-send'
   operation.horizon = { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 500, keysetExpiryMs: null }
   operation.terminalReplayEvidenceRequired = true
-  operation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
-    retainedOperationKey: operation.retainedOperationKey as string,
-    trade: trade as DurableCustodyRecord['operation']['trade'],
-  })
+  operation.operationId = operationIdFor(profileScope().scopeId, operation)
   assert.throws(() => decodeDurableCustodyRecord(generic), /terminal replay requirement is invalid/)
 
   operation.terminalReplayEvidenceRequired = false
@@ -830,7 +868,8 @@ test('safe abort transition requires deterministic rejection without dependency 
   assert.equal(aborted.operation.operation.state, 'aborted')
 
   const dependent = structuredClone(record)
-  ;(dependent.operation.sessionLink as { hasDependentOperation: boolean }).hasDependentOperation = true
+  if (dependent.operation.binding.kind !== 'trade') assert.fail('expected trade binding')
+  dependent.operation.binding.hasDependentOperation = true
   assert.throws(
     () => reduceDurableCustodyState(custodyState(dependent, expiredScopeState), {
       kind: 'abort-no-transport',
@@ -966,10 +1005,7 @@ test('active recovery access is cursor/limit bounded and never falls back to an 
   const secondRaw = custodyRecord()
   const secondOperation = secondRaw.operation as Record<string, unknown>
   secondOperation.retainedOperationKey = 'seller-lock-002'
-  secondOperation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
-    retainedOperationKey: 'seller-lock-002',
-    trade: secondOperation.trade as DurableCustodyRecord['operation']['trade'],
-  })
+  secondOperation.operationId = operationIdFor(profileScope().scopeId, secondOperation)
   const second = decodeDurableCustodyRecord(secondRaw)
   const page = await readDurableCustodyRecoveryPage({
     listRecoverablePage: async (input) => {
@@ -1037,13 +1073,9 @@ test('reconciled operation with no replay requirement leaves the active index wi
   const raw = custodyRecord()
   const operation = raw.operation as Record<string, unknown>
   operation.semanticKind = 'generic-send'
-  const trade = operation.trade as Record<string, unknown>
-  trade.stage = 'send'
+  operation.binding = { kind: 'wallet', activityId: 'wallet-send-001', stage: 'send' }
   operation.horizon = { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 500, keysetExpiryMs: null }
-  operation.operationId = deriveDurableCustodyOperationId(profileScope().scopeId, {
-    retainedOperationKey: operation.retainedOperationKey as string,
-    trade: trade as DurableCustodyRecord['operation']['trade'],
-  })
+  operation.operationId = operationIdFor(profileScope().scopeId, operation)
   operation.state = 'reconciled'
   operation.result = {
     state: 'applied',

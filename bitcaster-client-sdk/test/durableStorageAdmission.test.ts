@@ -34,6 +34,23 @@ const SCOPE = walletScope()
 const OPERATION_A = custodyRecord('a').operation.operationId
 const OPERATION_B = custodyRecord('b').operation.operationId
 
+function tradeBinding(
+  record: DurableCustodyRecord,
+): Extract<DurableCustodyRecord['operation']['binding'], { kind: 'trade' }> {
+  if (record.operation.binding.kind !== 'trade') assert.fail('expected trade binding')
+  return record.operation.binding
+}
+
+function tradeIdentity(record: DurableCustodyRecord) {
+  const binding = tradeBinding(record)
+  return {
+    kind: binding.kind,
+    tradeId: binding.tradeId,
+    role: binding.role,
+    stage: binding.stage,
+  }
+}
+
 test('calculates one exact versioned worst-case budget from canonical custody identifiers', () => {
   const budget = calculateDurableSwapStorageBudget(budgetInput())
   assert.equal(budget.schemaVersion, DURABLE_STORAGE_ADMISSION_SCHEMA_VERSION)
@@ -65,7 +82,7 @@ test('calculates one exact versioned worst-case budget from canonical custody id
   const foreignScope = walletScope('f'.repeat(64))
   const foreignOperationId = deriveDurableCustodyOperationId(foreignScope.scopeId, {
     retainedOperationKey: 'seller-lock-a',
-    trade: { tradeId: 'trade-a', role: 'seller', stage: 'lock' },
+    binding: { kind: 'trade', tradeId: 'trade-a', role: 'seller', stage: 'lock' },
   })
   assert.throws(() => calculateDurableSwapStorageBudget({
     ...budgetInput(),
@@ -75,7 +92,7 @@ test('calculates one exact versioned worst-case budget from canonical custody id
   const market = marketScope()
   const marketOperationId = deriveDurableCustodyOperationId(market.scopeId, {
     retainedOperationKey: 'market-lock-a',
-    trade: { tradeId: 'market-trade-a', role: 'seller', stage: 'lock' },
+    binding: { kind: 'trade', tradeId: 'market-trade-a', role: 'seller', stage: 'lock' },
   })
   assert.equal(calculateDurableSwapStorageBudget({
     ...budgetInput(),
@@ -88,7 +105,12 @@ test('calculates one exact versioned worst-case budget from canonical custody id
     assert.equal(decodeDurableCustodyScopeId(scope.scopeId), scope.scopeId)
     const operationId = deriveDurableCustodyOperationId(scope.scopeId, {
       retainedOperationKey: `key:${walletId.slice(0, 16)}%`,
-      trade: { tradeId: `trade:🔐:${walletId.slice(0, 16)}`, role: 'seller', stage: 'lock' },
+      binding: {
+        kind: 'trade',
+        tradeId: `trade:🔐:${walletId.slice(0, 16)}`,
+        role: 'seller',
+        stage: 'lock',
+      },
     })
     assert.equal(decodeDurableCustodyOperationId(operationId, scope.scopeId), operationId)
   }
@@ -97,7 +119,7 @@ test('calculates one exact versioned worst-case budget from canonical custody id
   maxRecord.scope = maxScope
   maxRecord.operation.operationId = deriveDurableCustodyOperationId(maxScope.scopeId, {
     retainedOperationKey: maxRecord.operation.retainedOperationKey,
-    trade: maxRecord.operation.trade,
+    binding: tradeIdentity(maxRecord),
   })
   assert.equal(decodeDurableCustodyRecord(maxRecord).scope.scopeId, maxScope.scopeId)
   assert.throws(() => decodeDurableCustodyScopeId('custody:wallet:%'), /custody scope id is invalid/)
@@ -207,7 +229,7 @@ test('release evidence rejects clones and rewritten operation or disposition aut
 
 test('corrupted aborted custody cannot authorize storage release', () => {
   const corruptions: Array<(record: DurableCustodyRecord) => void> = [
-    (record) => { record.operation.sessionLink.hasDependentOperation = true },
+    (record) => { tradeBinding(record).hasDependentOperation = true },
     (record) => {
       record.operation.delivery = {
         deliveryKind: 'outbox',
@@ -232,7 +254,7 @@ test('corrupted aborted custody cannot authorize storage release', () => {
     (record) => {
       record.terminalTombstone = {
         tombstoneId: 'tombstone-corrupt',
-        tradeId: record.operation.trade.tradeId,
+        tradeId: tradeBinding(record).tradeId,
         authenticatedTerminalStatus: true,
         replayCutoffObserved: true,
       }
@@ -465,7 +487,12 @@ function marketScope() {
 function custodyRecord(suffix: string): DurableCustodyRecord {
   const identity = {
     retainedOperationKey: `seller-lock-${suffix}`,
-    trade: { tradeId: `trade-${suffix}`, role: 'seller' as const, stage: 'lock' as const },
+    binding: {
+      kind: 'trade' as const,
+      tradeId: `trade-${suffix}`,
+      role: 'seller' as const,
+      stage: 'lock' as const,
+    },
   }
   const operationId = deriveDurableCustodyOperationId(SCOPE.scopeId, identity)
   return decodeDurableCustodyRecord({
@@ -474,6 +501,12 @@ function custodyRecord(suffix: string): DurableCustodyRecord {
     scope: SCOPE,
     operation: {
       ...identity,
+      binding: {
+        ...identity.binding,
+        sessionId: `session-${suffix}`,
+        immutableTradeFingerprint: FINGERPRINT_A,
+        hasDependentOperation: false,
+      },
       operationId,
       semanticKind: 'swap-lock',
       state: 'dispatch-intent',
@@ -509,13 +542,7 @@ function custodyRecord(suffix: string): DurableCustodyRecord {
           keysetFingerprint: FINGERPRINT_B,
           requireDleq: true,
         }],
-      },
-      sessionLink: {
-        linkKind: 'trade',
-        sessionId: `session-${suffix}`,
-        tradeId: `trade-${suffix}`,
-        immutableTradeFingerprint: FINGERPRINT_A,
-        hasDependentOperation: false,
+        outputKeysets: [{ keysetId: 'keyset-001', curve: 'secp256k1' }],
       },
       delivery: {
         deliveryKind: 'none',
@@ -659,7 +686,7 @@ function addPin(
 function pinOperationId(index: number) {
   return deriveDurableCustodyOperationId(SCOPE.scopeId, {
     retainedOperationKey: `pin-operation-${index}`,
-    trade: { tradeId: `pin-trade-${index}`, role: 'seller', stage: 'lock' },
+    binding: { kind: 'trade', tradeId: `pin-trade-${index}`, role: 'seller', stage: 'lock' },
   })
 }
 

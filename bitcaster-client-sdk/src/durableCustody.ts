@@ -22,10 +22,18 @@ type CustodyTradeStage =
   | 'ctf-merge'
   | 'ctf-redeem'
 
+type CustodyWalletStage =
+  | 'send'
+  | 'receive'
+  | 'ctf-split'
+  | 'ctf-merge'
+  | 'ctf-redeem'
+
 export type DurableCustodySemanticKind =
   | 'swap-lock'
   | 'swap-claim'
   | 'swap-refund'
+  | 'conditional-keyset-swap'
   | 'generic-receive'
   | 'generic-send'
   | 'ctf-split'
@@ -67,12 +75,35 @@ export type DurableCustodyScopeInput =
 
 export interface DurableCustodyOperationIdentity {
   retainedOperationKey: string
-  trade: {
-    tradeId: string
-    role: CustodyRole
-    stage: CustodyTradeStage
-  }
+  binding:
+    | {
+        kind: 'trade'
+        tradeId: string
+        role: CustodyRole
+        stage: CustodyTradeStage
+      }
+    | {
+        kind: 'wallet'
+        activityId: string
+        stage: CustodyWalletStage
+      }
 }
+
+export type DurableCustodyBinding =
+  | {
+      kind: 'trade'
+      tradeId: string
+      role: CustodyRole
+      stage: CustodyTradeStage
+      sessionId: string
+      immutableTradeFingerprint: string
+      hasDependentOperation: boolean
+    }
+  | {
+      kind: 'wallet'
+      activityId: string
+      stage: CustodyWalletStage
+    }
 
 /** Input to the global active-proof identity; the secret is never persisted in this record. */
 export interface DurableCustodyProofIdentityInput {
@@ -89,7 +120,7 @@ export interface DurableCustodyRecord {
   operation: {
     operationId: string
     retainedOperationKey: string
-    trade: DurableCustodyOperationIdentity['trade']
+    binding: DurableCustodyBinding
     semanticKind: DurableCustodySemanticKind
     state: DurableCustodyOperationState
     terminalReplayEvidenceRequired: boolean
@@ -137,13 +168,10 @@ export interface DurableCustodyRecord {
         keysetFingerprint: string
         requireDleq: boolean
       }>
-    }
-    sessionLink: {
-      linkKind: 'trade'
-      sessionId: string
-      tradeId: string
-      immutableTradeFingerprint: string
-      hasDependentOperation: boolean
+      outputKeysets: Array<{
+        keysetId: string
+        curve: DurableCustodyCurve
+      }>
     }
     delivery: {
       deliveryKind: 'none' | 'outbox'
@@ -399,8 +427,11 @@ export interface DurableCustodyTransaction {
   putScopeState(state: DurableCustodyScopeState): void
   getOperation(operationId: string): DurableCustodyRecord | null
   putOperation(record: DurableCustodyRecord): void
-  getSessionLink(sessionId: string): DurableCustodyRecord['operation']['sessionLink'] | null
-  putSessionLink(link: DurableCustodyRecord['operation']['sessionLink']): void
+  getSessionLink(sessionId: string): Extract<DurableCustodyBinding, { kind: 'trade' }> | null
+  putSessionLink(
+    operationId: string,
+    link: Extract<DurableCustodyBinding, { kind: 'trade' }>,
+  ): void
   reserveExactInputs(input: {
     operationId: string
     reservationId: string
@@ -595,9 +626,12 @@ const ROLES: readonly CustodyRole[] = ['buyer', 'seller']
 const STAGES: readonly CustodyTradeStage[] = [
   'lock', 'claim', 'refund', 'receive', 'send', 'ctf-split', 'ctf-merge', 'ctf-redeem',
 ]
+const WALLET_STAGES: readonly CustodyWalletStage[] = [
+  'send', 'receive', 'ctf-split', 'ctf-merge', 'ctf-redeem',
+]
 const SEMANTIC_KINDS: readonly DurableCustodySemanticKind[] = [
   'swap-lock', 'swap-claim', 'swap-refund', 'generic-receive', 'generic-send',
-  'ctf-split', 'ctf-merge', 'ctf-redeem',
+  'conditional-keyset-swap', 'ctf-split', 'ctf-merge', 'ctf-redeem',
 ]
 const STATES: readonly DurableCustodyOperationState[] = [
   'dispatch-intent', 'transport-attempted', 'reconciled', 'aborted',
@@ -607,10 +641,14 @@ const RETRY_REASONS: readonly DurableCustodyRetryReason[] = [
   'pending-or-mixed', 'mint-response-unknown', 'rate-limited', 'reservation-race',
 ]
 
-const SEMANTIC_STAGE_BINDINGS: Readonly<Record<DurableCustodySemanticKind, CustodyTradeStage>> = {
+const SEMANTIC_STAGE_BINDINGS: Readonly<Record<
+  DurableCustodySemanticKind,
+  CustodyTradeStage | CustodyWalletStage
+>> = {
   'swap-lock': 'lock',
   'swap-claim': 'claim',
   'swap-refund': 'refund',
+  'conditional-keyset-swap': 'lock',
   'generic-receive': 'receive',
   'generic-send': 'send',
   'ctf-split': 'ctf-split',
@@ -622,11 +660,27 @@ const SEMANTIC_TERMINAL_REPLAY_REQUIREMENTS: Readonly<Record<DurableCustodySeman
   'swap-lock': true,
   'swap-claim': true,
   'swap-refund': true,
+  'conditional-keyset-swap': true,
   'generic-receive': false,
   'generic-send': false,
   'ctf-split': false,
   'ctf-merge': false,
   'ctf-redeem': false,
+}
+
+const SEMANTIC_BINDING_KINDS: Readonly<Record<
+  DurableCustodySemanticKind,
+  DurableCustodyBinding['kind'] | 'either'
+>> = {
+  'swap-lock': 'trade',
+  'swap-claim': 'trade',
+  'swap-refund': 'trade',
+  'conditional-keyset-swap': 'trade',
+  'generic-receive': 'wallet',
+  'generic-send': 'wallet',
+  'ctf-split': 'either',
+  'ctf-merge': 'either',
+  'ctf-redeem': 'wallet',
 }
 
 const SEMANTIC_HORIZON_RULES: Readonly<Record<DurableCustodySemanticKind, {
@@ -636,6 +690,7 @@ const SEMANTIC_HORIZON_RULES: Readonly<Record<DurableCustodySemanticKind, {
   'swap-lock': { requireNotBefore: false, requireNotAfter: true },
   'swap-claim': { requireNotBefore: false, requireNotAfter: true },
   'swap-refund': { requireNotBefore: true, requireNotAfter: false },
+  'conditional-keyset-swap': { requireNotBefore: false, requireNotAfter: true },
   'generic-receive': { requireNotBefore: false, requireNotAfter: false },
   'generic-send': { requireNotBefore: false, requireNotAfter: false },
   'ctf-split': { requireNotBefore: false, requireNotAfter: false },
@@ -741,17 +796,26 @@ export function deriveDurableCustodyOperationId(
 ): string {
   const canonicalScopeId = decodeDurableCustodyScopeId(scopeId)
   requireIdentifier(identity.retainedOperationKey, 'retained operation key')
-  requireIdentifier(identity.trade.tradeId, 'trade id')
-  requireOneOf(identity.trade.role, ROLES, 'trade role')
-  requireOneOf(identity.trade.stage, STAGES, 'trade stage')
-  return requireCompositeIdentifier([
-    'custody-operation',
-    encodeURIComponent(canonicalScopeId),
-    encodeURIComponent(identity.trade.tradeId),
-    identity.trade.role,
-    identity.trade.stage,
-    encodeURIComponent(identity.retainedOperationKey),
-  ].join(':'), 'custody operation id')
+  const binding = decodeOperationIdentityBinding(identity.binding)
+  const parts = binding.kind === 'trade'
+    ? [
+        'custody-operation',
+        encodeURIComponent(canonicalScopeId),
+        'trade',
+        encodeURIComponent(binding.tradeId),
+        binding.role,
+        binding.stage,
+        encodeURIComponent(identity.retainedOperationKey),
+      ]
+    : [
+        'custody-operation',
+        encodeURIComponent(canonicalScopeId),
+        'wallet',
+        encodeURIComponent(binding.activityId),
+        binding.stage,
+        encodeURIComponent(identity.retainedOperationKey),
+      ]
+  return requireCompositeIdentifier(parts.join(':'), 'custody operation id')
 }
 
 /** Validates an operation identifier against its exact canonical custody scope. */
@@ -760,16 +824,31 @@ export function decodeDurableCustodyOperationId(value: unknown, expectedScopeId:
   const scopeId = decodeDurableCustodyScopeId(expectedScopeId)
   const parts = operationId.split(':')
   try {
-    if (parts.length === 6 && parts[0] === 'custody-operation') {
+    if (parts[0] === 'custody-operation') {
       const encodedScopeId = decodeURIComponent(parts[1]!)
-      const identity: DurableCustodyOperationIdentity = {
-        retainedOperationKey: decodeURIComponent(parts[5]!),
-        trade: {
-          tradeId: decodeURIComponent(parts[2]!),
-          role: parts[3] as CustodyRole,
-          stage: parts[4] as CustodyTradeStage,
-        },
-      }
+      const identity: DurableCustodyOperationIdentity =
+        parts.length === 7 && parts[2] === 'trade'
+          ? {
+              retainedOperationKey: decodeURIComponent(parts[6]!),
+              binding: {
+                kind: 'trade',
+                tradeId: decodeURIComponent(parts[3]!),
+                role: parts[4] as CustodyRole,
+                stage: parts[5] as CustodyTradeStage,
+              },
+            }
+          : parts.length === 6 && parts[2] === 'wallet'
+            ? {
+                retainedOperationKey: decodeURIComponent(parts[5]!),
+                binding: {
+                  kind: 'wallet',
+                  activityId: decodeURIComponent(parts[3]!),
+                  stage: parts[4] as CustodyWalletStage,
+                },
+              }
+            : (() => {
+                throw new Error('invalid operation identity')
+              })()
       if (encodedScopeId === scopeId
         && operationId === deriveDurableCustodyOperationId(scopeId, identity)) return operationId
     }
@@ -1037,7 +1116,7 @@ export function reduceDurableCustodyState(
       requireIdentifier(transition.tombstoneId, 'tombstone id')
       nextOperation.terminalTombstone = {
         tombstoneId: transition.tombstoneId,
-        tradeId: record.operation.trade.tradeId,
+        tradeId: requireTradeBinding(record).tradeId,
         authenticatedTerminalStatus: false,
         replayCutoffObserved: false,
       }
@@ -1166,12 +1245,12 @@ function decodeScope(value: unknown): DurableCustodyScope {
 function decodeOperation(value: unknown): DurableCustodyRecord['operation'] {
   const operation = requireRecord(value, 'operation')
   requireKnownFields(operation, [
-    'operationId', 'retainedOperationKey', 'trade', 'semanticKind', 'state',
+    'operationId', 'retainedOperationKey', 'binding', 'semanticKind', 'state',
     'terminalReplayEvidenceRequired', 'custodyContext', 'reservation',
-    'exactRequest', 'outputPlan', 'privateMaterial', 'result', 'verification', 'sessionLink',
+    'exactRequest', 'outputPlan', 'privateMaterial', 'result', 'verification',
     'delivery', 'retry', 'horizon',
   ])
-  const trade = decodeTrade(operation.trade)
+  const binding = decodeBinding(operation.binding)
   const retainedOperationKey = requireIdentifier(operation.retainedOperationKey, 'retained operation key')
   const semanticKind = requireString(operation.semanticKind, 'semantic kind') as DurableCustodySemanticKind
   requireOneOf(semanticKind, SEMANTIC_KINDS, 'semantic kind')
@@ -1180,7 +1259,7 @@ function decodeOperation(value: unknown): DurableCustodyRecord['operation'] {
   const decoded = {
     operationId: requireCompositeIdentifier(operation.operationId, 'operation id'),
     retainedOperationKey,
-    trade,
+    binding,
     semanticKind,
     state,
     terminalReplayEvidenceRequired: requireBoolean(
@@ -1194,7 +1273,6 @@ function decodeOperation(value: unknown): DurableCustodyRecord['operation'] {
     privateMaterial: decodePrivateMaterial(operation.privateMaterial),
     result: decodeResult(operation.result),
     verification: decodeVerification(operation.verification),
-    sessionLink: decodeSessionLink(operation.sessionLink),
     delivery: decodeDelivery(operation.delivery),
     retry: decodeRetry(operation.retry),
     horizon: decodeHorizon(operation.horizon),
@@ -1202,14 +1280,71 @@ function decodeOperation(value: unknown): DurableCustodyRecord['operation'] {
   return decoded
 }
 
-function decodeTrade(value: unknown): DurableCustodyOperationIdentity['trade'] {
-  const trade = requireRecord(value, 'trade')
-  requireKnownFields(trade, ['tradeId', 'role', 'stage'])
-  const role = requireString(trade.role, 'trade role') as CustodyRole
-  const stage = requireString(trade.stage, 'trade stage') as CustodyTradeStage
+function decodeOperationIdentityBinding(
+  value: unknown,
+): DurableCustodyOperationIdentity['binding'] {
+  const binding = requireRecord(value, 'operation identity binding')
+  const kind = requireString(binding.kind, 'operation binding kind')
+  if (kind === 'trade') {
+    requireKnownFields(binding, ['kind', 'tradeId', 'role', 'stage'])
+    return decodeTradeIdentityFields(binding)
+  }
+  if (kind !== 'wallet') throw new Error('operation binding kind is invalid')
+  requireKnownFields(binding, ['kind', 'activityId', 'stage'])
+  return decodeWalletIdentityFields(binding)
+}
+
+function decodeBinding(value: unknown): DurableCustodyBinding {
+  const binding = requireRecord(value, 'operation binding')
+  const kind = requireString(binding.kind, 'operation binding kind')
+  if (kind === 'wallet') {
+    requireKnownFields(binding, ['kind', 'activityId', 'stage'])
+    return decodeWalletIdentityFields(binding)
+  }
+  if (kind !== 'trade') throw new Error('operation binding kind is invalid')
+  requireKnownFields(binding, [
+    'kind', 'tradeId', 'role', 'stage', 'sessionId',
+    'immutableTradeFingerprint', 'hasDependentOperation',
+  ])
+  return {
+    ...decodeTradeIdentityFields(binding),
+    sessionId: requireIdentifier(binding.sessionId, 'session id'),
+    immutableTradeFingerprint: requireFingerprint(
+      binding.immutableTradeFingerprint,
+      'immutable trade fingerprint',
+    ),
+    hasDependentOperation: requireBoolean(
+      binding.hasDependentOperation,
+      'dependent operation marker',
+    ),
+  }
+}
+
+function decodeTradeIdentityFields(
+  binding: Record<string, unknown>,
+): Extract<DurableCustodyOperationIdentity['binding'], { kind: 'trade' }> {
+  const role = requireString(binding.role, 'trade role') as CustodyRole
+  const stage = requireString(binding.stage, 'trade stage') as CustodyTradeStage
   requireOneOf(role, ROLES, 'trade role')
   requireOneOf(stage, STAGES, 'trade stage')
-  return { tradeId: requireIdentifier(trade.tradeId, 'trade id'), role, stage }
+  return {
+    kind: 'trade',
+    tradeId: requireIdentifier(binding.tradeId, 'trade id'),
+    role,
+    stage,
+  }
+}
+
+function decodeWalletIdentityFields(
+  binding: Record<string, unknown>,
+): Extract<DurableCustodyOperationIdentity['binding'], { kind: 'wallet' }> {
+  const stage = requireString(binding.stage, 'wallet stage') as CustodyWalletStage
+  requireOneOf(stage, WALLET_STAGES, 'wallet stage')
+  return {
+    kind: 'wallet',
+    activityId: requireIdentifier(binding.activityId, 'wallet activity id'),
+    stage,
+  }
 }
 
 function decodeCustodyContext(value: unknown): DurableCustodyRecord['operation']['custodyContext'] {
@@ -1307,7 +1442,7 @@ function decodeResult(value: unknown): DurableCustodyRecord['operation']['result
 
 function decodeVerification(value: unknown): DurableCustodyRecord['operation']['verification'] {
   const verification = requireRecord(value, 'verification')
-  requireKnownFields(verification, ['outputPlanFingerprint', 'keysetBindings'])
+  requireKnownFields(verification, ['outputPlanFingerprint', 'keysetBindings', 'outputKeysets'])
   const rawKeysetBindings = requireArray(verification.keysetBindings, 'keyset bindings')
   if (rawKeysetBindings.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
     throw new Error('keyset bindings exceed the limit')
@@ -1325,22 +1460,25 @@ function decodeVerification(value: unknown): DurableCustodyRecord['operation']['
     }
   })
   if (keysetBindings.length === 0) throw new Error('keyset bindings must not be empty')
+  const rawOutputKeysets = requireArray(verification.outputKeysets, 'output keysets')
+  if (rawOutputKeysets.length === 0) throw new Error('output keysets must not be empty')
+  if (rawOutputKeysets.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
+    throw new Error('output keysets exceed the limit')
+  }
+  const outputKeysets = rawOutputKeysets.map((outputKeyset) => {
+    const decoded = requireRecord(outputKeyset, 'output keyset')
+    requireKnownFields(decoded, ['keysetId', 'curve'])
+    const curve = requireString(decoded.curve, 'output keyset curve') as DurableCustodyCurve
+    requireOneOf(curve, CURVES, 'output keyset curve')
+    return {
+      keysetId: requireIdentifier(decoded.keysetId, 'output keyset id'),
+      curve,
+    }
+  })
   return {
     outputPlanFingerprint: requireFingerprint(verification.outputPlanFingerprint, 'verification output plan fingerprint'),
     keysetBindings,
-  }
-}
-
-function decodeSessionLink(value: unknown): DurableCustodyRecord['operation']['sessionLink'] {
-  const link = requireRecord(value, 'session link')
-  requireKnownFields(link, ['linkKind', 'sessionId', 'tradeId', 'immutableTradeFingerprint', 'hasDependentOperation'])
-  if (link.linkKind !== 'trade') throw new Error('session link kind is invalid')
-  return {
-    linkKind: 'trade',
-    sessionId: requireIdentifier(link.sessionId, 'session id'),
-    tradeId: requireIdentifier(link.tradeId, 'session trade id'),
-    immutableTradeFingerprint: requireFingerprint(link.immutableTradeFingerprint, 'immutable trade fingerprint'),
-    hasDependentOperation: requireBoolean(link.hasDependentOperation, 'dependent operation marker'),
+    outputKeysets,
   }
 }
 
@@ -1439,16 +1577,17 @@ function decodeTombstone(value: unknown): DurableCustodyRecord['terminalTombston
 function validateRecordBindings(record: DurableCustodyRecord): void {
   const identity: DurableCustodyOperationIdentity = {
     retainedOperationKey: record.operation.retainedOperationKey,
-    trade: record.operation.trade,
+    binding: operationIdentityBinding(record.operation.binding),
   }
   if (record.operation.operationId !== deriveDurableCustodyOperationId(record.scope.scopeId, identity)) {
     throw new Error('custody operation identity is invalid')
   }
-  if (record.operation.sessionLink.tradeId !== record.operation.trade.tradeId) {
-    throw new Error('session link trade id is invalid')
-  }
-  if (SEMANTIC_STAGE_BINDINGS[record.operation.semanticKind] !== record.operation.trade.stage) {
+  if (SEMANTIC_STAGE_BINDINGS[record.operation.semanticKind] !== record.operation.binding.stage) {
     throw new Error('operation semantic stage binding is invalid')
+  }
+  const requiredBindingKind = SEMANTIC_BINDING_KINDS[record.operation.semanticKind]
+  if (requiredBindingKind !== 'either' && requiredBindingKind !== record.operation.binding.kind) {
+    throw new Error(`operation semantic requires ${requiredBindingKind} binding`)
   }
   if (record.operation.terminalReplayEvidenceRequired
     !== SEMANTIC_TERMINAL_REPLAY_REQUIREMENTS[record.operation.semanticKind]) {
@@ -1477,7 +1616,7 @@ function validateRecordBindings(record: DurableCustodyRecord): void {
     throw new Error('aborted operation result is invalid')
   }
   if (record.operation.state === 'aborted'
-    && (record.operation.sessionLink.hasDependentOperation
+    && ((record.operation.binding.kind === 'trade' && record.operation.binding.hasDependentOperation)
       || record.operation.delivery.deliveryKind !== 'none'
       || record.operation.delivery.state !== 'none'
       || record.operation.retry.attempt !== 0
@@ -1505,7 +1644,19 @@ function validateRecordBindings(record: DurableCustodyRecord): void {
       throw new Error('keyset verification binding is invalid')
     }
   }
-  if (record.terminalTombstone !== null && record.terminalTombstone.tradeId !== record.operation.trade.tradeId) {
+  const outputKeysets = new Set(record.operation.verification.outputKeysets.map(
+    (binding) => `${binding.keysetId}:${binding.curve}`,
+  ))
+  if (outputKeysets.size !== record.operation.verification.outputKeysets.length) {
+    throw new Error('output keyset binding is duplicated')
+  }
+  for (const outputKeyset of outputKeysets) {
+    if (!verificationBindings.has(outputKeyset)) {
+      throw new Error('output keyset verification binding is invalid')
+    }
+  }
+  if (record.terminalTombstone !== null
+    && record.terminalTombstone.tradeId !== requireTradeBinding(record).tradeId) {
     throw new Error('terminal tombstone trade id is invalid')
   }
   if (record.terminalTombstone !== null
@@ -1696,10 +1847,37 @@ function isAbortEligible(
       : record.operation.state === 'transport-attempted' ? 'submitted' : 'unknown',
     exactInputStates,
     exactRequestDisposition,
-    hasDependentJournaledIntent: record.operation.sessionLink.hasDependentOperation,
+    hasDependentJournaledIntent: record.operation.binding.kind === 'trade'
+      && record.operation.binding.hasDependentOperation,
     hasStagedResult: record.operation.result.state !== 'none',
     deliveryState: record.operation.delivery.state,
   })
+}
+
+function requireTradeBinding(
+  record: DurableCustodyRecord,
+): Extract<DurableCustodyBinding, { kind: 'trade' }> {
+  if (record.operation.binding.kind !== 'trade') {
+    throw new Error('operation requires trade binding')
+  }
+  return record.operation.binding
+}
+
+function operationIdentityBinding(
+  binding: DurableCustodyBinding,
+): DurableCustodyOperationIdentity['binding'] {
+  return binding.kind === 'trade'
+    ? {
+        kind: binding.kind,
+        tradeId: binding.tradeId,
+        role: binding.role,
+        stage: binding.stage,
+      }
+    : {
+        kind: binding.kind,
+        activityId: binding.activityId,
+        stage: binding.stage,
+      }
 }
 
 function validateDeliveryExpiry(
