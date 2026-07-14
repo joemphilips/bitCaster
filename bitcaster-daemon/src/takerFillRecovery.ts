@@ -123,7 +123,11 @@ export class DaemonTakerFillRecovery {
 
   async resumePending(state: DaemonState): Promise<void> {
     const pendingTradeIds = Object.values(state.swaps)
-      .filter((swap) => swap.takerRecovery?.status !== 'submitted')
+      .filter((swap) =>
+        swap.isTaker === true
+        && swap.failureReason === 'maker-collateral-failure'
+        && swap.takerRecovery?.status !== 'submitted'
+      )
       .map((swap) => swap.tradeId)
       .sort()
     for (const tradeId of pendingTradeIds) {

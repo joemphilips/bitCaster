@@ -523,6 +523,58 @@ export function readDaemonStateRows(
   }
 }
 
+/** Hydrates only live subscription work; terminal order/swap history stays cold. */
+export function readDaemonActiveTradeRuntimeRows(
+  database: DatabaseSync,
+): unknown | null {
+  assertDaemonStateSchema(database, false)
+  const orderIds = database
+    .prepare(
+      `SELECT order_id
+         FROM daemon_orders INDEXED BY daemon_orders_active_runtime_idx
+        WHERE status NOT IN ('Filled', 'filled', 'cancelled', 'Failed', 'failed')
+        ORDER BY order_id`,
+    )
+    .all()
+    .map((row) => requireText(row.order_id, 'active runtime order id'))
+  const swapIds = database
+    .prepare(
+      `SELECT trade_id
+         FROM daemon_swaps INDEXED BY daemon_swaps_active_recovery_idx
+        WHERE step IN ('awaiting-trade-created', 'opened', 'seller-opened', 'buyer-responded', 'settling', 'awaiting-confirmation')
+        ORDER BY trade_id`,
+    )
+    .all()
+    .map((row) => requireText(row.trade_id, 'active runtime swap id'))
+  return readDaemonStateRows(database, {
+    orderIds,
+    orderIdsFromSwapIds: swapIds,
+    swapIds,
+  })
+}
+
+/** Hydrates only failed taker fills that may still require one replacement. */
+export function readDaemonPendingTakerRecoveryRows(
+  database: DatabaseSync,
+): unknown | null {
+  assertDaemonStateSchema(database, false)
+  const swapIds = database
+    .prepare(
+      `SELECT trade_id
+         FROM daemon_swaps INDEXED BY daemon_swaps_taker_recovery_idx
+        WHERE is_taker = 1
+          AND failure_reason = 'maker-collateral-failure'
+          AND (taker_recovery_status IS NULL OR taker_recovery_status = 'pending')
+        ORDER BY trade_id`,
+    )
+    .all()
+    .map((row) => requireText(row.trade_id, 'pending taker recovery trade id'))
+  return readDaemonStateRows(database, {
+    orderIdsFromSwapIds: swapIds,
+    swapIds,
+  })
+}
+
 /** Reads only the capped denomination counts cashu-ts uses for output shaping. */
 export function readDaemonWalletProofAmountSample(
   database: DatabaseSync,
@@ -1110,6 +1162,10 @@ const STATE_SCHEMA_SQL = `
     CREATE INDEX daemon_orders_ephemeral_pubkey_idx
       ON daemon_orders (ephemeral_pubkey, order_id);
 
+    CREATE INDEX daemon_orders_active_runtime_idx
+      ON daemon_orders (order_id)
+      WHERE status NOT IN ('Filled', 'filled', 'cancelled', 'Failed', 'failed');
+
     CREATE INDEX daemon_order_trades_trade_idx
       ON daemon_order_trades (trade_id, order_id);
 
@@ -1122,6 +1178,12 @@ const STATE_SCHEMA_SQL = `
     CREATE INDEX daemon_swaps_active_recovery_idx
       ON daemon_swaps (trade_id)
       WHERE step IN ('awaiting-trade-created', 'opened', 'seller-opened', 'buyer-responded', 'settling', 'awaiting-confirmation');
+
+    CREATE INDEX daemon_swaps_taker_recovery_idx
+      ON daemon_swaps (trade_id)
+      WHERE is_taker = 1
+        AND failure_reason = 'maker-collateral-failure'
+        AND (taker_recovery_status IS NULL OR taker_recovery_status = 'pending');
 
     CREATE INDEX daemon_wallet_proofs_reservation_idx
       ON daemon_wallet_proofs (reserved_by, state, mint_url, proof_id);

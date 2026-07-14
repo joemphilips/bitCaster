@@ -6,6 +6,7 @@ import {
 } from '@cashu/cashu-ts'
 import { createHash } from 'node:crypto'
 import {
+  createDurableTradeRecoveryResultAccumulator,
   recoverDurableTradeSessions,
   reduceDurableTradeSession,
   validateDurableProofOperationLink,
@@ -139,7 +140,7 @@ export async function recoverDaemonDurableTradeSessions(input: {
   if (input.tradeId !== undefined) {
     return recoverDaemonDurableTrade(input.tradeId, input)
   }
-  const combined: DurableTradeRecoveryResult = { sessions: [], orphans: [] }
+  const combined = createDurableTradeRecoveryResultAccumulator()
   let cursor: string | null = null
   do {
     const page = await readRecoveryStorage(() =>
@@ -187,15 +188,11 @@ export async function recoverDaemonDurableTradeSessions(input: {
       }
       const ports = createDaemonDurableTradeRecoveryPorts(snapshot, input)
       const recovered = await recoverDurableTradeSessions(ports)
-      combined.sessions.push(...recovered.sessions)
-      combined.orphans.push(...recovered.orphans)
-      if (recovered.pendingIntents !== undefined) {
-        ;(combined.pendingIntents ??= []).push(...recovered.pendingIntents)
-      }
+      combined.append(recovered)
     }
     cursor = page.nextCursor
   } while (cursor !== null)
-  return combined
+  return combined.finish()
 }
 
 async function recoverDaemonDurableTrade(
@@ -487,8 +484,12 @@ class DaemonDurableTradeRecoveryCoordinator implements DaemonDurableTradeRecover
   }
 
   private async clearTerminalRetries(tradeId?: string): Promise<void> {
+    // Global recovery pages can cover many unrelated trades. Outstanding
+    // one-shot timers revalidate themselves when they fire; do not turn each
+    // global pass into one SQLite read per timer.
+    if (tradeId === undefined) return
     for (const [key, entry] of this.retryTimers) {
-      if (tradeId !== undefined && entry.request.tradeId !== tradeId) continue
+      if (entry.request.tradeId !== tradeId) continue
       if (await this.isRetryEligible(entry.request)) continue
       this.clearTimer(entry.timer)
       this.retryTimers.delete(key)
@@ -568,16 +569,23 @@ function selectKey<T>(values: Record<string, T>, key: string): Record<string, T>
   return value === undefined ? {} : { [key]: value }
 }
 
-function hasFailedClosedRecovery(
+export function hasFailedClosedRecovery(
   recovery: DurableTradeRecoveryResult,
   tradeId?: string,
 ): boolean {
   return (
+    recovery.summary?.failedClosed === true ||
     recovery.sessions.some(
       (result) =>
         result.kind === 'failed-closed' &&
         (tradeId === undefined || result.tradeId === tradeId),
-    ) || recovery.orphans.some((result) => result.kind === 'failed-closed')
+    ) ||
+    recovery.orphans.some((result) => result.kind === 'failed-closed') ||
+    recovery.pendingIntents?.some(
+      (result) =>
+        result.kind === 'failed-closed' &&
+        (tradeId === undefined || result.tradeId === tradeId),
+    ) === true
   )
 }
 

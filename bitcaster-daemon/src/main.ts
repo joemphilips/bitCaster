@@ -20,9 +20,13 @@ import {
   assertStoredDaemonStateIsEmptyForIdentityReplacement,
   emptyDaemonState,
   initializeDaemonStateInDatabase,
-  readStateScope,
+  readActiveTradeRuntimeState,
+  readPendingTakerRecoveryState,
 } from './state.ts'
-import type { DaemonDurableTradeRecoveryRunner } from './durableTradeRecovery.ts'
+import {
+  hasFailedClosedRecovery,
+  type DaemonDurableTradeRecoveryRunner,
+} from './durableTradeRecovery.ts'
 import {
   initializeDurableCustodyInDatabase,
   SqliteDurableCustodyStore,
@@ -434,17 +438,23 @@ switch (command) {
     }
     if (durableRecoveryRunner) {
       const recovery = await durableRecoveryRunner.finishBootstrap()
-      for (const session of recovery.durableRecovery.sessions) {
-        if (session.kind === 'failed-closed') {
-          throw new Error(
-            `durable trade recovery failed closed for ${session.tradeId}: ${session.reason}`,
-          )
-        }
+      const failedSession = recovery.durableRecovery.sessions.find(
+        (session) => session.kind === 'failed-closed',
+      )
+      if (failedSession?.kind === 'failed-closed') {
+        throw new Error(
+          `durable trade recovery failed closed for ${failedSession.tradeId}: ${failedSession.reason}`,
+        )
+      }
+      if (hasFailedClosedRecovery(recovery.durableRecovery)) {
+        throw new Error('durable trade recovery failed closed')
       }
       custodyLease.assertActive()
     }
     if (takerFillRecovery) {
-      await takerFillRecovery.resumePending(await readTradeRuntimeState())
+      await takerFillRecovery.resumePending(
+        await readPendingTakerRecoveryState(),
+      )
       custodyLease.assertActive()
     }
     const server = await startDaemonServer({
@@ -487,9 +497,7 @@ switch (command) {
 }
 
 async function readTradeRuntimeState() {
-  const state = await readStateScope({ orderIds: 'all', swapIds: 'all' })
-  if (!state) throw new Error('daemon SQLite state row is missing')
-  return state
+  return readActiveTradeRuntimeState()
 }
 
 function parseInitOptions(args: string[]): {

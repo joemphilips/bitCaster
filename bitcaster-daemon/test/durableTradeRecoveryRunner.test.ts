@@ -242,6 +242,46 @@ test('daemon recovery retry fires one serialized owner pass while it remains bef
   assert.equal(legacyRuns, 2)
 })
 
+test('global recovery does not rescan every outstanding retry timer', async () => {
+  const state = retryState()
+  let stateLoads = 0
+  let coordinatorRuns = 0
+  const runner = createDaemonDurableTradeRecoveryRunner({
+    executor: {
+      async resumeActiveSwaps() {
+        return { activeSwaps: 0 }
+      },
+    } as never,
+    connection: {} as never,
+    loadState: async () => {
+      stateLoads += 1
+      return state
+    },
+    nowMs: () => 1_000,
+    setTimer: (() => ({ unref() {} })) as never,
+    recoverDurableSessions: async ({ scheduleRetry }) => {
+      coordinatorRuns += 1
+      if (coordinatorRuns === 1) {
+        await scheduleRetry({
+          tradeId: 'trade-retry',
+          operationId:
+            state.proofOperations['trade-retry/seller-lock']!
+              .durableTradeRecovery!.operationId,
+          delayMs: 25,
+          reason: 'rate-limited',
+        })
+      }
+      return { sessions: [], orphans: [] }
+    },
+  })
+
+  await runner.recover()
+  stateLoads = 0
+  await runner.recover()
+
+  assert.equal(stateLoads, 1)
+})
+
 test('daemon recovery owner does not interleave an inbound cipher write with a paused session CAS', async () => {
   const home = await mkdtemp(
     join(tmpdir(), 'bitcaster-daemon-event-owner-cas-'),

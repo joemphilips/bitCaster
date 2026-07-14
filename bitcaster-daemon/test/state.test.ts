@@ -18,16 +18,62 @@ import {
   prepareProofOperationStateProjectionForTest as prepareProofOperation,
   readState,
   readStateScope,
+  readActiveTradeRuntimeState,
+  readPendingTakerRecoveryState,
   readWalletHoldingTotals,
   selectAvailableSatProofsForSend,
   setStateWriteFaultHookForTest,
   statePath,
   updateState,
   writeState,
+  type LocalOrderRecord,
+  type LocalSwapRecord,
 } from '../src/state.ts'
 import { deriveDaemonWalletProofIdFromProof } from '../src/stateSqlite.ts'
 
 const SQLITE_TEST_CREATED_AT = '2026-07-14T00:00:00.000Z'
+
+function localOrder(orderId: string, status: string): LocalOrderRecord {
+  return {
+    orderId,
+    marketId: 'condition-YES',
+    status,
+    tradeIds: [],
+    createdAt: SQLITE_TEST_CREATED_AT,
+    updatedAt: SQLITE_TEST_CREATED_AT,
+  }
+}
+
+function localSwap(
+  tradeId: string,
+  orderId: string,
+  step: LocalSwapRecord['step'],
+): LocalSwapRecord {
+  return {
+    tradeId,
+    orderId,
+    marketId: 'condition-YES',
+    messages: {},
+    step,
+    createdAt: SQLITE_TEST_CREATED_AT,
+    updatedAt: SQLITE_TEST_CREATED_AT,
+  }
+}
+
+function assertQueryUsesIndex(
+  database: DatabaseSync,
+  sql: string,
+  indexName: string,
+): void {
+  const plan = database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{
+    detail: string
+  }>
+  assert.equal(plan.some((row) => row.detail.includes(indexName)), true)
+  assert.equal(
+    plan.some((row) => row.detail.includes('USE TEMP B-TREE')),
+    false,
+  )
+}
 
 function registerProofIdFunction(
   database: DatabaseSync,
@@ -308,6 +354,60 @@ test('a malformed persisted local swap never normalizes private recovery materia
       () => readState(),
       /seller adaptor material row is incomplete/,
     )
+  })
+})
+
+test('trade runtime startup reads only indexed live orders and swaps', async () => {
+  await withDaemonHome(async () => {
+    const state = emptyDaemonState()
+    state.orders['active-order'] = localOrder('active-order', 'resting')
+    state.orders['terminal-order'] = localOrder('terminal-order', 'filled')
+    state.orders['taker-order'] = localOrder('taker-order', 'filled')
+    state.swaps['active-trade'] = localSwap(
+      'active-trade',
+      'active-order',
+      'opened',
+    )
+    state.swaps['terminal-trade'] = localSwap(
+      'terminal-trade',
+      'terminal-order',
+      'confirmed',
+    )
+    state.swaps['taker-pending'] = {
+      ...localSwap('taker-pending', 'taker-order', 'Failed'),
+      isTaker: true,
+      failureReason: 'maker-collateral-failure',
+    }
+    await writeState(state)
+
+    const runtime = await readActiveTradeRuntimeState()
+    assert.deepEqual(Object.keys(runtime.orders), ['active-order'])
+    assert.deepEqual(Object.keys(runtime.swaps), ['active-trade'])
+    const takerRecovery = await readPendingTakerRecoveryState()
+    assert.deepEqual(Object.keys(takerRecovery.orders), ['taker-order'])
+    assert.deepEqual(Object.keys(takerRecovery.swaps), ['taker-pending'])
+
+    const database = new DatabaseSync(statePath())
+    try {
+      assertQueryUsesIndex(
+        database,
+        `SELECT order_id FROM daemon_orders
+          WHERE status NOT IN ('Filled', 'filled', 'cancelled', 'Failed', 'failed')
+          ORDER BY order_id`,
+        'daemon_orders_active_runtime_idx',
+      )
+      assertQueryUsesIndex(
+        database,
+        `SELECT trade_id FROM daemon_swaps
+          WHERE is_taker = 1
+            AND failure_reason = 'maker-collateral-failure'
+            AND (taker_recovery_status IS NULL OR taker_recovery_status = 'pending')
+          ORDER BY trade_id`,
+        'daemon_swaps_taker_recovery_idx',
+      )
+    } finally {
+      database.close()
+    }
   })
 })
 

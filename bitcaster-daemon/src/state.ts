@@ -54,7 +54,9 @@ import {
   deriveDaemonWalletProofIdFromProof,
   ensureDaemonStateSchema,
   FULL_DAEMON_STATE_ROW_SCOPE,
+  readDaemonActiveTradeRuntimeRows,
   readDaemonActiveSwapIdsPage,
+  readDaemonPendingTakerRecoveryRows,
   readDaemonStateCounts,
   readDaemonStateIsEmpty,
   readDaemonStateRows,
@@ -610,6 +612,22 @@ export async function readActiveSwapIdsPage(
   return readNormalizedStateDatabase((database) =>
     readDaemonActiveSwapIdsPage(database, input),
   )
+}
+
+export async function readActiveTradeRuntimeState(): Promise<DaemonState> {
+  return readNormalizedStateDatabase((database) => {
+    const rows = readDaemonActiveTradeRuntimeRows(database)
+    if (rows === null) throw new Error('daemon SQLite state row is missing')
+    return decodeDaemonState(rows)
+  })
+}
+
+export async function readPendingTakerRecoveryState(): Promise<DaemonState> {
+  return readNormalizedStateDatabase((database) => {
+    const rows = readDaemonPendingTakerRecoveryRows(database)
+    if (rows === null) throw new Error('daemon SQLite state row is missing')
+    return decodeDaemonState(rows)
+  })
 }
 
 export async function readWalletBalance(): Promise<WalletBalance> {
