@@ -1267,7 +1267,7 @@ function createSchema(database: DatabaseSync): void {
       preflight_amount_sats INTEGER CHECK (
         preflight_amount_sats IS NULL OR preflight_amount_sats > 0
       ),
-      pin_state TEXT NOT NULL CHECK (pin_state IN ('prepared', 'active', 'released')),
+      pin_state TEXT NOT NULL CHECK (pin_state IN ('preparing', 'prepared', 'active', 'released')),
       order_id TEXT CHECK (order_id IS NULL OR length(order_id) BETWEEN 1 AND 1024),
       release_reason TEXT CHECK (release_reason IN ('pre-submit-rejected', 'filled', 'cancelled', 'failed', 'expired')),
       PRIMARY KEY (scope_id, pin_id),
@@ -1289,10 +1289,11 @@ function createSchema(database: DatabaseSync): void {
           AND order_side = 'Buy')
       ),
       CHECK (
-        (pin_state = 'prepared' AND order_id IS NULL AND release_reason IS NULL AND remaining_order_amount = order_amount)
+        (pin_state IN ('preparing', 'prepared') AND order_id IS NULL AND release_reason IS NULL AND remaining_order_amount = order_amount)
         OR (pin_state = 'active' AND order_id IS NOT NULL AND release_reason IS NULL)
         OR (pin_state = 'released' AND release_reason IS NOT NULL AND remaining_order_amount = 0)
       ),
+      CHECK (pin_state <> 'preparing' OR preflight_reservation_id IS NOT NULL),
       CHECK (release_reason <> 'pre-submit-rejected' OR order_id IS NULL)
     ) STRICT;
 

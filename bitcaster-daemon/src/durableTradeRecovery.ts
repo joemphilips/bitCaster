@@ -540,7 +540,6 @@ async function requireActiveTradeState(tradeId: string): Promise<DaemonState> {
     tradeIds: [tradeId],
     swapIds: [tradeId],
     orderIdsFromSwapIds: [tradeId],
-    walletProofs: [{ reservedBy: tradeId }],
   })
   if (!state) throw new Error('daemon SQLite state row is missing')
   return state
@@ -560,9 +559,7 @@ function selectTradeState(state: DaemonState, tradeId: string): DaemonState {
       order.tradeIds.includes(tradeId),
     ),
   )
-  selected.wallet.proofs = selected.wallet.proofs.filter(
-    (proof) => proof.reservedBy === tradeId,
-  )
+  selected.wallet.proofs = []
   return selected
 }
 

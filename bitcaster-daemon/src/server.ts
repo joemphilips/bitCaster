@@ -47,13 +47,13 @@ import {
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
 } from '@bitcaster-market/client-sdk/ctfSplit'
-import { prepareSwapInputsForTrade } from '@bitcaster-market/client-sdk/tradePreparation'
 import { takeProofsForLock } from '@bitcaster-market/client-sdk/proofSelection'
 import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
+  parseCashuProofUnit,
   quotePaymentSubunits,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import {
@@ -97,7 +97,6 @@ import {
   applyOrderEngineProjection,
   orderEngineProjectionScope,
   recordOrderStatus,
-  releaseProofReservation,
   updateState,
   type CashuProofRecord,
   type StoredProofRecord,
@@ -113,6 +112,7 @@ import {
   resolveMintKeysByKeyset,
   splitAvailableSatProofsForCtfCollateral,
   type WalletOpsDependencies,
+  type WalletOpsSecrets,
 } from './walletOps.ts'
 import { buildDaemonTokenHoldingsFromTotals } from './walletHoldings.ts'
 import type { DaemonDurableTradeRecoveryRunner } from './durableTradeRecovery.ts'
@@ -174,6 +174,30 @@ interface PreparedPreflightSplit {
   amountSats: number
 }
 
+interface OrderPreflightPreparationInput {
+  client: EngineClientLike
+  mintUrl: string
+  marketId: string
+  outcomeId: string
+  tokenSide: 'Outcome' | 'Complement'
+  side: 'Buy' | 'Sell'
+  price: number
+  amountSats: number
+  timeInForce: 'FAK' | 'FOK' | 'GTC'
+  preflightSplit?: boolean
+  clientOrderId: string
+  preparePin(
+    preflight: PreparedPreflightSplit,
+    proofs: readonly CashuProofRecord[],
+  ): Promise<DurableOrderCollateralPin>
+}
+
+interface OrderPreflightPreparationIntent {
+  preflight: PreparedPreflightSplit
+  baseAsset: string
+  unit: NonNullable<ReturnType<typeof parseCashuProofUnit>>
+}
+
 type DaemonParticipationScorePreflightResult =
   | { kind: 'disabled' | 'sufficient'; score: ParticipationScoreResponse }
   | {
@@ -199,12 +223,12 @@ async function splitWalletCompleteSet(input: {
   outcomeProofCounts: Record<string, number>
 }> {
   if (!input.secrets) throw new Error('daemon secrets are not initialized')
-  const collateral = await splitAvailableSatProofsForCtfCollateral(
-    input.amountSats,
-    input.mintUrl,
-    `${input.operationId}:regular-split`,
-    input.secrets,
-  )
+  const collateral = await splitAvailableSatProofsForCtfCollateral({
+    amountSats: input.amountSats,
+    mintUrl: input.mintUrl,
+    operationId: `${input.operationId}:regular-split`,
+    secrets: input.secrets,
+  })
   const transport = new CashuMintCtfSplitTransport(input.mintUrl)
   const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
     input.conditionId,
@@ -299,6 +323,32 @@ const ctfProofOperationStore: CtfProofOperationStore = {
       operationId,
       resultProofs,
     )) as CtfProofOperationRecord,
+}
+
+function createOrderPreflightProofOperationStore(
+  pinId: string,
+  unit: ReturnType<typeof defaultCollateralUnit>,
+): CtfProofOperationStore {
+  return {
+    getProofOperation: ctfProofOperationStore.getProofOperation,
+    prepareProofOperation: async (input) =>
+      (await prepareProofOperation({
+        ...input,
+        metadata: {
+          ...input.metadata,
+          reservationId: input.operationId,
+          unit,
+        },
+        walletProofReservation: {
+          reservationId: input.operationId,
+          unit,
+          parentOrderCollateralPinId: pinId,
+        },
+      })) as CtfProofOperationRecord,
+    markProofOperationMintSubmitted:
+      ctfProofOperationStore.markProofOperationMintSubmitted,
+    markProofOperationCompleted: ctfProofOperationStore.markProofOperationCompleted,
+  }
 }
 
 export async function startDaemonServer(
@@ -836,7 +886,7 @@ export async function dispatch(
         timeInForce: orderParams.timeInForce,
         clientOrderId,
       }
-      const preparedPreflight = await maybePreparePreflightSplitForOrder({
+      const preflightResult = await maybePreparePreflightSplitForOrder({
         client: context.client,
         mintUrl: context.profile.mintUrl,
         marketId: orderParams.marketId,
@@ -848,9 +898,23 @@ export async function dispatch(
         timeInForce: orderParams.timeInForce,
         preflightSplit: orderParams.preflightSplit,
         clientOrderId,
+        preparePin: (preflight, proofs) => prepareOrderCollateralPin({
+          marketId: orderParams.marketId,
+          mintUrl: context.profile.mintUrl,
+          unit: defaultCollateralUnit(marketUnit.baseAsset),
+          conditionId,
+          submissionRequest,
+          divisibility: marketUnit.divisibility,
+          baseAsset: marketUnit.baseAsset,
+          preparedPreflight: preflight,
+          exactProofs: proofs,
+          preparing: true,
+          resolveInputFeePpkByKeyset: deps.resolveInputFeePpkByKeyset,
+        }),
       })
+      const preparedPreflight = preflightResult?.preflight ?? null
       const collateralPin = orderParams.timeInForce === 'GTC'
-        ? await prepareOrderCollateralPin({
+        ? preflightResult?.pin ?? await prepareOrderCollateralPin({
             marketId: orderParams.marketId,
             mintUrl: context.profile.mintUrl,
             unit: defaultCollateralUnit(marketUnit.baseAsset),
@@ -871,8 +935,6 @@ export async function dispatch(
       } catch (err) {
         if (err instanceof EngineClientError && collateralPin) {
           await releaseOrderCollateralBeforeSubmit(collateralPin.pinId)
-        } else if (err instanceof EngineClientError && preparedPreflight) {
-          await releaseProofReservation(preparedPreflight.reservationId)
         }
         if (err instanceof EngineClientError) {
           return {
@@ -1486,22 +1548,195 @@ export async function commitAcceptedOrderSubmission(
   return committed.result
 }
 
-async function maybePreparePreflightSplitForOrder(input: {
-  client: EngineClientLike
-  mintUrl: string
-  marketId: string
-  outcomeId: string
-  tokenSide: 'Outcome' | 'Complement'
-  side: 'Buy' | 'Sell'
-  price: number
-  amountSats: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC'
-  preflightSplit?: boolean
-  clientOrderId: string
-}): Promise<PreparedPreflightSplit | null> {
+export interface OrderCollateralPreparationRecoveryDependencies {
+  walletOps?: WalletOpsDependencies
+  resolveOutputAmount?: typeof resolveRootPreflightOutputAmountSats
+  splitCollateral?: typeof splitAvailableSatProofsForCtfCollateral
+  splitPreflight?: typeof splitRootCompleteSetForPreflightOrder
+}
+
+export async function recoverPreparingOrderCollateralPins(
+  secrets: WalletOpsSecrets,
+  deps: OrderCollateralPreparationRecoveryDependencies = {},
+): Promise<{ recoveredCount: number }> {
+  const coordinator = requireDaemonOrderCollateralCoordinator()
+  let cursor: string | null = null
+  let recoveredCount = 0
+  do {
+    const page = await coordinator.readPreparingPage({ cursor, limit: 64 })
+    for (const pin of page.pins) {
+      await resumeOrderCollateralPreparation(pin, secrets, deps)
+      recoveredCount += 1
+    }
+    cursor = page.nextCursor
+  } while (cursor !== null)
+  return { recoveredCount }
+}
+
+async function resumeOrderCollateralPreparation(
+  pin: DurableOrderCollateralPin,
+  secrets: WalletOpsSecrets,
+  deps: OrderCollateralPreparationRecoveryDependencies,
+): Promise<void> {
+  const preflight = pin.preflightSplit
+  if (preflight === null) {
+    throw new Error('preparing order collateral has no preflight authority')
+  }
+  const rows = await readPinnedOrderCollateralRows(pin.pinId)
+  const firstRow = rows[0]
+  if (firstRow === undefined) {
+    throw new Error('preparing order collateral has no pinned proofs')
+  }
+  if (rows.every((row) => row.asset.kind === 'Outcome')) {
+    await requireDaemonOrderCollateralCoordinator().finishPreparation(pin.pinId)
+    return
+  }
+  if (rows.some((row) => row.asset.kind !== 'sats')) {
+    throw new Error('preparing order collateral mixes asset classes')
+  }
+  const baseAsset = normalizeMarketBaseAsset(firstRow.asset.baseAsset)
+  const resolveOutputAmount =
+    deps.resolveOutputAmount ?? resolveRootPreflightOutputAmountSats
+  const outputAmount = await resolveOutputAmount({
+    mintUrl: pin.mintUrl,
+    baseAsset,
+    conditionId: preflight.conditionId,
+    amountSats: preflight.amountSats,
+    keepOutcomeSetId: preflight.keepOutcomeSetId,
+    lockOutcomeSetId: preflight.lockOutcomeSetId,
+  })
+  const unit = parseCashuProofUnit(pin.unit)
+  if (unit === null) throw new Error('preparing order collateral unit is invalid')
+  const store = createOrderPreflightProofOperationStore(pin.pinId, unit)
+  const regularOperationId = `${pin.pinId}:regular-split:0`
+  const splitCollateral =
+    deps.splitCollateral ?? splitAvailableSatProofsForCtfCollateral
+  const collateral = await splitCollateral({
+    amountSats: outputAmount,
+    mintUrl: pin.mintUrl,
+    operationId: regularOperationId,
+    secrets,
+    deps: deps.walletOps,
+    baseAsset,
+    proofOperationStore: store,
+    candidateProofs: rows.map(({ proof }) => proof as Proof),
+  })
+  await commitAndFinishOrderCollateralPreparation({
+    pin,
+    preflight,
+    collateral,
+    outputAmount,
+    baseAsset,
+    store,
+    deps,
+  })
+}
+
+async function readPinnedOrderCollateralRows(
+  pinId: string,
+): Promise<StoredProofRecord[]> {
+  const coordinator = requireDaemonOrderCollateralCoordinator()
+  const proofIds = await coordinator.readProofIds(pinId)
+  const state = await readStateScope({ walletProofs: [{ proofIds }] })
+  const rows = state?.wallet.proofs ?? []
+  if (rows.length !== proofIds.length) {
+    throw new Error('pinned order collateral proof projection is incomplete')
+  }
+  await coordinator.assertOwnsProofs(pinId, rows)
+  return rows
+}
+
+async function finishOrderPreflightCtfSplit(
+  pin: DurableOrderCollateralPin,
+  preflight: PreparedPreflightSplit,
+  rows: StoredProofRecord[],
+  outputAmount: number,
+  baseAsset: string,
+  store: CtfProofOperationStore,
+  deps: OrderCollateralPreparationRecoveryDependencies = {},
+): Promise<void> {
+  const operationId = `${pin.pinId}:ctf-split:0`
+  const splitPreflight =
+    deps.splitPreflight ?? splitRootCompleteSetForPreflightOrder
+  const split = await splitPreflight({
+    mintUrl: pin.mintUrl,
+    baseAsset,
+    conditionId: preflight.conditionId,
+    collateralProofs: rows.map(({ proof }) => proof as Proof),
+    amountSats: outputAmount,
+    keepOutcomeSetId: preflight.keepOutcomeSetId,
+    lockOutcomeSetId: preflight.lockOutcomeSetId,
+    operationId,
+    proofOperationStore: store,
+  })
+  if (
+    split.resolvedKeepOutcomeSetId !== preflight.keepOutcomeSetId
+    || split.resolvedLockOutcomeSetId !== preflight.lockOutcomeSetId
+  ) {
+    throw new Error('pre-flight split resolved foreign outcome authority')
+  }
+  await commitOrderPreflightOutcomeTransform({
+    pinId: pin.pinId,
+    operationId,
+    mintUrl: pin.mintUrl,
+    baseAsset,
+    conditionId: preflight.conditionId,
+    spent: split.spentSatProofs,
+    proofsByCollection: split.proofsByCollection,
+  })
+  await requireDaemonOrderCollateralCoordinator().finishPreparation(pin.pinId)
+}
+
+async function commitAndFinishOrderCollateralPreparation(input: {
+  pin: DurableOrderCollateralPin
+  preflight: PreparedPreflightSplit
+  collateral: Awaited<ReturnType<typeof splitAvailableSatProofsForCtfCollateral>>
+  outputAmount: number
+  baseAsset: string
+  store: CtfProofOperationStore
+  deps: OrderCollateralPreparationRecoveryDependencies
+}): Promise<void> {
+  if (input.collateral.spent.length > 0) {
+    await commitOrderPreflightRegularTransform({
+      pin: input.pin,
+      operationId: `${input.pin.pinId}:regular-split:0`,
+      mintUrl: input.pin.mintUrl,
+      baseAsset: input.baseAsset,
+      spent: input.collateral.spent,
+      keep: input.collateral.keep,
+      inputs: input.collateral.inputs,
+    })
+  }
+  const rows = await readPinnedOrderCollateralRows(input.pin.pinId)
+  await finishOrderPreflightCtfSplit(
+    input.pin,
+    input.preflight,
+    rows,
+    input.outputAmount,
+    input.baseAsset,
+    input.store,
+    input.deps,
+  )
+}
+
+async function maybePreparePreflightSplitForOrder(
+  input: OrderPreflightPreparationInput,
+): Promise<{
+  preflight: PreparedPreflightSplit
+  pin: DurableOrderCollateralPin
+} | null> {
   if (input.preflightSplit !== true) return null
   if (input.side !== 'Buy' || input.timeInForce !== 'GTC') return null
 
+  const intent = await resolveOrderPreflightPreparationIntent(input)
+  if (intent === null) return null
+  const pin = await prepareFreshOrderPreflight(input, intent)
+  return { preflight: intent.preflight, pin }
+}
+
+async function resolveOrderPreflightPreparationIntent(
+  input: OrderPreflightPreparationInput,
+): Promise<OrderPreflightPreparationIntent | null> {
   const market = splitMarketId(input.marketId)
   if (!market) {
     throw new Error(
@@ -1531,101 +1766,68 @@ async function maybePreparePreflightSplitForOrder(input: {
     return null
   }
   const marketUnit = await loadMarketUnit(input.client, market.conditionId)
-
   const reservationId = durableOrderCollateralPinId(input.clientOrderId)
   const keepOutcomeSetId =
     input.tokenSide === 'Complement' ? complement : market.outcomeSetId
   const lockOutcomeSetId =
     input.tokenSide === 'Complement' ? market.outcomeSetId : complement
-  let resolvedKeepOutcomeSetId = keepOutcomeSetId
-  let resolvedLockOutcomeSetId = lockOutcomeSetId
-  try {
-    const prepared = await prepareSwapInputsForTrade({
-      role: 'seller',
+  return {
+    preflight: {
+      reservationId,
+      conditionId: market.conditionId,
+      keepOutcomeSetId,
       lockOutcomeSetId,
       amountSats: input.amountSats,
-      outcomeProofsByCollection: {},
-      regularProofs: [],
-      splitRegularToOutcome: async () => {
-        const preflightOutputAmountSats =
-          await resolveRootPreflightOutputAmountSats({
-            mintUrl: input.mintUrl,
-            baseAsset: marketUnit.baseAsset,
-            conditionId: market.conditionId,
-            amountSats: input.amountSats,
-            keepOutcomeSetId,
-            lockOutcomeSetId,
-          })
-        const secrets = await readSecrets()
-        if (!secrets) throw new Error('daemon secrets are not initialized')
-        const collateral = await splitAvailableSatProofsForCtfCollateral(
-          preflightOutputAmountSats,
-          input.mintUrl,
-          `${reservationId}:regular-split:0`,
-          secrets,
-          {},
-          marketUnit.baseAsset,
-        )
-        if (collateral.spent.length > 0) {
-          await replaceAvailableSatProofsWithPreparedCollateral({
-            mintUrl: input.mintUrl,
-            spentProofs: collateral.spent,
-            keepProofs: collateral.keep,
-            inputProofs: collateral.inputs,
-            reservationId,
-            baseAsset: marketUnit.baseAsset,
-          })
-        } else {
-          await reserveSelectedSatProofs(
-            input.mintUrl,
-            collateral.inputs,
-            reservationId,
-            marketUnit.baseAsset,
-          )
-        }
-        const split = await splitRootCompleteSetForPreflightOrder({
-          mintUrl: input.mintUrl,
-          baseAsset: marketUnit.baseAsset,
-          conditionId: market.conditionId,
-          collateralProofs: collateral.inputs,
-          amountSats: preflightOutputAmountSats,
-          keepOutcomeSetId,
-          lockOutcomeSetId,
-          operationId: `${reservationId}:ctf-split:0`,
-          proofOperationStore: ctfProofOperationStore,
-        })
-        resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId
-        resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId
-        await replaceReservedSatProofsWithReservedOutcomes({
-          mintUrl: input.mintUrl,
-          reservationId,
-          spentProofs: split.spentSatProofs,
-          conditionId: market.conditionId,
-          proofsByCollection: split.proofsByCollection,
-          baseAsset: marketUnit.baseAsset,
-        })
-        return {
-          proofsByCollection: split.proofsByCollection,
-          spentRegularProofs: [],
-          regularChangeProofs: [],
-        }
-      },
-    })
-    if (prepared.status !== 'prepared') {
-      throw new Error(`pre-flight split unavailable: ${prepared.reason}`)
-    }
-  } catch (err) {
-    await releaseProofReservation(reservationId)
-    throw err
+    },
+    baseAsset: marketUnit.baseAsset,
+    unit: defaultCollateralUnit(marketUnit.baseAsset),
   }
+}
 
-  return {
-    reservationId,
-    conditionId: market.conditionId,
-    keepOutcomeSetId: resolvedKeepOutcomeSetId,
-    lockOutcomeSetId: resolvedLockOutcomeSetId,
-    amountSats: input.amountSats,
+async function prepareFreshOrderPreflight(
+  input: OrderPreflightPreparationInput,
+  intent: OrderPreflightPreparationIntent,
+): Promise<DurableOrderCollateralPin> {
+  const { preflight, baseAsset, unit } = intent
+  let pin: DurableOrderCollateralPin | undefined
+  const ensurePin = async (proofs: readonly CashuProofRecord[]) => {
+    pin ??= await input.preparePin(preflight, proofs)
+    return pin
   }
+  const operationStore = createOrderPreflightProofOperationStore(
+    preflight.reservationId,
+    unit,
+  )
+  const outputAmount = await resolveRootPreflightOutputAmountSats({
+    mintUrl: input.mintUrl,
+    baseAsset,
+    conditionId: preflight.conditionId,
+    amountSats: input.amountSats,
+    keepOutcomeSetId: preflight.keepOutcomeSetId,
+    lockOutcomeSetId: preflight.lockOutcomeSetId,
+  })
+  const secrets = await readSecrets()
+  if (!secrets) throw new Error('daemon secrets are not initialized')
+  const collateral = await splitAvailableSatProofsForCtfCollateral({
+    amountSats: outputAmount,
+    mintUrl: input.mintUrl,
+    operationId: `${preflight.reservationId}:regular-split:0`,
+    secrets,
+    baseAsset,
+    proofOperationStore: operationStore,
+    beforeCollateralUse: async (proofs) => { await ensurePin(proofs) },
+  })
+  if (pin === undefined) throw new Error('pre-flight collateral pin is missing')
+  await commitAndFinishOrderCollateralPreparation({
+    pin,
+    preflight,
+    collateral,
+    outputAmount,
+    baseAsset,
+    store: operationStore,
+    deps: {},
+  })
+  return pin
 }
 
 async function prepareOrderCollateralPin(input: {
@@ -1637,6 +1839,8 @@ async function prepareOrderCollateralPin(input: {
   divisibility: number
   baseAsset: string
   preparedPreflight: PreparedPreflightSplit | null
+  exactProofs?: readonly CashuProofRecord[]
+  preparing?: boolean
   resolveInputFeePpkByKeyset?: WalletOpsDependencies['resolveInputFeePpkByKeyset']
 }) {
   const request = requireGtcSubmissionRequest(input.submissionRequest)
@@ -1646,9 +1850,13 @@ async function prepareOrderCollateralPin(input: {
     amountSubunits: request.amountSubunits,
     divisibility: input.divisibility,
   })
-  const pinId = durableOrderCollateralPinId(request.clientOrderId)
-  const proofs = input.preparedPreflight
-    ? await readPreparedPreflightCollateral(pinId)
+  const proofs = input.exactProofs
+    ? await readExactAvailableOrderCollateralRows({
+        mintUrl: input.mintUrl,
+        unit: input.unit,
+        baseAsset: input.baseAsset,
+        proofs: input.exactProofs,
+      })
     : await selectOrderCollateralRows({
         ...input,
         outcomeId: request.outcomeId,
@@ -1663,6 +1871,7 @@ async function prepareOrderCollateralPin(input: {
     requiredAmount,
     submissionRequest: request,
     preflightSplit: input.preparedPreflight,
+    preparing: input.preparing,
     proofs,
   })
 }
@@ -1693,19 +1902,25 @@ function requiredOrderCollateralAmount(input: {
     : Math.ceil((input.amountSubunits * input.price) / input.divisibility)
 }
 
-async function readPreparedPreflightCollateral(
-  pinId: string,
-): Promise<StoredProofRecord[]> {
-  const state = await readStateScope({
-    walletProofs: [{ state: 'reserved', reservedBy: pinId }],
-  })
-  const proofs = state?.wallet.proofs.filter(
-    (proof) => proof.state === 'reserved' && proof.reservedBy === pinId,
-  ) ?? []
-  if (proofs.length === 0) {
-    throw new Error('pre-flight order collateral reservation is missing')
+async function readExactAvailableOrderCollateralRows(input: {
+  mintUrl: string
+  unit: string
+  baseAsset: string
+  proofs: readonly CashuProofRecord[]
+}): Promise<StoredProofRecord[]> {
+  const proofIds = input.proofs.map((proof) =>
+    deriveDaemonWalletProofIdFromProof(input.mintUrl, input.unit, proof))
+  const state = await readStateScope({ walletProofs: [{ proofIds }] })
+  const rows = state?.wallet.proofs ?? []
+  if (rows.length !== proofIds.length
+    || rows.some((row) => row.state !== 'available'
+      || row.mintUrl !== input.mintUrl
+      || row.unit !== input.unit
+      || row.asset.kind !== 'sats'
+      || normalizeMarketBaseAsset(row.asset.baseAsset) !== input.baseAsset)) {
+    throw new Error('exact pre-flight order collateral is unavailable')
   }
-  return proofs
+  return rows
 }
 
 async function selectOrderCollateralRows(
@@ -1937,42 +2152,97 @@ async function wouldOrderCross(
   return false
 }
 
-async function reserveSelectedSatProofs(
-  mintUrl: string,
-  proofs: CashuProofRecord[],
-  reservedBy: string,
-  baseAssetInput?: string | null,
-): Promise<void> {
-  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
-  const unit = defaultCollateralUnit(baseAsset)
-  const secrets = new Set(proofs.map((proof) => proof.secret))
-  await updateState(
-    {
-      walletProofs: walletProofMutationScope(mintUrl, proofs, baseAsset),
+async function commitOrderPreflightRegularTransform(input: {
+  pin: DurableOrderCollateralPin
+  operationId: string
+  mintUrl: string
+  baseAsset: string
+  spent: CashuProofRecord[]
+  keep: CashuProofRecord[]
+  inputs: CashuProofRecord[]
+}): Promise<void> {
+  const asset = { kind: 'sats' as const, baseAsset: input.baseAsset }
+  const unit = defaultCollateralUnit(input.baseAsset)
+  await requireDaemonOrderCollateralCoordinator().commitTransform({
+    pinId: input.pin.pinId,
+    transformId: input.operationId,
+    operationKeys: [input.operationId],
+    replacementProofs: input.inputs.map((proof) => ({
+      proof, mintUrl: input.mintUrl, unit, asset,
+    })),
+    stateScope: {
+      walletProofs: walletProofMutationScope(
+        input.mintUrl,
+        [...input.spent, ...input.keep, ...input.inputs],
+        input.baseAsset,
+      ),
     },
-    (state, now) => {
-    let reserved = 0
-    for (const record of state.wallet.proofs) {
-      if (
-        record.mintUrl !== mintUrl ||
-        record.unit !== unit ||
-        record.state !== 'available' ||
-        record.asset.kind !== 'sats' ||
-        normalizeMarketBaseAsset(record.asset.baseAsset) !== baseAsset ||
-        !secrets.has(record.proof.secret)
-      ) {
-        continue
-      }
-      record.state = 'reserved'
-      record.reservedBy = reservedBy
-      record.updatedAt = now
-      reserved += 1
-    }
-    if (reserved !== secrets.size) {
-      throw new Error('pre-flight split collateral was no longer available')
-    }
+    applyState: (state, now) => {
+      removeProofsBySecretFromState(state, input.mintUrl, input.spent)
+      addProofsToState(state, input.mintUrl, input.keep, 'available', asset, now)
+      addProofsToState(
+        state,
+        input.mintUrl,
+        input.inputs,
+        'reserved',
+        asset,
+        now,
+        input.pin.pinId,
+      )
     },
+  })
+}
+
+async function commitOrderPreflightOutcomeTransform(input: {
+  pinId: string
+  operationId: string
+  mintUrl: string
+  baseAsset: string
+  conditionId: string
+  spent: CashuProofRecord[]
+  proofsByCollection: Record<string, CashuProofRecord[]>
+}): Promise<void> {
+  const unit = defaultCollateralUnit(input.baseAsset)
+  const replacements = Object.entries(input.proofsByCollection).flatMap(
+    ([outcomeSetId, proofs]) => proofs.map((proof) => ({
+      proof,
+      mintUrl: input.mintUrl,
+      unit,
+      asset: {
+        kind: 'Outcome' as const,
+        conditionId: input.conditionId,
+        outcomeSetId,
+        baseAsset: input.baseAsset,
+      },
+    })),
   )
+  await requireDaemonOrderCollateralCoordinator().commitTransform({
+    pinId: input.pinId,
+    transformId: input.operationId,
+    operationKeys: [input.operationId],
+    replacementProofs: replacements,
+    stateScope: {
+      walletProofs: walletProofMutationScope(
+        input.mintUrl,
+        [...input.spent, ...replacements.map(({ proof }) => proof)],
+        input.baseAsset,
+      ),
+    },
+    applyState: (state, now) => {
+      removeProofsBySecretFromState(state, input.mintUrl, input.spent)
+      for (const replacement of replacements) {
+        addProofsToState(
+          state,
+          input.mintUrl,
+          [replacement.proof],
+          'reserved',
+          replacement.asset,
+          now,
+          input.pinId,
+        )
+      }
+    },
+  })
 }
 
 function addProofsToState(
@@ -2017,127 +2287,6 @@ function removeProofsBySecretFromState(
   if (secrets.size === 0) return
   state.wallet.proofs = state.wallet.proofs.filter(
     (record) => record.mintUrl !== mintUrl || !secrets.has(record.proof.secret),
-  )
-}
-
-async function replaceAvailableSatProofsWithPreparedCollateral(input: {
-  mintUrl: string
-  spentProofs: CashuProofRecord[]
-  keepProofs: CashuProofRecord[]
-  inputProofs: CashuProofRecord[]
-  reservationId: string
-  baseAsset?: string | null
-}): Promise<void> {
-  const spent = new Set(input.spentProofs.map((proof) => proof.secret))
-  const baseAsset = normalizeMarketBaseAsset(input.baseAsset)
-  const unit = defaultCollateralUnit(baseAsset)
-  await updateState(
-    {
-      walletProofs: walletProofMutationScope(
-        input.mintUrl,
-        [...input.spentProofs, ...input.keepProofs, ...input.inputProofs],
-        baseAsset,
-      ),
-    },
-    (state, now) => {
-    state.wallet.proofs = state.wallet.proofs.filter(
-        (record) =>
-          record.mintUrl !== input.mintUrl || !spent.has(record.proof.secret),
-    )
-    const existingSecrets = new Set(
-      state.wallet.proofs
-        .filter((record) => record.mintUrl === input.mintUrl)
-        .map((record) => record.proof.secret),
-    )
-    for (const proof of input.keepProofs) {
-      if (existingSecrets.has(proof.secret)) continue
-      existingSecrets.add(proof.secret)
-      state.wallet.proofs.push({
-        proof: structuredClone(proof),
-        mintUrl: input.mintUrl,
-        unit,
-        state: 'available',
-        asset: { kind: 'sats', baseAsset },
-        createdAt: now,
-        updatedAt: now,
-      })
-    }
-    for (const proof of input.inputProofs) {
-      if (existingSecrets.has(proof.secret)) continue
-      existingSecrets.add(proof.secret)
-      state.wallet.proofs.push({
-        proof: structuredClone(proof),
-        mintUrl: input.mintUrl,
-        unit,
-        state: 'reserved',
-        reservedBy: input.reservationId,
-        asset: { kind: 'sats', baseAsset },
-        createdAt: now,
-        updatedAt: now,
-      })
-    }
-    },
-  )
-}
-
-async function replaceReservedSatProofsWithReservedOutcomes(input: {
-  mintUrl: string
-  reservationId: string
-  spentProofs: CashuProofRecord[]
-  conditionId: string
-  proofsByCollection: Record<string, CashuProofRecord[]>
-  baseAsset?: string | null
-}): Promise<void> {
-  const spent = new Set(input.spentProofs.map((proof) => proof.secret))
-  const baseAsset = normalizeMarketBaseAsset(input.baseAsset)
-  const unit = defaultCollateralUnit(baseAsset)
-  await updateState(
-    {
-      walletProofs: walletProofMutationScope(
-        input.mintUrl,
-        [
-          ...input.spentProofs,
-          ...Object.values(input.proofsByCollection).flat(),
-        ],
-        baseAsset,
-      ),
-    },
-    (state, now) => {
-    state.wallet.proofs = state.wallet.proofs.filter(
-      (record) =>
-        record.mintUrl !== input.mintUrl ||
-        record.reservedBy !== input.reservationId ||
-        !spent.has(record.proof.secret),
-    )
-    const existingSecrets = new Set(
-      state.wallet.proofs
-        .filter((record) => record.mintUrl === input.mintUrl)
-        .map((record) => record.proof.secret),
-    )
-      for (const [outcomeSetId, proofs] of Object.entries(
-        input.proofsByCollection,
-      )) {
-      for (const proof of proofs) {
-        if (existingSecrets.has(proof.secret)) continue
-        existingSecrets.add(proof.secret)
-        state.wallet.proofs.push({
-          proof: structuredClone(proof),
-          mintUrl: input.mintUrl,
-          unit,
-          state: 'reserved',
-          reservedBy: input.reservationId,
-          asset: {
-            kind: 'Outcome',
-            conditionId: input.conditionId,
-            outcomeSetId,
-            baseAsset,
-          },
-          createdAt: now,
-          updatedAt: now,
-        })
-      }
-    }
-    },
   )
 }
 

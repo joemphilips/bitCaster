@@ -1028,7 +1028,9 @@ function validatedWalletProofReservation(
   const parentOrderCollateralPinId = reservation.parentOrderCollateralPinId
   const tradeLockOperation = isTradeWalletReservationKind(input.kind)
   if (input.kind !== 'wallet-send'
-    && (!tradeLockOperation || input.durableTradeRecovery === undefined)) {
+    && (!tradeLockOperation
+      || (input.durableTradeRecovery === undefined
+        && parentOrderCollateralPinId === undefined))) {
     throw new Error('wallet proof reservation requires a durable wallet effect')
   }
   if (reservation.reservationId.length === 0) {
@@ -1041,7 +1043,6 @@ function validatedWalletProofReservation(
   }
   if (parentOrderCollateralPinId !== undefined
     && (parentOrderCollateralPinId.length === 0
-      || input.durableTradeRecovery === undefined
       || !tradeLockOperation)) {
     throw new Error('order collateral parent reservation is invalid')
   }
@@ -1090,7 +1091,9 @@ function assertWalletProofMatchesPrepare(
     parentOrderCollateralPinId?: string
   },
 ): void {
-  const assetMatches = input.kind === 'wallet-send'
+  const assetMatches = reservation.parentOrderCollateralPinId !== undefined
+    ? true
+    : input.kind === 'wallet-send'
     ? record.asset.kind === 'sats'
       && normalizeProofAssetBaseAsset(record.asset) === 'sat'
       && proof.conditionId === undefined
@@ -1197,26 +1200,6 @@ export function applyWalletProofDeltaInState(
   state.wallet.proofs = [...byId.values()]
 }
 
-export async function releaseProofReservation(
-  reservedBy: string,
-): Promise<void> {
-  await updateState(
-    {
-      walletProofs: [{ reservedBy, state: 'reserved' }],
-    },
-    (state, now) => {
-    for (const record of state.wallet.proofs) {
-      if (record.reservedBy !== reservedBy || record.state !== 'reserved') {
-        continue
-      }
-      record.state = 'available'
-      delete record.reservedBy
-      record.updatedAt = now
-    }
-    },
-  )
-}
-
 function exactWalletProofSelector(
   mintUrl: string,
   proofs: readonly CashuProofRecord[],
@@ -1240,6 +1223,12 @@ export async function getProofOperation(
 export interface ReconciledTradeWalletInputs {
   operationKeys: string[]
   rows: StoredProofRecord[]
+}
+
+interface ReconciledTradeLockedOutput {
+  operation: ProofOperationRecord
+  proof: CashuProofRecord
+  unit: CashuProofUnit
 }
 
 /**
@@ -1300,6 +1289,126 @@ export async function readReconciledTradeWalletInputs(
   return {
     operationKeys: operations.map(({ operationId }) => operationId),
     rows,
+  }
+}
+
+/**
+ * Loads the exact locked outputs retained by reconciled swap-lock operations.
+ * The wallet row lifecycle is only a checked projection: the completed daemon
+ * operation and its SDK custody result fingerprint remain the authority.
+ */
+export async function readReconciledTradeLockedOutputs(
+  tradeId: string,
+  exactProofs: readonly CashuProofRecord[],
+): Promise<StoredProofRecord[]> {
+  const expectedByKey = indexExpectedLockedOutputs(exactProofs)
+  const matchedByKey = await matchReconciledLockedOutputs(
+    tradeId,
+    expectedByKey,
+  )
+  return readExactLockedOutputRows(tradeId, exactProofs, matchedByKey)
+}
+
+async function matchReconciledLockedOutputs(
+  tradeId: string,
+  expectedByKey: ReadonlyMap<string, CashuProofRecord>,
+): Promise<Map<string, ReconciledTradeLockedOutput>> {
+  const tradeState = await readStateScope({ tradeIds: [tradeId] })
+  if (tradeState === null) throw new Error('daemon state is not initialized')
+  const matchedByKey = new Map<string, ReconciledTradeLockedOutput>()
+  for (const operation of Object.values(tradeState.proofOperations)) {
+    if (operation.kind !== 'swap-lock'
+      || operation.durableTradeRecovery?.tradeId !== tradeId) {
+      continue
+    }
+    const { unit } = requireReconciledWalletOperation(operation)
+    await assertProofOperationCustodyBound(operation)
+    for (const proof of operation.resultProofs?.send ?? []) {
+      const normalized = normalizeCashuProofRecord(proof)
+      const key = proofAuthorityKey(normalized)
+      const expected = expectedByKey.get(key)
+      if (expected === undefined) continue
+      if (matchedByKey.has(key)) {
+        throw new Error('partial lock refund has duplicate output authority')
+      }
+      assertExactProofBody(normalized, expected)
+      matchedByKey.set(key, { operation, proof: normalized, unit })
+    }
+  }
+  if (matchedByKey.size !== expectedByKey.size) {
+    throw new Error('partial lock refund has no reconciled output authority')
+  }
+  return matchedByKey
+}
+
+async function readExactLockedOutputRows(
+  tradeId: string,
+  exactProofs: readonly CashuProofRecord[],
+  matchedByKey: ReadonlyMap<string, ReconciledTradeLockedOutput>,
+): Promise<StoredProofRecord[]> {
+  const proofIds = [...matchedByKey.values()].map(({ operation, proof, unit }) =>
+    deriveDaemonWalletProofIdFromProof(operation.mintUrl, unit, proof),
+  )
+  const walletState = await readStateScope({ walletProofs: [{ proofIds }] })
+  if (walletState === null) throw new Error('daemon state is not initialized')
+  const rowsById = new Map(walletState.wallet.proofs.map((row) => [
+    deriveDaemonWalletProofId(row),
+    row,
+  ]))
+  return exactProofs.map((proof) => {
+    const canonical = matchedByKey.get(proofAuthorityKey(proof))
+    if (canonical === undefined) {
+      throw new Error('partial lock refund has no reconciled output authority')
+    }
+    const proofId = deriveDaemonWalletProofIdFromProof(
+      canonical.operation.mintUrl,
+      canonical.unit,
+      canonical.proof,
+    )
+    const row = rowsById.get(proofId)
+    if (row === undefined
+      || row.state !== 'locked'
+      || row.reservedBy !== tradeId
+      || row.mintUrl !== canonical.operation.mintUrl
+      || row.unit !== canonical.unit) {
+      throw new Error('partial lock refund projection is not exact')
+    }
+    assertExactProofBody(row.proof, canonical.proof)
+    return structuredClone(row)
+  })
+}
+
+function indexExpectedLockedOutputs(
+  exactProofs: readonly CashuProofRecord[],
+): Map<string, CashuProofRecord> {
+  if (exactProofs.length === 0) {
+    throw new Error('partial lock refund has no reconciled output authority')
+  }
+  const expectedByKey = new Map<string, CashuProofRecord>()
+  for (const proof of exactProofs.map(normalizeCashuProofRecord)) {
+    const key = proofAuthorityKey(proof)
+    if (expectedByKey.has(key)) {
+      throw new Error('partial lock refund repeats a locked proof')
+    }
+    expectedByKey.set(key, proof)
+  }
+  return expectedByKey
+}
+
+function proofAuthorityKey(proof: CashuProofRecord): string {
+  if (!proof.id) throw new Error('partial lock proof keyset is missing')
+  return `${proof.id}\u0000${proof.secret}`
+}
+
+function assertExactProofBody(
+  actual: CashuProofRecord,
+  expected: CashuProofRecord,
+): void {
+  if (!isDeepStrictEqual(
+    normalizedProofWithoutAssetMetadata(actual),
+    normalizedProofWithoutAssetMetadata(expected),
+  )) {
+    throw new Error('partial lock refund proof body is foreign')
   }
 }
 

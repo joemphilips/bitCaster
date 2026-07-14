@@ -13,6 +13,7 @@ import {
   assertOrderCollateralPinOwnsProofs,
   insertOrderCollateralPinInDatabase,
   readPreparedOrderCollateralPageInDatabase,
+  readPreparingOrderCollateralPageInDatabase,
   readOrderCollateralPinInDatabase,
   reconcileOrderCollateralFillInDatabase,
   reconcileOrderCollateralTransformInDatabase,
@@ -57,6 +58,7 @@ export class DaemonOrderCollateralCoordinator {
     requiredAmount: number
     submissionRequest: DurableOrderSubmissionRequest
     preflightSplit?: DurableOrderPreflightSplit | null
+    preparing?: boolean
     proofs: readonly StoredProofRecord[]
   }): Promise<DurableOrderCollateralPin> {
     this.authority.assertActive()
@@ -111,6 +113,18 @@ export class DaemonOrderCollateralCoordinator {
       }))
   }
 
+  async readPreparingPage(input: {
+    cursor?: string | null
+    limit: number
+  }) {
+    this.authority.assertActive()
+    return this.transact((database) =>
+      readPreparingOrderCollateralPageInDatabase(database, {
+        scopeId: this.authority.scope.scopeId,
+        ...input,
+      }))
+  }
+
   async commitAcceptedSubmission<Result>(input: {
     pinId: string
     orderId: string
@@ -149,6 +163,18 @@ export class DaemonOrderCollateralCoordinator {
         reason: 'pre-submit-rejected',
       })
       return replaceAndReleaseProjection(database, current, next)
+    })
+  }
+
+  async finishPreparation(pinId: string): Promise<DurableOrderCollateralPin> {
+    this.authority.assertActive()
+    return this.transact((database) => {
+      const current = requirePin(database, this.authority.scope.scopeId, pinId)
+      const next = reduceDurableOrderCollateralPin(current, {
+        kind: 'finish-preparation',
+        expectedRevision: current.revision,
+      })
+      return replaceOrderCollateralPinInDatabase(database, current, next)
     })
   }
 
@@ -424,7 +450,7 @@ function alignOrderCollateralProjection(
   const pinProofIds = new Set(pin.proofs.map((proof) => proof.proofId))
   for (const row of state.wallet.proofs) {
     const proofId = deriveDaemonWalletProofId(row)
-    if (pin.state === 'active' && pinProofIds.has(proofId)) {
+    if (pin.state !== 'released' && pinProofIds.has(proofId)) {
       row.state = 'reserved'
       row.reservedBy = pin.pinId
       row.updatedAt = now
@@ -437,7 +463,7 @@ function alignOrderCollateralProjection(
       row.updatedAt = now
     }
   }
-  if (pin.state === 'active') {
+  if (pin.state !== 'released') {
     const projected = new Set(state.wallet.proofs.map(deriveDaemonWalletProofId))
     if ([...replacementIds].some((proofId) => !projected.has(proofId))) {
       throw new Error('order collateral replacement proof was not projected')

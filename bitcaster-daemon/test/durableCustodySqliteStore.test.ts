@@ -319,6 +319,20 @@ test('SQLite custody store registers scopes with canonical market isolation cons
       )
       assert.throws(
         () =>
+          database.prepare(
+            `INSERT INTO custody_order_collateral_pins (
+              scope_id, pin_id, schema_version, revision, client_order_id,
+              market_id, mint_url, unit, order_amount, required_amount,
+              remaining_order_amount, outcome_id, token_side, order_side,
+              order_price, time_in_force, pin_state
+            ) VALUES (?, 'pin-without-preflight', 1, 0, 'client-order',
+              'condition-YES', 'https://mint.example', 'sat', 100, 100,
+              100, 'YES', 'Outcome', 'Buy', 50, 'GTC', 'preparing')`,
+          ).run(first.scope.scopeId),
+        /CHECK constraint failed/,
+      )
+      assert.throws(
+        () =>
           database
             .prepare(
               `INSERT INTO custody_verification_bindings (

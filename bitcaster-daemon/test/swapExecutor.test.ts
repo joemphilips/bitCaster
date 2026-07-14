@@ -61,6 +61,7 @@ import { SqliteDurableCustodyStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonProofOperationCoordinator } from '../src/durableProofOperationCoordinator.ts'
 import {
   DaemonOrderCollateralCoordinator,
+  durableOrderCollateralPinId,
   installDaemonOrderCollateralCoordinator,
   setDaemonOrderCollateralFaultHookForTest,
 } from '../src/durableOrderCollateralCoordinator.ts'
@@ -427,7 +428,7 @@ test('Block2_SellerLock_Leg2Failure_DoesNotPublishLockedProofsSeller', async () 
   }
 })
 
-test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
+test('PartialLockHeld projection alone cannot authorize a refund', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-partial-refund-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -447,8 +448,8 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
       marketId: 'cond-A',
       role: 'seller',
       counterpartyPubkey: `03${'22'.repeat(32)}`,
-      sellerLocktime: 120,
-      buyerLocktime: 100,
+      sellerLocktime: 1_800_000_120,
+      buyerLocktime: 1_800_000_100,
       fillAmountSats: 100,
       messages: {},
       step: 'Failed',
@@ -470,8 +471,8 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
         localProtocolPubkey: secrets.orderEphemeralKeys['order-1'].publicKeyHex,
         counterpartyProtocolPubkey: `03${'22'.repeat(32)}`,
         mintUrl: profile.mintUrl,
-        sellerLocktimeSecs: 120,
-        buyerLocktimeSecs: 100,
+        sellerLocktimeSecs: 1_800_000_120,
+        buyerLocktimeSecs: 1_800_000_100,
       },
     )
     state.wallet.proofs.push({
@@ -497,24 +498,19 @@ test('Block2_PartialLockHeld_DaemonRecoverySweepFires', async () => {
       },
     })
 
-    await executor.resumeActiveSwaps((await readState()) as DaemonState)
+    await assert.rejects(
+      executor.resumeActiveSwaps((await readState()) as DaemonState),
+      /partial lock refund has no reconciled output authority/,
+    )
 
     const persisted = await readState()
-    assert.deepEqual(refunded, [
-      'trade-partial-refund:partial-lock-refund:partial-locked',
-    ])
-    assert.equal(persisted?.swaps['trade-partial-refund'].step, 'refunded')
+    assert.deepEqual(refunded, [])
+    assert.equal(persisted?.swaps['trade-partial-refund'].step, 'Failed')
     assert.equal(
       persisted?.wallet.proofs.some(
         (row) => row.proof.secret === 'partial-locked',
       ),
-      false,
-    )
-    assert.equal(
-      persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'partial-refunded',
-      )?.state,
-      'available',
+      true,
     )
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -527,6 +523,8 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-partial-multi-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
+  let lease: DaemonDurableCustodyLease | undefined
+  let uninstallCoordinator: (() => void) | undefined
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = {
@@ -543,8 +541,8 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
       marketId: 'cond-B|C',
       role: 'seller',
       counterpartyPubkey: `03${'22'.repeat(32)}`,
-      sellerLocktime: 120,
-      buyerLocktime: 100,
+      sellerLocktime: 1_800_000_120,
+      buyerLocktime: 1_800_000_100,
       fillAmountSats: 100,
       messages: {},
       step: 'Failed',
@@ -583,11 +581,39 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
         localProtocolPubkey: secrets.orderEphemeralKeys['order-1'].publicKeyHex,
         counterpartyProtocolPubkey: `03${'22'.repeat(32)}`,
         mintUrl: profile.mintUrl,
-        sellerLocktimeSecs: 120,
-        buyerLocktimeSecs: 100,
+        sellerLocktimeSecs: 1_800_000_120,
+        buyerLocktimeSecs: 1_800_000_100,
       },
     )
+    const sourceB = {
+      ...proofRecord(profile.mintUrl, 100, 'available', {
+        kind: 'Outcome' as const,
+        conditionId: 'cond',
+        outcomeSetId: 'B',
+      }),
+      proof: {
+        ...cashuProof(100, 'partial-source-B'),
+        id: 'keyset-B',
+        conditionId: 'cond',
+        outcomeCollection: 'B',
+      },
+    }
+    const sourceC = {
+      ...proofRecord(profile.mintUrl, 100, 'available', {
+        kind: 'Outcome' as const,
+        conditionId: 'cond',
+        outcomeSetId: 'C',
+      }),
+      proof: {
+        ...cashuProof(100, 'partial-source-C'),
+        id: 'keyset-C',
+        conditionId: 'cond',
+        outcomeCollection: 'C',
+      },
+    }
     state.wallet.proofs.push(
+      sourceB,
+      sourceC,
       {
         ...proofRecord(profile.mintUrl, 100, 'locked', {
           kind: 'Outcome',
@@ -608,6 +634,24 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
       },
     )
     await writeState(state)
+    ;({ lease, uninstall: uninstallCoordinator } =
+      await installCanonicalProofCoordinatorForTest(secrets, sourceB.unit))
+    await recordReconciledSwapLockForTest({
+      tradeId: 'trade-partial-multi',
+      operationId: 'trade-partial-multi/seller-lock/B',
+      source: sourceB,
+      lockedProofs: [
+        { ...cashuProof(100, 'partial-locked-B'), id: 'keyset-B' },
+      ],
+    })
+    await recordReconciledSwapLockForTest({
+      tradeId: 'trade-partial-multi',
+      operationId: 'trade-partial-multi/seller-lock/C',
+      source: sourceC,
+      lockedProofs: [
+        { ...cashuProof(100, 'partial-locked-C'), id: 'keyset-C' },
+      ],
+    })
 
     const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection([]),
@@ -643,6 +687,8 @@ test('PartialLockHeld_MultiKeyset_AnnotatesRefundedProofsPerKeyset', async () =>
       'C',
     )
   } finally {
+    uninstallCoordinator?.()
+    await lease?.stopAndRelease()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
@@ -653,6 +699,8 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-partial-spent-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
+  let lease: DaemonDurableCustodyLease | undefined
+  let uninstallCoordinator: (() => void) | undefined
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-1'] = {
@@ -669,17 +717,26 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
       marketId: 'cond-A',
       role: 'seller',
       counterpartyPubkey: `03${'22'.repeat(32)}`,
-      sellerLocktime: 120,
-      buyerLocktime: 100,
+      sellerLocktime: 1_800_000_120,
+      buyerLocktime: 1_800_000_100,
       fillAmountSats: 100,
       messages: {},
       step: 'Failed',
       error: 'leg 1 locked; leg 2 failed',
       failure: {
         kind: 'PartialLockHeld',
+        tradeId: 'trade-partial-spent',
         refundLocktime: 1,
         affectedKeysets: ['A'],
         detail: 'leg 1 locked; leg 2 failed',
+        outcomeByKeyset: {
+          'keyset-100': {
+            conditionId: 'cond',
+            outcomeCollection: 'A',
+            marketId: 'cond-A',
+          },
+        },
+        lockedProofs: [cashuProof(100, 'partial-spent')],
       },
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
@@ -692,11 +749,23 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
         localProtocolPubkey: secrets.orderEphemeralKeys['order-1'].publicKeyHex,
         counterpartyProtocolPubkey: `03${'22'.repeat(32)}`,
         mintUrl: profile.mintUrl,
-        sellerLocktimeSecs: 120,
-        buyerLocktimeSecs: 100,
+        sellerLocktimeSecs: 1_800_000_120,
+        buyerLocktimeSecs: 1_800_000_100,
       },
     )
-    state.wallet.proofs.push({
+    const source = {
+      ...proofRecord(profile.mintUrl, 100, 'available', {
+        kind: 'Outcome' as const,
+        conditionId: 'cond',
+        outcomeSetId: 'A',
+      }),
+      proof: {
+        ...cashuProof(100, 'partial-spent-source'),
+        conditionId: 'cond',
+        outcomeCollection: 'A',
+      },
+    }
+    state.wallet.proofs.push(source, {
       ...proofRecord(profile.mintUrl, 100, 'locked', {
         kind: 'Outcome',
         conditionId: 'cond',
@@ -706,6 +775,14 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
       proof: cashuProof(100, 'partial-spent'),
     })
     await writeState(state)
+    ;({ lease, uninstall: uninstallCoordinator } =
+      await installCanonicalProofCoordinatorForTest(secrets, source.unit))
+    await recordReconciledSwapLockForTest({
+      tradeId: 'trade-partial-spent',
+      operationId: 'trade-partial-spent/seller-lock',
+      source,
+      lockedProofs: [cashuProof(100, 'partial-spent')],
+    })
 
     const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection([]),
@@ -728,6 +805,8 @@ test('Block2_PartialLockHeld_AlreadySpentReconcilesAsRefunded', async () => {
       false,
     )
   } finally {
+    uninstallCoordinator?.()
+    await lease?.stopAndRelease()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
@@ -1291,10 +1370,13 @@ test('DaemonSwapExecutor drives mint seller split before opening swap', async ()
   }
 })
 
-test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', async () => {
+test('DaemonSwapExecutor uses pinned pre-flight inventory for mint seller open', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-preflight-mint-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
+  let lease: DaemonDurableCustodyLease | undefined
+  let uninstallCoordinator: (() => void) | undefined
+  let uninstallOrderCollateral: (() => void) | undefined
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-preflight'] = {
@@ -1304,60 +1386,103 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
     await writeProfile(profile)
     await writeSecrets(secrets)
-    const reservationId = `order-preflight:${orderKey(secrets).publicKeyHex}`
+    const clientOrderId = 'client-order-preflight'
+    const reservationId = durableOrderCollateralPinId(clientOrderId)
     const state = emptyDaemonState()
     state.orders['order-preflight'] = {
       orderId: 'order-preflight',
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      clientOrderId,
+      timeInForce: 'GTC',
       ...mintSellerOrderEconomics(),
       preflightSplit: {
         reservationId,
         conditionId: 'cond',
         keepOutcomeSetId: 'YES',
         lockOutcomeSetId: 'NO',
-        amountSats: 200,
+        amountSats: 100,
       },
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
-    state.wallet.proofs.push(
-      {
-        ...proofRecord(profile.mintUrl, 100, 'reserved', {
+    const lockRow = {
+        ...proofRecord(profile.mintUrl, 100, 'available', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'NO',
         }),
-        reservedBy: reservationId,
         proof: cashuProof(100, 'reserved-lock-no'),
-      },
-      {
-        ...proofRecord(profile.mintUrl, 100, 'reserved', {
+      }
+    const keepRow = {
+        ...proofRecord(profile.mintUrl, 100, 'available', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
         }),
-        reservedBy: reservationId,
         proof: cashuProof(100, 'reserved-keep-yes'),
-      },
-    )
+      }
+    state.wallet.proofs.push(lockRow, keepRow)
     await writeState(state)
-
+    ;({ lease, uninstall: uninstallCoordinator } =
+      await installCanonicalProofCoordinatorForTest(secrets, lockRow.unit))
+    const orderCollateral = new DaemonOrderCollateralCoordinator(lease)
+    uninstallOrderCollateral = installDaemonOrderCollateralCoordinator(
+      orderCollateral,
+    )
+    const pin = await orderCollateral.prepare({
+      clientOrderId,
+      marketId: 'cond-YES',
+      mintUrl: profile.mintUrl,
+      unit: lockRow.unit,
+      orderAmount: 100,
+      requiredAmount: 100,
+      submissionRequest: {
+        clientOrderId,
+        outcomeId: 'YES',
+        tokenSide: 'Complement',
+        side: 'Buy',
+        price: 58,
+        amountSubunits: 100,
+        timeInForce: 'GTC',
+      },
+      preflightSplit: state.orders['order-preflight'].preflightSplit,
+      proofs: [lockRow, keepRow],
+    })
+    await orderCollateral.bindOrObserve({
+      pinId: pin.pinId,
+      orderId: 'order-preflight',
+      status: 'resting',
+      remainingAmount: 100,
+    })
     const sent: string[] = []
     const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: {
         ...fakeOps(),
-        async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
+        async sellerLockOutcomeProofs(ctx, proofs, amount, operationId) {
           assert.equal(proofs[0].secret, 'reserved-lock-no')
           assert.equal(amount, 100)
-          assert.match(operationId, /seller-preflight-lock$/)
-          return {
+          assert.match(operationId, /seller-inventory-lock$/)
+          const result = {
             lockedProofs: [cashuProof(100, 'lock-locked-100')],
             changeProofs: [],
           }
+          await recordReconciledProofOperationForTest({
+            tradeId: ctx.tradeId,
+            operationId,
+            mintUrl: profile.mintUrl,
+            unit: lockRow.unit,
+            sourceProofs: proofs,
+            resultProofs: {
+              send: result.lockedProofs,
+              keep: result.changeProofs,
+            },
+            parentOrderCollateralPinId: pin.pinId,
+          })
+          return result
         },
         async sellerOpenPrelocked(_ctx, proofs) {
           assert.equal(proofs[0].secret, 'lock-locked-100')
@@ -1378,8 +1503,8 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
         tradeId: 'trade-preflight',
         sellerPubkey: orderKey(secrets).publicKeyHex,
         buyerPubkey: `03${'56'.repeat(32)}`,
-        sellerLocktime: '2026-05-21T00:02:00.000Z',
-        buyerLocktime: '2026-05-21T00:01:00.000Z',
+        sellerLocktime: '2027-01-15T00:02:00.000Z',
+        buyerLocktime: '2027-01-15T00:01:00.000Z',
         marketId: 'cond-YES',
         fillAmountSubunits: 100,
         outcomeFaceAmountSubunits: 100,
@@ -1391,7 +1516,11 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
     )
 
     const persisted = await readState()
-    assert.equal(persisted?.swaps['trade-preflight'].step, 'seller-opened')
+    assert.equal(
+      persisted?.swaps['trade-preflight'].step,
+      'seller-opened',
+      persisted?.swaps['trade-preflight'].error,
+    )
     assert.equal(
       persisted?.wallet.proofs.find(
         (row) => row.proof.secret === 'reserved-lock-no',
@@ -1414,6 +1543,9 @@ test('DaemonSwapExecutor uses reserved pre-flight proofs for mint seller open', 
       'trade-preflight:locked-proofs-seller:cipher-seller',
     ])
   } finally {
+    uninstallOrderCollateral?.()
+    uninstallCoordinator?.()
+    await lease?.stopAndRelease()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
@@ -1502,11 +1634,6 @@ test('DaemonSwapExecutor uses primitive local inventory before pre-flight for co
             ],
             changeProofs: [],
           }
-        },
-        async splitProofsForExactSend() {
-          throw new Error(
-            'pre-flight split proof path must not run when primitive inventory is available',
-          )
         },
         async sellerOpenPrelocked(_ctx, proofs) {
           assert.deepEqual(proofs.map((proof) => proof.secret).sort(), [
@@ -2339,12 +2466,15 @@ test('non-GTC buyer continuation consumes the recovered lock input and stores it
   }
 })
 
-test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before seller open', async () => {
+test('DaemonSwapExecutor locks oversized pinned inventory and releases unused collateral', async () => {
   const home = await mkdtemp(
     join(tmpdir(), 'bitcaster-daemon-preflight-overpay-'),
   )
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
+  let lease: DaemonDurableCustodyLease | undefined
+  let uninstallCoordinator: (() => void) | undefined
+  let uninstallOrderCollateral: (() => void) | undefined
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-preflight'] = {
@@ -2354,13 +2484,16 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
     await writeProfile(profile)
     await writeSecrets(secrets)
-    const reservationId = `order-preflight:${orderKey(secrets).publicKeyHex}`
+    const clientOrderId = 'client-order-preflight-overpay'
+    const reservationId = durableOrderCollateralPinId(clientOrderId)
     const state = emptyDaemonState()
     state.orders['order-preflight'] = {
       orderId: 'order-preflight',
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      clientOrderId,
+      timeInForce: 'GTC',
       ...mintSellerOrderEconomics(),
       preflightSplit: {
         reservationId,
@@ -2373,61 +2506,86 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
-    state.wallet.proofs.push(
-      {
-        ...proofRecord(profile.mintUrl, 136, 'reserved', {
+    const lockRow = {
+        ...proofRecord(profile.mintUrl, 136, 'available', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'NO',
         }),
-        reservedBy: reservationId,
         proof: cashuProof(136, 'reserved-lock-no-136'),
-      },
-      {
-        ...proofRecord(profile.mintUrl, 136, 'reserved', {
+      }
+    const keepRow = {
+        ...proofRecord(profile.mintUrl, 136, 'available', {
           kind: 'Outcome',
           conditionId: 'cond',
           outcomeSetId: 'YES',
         }),
-        reservedBy: reservationId,
         proof: cashuProof(136, 'reserved-keep-yes-136'),
-      },
-    )
+      }
+    state.wallet.proofs.push(lockRow, keepRow)
     await writeState(state)
+    ;({ lease, uninstall: uninstallCoordinator } =
+      await installCanonicalProofCoordinatorForTest(secrets, lockRow.unit))
+    const orderCollateral = new DaemonOrderCollateralCoordinator(lease)
+    uninstallOrderCollateral = installDaemonOrderCollateralCoordinator(
+      orderCollateral,
+    )
+    const pin = await orderCollateral.prepare({
+      clientOrderId,
+      marketId: 'cond-YES',
+      mintUrl: profile.mintUrl,
+      unit: lockRow.unit,
+      orderAmount: 100,
+      requiredAmount: 100,
+      submissionRequest: {
+        clientOrderId,
+        outcomeId: 'YES',
+        tokenSide: 'Complement',
+        side: 'Buy',
+        price: 58,
+        amountSubunits: 100,
+        timeInForce: 'GTC',
+      },
+      preflightSplit: state.orders['order-preflight'].preflightSplit,
+      proofs: [lockRow, keepRow],
+    })
+    await orderCollateral.bindOrObserve({
+      pinId: pin.pinId,
+      orderId: 'order-preflight',
+      status: 'resting',
+      remainingAmount: 100,
+    })
 
     const sent: string[] = []
     const executor = newTestDaemonSwapExecutor({
       connection: fakeConnection(sent),
       ops: {
         ...fakeOps(),
-        async sellerLockOutcomeProofs(_ctx, proofs, amount, operationId) {
+        async sellerLockOutcomeProofs(ctx, proofs, amount, operationId) {
           assert.equal(proofs[0].secret, 'reserved-lock-no-136')
           assert.equal(amount, 100)
-          assert.match(operationId, /seller-preflight-lock$/)
-          return {
-            lockedProofs: [cashuProof(100, 'lock-locked-100')],
+          assert.match(operationId, /seller-inventory-lock$/)
+          const result = {
+            lockedProofs: [
+              { ...cashuProof(100, 'lock-locked-100'), id: 'keyset-136' },
+            ],
             changeProofs: [
               { ...cashuProof(36, 'lock-change-36'), id: 'keyset-136' },
             ],
           }
-        },
-        async splitProofsForExactSend(params) {
-          assert.equal(params.amountSats, 100)
-          assert.equal(params.preserveSourceKeyset, true)
-          assert.match(
-            params.operationId,
-            /seller-preflight-(lock|keep)-exact-v2\/(NO|YES)$/,
-          )
-          const prefix = params.operationId.includes('seller-preflight-lock')
-            ? 'lock'
-            : 'keep'
-          return {
-            sendProofs: [cashuProof(100, `${prefix}-exact-100`)],
-            changeProofs: [
-              { ...cashuProof(36, `${prefix}-change-36`), id: 'keyset-136' },
-            ],
-            spentProofs: params.sourceProofs,
-          }
+          await recordReconciledProofOperationForTest({
+            tradeId: ctx.tradeId,
+            operationId,
+            mintUrl: profile.mintUrl,
+            unit: lockRow.unit,
+            sourceProofs: proofs,
+            resultProofs: {
+              send: result.lockedProofs,
+              keep: result.changeProofs,
+            },
+            parentOrderCollateralPinId: pin.pinId,
+          })
+          return result
         },
         async sellerOpenPrelocked(_ctx, proofs) {
           assert.equal(proofs[0].secret, 'lock-locked-100')
@@ -2448,8 +2606,8 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
         tradeId: 'trade-preflight-overpay',
         sellerPubkey: orderKey(secrets).publicKeyHex,
         buyerPubkey: `03${'56'.repeat(32)}`,
-        sellerLocktime: '2026-05-21T00:02:00.000Z',
-        buyerLocktime: '2026-05-21T00:01:00.000Z',
+        sellerLocktime: '2027-01-15T00:02:00.000Z',
+        buyerLocktime: '2027-01-15T00:01:00.000Z',
         marketId: 'cond-YES',
         fillAmountSubunits: 100,
         outcomeFaceAmountSubunits: 100,
@@ -2482,25 +2640,28 @@ test('DaemonSwapExecutor splits oversized reserved pre-flight proofs before sell
       persisted?.wallet.proofs.find(
         (row) => row.proof.secret === 'lock-change-36',
       )?.state,
-      'reserved',
-    )
-    assert.equal(
-      persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'keep-exact-100',
-      )?.state,
       'available',
     )
     assert.equal(
       persisted?.wallet.proofs.find(
-        (row) => row.proof.secret === 'keep-change-36',
+        (row) => row.proof.secret === 'reserved-keep-yes-136',
       )?.state,
-      'reserved',
+      'available',
+    )
+    assert.equal(
+      persisted?.wallet.proofs.some(
+        (row) => row.proof.secret === 'keep-exact-100',
+      ),
+      false,
     )
     assert.deepEqual(sent, [
       'trade-preflight-overpay:adaptor-point:cipher-adaptor',
       'trade-preflight-overpay:locked-proofs-seller:cipher-seller',
     ])
   } finally {
+    uninstallOrderCollateral?.()
+    uninstallCoordinator?.()
+    await lease?.stopAndRelease()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
@@ -3011,9 +3172,6 @@ function throwingSendConnection(): TradeRuntimeConnection {
 
 function fakeOps(): DaemonSwapOps {
   return {
-    async splitProofsForExactSend() {
-      throw new Error('proof split path unused in this test')
-    },
     async sellerOpen() {
       throw new Error('raw seller open path unused in this test')
     },
@@ -3057,9 +3215,6 @@ function fakeOps(): DaemonSwapOps {
 
 function buyerFakeOps(): DaemonSwapOps {
   return {
-    async splitProofsForExactSend() {
-      throw new Error('proof split path unused in this test')
-    },
     async sellerOpen() {
       throw new Error('seller path unused in this test')
     },
@@ -3095,9 +3250,6 @@ function buyerFakeOps(): DaemonSwapOps {
 
 function mintFakeOps(): DaemonSwapOps {
   return {
-    async splitProofsForExactSend() {
-      throw new Error('proof split path unused in this test')
-    },
     async sellerOpen() {
       throw new Error('direct seller path unused in this test')
     },
@@ -3321,4 +3473,105 @@ function newTestDaemonSwapExecutor(
       ...options.walletOpsDeps,
     },
   })
+}
+
+async function installCanonicalProofCoordinatorForTest(
+  secrets: DaemonSecrets,
+  unit: string,
+): Promise<{
+  lease: DaemonDurableCustodyLease
+  uninstall: () => void
+}> {
+  const store = new SqliteDurableCustodyStore()
+  await store.registerScope(daemonWalletCustodyScope(secrets.walletSeedHex))
+  const lease = await DaemonDurableCustodyLease.claim({
+    store,
+    walletSeedHex: secrets.walletSeedHex,
+  })
+  const uninstall = installDaemonProofOperationCoordinator(
+    new DaemonProofOperationCoordinator({
+      authority: lease,
+      resolveMintKeys: async (_mintUrl, keysetIds) => new Map(
+        keysetIds.map((keysetId) => [keysetId, {
+          id: keysetId,
+          unit,
+          active: true,
+          input_fee_ppk: 0,
+          keys: { '100': `02${'44'.repeat(32)}` },
+        } as MintKeys]),
+      ),
+    }),
+  )
+  return { lease, uninstall }
+}
+
+async function recordReconciledSwapLockForTest(input: {
+  tradeId: string
+  operationId: string
+  source: DaemonState['wallet']['proofs'][number]
+  lockedProofs: CashuProofRecord[]
+}): Promise<void> {
+  await recordReconciledProofOperationForTest({
+    tradeId: input.tradeId,
+    operationId: input.operationId,
+    kind: 'swap-lock',
+    mintUrl: input.source.mintUrl,
+    unit: input.source.unit,
+    sourceProofs: [input.source.proof],
+    resultProofs: { send: input.lockedProofs, keep: [] },
+  })
+}
+
+async function recordReconciledProofOperationForTest(input: {
+  tradeId: string
+  operationId: string
+  mintUrl: string
+  unit: DaemonState['wallet']['proofs'][number]['unit']
+  sourceProofs: CashuProofRecord[]
+  resultProofs: Record<string, CashuProofRecord[]>
+  parentOrderCollateralPinId?: string
+}): Promise<void> {
+  const link = createDurableTradeProofOperationLink({
+    tradeId: input.tradeId,
+    role: 'seller',
+    stage: 'proof-reservation',
+    state: 'prepared',
+    operationKey: input.operationId,
+    kind: 'cashu-atomic',
+  })
+  await prepareProofOperation({
+    operationId: input.operationId,
+    durableTradeRecovery: link,
+    kind: 'swap-lock',
+    mintUrl: input.mintUrl,
+    inputs: input.sourceProofs,
+    outputs: Object.fromEntries(
+      Object.entries(input.resultProofs).map(([label, proofs]) => [
+        label,
+        proofs.map((proof, index) => ({
+        blindedMessage: {
+          amount: proof.amount,
+          id: proof.id as string,
+              B_: `${input.operationId}:${label}:${index}`,
+        },
+        blindingFactor: `${index + 1}`.padStart(64, '0'),
+        secret: `${index + 2}`.padStart(64, '0'),
+        })),
+      ]),
+    ),
+    metadata: {
+      reservationId: input.operationId,
+      unit: input.unit,
+      unselectedProofs: [],
+    },
+    walletProofReservation: {
+      reservationId: input.operationId,
+      unit: input.unit,
+      ...(input.parentOrderCollateralPinId === undefined
+        ? {}
+        : { parentOrderCollateralPinId: input.parentOrderCollateralPinId }),
+    },
+  })
+  await markProofOperationMintSubmitted(input.operationId)
+  await markProofOperationCompleted(input.operationId, input.resultProofs)
 }

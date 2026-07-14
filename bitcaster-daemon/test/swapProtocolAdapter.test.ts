@@ -55,40 +55,6 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
       nut07PollIntervalMs: 1,
       async loadAtomicSwapModule() {
         return {
-          async splitProofsForExactSend(params) {
-            calls.push(
-              `splitExact:${params.operationId}:${params.amountSats}:${params.sourceProofs[0].secret}`,
-            )
-            await params.proofOperationStore?.prepareProofOperation({
-              operationId: params.operationId ?? 'missing',
-              kind: 'proof-split',
-              mintUrl: params.mintUrl,
-              inputs: params.sourceProofs,
-              outputs: {
-                send: [output('split-send-secret')],
-                keep: [output('split-keep-secret')],
-              },
-              metadata: {
-                amount: params.amountSats,
-                fees: 0,
-                keysetId: 'keyset-100',
-                unit: 'sat',
-                unselectedProofs: [],
-              },
-            })
-            await params.proofOperationStore?.markProofOperationCompleted(
-              params.operationId ?? 'missing',
-              {
-                send: [proof(params.amountSats, 'split-send')],
-                keep: [proof(1, 'split-change')],
-              },
-            )
-            return {
-              sendProofs: [proof(params.amountSats, 'split-send')],
-              changeProofs: [proof(1, 'split-change')],
-              spentProofs: params.sourceProofs,
-            }
-          },
           async sellerPrepareSwap(ctx, proofs, options) {
             calls.push(
               `sellerPrepare:${options?.operationId}:${ctx.ephemeralKey.privateKey.length}:${proofs[0].secret}`,

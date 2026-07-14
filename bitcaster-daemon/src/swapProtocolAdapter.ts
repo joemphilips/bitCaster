@@ -60,18 +60,6 @@ interface ProofOperationOptions {
 }
 
 interface AtomicSwapModule {
-  splitProofsForExactSend(params: {
-    mintUrl: string
-    sourceProofs: CashuProofRecord[]
-    amountSats: number
-    preserveSourceKeyset?: boolean
-    operationId?: string
-    proofOperationStore?: DaemonTradeProofOperationStore
-  }): Promise<{
-    sendProofs: CashuProofRecord[]
-    changeProofs: CashuProofRecord[]
-    spentProofs: CashuProofRecord[]
-  }>
   sellerPrepareSwap(
     ctx: AtomicSwapContext,
     proofs: CashuProofRecord[],
@@ -320,18 +308,6 @@ export function createRealDaemonSwapOps(
     new CashuWallet(new CashuMint(mintUrl), { unit: 'sat' }))
 
   return {
-    async splitProofsForExactSend(params) {
-      const atomicSwap = await loadAtomicSwapModule()
-      return atomicSwap.splitProofsForExactSend({
-        mintUrl: params.mintUrl,
-        sourceProofs: params.sourceProofs,
-        amountSats: params.amountSats,
-        preserveSourceKeyset: params.preserveSourceKeyset,
-        operationId: params.operationId,
-        proofOperationStore: createDaemonTradeProofOperationStore(params.ctx),
-      })
-    },
-
     async sellerOpen(ctx, proofs) {
       const atomicSwap = await loadAtomicSwapModule()
       const out = await atomicSwap.sellerPrepareSwap(

@@ -121,6 +121,7 @@ export interface WalletOpsDependencies {
     mintUrl: string,
     keysetIds: string[],
   ) => Promise<Record<string, number>>
+  selectCollateralForCtfSplit?: typeof selectCollateralForCtfSplit
   resolveOutputKeysetByCollection?: (
     mintUrl: string,
     conditionId: string,
@@ -308,20 +309,38 @@ export async function sendWalletToken(
   )
 }
 
+export interface SplitAvailableCtfCollateralInput {
+  amountSats: number
+  mintUrl: string
+  operationId: string
+  secrets: WalletOpsSecrets
+  deps?: WalletOpsDependencies
+  baseAsset?: string | null
+  proofOperationStore?: CtfProofOperationStore
+  beforeCollateralUse?: (proofs: readonly Proof[]) => Promise<void>
+  candidateProofs?: readonly Proof[]
+}
+
 export async function splitAvailableSatProofsForCtfCollateral(
-  amountSats: number,
-  mintUrl: string,
-  operationId: string,
-  secrets: WalletOpsSecrets,
-  deps: WalletOpsDependencies = {},
-  baseAssetInput?: string | null,
-  proofOperationStore: CtfProofOperationStore = DAEMON_CTF_PROOF_OPERATION_STORE,
+  input: SplitAvailableCtfCollateralInput,
 ): Promise<PreparedCtfCollateralResult> {
+  const {
+    amountSats,
+    mintUrl,
+    operationId,
+    secrets,
+    beforeCollateralUse,
+    candidateProofs,
+  } = input
+  const deps = input.deps ?? {}
+  const baseAssetInput = input.baseAsset
+  const proofOperationStore =
+    input.proofOperationStore ?? DAEMON_CTF_PROOF_OPERATION_STORE
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
   const unit = defaultCollateralUnit(baseAsset)
   const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
   await wallet.loadMint()
-  const existing = await getProofOperation(operationId)
+  const existing = await proofOperationStore.getProofOperation(operationId)
   if (existing) {
     const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(
       mintUrl,
@@ -365,32 +384,52 @@ export async function splitAvailableSatProofsForCtfCollateral(
         ],
       })
     )?.wallet.proofs ?? []
-  const available = availableRows
-    .slice(0, DAEMON_WALLET_PROOF_CANDIDATE_LIMIT_MAX)
-    .map((record) => record.proof as Proof)
+  if (candidateProofs
+    && candidateProofs.length > DAEMON_WALLET_PROOF_CANDIDATE_LIMIT_MAX) {
+    throw new Error('candidate proof selection exceeds the durable input limit')
+  }
+  const available = candidateProofs
+    ? candidateProofs.map((proof) => normalizeProof(proof))
+    : availableRows
+        .slice(0, DAEMON_WALLET_PROOF_CANDIDATE_LIMIT_MAX)
+        .map((record) => record.proof as Proof)
 
+  let directCollateral: Awaited<
+    ReturnType<typeof validateExactCtfCollateralFromProofs>
+  > | null = null
   try {
-    const exact = await validateExactCtfCollateralFromProofs(
+    directCollateral = await validateExactCtfCollateralFromProofs(
       mintUrl,
       available,
       amountSats,
       deps,
     )
-    return { inputs: exact.inputs, spent: [], keep: [] }
   } catch {
     // Fall through to wallet-backed selection, then to a regular split if needed.
   }
+  if (directCollateral !== null) {
+    await beforeCollateralUse?.(directCollateral.inputs)
+    return { inputs: directCollateral.inputs, spent: [], keep: [] }
+  }
 
+  let selectedCollateral: Awaited<
+    ReturnType<typeof selectCollateralForCtfSplit>
+  > | null = null
   try {
-    const exact = await selectCollateralForCtfSplit(
+    const selectCollateral =
+      deps.selectCollateralForCtfSplit ?? selectCollateralForCtfSplit
+    selectedCollateral = await selectCollateral(
       mintUrl,
       available,
       amountSats,
       baseAsset,
     )
-    return { inputs: exact.inputs, spent: [], keep: [] }
   } catch {
     // Fall through to a regular split that creates a gross CTF input.
+  }
+  if (selectedCollateral !== null) {
+    await beforeCollateralUse?.(selectedCollateral.inputs)
+    return { inputs: selectedCollateral.inputs, spent: [], keep: [] }
   }
 
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
@@ -419,6 +458,7 @@ export async function splitAvailableSatProofsForCtfCollateral(
     }
     throw new Error(`insufficient available sats in mint ${mintUrl}`)
   }
+  await beforeCollateralUse?.(selected.send)
   const split = await splitRegularProofsWithOperation({
     mintUrl,
     baseAsset,

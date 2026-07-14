@@ -143,12 +143,12 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       try {
         await assert.rejects(
             () =>
-              splitAvailableSatProofsForCtfCollateral(
-            1_000,
-                'https://mint-a.example',
-            'preflight-msat-unit',
-            secrets,
-            {
+              splitAvailableSatProofsForCtfCollateral({
+                amountSats: 1_000,
+                mintUrl: 'https://mint-a.example',
+                operationId: 'preflight-msat-unit',
+                secrets,
+                deps: {
               createCashuWallet(_mintUrl, unit) {
                 requestedUnits.push(unit)
                 return {
@@ -161,9 +161,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
                   },
                 }
               },
-            },
-            'sat',
-          ),
+                },
+                baseAsset: 'sat',
+              }),
           /cashu wallet does not support fee-aware proof selection/,
         )
 
@@ -175,6 +175,53 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           await writeState(emptyDaemonState())
         }
       }
+      },
+    )
+
+    await t.test(
+      'collateral selection fails closed when its durable pin write fails',
+      async () => {
+        const priorState = await readState()
+        const state = emptyDaemonState()
+        state.wallet.proofs.push(
+          proofRecord(
+            'https://mint-a.example',
+            100,
+            'available',
+            { kind: 'sats', baseAsset: 'sat' },
+            'pin-write-input',
+          ),
+        )
+        await writeState(state)
+        let fallbackSelections = 0
+        try {
+          await assert.rejects(
+            splitAvailableSatProofsForCtfCollateral({
+              amountSats: 100,
+              mintUrl: 'https://mint-a.example',
+              operationId: 'pin-write-failure',
+              secrets,
+              deps: {
+                createCashuWallet() {
+                  return unusedWallet()
+                },
+                resolveInputFeePpkByKeyset: zeroInputFees,
+                async selectCollateralForCtfSplit() {
+                  fallbackSelections += 1
+                  throw new Error('fallback selection must not run')
+                },
+              },
+              baseAsset: 'sat',
+              async beforeCollateralUse() {
+                throw new Error('durable pin write failed')
+              },
+            }),
+            /durable pin write failed/,
+          )
+          assert.equal(fallbackSelections, 0)
+        } finally {
+          await writeState(priorState ?? emptyDaemonState())
+        }
       },
     )
 
@@ -2748,6 +2795,18 @@ function fakeMintKeys(id: string): MintKeys {
       '8': `02${'44'.repeat(32)}`,
     },
   } as MintKeys
+}
+
+function unusedWallet() {
+  return {
+    async loadMint() {},
+    async receive(): Promise<never> {
+      throw new Error('receive unused')
+    },
+    async send(): Promise<never> {
+      throw new Error('send unused')
+    },
+  }
 }
 
 function proofRecord(

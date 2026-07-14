@@ -18,6 +18,21 @@ export function readPreparedOrderCollateralPageInDatabase(
   database: DatabaseSync,
   input: { scopeId: string; cursor?: string | null; limit: number },
 ): PreparedOrderCollateralPage {
+  return readOrderCollateralStatePage(database, input, 'prepared')
+}
+
+export function readPreparingOrderCollateralPageInDatabase(
+  database: DatabaseSync,
+  input: { scopeId: string; cursor?: string | null; limit: number },
+): PreparedOrderCollateralPage {
+  return readOrderCollateralStatePage(database, input, 'preparing')
+}
+
+function readOrderCollateralStatePage(
+  database: DatabaseSync,
+  input: { scopeId: string; cursor?: string | null; limit: number },
+  pinState: 'preparing' | 'prepared',
+): PreparedOrderCollateralPage {
   if (!Number.isSafeInteger(input.limit)
     || input.limit < 1
     || input.limit > DURABLE_ORDER_COLLATERAL_PROOF_LIMIT_MAX) {
@@ -29,10 +44,11 @@ export function readPreparedOrderCollateralPageInDatabase(
   }
   const rows = database.prepare(
     `SELECT * FROM custody_order_collateral_pins
-      WHERE scope_id = ? AND pin_state = 'prepared' AND pin_id > ?
+      WHERE scope_id = ? AND pin_state = ? AND pin_id > ?
       ORDER BY pin_id LIMIT ?`,
   ).all(
     input.scopeId,
+    pinState,
     input.cursor ?? '',
     input.limit + 1,
   ) as Array<Record<string, unknown> & { pin_id: string }>
@@ -41,6 +57,7 @@ export function readPreparedOrderCollateralPageInDatabase(
   const proofsByPin = readPreparedPageProofs(
     database,
     input.scopeId,
+    pinState,
     input.cursor ?? '',
     pageRows.at(-1)?.pin_id,
   )
@@ -55,6 +72,7 @@ export function readPreparedOrderCollateralPageInDatabase(
 function readPreparedPageProofs(
   database: DatabaseSync,
   scopeId: string,
+  pinState: 'preparing' | 'prepared',
   cursor: string,
   lastPinId: string | undefined,
 ): Map<string, Array<Record<string, unknown>>> {
@@ -63,10 +81,10 @@ function readPreparedPageProofs(
     `SELECT proof.* FROM custody_order_collateral_proofs AS proof
       JOIN custody_order_collateral_pins AS pin
         ON pin.scope_id = proof.scope_id AND pin.pin_id = proof.pin_id
-      WHERE pin.scope_id = ? AND pin.pin_state = 'prepared'
+      WHERE pin.scope_id = ? AND pin.pin_state = ?
         AND pin.pin_id > ? AND pin.pin_id <= ?
       ORDER BY proof.pin_id, proof.proof_position`,
-  ).all(scopeId, cursor, lastPinId) as Array<Record<string, unknown>>
+  ).all(scopeId, pinState, cursor, lastPinId) as Array<Record<string, unknown>>
   const byPin = new Map<string, Array<Record<string, unknown>>>()
   for (const row of rows) {
     const pinId = row.pin_id as string
@@ -331,7 +349,7 @@ export function reconcileOrderCollateralTransformInDatabase(
     }
     return storedPin
   }
-  const current = requireActivePin(storedPin, storedPin.orderId ?? '')
+  const current = requireTransformablePin(storedPin)
   const allocatedProofIds = requireReconciledAllocations(database, input)
   const removedProofIds = new Set(allocatedProofIds)
   assertRemovedProofsBelongToPin(current, removedProofIds)
@@ -401,6 +419,15 @@ function requireActivePin(
 ): DurableOrderCollateralPin {
   if (pin.state !== 'active' || pin.orderId !== orderId) {
     throw new Error('order collateral fill has no active order authority')
+  }
+  return pin
+}
+
+function requireTransformablePin(
+  pin: DurableOrderCollateralPin,
+): DurableOrderCollateralPin {
+  if (pin.state !== 'preparing' && pin.state !== 'active') {
+    throw new Error('order collateral transform has no retained authority')
   }
   return pin
 }

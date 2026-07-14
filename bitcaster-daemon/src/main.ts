@@ -91,6 +91,7 @@ switch (command) {
       startDaemonServer,
       submitPendingEphemeralPubkeys,
       commitAcceptedOrderSubmission,
+      recoverPreparingOrderCollateralPins,
       createAuthenticatedBitcasterEngineClient,
     } = await import('./server.ts')
     const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } =
@@ -371,6 +372,13 @@ switch (command) {
       }
       : undefined
     durableRecoveryRunner?.armBootstrap()
+    const preflightRecovery = await recoverPreparingOrderCollateralPins(secrets)
+    custodyLease.assertActive()
+    if (preflightRecovery.recoveredCount > 0) {
+      process.stderr.write(
+        `Recovered ${preflightRecovery.recoveredCount} order collateral preparations\n`,
+      )
+    }
     const walletRecovery = await recoverPreparedWalletSends(secrets)
     custodyLease.assertActive()
     if (walletRecovery.recoveredCount > 0) {
