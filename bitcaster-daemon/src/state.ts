@@ -681,6 +681,13 @@ async function readNormalizedStateDatabase<T>(
   }
 }
 
+/** Reads adapter-specific typed rows without exposing a long-lived connection. */
+export async function readDaemonStateDatabase<T>(
+  read: (database: DatabaseSync) => T,
+): Promise<T> {
+  return readNormalizedStateDatabase(read)
+}
+
 export async function writeState(state: DaemonState): Promise<void> {
   await ensureProfileDir()
   const database = openStateDatabase()
@@ -818,6 +825,14 @@ export async function updateState<T>(
   const update =
     typeof scopeOrUpdate === 'function' ? scopeOrUpdate : scopedUpdate
   if (!update) throw new Error('daemon state update callback is missing')
+  return transactDaemonState((database) =>
+    applyDaemonStateWorkInDatabase(database, scope, update))
+}
+
+/** Runs one daemon-state SQLite write unit under the process-local owner lock. */
+export async function transactDaemonState<T>(
+  work: (database: DatabaseSync) => T,
+): Promise<T> {
   return withStateUpdateLock(async () => {
     await ensureProfileDir()
     const database = openStateDatabase()
@@ -825,7 +840,7 @@ export async function updateState<T>(
       if (process.platform !== 'win32') await chmod(statePath(), 0o600)
       database.exec('BEGIN IMMEDIATE')
       try {
-        const result = applyDaemonStateWorkInDatabase(database, scope, update)
+        const result = work(database)
         stateWriteFaultHookForTest?.('before-commit')
         database.exec('COMMIT')
         stateWriteFaultHookForTest?.('after-commit')
@@ -834,7 +849,7 @@ export async function updateState<T>(
         try {
           database.exec('ROLLBACK')
         } catch {
-          // The transaction may have committed before an after-commit fault.
+          // The transaction may already have committed before a fault hook.
         }
         throw error
       }

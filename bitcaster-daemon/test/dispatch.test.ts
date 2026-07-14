@@ -1405,6 +1405,60 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     )
 
     await t.test(
+      'wallet.seed-recover requires disclosure acknowledgement and uses stored seed',
+      async () => {
+        const rejected = await dispatch({
+          method: 'wallet.seed-recover',
+          params: { acknowledgeHistoryDisclosure: false as never },
+        })
+        assert.equal(rejected.ok, false)
+        assert.match(rejected.error ?? '', /history-disclosure/)
+
+        let receivedStoredSeed = false
+        const response = await dispatch(
+          {
+            method: 'wallet.seed-recover',
+            params: {
+              acknowledgeHistoryDisclosure: true,
+              unit: 'sat',
+            },
+          },
+          {
+            async recoverWalletFromSeed(input) {
+              receivedStoredSeed = input.walletSeedHex.length === 64
+                && input.walletSeedHex === secrets.walletSeedHex
+              return {
+                recoveryId: 'recovery-rpc',
+                state: 'completed',
+                completedKeysets: 1,
+                totalKeysets: 1,
+                batchesProcessed: 2,
+                importedProofs: 1,
+                ignoredSpentProofs: 0,
+                pendingProofs: 0,
+              }
+            },
+          },
+        )
+
+        assert.equal(receivedStoredSeed, true)
+        assert.deepEqual(response, {
+          ok: true,
+          result: {
+            recoveryId: 'recovery-rpc',
+            state: 'completed',
+            completedKeysets: 1,
+            totalKeysets: 1,
+            batchesProcessed: 2,
+            importedProofs: 1,
+            ignoredSpentProofs: 0,
+            pendingProofs: 0,
+          },
+        })
+      },
+    )
+
+    await t.test(
       'wallet.operations lists redacted proof operation summaries',
       async () => {
       const state = emptyDaemonState()

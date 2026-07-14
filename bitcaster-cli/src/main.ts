@@ -39,6 +39,7 @@ import type {
   MarketCloseParams,
   MarketCreateParams,
   QueryMarketsParams,
+  DaemonEmergencySeedRecoveryResult,
   WalletConsolidationResult,
 } from '@bitcaster-market/daemon/protocol'
 
@@ -382,6 +383,53 @@ function registerWalletCommand(program: Command): void {
     .action(async () => {
       await printDaemonResult(callDaemon({ method: 'wallet.recover' }))
     })
+
+  wallet
+    .command('seed-recover')
+    .description('Emergency NUT-13/NUT-09 recovery using the daemon wallet seed.')
+    .option('--unit <unit>', 'Mint unit', 'sat')
+    .option(
+      '--acknowledge-history-disclosure',
+      'Acknowledge that recovery reveals deterministic wallet history to the mint',
+    )
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli wallet seed-recover --acknowledge-history-disclosure',
+    )
+    .action(async (options: {
+      unit: string
+      acknowledgeHistoryDisclosure?: boolean
+    }) => {
+      if (options.acknowledgeHistoryDisclosure !== true) {
+        throwUsage(
+          'wallet seed-recover requires --acknowledge-history-disclosure',
+        )
+      }
+      await printDaemonResult(runEmergencySeedRecovery(options.unit))
+    })
+}
+
+async function runEmergencySeedRecovery(
+  unit: string,
+): Promise<DaemonResponse<DaemonEmergencySeedRecoveryResult>> {
+  while (true) {
+    const response = await callDaemon<DaemonEmergencySeedRecoveryResult>({
+      method: 'wallet.seed-recover',
+      params: {
+        acknowledgeHistoryDisclosure: true,
+        unit,
+      },
+    })
+    if (!response.ok) return response
+    const result = response.result
+    if (result === undefined) {
+      throwValidation('seed recovery returned no result')
+    }
+    if (result.state !== 'active') return response
+    if (result.batchesProcessed < 1) {
+      throwValidation('seed recovery made no durable progress')
+    }
+  }
 }
 
 function registerWalletSplitCommand(wallet: Command, name: string, hidden = false): void {

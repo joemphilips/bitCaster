@@ -15,6 +15,10 @@ export type DaemonCommand =
   | { method: 'wallet.consolidateMarket'; params: WalletConsolidateMarketParams }
   | { method: 'wallet.operations'; params?: { kind?: string; state?: string } }
   | { method: 'wallet.recover'; params?: undefined }
+  | {
+    method: 'wallet.seed-recover'
+    params: { acknowledgeHistoryDisclosure: true; unit?: string }
+  }
   | { method: 'order.submit'; params: SubmitOrderParams }
   | { method: 'order.status'; params: { marketId: string; orderId: string } }
   | { method: 'order.list'; params?: { marketId?: string; status?: string } }
@@ -23,6 +27,17 @@ export type DaemonCommand =
   | { method: 'trade.list'; params?: { marketId?: string; orderId?: string; step?: string } }
   | { method: 'trade.recover'; params?: undefined }
   | { method: 'trade.watch'; params: { tradeId: string } }
+
+export interface DaemonEmergencySeedRecoveryResult {
+  recoveryId: string
+  state: 'active' | 'completed' | 'pending-mint-state'
+  completedKeysets: number
+  totalKeysets: number
+  batchesProcessed: number
+  importedProofs: number
+  ignoredSpentProofs: number
+  pendingProofs: number
+}
 
 export interface SubmitOrderParams {
   marketId: string

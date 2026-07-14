@@ -114,6 +114,7 @@ import {
   type WalletOpsDependencies,
   type WalletOpsSecrets,
 } from './walletOps.ts'
+import { recoverDaemonWalletFromSeed } from './emergencySeedRecovery.ts'
 import { buildDaemonTokenHoldingsFromTotals } from './walletHoldings.ts'
 import type { DaemonDurableTradeRecoveryRunner } from './durableTradeRecovery.ts'
 import {
@@ -306,6 +307,7 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   tradeRuntime?: TradeRuntime
   swapExecutor?: SwapRecoveryExecutor
   durableTradeRecovery?: DaemonDurableTradeRecoveryRunner
+  recoverWalletFromSeed?: typeof recoverDaemonWalletFromSeed
 }
 
 const ctfProofOperationStore: CtfProofOperationStore = {
@@ -715,6 +717,33 @@ export async function dispatch(
       return {
         ok: true,
         result: await recoverPreparedWalletSends(secrets, deps),
+      }
+    }
+    case 'wallet.seed-recover': {
+      const profile = await readProfile()
+      if (!profile) {
+        return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      const secrets = await readSecrets()
+      if (!secrets) {
+        return { ok: false, error: 'daemon secrets are not initialized' }
+      }
+      if (command.params.acknowledgeHistoryDisclosure !== true) {
+        return {
+          ok: false,
+          error: 'seed recovery requires history-disclosure acknowledgement',
+        }
+      }
+      return {
+        ok: true,
+        result: await (
+          deps.recoverWalletFromSeed ?? recoverDaemonWalletFromSeed
+        )({
+          mintUrl: profile.mintUrl,
+          unit: command.params.unit,
+          walletSeedHex: secrets.walletSeedHex,
+          disclosureAcknowledged: true,
+        }),
       }
     }
     case 'wallet.operations': {

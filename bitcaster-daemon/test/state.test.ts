@@ -156,7 +156,17 @@ test('a fresh daemon profile creates only a durable SQLite state database', asyn
         tables.some((table) => table.name === 'daemon_state'),
         false,
       )
-      assert.equal(tables.length, 14)
+      assert.equal(tables.length, 16)
+      assert.equal(
+        tables.some((table) => table.name === 'daemon_seed_recovery_jobs'),
+        true,
+      )
+      assert.equal(
+        tables.some(
+          (table) => table.name === 'daemon_seed_recovery_keysets',
+        ),
+        true,
+      )
       assert.equal(
         tables.every((table) => table.sql.includes('STRICT')),
         true,

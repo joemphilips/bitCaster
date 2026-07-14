@@ -31,6 +31,8 @@ const STATE_TABLES = [
   'daemon_state_metadata',
   'daemon_wallet_proofs',
   'daemon_keyset_counters',
+  'daemon_seed_recovery_jobs',
+  'daemon_seed_recovery_keysets',
   'daemon_trade_sessions',
   'daemon_trade_expected_operations',
   'daemon_trade_planned_operations',
@@ -791,6 +793,7 @@ export function readDaemonStateIsEmpty(database: DatabaseSync): boolean {
       `SELECT
         NOT EXISTS (SELECT 1 FROM daemon_wallet_proofs LIMIT 1)
         AND NOT EXISTS (SELECT 1 FROM daemon_keyset_counters LIMIT 1)
+        AND NOT EXISTS (SELECT 1 FROM daemon_seed_recovery_jobs LIMIT 1)
         AND NOT EXISTS (SELECT 1 FROM daemon_proof_operations LIMIT 1)
         AND NOT EXISTS (SELECT 1 FROM daemon_trade_sessions LIMIT 1)
         AND NOT EXISTS (SELECT 1 FROM daemon_orders LIMIT 1)
@@ -909,6 +912,36 @@ const STATE_SCHEMA_SQL = `
     CREATE TABLE daemon_keyset_counters (
       counter_key TEXT PRIMARY KEY NOT NULL CHECK (length(counter_key) > 0),
       counter_value INTEGER NOT NULL CHECK (counter_value >= 0)
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_jobs (
+      recovery_id TEXT PRIMARY KEY NOT NULL CHECK (length(recovery_id) > 0),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0),
+      unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
+      disclosure_acknowledged INTEGER NOT NULL CHECK (disclosure_acknowledged = 1),
+      state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
+      imported_proofs INTEGER NOT NULL CHECK (imported_proofs >= 0),
+      ignored_spent_proofs INTEGER NOT NULL CHECK (ignored_spent_proofs >= 0),
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
+      UNIQUE (mint_url, unit)
+    ) STRICT;
+
+    CREATE TABLE daemon_seed_recovery_keysets (
+      recovery_id TEXT NOT NULL REFERENCES daemon_seed_recovery_jobs(recovery_id) ON DELETE RESTRICT,
+      keyset_id TEXT NOT NULL CHECK (length(keyset_id) > 0),
+      ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+      next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
+      trailing_empty_counters INTEGER NOT NULL CHECK (trailing_empty_counters >= 0),
+      revision INTEGER NOT NULL CHECK (revision >= 0),
+      state TEXT NOT NULL CHECK (state IN ('active', 'completed')),
+      PRIMARY KEY (recovery_id, keyset_id),
+      UNIQUE (recovery_id, ordinal),
+      CHECK (
+        (state = 'active' AND trailing_empty_counters < 300)
+        OR (state = 'completed' AND trailing_empty_counters >= 300)
+      )
     ) STRICT;
 
     CREATE TABLE daemon_trade_sessions (
@@ -1166,6 +1199,10 @@ const STATE_SCHEMA_SQL = `
       ON daemon_orders (order_id)
       WHERE status NOT IN ('Filled', 'filled', 'cancelled', 'Failed', 'failed');
 
+    CREATE INDEX daemon_seed_recovery_active_keyset_idx
+      ON daemon_seed_recovery_keysets (recovery_id, ordinal)
+      WHERE state = 'active';
+
     CREATE INDEX daemon_order_trades_trade_idx
       ON daemon_order_trades (trade_id, order_id);
 
@@ -1194,6 +1231,15 @@ function createStateSchema(database: DatabaseSync): void {
 }
 
 function clearStateRows(database: DatabaseSync): void {
+  if (
+    database.prepare(
+      'SELECT 1 FROM daemon_seed_recovery_jobs LIMIT 1',
+    ).get() !== undefined
+  ) {
+    throw new Error(
+      'full daemon state replacement cannot overwrite seed recovery state',
+    )
+  }
   for (const table of [
     'daemon_trade_ciphers',
     'daemon_trade_proof_links',
