@@ -143,7 +143,7 @@ switch (command) {
       if (!profile || !secrets || !rpcToken) {
         throw new Error('daemon profile storage is incomplete')
       }
-      custodyLease = await DaemonDurableCustodyLease.claim({
+      custodyLease = await DaemonDurableCustodyLease.claimAfterPreviousLease({
         store: new SqliteDurableCustodyStore(),
         walletSeedHex: secrets.walletSeedHex,
       })

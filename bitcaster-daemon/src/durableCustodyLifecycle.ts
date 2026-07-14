@@ -10,6 +10,20 @@ import {
 const DEFAULT_LEASE_DURATION_MS = 60_000
 const DEFAULT_RENEW_AFTER_MS = 20_000
 
+interface DaemonCustodyClaimInput {
+  store: DurableCustodyStore
+  walletSeedHex: string
+  nowMs?: () => number
+  leaseDurationMs?: number
+  renewAfterMs?: number
+  incarnationId?: string
+}
+
+interface DaemonCustodyTakeoverInput extends DaemonCustodyClaimInput {
+  sleep?: (delayMs: number) => Promise<void>
+  takeoverTimeoutMs?: number
+}
+
 export function daemonWalletCustodyScope(
   walletSeedHex: string,
 ): DurableCustodyScope {
@@ -56,14 +70,9 @@ export class DaemonDurableCustodyLease {
     this.renewAfterMs = renewAfterMs
   }
 
-  static async claim(input: {
-    store: DurableCustodyStore
-    walletSeedHex: string
-    nowMs?: () => number
-    leaseDurationMs?: number
-    renewAfterMs?: number
-    incarnationId?: string
-  }): Promise<DaemonDurableCustodyLease> {
+  static async claim(
+    input: DaemonCustodyClaimInput,
+  ): Promise<DaemonDurableCustodyLease> {
     const nowMs = input.nowMs ?? Date.now
     const leaseDurationMs =
       input.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS
@@ -91,6 +100,48 @@ export class DaemonDurableCustodyLease {
       leaseDurationMs,
       renewAfterMs,
     )
+  }
+
+  static async claimAfterPreviousLease(
+    input: DaemonCustodyTakeoverInput,
+  ): Promise<DaemonDurableCustodyLease> {
+    const nowMs = input.nowMs ?? Date.now
+    const leaseDurationMs =
+      input.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS
+    const renewAfterMs = input.renewAfterMs ?? DEFAULT_RENEW_AFTER_MS
+    if (renewAfterMs < 1 || renewAfterMs >= leaseDurationMs) {
+      throw new Error('daemon custody lease renewal interval is invalid')
+    }
+    const timeoutMs =
+      input.takeoverTimeoutMs ?? leaseDurationMs + renewAfterMs
+    if (timeoutMs < leaseDurationMs) {
+      throw new Error('daemon custody takeover timeout is invalid')
+    }
+    const deadlineMs = nowMs() + timeoutMs
+    const sleep = input.sleep ?? sleepFor
+    const scope = daemonWalletCustodyScope(input.walletSeedHex)
+
+    while (true) {
+      const state = await input.store.registerScope(scope)
+      const observedAtMs = nowMs()
+      if (state.owner === null || observedAtMs >= state.owner.leaseExpiresAtMs) {
+        return await DaemonDurableCustodyLease.claim({
+          store: input.store,
+          walletSeedHex: input.walletSeedHex,
+          nowMs,
+          leaseDurationMs,
+          renewAfterMs,
+          incarnationId: input.incarnationId,
+        })
+      }
+
+      const remainingMs = state.owner.leaseExpiresAtMs - observedAtMs
+      const untilTimeoutMs = deadlineMs - observedAtMs
+      if (untilTimeoutMs <= 0) {
+        throw new Error('timed out waiting for previous daemon custody lease')
+      }
+      await sleep(Math.min(remainingMs, renewAfterMs, untilTimeoutMs))
+    }
   }
 
   authorization(): DurableCustodyOwnerAuthorization {
@@ -155,4 +206,8 @@ export class DaemonDurableCustodyLease {
       onLost(this.failure)
     }
   }
+}
+
+function sleepFor(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs))
 }

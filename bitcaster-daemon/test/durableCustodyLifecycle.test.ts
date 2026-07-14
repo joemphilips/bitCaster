@@ -43,6 +43,41 @@ test('daemon custody ownership is seed-scoped and preserves fencing across relea
   })
 })
 
+test('daemon startup waits fail-closed for a crashed owner lease before takeover', async () => {
+  await withDaemonHome(async () => {
+    const store = new SqliteDurableCustodyStore()
+    await store.registerScope(daemonWalletCustodyScope(WALLET_SEED_HEX))
+    let now = 1_000
+    await DaemonDurableCustodyLease.claim({
+      store,
+      walletSeedHex: WALLET_SEED_HEX,
+      incarnationId: 'crashed-process',
+      nowMs: () => now,
+      leaseDurationMs: 1_000,
+      renewAfterMs: 500,
+    })
+    const waits: number[] = []
+
+    const successor = await DaemonDurableCustodyLease.claimAfterPreviousLease({
+      store,
+      walletSeedHex: WALLET_SEED_HEX,
+      incarnationId: 'successor-process',
+      nowMs: () => now,
+      leaseDurationMs: 1_000,
+      renewAfterMs: 500,
+      sleep: async (delayMs) => {
+        waits.push(delayMs)
+        now += delayMs
+      },
+    })
+
+    assert.deepEqual(waits, [500, 500])
+    assert.equal(successor.authorization().fencingEpoch, 2)
+    assert.equal(successor.incarnationId, 'successor-process')
+    await successor.stopAndRelease()
+  })
+})
+
 test('daemon custody effects fail closed after lease renewal is lost', async () => {
   await withDaemonHome(async () => {
     const baseStore = new SqliteDurableCustodyStore()
