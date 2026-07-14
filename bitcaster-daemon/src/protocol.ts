@@ -13,7 +13,10 @@ export type DaemonCommand =
   | { method: 'wallet.send'; params: { amountSats: number; mintUrl?: string; operationId?: string } }
   | { method: 'wallet.splitCompleteSet'; params: WalletSplitCompleteSetParams }
   | { method: 'wallet.consolidateMarket'; params: WalletConsolidateMarketParams }
-  | { method: 'wallet.operations'; params?: { kind?: string; state?: string } }
+  | {
+    method: 'wallet.operations'
+    params?: HistoryPageParams & { kind?: string; state?: string }
+  }
   | { method: 'wallet.recover'; params?: undefined }
   | {
     method: 'wallet.seed-recover'
@@ -21,10 +24,20 @@ export type DaemonCommand =
   }
   | { method: 'order.submit'; params: SubmitOrderParams }
   | { method: 'order.status'; params: { marketId: string; orderId: string } }
-  | { method: 'order.list'; params?: { marketId?: string; status?: string } }
+  | {
+    method: 'order.list'
+    params?: HistoryPageParams & { marketId?: string; status?: string }
+  }
   | { method: 'order.cancel'; params: { marketId: string; orderId: string } }
   | { method: 'order.book'; params: { marketId: string } }
-  | { method: 'trade.list'; params?: { marketId?: string; orderId?: string; step?: string } }
+  | {
+    method: 'trade.list'
+    params?: HistoryPageParams & {
+      marketId?: string
+      orderId?: string
+      step?: string
+    }
+  }
   | { method: 'trade.recover'; params?: undefined }
   | { method: 'trade.watch'; params: { tradeId: string } }
 
@@ -37,6 +50,11 @@ export interface DaemonEmergencySeedRecoveryResult {
   importedProofs: number
   ignoredSpentProofs: number
   pendingProofs: number
+}
+
+interface HistoryPageParams {
+  cursor?: string
+  limit?: number
 }
 
 export interface SubmitOrderParams {

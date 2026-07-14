@@ -4,10 +4,18 @@ import {
   deriveDurableCustodyProofId,
 } from '@bitcaster-market/client-sdk/durableCustody'
 import {
+  DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX,
+} from '@bitcaster-market/client-sdk/durableStorageAdmission'
+import {
   isCollateralUnitOf,
   parseCashuProofUnit,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { ensureDaemonSecretsSchema } from './secrets.ts'
+import {
+  DAEMON_PROOF_OPERATION_KINDS,
+  DAEMON_PROOF_OPERATION_STATES,
+  DAEMON_SWAP_STEPS,
+} from './daemonStateValues.ts'
 import type {
   CashuProofRecord,
   DaemonState,
@@ -20,12 +28,21 @@ import type {
 
 const STATE_SCHEMA_VERSION = 1
 const OPAQUE_ARTIFACT_MAX_BYTES = 4 * 1_024 * 1_024
+const SQLITE_IDENTIFIER_MAX_BYTES = 512
+const SQLITE_URL_MAX_BYTES = 2_048
+const SQLITE_SHORT_TEXT_MAX_BYTES = 256
 export const DAEMON_WALLET_PROOF_CANDIDATE_LIMIT_MAX =
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX
 const DAEMON_WALLET_PROOF_CANDIDATE_QUERY_LIMIT =
   DAEMON_WALLET_PROOF_CANDIDATE_LIMIT_MAX + 1
 const DAEMON_WALLET_DENOMINATION_TARGET = 3
 const DAEMON_WALLET_DENOMINATION_LIMIT_MAX = 256
+export const DAEMON_PROOF_OPERATION_GROUP_LIMIT_MAX = 256
+export const DAEMON_PROOF_OPERATION_GROUP_LABEL_BYTES_MAX = 256
+export const DAEMON_PROOF_OPERATION_INPUT_LIMIT_MAX =
+  DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX
+export const DAEMON_PROOF_OPERATION_GROUP_PROOF_COUNT_MAX =
+  DURABLE_STORAGE_OPERATION_ARTIFACT_LIMIT_MAX
 
 const STATE_TABLES = [
   'daemon_state_metadata',
@@ -37,6 +54,7 @@ const STATE_TABLES = [
   'daemon_trade_expected_operations',
   'daemon_trade_planned_operations',
   'daemon_proof_operations',
+  'daemon_proof_operation_group_counts',
   'daemon_trade_proof_links',
   'daemon_trade_ciphers',
   'daemon_orders',
@@ -106,6 +124,20 @@ export interface DaemonStateCounts {
 }
 
 const DAEMON_ID_PAGE_LIMIT_MAX = 256
+const SQL_PROOF_OPERATION_KINDS = sqliteEnumValues(
+  DAEMON_PROOF_OPERATION_KINDS,
+)
+const SQL_PROOF_OPERATION_STATES = sqliteEnumValues(
+  DAEMON_PROOF_OPERATION_STATES,
+)
+const SQL_SWAP_STEPS = sqliteEnumValues(DAEMON_SWAP_STEPS)
+
+function sqliteEnumValues(values: readonly string[]): string {
+  if (values.some((value) => !/^[A-Za-z0-9-]+$/.test(value))) {
+    throw new Error('daemon SQLite enum value is invalid')
+  }
+  return values.map((value) => `'${value}'`).join(', ')
+}
 
 export const FULL_DAEMON_STATE_ROW_SCOPE: DaemonStateRowScope = {
   wallet: true,
@@ -1017,10 +1049,10 @@ const STATE_SCHEMA_SQL = `
     ) STRICT;
 
     CREATE TABLE daemon_proof_operations (
-      operation_id TEXT PRIMARY KEY NOT NULL CHECK (length(operation_id) > 0),
-      kind TEXT NOT NULL CHECK (kind IN ('swap-lock', 'swap-claim', 'conditional-keyset-swap', 'ctf-split', 'ctf-merge', 'ctf-consolidation', 'ctf-redeem', 'regular-split', 'wallet-send', 'proof-split', 'swap-refund')),
-      state TEXT NOT NULL CHECK (state IN ('prepared', 'mint-submitted', 'completed', 'Failed')),
-      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0),
+      operation_id TEXT PRIMARY KEY NOT NULL CHECK (length(operation_id) > 0 AND length(CAST(operation_id AS BLOB)) <= ${SQLITE_IDENTIFIER_MAX_BYTES}),
+      kind TEXT NOT NULL CHECK (kind IN (${SQL_PROOF_OPERATION_KINDS})),
+      state TEXT NOT NULL CHECK (state IN (${SQL_PROOF_OPERATION_STATES})),
+      mint_url TEXT NOT NULL CHECK (length(mint_url) > 0 AND length(CAST(mint_url AS BLOB)) <= ${SQLITE_URL_MAX_BYTES}),
       durable_trade_id TEXT REFERENCES daemon_trade_sessions(trade_id) ON DELETE RESTRICT CHECK (durable_trade_id IS NULL OR length(durable_trade_id) > 0),
       durable_operation_id TEXT CHECK (durable_operation_id IS NULL OR length(durable_operation_id) > 0),
       durable_operation_key TEXT CHECK (durable_operation_key IS NULL OR length(durable_operation_key) > 0),
@@ -1028,11 +1060,13 @@ const STATE_SCHEMA_SQL = `
       durable_role TEXT CHECK (durable_role IN ('seller', 'buyer')),
       durable_stage TEXT CHECK (durable_stage IN ('proof-reservation', 'mint-submission', 'claim', 'refund')),
       durable_state TEXT CHECK (durable_state IN ('prepared', 'mint-submitted', 'reconciled')),
-      inputs_json TEXT NOT NULL CHECK (json_valid(inputs_json) AND length(CAST(inputs_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES}),
-      outputs_json TEXT NOT NULL CHECK (json_valid(outputs_json) AND length(CAST(outputs_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES}),
-      metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json) AND length(CAST(metadata_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES}),
+      inputs_json TEXT NOT NULL CHECK (json_valid(inputs_json) AND json_type(inputs_json) = 'array' AND length(CAST(inputs_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES}),
+      input_count INTEGER NOT NULL CHECK (input_count >= 0 AND input_count <= ${DAEMON_PROOF_OPERATION_INPUT_LIMIT_MAX}),
+      input_amount_sats INTEGER NOT NULL CHECK (input_amount_sats >= 0 AND input_amount_sats <= ${Number.MAX_SAFE_INTEGER}),
+      outputs_json TEXT NOT NULL CHECK (json_valid(outputs_json) AND json_type(outputs_json) = 'object' AND length(CAST(outputs_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES}),
+      metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json) AND json_type(metadata_json) = 'object' AND length(CAST(metadata_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES}),
       has_result_proofs INTEGER NOT NULL CHECK (has_result_proofs IN (0, 1)),
-      result_proofs_json TEXT CHECK (result_proofs_json IS NULL OR (json_valid(result_proofs_json) AND length(CAST(result_proofs_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES})),
+      result_proofs_json TEXT CHECK (result_proofs_json IS NULL OR (json_valid(result_proofs_json) AND json_type(result_proofs_json) = 'object' AND length(CAST(result_proofs_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES})),
       last_error TEXT CHECK (last_error IS NULL OR length(last_error) > 0),
       failure_code INTEGER CHECK (failure_code >= 0),
       created_at INTEGER NOT NULL CHECK (created_at >= 0),
@@ -1052,6 +1086,16 @@ const STATE_SCHEMA_SQL = `
         length(CAST(COALESCE(result_proofs_json, '') AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES}
       ),
       UNIQUE (durable_operation_id)
+    ) STRICT;
+
+    CREATE TABLE daemon_proof_operation_group_counts (
+      operation_id TEXT NOT NULL REFERENCES daemon_proof_operations(operation_id) ON DELETE CASCADE,
+      group_kind TEXT NOT NULL CHECK (group_kind IN ('planned-output', 'result-proof')),
+      position INTEGER NOT NULL CHECK (position >= 0 AND position < ${DAEMON_PROOF_OPERATION_GROUP_LIMIT_MAX}),
+      group_label TEXT NOT NULL CHECK (length(group_label) > 0 AND length(CAST(group_label AS BLOB)) <= ${DAEMON_PROOF_OPERATION_GROUP_LABEL_BYTES_MAX}),
+      proof_count INTEGER NOT NULL CHECK (proof_count >= 0 AND proof_count <= ${DAEMON_PROOF_OPERATION_GROUP_PROOF_COUNT_MAX}),
+      PRIMARY KEY (operation_id, group_kind, position),
+      UNIQUE (operation_id, group_kind, group_label)
     ) STRICT;
 
     CREATE TABLE daemon_trade_proof_links (
@@ -1077,23 +1121,23 @@ const STATE_SCHEMA_SQL = `
     ) STRICT;
 
     CREATE TABLE daemon_orders (
-      order_id TEXT PRIMARY KEY NOT NULL CHECK (length(order_id) > 0),
-      market_id TEXT NOT NULL CHECK (length(market_id) > 0),
+      order_id TEXT PRIMARY KEY NOT NULL CHECK (length(order_id) > 0 AND length(CAST(order_id AS BLOB)) <= ${SQLITE_IDENTIFIER_MAX_BYTES}),
+      market_id TEXT NOT NULL CHECK (length(market_id) > 0 AND length(CAST(market_id AS BLOB)) <= ${SQLITE_IDENTIFIER_MAX_BYTES}),
       token_side TEXT CHECK (token_side IN ('Outcome', 'Complement')),
       side TEXT CHECK (side IN ('Buy', 'Sell')),
       price_subunits INTEGER CHECK (price_subunits >= 0),
       amount_subunits INTEGER CHECK (amount_subunits >= 0),
       time_in_force TEXT CHECK (time_in_force IN ('FAK', 'FOK', 'GTC')),
       recovery_attempt INTEGER CHECK (recovery_attempt >= 0),
-      status TEXT NOT NULL CHECK (length(status) > 0),
-      ephemeral_pubkey TEXT CHECK (ephemeral_pubkey IS NULL OR length(ephemeral_pubkey) > 0),
-      client_order_id TEXT CHECK (client_order_id IS NULL OR length(client_order_id) > 0),
+      status TEXT NOT NULL CHECK (length(status) > 0 AND length(CAST(status AS BLOB)) <= ${SQLITE_SHORT_TEXT_MAX_BYTES}),
+      ephemeral_pubkey TEXT CHECK (ephemeral_pubkey IS NULL OR (length(ephemeral_pubkey) > 0 AND length(CAST(ephemeral_pubkey AS BLOB)) <= ${SQLITE_SHORT_TEXT_MAX_BYTES})),
+      client_order_id TEXT CHECK (client_order_id IS NULL OR (length(client_order_id) > 0 AND length(CAST(client_order_id AS BLOB)) <= ${SQLITE_IDENTIFIER_MAX_BYTES})),
       preflight_reservation_id TEXT CHECK (preflight_reservation_id IS NULL OR length(preflight_reservation_id) > 0),
       preflight_condition_id TEXT CHECK (preflight_condition_id IS NULL OR length(preflight_condition_id) > 0),
       preflight_keep_outcome_set_id TEXT CHECK (preflight_keep_outcome_set_id IS NULL OR length(preflight_keep_outcome_set_id) > 0),
       preflight_lock_outcome_set_id TEXT CHECK (preflight_lock_outcome_set_id IS NULL OR length(preflight_lock_outcome_set_id) > 0),
       preflight_amount_sats INTEGER CHECK (preflight_amount_sats > 0),
-      base_asset TEXT CHECK (base_asset IS NULL OR length(base_asset) > 0),
+      base_asset TEXT CHECK (base_asset IS NULL OR (length(base_asset) > 0 AND length(CAST(base_asset AS BLOB)) <= ${SQLITE_SHORT_TEXT_MAX_BYTES})),
       divisibility INTEGER CHECK (divisibility > 0),
       engine_status_present INTEGER NOT NULL CHECK (engine_status_present IN (0, 1)),
       engine_status_json TEXT CHECK (engine_status_json IS NULL OR (json_valid(engine_status_json) AND length(CAST(engine_status_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES})),
@@ -1116,9 +1160,9 @@ const STATE_SCHEMA_SQL = `
     ) STRICT;
 
     CREATE TABLE daemon_swaps (
-      trade_id TEXT PRIMARY KEY NOT NULL CHECK (length(trade_id) > 0),
-      market_id TEXT CHECK (market_id IS NULL OR length(market_id) > 0),
-      order_id TEXT CHECK (order_id IS NULL OR length(order_id) > 0),
+      trade_id TEXT PRIMARY KEY NOT NULL CHECK (length(trade_id) > 0 AND length(CAST(trade_id AS BLOB)) <= ${SQLITE_IDENTIFIER_MAX_BYTES}),
+      market_id TEXT CHECK (market_id IS NULL OR (length(market_id) > 0 AND length(CAST(market_id AS BLOB)) <= ${SQLITE_IDENTIFIER_MAX_BYTES})),
+      order_id TEXT CHECK (order_id IS NULL OR (length(order_id) > 0 AND length(CAST(order_id AS BLOB)) <= ${SQLITE_IDENTIFIER_MAX_BYTES})),
       role TEXT CHECK (role IN ('seller', 'buyer')),
       counterparty_pubkey TEXT CHECK (counterparty_pubkey IS NULL OR length(counterparty_pubkey) > 0),
       seller_locktime INTEGER CHECK (seller_locktime >= 0),
@@ -1144,11 +1188,11 @@ const STATE_SCHEMA_SQL = `
       buyer_locked_proofs_json TEXT CHECK (buyer_locked_proofs_json IS NULL OR (json_valid(buyer_locked_proofs_json) AND length(CAST(buyer_locked_proofs_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES})),
       seller_pre_sigs_json TEXT CHECK (seller_pre_sigs_json IS NULL OR (json_valid(seller_pre_sigs_json) AND length(CAST(seller_pre_sigs_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES})),
       engine_state TEXT CHECK (engine_state IS NULL OR length(engine_state) > 0),
-      failure_reason TEXT CHECK (failure_reason IS NULL OR length(failure_reason) > 0),
-      taker_client_order_id TEXT CHECK (taker_client_order_id IS NULL OR length(taker_client_order_id) > 0),
+      failure_reason TEXT CHECK (failure_reason IS NULL OR (length(failure_reason) > 0 AND length(CAST(failure_reason AS BLOB)) <= ${SQLITE_SHORT_TEXT_MAX_BYTES})),
+      taker_client_order_id TEXT CHECK (taker_client_order_id IS NULL OR (length(taker_client_order_id) > 0 AND length(CAST(taker_client_order_id AS BLOB)) <= ${SQLITE_IDENTIFIER_MAX_BYTES})),
       taker_recovery_status TEXT CHECK (taker_recovery_status IN ('pending', 'submitted')),
-      taker_replacement_order_id TEXT CHECK (taker_replacement_order_id IS NULL OR length(taker_replacement_order_id) > 0),
-      step TEXT NOT NULL CHECK (step IN ('awaiting-trade-created', 'opened', 'seller-opened', 'buyer-responded', 'settling', 'awaiting-confirmation', 'confirmed', 'refunded', 'Failed')),
+      taker_replacement_order_id TEXT CHECK (taker_replacement_order_id IS NULL OR (length(taker_replacement_order_id) > 0 AND length(CAST(taker_replacement_order_id AS BLOB)) <= ${SQLITE_IDENTIFIER_MAX_BYTES})),
+      step TEXT NOT NULL CHECK (step IN (${SQL_SWAP_STEPS})),
       error TEXT CHECK (error IS NULL OR length(error) > 0),
       failure_json TEXT CHECK (failure_json IS NULL OR (json_valid(failure_json) AND length(CAST(failure_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES})),
       created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND created_at GLOB '????-??-??T??:??:??.???Z'),
@@ -1189,8 +1233,14 @@ const STATE_SCHEMA_SQL = `
     CREATE INDEX daemon_proof_operations_recovery_idx
       ON daemon_proof_operations (durable_trade_id, state, operation_id);
 
+    CREATE INDEX daemon_proof_operations_history_idx
+      ON daemon_proof_operations (updated_at DESC, operation_id DESC);
+
     CREATE INDEX daemon_orders_listing_idx
       ON daemon_orders (market_id, status, updated_at DESC, order_id);
+
+    CREATE INDEX daemon_orders_history_idx
+      ON daemon_orders (updated_at DESC, order_id DESC);
 
     CREATE INDEX daemon_orders_ephemeral_pubkey_idx
       ON daemon_orders (ephemeral_pubkey, order_id);
@@ -1208,6 +1258,9 @@ const STATE_SCHEMA_SQL = `
 
     CREATE INDEX daemon_swaps_listing_idx
       ON daemon_swaps (market_id, step, updated_at DESC, trade_id);
+
+    CREATE INDEX daemon_swaps_history_idx
+      ON daemon_swaps (updated_at DESC, trade_id DESC);
 
     CREATE INDEX daemon_swaps_order_idx
       ON daemon_swaps (order_id, updated_at DESC, trade_id);
@@ -1692,15 +1745,17 @@ function insertProofOperation(
   operation: ProofOperationRecord,
 ): void {
   const link = operation.durableTradeRecovery
+  const summary = summarizeProofOperationForStorage(operation)
   database
     .prepare(
       `INSERT INTO daemon_proof_operations (
       operation_id, kind, state, mint_url, durable_trade_id, durable_operation_id,
       durable_operation_key,
       durable_kind, durable_role, durable_stage, durable_state,
-      inputs_json, outputs_json, metadata_json, has_result_proofs,
+      inputs_json, input_count, input_amount_sats,
+      outputs_json, metadata_json, has_result_proofs,
       result_proofs_json, last_error, failure_code, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       operation.operationId,
@@ -1715,6 +1770,8 @@ function insertProofOperation(
       link?.stage ?? null,
       link?.state ?? null,
       encodeArtifact(operation.inputs, 'proof operation inputs'),
+      summary.inputCount,
+      summary.inputAmountSats,
       encodeArtifact(operation.outputs, 'proof operation outputs'),
       encodeArtifact(operation.metadata, 'proof operation metadata'),
       operation.resultProofs === undefined ? 0 : 1,
@@ -1729,6 +1786,85 @@ function insertProofOperation(
       operation.createdAt,
       operation.updatedAt,
     )
+  insertProofOperationGroupCounts(database, operation.operationId, summary)
+}
+
+interface StoredProofOperationSummary {
+  inputCount: number
+  inputAmountSats: number
+  groups: Array<{
+    kind: 'planned-output' | 'result-proof'
+    position: number
+    label: string
+    count: number
+  }>
+}
+
+function summarizeProofOperationForStorage(
+  operation: ProofOperationRecord,
+): StoredProofOperationSummary {
+  if (operation.inputs.length > DAEMON_PROOF_OPERATION_INPUT_LIMIT_MAX) {
+    throw new Error('proof operation input count exceeds the durable limit')
+  }
+  const inputAmountSats = operation.inputs.reduce((total, proof) => {
+    const amount = requireNonnegativeInteger(proof.amount, 'proof amount')
+    const next = total + amount
+    if (!Number.isSafeInteger(next)) {
+      throw new Error('proof operation input amount exceeds the durable limit')
+    }
+    return next
+  }, 0)
+  return {
+    inputCount: operation.inputs.length,
+    inputAmountSats,
+    groups: [
+      ...summarizeProofGroups('planned-output', operation.outputs),
+      ...summarizeProofGroups('result-proof', operation.resultProofs ?? {}),
+    ],
+  }
+}
+
+function summarizeProofGroups(
+  kind: 'planned-output' | 'result-proof',
+  groups: Record<string, unknown>,
+): StoredProofOperationSummary['groups'] {
+  const entries = Object.entries(groups)
+  if (entries.length > DAEMON_PROOF_OPERATION_GROUP_LIMIT_MAX) {
+    throw new Error('proof operation group count exceeds the durable limit')
+  }
+  return entries.map(([label, proofs], position) => {
+    if (
+      label.length === 0 ||
+      Buffer.byteLength(label, 'utf8') >
+        DAEMON_PROOF_OPERATION_GROUP_LABEL_BYTES_MAX ||
+      !Array.isArray(proofs) ||
+      proofs.length > DAEMON_PROOF_OPERATION_GROUP_PROOF_COUNT_MAX
+    ) {
+      throw new Error('proof operation group summary exceeds the durable limit')
+    }
+    return { kind, position, label, count: proofs.length }
+  })
+}
+
+function insertProofOperationGroupCounts(
+  database: DatabaseSync,
+  operationId: string,
+  summary: StoredProofOperationSummary,
+): void {
+  const statement = database.prepare(
+    `INSERT INTO daemon_proof_operation_group_counts (
+      operation_id, group_kind, position, group_label, proof_count
+    ) VALUES (?, ?, ?, ?, ?)`,
+  )
+  for (const group of summary.groups) {
+    statement.run(
+      operationId,
+      group.kind,
+      group.position,
+      group.label,
+      group.count,
+    )
+  }
 }
 
 function insertTradeSessionChildren(

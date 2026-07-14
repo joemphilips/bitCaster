@@ -1482,6 +1482,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           keep: [],
         },
         metadata: { note: 'not returned' },
+        lastError: 'upstream leaked secret',
         createdAt: 10,
         updatedAt: 20,
       }
@@ -1513,7 +1514,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const all = await dispatch({ method: 'wallet.operations', params: {} })
       assert.equal(all.ok, true)
       assert.deepEqual(
-        (all.result as Array<{ operationId: string }>).map(
+        (all.result as { items: Array<{ operationId: string }> }).items.map(
           (operation) => operation.operationId,
         ),
         ['op-b', 'op-a'],
@@ -1525,8 +1526,8 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         params: { kind: 'wallet-send', state: 'prepared' },
       })
       assert.equal(filtered.ok, true)
-      assert.deepEqual(filtered.result, [
-        {
+      assert.deepEqual(filtered.result, {
+        items: [{
           operationId: 'op-a',
           kind: 'wallet-send',
           state: 'prepared',
@@ -1535,11 +1536,11 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           inputCount: 2,
           outputCounts: { send: 1, keep: 0 },
           resultProofCounts: {},
-          lastError: null,
           createdAt: 10,
           updatedAt: 20,
-        },
-      ])
+        }],
+        nextCursor: null,
+      })
       },
     )
 
@@ -2289,7 +2290,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         fillAmountSubunits: 100,
         outcomeFaceAmountSubunits: 100,
         quotePaymentSubunits: 42,
-        messages: {},
+        messages: { adaptorPoint: 'watch-private-cipher' },
+        sellerAdaptorSecretHex: 'aa',
+        sellerAdaptorPointHex: 'bb',
         step: 'awaiting-trade-created',
         createdAt: '2026-05-21T00:00:00.000Z',
         updatedAt: '2026-05-21T00:00:00.000Z',
@@ -2302,9 +2305,17 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       })
 
       assert.equal(response.ok, true)
-      assert.equal(
-        (response.result as { tradeId?: string } | null)?.tradeId,
-        'trade-1',
+      assert.deepEqual(response.result, {
+        tradeId: 'trade-1',
+        marketId: 'cond-YES',
+        orderId: 'order-1',
+        step: 'awaiting-trade-created',
+        createdAt: '2026-05-21T00:00:00.000Z',
+        updatedAt: '2026-05-21T00:00:00.000Z',
+      })
+      assert.doesNotMatch(
+        JSON.stringify(response.result),
+        /watch-private-cipher|sellerAdaptorSecretHex|sellerAdaptorPointHex/,
       )
     })
 
@@ -2316,7 +2327,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         tradeId: 'trade-a',
         marketId: 'cond-YES',
         orderId: 'order-a',
-        messages: {},
+        messages: { adaptorPoint: 'private-adaptor-cipher' },
+        sellerAdaptorSecretHex: 'aa',
+        sellerAdaptorPointHex: 'bb',
         step: 'seller-opened',
         createdAt: '2026-05-21T00:00:00.000Z',
         updatedAt: '2026-05-21T00:00:00.000Z',
@@ -2344,10 +2357,14 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const all = await dispatch({ method: 'trade.list', params: {} })
       assert.equal(all.ok, true)
       assert.deepEqual(
-          (all.result as Array<{ tradeId: string }>).map(
+          (all.result as { items: Array<{ tradeId: string }> }).items.map(
             (swap) => swap.tradeId,
           ),
         ['trade-c', 'trade-b', 'trade-a'],
+      )
+      assert.doesNotMatch(
+        JSON.stringify(all.result),
+        /private-adaptor-cipher|sellerAdaptorSecretHex|sellerAdaptorPointHex/,
       )
 
       const filtered = await dispatch({
@@ -2355,7 +2372,17 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         params: { marketId: 'cond-YES', step: 'seller-opened' },
       })
       assert.equal(filtered.ok, true)
-      assert.deepEqual(filtered.result, [state.swaps['trade-a']])
+      assert.deepEqual(filtered.result, {
+        items: [{
+          tradeId: 'trade-a',
+          marketId: 'cond-YES',
+          orderId: 'order-a',
+          step: 'seller-opened',
+          createdAt: '2026-05-21T00:00:00.000Z',
+          updatedAt: '2026-05-21T00:00:00.000Z',
+        }],
+        nextCursor: null,
+      })
       },
     )
 
@@ -2449,10 +2476,33 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       const all = await dispatch({ method: 'order.list', params: {} })
       assert.equal(all.ok, true)
       assert.deepEqual(
-          (all.result as Array<{ orderId: string }>).map(
+          (all.result as { items: Array<{ orderId: string }> }).items.map(
             (order) => order.orderId,
           ),
         ['order-c', 'order-b', 'order-a'],
+      )
+
+      const firstPage = await dispatch({
+        method: 'order.list',
+        params: { limit: 1 },
+      })
+      const firstResult = firstPage.result as {
+        items: Array<{ orderId: string }>
+        nextCursor: string | null
+      }
+      assert.deepEqual(firstResult.items.map((order) => order.orderId), [
+        'order-c',
+      ])
+      assert.equal(typeof firstResult.nextCursor, 'string')
+      const secondPage = await dispatch({
+        method: 'order.list',
+        params: { limit: 1, cursor: firstResult.nextCursor! },
+      })
+      assert.deepEqual(
+        (secondPage.result as { items: Array<{ orderId: string }> }).items.map(
+          (order) => order.orderId,
+        ),
+        ['order-b'],
       )
 
       const filtered = await dispatch({
@@ -2460,7 +2510,16 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
         params: { marketId: 'cond-YES', status: 'resting' },
       })
       assert.equal(filtered.ok, true)
-      assert.deepEqual(filtered.result, [state.orders['order-a']])
+      assert.deepEqual(filtered.result, {
+        items: [{
+          orderId: 'order-a',
+          marketId: 'cond-YES',
+          status: 'resting',
+          createdAt: '2026-05-21T00:00:00.000Z',
+          updatedAt: '2026-05-21T00:00:00.000Z',
+        }],
+        nextCursor: null,
+      })
       },
     )
 

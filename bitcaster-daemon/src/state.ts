@@ -47,6 +47,21 @@ import {
 import { readOrderEphemeralSecret } from './secrets.ts'
 import { validateDaemonDurableOperationBinding } from './durableTradeBinding.ts'
 import {
+  DAEMON_PROOF_OPERATION_KINDS,
+  DAEMON_PROOF_OPERATION_STATES,
+  DAEMON_SWAP_STEPS,
+  isDaemonStateValue,
+  type DaemonProofOperationKind,
+  type DaemonProofOperationState,
+  type DaemonSwapStep,
+} from './daemonStateValues.ts'
+import {
+  readLocalOrderHistoryPage,
+  readLocalSwapHistoryItem,
+  readLocalSwapHistoryPage,
+  readProofOperationHistoryPage,
+} from './localHistorySqlite.ts'
+import {
   assertDaemonStateSchema,
   daemonStateSchemaExists,
   DAEMON_WALLET_PROOF_CANDIDATE_LIMIT_MAX,
@@ -96,24 +111,9 @@ export interface StoredOutputData {
   secret: string
 }
 
-export type ProofOperationKind =
-  | 'swap-lock'
-  | 'swap-claim'
-  | 'conditional-keyset-swap'
-  | 'ctf-split'
-  | 'ctf-merge'
-  | 'ctf-consolidation'
-  | 'ctf-redeem'
-  | 'regular-split'
-  | 'wallet-send'
-  | 'proof-split'
-  | 'swap-refund'
+export type ProofOperationKind = DaemonProofOperationKind
 
-export type ProofOperationState =
-  | 'prepared'
-  | 'mint-submitted'
-  | 'completed'
-  | 'Failed'
+export type ProofOperationState = DaemonProofOperationState
 
 export interface ProofOperationRecord {
   operationId: string
@@ -140,7 +140,6 @@ export interface ProofOperationSummary {
   inputCount: number
   outputCounts: Record<string, number>
   resultProofCounts: Record<string, number>
-  lastError?: string | null
   createdAt: number
   updatedAt: number
 }
@@ -148,6 +147,17 @@ export interface ProofOperationSummary {
 export interface ListProofOperationsParams {
   kind?: string
   state?: string
+  cursor?: string
+  limit?: number
+}
+
+/**
+ * Live keyset page, not an exhaustive snapshot. Rows updated during a traversal
+ * may move across its boundary; start again without a cursor to refresh it.
+ */
+export interface DaemonHistoryPage<T> {
+  items: T[]
+  nextCursor: string | null
 }
 
 export interface PrepareProofOperationInput {
@@ -313,12 +323,34 @@ export interface LocalOrderPreflightSplit {
 export interface ListLocalOrdersParams {
   marketId?: string
   status?: string
+  cursor?: string
+  limit?: number
 }
+
+export type LocalOrderSummary = Omit<
+  LocalOrderRecord,
+  'tradeIds' | 'engineStatus' | 'preflightSplit'
+>
 
 export interface ListLocalSwapsParams {
   marketId?: string
   orderId?: string
   step?: string
+  cursor?: string
+  limit?: number
+}
+
+export interface LocalSwapSummary {
+  tradeId: string
+  marketId?: string
+  orderId?: string
+  role?: 'seller' | 'buyer'
+  step: LocalSwapRecord['step']
+  isTaker?: boolean
+  takerRecoveryStatus?: 'pending' | 'submitted'
+  takerReplacementOrderId?: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface LocalSwapRecord {
@@ -361,16 +393,7 @@ export interface LocalSwapRecord {
     status: 'pending' | 'submitted'
     replacementOrderId?: string
   }
-  step:
-    | 'awaiting-trade-created'
-    | 'opened'
-    | 'seller-opened'
-    | 'buyer-responded'
-    | 'settling'
-    | 'awaiting-confirmation'
-    | 'confirmed'
-      | 'refunded'
-      | 'Failed'
+  step: DaemonSwapStep
   error?: string
   failure?: SwapFailure | PartialLockHeldRecord
   createdAt: string
@@ -1856,37 +1879,34 @@ export async function recordOrderStatus(
 
 export async function listLocalOrders(
   params: ListLocalOrdersParams = {},
-): Promise<LocalOrderRecord[]> {
-  const state = await readStateScope({ orderIds: 'all' })
-  if (!state) return []
-  return Object.values(state.orders)
-    .filter((order) => !params.marketId || order.marketId === params.marketId)
-    .filter((order) => !params.status || order.status === params.status)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+): Promise<DaemonHistoryPage<LocalOrderSummary>> {
+  return readDaemonStateDatabase((database) =>
+    readLocalOrderHistoryPage(database, params),
+  )
 }
 
 export async function listLocalSwaps(
   params: ListLocalSwapsParams = {},
-): Promise<LocalSwapRecord[]> {
-  const state = await readStateScope({ swapIds: 'all' })
-  if (!state) return []
-  return Object.values(state.swaps)
-    .filter((swap) => !params.marketId || swap.marketId === params.marketId)
-    .filter((swap) => !params.orderId || swap.orderId === params.orderId)
-    .filter((swap) => !params.step || swap.step === params.step)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+): Promise<DaemonHistoryPage<LocalSwapSummary>> {
+  return readDaemonStateDatabase((database) =>
+    readLocalSwapHistoryPage(database, params),
+  )
+}
+
+export async function readLocalSwapSummaryById(
+  tradeId: string,
+): Promise<LocalSwapSummary | null> {
+  return readDaemonStateDatabase((database) =>
+    readLocalSwapHistoryItem(database, tradeId),
+  )
 }
 
 export async function listProofOperations(
   params: ListProofOperationsParams = {},
-): Promise<ProofOperationSummary[]> {
-  const state = await readStateScope({ proofOperationIds: 'all' })
-  if (!state) return []
-  return Object.values(state.proofOperations)
-    .filter((operation) => !params.kind || operation.kind === params.kind)
-    .filter((operation) => !params.state || operation.state === params.state)
-    .map(summarizeProofOperation)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+): Promise<DaemonHistoryPage<ProofOperationSummary>> {
+  return readDaemonStateDatabase((database) =>
+    readProofOperationHistoryPage(database, params),
+  )
 }
 
 export async function recordSubmittedOrder(
@@ -1918,35 +1938,6 @@ export async function recordSubmittedOrder(
     timeInForce,
     recoveryAttempt,
   })
-}
-
-function summarizeProofOperation(
-  operation: ProofOperationRecord,
-): ProofOperationSummary {
-  return {
-    operationId: operation.operationId,
-    kind: operation.kind,
-    state: operation.state,
-    mintUrl: operation.mintUrl,
-    inputAmountSats: operation.inputs.reduce(
-      (sum, proof) => sum + amountToNumber(proof.amount),
-      0,
-    ),
-    inputCount: operation.inputs.length,
-    outputCounts: countRecordArrays(operation.outputs),
-    resultProofCounts: countRecordArrays(operation.resultProofs ?? {}),
-    lastError: operation.lastError,
-    createdAt: operation.createdAt,
-    updatedAt: operation.updatedAt,
-  }
-}
-
-function countRecordArrays<T>(
-  record: Record<string, T[]>,
-): Record<string, number> {
-  return Object.fromEntries(
-    Object.entries(record).map(([key, values]) => [key, values.length]),
-  )
 }
 
 export interface OrderEngineProjectionInput {
@@ -3264,17 +3255,7 @@ function requireBoolean(value: unknown, name: string): boolean {
 }
 
 function isValidSwapStep(value: unknown): value is LocalSwapRecord['step'] {
-  return (
-    value === 'awaiting-trade-created' ||
-    value === 'opened' ||
-    value === 'seller-opened' ||
-    value === 'buyer-responded' ||
-    value === 'settling' ||
-    value === 'awaiting-confirmation' ||
-    value === 'confirmed' ||
-    value === 'refunded' ||
-    value === 'Failed'
-  )
+  return isDaemonStateValue(value, DAEMON_SWAP_STEPS)
 }
 
 function decodeTokenSide(
@@ -3861,19 +3842,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isProofOperationKind(value: unknown): value is ProofOperationKind {
-  return (
-    value === 'swap-lock' ||
-    value === 'swap-claim' ||
-    value === 'conditional-keyset-swap' ||
-    value === 'ctf-split' ||
-    value === 'ctf-merge' ||
-    value === 'ctf-consolidation' ||
-    value === 'ctf-redeem' ||
-    value === 'regular-split' ||
-    value === 'wallet-send' ||
-    value === 'proof-split' ||
-    value === 'swap-refund'
-  )
+  return isDaemonStateValue(value, DAEMON_PROOF_OPERATION_KINDS)
 }
 
 function toJsonSafe(value: unknown): unknown {
@@ -3894,12 +3863,7 @@ function toJsonSafe(value: unknown): unknown {
 }
 
 function isProofOperationState(value: unknown): value is ProofOperationState {
-  return (
-    value === 'prepared' ||
-    value === 'mint-submitted' ||
-    value === 'completed' ||
-    value === 'Failed'
-  )
+  return isDaemonStateValue(value, DAEMON_PROOF_OPERATION_STATES)
 }
 
 function findOrderForTradeCreated(

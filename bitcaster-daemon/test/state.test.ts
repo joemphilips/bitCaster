@@ -12,6 +12,9 @@ import {
   emptyDaemonState,
   ensureState,
   initializeState,
+  listLocalOrders,
+  listLocalSwaps,
+  listProofOperations,
   markProofOperationCompleted,
   markProofOperationMintSubmitted,
   prepareProofOperation as prepareProofOperationWithCustody,
@@ -73,6 +76,24 @@ function assertQueryUsesIndex(
     plan.some((row) => row.detail.includes('USE TEMP B-TREE')),
     false,
   )
+}
+
+function assertQuerySearchesIndex(
+  database: DatabaseSync,
+  sql: string,
+  indexName: string,
+  params: Array<string | number>,
+): void {
+  const plan = database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{
+    detail: string
+  }>
+  assert.equal(
+    plan.some(
+      (row) => row.detail.includes('SEARCH') && row.detail.includes(indexName),
+    ),
+    true,
+  )
+  assert.equal(plan.some((row) => row.detail.includes('USE TEMP B-TREE')), false)
 }
 
 function registerProofIdFunction(
@@ -156,7 +177,7 @@ test('a fresh daemon profile creates only a durable SQLite state database', asyn
         tables.some((table) => table.name === 'daemon_state'),
         false,
       )
-      assert.equal(tables.length, 16)
+      assert.equal(tables.length, 17)
       assert.equal(
         tables.some((table) => table.name === 'daemon_seed_recovery_jobs'),
         true,
@@ -164,6 +185,12 @@ test('a fresh daemon profile creates only a durable SQLite state database', asyn
       assert.equal(
         tables.some(
           (table) => table.name === 'daemon_seed_recovery_keysets',
+        ),
+        true,
+      )
+      assert.equal(
+        tables.some(
+          (table) => table.name === 'daemon_proof_operation_group_counts',
         ),
         true,
       )
@@ -418,6 +445,134 @@ test('trade runtime startup reads only indexed live orders and swaps', async () 
     } finally {
       database.close()
     }
+  })
+})
+
+test('local history pages use bounded index seeks and reject invalid input', async () => {
+  await withDaemonHome(async () => {
+    await initializeState()
+    const database = new DatabaseSync(statePath())
+    try {
+      const queries = [
+        [
+          `SELECT order_id FROM daemon_orders
+            WHERE (updated_at, order_id) < (?, ?)
+            ORDER BY updated_at DESC, order_id DESC LIMIT ?`,
+          'daemon_orders_history_idx',
+          [SQLITE_TEST_CREATED_AT, 'order-cursor', 101],
+        ],
+        [
+          `SELECT trade_id FROM daemon_swaps
+            WHERE (updated_at, trade_id) < (?, ?)
+            ORDER BY updated_at DESC, trade_id DESC LIMIT ?`,
+          'daemon_swaps_history_idx',
+          [SQLITE_TEST_CREATED_AT, 'trade-cursor', 101],
+        ],
+        [
+          `SELECT operation_id FROM daemon_proof_operations
+            WHERE (updated_at, operation_id) < (?, ?)
+            ORDER BY updated_at DESC, operation_id DESC LIMIT ?`,
+          'daemon_proof_operations_history_idx',
+          [Date.parse(SQLITE_TEST_CREATED_AT), 'operation-cursor', 101],
+        ],
+      ] as const
+      for (const [sql, index, params] of queries) {
+        assertQuerySearchesIndex(database, sql, index, [...params])
+      }
+    } finally {
+      database.close()
+    }
+
+    await assert.rejects(
+      () => listLocalOrders({ cursor: 'not-a-canonical-cursor' }),
+      /order history cursor is invalid/,
+    )
+    await assert.rejects(
+      () => listLocalOrders({ limit: 101 }),
+      /daemon history page limit is invalid/,
+    )
+    await assert.rejects(
+      () => listLocalOrders({ cursor: 42 as unknown as string }),
+      /order history cursor is invalid/,
+    )
+    const swapCursor = Buffer.from(JSON.stringify({
+      version: 1,
+      kind: 'swap',
+      sort: SQLITE_TEST_CREATED_AT,
+      id: 'trade-cursor',
+    })).toString('base64url')
+    await assert.rejects(
+      () => listLocalOrders({ cursor: swapCursor }),
+      /order history cursor is invalid/,
+    )
+    await assert.rejects(
+      () => listProofOperations({ kind: 'future-kind' }),
+      /proof operation kind filter is invalid/,
+    )
+    await assert.rejects(
+      () => listLocalSwaps({ step: 'future-step' }),
+      /swap step filter is invalid/,
+    )
+
+    await prepareProofOperation({
+      operationId: 'corrupt-history-operation',
+      kind: 'wallet-send',
+      mintUrl: 'https://mint.example',
+      inputs: [{ amount: 1, secret: 'proof-secret', C: 'proof-signature' }],
+      outputs: {},
+    })
+    const corrupt = new DatabaseSync(statePath())
+    try {
+      assert.throws(
+        () => corrupt.prepare(
+          `UPDATE daemon_proof_operations SET outputs_json = '[]'
+            WHERE operation_id = 'corrupt-history-operation'`,
+        ).run(),
+        /CHECK constraint failed/,
+      )
+      corrupt.exec('PRAGMA ignore_check_constraints = ON')
+      corrupt
+        .prepare(
+          `UPDATE daemon_proof_operations
+              SET input_count = -1
+            WHERE operation_id = 'corrupt-history-operation'`,
+        )
+        .run()
+    } finally {
+      corrupt.close()
+    }
+    await assert.rejects(
+      () => listProofOperations(),
+      /input count is invalid/,
+    )
+  })
+})
+
+test('a maximum-size history id round-trips through its continuation cursor', async () => {
+  await withDaemonHome(async () => {
+    const boundaryId = '"'.repeat(512)
+    const state = emptyDaemonState()
+    state.orders[boundaryId] = {
+      ...localOrder(boundaryId, 'resting'),
+      updatedAt: '2026-07-12T00:00:01.000Z',
+    }
+    state.orders.older = {
+      ...localOrder('older', 'resting'),
+      updatedAt: '2026-07-12T00:00:00.000Z',
+    }
+    await writeState(state)
+
+    const first = await listLocalOrders({ limit: 1 })
+    assert.equal(first.items[0]?.orderId, boundaryId)
+    assert.equal(typeof first.nextCursor, 'string')
+    assert.ok(first.nextCursor!.length > 1_024)
+
+    const second = await listLocalOrders({
+      limit: 1,
+      cursor: first.nextCursor!,
+    })
+    assert.equal(second.items[0]?.orderId, 'older')
+    assert.equal(second.nextCursor, null)
   })
 })
 

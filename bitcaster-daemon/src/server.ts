@@ -86,6 +86,7 @@ import {
   listProofOperations,
   listLocalOrders,
   listLocalSwaps,
+  readLocalSwapSummaryById,
   markProofOperationMintSubmitted,
   markProofOperationCompleted,
   prepareProofOperation,
@@ -1006,10 +1007,9 @@ export async function dispatch(
       if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
-      const state = await readStateScope({ swapIds: [command.params.tradeId] })
       return {
         ok: true,
-        result: state?.swaps[command.params.tradeId] ?? null,
+        result: await readLocalSwapSummaryById(command.params.tradeId),
       }
     }
     case 'trade.list': {

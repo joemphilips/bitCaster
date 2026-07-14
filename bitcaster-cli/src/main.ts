@@ -368,11 +368,14 @@ function registerWalletCommand(program: Command): void {
     .description('List prepared or recoverable wallet operations.')
     .option('--kind <kind>', 'Operation kind')
     .option('--state <state>', 'Operation state')
+    .option('--cursor <cursor>', 'Opaque continuation cursor')
+    .option('--limit <n>', 'Maximum history rows to scan', parseIntegerOption('limit'))
     .addHelpText('after', '\nExample:\n  bitcaster-cli wallet operations --kind wallet-send --state prepared')
-    .action(async (options: { kind?: string; state?: string }) => {
-      const params: { kind?: string; state?: string } = {}
+    .action(async (options: HistoryListOptions & { kind?: string; state?: string }) => {
+      const params: HistoryListOptions & { kind?: string; state?: string } = {}
       if (options.kind !== undefined) params.kind = options.kind
       if (options.state !== undefined) params.state = options.state
+      addHistoryPageParams(params, options)
       await printDaemonResult(callDaemon({ method: 'wallet.operations', params }))
     })
 
@@ -564,11 +567,14 @@ function registerOrderCommand(program: Command): void {
     .description('List orders, optionally filtered by market or status.')
     .option('--market <market-id>', 'Market id')
     .option('--status <status>', 'Order status')
+    .option('--cursor <cursor>', 'Opaque continuation cursor')
+    .option('--limit <n>', 'Maximum history rows to scan', parseIntegerOption('limit'))
     .addHelpText('after', '\nExample:\n  bitcaster-cli order list --market <market-id> --status resting')
-    .action(async (options: { market?: string; status?: string }) => {
-      const params: { marketId?: string; status?: string } = {}
+    .action(async (options: HistoryListOptions & { market?: string; status?: string }) => {
+      const params: HistoryListOptions & { marketId?: string; status?: string } = {}
       if (options.market !== undefined) params.marketId = options.market
       if (options.status !== undefined) params.status = options.status
+      addHistoryPageParams(params, options)
       await printDaemonResult(callDaemon({ method: 'order.list', params }))
     })
 
@@ -659,12 +665,15 @@ function registerTradeCommand(program: Command): void {
     .option('--market <market-id>', 'Market id')
     .option('--order <order-id>', 'Order id')
     .option('--step <step>', 'Protocol step')
+    .option('--cursor <cursor>', 'Opaque continuation cursor')
+    .option('--limit <n>', 'Maximum history rows to scan', parseIntegerOption('limit'))
     .addHelpText('after', '\nExample:\n  bitcaster-cli trade list --market <market-id> --order <order-id>')
-    .action(async (options: { market?: string; order?: string; step?: string }) => {
-      const params: { marketId?: string; orderId?: string; step?: string } = {}
+    .action(async (options: HistoryListOptions & { market?: string; order?: string; step?: string }) => {
+      const params: HistoryListOptions & { marketId?: string; orderId?: string; step?: string } = {}
       if (options.market !== undefined) params.marketId = options.market
       if (options.order !== undefined) params.orderId = options.order
       if (options.step !== undefined) params.step = options.step
+      addHistoryPageParams(params, options)
       await printDaemonResult(callDaemon({ method: 'trade.list', params }))
     })
 
@@ -1113,6 +1122,19 @@ function isDaemonFailure(value: unknown): value is DaemonResponse {
 
 function parseIntegerOption(name: string): (value: string) => number {
   return (value: string) => parseIntegerArg(value, name)
+}
+
+interface HistoryListOptions {
+  cursor?: string
+  limit?: number
+}
+
+function addHistoryPageParams(
+  params: HistoryListOptions,
+  options: HistoryListOptions,
+): void {
+  if (options.cursor !== undefined) params.cursor = options.cursor
+  if (options.limit !== undefined) params.limit = options.limit
 }
 
 function parseNonNegativeIntegerOption(name: string): (value: string) => number {

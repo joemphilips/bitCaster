@@ -130,6 +130,10 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'wallet-send',
       '--state',
       'prepared',
+      '--cursor',
+      'wallet-cursor',
+      '--limit',
+      '17',
     ])
     await runCli(daemonUrl, [
       'wallet',
@@ -206,6 +210,10 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'cond-YES',
       '--status',
       'resting',
+      '--cursor',
+      'order-cursor',
+      '--limit',
+      '23',
     ])
     await runCli(daemonUrl, ['order', 'cancel', 'cond-YES', 'order-1'])
     await runCli(daemonUrl, ['order', 'book', 'cond-YES'])
@@ -218,6 +226,10 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'order-1',
       '--step',
       'seller-opened',
+      '--cursor',
+      'trade-cursor',
+      '--limit',
+      '29',
     ])
     await runCli(daemonUrl, ['trade', 'recover'])
     await runCli(daemonUrl, ['trade', 'watch', 'trade-1'])
@@ -259,7 +271,12 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       },
       {
         method: 'wallet.operations',
-        params: { kind: 'wallet-send', state: 'prepared' },
+        params: {
+          kind: 'wallet-send',
+          state: 'prepared',
+          cursor: 'wallet-cursor',
+          limit: 17,
+        },
       },
       { method: 'wallet.recover' },
       {
@@ -318,7 +335,12 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       },
       {
         method: 'order.list',
-        params: { marketId: 'cond-YES', status: 'resting' },
+        params: {
+          marketId: 'cond-YES',
+          status: 'resting',
+          cursor: 'order-cursor',
+          limit: 23,
+        },
       },
       {
         method: 'order.cancel',
@@ -334,6 +356,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           marketId: 'cond-YES',
           orderId: 'order-1',
           step: 'seller-opened',
+          cursor: 'trade-cursor',
+          limit: 29,
         },
       },
       { method: 'trade.recover' },
