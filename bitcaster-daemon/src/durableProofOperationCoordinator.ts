@@ -49,6 +49,10 @@ import {
   type ProofOperationRecord,
 } from './state.ts'
 import type { DaemonStateRowScope } from './stateSqlite.ts'
+import {
+  assertOrderCollateralPinOwnsProofs,
+  bindOrderCollateralOperationInDatabase,
+} from './durableOrderCollateralSqlite.ts'
 
 interface DaemonCustodyAuthority {
   readonly scope: DaemonDurableCustodyLease['scope']
@@ -122,7 +126,20 @@ export class DaemonProofOperationCoordinator
     )
     return this.unitOfWork.transact(
       this.transactionInput(stateScopeFor(input)),
-      ({ custody, state, now }) => {
+      ({ database, custody, state, now }) => {
+        const parentPinId = input.walletProofReservation
+          ?.parentOrderCollateralPinId
+        const parentProofIds = custodyRecord.operation.reservation.inputs.map(
+          ({ proofId }) => proofId,
+        )
+        if (parentPinId !== undefined) {
+          assertOrderCollateralPinOwnsProofs(
+            database,
+            this.authority.scope.scopeId,
+            parentPinId,
+            parentProofIds,
+          )
+        }
         const existing = state.getProofOperation(input.operationId)
         if (existing !== null) {
           assertStatePrepareMatches(existing, input)
@@ -130,10 +147,16 @@ export class DaemonProofOperationCoordinator
             state.reserveWalletProofs(input, now)
           }
           commitCustodyPrepare(custody, custodyRecord)
+          bindParentOrderCollateral(
+            database,
+            parentPinId,
+            custodyRecord,
+          )
           return existing
         }
         state.reserveWalletProofs(input, now)
         commitCustodyPrepare(custody, custodyRecord)
+        bindParentOrderCollateral(database, parentPinId, custodyRecord)
         const prepared = createPreparedStateRecord(input, Date.parse(now))
         state.putProofOperation(prepared)
         prepareTradeSession(state, prepared)
@@ -281,6 +304,20 @@ export class DaemonProofOperationCoordinator
       stateScope,
     }
   }
+}
+
+function bindParentOrderCollateral(
+  database: DaemonCustodyUnitOfWorkTransaction['database'],
+  pinId: string | undefined,
+  record: DurableCustodyRecord,
+): void {
+  if (pinId === undefined) return
+  bindOrderCollateralOperationInDatabase(database, {
+    scopeId: record.scope.scopeId,
+    pinId,
+    operationId: record.operation.operationId,
+    proofIds: record.operation.reservation.inputs.map(({ proofId }) => proofId),
+  })
 }
 
 function createCustodyRecord(

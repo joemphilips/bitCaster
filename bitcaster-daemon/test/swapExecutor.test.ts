@@ -25,17 +25,24 @@ import {
 } from '../src/secrets.ts'
 import {
   emptyDaemonState,
+  prepareProofOperation,
+  markProofOperationCompleted,
+  markProofOperationMintSubmitted,
   installDaemonProofOperationCoordinator,
   readState,
   recordSwapMessage,
   recordTradeCreated,
   recordTradeStateChanged,
   statePath,
+  updateState,
   writeState,
   type CashuProofRecord,
   type DaemonState,
 } from '../src/state.ts'
-import { recoverDaemonDurableTradeSessions } from '../src/durableTradeRecovery.ts'
+import {
+  createDaemonDurableTradeRecoveryRunner,
+  recoverDaemonDurableTradeSessions,
+} from '../src/durableTradeRecovery.ts'
 import {
   createRealDaemonSwapOps,
   recoverExactDaemonProofOperation,
@@ -52,6 +59,11 @@ import {
 } from '../src/durableCustodyLifecycle.ts'
 import { SqliteDurableCustodyStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonProofOperationCoordinator } from '../src/durableProofOperationCoordinator.ts'
+import {
+  DaemonOrderCollateralCoordinator,
+  installDaemonOrderCollateralCoordinator,
+  setDaemonOrderCollateralFaultHookForTest,
+} from '../src/durableOrderCollateralCoordinator.ts'
 
 test('DaemonSwapExecutor drives seller open and claim with durable wallet state', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-swap-'))
@@ -265,7 +277,7 @@ test('DaemonSwapExecutor classifies each durable link state before resuming matc
     assert.deepEqual(
       await executor.resumeActiveSwaps((await readState()) as DaemonState),
       {
-      activeSwaps: 0,
+      activeSwaps: 1,
       },
     )
     assert.equal((await readState())?.swaps['trade-live'].step, 'seller-opened')
@@ -1585,13 +1597,16 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
   const originalCheckProofsStates = CashuWallet.prototype.checkProofsStates
   let custodyLease: DaemonDurableCustodyLease | undefined
   let uninstallCoordinator: (() => void) | undefined
+  let uninstallOrderCollateral: (() => void) | undefined
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     secrets.orderEphemeralKeys['order-ctf'] = {
       ...orderKey(secrets),
       orderId: 'order-ctf',
     }
-    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex, {
+      mintUrl: 'https://mint.example',
+    })
     await writeProfile(profile)
     await writeSecrets(secrets)
     const state = emptyDaemonState()
@@ -1600,19 +1615,32 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
       marketId: 'cond-YES',
       status: 'resting',
       ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      clientOrderId: 'client-order-ctf',
+      timeInForce: 'GTC',
       ...directSellerOrderEconomics(),
       tradeIds: [],
       createdAt: '2026-05-21T00:00:00.000Z',
       updatedAt: '2026-05-21T00:00:00.000Z',
     }
-    state.wallet.proofs.push({
+    const pinnedInput = {
       ...proofRecord(profile.mintUrl, 100, 'available', {
         kind: 'Outcome',
         conditionId: 'cond',
         outcomeSetId: 'YES',
       }),
       proof: { ...cashuProof(100, 'ctf-retained-input'), id: 'ctf-keyset' },
-    })
+    }
+    state.wallet.proofs.push(
+      pinnedInput,
+      {
+        ...proofRecord(profile.mintUrl, 200, 'available', {
+          kind: 'Outcome',
+          conditionId: 'cond',
+          outcomeSetId: 'YES',
+        }),
+        proof: { ...cashuProof(200, 'fresh-decoy'), id: 'ctf-keyset' },
+      },
+    )
     await writeState(state)
     const custodyStore = new SqliteDurableCustodyStore()
     await custodyStore.registerScope(
@@ -1628,7 +1656,7 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
         resolveMintKeys: async (_mintUrl, keysetIds) => new Map(
           keysetIds.map((keysetId) => [keysetId, {
             id: keysetId,
-            unit: 'sat',
+            unit: pinnedInput.unit,
             active: true,
             input_fee_ppk: 0,
             keys: { '100': `02${'44'.repeat(32)}` },
@@ -1636,9 +1664,41 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
         ),
       }),
     )
+    const orderCollateral = new DaemonOrderCollateralCoordinator(custodyLease)
+    uninstallOrderCollateral = installDaemonOrderCollateralCoordinator(
+      orderCollateral,
+    )
+    const pin = await orderCollateral.prepare({
+      clientOrderId: 'client-order-ctf',
+      marketId: 'cond-YES',
+      mintUrl: profile.mintUrl,
+      unit: pinnedInput.unit,
+      orderAmount: 100,
+      requiredAmount: 100,
+      submissionRequest: {
+        clientOrderId: 'client-order-ctf',
+        outcomeId: 'YES',
+        tokenSide: 'Outcome',
+        side: 'Sell',
+        price: 50,
+        amountSubunits: 100,
+        timeInForce: 'GTC',
+      },
+      proofs: [pinnedInput],
+    })
+    await orderCollateral.bindOrObserve({
+      pinId: pin.pinId,
+      orderId: 'order-ctf',
+      status: 'resting',
+      remainingAmount: 100,
+    })
 
     let preparedKey: string | undefined
+    let resumedKey: string | undefined
     let exactResumed = 0
+    let injectFillCommitCrash = true
+    let canonicalStateBeforeFill: string | undefined
+    let allocatedOperationKeyBeforeFill: string | undefined
     const loadAtomicSwapModule = async () => ({
       async sellerLockOutcomeProofs(
         _ctx: unknown,
@@ -1661,6 +1721,19 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
         }
         },
       ) {
+        if (exactResumed > 0) {
+          resumedKey = options.operationId
+          assert.deepEqual(
+            proofs.map((proof) => proof.secret),
+            ['ctf-retained-input'],
+          )
+          return {
+            lockedProofs: [
+              { ...proofs[0]!, secret: 'ctf-recovered-lock' },
+            ],
+            changeProofs: [],
+          }
+        }
         preparedKey = options.operationId
         await options.proofOperationStore!.prepareProofOperation({
           operationId: options.operationId!,
@@ -1680,7 +1753,7 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
               },
             ],
           },
-          metadata: { unit: 'sat', keysetId: 'ctf-keyset' },
+          metadata: { unit: pinnedInput.unit, keysetId: 'ctf-keyset' },
         })
         const submitted = await options.proofOperationStore!.markProofOperationMintSubmitted(
           options.operationId!,
@@ -1713,9 +1786,62 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
       async restoreExactPreparedProofOperation() {
         throw new Error('restore path was not expected')
       },
+      async sellerPreparePrelockedSwap(
+        _ctx: unknown,
+        proofs: CashuProofRecord[],
+      ) {
+        assert.deepEqual(
+          proofs.map((proof) => proof.secret),
+          ['ctf-recovered-lock'],
+        )
+        const database = new DatabaseSync(statePath(), { readOnly: true })
+        try {
+          canonicalStateBeforeFill = (database.prepare(
+            `SELECT operation_state
+               FROM custody_operations
+              WHERE retained_operation_key = ?`,
+          ).get('trade-ctf/seller-lock') as
+            | { operation_state: string }
+            | undefined)?.operation_state
+          allocatedOperationKeyBeforeFill = (database.prepare(
+            `SELECT operation.retained_operation_key
+               FROM custody_order_collateral_allocations AS allocation
+               JOIN custody_operations AS operation
+                 ON operation.scope_id = allocation.scope_id
+                AND operation.operation_id = allocation.operation_id
+              WHERE allocation.pin_id = ?`,
+          ).get(pin.pinId) as
+            | { retained_operation_key: string }
+            | undefined)?.retained_operation_key
+        } finally {
+          database.close()
+        }
+        if (injectFillCommitCrash) {
+          injectFillCommitCrash = false
+          setDaemonOrderCollateralFaultHookForTest((stage) => {
+            if (stage === 'before-commit') {
+              throw new Error(
+                'Proof operation trade-ctf/seller-lock is still pending at the mint',
+              )
+            }
+          })
+        }
+        return {
+          adaptorPointCipher: 'ctf-adaptor-cipher',
+          lockedProofsCipher: 'ctf-locked-cipher',
+          adaptorPoint: {
+            secret: Uint8Array.of(1),
+            point: Uint8Array.of(2),
+          },
+          lockedProofs: proofs,
+          changeProofs: [],
+        }
+      },
     })
+    const connection = fakeConnection([])
     const executor = newTestDaemonSwapExecutor({
-      connection: fakeConnection([]),
+      connection,
+      retryDelayMs: 60_000,
       ops: createRealDaemonSwapOps({
         loadAtomicSwapModule: loadAtomicSwapModule as never,
       }),
@@ -1739,6 +1865,7 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
     assert.equal(
       beforeRestart?.proofOperations[preparedKey!]?.state,
       'mint-submitted',
+      beforeRestart?.swaps['trade-ctf']?.error,
     )
     assert.equal(
       beforeRestart?.proofOperations[preparedKey!]?.durableTradeRecovery
@@ -1749,19 +1876,45 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
     CashuWallet.prototype.loadMint = async () => undefined
     CashuWallet.prototype.checkProofsStates = async () =>
       [{ state: CheckStateEnum.UNSPENT }] as ProofState[]
-    const recovery = await recoverDaemonDurableTradeSessions({
-      executor: {} as never,
-      exactOperationAdapter: (record, action) =>
-        recoverExactDaemonProofOperation(record, action, {
-          loadAtomicSwapModule: loadAtomicSwapModule as never,
+    const runner = createDaemonDurableTradeRecoveryRunner({
+      executor,
+      connection,
+      recoverDurableSessions: ({ scheduleRetry, tradeId }) =>
+        recoverDaemonDurableTradeSessions({
+          executor,
+          connection,
+          scheduleRetry,
+          ...(tradeId === undefined ? {} : { tradeId }),
+          exactOperationAdapter: (record, action) =>
+            recoverExactDaemonProofOperation(record, action, {
+              loadAtomicSwapModule: loadAtomicSwapModule as never,
+            }),
         }),
-      connection: { async joinTrade() {}, async sendSwapMessage() {} } as never,
     })
+    const firstRecovery = await runner.recover()
 
     assert.equal(exactResumed, 1)
-    assert.deepEqual(recovery.sessions, [
+    assert.deepEqual(firstRecovery.durableRecovery.sessions, [
       { kind: 'ready', tradeId: 'trade-ctf' },
     ])
+    assert.equal(firstRecovery.activeSwaps, 1)
+    assert.equal(canonicalStateBeforeFill, 'reconciled')
+    assert.equal(resumedKey, 'trade-ctf/seller-lock')
+    assert.equal(
+      allocatedOperationKeyBeforeFill,
+      'trade-ctf/seller-lock',
+    )
+    const afterInjectedCrash = await readState()
+    assert.equal(afterInjectedCrash?.swaps['trade-ctf']?.step, 'opened')
+    assert.equal(
+      afterInjectedCrash?.wallet.proofs.find(
+        (proof) => proof.proof.secret === 'ctf-retained-input',
+      )?.reservedBy,
+      'trade-ctf/seller-lock',
+    )
+    setDaemonOrderCollateralFaultHookForTest(undefined)
+    const recovered = await runner.recover()
+    assert.equal(recovered.activeSwaps, 1)
     const afterRestart = await readState()
     assert.equal(
       afterRestart?.proofOperations[preparedKey!]?.state,
@@ -1771,11 +1924,415 @@ test('production CTF seller lock uses a canonical key and recovers its retained 
       afterRestart?.durableTradeSessions['trade-ctf']?.stage,
       'reconciliation-complete',
     )
+    assert.equal(
+      afterRestart?.swaps['trade-ctf']?.step,
+      'seller-opened',
+      afterRestart?.swaps['trade-ctf']?.error,
+    )
+    assert.equal(
+      afterRestart?.wallet.proofs.some(
+        (proof) => proof.proof.secret === 'ctf-retained-input',
+      ),
+      false,
+    )
+    assert.equal(
+      afterRestart?.wallet.proofs.find(
+        (proof) => proof.proof.secret === 'ctf-recovered-lock',
+      )?.reservedBy,
+      'trade-ctf',
+    )
+    await assert.rejects(
+      orderCollateral.readProofIds(pin.pinId),
+      /order collateral pin is released/,
+    )
   } finally {
+    setDaemonOrderCollateralFaultHookForTest(undefined)
+    uninstallOrderCollateral?.()
     uninstallCoordinator?.()
     await custodyLease?.stopAndRelease()
     CashuWallet.prototype.loadMint = originalLoadMint
     CashuWallet.prototype.checkProofsStates = originalCheckProofsStates
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('non-GTC seller recovery reuses its exact reserved input instead of a fresh proof', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-fak-restart-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  const originalLoadMint = CashuWallet.prototype.loadMint
+  const originalCheckProofsStates = CashuWallet.prototype.checkProofsStates
+  let lease: DaemonDurableCustodyLease | undefined
+  let uninstallCoordinator: (() => void) | undefined
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-fak'] = {
+      ...orderKey(secrets),
+      orderId: 'order-fak',
+    }
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex, {
+      mintUrl: 'https://mint.example',
+    })
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const retained = {
+      ...proofRecord(profile.mintUrl, 100, 'available', {
+        kind: 'Outcome',
+        conditionId: 'cond',
+        outcomeSetId: 'YES',
+      }),
+      proof: { ...cashuProof(100, 'fak-retained'), id: 'ctf-keyset' },
+    }
+    const state = emptyDaemonState()
+    state.orders['order-fak'] = {
+      orderId: 'order-fak',
+      marketId: 'cond-YES',
+      status: 'filled',
+      ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      timeInForce: 'FAK',
+      ...directSellerOrderEconomics(),
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    const decoy = {
+      ...retained,
+      proof: { ...cashuProof(200, 'fak-decoy'), id: 'ctf-keyset' },
+    }
+    state.wallet.proofs.push(retained)
+    await writeState(state)
+
+    const store = new SqliteDurableCustodyStore()
+    await store.registerScope(daemonWalletCustodyScope(secrets.walletSeedHex))
+    lease = await DaemonDurableCustodyLease.claim({
+      store,
+      walletSeedHex: secrets.walletSeedHex,
+    })
+    uninstallCoordinator = installDaemonProofOperationCoordinator(
+      new DaemonProofOperationCoordinator({
+        authority: lease,
+        resolveMintKeys: async (_mintUrl, keysetIds) => new Map(
+          keysetIds.map((keysetId) => [keysetId, {
+            id: keysetId,
+            unit: retained.unit,
+            active: true,
+            input_fee_ppk: 0,
+            keys: { '100': `02${'44'.repeat(32)}` },
+          } as MintKeys]),
+        ),
+      }),
+    )
+    let recoveryCalls = 0
+    const loadAtomicSwapModule = async () => ({
+      async sellerLockOutcomeProofs(
+        _ctx: unknown,
+        proofs: CashuProofRecord[],
+        _amount: number,
+        options: {
+          operationId?: string
+          proofOperationStore?: {
+            prepareProofOperation(input: unknown): Promise<unknown>
+            markProofOperationMintSubmitted(operationId: string): Promise<unknown>
+          }
+        },
+      ) {
+        assert.deepEqual(proofs.map(({ secret }) => secret), ['fak-retained'])
+        if (recoveryCalls > 0) {
+          return {
+            lockedProofs: [{ ...proofs[0]!, secret: 'fak-recovered-lock' }],
+            changeProofs: [],
+          }
+        }
+        await options.proofOperationStore!.prepareProofOperation({
+          operationId: options.operationId!,
+          kind: 'conditional-keyset-swap',
+          mintUrl: profile.mintUrl,
+          inputs: proofs,
+          outputs: {
+            lock: [{
+              blindedMessage: {
+                amount: 100,
+                id: 'ctf-keyset',
+                B_: 'fak-retained-output',
+              },
+              blindingFactor: '01',
+              secret: 'fak-retained-output-secret',
+            }],
+          },
+          metadata: { unit: retained.unit, keysetId: 'ctf-keyset' },
+        })
+        await options.proofOperationStore!.markProofOperationMintSubmitted(
+          options.operationId!,
+        )
+        throw new Error(`Proof operation ${options.operationId} is still pending at the mint`)
+      },
+      async resumeExactPreparedProofOperation(
+        _wallet: unknown,
+        entry: { inputs: CashuProofRecord[] },
+      ) {
+        recoveryCalls += 1
+        assert.deepEqual(entry.inputs.map(({ secret }) => secret), ['fak-retained'])
+        return {
+          lock: [{ ...entry.inputs[0]!, secret: 'fak-recovered-lock' }],
+        }
+      },
+      async restoreExactPreparedProofOperation() {
+        throw new Error('restore path was not expected')
+      },
+      async sellerPreparePrelockedSwap(
+        _ctx: unknown,
+        proofs: CashuProofRecord[],
+      ) {
+        return {
+          adaptorPointCipher: 'fak-adaptor-cipher',
+          lockedProofsCipher: 'fak-lock-cipher',
+          adaptorPoint: { secret: Uint8Array.of(1), point: Uint8Array.of(2) },
+          lockedProofs: proofs,
+          changeProofs: [],
+        }
+      },
+    })
+    const connection = fakeConnection([])
+    const executor = newTestDaemonSwapExecutor({
+      connection,
+      retryDelayMs: 60_000,
+      ops: createRealDaemonSwapOps({
+        loadAtomicSwapModule: loadAtomicSwapModule as never,
+      }),
+    })
+    await executor.onTradeCreated(await recordTradeCreated({
+      tradeId: 'trade-fak',
+      sellerPubkey: orderKey(secrets).publicKeyHex,
+      buyerPubkey: `03${'59'.repeat(32)}`,
+      sellerLocktime: '2099-05-21T00:02:00.000Z',
+      buyerLocktime: '2099-05-21T00:01:00.000Z',
+      marketId: 'cond-YES',
+      fillAmountSubunits: 100,
+      outcomeFaceAmountSubunits: 100,
+      quotePaymentSubunits: 42,
+      settlementKind: 'DirectSwap',
+    }))
+    const submittedState = await readState()
+    assert.equal(
+      submittedState?.proofOperations['trade-fak/seller-lock']?.state,
+      'mint-submitted',
+      submittedState?.swaps['trade-fak']?.error,
+    )
+    assert.equal(submittedState?.wallet.proofs.find(
+      ({ proof }) => proof.secret === 'fak-retained',
+    )?.reservedBy, 'trade-fak/seller-lock')
+    await updateState({ walletProofs: 'all' }, (walletState) => {
+      walletState.wallet.proofs.push(decoy)
+    })
+    const beforeRestart = await readState()
+    assert.equal(beforeRestart?.wallet.proofs.find(
+      ({ proof }) => proof.secret === 'fak-decoy',
+    )?.state, 'available')
+
+    CashuWallet.prototype.loadMint = async () => undefined
+    CashuWallet.prototype.checkProofsStates = async () =>
+      [{ state: CheckStateEnum.UNSPENT }] as ProofState[]
+    const runner = createDaemonDurableTradeRecoveryRunner({
+      executor,
+      connection,
+      recoverDurableSessions: ({ scheduleRetry, tradeId }) =>
+        recoverDaemonDurableTradeSessions({
+          executor,
+          connection,
+          scheduleRetry,
+          ...(tradeId === undefined ? {} : { tradeId }),
+          exactOperationAdapter: (record, action) =>
+            recoverExactDaemonProofOperation(record, action, {
+              loadAtomicSwapModule: loadAtomicSwapModule as never,
+            }),
+        }),
+    })
+    const recovery = await runner.recover()
+    assert.equal(recovery.activeSwaps, 1)
+    assert.equal(recoveryCalls, 1)
+    const afterRestart = await readState()
+    assert.equal(afterRestart?.swaps['trade-fak']?.step, 'seller-opened')
+    assert.equal(afterRestart?.wallet.proofs.some(
+      ({ proof }) => proof.secret === 'fak-retained',
+    ), false)
+    assert.equal(afterRestart?.wallet.proofs.find(
+      ({ proof }) => proof.secret === 'fak-decoy',
+    )?.state, 'available')
+  } finally {
+    uninstallCoordinator?.()
+    await lease?.stopAndRelease()
+    CashuWallet.prototype.loadMint = originalLoadMint
+    CashuWallet.prototype.checkProofsStates = originalCheckProofsStates
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('non-GTC buyer continuation consumes the recovered lock input and stores its successor', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-buyer-resume-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  let lease: DaemonDurableCustodyLease | undefined
+  let uninstallCoordinator: (() => void) | undefined
+  try {
+    const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
+    secrets.orderEphemeralKeys['order-buyer-resume'] = {
+      ...orderKey(secrets),
+      orderId: 'order-buyer-resume',
+      marketId: 'cond-NO',
+    }
+    const profile = profileFromPublicKey(secrets.nostrPublicKeyHex, {
+      mintUrl: 'https://mint.example',
+    })
+    await writeProfile(profile)
+    await writeSecrets(secrets)
+    const input = {
+      ...proofRecord(profile.mintUrl, 42, 'available', { kind: 'sats' }),
+      proof: { ...cashuProof(42, 'buyer-resume-input'), id: 'buyer-keyset' },
+    }
+    const state = emptyDaemonState()
+    state.orders['order-buyer-resume'] = {
+      orderId: 'order-buyer-resume',
+      marketId: 'cond-NO',
+      status: 'filled',
+      ephemeralPubkey: orderKey(secrets).publicKeyHex,
+      timeInForce: 'FAK',
+      ...directBuyerOrderEconomics(),
+      tradeIds: [],
+      createdAt: '2026-05-21T00:00:00.000Z',
+      updatedAt: '2026-05-21T00:00:00.000Z',
+    }
+    state.wallet.proofs.push(input)
+    await writeState(state)
+    const store = new SqliteDurableCustodyStore()
+    await store.registerScope(daemonWalletCustodyScope(secrets.walletSeedHex))
+    lease = await DaemonDurableCustodyLease.claim({
+      store,
+      walletSeedHex: secrets.walletSeedHex,
+    })
+    uninstallCoordinator = installDaemonProofOperationCoordinator(
+      new DaemonProofOperationCoordinator({
+        authority: lease,
+        resolveMintKeys: async (_mintUrl, keysetIds) => new Map(
+          keysetIds.map((keysetId) => [keysetId, {
+            id: keysetId,
+            unit: input.unit,
+            active: true,
+            input_fee_ppk: 0,
+            keys: { '42': `02${'45'.repeat(32)}` },
+          } as MintKeys]),
+        ),
+      }),
+    )
+    await recordTradeCreated({
+      tradeId: 'trade-buyer-resume',
+      sellerPubkey: `02${'60'.repeat(32)}`,
+      buyerPubkey: orderKey(secrets).publicKeyHex,
+      sellerLocktime: '2099-05-21T00:02:00.000Z',
+      buyerLocktime: '2099-05-21T00:01:00.000Z',
+      marketId: 'cond-NO',
+      fillAmountSubunits: 100,
+      outcomeFaceAmountSubunits: 100,
+      quotePaymentSubunits: 42,
+      settlementKind: 'DirectSwap',
+    })
+    const operationId = 'trade-buyer-resume/buyer-lock'
+    const link = createDurableTradeProofOperationLink({
+      tradeId: 'trade-buyer-resume',
+      role: 'buyer',
+      stage: 'proof-reservation',
+      state: 'prepared',
+      operationKey: operationId,
+      kind: 'cashu-atomic',
+    })
+    await prepareProofOperation({
+      operationId,
+      durableTradeRecovery: link,
+      kind: 'swap-lock',
+      mintUrl: profile.mintUrl,
+      inputs: [input.proof],
+      outputs: {
+        send: [{
+          blindedMessage: {
+            amount: 42,
+            id: 'buyer-keyset',
+            B_: 'buyer-resume-output',
+          },
+          blindingFactor: '01',
+          secret: 'buyer-resume-output-secret',
+        }],
+        keep: [],
+      },
+      metadata: {
+        unit: input.unit,
+        keysetId: 'buyer-keyset',
+        reservationId: operationId,
+        unselectedProofs: [],
+      },
+      walletProofReservation: { reservationId: operationId, unit: input.unit },
+    })
+    await markProofOperationMintSubmitted(operationId)
+    await markProofOperationCompleted(operationId, {
+      send: [{ ...input.proof, secret: 'buyer-resume-locked' }],
+      keep: [],
+    })
+    await recordSwapMessage(
+      'trade-buyer-resume',
+      'adaptor-point',
+      'buyer-resume-adaptor',
+    )
+    await recordSwapMessage(
+      'trade-buyer-resume',
+      'locked-proofs-seller',
+      'buyer-resume-seller-lock',
+    )
+    await updateState({ walletProofs: 'all' }, (walletState) => {
+      walletState.wallet.proofs.push({
+        ...input,
+        state: 'available',
+        proof: { ...cashuProof(100, 'buyer-resume-decoy'), id: 'buyer-keyset' },
+      })
+    })
+
+    const executor = newTestDaemonSwapExecutor({
+      connection: fakeConnection([]),
+      ops: {
+        ...buyerFakeOps(),
+        async buyerRespond(_ctx, _messages, proofs) {
+          assert.deepEqual(proofs.map(({ secret }) => secret), [
+            'buyer-resume-input',
+          ])
+          return {
+            lockedProofsCipher: 'buyer-resume-cipher',
+            lockedProofs: [{ ...proofs[0]!, secret: 'buyer-resume-locked' }],
+            changeProofs: [],
+            preSigsHex: ['buyer-resume-pre'],
+            sellerPreSigsHex: ['buyer-resume-seller-pre'],
+          }
+        },
+      },
+    })
+    const recovery = await executor.resumeActiveSwaps(
+      (await readState()) as DaemonState,
+    )
+    assert.equal(recovery.activeSwaps, 1)
+    const after = await readState()
+    assert.equal(after?.swaps['trade-buyer-resume']?.step, 'buyer-responded')
+    assert.equal(after?.wallet.proofs.some(
+      ({ proof }) => proof.secret === 'buyer-resume-input',
+    ), false)
+    assert.equal(after?.wallet.proofs.find(
+      ({ proof }) => proof.secret === 'buyer-resume-locked',
+    )?.reservedBy, 'trade-buyer-resume')
+    assert.equal(after?.wallet.proofs.find(
+      ({ proof }) => proof.secret === 'buyer-resume-decoy',
+    )?.state, 'available')
+  } finally {
+    uninstallCoordinator?.()
+    await lease?.stopAndRelease()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })

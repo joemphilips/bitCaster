@@ -30,6 +30,7 @@ import {
   type MarketThumbnailBytes,
 } from '@bitcaster-market/client-sdk'
 import { planParticipationScoreTopUp } from '@bitcaster-market/client-sdk/participationScore'
+import type { DurableOrderCollateralPin } from '@bitcaster-market/client-sdk/durableOrderCollateral'
 import { complementOutcomeSetId } from '@bitcaster-market/client-sdk/outcomeSets'
 import { validateOrderIntent } from '@bitcaster-market/client-sdk/orderValidation'
 import { checkOrderSettlementSupport } from '@bitcaster-market/client-sdk/settlementSupport'
@@ -47,6 +48,7 @@ import {
   type CtfProofOperationStore,
 } from '@bitcaster-market/client-sdk/ctfSplit'
 import { prepareSwapInputsForTrade } from '@bitcaster-market/client-sdk/tradePreparation'
+import { takeProofsForLock } from '@bitcaster-market/client-sdk/proofSelection'
 import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
   defaultCollateralUnit,
@@ -92,10 +94,13 @@ import {
   readWalletBalance,
   readWalletHoldingTotals,
   recordSubmittedOrder,
+  applyOrderEngineProjection,
+  orderEngineProjectionScope,
   recordOrderStatus,
   releaseProofReservation,
   updateState,
   type CashuProofRecord,
+  type StoredProofRecord,
 } from './state.ts'
 import type { TradeRuntime } from './tradeRuntime.ts'
 import {
@@ -111,7 +116,14 @@ import {
 } from './walletOps.ts'
 import { buildDaemonTokenHoldingsFromTotals } from './walletHoldings.ts'
 import type { DaemonDurableTradeRecoveryRunner } from './durableTradeRecovery.ts'
-import { deriveDaemonWalletProofIdFromProof } from './stateSqlite.ts'
+import {
+  DAEMON_WALLET_PROOF_CANDIDATE_LIMIT_MAX,
+  deriveDaemonWalletProofIdFromProof,
+} from './stateSqlite.ts'
+import {
+  durableOrderCollateralPinId,
+  requireDaemonOrderCollateralCoordinator,
+} from './durableOrderCollateralCoordinator.ts'
 
 export interface DaemonServerOptions {
   host?: string
@@ -791,6 +803,12 @@ export async function dispatch(
       }
       const conditionId = conditionIdFromMarketId(orderParams.marketId)
       const marketUnit = await loadMarketUnit(context.client, conditionId)
+      const participationScore = await ensureDaemonParticipationScoreForNextMatch({
+        client: context.client,
+        profile: context.profile,
+        secrets: context.secrets,
+        deps,
+      })
       const holdings = buildDaemonTokenHoldingsFromTotals(
         await readWalletHoldingTotals({
         mintUrl: context.profile.mintUrl,
@@ -809,6 +827,15 @@ export async function dispatch(
         return { ok: false, error: backingError }
       }
       const clientOrderId = randomUUID()
+      const submissionRequest: SubmitOrderRequest = {
+        outcomeId: orderParams.outcomeId,
+        tokenSide: orderParams.tokenSide,
+        side: orderParams.side,
+        price: orderParams.price,
+        amountSubunits,
+        timeInForce: orderParams.timeInForce,
+        clientOrderId,
+      }
       const preparedPreflight = await maybePreparePreflightSplitForOrder({
         client: context.client,
         mintUrl: context.profile.mintUrl,
@@ -822,33 +849,29 @@ export async function dispatch(
         preflightSplit: orderParams.preflightSplit,
         clientOrderId,
       })
-      let participationScore: DaemonParticipationScorePreflightResult
-      try {
-        participationScore = await ensureDaemonParticipationScoreForNextMatch({
-          client: context.client,
-          profile: context.profile,
-          secrets: context.secrets,
-          deps,
-        })
-      } catch (err) {
-        if (preparedPreflight) {
-          await releaseProofReservation(preparedPreflight.reservationId)
-        }
-        throw err
-      }
+      const collateralPin = orderParams.timeInForce === 'GTC'
+        ? await prepareOrderCollateralPin({
+            marketId: orderParams.marketId,
+            mintUrl: context.profile.mintUrl,
+            unit: defaultCollateralUnit(marketUnit.baseAsset),
+            conditionId,
+            submissionRequest,
+            divisibility: marketUnit.divisibility,
+            baseAsset: marketUnit.baseAsset,
+            preparedPreflight,
+            resolveInputFeePpkByKeyset: deps.resolveInputFeePpkByKeyset,
+          })
+        : null
       let submitted: SubmitOrderResponse
       try {
-        submitted = await context.client.submitOrder(orderParams.marketId, {
-          outcomeId: orderParams.outcomeId,
-          tokenSide: orderParams.tokenSide,
-          side: orderParams.side,
-          price: orderParams.price,
-          amountSubunits,
-          timeInForce: orderParams.timeInForce,
-          clientOrderId,
-        })
+        submitted = await context.client.submitOrder(
+          orderParams.marketId,
+          submissionRequest,
+        )
       } catch (err) {
-        if (preparedPreflight) {
+        if (err instanceof EngineClientError && collateralPin) {
+          await releaseOrderCollateralBeforeSubmit(collateralPin.pinId)
+        } else if (err instanceof EngineClientError && preparedPreflight) {
           await releaseProofReservation(preparedPreflight.reservationId)
         }
         if (err instanceof EngineClientError) {
@@ -860,17 +883,19 @@ export async function dispatch(
         }
         throw err
       }
-      const local = await recordSubmittedOrder(
-        orderParams.marketId,
-        clientOrderId,
-        submitted,
-        preparedPreflight,
-        orderParams.tokenSide,
-        orderParams.side,
-        orderParams.price,
-        amountSubunits,
-        orderParams.timeInForce,
-      )
+      const local = collateralPin
+        ? await commitAcceptedOrderSubmission(collateralPin, submitted)
+        : await recordSubmittedOrder(
+            orderParams.marketId,
+            clientOrderId,
+            submitted,
+            preparedPreflight,
+            orderParams.tokenSide,
+            orderParams.side,
+            orderParams.price,
+            amountSubunits,
+            orderParams.timeInForce,
+          )
     await submitPendingEphemeralPubkeys({
       client: context.client,
       marketId: orderParams.marketId,
@@ -948,6 +973,15 @@ export async function dispatch(
             status,
           )
         : null
+      if (status && local?.clientOrderId && local.timeInForce === 'GTC') {
+        await observeOrderCollateral({
+          clientOrderId: local.clientOrderId,
+          orderId: status.orderId,
+          status: status.status,
+          remainingAmount: status.remainingAmountSubunits,
+          tradeIds: local.tradeIds,
+        })
+      }
       if (local) {
         await startTradeRuntimeBestEffort(deps.tradeRuntime)
       }
@@ -994,6 +1028,15 @@ export async function dispatch(
             },
           )
         : null
+      if (cancelled && local?.clientOrderId && local.timeInForce === 'GTC') {
+        await observeOrderCollateral({
+          clientOrderId: local.clientOrderId,
+          orderId: command.params.orderId,
+          status: 'cancelled',
+          remainingAmount: 0,
+          tradeIds: local.tradeIds,
+        })
+      }
       return {
         ok: true,
         result: { cancelled, local },
@@ -1410,13 +1453,46 @@ export async function submitPendingEphemeralPubkeys(input: {
   }
 }
 
+export async function commitAcceptedOrderSubmission(
+  pin: DurableOrderCollateralPin,
+  engineResponse: SubmitOrderResponse,
+) {
+  if (engineResponse.orderId.length === 0) {
+    throw new Error('engine submit response did not include orderId')
+  }
+  const request = pin.submissionRequest
+  const projection = {
+    marketId: pin.marketId,
+    orderId: engineResponse.orderId,
+    engineStatus: engineResponse,
+    clientOrderId: pin.clientOrderId,
+    preflightSplit: pin.preflightSplit,
+    tokenSide: request.tokenSide,
+    side: request.side,
+    priceSubunits: request.price,
+    amountSubunits: request.amountSubunits,
+    timeInForce: request.timeInForce,
+  } as const
+  const committed = await requireDaemonOrderCollateralCoordinator()
+    .commitAcceptedSubmission({
+      pinId: pin.pinId,
+      orderId: engineResponse.orderId,
+      status: engineResponse.status,
+      remainingAmount: engineResponse.remainingAmountSubunits,
+      stateScope: orderEngineProjectionScope(projection),
+      applyState: (state, now) =>
+        applyOrderEngineProjection(state, now, projection),
+    })
+  return committed.result
+}
+
 async function maybePreparePreflightSplitForOrder(input: {
   client: EngineClientLike
   mintUrl: string
   marketId: string
   outcomeId: string
-  side: 'Buy' | 'Sell'
   tokenSide: 'Outcome' | 'Complement'
+  side: 'Buy' | 'Sell'
   price: number
   amountSats: number
   timeInForce: 'FAK' | 'FOK' | 'GTC'
@@ -1456,7 +1532,7 @@ async function maybePreparePreflightSplitForOrder(input: {
   }
   const marketUnit = await loadMarketUnit(input.client, market.conditionId)
 
-  const reservationId = `order-preflight:${input.clientOrderId}`
+  const reservationId = durableOrderCollateralPinId(input.clientOrderId)
   const keepOutcomeSetId =
     input.tokenSide === 'Complement' ? complement : market.outcomeSetId
   const lockOutcomeSetId =
@@ -1550,6 +1626,189 @@ async function maybePreparePreflightSplitForOrder(input: {
     lockOutcomeSetId: resolvedLockOutcomeSetId,
     amountSats: input.amountSats,
   }
+}
+
+async function prepareOrderCollateralPin(input: {
+  marketId: string
+  mintUrl: string
+  unit: string
+  conditionId: string
+  submissionRequest: SubmitOrderRequest
+  divisibility: number
+  baseAsset: string
+  preparedPreflight: PreparedPreflightSplit | null
+  resolveInputFeePpkByKeyset?: WalletOpsDependencies['resolveInputFeePpkByKeyset']
+}) {
+  const request = requireGtcSubmissionRequest(input.submissionRequest)
+  const requiredAmount = requiredOrderCollateralAmount({
+    side: request.side,
+    price: request.price,
+    amountSubunits: request.amountSubunits,
+    divisibility: input.divisibility,
+  })
+  const pinId = durableOrderCollateralPinId(request.clientOrderId)
+  const proofs = input.preparedPreflight
+    ? await readPreparedPreflightCollateral(pinId)
+    : await selectOrderCollateralRows({
+        ...input,
+        outcomeId: request.outcomeId,
+        side: request.side,
+      }, requiredAmount)
+  return requireDaemonOrderCollateralCoordinator().prepare({
+    clientOrderId: request.clientOrderId,
+    marketId: input.marketId,
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    orderAmount: request.amountSubunits,
+    requiredAmount,
+    submissionRequest: request,
+    preflightSplit: input.preparedPreflight,
+    proofs,
+  })
+}
+
+function requireGtcSubmissionRequest(
+  request: SubmitOrderRequest,
+): Omit<SubmitOrderRequest, 'timeInForce' | 'comment'> & { timeInForce: 'GTC' } {
+  if (request.timeInForce !== 'GTC' || request.comment !== undefined) {
+    throw new Error('order collateral requires an unsigned exact GTC request')
+  }
+  const { comment: _comment, ...exact } = request
+  return { ...exact, timeInForce: 'GTC' }
+}
+
+function requiredOrderCollateralAmount(input: {
+  side: 'Buy' | 'Sell'
+  price: number
+  amountSubunits: number
+  divisibility: number
+}): number {
+  if (input.side === 'Sell') return input.amountSubunits
+  return input.amountSubunits % input.divisibility === 0
+    ? quotePaymentSubunits({
+        faceAmountSubunits: input.amountSubunits,
+        priceNumerator: input.price,
+        divisibility: input.divisibility,
+      })
+    : Math.ceil((input.amountSubunits * input.price) / input.divisibility)
+}
+
+async function readPreparedPreflightCollateral(
+  pinId: string,
+): Promise<StoredProofRecord[]> {
+  const state = await readStateScope({
+    walletProofs: [{ state: 'reserved', reservedBy: pinId }],
+  })
+  const proofs = state?.wallet.proofs.filter(
+    (proof) => proof.state === 'reserved' && proof.reservedBy === pinId,
+  ) ?? []
+  if (proofs.length === 0) {
+    throw new Error('pre-flight order collateral reservation is missing')
+  }
+  return proofs
+}
+
+async function selectOrderCollateralRows(
+  input: {
+    mintUrl: string
+    unit: string
+    conditionId: string
+    outcomeId: string
+    side: 'Buy' | 'Sell'
+    baseAsset: string
+    resolveInputFeePpkByKeyset?: WalletOpsDependencies['resolveInputFeePpkByKeyset']
+  },
+  amount: number,
+): Promise<StoredProofRecord[]> {
+  const selector = input.side === 'Buy'
+    ? {
+        mintUrl: input.mintUrl,
+        unit: input.unit,
+        state: 'available' as const,
+        assetKind: 'sats' as const,
+        baseAsset: input.baseAsset,
+        candidateLimit: true,
+      }
+    : {
+        mintUrl: input.mintUrl,
+        unit: input.unit,
+        state: 'available' as const,
+        assetKind: 'Outcome' as const,
+        conditionId: input.conditionId,
+        outcomeSetId: input.outcomeId,
+        baseAsset: input.baseAsset,
+        candidateLimit: true,
+      }
+  const candidates = (await readStateScope({ walletProofs: [selector] }))
+    ?.wallet.proofs ?? []
+  return takeExactOrderCollateral(
+    candidates,
+    input.mintUrl,
+    amount,
+    input.resolveInputFeePpkByKeyset,
+  )
+}
+
+async function takeExactOrderCollateral(
+  candidates: StoredProofRecord[],
+  mintUrl: string,
+  amount: number,
+  resolveInputFeePpkByKeyset?: WalletOpsDependencies['resolveInputFeePpkByKeyset'],
+): Promise<StoredProofRecord[]> {
+  const keysetIds = candidates.flatMap((proof) =>
+    proof.proof.id ? [proof.proof.id] : [],
+  )
+  const fees = resolveInputFeePpkByKeyset
+    ? await resolveInputFeePpkByKeyset(mintUrl, keysetIds)
+    : await resolveCtfConsolidationInputFees(mintUrl, keysetIds)
+  const selected = takeProofsForLock(
+    candidates.map((proof) => proof.proof),
+    amount,
+    fees,
+  )
+  if (selected === null) {
+    throw new Error(`insufficient exact proofs for order collateral (${amount})`)
+  }
+  const selectedIds = new Set(selected.map((proof) =>
+    deriveDaemonWalletProofIdFromProof(mintUrl, candidates[0]?.unit, proof),
+  ))
+  const rows = candidates.filter((proof) => selectedIds.has(
+    deriveDaemonWalletProofIdFromProof(mintUrl, proof.unit, proof.proof),
+  ))
+  if (rows.length > DAEMON_WALLET_PROOF_CANDIDATE_LIMIT_MAX) {
+    throw new Error('order collateral proof selection exceeds the durable limit')
+  }
+  return rows
+}
+
+function releaseOrderCollateralBeforeSubmit(pinId: string) {
+  return requireDaemonOrderCollateralCoordinator().releaseBeforeSubmit(pinId)
+}
+
+function observeOrderCollateral(input: {
+  clientOrderId: string
+  orderId: string
+  status: string
+  remainingAmount: number
+  tradeIds: readonly string[]
+}) {
+  const coordinator = requireDaemonOrderCollateralCoordinator()
+  if (input.status === 'cancelled'
+    || input.status === 'failed'
+    || input.status === 'expired') {
+    return coordinator.releaseTerminal({
+      pinId: durableOrderCollateralPinId(input.clientOrderId),
+      orderId: input.orderId,
+      status: input.status,
+      tradeIds: input.tradeIds,
+    })
+  }
+  return coordinator.bindOrObserve({
+    pinId: durableOrderCollateralPinId(input.clientOrderId),
+    orderId: input.orderId,
+    status: input.status,
+    remainingAmount: input.remainingAmount,
+  })
 }
 
 async function loadMarketOutcomeLabels(

@@ -607,57 +607,6 @@ export function readDaemonWalletHoldingTotals(
   return { baseUnitProofs, outcomeAmountsBySet }
 }
 
-/** Enumerates only nonterminal durable trade scopes, independent of history. */
-export function readDaemonRecoverableTradeIdsPage(
-  database: DatabaseSync,
-  input: DaemonIdPageInput,
-): DaemonIdPage {
-  assertDaemonStateSchema(database, false)
-  validateIdPageInput(input)
-  const rows = (
-    input.cursor === null
-      ? database
-          .prepare(
-            `SELECT swaps.trade_id
-         FROM daemon_swaps AS swaps INDEXED BY daemon_swaps_active_recovery_idx
-        WHERE swaps.step IN ('awaiting-trade-created', 'opened', 'seller-opened', 'buyer-responded', 'settling', 'awaiting-confirmation')
-          AND EXISTS (
-            SELECT 1 FROM daemon_trade_sessions AS sessions
-             WHERE sessions.trade_id = swaps.trade_id
-          )
-       UNION
-       SELECT durable_trade_id AS trade_id
-         FROM daemon_proof_operations
-        WHERE durable_trade_id IS NOT NULL
-          AND durable_state IN ('prepared', 'mint-submitted')
-       ORDER BY trade_id
-       LIMIT ?`,
-          )
-          .all(input.limit + 1)
-      : database
-          .prepare(
-            `SELECT swaps.trade_id
-         FROM daemon_swaps AS swaps INDEXED BY daemon_swaps_active_recovery_idx
-        WHERE swaps.step IN ('awaiting-trade-created', 'opened', 'seller-opened', 'buyer-responded', 'settling', 'awaiting-confirmation')
-          AND swaps.trade_id > ?
-          AND EXISTS (
-            SELECT 1 FROM daemon_trade_sessions AS sessions
-             WHERE sessions.trade_id = swaps.trade_id
-          )
-       UNION
-       SELECT durable_trade_id AS trade_id
-         FROM daemon_proof_operations
-        WHERE durable_trade_id IS NOT NULL
-          AND durable_state IN ('prepared', 'mint-submitted')
-          AND durable_trade_id > ?
-       ORDER BY trade_id
-       LIMIT ?`,
-          )
-          .all(input.cursor, input.cursor, input.limit + 1)
-  ) as Array<Record<string, unknown>>
-  return idPageFromRows(rows, input.limit, 'recoverable trade id')
-}
-
 /** Enumerates only legacy nonterminal swaps for the bounded startup sweep. */
 export function readDaemonActiveSwapIdsPage(
   database: DatabaseSync,
@@ -688,45 +637,6 @@ export function readDaemonActiveSwapIdsPage(
           .all(input.cursor, input.limit + 1)
   ) as Array<Record<string, unknown>>
   return idPageFromRows(rows, input.limit, 'active swap id')
-}
-
-/** Enumerates active standalone wallet operations without loading proof history. */
-export function readDaemonRecoverableWalletOperationIdsPage(
-  database: DatabaseSync,
-  input: DaemonIdPageInput,
-): DaemonIdPage {
-  assertDaemonStateSchema(database, false)
-  validateIdPageInput(input)
-  const rows = (
-    input.cursor === null
-      ? database
-          .prepare(
-            `SELECT operation_id
-         FROM daemon_proof_operations
-        WHERE state IN ('prepared', 'mint-submitted')
-          AND kind IN ('wallet-send', 'ctf-consolidation')
-        ORDER BY operation_id
-        LIMIT ?`,
-          )
-          .all(input.limit + 1)
-      : database
-          .prepare(
-            `SELECT operation_id
-         FROM daemon_proof_operations
-        WHERE state IN ('prepared', 'mint-submitted')
-          AND kind IN ('wallet-send', 'ctf-consolidation')
-          AND operation_id > ?
-        ORDER BY operation_id
-        LIMIT ?`,
-          )
-          .all(input.cursor, input.limit + 1)
-  ) as Array<Record<string, unknown>>
-  return idPageFromRows(
-    rows,
-    input.limit,
-    'recoverable wallet operation id',
-    'operation_id',
-  )
 }
 
 /** Produces the RPC balance projection without hydrating bearer proof bodies. */
@@ -1193,16 +1103,6 @@ const STATE_SCHEMA_SQL = `
 
     CREATE INDEX daemon_proof_operations_recovery_idx
       ON daemon_proof_operations (durable_trade_id, state, operation_id);
-
-    CREATE INDEX daemon_proof_operations_active_recovery_idx
-      ON daemon_proof_operations (durable_trade_id)
-      WHERE durable_trade_id IS NOT NULL
-        AND durable_state IN ('prepared', 'mint-submitted');
-
-    CREATE INDEX daemon_proof_operations_wallet_recovery_idx
-      ON daemon_proof_operations (operation_id)
-      WHERE state IN ('prepared', 'mint-submitted')
-        AND kind IN ('wallet-send', 'ctf-consolidation');
 
     CREATE INDEX daemon_orders_listing_idx
       ON daemon_orders (market_id, status, updated_at DESC, order_id);

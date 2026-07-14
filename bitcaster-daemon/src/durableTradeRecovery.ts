@@ -715,6 +715,7 @@ async function resumeActiveSwapsPaged(
       const state = await readStateScope({
         tradeIds: page.ids,
         swapIds: page.ids,
+        orderIdsFromSwapIds: page.ids,
       })
       if (!state) throw new Error('daemon SQLite state row is missing')
       activeSwaps += (await executor.resumeActiveSwaps(state)).activeSwaps

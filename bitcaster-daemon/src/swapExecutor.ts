@@ -40,7 +40,9 @@ import {
   type LocalOrderPreflightSplit,
   type LocalSwapRecord,
   type StoredProofRecord,
+  getProofOperation,
   readStateScope,
+  readReconciledTradeWalletInputs,
   journalOutboundSwapCipher,
   updateState,
 } from './state.ts'
@@ -50,8 +52,17 @@ import {
   type DaemonWalletProofSelector,
 } from './stateSqlite.ts'
 import { validateDaemonTradeAuthorityBinding } from './durableTradeBinding.ts'
+import {
+  durableOrderCollateralPinId,
+  requireDaemonOrderCollateralCoordinator,
+} from './durableOrderCollateralCoordinator.ts'
+import { createDaemonTradeCtfProofOperationStore } from './swapProtocolAdapter.ts'
 
 type OutcomeAsset = Extract<StoredProofRecord['asset'], { kind: 'Outcome' }>
+type CollateralProofRecord = Pick<
+  StoredProofRecord,
+  'proof' | 'mintUrl' | 'unit' | 'asset'
+>
 const PARTIAL_LOCK_REFUND_MARGIN_SECS = 60
 const RETRYABLE_SWAP_STEP_RETRY_DELAY_MS = 1_000
 const RETRYABLE_SWAP_STEP_MAX_ATTEMPTS = 90
@@ -71,6 +82,7 @@ export interface DaemonSwapContext {
   buyerLocktime: number
   mintUrl: string
   baseAsset?: string | null
+  orderCollateralPinId?: string
 }
 
 export interface SellerOpenResult {
@@ -111,6 +123,7 @@ interface ReservedExactProofs {
   spentProofs: CashuProofRecord[]
   changeProofs: CashuProofRecord[]
   wasSplit: boolean
+  operationKey: string | null
 }
 
 interface ReservedExactProofGroup {
@@ -128,6 +141,7 @@ interface LockedOutcomeProofGroups {
   lockedProofs: CashuProofRecord[]
   changeProofs: CashuProofRecord[]
   collectionByKeyset: Map<string, string>
+  operationKeys: string[]
 }
 
 export interface LockedOutcomeProofResult {
@@ -137,6 +151,7 @@ export interface LockedOutcomeProofResult {
 
 export interface DaemonSwapOps {
   splitProofsForExactSend(params: {
+    ctx: DaemonSwapContext
     mintUrl: string
     sourceProofs: CashuProofRecord[]
     amountSats: number
@@ -260,26 +275,16 @@ export class DaemonSwapExecutor {
     activeSwaps: number
   }> {
     await this.sweepPartialLockFailures(state)
-    // Once a trade has a durable proof-operation record, only the SDK exact
-    // dispatcher may advance it after restart. The legacy sweep must not
-    // re-enter proof selection merely because that record later reconciles.
-    const durableOperationTrades = new Set(
-      Object.values(state.proofOperations)
-        .map((operation) => operation.durableTradeRecovery)
-        .filter(
-          (link): link is DurableTradeProofOperationLink => link !== undefined,
-        )
-        .map((link) => {
-          isDurableTradeRecoveryLinkInProgress(link)
-          return link
-        })
-        .map((link) => link.tradeId),
-    )
+    const durableOperationsByTrade = groupDurableOperationsByTrade(state)
     const swaps = Object.values(state.swaps)
       .filter(
         (swap) =>
-        !isTerminal(swap) &&
-        !durableOperationTrades.has(swap.tradeId) &&
+          !isTerminal(swap) &&
+          canResumeAfterDurableRecovery(
+            state,
+            swap,
+            durableOperationsByTrade.get(swap.tradeId) ?? [],
+          ) &&
           hasValidDurableSession(state, swap.tradeId),
       )
       .sort((a, b) => a.tradeId.localeCompare(b.tradeId))
@@ -508,27 +513,31 @@ export class DaemonSwapExecutor {
           `invalid market id for seller inventory: ${swap.marketId ?? '<missing>'}`,
         )
       }
-      const selected = await selectOutcomeProofsForOutcomeSet(
-        await readStateScope({
-          walletProofs: availableOutcomeProofSelectors(
-            profile.mintUrl,
-            asset.conditionId,
-            asset.outcomeSetId,
-            swap.baseAsset,
-          ),
-        }),
-        profile.mintUrl,
-        asset.conditionId,
-        asset.outcomeSetId,
-        amount,
-        this.walletOpsDeps,
-        swap.baseAsset,
+      const retained = await readReconciledTradeWalletInputs(
+        tradeId,
+        `${tradeId}/seller-lock`,
       )
+      const selected = retained?.rows ?? await this.selectSellerOutcomeProofs({
+        ctx,
+        mintUrl: profile.mintUrl,
+        asset,
+        amount,
+      })
       if (!selected) {
         throw new Error(
           `insufficient outcome proofs for seller open (${amount} sats)`,
         )
       }
+      if (retained !== null) {
+        await assertExactOutcomeInputs(
+          retained.rows,
+          profile.mintUrl,
+          asset,
+          amount,
+          this.walletOpsDeps,
+        )
+      }
+      await assertOrderCollateralProofs(ctx, selected)
       const locked = await this.lockOutcomeProofRowGroups({
         tradeId,
         ctx,
@@ -542,8 +551,26 @@ export class DaemonSwapExecutor {
         ctx,
         locked.lockedProofs,
       )
-      await updateState(
-        {
+      await this.commitOrderCollateralFill({
+        ctx,
+        swap,
+        fillOrderAmount: amount,
+        operationKeys: locked.operationKeys,
+        replacementProofs: [
+          ...outcomeCollateralRecordsByKeyset(
+            profile.mintUrl,
+            locked.changeProofs,
+            asset.conditionId,
+            locked.collectionByKeyset,
+            swap.baseAsset,
+          ),
+          ...collateralProofRecords(
+            profile.mintUrl,
+            result.changeProofs,
+            asset,
+          ),
+        ],
+        stateScope: {
           walletProofs: exactWalletProofSelectors(
             profile.mintUrl,
             [
@@ -556,7 +583,7 @@ export class DaemonSwapExecutor {
           ),
           swapIds: [tradeId],
         },
-        (state, now) => {
+        applyState: (state, now) => {
         const live = state.swaps[tradeId]
         if (!live || isTerminal(live)) return
         removeProofsBySecret(
@@ -603,7 +630,7 @@ export class DaemonSwapExecutor {
         live.step = 'seller-opened'
         live.updatedAt = now
         },
-      )
+      })
       await this.sendSwapMessageResumable(
         tradeId,
         TRADE_MESSAGE_TYPES.adaptorPoint,
@@ -627,6 +654,35 @@ export class DaemonSwapExecutor {
     }
   }
 
+  private async selectSellerOutcomeProofs(input: {
+    ctx: DaemonSwapContext
+    mintUrl: string
+    asset: OutcomeAsset
+    amount: number
+  }): Promise<StoredProofRecord[] | null> {
+    const state = await readCollateralState(
+      input.ctx.orderCollateralPinId,
+      availableOutcomeProofSelectors(
+        input.mintUrl,
+        input.asset.conditionId,
+        input.asset.outcomeSetId,
+        input.ctx.baseAsset,
+      ),
+    )
+    const args = [
+      state,
+      input.mintUrl,
+      input.asset.conditionId,
+      input.asset.outcomeSetId,
+      input.amount,
+      this.walletOpsDeps,
+      input.ctx.baseAsset,
+    ] as const
+    return input.ctx.orderCollateralPinId
+      ? selectPinnedProofsForOutcomeSet(...args)
+      : selectOutcomeProofsForOutcomeSet(...args)
+  }
+
   private async lockOutcomeProofRowGroups(input: {
     tradeId: string
     ctx: DaemonSwapContext
@@ -641,19 +697,22 @@ export class DaemonSwapExecutor {
     const lockedProofs: CashuProofRecord[] = []
     const changeProofs: CashuProofRecord[] = []
     const spentProofs: CashuProofRecord[] = []
+    const operationKeys: string[] = []
 
     for (const group of groups) {
       try {
+        const operationKey = daemonTradeOperationKey(
+          input.tradeId,
+          input.operationStep,
+          groups.length === 1 ? undefined : group.outcomeSetId,
+        )
         const locked = await this.ops.sellerLockOutcomeProofs(
           input.ctx,
           group.rows.map(proofWithOutcomeMetadata),
           input.amount,
-          daemonTradeOperationKey(
-            input.tradeId,
-            input.operationStep,
-            groups.length === 1 ? undefined : group.outcomeSetId,
-          ),
+          operationKey,
         )
+        operationKeys.push(operationKey)
         lockedProofs.push(...locked.lockedProofs)
         changeProofs.push(...locked.changeProofs)
         spentProofs.push(...group.rows.map((row) => row.proof))
@@ -683,6 +742,7 @@ export class DaemonSwapExecutor {
       lockedProofs,
       changeProofs,
       collectionByKeyset,
+      operationKeys,
     }
   }
 
@@ -763,23 +823,36 @@ export class DaemonSwapExecutor {
     split: MintSellerSplit,
     amount: number,
   ): Promise<void> {
-    const availableOutcome = await selectOutcomeProofsForOutcomeSet(
-      await readStateScope({
-        walletProofs: availableOutcomeProofSelectors(
+    const collateralState = await readCollateralState(
+      ctx.orderCollateralPinId,
+      availableOutcomeProofSelectors(
+        mintUrl,
+        split.conditionId,
+        split.lockOutcomeSetId,
+        swap.baseAsset,
+      ),
+    )
+    const availableOutcome = ctx.orderCollateralPinId
+      ? await selectPinnedProofsForOutcomeSet(
+          collateralState,
           mintUrl,
           split.conditionId,
           split.lockOutcomeSetId,
+          amount,
+          this.walletOpsDeps,
           swap.baseAsset,
-        ),
-      }),
-      mintUrl,
-      split.conditionId,
-      split.lockOutcomeSetId,
-      amount,
-      this.walletOpsDeps,
-      swap.baseAsset,
-    )
+        )
+      : await selectOutcomeProofsForOutcomeSet(
+          collateralState,
+          mintUrl,
+          split.conditionId,
+          split.lockOutcomeSetId,
+          amount,
+          this.walletOpsDeps,
+          swap.baseAsset,
+        )
     if (availableOutcome) {
+      await assertOrderCollateralProofs(ctx, availableOutcome)
       const locked = await this.lockOutcomeProofRowGroups({
         tradeId,
         ctx,
@@ -793,8 +866,19 @@ export class DaemonSwapExecutor {
         ctx,
         locked.lockedProofs,
       )
-      await updateState(
-        {
+      await this.commitOrderCollateralFill({
+        ctx,
+        swap,
+        fillOrderAmount: amount,
+        operationKeys: locked.operationKeys,
+        replacementProofs: outcomeCollateralRecordsByKeyset(
+          mintUrl,
+          locked.changeProofs,
+          split.conditionId,
+          locked.collectionByKeyset,
+          swap.baseAsset,
+        ),
+        stateScope: {
           walletProofs: exactWalletProofSelectors(
             mintUrl,
             [
@@ -806,7 +890,7 @@ export class DaemonSwapExecutor {
           ),
           swapIds: [tradeId],
         },
-        (state, now) => {
+        applyState: (state, now) => {
         const live = state.swaps[tradeId]
         if (!live || isTerminal(live)) return
         removeProofsBySecret(
@@ -847,7 +931,7 @@ export class DaemonSwapExecutor {
         live.step = 'seller-opened'
         live.updatedAt = now
         },
-      )
+      })
       await this.sendSwapMessageResumable(
         tradeId,
         TRADE_MESSAGE_TYPES.adaptorPoint,
@@ -878,12 +962,17 @@ export class DaemonSwapExecutor {
       await this.sellerOpenPreflightMint(
         tradeId,
         ctx,
+        swap,
         mintUrl,
         split,
         amount,
         preflight,
       )
       return
+    }
+
+    if (ctx.orderCollateralPinId !== undefined) {
+      throw new Error('pinned seller collateral cannot select fresh proofs')
     }
 
     const secrets = await readSecrets()
@@ -900,14 +989,27 @@ export class DaemonSwapExecutor {
       keepOutcomeSetId: split.keepOutcomeSetId,
       lockOutcomeSetId: split.lockOutcomeSetId,
     })
-    const collateral = await splitAvailableSatProofsForCtfCollateral(
-      splitAmount,
-      mintUrl,
-      `${tradeId}:seller-regular-ctf-input`,
-      secrets,
-      this.walletOpsDeps,
-      baseAsset,
-    )
+    const regularSplitOperationId = `${tradeId}/seller-regular-ctf-input`
+    const ctfSplitOperationId = `${tradeId}/seller-mint-ctf-split`
+    const [regularSplit, ctfSplit] = await Promise.all([
+      getProofOperation(regularSplitOperationId),
+      getProofOperation(ctfSplitOperationId),
+    ])
+    const operationStore = createDaemonTradeCtfProofOperationStore(ctx)
+    const collateral = regularSplit !== null || ctfSplit === null
+      ? await splitAvailableSatProofsForCtfCollateral(
+          splitAmount,
+          mintUrl,
+          regularSplitOperationId,
+          secrets,
+          this.walletOpsDeps,
+          baseAsset,
+          operationStore,
+        )
+      : await exactCtfSplitCollateral(
+          tradeId,
+          ctfSplitOperationId,
+        )
     const result = await this.ops.sellerOpenMint(
       ctx,
       {
@@ -993,48 +1095,70 @@ export class DaemonSwapExecutor {
   private async sellerOpenPreflightMint(
     tradeId: string,
     ctx: DaemonSwapContext,
+    swap: LocalSwapRecord,
     mintUrl: string,
     split: MintSellerSplit,
     amount: number,
     preflight: LocalOrderPreflightSplit,
   ): Promise<void> {
-    const state = await readStateScope({
-      walletProofs: [
-        {
+    const state = await readCollateralState(ctx.orderCollateralPinId, [
+      {
+        mintUrl,
+        reservedBy: preflight.reservationId,
+        state: 'reserved',
+      },
+    ])
+    const selectedLock = ctx.orderCollateralPinId
+      ? selectPinnedProofRowsForOutcomeSet(
+          state,
           mintUrl,
-          reservedBy: preflight.reservationId,
-          state: 'reserved',
-        },
-      ],
-    })
-    const selectedLock = selectReservedProofRowsForOutcomeSet(
-      state,
-      mintUrl,
-      preflight.reservationId,
-      split.conditionId,
-      preflight.lockOutcomeSetId,
-    )
+          split.conditionId,
+          preflight.lockOutcomeSetId,
+          swap.baseAsset,
+        )
+      : selectReservedProofRowsForOutcomeSet(
+          state,
+          mintUrl,
+          preflight.reservationId,
+          split.conditionId,
+          preflight.lockOutcomeSetId,
+        )
     if (!selectedLock || sumProofRows(selectedLock) < amount) {
       throw new Error(
         `insufficient pre-flight lock proofs for mint seller open (${amount} sats)`,
       )
     }
-    const selectedKeep = await selectReservedProofsForOutcomeSet(
-      state,
-      mintUrl,
-      preflight.reservationId,
-      split.conditionId,
-      preflight.keepOutcomeSetId,
-      amount,
-      this.walletOpsDeps,
-    )
+    const selectedKeep = ctx.orderCollateralPinId
+      ? await selectPinnedProofsForOutcomeSet(
+          state,
+          mintUrl,
+          split.conditionId,
+          preflight.keepOutcomeSetId,
+          amount,
+          this.walletOpsDeps,
+          swap.baseAsset,
+        )
+      : await selectReservedProofsForOutcomeSet(
+          state,
+          mintUrl,
+          preflight.reservationId,
+          split.conditionId,
+          preflight.keepOutcomeSetId,
+          amount,
+          this.walletOpsDeps,
+        )
     if (!selectedKeep) {
       throw new Error(
         `insufficient pre-flight keep proofs for mint seller open (${amount} sats)`,
       )
     }
+    await assertOrderCollateralProofs(ctx, [
+      ...selectedLock,
+      ...selectedKeep,
+    ])
 
     const lockProofs = await this.prepareReservedExactProofsByOutcomeSet(
+      ctx,
       mintUrl,
       selectedLock,
       amount,
@@ -1042,20 +1166,44 @@ export class DaemonSwapExecutor {
       (rows) => Math.max(amount, sumProofRows(rows)),
     )
     const keepProofs = await this.prepareReservedExactProofsByOutcomeSet(
+      ctx,
       mintUrl,
       selectedKeep,
       amount,
       `${tradeId}:seller-preflight-keep-exact-v2`,
     )
-    await updateState(
-      {
+    const exactSplitGroups = [...lockProofs, ...keepProofs]
+      .filter((group) => group.split.operationKey !== null)
+    await this.commitOrderCollateralTransform({
+      ctx,
+      transformId: `${tradeId}:preflight-exact`,
+      operationKeys: exactSplitGroups.map((group) =>
+        group.split.operationKey as string,
+      ),
+      replacementProofs: [
+        ...lockProofs
+          .filter((group) => group.split.operationKey !== null)
+          .flatMap((group) => collateralProofRecords(
+            mintUrl,
+            [...group.split.exactProofs, ...group.split.changeProofs],
+            group.asset,
+          )),
+        ...keepProofs
+          .filter((group) => group.split.operationKey !== null)
+          .flatMap((group) => collateralProofRecords(
+            mintUrl,
+            group.split.changeProofs,
+            group.asset,
+          )),
+      ],
+      stateScope: {
         walletProofs: exactWalletProofSelectors(
           mintUrl,
           reservedExactGroupProofs(lockProofs),
           ctx.baseAsset,
         ),
       },
-      (state, now) => {
+      applyState: (state, now) => {
       applyReservedLockProofGroups(
         state,
         mintUrl,
@@ -1063,27 +1211,37 @@ export class DaemonSwapExecutor {
         preflight.reservationId,
         now,
       )
+      applyReservedKeepProofGroups(
+        state,
+        mintUrl,
+        keepProofs.filter((group) => group.split.wasSplit),
+        preflight.reservationId,
+        now,
+      )
       },
-    )
+    })
 
     const lockCollectionByKeyset = keysetToOutcomeCollection(selectedLock)
     const lockedProofs: CashuProofRecord[] = []
     const changeProofs: CashuProofRecord[] = []
     const spentProofs: CashuProofRecord[] = []
+    const sellerLockOperationKeys: string[] = []
     try {
       for (const group of lockProofs) {
+        const operationKey = daemonTradeOperationKey(
+          tradeId,
+          'seller-preflight-lock',
+          lockProofs.length === 1 ? undefined : group.asset.outcomeSetId,
+        )
         const locked = await this.ops.sellerLockOutcomeProofs(
           ctx,
           group.split.exactProofs.map((proof) =>
             proofWithAssetMetadata(proof, group.asset),
           ),
           amount,
-          daemonTradeOperationKey(
-            tradeId,
-            'seller-preflight-lock',
-            lockProofs.length === 1 ? undefined : group.asset.outcomeSetId,
-          ),
+          operationKey,
         )
+        sellerLockOperationKeys.push(operationKey)
         lockedProofs.push(...locked.lockedProofs)
         changeProofs.push(...locked.changeProofs)
         spentProofs.push(...group.split.exactProofs)
@@ -1109,8 +1267,23 @@ export class DaemonSwapExecutor {
       throw err
     }
     const result = await this.ops.sellerOpenPrelocked(ctx, lockedProofs)
-    await updateState(
-      {
+    const releasedKeepProofs = keepProofs
+      .filter((group) => !group.split.wasSplit)
+      .flatMap((group) => group.selectedRows)
+    await this.commitOrderCollateralFill({
+      ctx,
+      swap,
+      fillOrderAmount: amount,
+      operationKeys: sellerLockOperationKeys,
+      releaseProofs: releasedKeepProofs,
+      replacementProofs: outcomeCollateralRecordsByKeyset(
+        mintUrl,
+        changeProofs,
+        split.conditionId,
+        lockCollectionByKeyset,
+        ctx.baseAsset,
+      ),
+      stateScope: {
         walletProofs: exactWalletProofSelectors(
           mintUrl,
           [
@@ -1123,7 +1296,7 @@ export class DaemonSwapExecutor {
         ),
         swapIds: [tradeId],
       },
-      (state, now) => {
+      applyState: (state, now) => {
       const live = state.swaps[tradeId]
       if (!live || isTerminal(live)) return
       removeProofsBySecret(
@@ -1156,13 +1329,7 @@ export class DaemonSwapExecutor {
         now,
         preflight.reservationId,
       )
-      applyReservedKeepProofGroups(
-        state,
-        mintUrl,
-        keepProofs,
-        preflight.reservationId,
-        now,
-      )
+      releaseReservedProofs(state, releasedKeepProofs, now)
       live.messages = {
         ...live.messages,
         adaptorPoint: result.adaptorPointCipher,
@@ -1175,7 +1342,7 @@ export class DaemonSwapExecutor {
       live.step = 'seller-opened'
       live.updatedAt = now
       },
-    )
+    })
     await this.sendSwapMessageResumable(
       tradeId,
       TRADE_MESSAGE_TYPES.adaptorPoint,
@@ -1197,6 +1364,7 @@ export class DaemonSwapExecutor {
   }
 
   private async prepareReservedExactProofs(
+    ctx: DaemonSwapContext,
     mintUrl: string,
     selected: StoredProofRecord[],
     amount: number,
@@ -1208,9 +1376,11 @@ export class DaemonSwapExecutor {
         spentProofs: selected.map((row) => row.proof),
         changeProofs: [],
         wasSplit: false,
+        operationKey: null,
       }
     }
     const split = await this.ops.splitProofsForExactSend({
+      ctx,
       mintUrl,
       sourceProofs: selected.map((row) => row.proof),
       amountSats: amount,
@@ -1224,10 +1394,12 @@ export class DaemonSwapExecutor {
       spentProofs: split.spentProofs,
       changeProofs: split.changeProofs,
       wasSplit: true,
+      operationKey: operationId,
     }
   }
 
   private async prepareReservedExactProofsByOutcomeSet(
+    ctx: DaemonSwapContext,
     mintUrl: string,
     selected: StoredProofRecord[],
     amount: number,
@@ -1254,6 +1426,7 @@ export class DaemonSwapExecutor {
       groups.push({
         selectedRows: rows,
         split: await this.prepareReservedExactProofs(
+          ctx,
           mintUrl,
           rows,
           amountForRows?.(rows) ?? amount,
@@ -1291,32 +1464,33 @@ export class DaemonSwapExecutor {
       )
       const baseAsset = normalizeMarketBaseAsset(swap.baseAsset)
       const unit = defaultCollateralUnit(baseAsset)
-      const selected = await selectProofs(
-        await readStateScope({
-          walletProofs: [
-            {
-              mintUrl: profile.mintUrl,
-              unit,
-              state: 'available',
-              assetKind: 'sats',
-              baseAsset,
-              candidateLimit: true,
-            },
-          ],
-        }),
-        profile.mintUrl,
-        (proof) =>
-          proof.asset.kind === 'sats' &&
-          proof.unit === unit &&
-          normalizeMarketBaseAsset(proof.asset.baseAsset) === baseAsset,
-        amount,
-        this.walletOpsDeps,
+      const retained = await readReconciledTradeWalletInputs(
+        tradeId,
+        `${tradeId}/buyer-lock`,
       )
+      const selected = retained?.rows ?? await this.selectBuyerProofs({
+        ctx,
+        mintUrl: profile.mintUrl,
+        unit,
+        baseAsset,
+        amount,
+      })
       if (!selected) {
         throw new Error(
           `insufficient ${baseAsset} proofs for buyer response (${amount} sub-units)`,
         )
       }
+      if (retained !== null) {
+        await assertExactBaseInputs(
+          retained.rows,
+          profile.mintUrl,
+          unit,
+          baseAsset,
+          amount,
+          this.walletOpsDeps,
+        )
+      }
+      await assertOrderCollateralProofs(ctx, selected)
       const result = await this.ops.buyerRespond(
         ctx,
         {
@@ -1326,19 +1500,50 @@ export class DaemonSwapExecutor {
         selected.map((row) => row.proof),
         amount,
       )
-      await updateState(
-        {
+      await this.commitOrderCollateralFill({
+        ctx,
+        swap,
+        fillOrderAmount: requiredAmount(
+          swap.outcomeFaceAmountSubunits
+            ?? swap.outcomeFaceAmountSats
+            ?? swap.fillAmountSubunits
+            ?? swap.fillAmountSats,
+        ),
+        operationKeys: [`${tradeId}/buyer-lock`],
+        replacementProofs: collateralProofRecords(
+          profile.mintUrl,
+          result.changeProofs,
+          { kind: 'sats', baseAsset },
+        ),
+        stateScope: {
           walletProofs: exactWalletProofSelectors(
             profile.mintUrl,
-            [...selected.map((row) => row.proof), ...result.changeProofs],
+            [
+              ...selected.map((row) => row.proof),
+              ...result.lockedProofs,
+              ...result.changeProofs,
+            ],
             swap.baseAsset,
           ),
           swapIds: [tradeId],
         },
-        (state, now) => {
+        applyState: (state, now) => {
         const live = state.swaps[tradeId]
         if (!live || isTerminal(live)) return
-        markProofs(state, selected, 'locked', tradeId, now)
+        removeProofsBySecret(
+          state,
+          profile.mintUrl,
+          selected.map((row) => row.proof),
+        )
+        addProofs(
+          state,
+          profile.mintUrl,
+          result.lockedProofs,
+          'locked',
+          { kind: 'sats', baseAsset },
+          now,
+          tradeId,
+        )
           addProofs(
             state,
             profile.mintUrl,
@@ -1360,7 +1565,7 @@ export class DaemonSwapExecutor {
         live.step = 'buyer-responded'
         live.updatedAt = now
         },
-      )
+      })
       await this.sendSwapMessageResumable(
         tradeId,
         TRADE_MESSAGE_TYPES.lockedProofsBuyer,
@@ -1369,6 +1574,42 @@ export class DaemonSwapExecutor {
     } catch (err) {
       await this.handleSwapStepError(tradeId, err)
     }
+  }
+
+  private async selectBuyerProofs(input: {
+    ctx: DaemonSwapContext
+    mintUrl: string
+    unit: string
+    baseAsset: string
+    amount: number
+  }): Promise<StoredProofRecord[] | null> {
+    const state = await readCollateralState(input.ctx.orderCollateralPinId, [{
+      mintUrl: input.mintUrl,
+      unit: input.unit,
+      state: 'available',
+      assetKind: 'sats',
+      baseAsset: input.baseAsset,
+      candidateLimit: true,
+    }])
+    const predicate = (proof: StoredProofRecord) =>
+      proof.asset.kind === 'sats'
+      && proof.unit === input.unit
+      && normalizeMarketBaseAsset(proof.asset.baseAsset) === input.baseAsset
+    return input.ctx.orderCollateralPinId
+      ? selectPinnedProofs(
+          state,
+          input.mintUrl,
+          predicate,
+          input.amount,
+          this.walletOpsDeps,
+        )
+      : selectProofs(
+          state,
+          input.mintUrl,
+          predicate,
+          input.amount,
+          this.walletOpsDeps,
+        )
   }
 
   private async sellerClaim(tradeId: string): Promise<void> {
@@ -1515,6 +1756,60 @@ export class DaemonSwapExecutor {
     }
   }
 
+  private async commitOrderCollateralFill(input: {
+    ctx: DaemonSwapContext
+    swap: LocalSwapRecord
+    fillOrderAmount: number
+    operationKeys: readonly string[]
+    releaseProofs?: readonly StoredProofRecord[]
+    replacementProofs: readonly CollateralProofRecord[]
+    stateScope: Parameters<typeof updateState>[0]
+    applyState: (state: DaemonState, now: string) => void
+  }): Promise<void> {
+    const pinId = input.ctx.orderCollateralPinId
+    if (pinId === undefined) {
+      await updateState(input.stateScope, input.applyState)
+      return
+    }
+    if (!input.swap.orderId) {
+      throw new Error('order collateral trade has no engine order')
+    }
+    await requireDaemonOrderCollateralCoordinator().commitFill({
+      pinId,
+      orderId: input.swap.orderId,
+      tradeId: input.swap.tradeId,
+      fillOrderAmount: input.fillOrderAmount,
+      operationKeys: input.operationKeys,
+      releaseProofs: input.releaseProofs ?? [],
+      replacementProofs: input.replacementProofs,
+      stateScope: input.stateScope,
+      applyState: input.applyState,
+    })
+  }
+
+  private async commitOrderCollateralTransform(input: {
+    ctx: DaemonSwapContext
+    transformId: string
+    operationKeys: readonly string[]
+    replacementProofs: readonly CollateralProofRecord[]
+    stateScope: Parameters<typeof updateState>[0]
+    applyState: (state: DaemonState, now: string) => void
+  }): Promise<void> {
+    const pinId = input.ctx.orderCollateralPinId
+    if (pinId === undefined || input.operationKeys.length === 0) {
+      await updateState(input.stateScope, input.applyState)
+      return
+    }
+    await requireDaemonOrderCollateralCoordinator().commitTransform({
+      pinId,
+      transformId: input.transformId,
+      operationKeys: input.operationKeys,
+      replacementProofs: input.replacementProofs,
+      stateScope: input.stateScope,
+      applyState: input.applyState,
+    })
+  }
+
   private async loadContext(tradeId: string): Promise<{
     ctx: DaemonSwapContext
     swap: LocalSwapRecord
@@ -1522,7 +1817,11 @@ export class DaemonSwapExecutor {
   } | null> {
     const [profile, state] = await Promise.all([
       readProfile(),
-      readStateScope({ swapIds: [tradeId], tradeIds: [tradeId] }),
+      readStateScope({
+        swapIds: [tradeId],
+        tradeIds: [tradeId],
+        orderIdsFromSwapIds: [tradeId],
+      }),
     ])
     const swap = state?.swaps[tradeId]
     const session = state?.durableTradeSessions[tradeId]
@@ -1558,6 +1857,11 @@ export class DaemonSwapExecutor {
       // Never terminalize or perform a custody effect with guessed key material.
       return null
     }
+    const order = state.orders[swap.orderId]
+    const orderCollateralPinId = order?.timeInForce === 'GTC'
+      && order.clientOrderId
+      ? durableOrderCollateralPinId(order.clientOrderId)
+      : undefined
     return {
       swap,
       profile,
@@ -1573,6 +1877,9 @@ export class DaemonSwapExecutor {
         buyerLocktime: swap.buyerLocktime,
         mintUrl: profile.mintUrl,
         baseAsset: normalizeMarketBaseAsset(swap.baseAsset),
+        ...(orderCollateralPinId === undefined
+          ? {}
+          : { orderCollateralPinId }),
       },
     }
   }
@@ -1745,6 +2052,27 @@ function isDurableTradeRecoveryLinkInProgress(
   return classifyDurableTradeRecoveryLinkState(link.state) === 'active'
 }
 
+function groupDurableOperationsByTrade(
+  state: DaemonState,
+): Map<string, DurableTradeProofOperationLink[]> {
+  const grouped = new Map<string, DurableTradeProofOperationLink[]>()
+  for (const operation of Object.values(state.proofOperations)) {
+    const link = operation.durableTradeRecovery
+    if (link === undefined) continue
+    grouped.set(link.tradeId, [...(grouped.get(link.tradeId) ?? []), link])
+  }
+  return grouped
+}
+
+function canResumeAfterDurableRecovery(
+  _state: DaemonState,
+  _swap: LocalSwapRecord,
+  links: readonly DurableTradeProofOperationLink[],
+): boolean {
+  if (links.some(isDurableTradeRecoveryLinkInProgress)) return false
+  return true
+}
+
 function hasValidDurableSession(state: DaemonState, tradeId: string): boolean {
   const session = state.durableTradeSessions[tradeId]
   return session !== undefined && validateDurableTradeSession(session) === null
@@ -1822,6 +2150,89 @@ async function selectProofs(
   )
 }
 
+async function assertExactBaseInputs(
+  rows: readonly StoredProofRecord[],
+  mintUrl: string,
+  unit: string,
+  baseAsset: string,
+  amount: number,
+  deps: WalletOpsDependencies,
+): Promise<void> {
+  if (rows.some((row) =>
+    row.mintUrl !== mintUrl
+    || row.unit !== unit
+    || row.asset.kind !== 'sats'
+    || normalizeMarketBaseAsset(row.asset.baseAsset) !== baseAsset)) {
+    throw new Error('reconciled buyer lock has foreign wallet inputs')
+  }
+  await assertExactRowsCover(rows, mintUrl, amount, deps)
+}
+
+async function assertExactOutcomeInputs(
+  rows: readonly StoredProofRecord[],
+  mintUrl: string,
+  asset: OutcomeAsset,
+  amount: number,
+  deps: WalletOpsDependencies,
+): Promise<void> {
+  const validAsset = (row: StoredProofRecord) =>
+    row.mintUrl === mintUrl
+    && row.asset.kind === 'Outcome'
+    && row.asset.conditionId === asset.conditionId
+    && normalizeMarketBaseAsset(row.asset.baseAsset) === asset.baseAsset
+  if (rows.some((row) => !validAsset(row))) {
+    throw new Error('reconciled seller lock has foreign wallet inputs')
+  }
+  const exact = rows.filter((row) =>
+    row.asset.kind === 'Outcome'
+    && row.asset.outcomeSetId === asset.outcomeSetId)
+  if (exact.length === rows.length) {
+    await assertExactRowsCover(exact, mintUrl, amount, deps)
+    return
+  }
+  const collections = parseOutcomeSetId(asset.outcomeSetId)
+  if (collections.length === 0 || rows.some((row) =>
+    row.asset.kind !== 'Outcome'
+    || !collections.includes(row.asset.outcomeSetId))) {
+    throw new Error('reconciled seller lock outcome coverage is foreign')
+  }
+  for (const collection of collections) {
+    const collectionRows = rows.filter((row) =>
+      row.asset.kind === 'Outcome' && row.asset.outcomeSetId === collection)
+    await assertExactRowsCover(collectionRows, mintUrl, amount, deps)
+  }
+}
+
+async function assertExactRowsCover(
+  rows: readonly StoredProofRecord[],
+  mintUrl: string,
+  amount: number,
+  deps: WalletOpsDependencies,
+): Promise<void> {
+  if (rows.length === 0) throw new Error('reconciled trade wallet inputs are empty')
+  const fees = await inputFeePpkByKeysetForRows(mintUrl, [...rows], deps)
+  if (takeProofsForLock(rows.map((row) => row.proof), amount, fees) === null) {
+    throw new Error('reconciled trade wallet inputs are insufficient')
+  }
+}
+
+async function exactCtfSplitCollateral(
+  tradeId: string,
+  operationId: string,
+) {
+  const retained = await readReconciledTradeWalletInputs(tradeId, operationId)
+  if (retained === null
+    || retained.operationKeys.length !== 1
+    || retained.operationKeys[0] !== operationId) {
+    throw new Error('reconciled CTF split has no exact wallet input authority')
+  }
+  return {
+    inputs: retained.rows.map((row) => structuredClone(row.proof)),
+    spent: [],
+    keep: [],
+  }
+}
+
 async function selectOutcomeProofsForOutcomeSet(
   state: DaemonState | null,
   mintUrl: string,
@@ -1858,6 +2269,67 @@ async function selectOutcomeProofsForOutcomeSet(
       amount,
       deps,
     )
+    if (!leg) return null
+    selected.push(...leg)
+  }
+  return selected
+}
+
+async function selectPinnedProofs(
+  state: DaemonState | null,
+  mintUrl: string,
+  predicate: (proof: StoredProofRecord) => boolean,
+  amount: number,
+  deps: WalletOpsDependencies = {},
+): Promise<StoredProofRecord[] | null> {
+  const candidates = (state?.wallet.proofs ?? []).filter(
+    (proof) =>
+      proof.mintUrl === mintUrl &&
+      proof.state === 'reserved' &&
+      predicate(proof),
+  )
+  const inputFeePpkByKeyset = await inputFeePpkByKeysetForRows(
+    mintUrl,
+    candidates,
+    deps,
+  )
+  const selectedProofs = takeProofsForLock(
+    candidates.map((row) => row.proof),
+    amount,
+    inputFeePpkByKeyset,
+  )
+  if (!selectedProofs) return null
+  const selectedKeys = new Set(selectedProofs.map(proofKey))
+  return candidates.filter((row) => selectedKeys.has(proofKey(row.proof)))
+}
+
+async function selectPinnedProofsForOutcomeSet(
+  state: DaemonState | null,
+  mintUrl: string,
+  conditionId: string,
+  outcomeSetId: string,
+  amount: number,
+  deps: WalletOpsDependencies = {},
+  baseAssetInput?: string | null,
+): Promise<StoredProofRecord[] | null> {
+  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const select = (selectedOutcomeSetId: string) => selectPinnedProofs(
+    state,
+    mintUrl,
+    (proof) =>
+      proof.asset.kind === 'Outcome' &&
+      proof.asset.conditionId === conditionId &&
+      proof.asset.outcomeSetId === selectedOutcomeSetId &&
+      normalizeMarketBaseAsset(proof.asset.baseAsset) === baseAsset,
+    amount,
+    deps,
+  )
+  const exact = await select(outcomeSetId)
+  if (exact) return exact
+
+  const selected: StoredProofRecord[] = []
+  for (const outcomeCollection of parseOutcomeSetId(outcomeSetId)) {
+    const leg = await select(outcomeCollection)
     if (!leg) return null
     selected.push(...leg)
   }
@@ -1983,20 +2455,38 @@ function selectReservedProofRowsForOutcomeSet(
   return selected
 }
 
-function markProofs(
-  state: DaemonState,
-  proofs: StoredProofRecord[],
-  nextState: StoredProofRecord['state'],
-  reservedBy: string,
-  now: string,
-): void {
-  const keys = new Set(proofs.map((proof) => proofKey(proof.proof)))
-  for (const row of state.wallet.proofs) {
-    if (!keys.has(proofKey(row.proof))) continue
-    row.state = nextState
-    row.reservedBy = reservedBy
-    row.updatedAt = now
+function selectPinnedProofRowsForOutcomeSet(
+  state: DaemonState | null,
+  mintUrl: string,
+  conditionId: string,
+  outcomeSetId: string,
+  baseAssetInput?: string | null,
+): StoredProofRecord[] | null {
+  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const rows = (state?.wallet.proofs ?? []).filter(
+    (proof) =>
+      proof.mintUrl === mintUrl &&
+      proof.state === 'reserved' &&
+      proof.asset.kind === 'Outcome' &&
+      proof.asset.conditionId === conditionId &&
+      normalizeMarketBaseAsset(proof.asset.baseAsset) === baseAsset,
+  )
+  const exact = rows.filter(
+    (proof) => proof.asset.kind === 'Outcome'
+      && proof.asset.outcomeSetId === outcomeSetId,
+  )
+  if (exact.length > 0) return exact
+
+  const selected: StoredProofRecord[] = []
+  for (const outcomeCollection of parseOutcomeSetId(outcomeSetId)) {
+    const leg = rows.filter(
+      (proof) => proof.asset.kind === 'Outcome'
+        && proof.asset.outcomeSetId === outcomeCollection,
+    )
+    if (leg.length === 0) return null
+    selected.push(...leg)
   }
+  return selected
 }
 
 function applyReservedKeepProofs(
@@ -2118,6 +2608,48 @@ function addProofs(
       updatedAt: now,
     })
   }
+}
+
+function collateralProofRecords(
+  mintUrl: string,
+  proofs: readonly CashuProofRecord[],
+  asset: StoredProofRecord['asset'],
+): CollateralProofRecord[] {
+  return proofs.map((proof) => ({
+    proof,
+    mintUrl,
+    unit: defaultCollateralUnit(asset.baseAsset),
+    asset,
+  }))
+}
+
+function outcomeCollateralRecordsByKeyset(
+  mintUrl: string,
+  proofs: readonly CashuProofRecord[],
+  conditionId: string,
+  collectionByKeyset: ReadonlyMap<string, string>,
+  baseAssetInput: string | null | undefined,
+): CollateralProofRecord[] {
+  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  return proofs.map((proof) => {
+    const outcomeSetId = proof.id
+      ? collectionByKeyset.get(proof.id)
+      : undefined
+    if (outcomeSetId === undefined) {
+      throw new Error('order collateral change has no outcome collection')
+    }
+    return {
+      proof,
+      mintUrl,
+      unit: defaultCollateralUnit(baseAsset),
+      asset: {
+        kind: 'Outcome' as const,
+        conditionId,
+        outcomeSetId,
+        baseAsset,
+      },
+    }
+  })
 }
 
 function addOutcomeProofsByCollection(
@@ -2299,6 +2831,42 @@ function availableOutcomeProofSelectors(
     baseAsset,
     candidateLimit: true,
   }))
+}
+
+async function readCollateralState(
+  pinId: string | undefined,
+  selectors: readonly DaemonWalletProofSelector[],
+): Promise<DaemonState | null> {
+  if (pinId === undefined) {
+    return readStateScope({ walletProofs: selectors })
+  }
+  const proofIds = await requireDaemonOrderCollateralCoordinator()
+    .readProofIds(pinId)
+  if (proofIds.length === 0) {
+    throw new Error('active order collateral pin has no proofs')
+  }
+  const pinnedSelectors = selectors.map((selector) => {
+    const pinnedSelector: DaemonWalletProofSelector = {
+      ...selector,
+      proofIds,
+      state: 'reserved',
+    }
+    delete pinnedSelector.reservedBy
+    delete pinnedSelector.candidateLimit
+    return pinnedSelector
+  })
+  return readStateScope({ walletProofs: pinnedSelectors })
+}
+
+async function assertOrderCollateralProofs(
+  ctx: DaemonSwapContext,
+  proofs: readonly StoredProofRecord[],
+): Promise<void> {
+  if (ctx.orderCollateralPinId === undefined) return
+  await requireDaemonOrderCollateralCoordinator().assertOwnsProofs(
+    ctx.orderCollateralPinId,
+    proofs,
+  )
 }
 
 function reservedExactGroupProofs(

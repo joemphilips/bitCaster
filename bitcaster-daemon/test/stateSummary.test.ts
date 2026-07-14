@@ -9,11 +9,8 @@ import {
   addAvailableSatProofs,
   emptyDaemonState,
   initializeState,
-  prepareProofOperationStateProjectionForTest as prepareProofOperation,
   readActiveSwapIdsPage,
   readDaemonStatusSnapshot,
-  readRecoverableTradeIdsPage,
-  readRecoverableWalletOperationIdsPage,
   readState,
   readWalletBalance,
   readWalletProofAmountSample,
@@ -21,7 +18,6 @@ import {
   summarizeWalletBalance,
   type CashuProofRecord,
   type DaemonState,
-  type StoredOutputData,
 } from '../src/state.ts'
 import {
   TEST_SESSION_PUBLIC_KEY,
@@ -122,7 +118,7 @@ test('wallet receive denomination sample is indexed, payload-free, and count-cap
   })
 })
 
-test('daemon recovery selectors page only active normalized rows', async () => {
+test('daemon legacy swap recovery pages only active normalized rows', async () => {
   await withDaemonHome(async () => {
     await initializeState()
     const state = emptyDaemonState()
@@ -133,17 +129,6 @@ test('daemon recovery selectors page only active normalized rows', async () => {
     addTrade(state, 'trade-c', 'reconciliation-complete', 'settling')
     await writeStateWithDurableSessionKeys(state)
 
-    assert.deepEqual(
-      await readRecoverableTradeIdsPage({ cursor: null, limit: 1 }),
-      {
-        ids: ['trade-a'],
-        nextCursor: 'trade-a',
-      },
-    )
-    assert.deepEqual(
-      await readRecoverableTradeIdsPage({ cursor: 'trade-a', limit: 1 }),
-      { ids: ['trade-c'], nextCursor: null },
-    )
     assert.deepEqual(await readActiveSwapIdsPage({ cursor: null, limit: 1 }), {
       ids: ['trade-a'],
       nextCursor: 'trade-a',
@@ -155,72 +140,14 @@ test('daemon recovery selectors page only active normalized rows', async () => {
         nextCursor: null,
       },
     )
-
-    await prepareProofOperation({
-      operationId: 'wallet-operation-a',
-      kind: 'wallet-send',
-      mintUrl: MINT_URL,
-      inputs: [proof(1, 'wallet-operation-input')],
-      outputs: { send: [output(1, 'send')], keep: [] },
-      metadata: {
-        amount: 1,
-        fees: 0,
-        keysetId: 'keyset-1',
-        unselectedProofs: [],
-        reservationId: 'wallet-send:wallet-operation-a',
-      },
-    })
-    assert.deepEqual(
-      await readRecoverableWalletOperationIdsPage({ cursor: null, limit: 1 }),
-      { ids: ['wallet-operation-a'], nextCursor: null },
-    )
   })
 })
 
-test('daemon recovery cursor queries use partial range indexes', async () => {
+test('daemon legacy swap recovery cursor uses a partial range index', async () => {
   await withDaemonHome(async () => {
     await initializeState()
     const database = new DatabaseSync(statePath())
     try {
-      const tradePlan = database
-        .prepare(
-          `EXPLAIN QUERY PLAN
-         SELECT swaps.trade_id
-           FROM daemon_swaps AS swaps INDEXED BY daemon_swaps_active_recovery_idx
-          WHERE swaps.step IN ('awaiting-trade-created', 'opened', 'seller-opened', 'buyer-responded', 'settling', 'awaiting-confirmation')
-            AND swaps.trade_id > ?
-            AND EXISTS (
-              SELECT 1 FROM daemon_trade_sessions AS sessions
-               WHERE sessions.trade_id = swaps.trade_id
-            )
-         UNION
-         SELECT durable_trade_id AS trade_id
-           FROM daemon_proof_operations
-          WHERE durable_trade_id IS NOT NULL
-            AND durable_state IN ('prepared', 'mint-submitted')
-            AND durable_trade_id > ?
-         ORDER BY trade_id
-         LIMIT ?`,
-        )
-        .all('cursor', 'cursor', 65) as Array<{ detail: string }>
-      assert.equal(
-        tradePlan.some(
-          (row) =>
-            row.detail.includes('daemon_swaps_active_recovery_idx') &&
-            row.detail.includes('trade_id>?'),
-        ),
-        true,
-      )
-      assert.equal(
-        tradePlan.some(
-          (row) =>
-            row.detail.includes(
-              'daemon_proof_operations_active_recovery_idx',
-            ) && row.detail.includes('durable_trade_id>?'),
-        ),
-        true,
-      )
-
       const swapPlan = database
         .prepare(
           `EXPLAIN QUERY PLAN
@@ -235,26 +162,6 @@ test('daemon recovery cursor queries use partial range indexes', async () => {
           (row) =>
             row.detail.includes('daemon_swaps_active_recovery_idx') &&
             row.detail.includes('trade_id>?'),
-        ),
-        true,
-      )
-
-      const walletPlan = database
-        .prepare(
-          `EXPLAIN QUERY PLAN
-         SELECT operation_id FROM daemon_proof_operations
-          WHERE state IN ('prepared', 'mint-submitted')
-            AND kind IN ('wallet-send', 'ctf-consolidation')
-            AND operation_id > ?
-          ORDER BY operation_id LIMIT ?`,
-        )
-        .all('cursor', 65) as Array<{ detail: string }>
-      assert.equal(
-        walletPlan.some(
-          (row) =>
-            row.detail.includes(
-              'daemon_proof_operations_wallet_recovery_idx',
-            ) && row.detail.includes('operation_id>?'),
         ),
         true,
       )
@@ -314,12 +221,4 @@ function addTrade(
 
 function proof(amount: number, secret: string): CashuProofRecord {
   return { id: 'keyset-1', amount, secret, C: `signature-${secret}` }
-}
-
-function output(amount: number, suffix: string): StoredOutputData {
-  return {
-    blindedMessage: { amount, id: 'keyset-1', B_: `blinded-${suffix}` },
-    blindingFactor: `blinding-${suffix}`,
-    secret: `output-${suffix}`,
-  }
 }

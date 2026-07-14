@@ -9,9 +9,16 @@ import { createP2PKWitness } from '@bitcaster-market/swap-protocol/p2pk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { createDurableTradeProofOperationLink } from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import {
+  normalizeMarketBaseAsset,
+  parseCashuProofUnit,
+} from '@bitcaster-market/client-sdk/marketUnits'
+import {
   CashuMintCtfSplitTransport,
   restoreOutputGroups as restoreCtfOutputGroups,
   resumeCtfSplitOperation,
+  splitRegularProofsWithOperation,
+  type CtfProofOperationRecord,
+  type CtfProofOperationStore,
 } from '@bitcaster-market/client-sdk/ctfSplit'
 import { durableBindingForDaemonProofOperation } from './durableTradeBinding.ts'
 import {
@@ -19,6 +26,8 @@ import {
   markProofOperationMintSubmitted,
   markProofOperationCompleted,
   prepareProofOperation,
+  readStateScope,
+  isTradeWalletReservationKind,
   type CashuProofRecord,
   type PrepareProofOperationInput,
   type ProofOperationRecord,
@@ -28,8 +37,10 @@ import type {
   DaemonSwapOps,
   SellerMintOpenResult,
 } from './swapExecutor.ts'
+import { requireDaemonOrderCollateralCoordinator } from './durableOrderCollateralCoordinator.ts'
+import { deriveDaemonWalletProofIdFromProof } from './stateSqlite.ts'
 
-interface ProofOperationStore {
+export interface DaemonTradeProofOperationStore {
   getProofOperation(operationId: string): Promise<ProofOperationRecord | null>
   prepareProofOperation(
     input: PrepareProofOperationInput,
@@ -45,7 +56,7 @@ interface ProofOperationStore {
 
 interface ProofOperationOptions {
   operationId?: string
-  proofOperationStore?: ProofOperationStore
+  proofOperationStore?: DaemonTradeProofOperationStore
 }
 
 interface AtomicSwapModule {
@@ -55,7 +66,7 @@ interface AtomicSwapModule {
     amountSats: number
     preserveSourceKeyset?: boolean
     operationId?: string
-    proofOperationStore?: ProofOperationStore
+    proofOperationStore?: DaemonTradeProofOperationStore
   }): Promise<{
     sendProofs: CashuProofRecord[]
     changeProofs: CashuProofRecord[]
@@ -156,7 +167,7 @@ interface CtfSplitModule {
       sigFlag: string
     }
     operationId: string
-    proofOperationStore: ProofOperationStore
+    proofOperationStore: DaemonTradeProofOperationStore
   }): Promise<{
     resolvedLockOutcomeSetId: string
     resolvedKeepOutcomeSetId: string
@@ -241,6 +252,26 @@ export async function recoverExactDaemonProofOperation(
       })
       return
     }
+    case 'regular-split': {
+      const unit = exactOperationUnit(retained)
+      const amount = exactOperationAmount(retained)
+      const wallet = new CashuWallet(new CashuMint(retained.mintUrl), { unit })
+      await wallet.loadMint()
+      await splitRegularProofsWithOperation({
+        mintUrl: retained.mintUrl,
+        baseAsset: normalizeMarketBaseAsset(
+          typeof retained.metadata.baseAsset === 'string'
+            ? retained.metadata.baseAsset
+            : null,
+        ),
+        operationId: retained.operationId,
+        wallet,
+        proofs: [],
+        amountSubunits: amount,
+        proofOperationStore: DAEMON_PROOF_OPERATION_STORE as never,
+      })
+      return
+    }
     case 'swap-refund': {
       const atomicSwap = await (
         options.loadAtomicSwapModule ?? defaultAtomicSwapModuleLoader
@@ -255,7 +286,6 @@ export async function recoverExactDaemonProofOperation(
     case 'ctf-merge':
     case 'ctf-consolidation':
     case 'ctf-redeem':
-    case 'regular-split':
     case 'wallet-send':
       throw new Error(`Unsupported exact durable recovery operation ${retained.kind}`)
   }
@@ -298,7 +328,7 @@ export function createRealDaemonSwapOps(
         amountSats: params.amountSats,
         preserveSourceKeyset: params.preserveSourceKeyset,
         operationId: params.operationId,
-        proofOperationStore: DAEMON_PROOF_OPERATION_STORE,
+        proofOperationStore: createDaemonTradeProofOperationStore(params.ctx),
       })
     },
 
@@ -307,7 +337,7 @@ export function createRealDaemonSwapOps(
       const out = await atomicSwap.sellerPrepareSwap(
         toAtomicCtx(ctx),
         proofs,
-        proofOperationOptions(ctx.tradeId, 'seller-lock'),
+        proofOperationOptions(ctx, 'seller-lock'),
       )
       return {
         adaptorPointCipher: out.adaptorPointCipher,
@@ -343,7 +373,7 @@ export function createRealDaemonSwapOps(
         amountSats,
         {
           operationId,
-          proofOperationStore: proofOperationStoreFor(ctx),
+          proofOperationStore: createDaemonTradeProofOperationStore(ctx),
         },
       )
     },
@@ -369,7 +399,7 @@ export function createRealDaemonSwapOps(
           sigFlag: 'SIG_INPUTS',
         },
         operationId: `${ctx.tradeId}/seller-mint-ctf-split`,
-        proofOperationStore: proofOperationStoreFor(ctx),
+        proofOperationStore: createDaemonTradeProofOperationStore(ctx),
       })
       const prepared = await atomicSwap.sellerPreparePrelockedSwap(
         toAtomicCtx(ctx),
@@ -400,7 +430,7 @@ export function createRealDaemonSwapOps(
         messages.lockedProofsSeller,
         proofs,
         amountSats,
-        proofOperationOptions(ctx.tradeId, 'buyer-lock'),
+        proofOperationOptions(ctx, 'buyer-lock'),
       )
       return {
         lockedProofsCipher: out.lockedProofsCipher,
@@ -420,7 +450,7 @@ export function createRealDaemonSwapOps(
           point: hexToBytes(adaptorPointHex),
         },
         lockedProofsBuyerCipher,
-        proofOperationOptions(ctx.tradeId, 'seller-claim'),
+        proofOperationOptions(ctx, 'seller-claim'),
       )
     },
 
@@ -439,7 +469,7 @@ export function createRealDaemonSwapOps(
             adaptorSecret,
             state.lockedProofsSellerCipher,
             state.sellerPreSigsHex,
-            proofOperationOptions(ctx.tradeId, 'buyer-claim'),
+            proofOperationOptions(ctx, 'buyer-claim'),
           )
         }
         await sleep(nut07PollIntervalMs)
@@ -449,7 +479,7 @@ export function createRealDaemonSwapOps(
 
     async refundLockedProofs(ctx, lockedProofs, operationId) {
       if (lockedProofs.length === 0) return []
-      const store = proofOperationStoreFor(ctx)
+      const store = createDaemonTradeProofOperationStore(ctx)
       const atomicSwap = await loadAtomicSwapModule()
       const wallet = createRefundWallet(ctx.mintUrl)
       await wallet.loadMint()
@@ -510,7 +540,7 @@ async function recoverExactRefund(
   atomicSwap: AtomicSwapModule,
   wallet: RefundWallet,
   existing: ProofOperationRecord,
-  store: ProofOperationStore,
+  store: DaemonTradeProofOperationStore,
 ): Promise<CashuProofRecord[]> {
   if (existing.kind !== 'swap-refund') {
     throw new Error('retained refund operation has a foreign kind')
@@ -550,27 +580,30 @@ function serializeRefundOutputs(
 }
 
 function proofOperationOptions(
-  tradeId: string,
+  ctx: Pick<DaemonSwapContext, 'tradeId' | 'role' | 'orderCollateralPinId'>,
   step: 'seller-lock' | 'buyer-lock' | 'seller-claim' | 'buyer-claim',
 ): Required<ProofOperationOptions> {
   return {
-    operationId: `${tradeId}/${step}`,
-    proofOperationStore: proofOperationStoreFor({ tradeId, role: step.startsWith('buyer') ? 'buyer' : 'seller' }),
+    operationId: `${ctx.tradeId}/${step}`,
+    proofOperationStore: createDaemonTradeProofOperationStore(ctx),
   }
 }
 
-const DAEMON_PROOF_OPERATION_STORE: ProofOperationStore = {
+const DAEMON_PROOF_OPERATION_STORE: DaemonTradeProofOperationStore = {
   getProofOperation,
   prepareProofOperation,
   markProofOperationMintSubmitted,
   markProofOperationCompleted,
 }
 
-function proofOperationStoreFor(ctx: Pick<DaemonSwapContext, 'tradeId' | 'role'>): ProofOperationStore {
+export function createDaemonTradeProofOperationStore(
+  ctx: Pick<DaemonSwapContext, 'tradeId' | 'role' | 'orderCollateralPinId'>,
+): DaemonTradeProofOperationStore {
   return {
     getProofOperation,
     prepareProofOperation: async (input) => prepareProofOperation({
         ...input,
+        ...(await walletReservationForOperation(ctx, input)),
         durableTradeRecovery: createDurableTradeProofOperationLink({
           tradeId: ctx.tradeId,
           role: ctx.role,
@@ -584,12 +617,117 @@ function proofOperationStoreFor(ctx: Pick<DaemonSwapContext, 'tradeId' | 'role'>
   }
 }
 
+export function createDaemonTradeCtfProofOperationStore(
+  ctx: Pick<DaemonSwapContext, 'tradeId' | 'role' | 'orderCollateralPinId'>,
+): CtfProofOperationStore {
+  const store = createDaemonTradeProofOperationStore(ctx)
+  return {
+    async getProofOperation(operationId) {
+      return await store.getProofOperation(operationId) as CtfProofOperationRecord | null
+    },
+    async prepareProofOperation(input) {
+      return await store.prepareProofOperation(input) as CtfProofOperationRecord
+    },
+    async markProofOperationMintSubmitted(operationId, redeemBinding) {
+      return await markProofOperationMintSubmitted(
+        operationId,
+        redeemBinding,
+      ) as CtfProofOperationRecord
+    },
+    async markProofOperationCompleted(operationId, resultProofs) {
+      return await store.markProofOperationCompleted(
+        operationId,
+        resultProofs,
+      ) as CtfProofOperationRecord
+    },
+  }
+}
+
+async function walletReservationForOperation(
+  ctx: Pick<DaemonSwapContext, 'orderCollateralPinId'>,
+  input: PrepareProofOperationInput,
+): Promise<Pick<PrepareProofOperationInput, 'metadata' | 'walletProofReservation'>> {
+  if (!isTradeWalletReservationKind(input.kind)) return {}
+  const unit = requireOperationUnit(input)
+  const pinId = ctx.orderCollateralPinId
+  if (pinId !== undefined) {
+    const ownership = await requireDaemonOrderCollateralCoordinator()
+      .classifyProofs(pinId, {
+        mintUrl: input.mintUrl,
+        unit,
+        proofs: input.inputs,
+      })
+    if (ownership === 'all') {
+      return operationReservation(input, unit, pinId)
+    }
+  }
+  const ownership = await classifyWalletProofInputs(input, unit)
+  return ownership === 'all' ? operationReservation(input, unit) : {}
+}
+
+function requireOperationUnit(input: PrepareProofOperationInput) {
+  const rawUnit = input.metadata?.unit
+  const unit = parseCashuProofUnit(typeof rawUnit === 'string' ? rawUnit : null)
+  if (unit === null) throw new Error('trade proof operation has no mint unit')
+  return unit
+}
+
+function operationReservation(
+  input: PrepareProofOperationInput,
+  unit: NonNullable<ReturnType<typeof parseCashuProofUnit>>,
+  parentOrderCollateralPinId?: string,
+): Pick<PrepareProofOperationInput, 'metadata' | 'walletProofReservation'> {
+  if (input.metadata?.reservationId !== undefined
+    && input.metadata.reservationId !== input.operationId) {
+    throw new Error('trade proof operation has a foreign reservation')
+  }
+  return {
+    metadata: {
+      ...input.metadata,
+      reservationId: input.operationId,
+      unit,
+    },
+    walletProofReservation: {
+      reservationId: input.operationId,
+      unit,
+      ...(parentOrderCollateralPinId === undefined
+        ? {}
+        : { parentOrderCollateralPinId }),
+    },
+  }
+}
+
+async function classifyWalletProofInputs(
+  input: PrepareProofOperationInput,
+  unit: NonNullable<ReturnType<typeof parseCashuProofUnit>>,
+): Promise<'all' | 'none'> {
+  const proofIds = input.inputs.map((proof) =>
+    deriveDaemonWalletProofIdFromProof(input.mintUrl, unit, proof),
+  )
+  const state = await readStateScope({ walletProofs: [{ proofIds }] })
+  const storedIds = new Set((state?.wallet.proofs ?? []).map((proof) =>
+    deriveDaemonWalletProofIdFromProof(proof.mintUrl, proof.unit, proof.proof),
+  ))
+  const matches = proofIds.map((proofId) => storedIds.has(proofId))
+  if (matches.every(Boolean)) return 'all'
+  if (matches.every((match) => !match)) return 'none'
+  throw new Error('trade proof operation mixes wallet and transient inputs')
+}
+
 function exactOperationUnit(record: ProofOperationRecord): string {
   const unit = record.metadata.unit
   if (typeof unit !== 'string' || unit.length === 0) {
     throw new Error(`Retained proof operation ${record.operationId} has no mint unit`)
   }
   return unit
+}
+
+function exactOperationAmount(record: ProofOperationRecord): number {
+  const amount = record.metadata.amount
+  if (!Number.isSafeInteger(amount) || (amount as number) <= 0) {
+    throw new Error(`Retained proof operation ${record.operationId} has no amount`)
+  }
+  return amount as number
 }
 
 async function defaultAtomicSwapModuleLoader(): Promise<AtomicSwapModule> {

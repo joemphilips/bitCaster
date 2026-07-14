@@ -230,6 +230,11 @@ test('SQLite custody store registers scopes with canonical market isolation cons
           'custody_active_work',
           'custody_operation_inputs',
           'custody_operations',
+          'custody_order_collateral_allocations',
+          'custody_order_collateral_fills',
+          'custody_order_collateral_pins',
+          'custody_order_collateral_proofs',
+          'custody_order_collateral_transforms',
           'custody_proof_reservations',
           'custody_schema_metadata',
           'custody_scope_state',
@@ -248,6 +253,18 @@ test('SQLite custody store registers scopes with canonical market isolation cons
         ['custody_scope_state', 'scope_id'],
         ['custody_session_links', 'session_id'],
         ['custody_proof_reservations', 'proof_id'],
+        ['custody_order_collateral_pins', 'scope_id'],
+        ['custody_order_collateral_pins', 'pin_id'],
+        ['custody_order_collateral_pins', 'unit'],
+        ['custody_order_collateral_pins', 'outcome_id'],
+        ['custody_order_collateral_pins', 'token_side'],
+        ['custody_order_collateral_pins', 'order_side'],
+        ['custody_order_collateral_pins', 'order_price'],
+        ['custody_order_collateral_pins', 'time_in_force'],
+        ['custody_order_collateral_proofs', 'proof_id'],
+        ['custody_order_collateral_allocations', 'operation_id'],
+        ['custody_order_collateral_fills', 'trade_id'],
+        ['custody_order_collateral_transforms', 'transform_id'],
       ] as const) {
         const columns = database
           .prepare(`PRAGMA table_info(${table})`)
@@ -266,6 +283,17 @@ test('SQLite custody store registers scopes with canonical market isolation cons
           (index) =>
             index.name === 'custody_session_links_operation_idx' &&
             index.unique === 1,
+        ),
+        true,
+      )
+      const collateralIndexes = database
+        .prepare('PRAGMA index_list(custody_order_collateral_pins)')
+        .all() as Array<{ name: string; unique: number }>
+      assert.equal(
+        collateralIndexes.some(
+          (index) =>
+            index.name === 'custody_order_collateral_pins_active_idx' &&
+            index.unique === 0,
         ),
         true,
       )

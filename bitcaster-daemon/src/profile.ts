@@ -38,6 +38,11 @@ const mandatoryProfileSchemaTables = [
   'custody_operation_inputs',
   'custody_session_links',
   'custody_proof_reservations',
+  'custody_order_collateral_pins',
+  'custody_order_collateral_proofs',
+  'custody_order_collateral_allocations',
+  'custody_order_collateral_transforms',
+  'custody_order_collateral_fills',
   'custody_verification_bindings',
   'custody_active_work',
 ] as const

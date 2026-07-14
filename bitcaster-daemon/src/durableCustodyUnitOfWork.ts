@@ -2,6 +2,7 @@ import type {
   DurableCustodyTransaction,
   DurableCustodyTransactionInput,
 } from '@bitcaster-market/client-sdk/durableCustody'
+import type { DatabaseSync } from 'node:sqlite'
 import {
   applyDurableCustodyWorkInDatabase,
 } from './durableCustodySqliteStore.ts'
@@ -23,6 +24,7 @@ import {
 import type { DurableTradeSession } from '@bitcaster-market/client-sdk/durableTradeRecovery'
 
 export interface DaemonCustodyUnitOfWorkTransaction {
+  database: DatabaseSync
   custody: DurableCustodyTransaction
   state: DaemonCustodyStateEffects
   now: string
@@ -75,6 +77,7 @@ export class DaemonCustodyUnitOfWork {
               database,
               input.stateScope,
               (state, now) => apply({
+                database,
                 custody,
                 state: createStateEffects(state, input.stateScope),
                 now,

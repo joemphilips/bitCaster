@@ -315,6 +315,7 @@ export async function splitAvailableSatProofsForCtfCollateral(
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
   baseAssetInput?: string | null,
+  proofOperationStore: CtfProofOperationStore = DAEMON_CTF_PROOF_OPERATION_STORE,
 ): Promise<PreparedCtfCollateralResult> {
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
   const unit = defaultCollateralUnit(baseAsset)
@@ -338,7 +339,7 @@ export async function splitAvailableSatProofsForCtfCollateral(
       wallet,
       proofs: [],
       amountSats: grossCtfInputSats,
-      proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
+      proofOperationStore,
     })
     const exact = await validateExactCtfCollateralFromProofs(
       mintUrl,
@@ -425,7 +426,7 @@ export async function splitAvailableSatProofsForCtfCollateral(
     wallet,
     proofs: selected.send,
     amountSats: grossCtfInputSats,
-    proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
+    proofOperationStore,
   })
   const exact = await validateExactCtfCollateralFromProofs(
     mintUrl,

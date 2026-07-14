@@ -72,6 +72,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
                 amount: params.amountSats,
                 fees: 0,
                 keysetId: 'keyset-100',
+                unit: 'sat',
                 unselectedProofs: [],
               },
             })
@@ -105,6 +106,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
                 amount: 100,
                 fees: 0,
                 keysetId: 'keyset-100',
+                unit: 'sat',
                 unselectedProofs: [],
               },
             })
@@ -218,7 +220,7 @@ test('real daemon swap adapter maps SDK daemon context to atomic-swap operations
                 YES: [output('yes-output')],
                 NO: [output('no-output')],
               },
-              metadata: { amount: params.amountSats },
+              metadata: { amount: params.amountSats, unit: 'sat' },
             })
             await params.proofOperationStore.markProofOperationCompleted(
               params.operationId,

@@ -55,8 +55,6 @@ import {
   ensureDaemonStateSchema,
   FULL_DAEMON_STATE_ROW_SCOPE,
   readDaemonActiveSwapIdsPage,
-  readDaemonRecoverableTradeIdsPage,
-  readDaemonRecoverableWalletOperationIdsPage,
   readDaemonStateCounts,
   readDaemonStateIsEmpty,
   readDaemonStateRows,
@@ -161,6 +159,7 @@ export interface PrepareProofOperationInput {
   walletProofReservation?: {
     reservationId: string
     unit: CashuProofUnit
+    parentOrderCollateralPinId?: string
   }
 }
 
@@ -605,27 +604,11 @@ export async function readWalletProofAmountSample(input: {
   )
 }
 
-export async function readRecoverableTradeIdsPage(
-  input: DaemonIdPageInput,
-): Promise<DaemonIdPage> {
-  return readNormalizedStateDatabase((database) =>
-    readDaemonRecoverableTradeIdsPage(database, input),
-  )
-}
-
 export async function readActiveSwapIdsPage(
   input: DaemonIdPageInput,
 ): Promise<DaemonIdPage> {
   return readNormalizedStateDatabase((database) =>
     readDaemonActiveSwapIdsPage(database, input),
-  )
-}
-
-export async function readRecoverableWalletOperationIdsPage(
-  input: DaemonIdPageInput,
-): Promise<DaemonIdPage> {
-  return readNormalizedStateDatabase((database) =>
-    readDaemonRecoverableWalletOperationIdsPage(database, input),
   )
 }
 
@@ -991,11 +974,16 @@ export function reserveWalletProofsForPrepareInState(
     )
     const record = recordsById.get(proofId)
     if (record === undefined) throw new WalletProofReservationConflictError()
-    assertWalletProofMatchesPrepare(record, proof, input, reservation.unit)
+    assertWalletProofMatchesPrepare(record, proof, input, reservation)
     if (record.state === 'reserved' && record.reservedBy === reservation.reservationId) {
       continue
     }
-    if (record.state !== 'available') throw new WalletProofReservationConflictError()
+    const parentOwned = reservation.parentOrderCollateralPinId !== undefined
+      && record.state === 'reserved'
+      && record.reservedBy === reservation.parentOrderCollateralPinId
+    if (record.state !== 'available' && !parentOwned) {
+      throw new WalletProofReservationConflictError()
+    }
     record.state = 'reserved'
     record.reservedBy = reservation.reservationId
     record.updatedAt = now
@@ -1030,11 +1018,18 @@ function selectAvailableSatProofRecords(
 
 function validatedWalletProofReservation(
   input: PrepareProofOperationInput,
-): { reservationId: string; unit: CashuProofUnit } | null {
+): {
+  reservationId: string
+  unit: CashuProofUnit
+  parentOrderCollateralPinId?: string
+} | null {
   const reservation = input.walletProofReservation
   if (reservation === undefined) return null
-  if (input.kind !== 'wallet-send') {
-    throw new Error('wallet proof reservation requires a wallet send operation')
+  const parentOrderCollateralPinId = reservation.parentOrderCollateralPinId
+  const tradeLockOperation = isTradeWalletReservationKind(input.kind)
+  if (input.kind !== 'wallet-send'
+    && (!tradeLockOperation || input.durableTradeRecovery === undefined)) {
+    throw new Error('wallet proof reservation requires a durable wallet effect')
   }
   if (reservation.reservationId.length === 0) {
     throw new Error('wallet proof reservation id is invalid')
@@ -1044,27 +1039,92 @@ function validatedWalletProofReservation(
     || input.metadata?.unit !== unit) {
     throw new Error('wallet proof reservation metadata is invalid')
   }
+  if (parentOrderCollateralPinId !== undefined
+    && (parentOrderCollateralPinId.length === 0
+      || input.durableTradeRecovery === undefined
+      || !tradeLockOperation)) {
+    throw new Error('order collateral parent reservation is invalid')
+  }
   if (input.inputs.length === 0) {
     throw new Error('wallet proof reservation inputs are empty')
   }
-  return { reservationId: reservation.reservationId, unit }
+  return {
+    reservationId: reservation.reservationId,
+    unit,
+    ...(parentOrderCollateralPinId === undefined
+      ? {}
+      : { parentOrderCollateralPinId }),
+  }
+}
+
+export function isTradeWalletReservationKind(kind: ProofOperationKind): boolean {
+  switch (kind) {
+    case 'swap-lock':
+    case 'conditional-keyset-swap':
+    case 'ctf-split':
+    case 'proof-split':
+    case 'regular-split':
+      return true
+    case 'wallet-send':
+    case 'swap-claim':
+    case 'swap-refund':
+    case 'ctf-merge':
+    case 'ctf-consolidation':
+    case 'ctf-redeem':
+      return false
+    default:
+      return unreachableProofOperationKind(kind)
+  }
+}
+
+function unreachableProofOperationKind(value: never): never {
+  throw new Error(`unhandled proof operation kind: ${String(value)}`)
 }
 
 function assertWalletProofMatchesPrepare(
   record: StoredProofRecord,
   proof: CashuProofRecord,
   input: PrepareProofOperationInput,
-  unit: CashuProofUnit,
+  reservation: {
+    unit: CashuProofUnit
+    parentOrderCollateralPinId?: string
+  },
 ): void {
-  if (record.mintUrl !== input.mintUrl || record.unit !== unit
-    || record.asset.kind !== 'sats'
-    || normalizeProofAssetBaseAsset(record.asset) !== 'sat'
+  const assetMatches = input.kind === 'wallet-send'
+    ? record.asset.kind === 'sats'
+      && normalizeProofAssetBaseAsset(record.asset) === 'sat'
+      && proof.conditionId === undefined
+      && proof.outcomeCollection === undefined
+    : proofMetadataMatchesStoredAsset(record, proof)
+  if (record.mintUrl !== input.mintUrl || record.unit !== reservation.unit
+    || !assetMatches
     || !isDeepStrictEqual(
-      normalizeCashuProofRecord(record.proof),
-      normalizeCashuProofRecord(proof),
+      normalizedProofWithoutAssetMetadata(record.proof),
+      normalizedProofWithoutAssetMetadata(proof),
     )) {
     throw new Error('wallet proof reservation input is foreign')
   }
+}
+
+function proofMetadataMatchesStoredAsset(
+  record: StoredProofRecord,
+  proof: CashuProofRecord,
+): boolean {
+  if (record.asset.kind === 'sats') {
+    return proof.conditionId === undefined
+      && proof.outcomeCollection === undefined
+  }
+  return proof.conditionId === record.asset.conditionId
+    && proof.outcomeCollection === record.asset.outcomeSetId
+}
+
+function normalizedProofWithoutAssetMetadata(
+  proof: CashuProofRecord,
+): CashuProofRecord {
+  const normalized = normalizeCashuProofRecord(proof)
+  delete normalized.conditionId
+  delete normalized.outcomeCollection
+  return normalized
 }
 
 /**
@@ -1175,6 +1235,91 @@ export async function getProofOperation(
     (await readStateScope({ proofOperationIds: [operationId] }))
       ?.proofOperations[operationId] ?? null
   )
+}
+
+export interface ReconciledTradeWalletInputs {
+  operationKeys: string[]
+  rows: StoredProofRecord[]
+}
+
+/**
+ * Loads the exact wallet inputs retained by reconciled operations for one
+ * state-machine step. Missing, released, mixed, or body-mismatched authority
+ * fails closed; callers may select fresh proofs only when no matching operation
+ * has ever been prepared.
+ */
+export async function readReconciledTradeWalletInputs(
+  tradeId: string,
+  operationKeyPrefix: string,
+): Promise<ReconciledTradeWalletInputs | null> {
+  const tradeState = await readStateScope({ tradeIds: [tradeId] })
+  if (tradeState === null) throw new Error('daemon state is not initialized')
+  const operations = Object.values(tradeState.proofOperations)
+    .filter((operation) =>
+      operation.durableTradeRecovery?.tradeId === tradeId
+      && (operation.operationId === operationKeyPrefix
+        || operation.operationId.startsWith(`${operationKeyPrefix}/`)),
+    )
+    .sort((left, right) => left.operationId.localeCompare(right.operationId))
+  if (operations.length === 0) return null
+
+  const prepared = operations.map(requireReconciledWalletOperation)
+  const proofIds = prepared.flatMap(({ operation, unit }) =>
+    operation.inputs.map((proof) => deriveDaemonWalletProofIdFromProof(
+      operation.mintUrl,
+      unit,
+      proof,
+    )),
+  )
+  if (new Set(proofIds).size !== proofIds.length) {
+    throw new Error('reconciled trade operations share wallet input authority')
+  }
+  const walletState = await readStateScope({ walletProofs: [{ proofIds }] })
+  if (walletState === null) throw new Error('daemon state is not initialized')
+  const rowsById = new Map(walletState.wallet.proofs.map((row) => [
+    deriveDaemonWalletProofId(row),
+    row,
+  ]))
+  const rows = prepared.flatMap(({ operation, unit }) =>
+    operation.inputs.map((proof) => {
+      const proofId = deriveDaemonWalletProofIdFromProof(
+        operation.mintUrl,
+        unit,
+        proof,
+      )
+      const row = rowsById.get(proofId)
+      if (row === undefined
+        || row.state !== 'reserved'
+        || row.reservedBy !== operation.operationId) {
+        throw new Error('reconciled trade wallet input authority is missing')
+      }
+      assertWalletProofMatchesPrepare(row, proof, operation, { unit })
+      return structuredClone(row)
+    }),
+  )
+  return {
+    operationKeys: operations.map(({ operationId }) => operationId),
+    rows,
+  }
+}
+
+function requireReconciledWalletOperation(operation: ProofOperationRecord): {
+  operation: ProofOperationRecord
+  unit: CashuProofUnit
+} {
+  const link = operation.durableTradeRecovery
+  const rawUnit = operation.metadata.unit
+  const unit = parseCashuProofUnit(
+    typeof rawUnit === 'string' ? rawUnit : null,
+  )
+  if (operation.state !== 'completed'
+    || link?.state !== 'reconciled'
+    || operation.metadata.reservationId !== operation.operationId
+    || unit === null
+    || operation.inputs.length === 0) {
+    throw new Error('trade wallet operation is not reconciled exact authority')
+  }
+  return { operation, unit }
 }
 
 export async function prepareProofOperation(
@@ -1564,7 +1709,7 @@ export async function recordOrderStatus(
   orderId: string,
   engineStatus: unknown,
 ): Promise<LocalOrderRecord> {
-  return upsertOrderFromEngine(marketId, orderId, engineStatus)
+  return upsertOrderFromEngine({ marketId, orderId, engineStatus })
 }
 
 export async function listLocalOrders(
@@ -1618,10 +1763,10 @@ export async function recordSubmittedOrder(
   if (!orderId) {
     throw new Error('engine submit response did not include orderId')
   }
-  return upsertOrderFromEngine(
+  return upsertOrderFromEngine({
     marketId,
     orderId,
-    engineResponse,
+    engineStatus: engineResponse,
     clientOrderId,
     preflightSplit,
     tokenSide,
@@ -1630,7 +1775,7 @@ export async function recordSubmittedOrder(
     amountSubunits,
     timeInForce,
     recoveryAttempt,
-  )
+  })
 }
 
 function summarizeProofOperation(
@@ -1662,121 +1807,134 @@ function countRecordArrays<T>(
   )
 }
 
-function upsertOrderFromEngine(
-  marketId: string,
-  orderId: string,
-  engineStatus: unknown,
-  clientOrderId?: string,
-  preflightSplit?: LocalOrderPreflightSplit | null,
-  tokenSide?: 'Outcome' | 'Complement',
-  side?: 'Buy' | 'Sell',
-  priceSubunits?: number,
-  amountSubunits?: number,
-  timeInForce?: 'FAK' | 'FOK' | 'GTC',
-  recoveryAttempt?: number,
-): Promise<LocalOrderRecord> {
-  const engineTradeIds = extractTradeIds(engineStatus)
-  return updateState(
-    {
-      orderIds: [orderId],
-      swapIds: engineTradeIds,
-      swapIdsFromOrderIds: [orderId],
-    },
-    (state, now) => {
-    const existing = state.orders[orderId]
-      const status =
-        readStringProperty(engineStatus, 'status') ??
-        existing?.status ??
-        'unknown'
-    const baseAsset =
-        readStringProperty(engineStatus, 'baseAsset') ??
-        existing?.baseAsset ??
-        null
-    const divisibility =
-        readNumberProperty(engineStatus, 'divisibility') ??
-        existing?.divisibility
-    const tradeIds = [
-        ...new Set([...(existing?.tradeIds ?? []), ...engineTradeIds]),
-    ]
-    const nextTokenSide = tokenSide ?? existing?.tokenSide
-    const nextSide = side ?? existing?.side
-    const nextPriceSubunits = priceSubunits ?? existing?.priceSubunits
-    const nextAmountSubunits = amountSubunits ?? existing?.amountSubunits
-    const nextTimeInForce = timeInForce ?? existing?.timeInForce
-    const nextRecoveryAttempt = recoveryAttempt ?? existing?.recoveryAttempt
-    const takerByTradeId = extractTakerParticipation(engineStatus, orderId)
-    const record: LocalOrderRecord = {
-      orderId,
-      marketId,
-      ...(nextTokenSide ? { tokenSide: nextTokenSide } : {}),
-      ...(nextSide ? { side: nextSide } : {}),
-        ...(nextPriceSubunits != null
-          ? { priceSubunits: nextPriceSubunits }
-          : {}),
-        ...(nextAmountSubunits != null
-          ? { amountSubunits: nextAmountSubunits }
-          : {}),
-      ...(nextTimeInForce ? { timeInForce: nextTimeInForce } : {}),
-        ...(nextRecoveryAttempt != null
-          ? { recoveryAttempt: nextRecoveryAttempt }
-          : {}),
-      status,
-      ...((clientOrderId ?? existing?.clientOrderId)
-        ? { clientOrderId: clientOrderId ?? existing?.clientOrderId }
-        : {}),
-      ...(baseAsset ? { baseAsset } : {}),
-      ...(divisibility ? { divisibility } : {}),
-      ...(preflightSplit === null
-        ? {}
-        : preflightSplit || existing?.preflightSplit
-          ? { preflightSplit: preflightSplit ?? existing?.preflightSplit }
-          : {}),
-      tradeIds,
-      engineStatus,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    }
-    state.orders[orderId] = record
-    for (const tradeId of tradeIds) {
-      const swap = state.swaps[tradeId]
-      state.swaps[tradeId] = {
-        tradeId,
-        marketId,
-        orderId,
-        role: swap?.role,
-        counterpartyPubkey: swap?.counterpartyPubkey,
-        sellerLocktime: swap?.sellerLocktime,
-        buyerLocktime: swap?.buyerLocktime,
-        fillAmountSats: swap?.fillAmountSats,
-        fillAmountSubunits: swap?.fillAmountSubunits,
-        outcomeFaceAmountSats: swap?.outcomeFaceAmountSats,
-        outcomeFaceAmountSubunits: swap?.outcomeFaceAmountSubunits,
-        quotePaymentSats: swap?.quotePaymentSats,
-        baseAsset: swap?.baseAsset,
-        divisibility: swap?.divisibility,
-        quotePaymentSubunits: swap?.quotePaymentSubunits,
-        settlementKind: swap?.settlementKind,
-        sellerKeepOutcomeSetId: swap?.sellerKeepOutcomeSetId,
-        sellerLockOutcomeSetId: swap?.sellerLockOutcomeSetId,
-        isTaker: takerByTradeId.get(tradeId) ?? swap?.isTaker,
-        messages: swap?.messages ?? {},
-        sellerAdaptorSecretHex: swap?.sellerAdaptorSecretHex,
-        sellerAdaptorPointHex: swap?.sellerAdaptorPointHex,
-        buyerPreSigsHex: swap?.buyerPreSigsHex,
-        buyerLockedProofs: swap?.buyerLockedProofs,
-        sellerPreSigsHex: swap?.sellerPreSigsHex,
-        engineState: swap?.engineState,
-        failureReason: swap?.failureReason,
-        takerRecovery: swap?.takerRecovery,
-        step: swap?.step ?? 'awaiting-trade-created',
-        error: swap?.error,
-        createdAt: swap?.createdAt ?? now,
-        updatedAt: now,
-      }
-    }
-    return record
-    },
+export interface OrderEngineProjectionInput {
+  marketId: string
+  orderId: string
+  engineStatus: unknown
+  clientOrderId?: string
+  preflightSplit?: LocalOrderPreflightSplit | null
+  tokenSide?: 'Outcome' | 'Complement'
+  side?: 'Buy' | 'Sell'
+  priceSubunits?: number
+  amountSubunits?: number
+  timeInForce?: 'FAK' | 'FOK' | 'GTC'
+  recoveryAttempt?: number
+}
+
+export function orderEngineProjectionScope(
+  input: OrderEngineProjectionInput,
+): DaemonStateRowScope {
+  return {
+    orderIds: [input.orderId],
+    swapIds: extractTradeIds(input.engineStatus),
+    swapIdsFromOrderIds: [input.orderId],
+  }
+}
+
+export function applyOrderEngineProjection(
+  state: DaemonState,
+  now: string,
+  input: OrderEngineProjectionInput,
+): LocalOrderRecord {
+  const existing = state.orders[input.orderId]
+  const tradeIds = mergedTradeIds(existing, input.engineStatus)
+  const record = buildOrderRecord(input, existing, tradeIds, now)
+  const takerByTradeId = extractTakerParticipation(
+    input.engineStatus,
+    input.orderId,
   )
+  state.orders[input.orderId] = record
+  for (const tradeId of tradeIds) {
+    state.swaps[tradeId] = projectOrderSwap(
+      state.swaps[tradeId],
+      record,
+      tradeId,
+      takerByTradeId.get(tradeId),
+      now,
+    )
+  }
+  return record
+}
+
+function upsertOrderFromEngine(
+  input: OrderEngineProjectionInput,
+): Promise<LocalOrderRecord> {
+  return updateState(
+    orderEngineProjectionScope(input),
+    (state, now) => applyOrderEngineProjection(state, now, input),
+  )
+}
+
+function mergedTradeIds(
+  existing: LocalOrderRecord | undefined,
+  engineStatus: unknown,
+): string[] {
+  return [...new Set([
+    ...(existing?.tradeIds ?? []),
+    ...extractTradeIds(engineStatus),
+  ])]
+}
+
+function buildOrderRecord(
+  input: OrderEngineProjectionInput,
+  existing: LocalOrderRecord | undefined,
+  tradeIds: string[],
+  now: string,
+): LocalOrderRecord {
+  const baseAsset = readStringProperty(input.engineStatus, 'baseAsset')
+    ?? existing?.baseAsset ?? null
+  const divisibility = readNumberProperty(input.engineStatus, 'divisibility')
+    ?? existing?.divisibility
+  const preflightSplit = input.preflightSplit === null
+    ? undefined
+    : input.preflightSplit ?? existing?.preflightSplit
+  return {
+    orderId: input.orderId,
+    marketId: input.marketId,
+    ...optional('tokenSide', input.tokenSide ?? existing?.tokenSide),
+    ...optional('side', input.side ?? existing?.side),
+    ...optional('priceSubunits', input.priceSubunits ?? existing?.priceSubunits),
+    ...optional('amountSubunits', input.amountSubunits ?? existing?.amountSubunits),
+    ...optional('timeInForce', input.timeInForce ?? existing?.timeInForce),
+    ...optional('recoveryAttempt', input.recoveryAttempt ?? existing?.recoveryAttempt),
+    status: readStringProperty(input.engineStatus, 'status')
+      ?? existing?.status ?? 'unknown',
+    ...optional('clientOrderId', input.clientOrderId ?? existing?.clientOrderId),
+    ...optional('baseAsset', baseAsset || undefined),
+    ...optional('divisibility', divisibility || undefined),
+    ...optional('preflightSplit', preflightSplit),
+    tradeIds,
+    engineStatus: input.engineStatus,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  }
+}
+
+function optional<Key extends string, Value>(
+  key: Key,
+  value: Value | undefined,
+): { [Property in Key]?: Value } {
+  return value === undefined ? {} : { [key]: value } as { [Property in Key]: Value }
+}
+
+function projectOrderSwap(
+  existing: LocalSwapRecord | undefined,
+  order: LocalOrderRecord,
+  tradeId: string,
+  isTaker: boolean | undefined,
+  now: string,
+): LocalSwapRecord {
+  return {
+    ...existing,
+    tradeId,
+    marketId: order.marketId,
+    orderId: order.orderId,
+    isTaker: isTaker ?? existing?.isTaker,
+    messages: existing?.messages ?? {},
+    step: existing?.step ?? 'awaiting-trade-created',
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  }
 }
 
 export async function recordTradeCreated(

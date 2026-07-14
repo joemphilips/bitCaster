@@ -14,6 +14,10 @@ import {
 } from '@bitcaster-market/client-sdk/durableTradeRecovery'
 import { DaemonProofOperationCoordinator } from '../src/durableProofOperationCoordinator.ts'
 import {
+  DaemonOrderCollateralCoordinator,
+  setDaemonOrderCollateralFaultHookForTest,
+} from '../src/durableOrderCollateralCoordinator.ts'
+import {
   daemonWalletCustodyScope,
   DaemonDurableCustodyLease,
 } from '../src/durableCustodyLifecycle.ts'
@@ -30,6 +34,7 @@ import {
   emptyDaemonState,
   getProofOperation,
   installDaemonProofOperationCoordinator,
+  markProofOperationCompleted,
   markProofOperationMintSubmitted,
   prepareProofOperation,
   readState,
@@ -51,6 +56,7 @@ async function withDaemonHome(run: () => Promise<void>): Promise<void> {
     await run()
   } finally {
     setDaemonCustodyUnitOfWorkFaultHookForTest(undefined)
+    setDaemonOrderCollateralFaultHookForTest(undefined)
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
@@ -125,8 +131,12 @@ function reservingWalletSend() {
 }
 
 function storedOutput(secret: string, byte: string) {
+  return storedOutputAmount(secret, byte, 1)
+}
+
+function storedOutputAmount(secret: string, byte: string, amount: number) {
   return {
-    blindedMessage: { amount: 1, id: KEYSET_ID, B_: `02${byte.repeat(32)}` },
+    blindedMessage: { amount, id: KEYSET_ID, B_: `02${byte.repeat(32)}` },
     blindingFactor: byte.repeat(32),
     secret,
   }
@@ -428,6 +438,228 @@ test('trade session and canonical custody advance together across a submit fault
     }
   })
 })
+
+test('trade lock reserves exact wallet inputs until its state-machine commit', async () => {
+  await withDaemonHome(async () => {
+    const { lease, uninstall } = await installedCoordinator()
+    try {
+      const operationId = 'trade-wallet-lock/buyer-lock'
+      const link = createDurableTradeProofOperationLink({
+        tradeId: 'trade-wallet-lock',
+        role: 'buyer',
+        stage: 'proof-reservation',
+        state: 'prepared',
+        operationKey: operationId,
+        kind: 'cashu-atomic',
+      })
+      const session = tradeSession(link)
+      const state = emptyDaemonState()
+      state.durableTradeSessions[session.tradeId] = session
+      await writeStateWithDurableSessionKeys(state)
+      const prepared = preparedWalletSend()
+      await addAvailableSatProofs(prepared.mintUrl, prepared.inputs)
+
+      await prepareProofOperation({
+        ...prepared,
+        operationId,
+        durableTradeRecovery: link,
+        kind: 'swap-lock',
+        metadata: {
+          ...prepared.metadata,
+          reservationId: operationId,
+        },
+        walletProofReservation: {
+          reservationId: operationId,
+          unit: 'sat',
+        },
+      })
+
+      const reserved = (await readState()).wallet.proofs[0]
+      assert.equal(reserved?.state, 'reserved')
+      assert.equal(reserved?.reservedBy, operationId)
+      await markProofOperationMintSubmitted(operationId)
+      await markProofOperationCompleted(operationId, {
+        send: [{
+          id: KEYSET_ID,
+          amount: 1,
+          secret: 'locked-secret',
+          C: PUBLIC_KEY,
+        }],
+        keep: [{
+          id: KEYSET_ID,
+          amount: 1,
+          secret: 'change-secret',
+          C: PUBLIC_KEY,
+        }],
+      })
+
+      const recoveredInput = (await readState()).wallet.proofs[0]
+      assert.equal(recoveredInput?.state, 'reserved')
+      assert.equal(recoveredInput?.reservedBy, operationId)
+    } finally {
+      uninstall()
+      await lease.stopAndRelease()
+    }
+  })
+})
+
+test('order collateral capability survives restart and follows exact partial-fill change', async () => {
+  await withDaemonHome(async () => {
+    const installed = await installedCoordinator()
+    let lease = installed.lease
+    let uninstall = installed.uninstall
+    try {
+      const operationId = 'trade-order-pin/buyer-lock'
+      const link = createDurableTradeProofOperationLink({
+        tradeId: 'trade-order-pin',
+        role: 'buyer',
+        stage: 'proof-reservation',
+        state: 'prepared',
+        operationKey: operationId,
+        kind: 'cashu-atomic',
+      })
+      const session = tradeSession(link)
+      const state = emptyDaemonState()
+      state.durableTradeSessions[session.tradeId] = session
+      await writeStateWithDurableSessionKeys(state)
+
+      const inputProof = cashuProof(100, 'order-pin-input')
+      const [inputRow] = await addAvailableSatProofs(
+        'https://mint.example',
+        [inputProof],
+      )
+      assert.ok(inputRow)
+      let orderCoordinator = new DaemonOrderCollateralCoordinator(lease)
+      const pin = await orderCoordinator.prepare({
+        clientOrderId: 'client-order-pin',
+        marketId: 'condition-YES',
+        mintUrl: 'https://mint.example',
+        unit: 'sat',
+        orderAmount: 100,
+        requiredAmount: 100,
+        submissionRequest: {
+          clientOrderId: 'client-order-pin',
+          outcomeId: 'YES',
+          tokenSide: 'Outcome',
+          side: 'Buy',
+          price: 50,
+          amountSubunits: 100,
+          timeInForce: 'GTC',
+        },
+        proofs: [inputRow],
+      })
+      await orderCoordinator.bindOrObserve({
+        pinId: pin.pinId,
+        orderId: 'order-pin',
+        status: 'resting',
+        remainingAmount: 100,
+      })
+
+      await prepareProofOperation({
+        operationId,
+        durableTradeRecovery: link,
+        kind: 'swap-lock',
+        mintUrl: 'https://mint.example',
+        inputs: [inputProof],
+        outputs: {
+          send: [storedOutputAmount('order-pin-locked', '66', 40)],
+          keep: [storedOutputAmount('order-pin-change', '77', 60)],
+        },
+        metadata: {
+          amount: 40,
+          fees: 0,
+          keysetId: KEYSET_ID,
+          unit: 'sat',
+          reservationId: operationId,
+          unselectedProofs: [],
+        },
+        walletProofReservation: {
+          reservationId: operationId,
+          unit: 'sat',
+          parentOrderCollateralPinId: pin.pinId,
+        },
+      })
+      assert.equal((await readState()).wallet.proofs[0]?.reservedBy, operationId)
+      await markProofOperationMintSubmitted(operationId)
+      const locked = cashuProof(40, 'order-pin-locked')
+      const change = cashuProof(60, 'order-pin-change')
+      await markProofOperationCompleted(operationId, {
+        send: [locked],
+        keep: [change],
+      })
+      const commitFill = () => orderCoordinator.commitFill({
+        pinId: pin.pinId,
+        orderId: 'order-pin',
+        tradeId: session.tradeId,
+        fillOrderAmount: 40,
+        operationKeys: [operationId],
+        releaseProofs: [],
+        replacementProofs: [{
+          proof: change,
+          mintUrl: 'https://mint.example',
+          unit: 'sat',
+          asset: { kind: 'sats', baseAsset: 'sat' },
+        }],
+        stateScope: { walletProofs: [{ proofIds: [
+          proofId(inputProof),
+          proofId(change),
+        ] }] },
+        applyState(walletState, now) {
+          walletState.wallet.proofs = [{
+            proof: change,
+            mintUrl: 'https://mint.example',
+            unit: 'sat',
+            state: 'available',
+            asset: { kind: 'sats', baseAsset: 'sat' },
+            createdAt: now,
+            updatedAt: now,
+          }]
+        },
+      })
+      setDaemonOrderCollateralFaultHookForTest((stage) => {
+        if (stage === 'before-commit') throw new Error('fill commit crash')
+      })
+      await assert.rejects(commitFill, /fill commit crash/)
+      assert.equal((await readState()).wallet.proofs[0]?.proof.secret,
+        inputProof.secret)
+      setDaemonOrderCollateralFaultHookForTest(undefined)
+      await commitFill()
+
+      uninstall()
+      await lease.stopAndRelease()
+      lease = await DaemonDurableCustodyLease.claim({
+        store: installed.store,
+        walletSeedHex: WALLET_SEED,
+      })
+      uninstall = installCoordinator(lease)
+      orderCoordinator = new DaemonOrderCollateralCoordinator(lease)
+      assert.equal(await orderCoordinator.classifyProofs(pin.pinId, {
+        mintUrl: 'https://mint.example',
+        unit: 'sat',
+        proofs: [change],
+      }), 'all')
+      const persistedChange = (await readState()).wallet.proofs[0]
+      assert.equal(persistedChange?.proof.secret, change.secret)
+      assert.equal(persistedChange?.state, 'reserved')
+      assert.equal(persistedChange?.reservedBy, pin.pinId)
+    } finally {
+      uninstall()
+      await lease.stopAndRelease()
+    }
+  })
+})
+
+function cashuProof(amount: number, secret: string) {
+  return { id: KEYSET_ID, amount, secret, C: PUBLIC_KEY }
+}
+
+function proofId(proof: ReturnType<typeof cashuProof>): string {
+  return deriveDaemonWalletProofIdFromProof(
+    'https://mint.example',
+    'sat',
+    proof,
+  )
+}
 
 function tradeSession(
   operation: ReturnType<typeof createDurableTradeProofOperationLink>,

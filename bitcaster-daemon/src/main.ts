@@ -90,6 +90,7 @@ switch (command) {
     const {
       startDaemonServer,
       submitPendingEphemeralPubkeys,
+      commitAcceptedOrderSubmission,
       createAuthenticatedBitcasterEngineClient,
     } = await import('./server.ts')
     const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } =
@@ -142,8 +143,16 @@ switch (command) {
       })
       const { DaemonProofOperationCoordinator } =
         await import('./durableProofOperationCoordinator.ts')
+      const {
+        DaemonOrderCollateralCoordinator,
+        installDaemonOrderCollateralCoordinator,
+        requireDaemonOrderCollateralCoordinator,
+      } = await import('./durableOrderCollateralCoordinator.ts')
       installDaemonProofOperationCoordinator(
         new DaemonProofOperationCoordinator({ authority: custodyLease }),
+      )
+      installDaemonOrderCollateralCoordinator(
+        new DaemonOrderCollateralCoordinator(custodyLease),
       )
       custodyLease.startRenewal((error) => {
         leaseFailure = error
@@ -383,6 +392,37 @@ switch (command) {
       throw new Error(
         `wallet recovery remains unresolved for ${walletRecovery.pendingCount} operations`,
       )
+    }
+    if (recoveryEngineClient) {
+      const { recoverPreparedOrderSubmissions } =
+        await import('./durableOrderSubmissionRecovery.ts')
+      const orderRecovery = await recoverPreparedOrderSubmissions({
+        coordinator: requireDaemonOrderCollateralCoordinator(),
+        submitOrder: (marketId, request) =>
+          recoveryEngineClient.submitOrder(marketId, request),
+        commitAccepted: commitAcceptedOrderSubmission,
+        afterCommit: async (pin, response) => {
+          await submitPendingEphemeralPubkeys({
+            client: recoveryEngineClient,
+            marketId: pin.marketId,
+            conditionId: conditionIdFromMarketId(pin.marketId),
+            orderId: response.orderId,
+            pendingPubkeySubmissions: response.pendingPubkeySubmissions,
+          })
+        },
+        onAfterCommitError: (error, pin) => {
+          const message = error instanceof Error ? error.message : String(error)
+          process.stderr.write(
+            `Recovered order ${pin.clientOrderId} pending-pubkey retry deferred: ${message}\n`,
+          )
+        },
+      })
+      if (orderRecovery.recoveredCount > 0) {
+        process.stderr.write(
+          `Recovered ${orderRecovery.recoveredCount} exact order submissions\n`,
+        )
+      }
+      custodyLease.assertActive()
     }
     if (durableRecoveryRunner) {
       const recovery = await durableRecoveryRunner.finishBootstrap()

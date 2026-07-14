@@ -37,6 +37,11 @@ const CUSTODY_TABLES = [
   'custody_operation_inputs',
   'custody_session_links',
   'custody_proof_reservations',
+  'custody_order_collateral_pins',
+  'custody_order_collateral_proofs',
+  'custody_order_collateral_allocations',
+  'custody_order_collateral_transforms',
+  'custody_order_collateral_fills',
   'custody_verification_bindings',
   'custody_active_work',
 ] as const
@@ -831,6 +836,59 @@ function assertSchema(database: DatabaseSync): void {
   )
   assertForeignKey(
     database,
+    'custody_order_collateral_pins',
+    'custody_scopes',
+    [['scope_id', 'scope_id']],
+  )
+  assertForeignKey(
+    database,
+    'custody_order_collateral_proofs',
+    'custody_order_collateral_pins',
+    [
+      ['scope_id', 'scope_id'],
+      ['pin_id', 'pin_id'],
+    ],
+  )
+  assertForeignKey(
+    database,
+    'custody_order_collateral_allocations',
+    'custody_order_collateral_proofs',
+    [
+      ['scope_id', 'scope_id'],
+      ['pin_id', 'pin_id'],
+      ['proof_id', 'proof_id'],
+    ],
+  )
+  assertForeignKey(
+    database,
+    'custody_order_collateral_allocations',
+    'custody_proof_reservations',
+    [
+      ['scope_id', 'scope_id'],
+      ['operation_id', 'operation_id'],
+      ['proof_id', 'proof_id'],
+    ],
+  )
+  assertForeignKey(
+    database,
+    'custody_order_collateral_transforms',
+    'custody_order_collateral_pins',
+    [
+      ['scope_id', 'scope_id'],
+      ['pin_id', 'pin_id'],
+    ],
+  )
+  assertForeignKey(
+    database,
+    'custody_order_collateral_fills',
+    'custody_order_collateral_pins',
+    [
+      ['scope_id', 'scope_id'],
+      ['pin_id', 'pin_id'],
+    ],
+  )
+  assertForeignKey(
+    database,
     'custody_verification_bindings',
     'custody_operations',
     [
@@ -855,6 +913,13 @@ function assertSchema(database: DatabaseSync): void {
     'custody_proof_reservations_operation_idx',
     false,
     ['scope_id', 'operation_id', 'proof_id'],
+  )
+  assertNamedIndex(
+    database,
+    'custody_order_collateral_pins',
+    'custody_order_collateral_pins_active_idx',
+    false,
+    ['scope_id', 'pin_state', 'pin_id'],
   )
 }
 
@@ -1161,9 +1226,140 @@ function createSchema(database: DatabaseSync): void {
       input_position INTEGER NOT NULL CHECK (input_position >= 0),
       keyset_id TEXT NOT NULL,
       curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
+      UNIQUE (scope_id, operation_id, proof_id),
       FOREIGN KEY (scope_id, operation_id)
         REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
     ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS custody_order_collateral_pins (
+      scope_id TEXT NOT NULL CHECK (length(scope_id) BETWEEN 1 AND 1024),
+      pin_id TEXT NOT NULL CHECK (length(pin_id) BETWEEN 1 AND 1024),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      revision INTEGER NOT NULL CHECK (revision >= 0),
+      client_order_id TEXT NOT NULL CHECK (length(client_order_id) BETWEEN 1 AND 1024),
+      market_id TEXT NOT NULL CHECK (length(market_id) BETWEEN 1 AND 1024),
+      mint_url TEXT NOT NULL CHECK (length(mint_url) BETWEEN 1 AND 1024),
+      unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat', 'usd')),
+      order_amount INTEGER NOT NULL CHECK (order_amount > 0),
+      required_amount INTEGER NOT NULL CHECK (required_amount > 0),
+      remaining_order_amount INTEGER NOT NULL CHECK (remaining_order_amount >= 0),
+      outcome_id TEXT NOT NULL CHECK (length(outcome_id) BETWEEN 1 AND 1024),
+      token_side TEXT NOT NULL CHECK (token_side IN ('Outcome', 'Complement')),
+      order_side TEXT NOT NULL CHECK (order_side IN ('Buy', 'Sell')),
+      order_price INTEGER NOT NULL CHECK (order_price > 0),
+      time_in_force TEXT NOT NULL CHECK (time_in_force = 'GTC'),
+      preflight_reservation_id TEXT CHECK (
+        preflight_reservation_id IS NULL
+        OR length(preflight_reservation_id) BETWEEN 1 AND 1024
+      ),
+      preflight_condition_id TEXT CHECK (
+        preflight_condition_id IS NULL
+        OR length(preflight_condition_id) BETWEEN 1 AND 1024
+      ),
+      preflight_keep_outcome_set_id TEXT CHECK (
+        preflight_keep_outcome_set_id IS NULL
+        OR length(preflight_keep_outcome_set_id) BETWEEN 1 AND 1024
+      ),
+      preflight_lock_outcome_set_id TEXT CHECK (
+        preflight_lock_outcome_set_id IS NULL
+        OR length(preflight_lock_outcome_set_id) BETWEEN 1 AND 1024
+      ),
+      preflight_amount_sats INTEGER CHECK (
+        preflight_amount_sats IS NULL OR preflight_amount_sats > 0
+      ),
+      pin_state TEXT NOT NULL CHECK (pin_state IN ('prepared', 'active', 'released')),
+      order_id TEXT CHECK (order_id IS NULL OR length(order_id) BETWEEN 1 AND 1024),
+      release_reason TEXT CHECK (release_reason IN ('pre-submit-rejected', 'filled', 'cancelled', 'failed', 'expired')),
+      PRIMARY KEY (scope_id, pin_id),
+      UNIQUE (scope_id, client_order_id),
+      FOREIGN KEY (scope_id) REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+      CHECK (remaining_order_amount <= order_amount),
+      CHECK (
+        (preflight_reservation_id IS NULL
+          AND preflight_condition_id IS NULL
+          AND preflight_keep_outcome_set_id IS NULL
+          AND preflight_lock_outcome_set_id IS NULL
+          AND preflight_amount_sats IS NULL)
+        OR (preflight_reservation_id = pin_id
+          AND preflight_condition_id IS NOT NULL
+          AND preflight_keep_outcome_set_id IS NOT NULL
+          AND preflight_lock_outcome_set_id IS NOT NULL
+          AND preflight_keep_outcome_set_id <> preflight_lock_outcome_set_id
+          AND preflight_amount_sats = order_amount
+          AND order_side = 'Buy')
+      ),
+      CHECK (
+        (pin_state = 'prepared' AND order_id IS NULL AND release_reason IS NULL AND remaining_order_amount = order_amount)
+        OR (pin_state = 'active' AND order_id IS NOT NULL AND release_reason IS NULL)
+        OR (pin_state = 'released' AND release_reason IS NOT NULL AND remaining_order_amount = 0)
+      ),
+      CHECK (release_reason <> 'pre-submit-rejected' OR order_id IS NULL)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS custody_order_collateral_proofs (
+      proof_id TEXT PRIMARY KEY NOT NULL CHECK (length(proof_id) = 64 AND proof_id NOT GLOB '*[^0-9a-f]*'),
+      scope_id TEXT NOT NULL CHECK (length(scope_id) BETWEEN 1 AND 1024),
+      pin_id TEXT NOT NULL CHECK (length(pin_id) BETWEEN 1 AND 1024),
+      proof_position INTEGER NOT NULL CHECK (proof_position >= 0),
+      keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
+      amount INTEGER NOT NULL CHECK (amount > 0),
+      asset_kind TEXT NOT NULL CHECK (asset_kind IN ('base', 'outcome')),
+      condition_id TEXT CHECK (condition_id IS NULL OR length(condition_id) BETWEEN 1 AND 1024),
+      outcome_set_id TEXT CHECK (outcome_set_id IS NULL OR length(outcome_set_id) BETWEEN 1 AND 1024),
+      UNIQUE (scope_id, pin_id, proof_position),
+      UNIQUE (scope_id, pin_id, proof_id),
+      FOREIGN KEY (scope_id, pin_id)
+        REFERENCES custody_order_collateral_pins(scope_id, pin_id) ON DELETE RESTRICT,
+      CHECK (
+        (asset_kind = 'base' AND condition_id IS NULL AND outcome_set_id IS NULL)
+        OR (asset_kind = 'outcome' AND condition_id IS NOT NULL AND outcome_set_id IS NOT NULL)
+      )
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS custody_order_collateral_allocations (
+      scope_id TEXT NOT NULL CHECK (length(scope_id) BETWEEN 1 AND 1024),
+      pin_id TEXT NOT NULL CHECK (length(pin_id) BETWEEN 1 AND 1024),
+      operation_id TEXT NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 1024),
+      proof_id TEXT PRIMARY KEY NOT NULL,
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      FOREIGN KEY (scope_id, pin_id, proof_id)
+        REFERENCES custody_order_collateral_proofs(scope_id, pin_id, proof_id) ON DELETE RESTRICT,
+      FOREIGN KEY (scope_id, operation_id, proof_id)
+        REFERENCES custody_proof_reservations(scope_id, operation_id, proof_id) ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS custody_order_collateral_fills (
+      scope_id TEXT NOT NULL CHECK (length(scope_id) BETWEEN 1 AND 1024),
+      pin_id TEXT NOT NULL CHECK (length(pin_id) BETWEEN 1 AND 1024),
+      trade_id TEXT NOT NULL CHECK (length(trade_id) BETWEEN 1 AND 1024),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      fill_order_amount INTEGER NOT NULL CHECK (fill_order_amount > 0),
+      remaining_order_amount INTEGER NOT NULL CHECK (remaining_order_amount >= 0),
+      effect_fingerprint TEXT NOT NULL CHECK (
+        length(effect_fingerprint) = 64
+        AND effect_fingerprint NOT GLOB '*[^0-9a-f]*'
+      ),
+      PRIMARY KEY (scope_id, pin_id, trade_id),
+      FOREIGN KEY (scope_id, pin_id)
+        REFERENCES custody_order_collateral_pins(scope_id, pin_id) ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS custody_order_collateral_transforms (
+      scope_id TEXT NOT NULL CHECK (length(scope_id) BETWEEN 1 AND 1024),
+      pin_id TEXT NOT NULL CHECK (length(pin_id) BETWEEN 1 AND 1024),
+      transform_id TEXT NOT NULL CHECK (length(transform_id) BETWEEN 1 AND 1024),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      effect_fingerprint TEXT NOT NULL CHECK (
+        length(effect_fingerprint) = 64
+        AND effect_fingerprint NOT GLOB '*[^0-9a-f]*'
+      ),
+      PRIMARY KEY (scope_id, pin_id, transform_id),
+      FOREIGN KEY (scope_id, pin_id)
+        REFERENCES custody_order_collateral_pins(scope_id, pin_id) ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE INDEX custody_order_collateral_pins_active_idx
+      ON custody_order_collateral_pins(scope_id, pin_state, pin_id);
 
     CREATE TABLE IF NOT EXISTS custody_verification_bindings (
       scope_id TEXT NOT NULL,

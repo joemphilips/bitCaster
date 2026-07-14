@@ -13,6 +13,10 @@ import {
 import { SqliteDurableCustodyStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonProofOperationCoordinator } from '../src/durableProofOperationCoordinator.ts'
 import {
+  DaemonOrderCollateralCoordinator,
+  installDaemonOrderCollateralCoordinator,
+} from '../src/durableOrderCollateralCoordinator.ts'
+import {
   setDaemonCustodyUnitOfWorkFaultHookForTest,
 } from '../src/durableCustodyUnitOfWork.ts'
 import { dispatch, type EngineClientLike } from '../src/server.ts'
@@ -45,6 +49,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
   process.env.BITCASTER_DAEMON_HOME = home
   let lease: DaemonDurableCustodyLease | undefined
   let uninstallCoordinator: (() => void) | undefined
+  let uninstallOrderCollateral: (() => void) | undefined
   try {
     const secrets = createDaemonSecrets('2026-05-21T00:00:00.000Z')
     const profile = profileFromPublicKey(secrets.nostrPublicKeyHex)
@@ -66,6 +71,9 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           keysetIds.map((keysetId) => [keysetId, fakeMintKeys(keysetId)]),
         ),
       }),
+    )
+    uninstallOrderCollateral = installDaemonOrderCollateralCoordinator(
+      new DaemonOrderCollateralCoordinator(lease),
     )
 
     await t.test('wallet.balance summarizes durable proof state', async () => {
@@ -1437,7 +1445,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test(
       'order.submit uses clientOrderId and submits pubkey only for pending matches',
       async () => {
-      await writeState(backedDaemonState('cond', 10_000))
+      await writeState(backedDaemonState('cond', 10_000, 'matched'))
         let capturedOptions: {
           baseUrl: string
           nostrSecretKeyHex: string
@@ -1508,6 +1516,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         },
         {
+          resolveInputFeePpkByKeyset: zeroInputFees,
           createEngineClient(options) {
             capturedOptions = options
             return engine
@@ -1574,7 +1583,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test(
       'order.submit validates D=1000 prices using engine market metadata',
       async () => {
-      await writeState(backedDaemonState('cond', 10_000))
+      await writeState(backedDaemonState('cond', 10_000, 'd1000'))
       let capturedRequest: unknown = null
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
@@ -1621,6 +1630,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         },
         {
+          resolveInputFeePpkByKeyset: zeroInputFees,
           createEngineClient() {
             return engine
           },
@@ -1697,7 +1707,10 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             timeInForce: 'GTC',
           },
         },
-        { createEngineClient: () => engine },
+        {
+          resolveInputFeePpkByKeyset: zeroInputFees,
+          createEngineClient: () => engine,
+        },
       )
 
       assert.equal(response.ok, false)
@@ -1776,6 +1789,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         },
         {
+          resolveInputFeePpkByKeyset: zeroInputFees,
           createEngineClient: () => engine,
             generateEphemeralKeypair: () =>
               testEphemeralKeypair('77'.repeat(32)),
@@ -1798,7 +1812,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       'order.submit starts runtime with complement order subscription state',
       async () => {
       const priorState = await readState()
-      await writeState(backedDaemonState())
+      await writeState(backedDaemonState('cond', 10_000, 'complement'))
       try {
         const engine: EngineClientLike = {
           ...scoreDisabledEngineMethods,
@@ -1845,6 +1859,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             },
           },
           {
+            resolveInputFeePpkByKeyset: zeroInputFees,
             createEngineClient() {
               return engine
             },
@@ -1874,7 +1889,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       'order.submit propagates engine machine-code rejections',
       async () => {
       const priorState = await readState()
-      await writeState(backedDaemonState())
+      await writeState(backedDaemonState('cond', 10_000, 'rejected'))
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
         async submitOrder() {
@@ -1912,6 +1927,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         },
         {
+          resolveInputFeePpkByKeyset: zeroInputFees,
           createEngineClient() {
             return engine
           },
@@ -2006,6 +2022,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
             },
           },
           {
+            resolveInputFeePpkByKeyset: zeroInputFees,
             createEngineClient() {
               return engine
             },
@@ -2068,7 +2085,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       'order.submit rejects malformed order intent before side effects',
       async () => {
       const priorState = await readState()
-      await writeState(backedDaemonState())
+      await writeState(backedDaemonState('cond', 10_000, 'malformed'))
 
       try {
         for (const params of [
@@ -2361,6 +2378,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         },
         {
+          resolveInputFeePpkByKeyset: zeroInputFees,
           createEngineClient() {
             return {
               async submitOrder() {
@@ -2424,6 +2442,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           params: { marketId: 'cond-YES' },
         },
         {
+          resolveInputFeePpkByKeyset: zeroInputFees,
           createEngineClient() {
             return {
               async submitOrder() {
@@ -2466,7 +2485,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test(
       'order.submit remains successful when trade runtime start fails after persistence',
       async () => {
-      await writeState(backedDaemonState())
+      await writeState(backedDaemonState('cond', 10_000, 'runtime-fail'))
       const engine: EngineClientLike = {
         ...scoreDisabledEngineMethods,
         async submitOrder(_marketId, request) {
@@ -2504,6 +2523,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         },
         {
+          resolveInputFeePpkByKeyset: zeroInputFees,
           createEngineClient() {
             return engine
           },
@@ -2532,7 +2552,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
     await t.test(
       'order.submit accepts direct sell flow after same-outcome CTF swaps are supported',
       async () => {
-      await writeState(backedDaemonState())
+      await writeState(backedDaemonState('cond', 10_000, 'direct-sell'))
       let capturedRequest: unknown = null
 
       const response = await dispatch(
@@ -2548,6 +2568,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
           },
         },
         {
+          resolveInputFeePpkByKeyset: zeroInputFees,
           createEngineClient() {
             return {
               ...scoreDisabledEngineMethods,
@@ -2705,6 +2726,7 @@ test('daemon dispatch persists wallet, order, and swap state', async (t) => {
       },
     )
   } finally {
+    uninstallOrderCollateral?.()
     uninstallCoordinator?.()
     await lease?.stopAndRelease()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -2753,7 +2775,11 @@ function proofRecord(
   }
 }
 
-function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
+function backedDaemonState(
+  conditionId = 'cond',
+  amount = 10_000,
+  proofNamespace = 'default',
+): DaemonState {
   const state = emptyDaemonState()
   state.wallet.proofs.push(
     proofRecord(
@@ -2766,7 +2792,7 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
       outcomeSetId: 'YES',
       baseAsset: 'sat',
       },
-      `${conditionId}-yes-vcs`,
+      `${conditionId}-${proofNamespace}-yes-vcs`,
     ),
     proofRecord(
       'https://mint-a.example',
@@ -2778,7 +2804,7 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
       outcomeSetId: 'NO',
       baseAsset: 'sat',
       },
-      `${conditionId}-no-vcs`,
+      `${conditionId}-${proofNamespace}-no-vcs`,
     ),
     proofRecord(
       'https://mint-a.example',
@@ -2788,7 +2814,7 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
       kind: 'sats',
       baseAsset: 'sat',
       },
-      `${conditionId}-base`,
+      `${conditionId}-${proofNamespace}-base`,
     ),
   )
   return state
@@ -2830,6 +2856,13 @@ function cashuProof(amount: number, secret: string): Proof {
     secret,
     C: `02${'11'.repeat(32)}`,
   }
+}
+
+async function zeroInputFees(
+  _mintUrl: string,
+  keysetIds: string[],
+): Promise<Record<string, number>> {
+  return Object.fromEntries(keysetIds.map((keysetId) => [keysetId, 0]))
 }
 
 function concurrentSendWallet(selectedSecrets: string[]) {
