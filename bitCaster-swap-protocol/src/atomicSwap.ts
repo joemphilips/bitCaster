@@ -40,12 +40,13 @@ import {
   hashToCurve,
   splitAmount,
 } from "@cashu/cashu-ts";
-import { schnorr } from "@noble/curves/secp256k1.js";
+import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import {
   type EphemeralKeypair,
   computeSharedSecret,
   deriveEncryptionKey,
   encrypt,
+  encryptWithIv,
   decrypt,
   hexToBytes,
 } from "./ecdh.ts";
@@ -119,7 +120,11 @@ export type ProofOperationKind =
   | "ctf-split"
   | "ctf-redeem"
   | "proof-split";
-export type ProofOperationState = "prepared" | "mint-submitted" | "completed" | "failed";
+export type ProofOperationState =
+  | "prepared"
+  | "mint-submitted"
+  | "completed"
+  | "failed";
 
 export interface ProofOperationRecord {
   operationId: string;
@@ -278,9 +283,12 @@ async function buildSharedKey(ctx: SwapContext): Promise<CryptoKey> {
 async function encryptMsg(
   ctx: SwapContext,
   plaintext: string,
+  persistedIv?: Uint8Array,
 ): Promise<string> {
   const key = await buildSharedKey(ctx);
-  return encrypt(key, plaintext);
+  return persistedIv
+    ? encryptWithIv(key, plaintext, persistedIv)
+    : encrypt(key, plaintext);
 }
 
 async function decryptMsg(
@@ -343,20 +351,42 @@ export async function sellerPrepareSwap(
  * check is wired in as a hard guard together with the Phase 1 seller
  * call-site cutover (see docs/plans/p19-cashu-ts-ctf-native.md).
  */
-export async function sellerPreparePrelockedSwap(
-  ctx: SwapContext,
-  lockedProofs: Proof[],
-  changeProofs: Proof[] = [],
-): Promise<{
+export interface SellerPreparedSwap {
   adaptorPointCipher: string;
   lockedProofsCipher: string;
   adaptorPoint: AdaptorPoint;
   lockedProofs: Proof[];
   changeProofs: Proof[];
-}> {
+}
+
+export async function sellerPreparePrelockedSwap(
+  ctx: SwapContext,
+  lockedProofs: Proof[],
+  changeProofs: Proof[] = [],
+): Promise<SellerPreparedSwap> {
+  return sellerPreparePersistedPrelockedSwap(
+    ctx,
+    lockedProofs,
+    generateAdaptorPoint(),
+    changeProofs,
+  );
+}
+
+/**
+ * Prepare the seller messages from adaptor material that is already durable.
+ *
+ * Recovery callers must use this entrypoint so a crash cannot rotate the
+ * adaptor secret after proofs have crossed a mint boundary.
+ */
+export async function sellerPreparePersistedPrelockedSwap(
+  ctx: SwapContext,
+  lockedProofs: Proof[],
+  persistedAdaptorPoint: AdaptorPoint,
+  changeProofs: Proof[] = [],
+): Promise<SellerPreparedSwap> {
   assertProofsAtomicSwapLocked(ctx, lockedProofs);
   const protocolLockedProofs = lockedProofs.map(stripLocalProofMetadata);
-  const adaptorPoint = generateAdaptorPoint();
+  const adaptorPoint = validatePersistedAdaptorPoint(persistedAdaptorPoint);
 
   // Pre-sign each proof's secret
   const privBytes = ctx.ephemeralKey.privateKey;
@@ -392,6 +422,26 @@ export async function sellerPreparePrelockedSwap(
     adaptorPoint,
     lockedProofs: protocolLockedProofs,
     changeProofs,
+  };
+}
+
+function validatePersistedAdaptorPoint(persisted: AdaptorPoint): AdaptorPoint {
+  if (persisted.secret.length !== 32 || persisted.point.length !== 33) {
+    throw new Error("persisted adaptor point binding is invalid");
+  }
+
+  try {
+    const derivedPoint = secp256k1.getPublicKey(persisted.secret, true);
+    if (!derivedPoint.every((byte, index) => byte === persisted.point[index])) {
+      throw new Error("binding mismatch");
+    }
+  } catch {
+    throw new Error("persisted adaptor point binding is invalid");
+  }
+
+  return {
+    secret: Uint8Array.from(persisted.secret),
+    point: Uint8Array.from(persisted.point),
   };
 }
 
@@ -576,7 +626,9 @@ export async function conditionalKeysetSwap(
       outputs: serializeOutputDataArrayByLabel(preview.outputDataByLabel),
       metadata: { keysetId: preview.keysetId, unit },
     });
-    await proofOperationStore.markProofOperationMintSubmitted(options.operationId);
+    await proofOperationStore.markProofOperationMintSubmitted(
+      options.operationId,
+    );
     const result = await completeConditionalKeysetSwapPreview(wallet, preview);
     await proofOperationStore.markProofOperationCompleted(
       options.operationId,
@@ -714,7 +766,10 @@ function grossConditionalAmountForNetClaim(
 ): number {
   let grossAmount = netAmount;
   for (let attempt = 0; attempt < 32; attempt += 1) {
-    const proofCount = splitAmount(Amount.from(grossAmount), keyset.keys).length;
+    const proofCount = splitAmount(
+      Amount.from(grossAmount),
+      keyset.keys,
+    ).length;
     const nextGrossAmount = netAmount + conditionalInputFee(proofCount, keyset);
     if (nextGrossAmount === grossAmount) return grossAmount;
     grossAmount = nextGrossAmount;
@@ -884,7 +939,7 @@ export async function buyerPrepareSwap(
   aliceLockedProofsCipher: string,
   satProofs: Proof[],
   amountSats: number,
-  options: ProofOperationOptions = {},
+  options: BuyerPrepareSwapOptions = {},
 ): Promise<{
   lockedProofsCipher: string;
   adaptorPointHex: string;
@@ -896,6 +951,9 @@ export async function buyerPrepareSwap(
   if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
     throw new Error("buyerPrepareSwap: amountSats must be a positive integer");
   }
+  const lockedProofsCipherIv = validatePersistedCipherIv(
+    options.lockedProofsCipherIv,
+  );
 
   // Decrypt Alice's messages
   const aptPlain = await decryptMsg(ctx, aliceAdaptorPointCipher);
@@ -947,6 +1005,7 @@ export async function buyerPrepareSwap(
   const lockedProofsCipher = await encryptMsg(
     ctx,
     encodeProofsMsg(lockedProofsMsg),
+    lockedProofsCipherIv,
   );
 
   return {
@@ -957,6 +1016,21 @@ export async function buyerPrepareSwap(
     preSigsHex,
     sellerPreSigsHex: alicePreSigsHex,
   };
+}
+
+export interface BuyerPrepareSwapOptions extends ProofOperationOptions {
+  /** Persist before proof preparation so restart reconstructs one exact cipher. */
+  lockedProofsCipherIv?: Uint8Array;
+}
+
+function validatePersistedCipherIv(
+  value: Uint8Array | undefined,
+): Uint8Array | undefined {
+  if (value === undefined) return undefined;
+  if (value.length !== 12) {
+    throw new Error("persisted swap cipher IV must be 12 bytes");
+  }
+  return Uint8Array.from(value);
 }
 
 /**
@@ -1077,10 +1151,8 @@ async function lockProofsForSwap(
   proofOperationStore?: ProofOperationStore,
 ): Promise<LockedProofResult> {
   const mint = new CashuMint(ctx.mintUrl);
-  const { wallet, sendConfig, inputFeeSats, unit } = await walletForSourceProofs(
-    mint,
-    sourceProofs,
-  );
+  const { wallet, sendConfig, inputFeeSats, unit } =
+    await walletForSourceProofs(mint, sourceProofs);
 
   const netInputSats = sumProofs(sourceProofs) - inputFeeSats;
   if (netInputSats <= 0)
@@ -1369,7 +1441,9 @@ export async function resumePreparedProofOperation(
     return final;
   }
   if (allStates(states, CheckStateEnum.UNSPENT)) {
-    await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
+    await proofOperationStore.markProofOperationMintSubmitted(
+      entry.operationId,
+    );
     const result = await wallet.completeSwap(entryToSwapPreview(entry));
     const final = exactResultGroups(entry.kind, result);
     const normalized = normalizeProofGroups(final);
@@ -1417,20 +1491,18 @@ export async function restoreExactPreparedProofOperation(
       `Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? "unknown error"}`,
     );
   }
-  const restored = entry.kind === "conditional-keyset-swap"
-    ? await restoreOutputGroups(
-        entry.mintUrl,
-        entry.outputs,
-        OutputData,
-        CashuMint,
-        normalizeCtfSignature,
-      )
-    : await restoreOutputGroups(entry.mintUrl, entry.outputs);
+  const restored =
+    entry.kind === "conditional-keyset-swap"
+      ? await restoreOutputGroups(
+          entry.mintUrl,
+          entry.outputs,
+          OutputData,
+          CashuMint,
+          normalizeCtfSignature,
+        )
+      : await restoreOutputGroups(entry.mintUrl, entry.outputs);
   if (operationKeepsUnselectedInputs(entry.kind)) {
-    restored.keep = [
-      ...(restored.keep ?? []),
-      ...readUnselectedProofs(entry),
-    ];
+    restored.keep = [...(restored.keep ?? []), ...readUnselectedProofs(entry)];
   }
   return normalizeProofGroups(restored);
 }
@@ -1515,7 +1587,9 @@ async function resumeConditionalKeysetSwap(
       typeof entry.metadata.keysetId === "string"
         ? entry.metadata.keysetId
         : singleProofKeysetId(entry.inputs);
-    await proofOperationStore.markProofOperationMintSubmitted(entry.operationId);
+    await proofOperationStore.markProofOperationMintSubmitted(
+      entry.operationId,
+    );
     const result = await completeConditionalKeysetSwapPreview(wallet, {
       keysetId,
       inputs: entry.inputs,
@@ -1574,7 +1648,10 @@ async function walletForSourceProofs(
   };
 }
 
-async function unitForProofs(mint: CashuMint, proofs: Proof[]): Promise<string> {
+async function unitForProofs(
+  mint: CashuMint,
+  proofs: Proof[],
+): Promise<string> {
   const ids = [...new Set(proofs.map((proof) => proof.id).filter(Boolean))];
   if (ids.length === 0) {
     throw new Error("Atomic swap proof set must contain keyset ids");
@@ -1828,7 +1905,10 @@ function allStates(states: ProofState[], expected: string): boolean {
   return states.length > 0 && states.every((state) => state.state === expected);
 }
 
-function swapPreviewMetadata(preview: SwapPreview, unit: string): Record<string, unknown> {
+function swapPreviewMetadata(
+  preview: SwapPreview,
+  unit: string,
+): Record<string, unknown> {
   return {
     amount: amountToNumber(preview.amount),
     fees: amountToNumber(preview.fees),
@@ -1849,7 +1929,8 @@ function entryToSwapPreview(entry: ProofOperationRecord): SwapPreview {
     sendOutputs:
       deserializeOutputGroups({ send: entry.outputs.send ?? [] }).send ?? [],
     keepOutputs:
-      deserializeOutputGroups({ keep: entry.outputs[keepLabel] ?? [] }).keep ?? [],
+      deserializeOutputGroups({ keep: entry.outputs[keepLabel] ?? [] }).keep ??
+      [],
     unselectedProofs: readUnselectedProofs(entry),
   } as unknown as SwapPreview;
 }

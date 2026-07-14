@@ -10,7 +10,7 @@
  * Everything is kept in Uint8Array so the caller controls hex-encoding.
  */
 
-import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { secp256k1 } from "@noble/curves/secp256k1.js";
 
 // ---------------------------------------------------------------------------
 // Keypair
@@ -18,16 +18,16 @@ import { secp256k1 } from '@noble/curves/secp256k1.js'
 
 export interface EphemeralKeypair {
   /** 32-byte scalar. */
-  privateKey: Uint8Array
+  privateKey: Uint8Array;
   /** 33-byte compressed point, hex (starts 02/03). */
-  publicKey: string
+  publicKey: string;
 }
 
 /** Generate a fresh ephemeral secp256k1 keypair for one trade. */
 export function generateEphemeralKeypair(): EphemeralKeypair {
-  const privateKey = secp256k1.utils.randomSecretKey()
-  const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-  return { privateKey, publicKey }
+  const privateKey = secp256k1.utils.randomSecretKey();
+  const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true));
+  return { privateKey, publicKey };
 }
 
 // ---------------------------------------------------------------------------
@@ -45,9 +45,9 @@ export function computeSharedSecret(
   privateKey: Uint8Array,
   counterpartyPubkey: string,
 ): Uint8Array {
-  const pubBytes = hexToBytes(counterpartyPubkey)
+  const pubBytes = hexToBytes(counterpartyPubkey);
   // getSharedSecret returns a 33-byte compressed point by default
-  return secp256k1.getSharedSecret(privateKey, pubBytes)
+  return secp256k1.getSharedSecret(privateKey, pubBytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -58,49 +58,81 @@ export function computeSharedSecret(
  * Derive a 256-bit AES key from the shared EC point.
  * Uses SHA-256 over the raw bytes of the compressed shared point.
  */
-export function deriveEncryptionKey(sharedSecret: Uint8Array): Promise<CryptoKey> {
-  const digest = crypto.subtle.digest('SHA-256', sharedSecret.buffer as ArrayBuffer)
+export function deriveEncryptionKey(
+  sharedSecret: Uint8Array,
+): Promise<CryptoKey> {
+  const digest = crypto.subtle.digest(
+    "SHA-256",
+    sharedSecret.buffer as ArrayBuffer,
+  );
   return digest.then((raw) =>
     crypto.subtle.importKey(
-      'raw',
+      "raw",
       raw,
-      { name: 'AES-GCM', length: 256 },
+      { name: "AES-GCM", length: 256 },
       false,
-      ['encrypt', 'decrypt'],
+      ["encrypt", "decrypt"],
     ),
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Encrypt / decrypt — AES-256-GCM
 // ---------------------------------------------------------------------------
 
-const IV_BYTES = 12 // 96-bit IV for GCM
+const IV_BYTES = 12; // 96-bit IV for GCM
 
 /**
  * Encrypt `plaintext` using AES-256-GCM.
  *
  * @returns base64-encoded `IV (12 bytes) || ciphertext+tag`
  */
-export async function encrypt(key: CryptoKey, plaintext: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES))
-  const encoded = new TextEncoder().encode(plaintext)
-  const cipherBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded)
-  const out = new Uint8Array(IV_BYTES + cipherBuf.byteLength)
-  out.set(iv, 0)
-  out.set(new Uint8Array(cipherBuf), IV_BYTES)
-  return uint8ToBase64(out)
+export async function encrypt(
+  key: CryptoKey,
+  plaintext: string,
+): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+  return encryptWithIv(key, plaintext, iv);
+}
+
+/** Rebuild an exact durable ciphertext from a caller-persisted GCM IV. */
+export async function encryptWithIv(
+  key: CryptoKey,
+  plaintext: string,
+  persistedIv: Uint8Array,
+): Promise<string> {
+  if (persistedIv.length !== IV_BYTES) {
+    throw new Error("encryption IV must be 12 bytes");
+  }
+  const iv = Uint8Array.from(persistedIv);
+  const encoded = new TextEncoder().encode(plaintext);
+  const cipherBuf = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    encoded,
+  );
+  const out = new Uint8Array(IV_BYTES + cipherBuf.byteLength);
+  out.set(iv, 0);
+  out.set(new Uint8Array(cipherBuf), IV_BYTES);
+  return uint8ToBase64(out);
 }
 
 /**
  * Decrypt a base64-encoded `IV || ciphertext+tag` produced by `encrypt`.
  */
-export async function decrypt(key: CryptoKey, ciphertext: string): Promise<string> {
-  const buf = base64ToUint8(ciphertext)
-  const iv = buf.slice(0, IV_BYTES)
-  const data = buf.slice(IV_BYTES)
-  const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data)
-  return new TextDecoder().decode(plainBuf)
+export async function decrypt(
+  key: CryptoKey,
+  ciphertext: string,
+): Promise<string> {
+  const buf = base64ToUint8(ciphertext);
+  const iv = buf.slice(0, IV_BYTES);
+  const data = buf.slice(IV_BYTES);
+  const plainBuf = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    key,
+    data,
+  );
+  return new TextDecoder().decode(plainBuf);
 }
 
 // ---------------------------------------------------------------------------
@@ -109,28 +141,28 @@ export async function decrypt(key: CryptoKey, ciphertext: string): Promise<strin
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 export function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error('hex string has odd length')
-  const out = new Uint8Array(hex.length / 2)
+  if (hex.length % 2 !== 0) throw new Error("hex string has odd length");
+  const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
-  return out
+  return out;
 }
 
 function uint8ToBase64(bytes: Uint8Array): string {
-  let bin = ''
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
-  return btoa(bin)
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
 }
 
 function base64ToUint8(b64: string): Uint8Array {
-  const bin = atob(b64)
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
