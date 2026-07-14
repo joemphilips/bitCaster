@@ -2172,7 +2172,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Lifecycle state of a single deposit. `requested` → invoice issued or ecash submission accepted, awaiting payment proof. `paid` → payment confirmed and crediting is in progress. `credited` → the market account was credited (terminal-success). `failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
+    /// Lifecycle state of a single deposit. `requested` → ecash submission accepted, awaiting proof verification. `paid` → payment confirmed and crediting is in progress. `credited` → the market account was credited (terminal-success and the only state that authorizes a client to delete the submitted proofs). `failed` → the latest attempt failed; an ecash client may retry the exact same deposit id, normalized request, and token so recovery can continue without double-crediting.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -2194,17 +2194,14 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// How the funder is paying the deposit.
+    /// Deposit payment method. The current protocol accepts ecash only.
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum DepositMethod
     {
 
-        [System.Runtime.Serialization.EnumMember(Value = @"lightningInvoice")]
-        LightningInvoice = 0,
-
         [System.Runtime.Serialization.EnumMember(Value = @"ecash")]
-        Ecash = 1,
+        Ecash = 0,
 
     }
 
@@ -2212,8 +2209,9 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class RequestEcashDepositRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public RequestEcashDepositRequest(long @amountSubunits, string @creatorPubkey, int? @divisibility, bool? @fundAmm, string @proofsToken, string @unit)
+        public RequestEcashDepositRequest(long @amountSubunits, string @creatorPubkey, System.Guid @depositId, int? @divisibility, bool? @fundAmm, string @proofsToken, string @unit)
         {
+            this.DepositId = @depositId;
             this.AmountSubunits = @amountSubunits;
             this.Unit = @unit;
             this.Divisibility = @divisibility;
@@ -2223,6 +2221,13 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
+        /// Client-generated idempotency identifier. Retries must reuse this identifier with the exact same normalized request and ecash token.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("depositId")]
+        public System.Guid DepositId { get; }
+
+        /// <summary>
         /// Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market.
         /// <br/>
         /// </summary>
@@ -2230,13 +2235,15 @@ namespace BitCaster.MatchingEngine.Contracts
         public long AmountSubunits { get; }
 
         /// <summary>
-        /// Cashu token unit expected for the supplied proofs.
+        /// Cashu token unit expected for the supplied proofs. When supplied, it must match the registered market's canonical collateral unit.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("unit")]
         public string Unit { get; }
 
         /// <summary>
-        /// Market price divisibility associated with the supplied unit.
+        /// Market price divisibility associated with the supplied unit. When supplied, it must match the registered market's effective divisibility.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
         public int? Divisibility { get; }
@@ -2469,16 +2476,16 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class GetDepositResponseDto
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public GetDepositResponseDto(long @amountSubunits, string @conditionId, System.Guid @depositId, System.DateTimeOffset? @expiresAt, string @failureReason, DepositMethod @method, System.DateTimeOffset @requestedAt, DepositState @state, System.DateTimeOffset @updatedAt)
+        public GetDepositResponseDto(long @amountSubunits, string @conditionId, long? @creditedAmountSubunits, System.Guid @depositId, string @failureReason, DepositMethod @method, System.DateTimeOffset @requestedAt, DepositState @state, System.DateTimeOffset @updatedAt)
         {
             this.DepositId = @depositId;
             this.ConditionId = @conditionId;
             this.State = @state;
             this.Method = @method;
             this.AmountSubunits = @amountSubunits;
+            this.CreditedAmountSubunits = @creditedAmountSubunits;
             this.RequestedAt = @requestedAt;
             this.UpdatedAt = @updatedAt;
-            this.ExpiresAt = @expiresAt;
             this.FailureReason = @failureReason;
         }
 
@@ -2499,8 +2506,18 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositMethod>))]
         public DepositMethod Method { get; }
 
+        /// <summary>
+        /// Immutable gross amount asserted by the original request.
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
         public long AmountSubunits { get; }
+
+        /// <summary>
+        /// Actual redeemed proof value credited after mint input fees. Null until the deposit reaches credited state and never greater than amountSubunits.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("creditedAmountSubunits")]
+        public long? CreditedAmountSubunits { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("requestedAt")]
         public System.DateTimeOffset RequestedAt { get; }
@@ -2510,12 +2527,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("updatedAt")]
         public System.DateTimeOffset UpdatedAt { get; }
-
-        /// <summary>
-        /// For LN deposits, when the bolt11 stops being payable.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
-        public System.DateTimeOffset? ExpiresAt { get; }
 
         /// <summary>
         /// Populated only when `state == Failed`.

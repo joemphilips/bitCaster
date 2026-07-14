@@ -314,7 +314,7 @@ export interface paths {
         put?: never;
         /**
          * Submit an ecash payment for market liquidity
-         * @description Submits an ecash deposit for asynchronous proof verification and crediting. Use the returned `depositId` to poll for state transitions via the GET endpoint.
+         * @description Submits an ecash deposit for asynchronous proof verification and crediting. The client supplies a durable `depositId` before selecting or sending proofs and reuses it for exact retries and status polling.
          */
         post: operations["requestEcashDeposit"];
         delete?: never;
@@ -332,7 +332,7 @@ export interface paths {
         };
         /**
          * Read the current state of a deposit
-         * @description Polling-friendly read of a single deposit's lifecycle state. Bearer payment instruments (bolt11) and proof material are deliberately excluded from the response — they appear only in the original request response. Public; no authentication required.
+         * @description Polling-friendly read of a single deposit's lifecycle state. Bearer proof material is deliberately excluded from the response. Public; no authentication required.
          */
         get: operations["getDepositStatus"];
         put?: never;
@@ -1033,23 +1033,28 @@ export interface components {
             markets: components["schemas"]["CreatorMarketEntry"][];
         };
         /**
-         * @description Lifecycle state of a single deposit. `requested` → invoice issued or ecash submission accepted, awaiting payment proof. `paid` → payment confirmed and crediting is in progress. `credited` → the market account was credited (terminal-success). `failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
+         * @description Lifecycle state of a single deposit. `requested` → ecash submission accepted, awaiting proof verification. `paid` → payment confirmed and crediting is in progress. `credited` → the market account was credited (terminal-success and the only state that authorizes a client to delete the submitted proofs). `failed` → the latest attempt failed; an ecash client may retry the exact same deposit id, normalized request, and token so recovery can continue without double-crediting.
          * @enum {string}
          */
         DepositState: "requested" | "paid" | "credited" | "failed";
         /**
-         * @description How the funder is paying the deposit.
+         * @description Deposit payment method. The current protocol accepts ecash only.
          * @enum {string}
          */
-        DepositMethod: "lightningInvoice" | "ecash";
+        DepositMethod: "ecash";
         RequestEcashDepositRequest: {
+            /**
+             * Format: uuid
+             * @description Client-generated idempotency identifier. Retries must reuse this identifier with the exact same normalized request and ecash token.
+             */
+            depositId: string;
             /** @description Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market. */
             amountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description Cashu token unit expected for the supplied proofs. */
+            /** @description Cashu token unit expected for the supplied proofs. When supplied, it must match the registered market's canonical collateral unit. */
             unit?: string;
             /**
              * Format: int32
-             * @description Market price divisibility associated with the supplied unit.
+             * @description Market price divisibility associated with the supplied unit. When supplied, it must match the registered market's effective divisibility.
              */
             divisibility?: number;
             /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
@@ -1143,7 +1148,10 @@ export interface components {
             conditionId: string;
             state: components["schemas"]["DepositState"];
             method: components["schemas"]["DepositMethod"];
+            /** @description Immutable gross amount asserted by the original request. */
             amountSubunits: components["schemas"]["CollateralSubunits"];
+            /** @description Actual redeemed proof value credited after mint input fees. Null until the deposit reaches credited state and never greater than amountSubunits. */
+            creditedAmountSubunits?: components["schemas"]["CollateralSubunits"] | null;
             /** Format: date-time */
             requestedAt: string;
             /**
@@ -1151,11 +1159,6 @@ export interface components {
              * @description Most recent state-change timestamp.
              */
             updatedAt: string;
-            /**
-             * Format: date-time
-             * @description For LN deposits, when the bolt11 stops being payable.
-             */
-            expiresAt?: string | null;
             /** @description Populated only when `state == Failed`. */
             failureReason?: string | null;
         };
@@ -1991,6 +1994,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Market is closed and this is not an exact retry of an existing deposit */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Market not found */
             404: {
                 headers: {
@@ -1998,8 +2008,22 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Deposit identifier is already bound to a different request */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Per-pubkey deposit-request rate limit exceeded */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wallet-service forwarding failed; retry the exact request and deposit id */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

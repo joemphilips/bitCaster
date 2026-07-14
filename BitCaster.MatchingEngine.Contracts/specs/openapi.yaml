@@ -534,8 +534,8 @@ paths:
         - nip98: []
       description: >
         Submits an ecash deposit for asynchronous proof verification and
-        crediting. Use the returned `depositId` to poll for state transitions
-        via the GET endpoint.
+        crediting. The client supplies a durable `depositId` before selecting
+        or sending proofs and reuses it for exact retries and status polling.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
       requestBody:
@@ -555,10 +555,16 @@ paths:
           description: Validation error (e.g. malformed proofs token, non-positive amount)
         '401':
           description: Missing or invalid NIP-98 authentication
+        '403':
+          description: Market is closed and this is not an exact retry of an existing deposit
         '404':
           description: Market not found
+        '409':
+          description: Deposit identifier is already bound to a different request
         '429':
           description: Per-pubkey deposit-request rate limit exceeded
+        '502':
+          description: Wallet-service forwarding failed; retry the exact request and deposit id
 
   /api/v1/markets/{conditionId}/deposit/{depositId}:
     get:
@@ -566,9 +572,8 @@ paths:
       summary: Read the current state of a deposit
       description: >
         Polling-friendly read of a single deposit's lifecycle state. Bearer
-        payment instruments (bolt11) and proof material are deliberately
-        excluded from the response — they appear only in the original
-        request response. Public; no authentication required.
+        proof material is deliberately excluded from the response. Public; no
+        authentication required.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
         - name: depositId
@@ -2197,25 +2202,33 @@ components:
         - credited
         - failed
       description: >
-        Lifecycle state of a single deposit. `requested` → invoice issued or
-        ecash submission accepted, awaiting payment proof. `paid` → payment
+        Lifecycle state of a single deposit. `requested` → ecash submission
+        accepted, awaiting proof verification. `paid` → payment
         confirmed and crediting is in progress. `credited` → the market account
-        was credited (terminal-success). `failed` → invoice expired, ecash
-        rejected, or crediting failed (terminal-failure).
+        was credited (terminal-success and the only state that authorizes a
+        client to delete the submitted proofs). `failed` → the latest attempt
+        failed; an ecash client may retry the exact same deposit id, normalized
+        request, and token so recovery can continue without double-crediting.
 
     DepositMethod:
       type: string
       enum:
-        - lightningInvoice
         - ecash
-      description: How the funder is paying the deposit.
+      description: Deposit payment method. The current protocol accepts ecash only.
 
     RequestEcashDepositRequest:
       type: object
       required:
+        - depositId
         - amountSubunits
         - proofsToken
       properties:
+        depositId:
+          type: string
+          format: uuid
+          description: >
+            Client-generated idempotency identifier. Retries must reuse this
+            identifier with the exact same normalized request and ecash token.
         amountSubunits:
           allOf:
             - $ref: '#/components/schemas/CollateralSubunits'
@@ -2226,12 +2239,16 @@ components:
         unit:
           type: string
           minLength: 1
-          description: Cashu token unit expected for the supplied proofs.
+          description: >
+            Cashu token unit expected for the supplied proofs. When supplied,
+            it must match the registered market's canonical collateral unit.
         divisibility:
           type: integer
           format: int32
           minimum: 1
-          description: Market price divisibility associated with the supplied unit.
+          description: >
+            Market price divisibility associated with the supplied unit. When
+            supplied, it must match the registered market's effective divisibility.
         proofsToken:
           type: string
           description: >
@@ -2377,6 +2394,15 @@ components:
           $ref: '#/components/schemas/DepositMethod'
         amountSubunits:
           $ref: '#/components/schemas/CollateralSubunits'
+          description: Immutable gross amount asserted by the original request.
+        creditedAmountSubunits:
+          allOf:
+            - $ref: '#/components/schemas/CollateralSubunits'
+          nullable: true
+          description: >
+            Actual redeemed proof value credited after mint input fees. Null
+            until the deposit reaches credited state and never greater than
+            amountSubunits.
         requestedAt:
           type: string
           format: date-time
@@ -2384,11 +2410,6 @@ components:
           type: string
           format: date-time
           description: Most recent state-change timestamp.
-        expiresAt:
-          type: string
-          format: date-time
-          nullable: true
-          description: For LN deposits, when the bolt11 stops being payable.
         failureReason:
           type: string
           nullable: true
