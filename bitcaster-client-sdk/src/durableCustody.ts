@@ -10,7 +10,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 export const DURABLE_CUSTODY_SCHEMA_VERSION = 1 as const
 export const DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX = 16 * 1_024
 
-type CustodyScopeKind = 'profile' | 'market'
+type CustodyScopeKind = 'wallet' | 'market'
 type CustodyRole = 'buyer' | 'seller'
 type CustodyTradeStage =
   | 'lock'
@@ -42,8 +42,8 @@ export type DurableCustodyCurve = 'secp256k1' | 'bls12-381'
 
 export type DurableCustodyScope =
   | {
-    scopeKind: 'profile'
-    profileId: string
+    scopeKind: 'wallet'
+    walletId: string
     scopeId: string
   }
   | {
@@ -56,7 +56,7 @@ export type DurableCustodyScope =
   }
 
 export type DurableCustodyScopeInput =
-  | { scopeKind: 'profile'; profileId: string }
+  | { scopeKind: 'wallet'; walletId: string }
   | {
     scopeKind: 'market'
     marketId: string
@@ -181,10 +181,11 @@ export interface DurableCustodyRecord {
 export interface DurableCustodyScopeState {
   schemaVersion: typeof DURABLE_CUSTODY_SCHEMA_VERSION
   scope: DurableCustodyScope
+  /** Monotonic fencing authority retained even while the scope is unowned. */
+  fencingEpoch: number
   /** `null` is the only canonical state before an adapter has granted a lease. */
   owner: null | {
-    ownerId: string
-    epoch: number
+    incarnationId: string
     leaseExpiresAtMs: number
   }
   effectiveClock: {
@@ -239,8 +240,8 @@ export type DurableCustodyRetryReason =
   | 'reservation-race'
 
 export interface DurableCustodyOwnerAuthorization {
-  ownerId: string
-  ownerEpoch: number
+  incarnationId: string
+  fencingEpoch: number
   observedAtMs: number
 }
 
@@ -259,6 +260,10 @@ export interface DurableCustodyStore extends DurableCustodyActiveRecoveryPageSto
   registerScope(scope: DurableCustodyScope): Promise<DurableCustodyScopeState>
   /** Claims an unowned or expired scope and advances its fencing epoch. */
   claimScope(input: DurableCustodyScopeClaimInput): Promise<DurableCustodyScopeState>
+  /** Extends the exact current owner's lease without advancing its epoch. */
+  renewScope(input: DurableCustodyScopeLeaseInput): Promise<DurableCustodyScopeState>
+  /** Clears the exact current owner while preserving its fencing epoch. */
+  releaseScope(input: DurableCustodyScopeReleaseInput): Promise<DurableCustodyScopeState>
   transact<T>(
     input: DurableCustodyTransactionInput,
     apply: DurableCustodyTransactionWork<T>,
@@ -363,9 +368,20 @@ function isDecodedDurableCustodyActiveRecoveryRecord(decoded: DurableCustodyReco
 
 export interface DurableCustodyScopeClaimInput {
   scope: DurableCustodyScope
-  ownerId: string
+  incarnationId: string
   observedAtMs: number
   leaseExpiresAtMs: number
+}
+
+export interface DurableCustodyScopeLeaseInput
+  extends DurableCustodyOwnerAuthorization {
+  scope: DurableCustodyScope
+  leaseExpiresAtMs: number
+}
+
+export interface DurableCustodyScopeReleaseInput
+  extends DurableCustodyOwnerAuthorization {
+  scope: DurableCustodyScope
 }
 
 export interface DurableCustodyTransactionInput {
@@ -483,10 +499,15 @@ export interface DurableCustodyExactOperationReference {
 export type DurableCustodyTransition =
   | ({
     kind: 'owner-claimed'
-    nextOwnerId: string
-    nextOwnerEpoch: number
+    nextIncarnationId: string
+    nextFencingEpoch: number
     nextLeaseExpiresAtMs: number
   } & Pick<DurableCustodyOwnerAuthorization, 'observedAtMs'>)
+  | ({
+    kind: 'owner-renewed'
+    nextLeaseExpiresAtMs: number
+  } & DurableCustodyOwnerAuthorization)
+  | ({ kind: 'owner-released' } & DurableCustodyOwnerAuthorization)
   | ({ kind: 'transport-attempted' } & DurableCustodyOwnerAuthorization)
   | ({
     kind: 'retry-scheduled'
@@ -551,7 +572,25 @@ export function claimDurableCustodyScope(
   return claimOwner(scopeState, transition)
 }
 
-const SCOPE_KINDS: readonly CustodyScopeKind[] = ['profile', 'market']
+/** Extends only the exact current owner's live lease. */
+export function renewDurableCustodyScope(
+  scopeState: DurableCustodyScopeState,
+  transition: Extract<DurableCustodyTransition, { kind: 'owner-renewed' }>,
+): DurableCustodyScopeState {
+  validateScopeState(scopeState, scopeState.scope)
+  return renewOwner(scopeState, transition)
+}
+
+/** Releases only the exact current owner and preserves the fencing epoch. */
+export function releaseDurableCustodyScope(
+  scopeState: DurableCustodyScopeState,
+  transition: Extract<DurableCustodyTransition, { kind: 'owner-released' }>,
+): DurableCustodyScopeState {
+  validateScopeState(scopeState, scopeState.scope)
+  return releaseOwner(scopeState, transition)
+}
+
+const SCOPE_KINDS: readonly CustodyScopeKind[] = ['wallet', 'market']
 const ROLES: readonly CustodyRole[] = ['buyer', 'seller']
 const STAGES: readonly CustodyTradeStage[] = [
   'lock', 'claim', 'refund', 'receive', 'send', 'ctf-split', 'ctf-merge', 'ctf-redeem',
@@ -604,14 +643,29 @@ const SEMANTIC_HORIZON_RULES: Readonly<Record<DurableCustodySemanticKind, {
   'ctf-redeem': { requireNotBefore: false, requireNotAfter: false },
 }
 
+const CUSTODY_WALLET_ID_DOMAIN = new TextEncoder().encode(
+  'bitcaster/durable-custody-wallet-id/v1\0',
+)
+
+/**
+ * Derives the non-secret, authentication-independent wallet scope identifier
+ * from the exact Cashu seed root supplied to the client wallet.
+ */
+export function deriveDurableCustodyWalletId(seed: Uint8Array): string {
+  if (!(seed instanceof Uint8Array) || (seed.length !== 32 && seed.length !== 64)) {
+    throw new Error('custody wallet seed root must be 32 or 64 bytes')
+  }
+  const input = new Uint8Array(CUSTODY_WALLET_ID_DOMAIN.length + seed.length)
+  input.set(CUSTODY_WALLET_ID_DOMAIN)
+  input.set(seed, CUSTODY_WALLET_ID_DOMAIN.length)
+  return bytesToHex(sha256(input))
+}
+
 /** Creates the deterministic scope identifier used only as non-secret metadata. */
 export function deriveDurableCustodyScopeId(input: DurableCustodyScopeInput): string {
-  if (input.scopeKind === 'profile') {
-    requireIdentifier(input.profileId, 'profile id')
-    return requireCompositeIdentifier(
-      `custody:profile:${encodeURIComponent(input.profileId)}`,
-      'custody scope id',
-    )
+  if (input.scopeKind === 'wallet') {
+    const walletId = requireFingerprint(input.walletId, 'custody wallet id')
+    return `custody:wallet:${walletId}`
   }
   const marketId = requireIdentifier(input.marketId, 'market id')
   const inventoryAccountId = requireIdentifier(input.inventoryAccountId, 'inventory account id')
@@ -632,9 +686,9 @@ export function decodeDurableCustodyScopeId(value: unknown): string {
   const scopeId = requireCompositeIdentifier(value, 'custody scope id')
   const parts = scopeId.split(':')
   try {
-    if (parts.length === 3 && parts[0] === 'custody' && parts[1] === 'profile') {
-      const profileId = decodeURIComponent(parts[2]!)
-      if (scopeId === deriveDurableCustodyScopeId({ scopeKind: 'profile', profileId })) return scopeId
+    if (parts.length === 3 && parts[0] === 'custody' && parts[1] === 'wallet') {
+      const walletId = parts[2]!
+      if (scopeId === deriveDurableCustodyScopeId({ scopeKind: 'wallet', walletId })) return scopeId
     }
     if (parts.length === 6 && parts[0] === 'custody' && parts[1] === 'market') {
       const input: DurableCustodyScopeInput = {
@@ -664,7 +718,7 @@ export function validateDurableCustodyScopeRegistration(
   if (existing.scopeKind !== requested.scopeKind) {
     throw new Error('custody scope registration is foreign')
   }
-  if (existing.scopeKind === 'profile' && requested.scopeKind === 'profile') {
+  if (existing.scopeKind === 'wallet' && requested.scopeKind === 'wallet') {
     if (existing.scopeId !== requested.scopeId) throw new Error('custody scope registration is foreign')
     return
   }
@@ -809,19 +863,26 @@ export function decodeDurableCustodyScopeState(
   expectedScope?: DurableCustodyScope,
 ): DurableCustodyScopeState {
   const root = requireRecord(value, 'durable custody scope state')
-  requireKnownFields(root, ['schemaVersion', 'scope', 'owner', 'effectiveClock'])
+  requireKnownFields(root, [
+    'schemaVersion', 'scope', 'fencingEpoch', 'owner', 'effectiveClock',
+  ])
   if (root.schemaVersion !== DURABLE_CUSTODY_SCHEMA_VERSION) {
     throw new Error('unsupported durable custody schema version')
   }
   const state = {
     schemaVersion: DURABLE_CUSTODY_SCHEMA_VERSION,
     scope: decodeScope(root.scope),
+    fencingEpoch: requireNonNegativeInteger(
+      root.fencingEpoch,
+      'custody fencing epoch',
+    ),
     owner: decodeOwner(root.owner),
     effectiveClock: decodeClock(root.effectiveClock),
   } satisfies DurableCustodyScopeState
   if (expectedScope !== undefined && state.scope.scopeId !== expectedScope.scopeId) {
     throw new Error('foreign custody scope')
   }
+  validateScopeState(state, state.scope)
   return state
 }
 
@@ -837,6 +898,18 @@ export function reduceDurableCustodyState(
     return {
       operation: record,
       scopeState: claimOwner(scopeState, transition),
+    }
+  }
+  if (transition.kind === 'owner-renewed') {
+    return {
+      operation: record,
+      scopeState: renewOwner(scopeState, transition),
+    }
+  }
+  if (transition.kind === 'owner-released') {
+    return {
+      operation: record,
+      scopeState: releaseOwner(scopeState, transition),
     }
   }
   const effectiveNowMs = authorizeOwner(scopeState, transition)
@@ -1063,14 +1136,14 @@ function decodeScope(value: unknown): DurableCustodyScope {
   const scope = requireRecord(value, 'scope')
   const scopeKind = requireString(scope.scopeKind, 'scope kind') as CustodyScopeKind
   requireOneOf(scopeKind, SCOPE_KINDS, 'scope kind')
-  if (scopeKind === 'profile') {
-    requireKnownFields(scope, ['scopeKind', 'profileId', 'scopeId'])
-    const profileId = requireIdentifier(scope.profileId, 'profile id')
+  if (scopeKind === 'wallet') {
+    requireKnownFields(scope, ['scopeKind', 'walletId', 'scopeId'])
+    const walletId = requireFingerprint(scope.walletId, 'custody wallet id')
     const scopeId = decodeDurableCustodyScopeId(scope.scopeId)
-    if (scopeId !== deriveDurableCustodyScopeId({ scopeKind, profileId })) {
+    if (scopeId !== deriveDurableCustodyScopeId({ scopeKind, walletId })) {
       throw new Error('custody scope id is invalid')
     }
-    return { scopeKind, profileId, scopeId }
+    return { scopeKind, walletId, scopeId }
   }
   requireKnownFields(scope, ['scopeKind', 'marketId', 'inventoryAccountId', 'normalizedMint', 'unit', 'scopeId'])
   const marketId = requireIdentifier(scope.marketId, 'market id')
@@ -1335,10 +1408,12 @@ function decodeHorizon(value: unknown): DurableCustodyRecord['operation']['horiz
 function decodeOwner(value: unknown): DurableCustodyScopeState['owner'] {
   if (value === null) return null
   const owner = requireRecord(value, 'owner')
-  requireKnownFields(owner, ['ownerId', 'epoch', 'leaseExpiresAtMs'])
+  requireKnownFields(owner, ['incarnationId', 'leaseExpiresAtMs'])
   return {
-    ownerId: requireIdentifier(owner.ownerId, 'owner id'),
-    epoch: requireNonNegativeInteger(owner.epoch, 'owner epoch'),
+    incarnationId: requireIdentifier(
+      owner.incarnationId,
+      'owner incarnation id',
+    ),
     leaseExpiresAtMs: requireNonNegativeInteger(owner.leaseExpiresAtMs, 'owner lease expiry'),
   }
 }
@@ -1441,8 +1516,8 @@ function validateRecordBindings(record: DurableCustodyRecord): void {
 
 function validateCustodyContext(record: DurableCustodyRecord): void {
   const context = record.operation.custodyContext
-  if (record.scope.scopeKind === 'profile') {
-    if (context.inventoryAccountId !== null) throw new Error('profile custody context inventory is invalid')
+  if (record.scope.scopeKind === 'wallet') {
+    if (context.inventoryAccountId !== null) throw new Error('wallet custody context inventory is invalid')
     return
   }
   if (context.inventoryAccountId !== record.scope.inventoryAccountId
@@ -1495,10 +1570,10 @@ function validateScopeState(
   if (canonicalScope.scopeId !== expectedScope.scopeId) {
     throw new Error('foreign custody scope')
   }
+  requireNonNegativeInteger(scopeState.fencingEpoch, 'custody fencing epoch')
   requireNonNegativeInteger(scopeState.effectiveClock.highWaterMarkMs, 'effective clock high-water mark')
   if (scopeState.owner === null) return
-  requireIdentifier(scopeState.owner.ownerId, 'custody owner id')
-  requireNonNegativeInteger(scopeState.owner.epoch, 'custody owner epoch')
+  requireIdentifier(scopeState.owner.incarnationId, 'custody owner incarnation id')
   requireNonNegativeInteger(scopeState.owner.leaseExpiresAtMs, 'custody owner lease expiry')
 }
 
@@ -1508,38 +1583,85 @@ function claimOwner(
 ): DurableCustodyScopeState {
   const observedAtMs = requireNonNegativeInteger(transition.observedAtMs, 'owner claim observed time')
   const effectiveNowMs = Math.max(scopeState.effectiveClock.highWaterMarkMs, observedAtMs)
-  const nextOwnerId = requireIdentifier(transition.nextOwnerId, 'next owner id')
-  const nextOwnerEpoch = requireNonNegativeInteger(transition.nextOwnerEpoch, 'next owner epoch')
+  const nextIncarnationId = requireIdentifier(
+    transition.nextIncarnationId,
+    'next owner incarnation id',
+  )
+  const nextFencingEpoch = requireNonNegativeInteger(
+    transition.nextFencingEpoch,
+    'next fencing epoch',
+  )
   const nextLeaseExpiresAtMs = requireNonNegativeInteger(transition.nextLeaseExpiresAtMs, 'next owner lease expiry')
   if (scopeState.owner !== null && effectiveNowMs < scopeState.owner.leaseExpiresAtMs) {
     throw new Error('custody owner lease has not expired')
   }
-  const priorEpoch = scopeState.owner?.epoch ?? 0
-  if (nextOwnerEpoch <= priorEpoch) {
+  if (nextFencingEpoch !== scopeState.fencingEpoch + 1) {
     throw new Error('custody owner epoch is not monotonic')
   }
   if (nextLeaseExpiresAtMs <= effectiveNowMs) {
     throw new Error('next custody owner lease is invalid')
   }
   const next = structuredClone(scopeState)
+  next.fencingEpoch = nextFencingEpoch
   next.owner = {
-    ownerId: nextOwnerId,
-    epoch: nextOwnerEpoch,
+    incarnationId: nextIncarnationId,
     leaseExpiresAtMs: nextLeaseExpiresAtMs,
   }
   next.effectiveClock.highWaterMarkMs = effectiveNowMs
   return next
 }
 
+function renewOwner(
+  scopeState: DurableCustodyScopeState,
+  transition: Extract<DurableCustodyTransition, { kind: 'owner-renewed' }>,
+): DurableCustodyScopeState {
+  const effectiveNowMs = authorizeOwner(scopeState, transition)
+  const nextLeaseExpiresAtMs = requireNonNegativeInteger(
+    transition.nextLeaseExpiresAtMs,
+    'next owner lease expiry',
+  )
+  if (
+    scopeState.owner === null ||
+    nextLeaseExpiresAtMs <= scopeState.owner.leaseExpiresAtMs ||
+    nextLeaseExpiresAtMs <= effectiveNowMs
+  ) {
+    throw new Error('next custody owner lease is invalid')
+  }
+  const next = structuredClone(scopeState)
+  next.owner!.leaseExpiresAtMs = nextLeaseExpiresAtMs
+  next.effectiveClock.highWaterMarkMs = effectiveNowMs
+  return next
+}
+
+function releaseOwner(
+  scopeState: DurableCustodyScopeState,
+  transition: Extract<DurableCustodyTransition, { kind: 'owner-released' }>,
+): DurableCustodyScopeState {
+  const effectiveNowMs = authorizeOwner(scopeState, transition)
+  const next = structuredClone(scopeState)
+  next.owner = null
+  next.effectiveClock.highWaterMarkMs = effectiveNowMs
+  return next
+}
+
 function authorizeOwner(scopeState: DurableCustodyScopeState, authorization: DurableCustodyOwnerAuthorization): number {
-  const ownerId = requireIdentifier(authorization.ownerId, 'custody owner id')
-  const ownerEpoch = requireNonNegativeInteger(authorization.ownerEpoch, 'custody owner epoch')
+  const incarnationId = requireIdentifier(
+    authorization.incarnationId,
+    'custody owner incarnation id',
+  )
+  const fencingEpoch = requireNonNegativeInteger(
+    authorization.fencingEpoch,
+    'custody fencing epoch',
+  )
   const observedAtMs = requireNonNegativeInteger(authorization.observedAtMs, 'custody owner observed time')
   const effectiveNowMs = Math.max(scopeState.effectiveClock.highWaterMarkMs, observedAtMs)
   if (scopeState.owner === null) {
     throw new Error('custody scope is unclaimed')
   }
-  if (ownerId !== scopeState.owner.ownerId || ownerEpoch !== scopeState.owner.epoch) {
+  if (
+    incarnationId !== scopeState.owner.incarnationId ||
+    fencingEpoch !== scopeState.fencingEpoch
+  ) {
     throw new Error('custody owner epoch is foreign')
   }
   if (effectiveNowMs >= scopeState.owner.leaseExpiresAtMs) {

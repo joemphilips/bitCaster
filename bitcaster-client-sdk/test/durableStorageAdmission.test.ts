@@ -30,7 +30,7 @@ import {
 const FINGERPRINT_A = 'a'.repeat(64)
 const FINGERPRINT_B = 'b'.repeat(64)
 const PROOF_ID = '11'.repeat(32)
-const SCOPE = profileScope()
+const SCOPE = walletScope()
 const OPERATION_A = custodyRecord('a').operation.operationId
 const OPERATION_B = custodyRecord('b').operation.operationId
 
@@ -62,7 +62,7 @@ test('calculates one exact versioned worst-case budget from canonical custody id
     ...budgetInput(),
     operations: [{ ...budgetInput().operations[0]!, semanticOperationId: 'bb'.repeat(32) }],
   }), /custody operation id is invalid/)
-  const foreignScope = profileScope('foreign-profile')
+  const foreignScope = walletScope('f'.repeat(64))
   const foreignOperationId = deriveDurableCustodyOperationId(foreignScope.scopeId, {
     retainedOperationKey: 'seller-lock-a',
     trade: { tradeId: 'trade-a', role: 'seller', stage: 'lock' },
@@ -83,21 +83,16 @@ test('calculates one exact versioned worst-case budget from canonical custody id
     operations: [operationBudget(marketOperationId, 900)],
   }).scopeId, market.scopeId)
 
-  for (const profileId of [
-    'x'.repeat(512),
-    'profile:with:colons',
-    'profile%with%percent',
-    'ユーザー🔐',
-  ]) {
-    const scope = profileScope(profileId)
+  for (const walletId of ['a', 'b', 'c', 'd'].map((value) => value.repeat(64))) {
+    const scope = walletScope(walletId)
     assert.equal(decodeDurableCustodyScopeId(scope.scopeId), scope.scopeId)
     const operationId = deriveDurableCustodyOperationId(scope.scopeId, {
-      retainedOperationKey: `key:${profileId.slice(0, 16)}%`,
-      trade: { tradeId: `trade:🔐:${profileId.slice(0, 16)}`, role: 'seller', stage: 'lock' },
+      retainedOperationKey: `key:${walletId.slice(0, 16)}%`,
+      trade: { tradeId: `trade:🔐:${walletId.slice(0, 16)}`, role: 'seller', stage: 'lock' },
     })
     assert.equal(decodeDurableCustodyOperationId(operationId, scope.scopeId), operationId)
   }
-  const maxScope = profileScope('x'.repeat(512))
+  const maxScope = walletScope('e'.repeat(64))
   const maxRecord = structuredClone(custodyRecord('max'))
   maxRecord.scope = maxScope
   maxRecord.operation.operationId = deriveDurableCustodyOperationId(maxScope.scopeId, {
@@ -105,7 +100,7 @@ test('calculates one exact versioned worst-case budget from canonical custody id
     trade: maxRecord.operation.trade,
   })
   assert.equal(decodeDurableCustodyRecord(maxRecord).scope.scopeId, maxScope.scopeId)
-  assert.throws(() => decodeDurableCustodyScopeId('custody:profile:%'), /custody scope id is invalid/)
+  assert.throws(() => decodeDurableCustodyScopeId('custody:wallet:%'), /custody scope id is invalid/)
 })
 
 test('reserves, consumes, and releases exact custody operations without dropping shared bytes early', () => {
@@ -162,7 +157,7 @@ test('release evidence is inferred only from decoded custody state and terminal 
   )
   assert.throws(
     () => createDurableStorageReleaseEvidence(terminalRecord('a'), decodedScopeState({
-      scope: profileScope('foreign-profile'),
+      scope: walletScope('f'.repeat(64)),
     })),
     /foreign custody scope/,
   )
@@ -257,7 +252,7 @@ test('persisted accounting rejects foreign reservations and duplicate reservatio
   const reservation = reservationPlan()
   const state = reserve(accountingState(), reservation)
   const foreign = structuredClone(state)
-  foreign.reservations[0]!.scopeId = profileScope('foreign-profile').scopeId
+  foreign.reservations[0]!.scopeId = walletScope('f'.repeat(64)).scopeId
   assert.throws(() => decodeDurableStorageAccountingState(foreign), /reservation scope is foreign/)
 
   const duplicateReservation = structuredClone(state)
@@ -451,8 +446,8 @@ test('headroom loss disables admission and restore is explicit', () => {
   assert.equal(restored.emergencyHeadroom.state, 'ready')
 })
 
-function profileScope(profileId = 'profile-001') {
-  const input = { scopeKind: 'profile' as const, profileId }
+function walletScope(walletId = 'a'.repeat(64)) {
+  const input = { scopeKind: 'wallet' as const, walletId }
   return { ...input, scopeId: deriveDurableCustodyScopeId(input) }
 }
 
@@ -570,7 +565,8 @@ function decodedScopeState(overrides: Record<string, unknown> = {}): DurableCust
   return decodeDurableCustodyScopeState({
     schemaVersion: 1,
     scope: SCOPE,
-    owner: { ownerId: 'worker-001', epoch: 7, leaseExpiresAtMs: 10_000 },
+    fencingEpoch: 7,
+    owner: { incarnationId: 'worker-001', leaseExpiresAtMs: 10_000 },
     effectiveClock: { highWaterMarkMs: 1_000 },
     ...overrides,
   })

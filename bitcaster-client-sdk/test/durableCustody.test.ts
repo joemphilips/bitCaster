@@ -12,6 +12,9 @@ import {
   deriveDurableCustodyOperationId,
   deriveDurableCustodyProofId,
   deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+  releaseDurableCustodyScope,
+  renewDurableCustodyScope,
   validateDurableCustodyScopeRegistration,
   reduceDurableCustodyState,
   type DurableCustodyRecord,
@@ -24,8 +27,8 @@ const FINGERPRINT_B = 'b'.repeat(64)
 
 function profileScope() {
   const scope = {
-    scopeKind: 'profile' as const,
-    profileId: 'profile-001',
+    scopeKind: 'wallet' as const,
+    walletId: FINGERPRINT_A,
   }
   return { ...scope, scopeId: deriveDurableCustodyScopeId(scope) }
 }
@@ -141,9 +144,9 @@ function custodyScopeState(overrides: Record<string, unknown> = {}): Record<stri
   return {
     schemaVersion: 1,
     scope: profileScope(),
+    fencingEpoch: 7,
     owner: {
-      ownerId: 'worker-001',
-      epoch: 7,
+      incarnationId: 'worker-001',
       leaseExpiresAtMs: 10_000,
     },
     effectiveClock: { highWaterMarkMs: 1_000 },
@@ -182,8 +185,8 @@ function exactReference(record: DurableCustodyRecord) {
 }
 
 const ownerAuthorization = {
-  ownerId: 'worker-001',
-  ownerEpoch: 7,
+  incarnationId: 'worker-001',
+  fencingEpoch: 7,
   observedAtMs: 1_500,
 }
 
@@ -201,8 +204,8 @@ test('canonical custody decoder rejects unknown versions, fields, and foreign sc
   assert.throws(
     () => {
       const foreignScope = {
-        scopeKind: 'profile' as const,
-        profileId: 'profile-foreign',
+        scopeKind: 'wallet' as const,
+        walletId: FINGERPRINT_B,
       }
       return decodeDurableCustodyRecord(custodyRecord(), {
         ...foreignScope,
@@ -227,31 +230,79 @@ test('custody scope registration starts unowned and claims advance a shared fenc
   const unowned = decodeDurableCustodyScopeState({
     schemaVersion: 1,
     scope: profileScope(),
+    fencingEpoch: 0,
     owner: null,
     effectiveClock: { highWaterMarkMs: 1_000 },
   })
   const claimed = claimDurableCustodyScope(unowned, {
     kind: 'owner-claimed',
-    nextOwnerId: 'worker-001',
-    nextOwnerEpoch: 1,
+    nextIncarnationId: 'worker-001',
+    nextFencingEpoch: 1,
     observedAtMs: 1_500,
     nextLeaseExpiresAtMs: 2_000,
   })
   assert.deepEqual(claimed.owner, {
-    ownerId: 'worker-001',
-    epoch: 1,
+    incarnationId: 'worker-001',
     leaseExpiresAtMs: 2_000,
   })
+  assert.equal(claimed.fencingEpoch, 1)
   assert.equal(claimed.effectiveClock.highWaterMarkMs, 1_500)
   assert.throws(
     () => claimDurableCustodyScope(claimed, {
       kind: 'owner-claimed',
-      nextOwnerId: 'worker-002',
-      nextOwnerEpoch: 2,
+      nextIncarnationId: 'worker-002',
+      nextFencingEpoch: 2,
       observedAtMs: 1_600,
       nextLeaseExpiresAtMs: 3_000,
     }),
     /custody owner lease has not expired/,
+  )
+})
+
+test('wallet scope identity is seed-derived and independent of authentication identity', () => {
+  const seed = new Uint8Array(32).fill(7)
+  const walletId = deriveDurableCustodyWalletId(seed)
+  assert.equal(walletId, deriveDurableCustodyWalletId(seed.slice()))
+  assert.notEqual(walletId, deriveDurableCustodyWalletId(new Uint8Array(32).fill(8)))
+  assert.match(walletId, /^[0-9a-f]{64}$/)
+  assert.throws(
+    () => deriveDurableCustodyWalletId(new Uint8Array(31)),
+    /32 or 64 bytes/,
+  )
+})
+
+test('renew and release preserve the fencing epoch and reject stale owners', () => {
+  const claimed = decodedScopeState()
+  const renewed = renewDurableCustodyScope(claimed, {
+    kind: 'owner-renewed',
+    ...ownerAuthorization,
+    nextLeaseExpiresAtMs: 20_000,
+  })
+  assert.equal(renewed.fencingEpoch, 7)
+  assert.equal(renewed.owner?.leaseExpiresAtMs, 20_000)
+  const released = releaseDurableCustodyScope(renewed, {
+    kind: 'owner-released',
+    ...ownerAuthorization,
+    observedAtMs: 2_000,
+  })
+  assert.equal(released.fencingEpoch, 7)
+  assert.equal(released.owner, null)
+  const reclaimed = claimDurableCustodyScope(released, {
+    kind: 'owner-claimed',
+    nextIncarnationId: 'worker-002',
+    nextFencingEpoch: 8,
+    observedAtMs: 2_001,
+    nextLeaseExpiresAtMs: 30_000,
+  })
+  assert.equal(reclaimed.fencingEpoch, 8)
+  assert.throws(
+    () => renewDurableCustodyScope(reclaimed, {
+      kind: 'owner-renewed',
+      ...ownerAuthorization,
+      observedAtMs: 2_002,
+      nextLeaseExpiresAtMs: 40_000,
+    }),
+    /custody owner epoch is foreign/,
   )
 })
 
@@ -545,13 +596,12 @@ test('not-before waits rather than aborting and an expired lease permits a fence
   const claimed = reduceDurableCustodyState(custodyState(), {
     kind: 'owner-claimed',
     observedAtMs: 10_000,
-    nextOwnerId: 'worker-002',
-    nextOwnerEpoch: 8,
+    nextIncarnationId: 'worker-002',
+    nextFencingEpoch: 8,
     nextLeaseExpiresAtMs: 20_000,
   })
   assert.deepEqual(claimed.scopeState.owner, {
-    ownerId: 'worker-002',
-    epoch: 8,
+    incarnationId: 'worker-002',
     leaseExpiresAtMs: 20_000,
   })
   assert.throws(
@@ -567,8 +617,8 @@ test('not-before waits rather than aborting and an expired lease permits a fence
 test('scope authority is shared across operations and rejects a foreign scope row', () => {
   const record = decodedRecord()
   const foreign = {
-    scopeKind: 'profile' as const,
-    profileId: 'profile-foreign',
+    scopeKind: 'wallet' as const,
+    walletId: FINGERPRINT_B,
   }
   const foreignScopeState = decodeDurableCustodyScopeState({
     ...custodyScopeState(),
@@ -590,8 +640,8 @@ test('scope authority is shared across operations and rejects a foreign scope ro
     () => reduceDurableCustodyState(custodyState(record, unownedForeignScopeState), {
       kind: 'owner-claimed',
       observedAtMs: 1_000,
-      nextOwnerId: 'worker-002',
-      nextOwnerEpoch: 1,
+      nextIncarnationId: 'worker-002',
+      nextFencingEpoch: 8,
       nextLeaseExpiresAtMs: 10_000,
     }),
     /foreign custody scope/,
