@@ -142,6 +142,14 @@ export interface DurableProofOperationFactsInput {
   keysets: readonly DurableProofOperationKeysetFactsInput[]
 }
 
+export interface DurableCustodySemanticPolicy {
+  stage: CustodyTradeStage | CustodyWalletStage
+  bindingKind: DurableCustodyBinding['kind'] | 'either'
+  terminalReplayEvidenceRequired: boolean
+  requireNotBefore: boolean
+  requireNotAfter: boolean
+}
+
 /** Input to the global active-proof identity; the secret is never persisted in this record. */
 export interface DurableCustodyProofIdentityInput {
   normalizedMint: string
@@ -714,7 +722,7 @@ const SEMANTIC_BINDING_KINDS: Readonly<Record<
   'swap-refund': 'trade',
   'conditional-keyset-swap': 'trade',
   'generic-receive': 'wallet',
-  'generic-send': 'wallet',
+  'generic-send': 'either',
   'ctf-split': 'either',
   'ctf-merge': 'either',
   'ctf-redeem': 'wallet',
@@ -738,6 +746,20 @@ const SEMANTIC_HORIZON_RULES: Readonly<Record<DurableCustodySemanticKind, {
 const CUSTODY_WALLET_ID_DOMAIN = new TextEncoder().encode(
   'bitcaster/durable-custody-wallet-id/v1\0',
 )
+
+/** Returns the one SDK-owned policy for a persisted custody semantic. */
+export function durableCustodySemanticPolicy(
+  semanticKind: DurableCustodySemanticKind,
+): DurableCustodySemanticPolicy {
+  requireOneOf(semanticKind, SEMANTIC_KINDS, 'operation semantic kind')
+  return {
+    stage: SEMANTIC_STAGE_BINDINGS[semanticKind],
+    bindingKind: SEMANTIC_BINDING_KINDS[semanticKind],
+    terminalReplayEvidenceRequired:
+      SEMANTIC_TERMINAL_REPLAY_REQUIREMENTS[semanticKind],
+    ...SEMANTIC_HORIZON_RULES[semanticKind],
+  }
+}
 
 /**
  * Derives the non-secret, authentication-independent wallet scope identifier
@@ -976,6 +998,34 @@ export function deriveDurableCustodyKeysetFingerprint(input: {
     input.curve,
     ...canonicalEntries.flatMap(({ amountText, publicKey }) => [amountText, publicKey]),
   ])))
+}
+
+/** Canonical bounded JSON digest used to bind exact opaque artifact handles. */
+export function deriveDurableCustodyArtifactFingerprint(value: unknown): string {
+  const canonical = canonicalCustodyArtifactJson(value)
+  const bytes = new TextEncoder().encode(canonical)
+  if (bytes.length === 0 || bytes.length > DURABLE_CUSTODY_RECOVERY_PAGE_MAX_BYTES) {
+    throw new Error('custody artifact exceeds the byte limit')
+  }
+  return bytesToHex(sha256(bytes))
+}
+
+function canonicalCustodyArtifactJson(value: unknown): string {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return JSON.stringify(value)
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new Error('custody artifact number is invalid')
+    return JSON.stringify(value)
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalCustodyArtifactJson).join(',')}]`
+  }
+  if (typeof value !== 'object') throw new Error('custody artifact is invalid')
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+  return `{${entries.map(([key, item]) =>
+    `${JSON.stringify(key)}:${canonicalCustodyArtifactJson(item)}`).join(',')}}`
 }
 
 /**

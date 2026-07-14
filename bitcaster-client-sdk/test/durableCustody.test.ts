@@ -6,6 +6,7 @@ import {
   applyDurableCustodyTransaction,
   claimDurableCustodyScope,
   createDurableProofOperationFacts,
+  deriveDurableCustodyArtifactFingerprint,
   decideDurableCustodyRecovery,
   decideTerminalTombstoneDrain,
   isDurableCustodyActiveRecoveryRecord,
@@ -133,6 +134,21 @@ test('exact proof facts reject missing authority and verification policy', () =>
       }],
     }),
     /keyset public key is invalid/,
+  )
+})
+
+test('artifact fingerprints are canonical and reject ambiguous JSON values', () => {
+  assert.equal(
+    deriveDurableCustodyArtifactFingerprint({ b: [2, 3], a: 1 }),
+    deriveDurableCustodyArtifactFingerprint({ a: 1, b: [2, 3] }),
+  )
+  assert.notEqual(
+    deriveDurableCustodyArtifactFingerprint({ a: 1 }),
+    deriveDurableCustodyArtifactFingerprint({ a: 2 }),
+  )
+  assert.throws(
+    () => deriveDurableCustodyArtifactFingerprint({ missing: undefined }),
+    /artifact is invalid/,
   )
 })
 
@@ -592,6 +608,26 @@ test('canonical custody decoder requires immutable exact-operation and verificat
     genericWithoutHorizonOperation,
   )
   assert.equal(decodeDurableCustodyRecord(genericWithoutHorizon).operation.semanticKind, 'generic-send')
+
+  const tradeProofSplit = custodyRecord()
+  const tradeProofSplitOperation = tradeProofSplit.operation as Record<string, unknown>
+  tradeProofSplitOperation.semanticKind = 'generic-send'
+  tradeProofSplitOperation.terminalReplayEvidenceRequired = false
+  ;(tradeProofSplitOperation.binding as Record<string, unknown>).stage = 'send'
+  tradeProofSplitOperation.horizon = {
+    notBeforeMs: null,
+    notAfterMs: null,
+    safetyMarginMs: 0,
+    keysetExpiryMs: null,
+  }
+  tradeProofSplitOperation.operationId = operationIdFor(
+    profileScope().scopeId,
+    tradeProofSplitOperation,
+  )
+  assert.equal(
+    decodeDurableCustodyRecord(tradeProofSplit).operation.binding.kind,
+    'trade',
+  )
 
   const nonExpiringCtf = custodyRecord()
   const nonExpiringCtfOperation = nonExpiringCtf.operation as Record<string, unknown>
