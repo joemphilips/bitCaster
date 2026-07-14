@@ -185,6 +185,21 @@ export class SqliteDurableCustodyStore implements DurableCustodyStore {
     }
   }
 
+  async readScope(
+    scope: DurableCustodyScope,
+  ): Promise<DurableCustodyScopeState | null> {
+    scope = canonicalizeScope(scope)
+    const database = this.openDatabase()
+    try {
+      const existing = readScope(database, scope.scopeId)
+      if (existing === null) return null
+      validateDurableCustodyScopeRegistration(existing, scope)
+      return readScopeState(database, scope)
+    } finally {
+      database.close()
+    }
+  }
+
   async claimScope(
     input: DurableCustodyScopeClaimInput,
   ): Promise<DurableCustodyScopeState> {

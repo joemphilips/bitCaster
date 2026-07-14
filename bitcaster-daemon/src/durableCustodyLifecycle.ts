@@ -74,12 +74,7 @@ export class DaemonDurableCustodyLease {
     input: DaemonCustodyClaimInput,
   ): Promise<DaemonDurableCustodyLease> {
     const nowMs = input.nowMs ?? Date.now
-    const leaseDurationMs =
-      input.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS
-    const renewAfterMs = input.renewAfterMs ?? DEFAULT_RENEW_AFTER_MS
-    if (renewAfterMs < 1 || renewAfterMs >= leaseDurationMs) {
-      throw new Error('daemon custody lease renewal interval is invalid')
-    }
+    const { leaseDurationMs, renewAfterMs } = resolveLeaseTiming(input)
     const observedAtMs = nowMs()
     const incarnationId = input.incarnationId ?? randomUUID()
     const scope = daemonWalletCustodyScope(input.walletSeedHex)
@@ -106,24 +101,24 @@ export class DaemonDurableCustodyLease {
     input: DaemonCustodyTakeoverInput,
   ): Promise<DaemonDurableCustodyLease> {
     const nowMs = input.nowMs ?? Date.now
-    const leaseDurationMs =
-      input.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS
-    const renewAfterMs = input.renewAfterMs ?? DEFAULT_RENEW_AFTER_MS
-    if (renewAfterMs < 1 || renewAfterMs >= leaseDurationMs) {
-      throw new Error('daemon custody lease renewal interval is invalid')
-    }
+    const { leaseDurationMs, renewAfterMs } = resolveLeaseTiming(input)
     const timeoutMs =
       input.takeoverTimeoutMs ?? leaseDurationMs + renewAfterMs
-    if (timeoutMs < leaseDurationMs) {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < leaseDurationMs) {
       throw new Error('daemon custody takeover timeout is invalid')
     }
-    const deadlineMs = nowMs() + timeoutMs
+    const startedAtMs = requireObservedTime(nowMs())
+    const deadlineMs = startedAtMs + timeoutMs
+    if (!Number.isSafeInteger(deadlineMs)) {
+      throw new Error('daemon custody takeover deadline is invalid')
+    }
     const sleep = input.sleep ?? sleepFor
     const scope = daemonWalletCustodyScope(input.walletSeedHex)
 
     while (true) {
-      const state = await input.store.registerScope(scope)
-      const observedAtMs = nowMs()
+      const state = await input.store.readScope(scope)
+      if (state === null) throw new Error('daemon custody scope is missing')
+      const observedAtMs = requireObservedTime(nowMs())
       if (state.owner === null || observedAtMs >= state.owner.leaseExpiresAtMs) {
         return await DaemonDurableCustodyLease.claim({
           store: input.store,
@@ -210,4 +205,30 @@ export class DaemonDurableCustodyLease {
 
 function sleepFor(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+function resolveLeaseTiming(input: DaemonCustodyClaimInput): {
+  leaseDurationMs: number
+  renewAfterMs: number
+} {
+  const leaseDurationMs = input.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS
+  const renewAfterMs = input.renewAfterMs ?? DEFAULT_RENEW_AFTER_MS
+  if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 2) {
+    throw new Error('daemon custody lease duration is invalid')
+  }
+  if (
+    !Number.isSafeInteger(renewAfterMs) ||
+    renewAfterMs < 1 ||
+    renewAfterMs >= leaseDurationMs
+  ) {
+    throw new Error('daemon custody lease renewal interval is invalid')
+  }
+  return { leaseDurationMs, renewAfterMs }
+}
+
+function requireObservedTime(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('daemon custody observed time is invalid')
+  }
+  return value
 }

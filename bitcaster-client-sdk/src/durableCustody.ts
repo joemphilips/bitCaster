@@ -344,6 +344,10 @@ export interface DurableCustodyStore extends DurableCustodyActiveRecoveryPageSto
    * `(normalizedMint, unit, inventoryAccountId)` uniqueness in this call.
    */
   registerScope(scope: DurableCustodyScope): Promise<DurableCustodyScopeState>
+  /** Reads existing fencing authority without creating missing custody state. */
+  readScope(
+    scope: DurableCustodyScope,
+  ): Promise<DurableCustodyScopeState | null>
   /** Claims an unowned or expired scope and advances its fencing epoch. */
   claimScope(input: DurableCustodyScopeClaimInput): Promise<DurableCustodyScopeState>
   /** Extends the exact current owner's lease without advancing its epoch. */

@@ -78,6 +78,38 @@ test('daemon startup waits fail-closed for a crashed owner lease before takeover
   })
 })
 
+test('daemon takeover never recreates missing seed-scoped fencing authority', async () => {
+  await withDaemonHome(async () => {
+    const store = new SqliteDurableCustodyStore()
+    await assert.rejects(
+      DaemonDurableCustodyLease.claimAfterPreviousLease({
+        store,
+        walletSeedHex: WALLET_SEED_HEX,
+      }),
+      /custody scope is missing/,
+    )
+    assert.equal(
+      await store.readScope(daemonWalletCustodyScope(WALLET_SEED_HEX)),
+      null,
+    )
+  })
+})
+
+test('daemon takeover rejects non-finite timing before polling custody state', async () => {
+  await withDaemonHome(async () => {
+    const store = new SqliteDurableCustodyStore()
+    await store.registerScope(daemonWalletCustodyScope(WALLET_SEED_HEX))
+    await assert.rejects(
+      DaemonDurableCustodyLease.claimAfterPreviousLease({
+        store,
+        walletSeedHex: WALLET_SEED_HEX,
+        takeoverTimeoutMs: Number.NaN,
+      }),
+      /takeover timeout is invalid/,
+    )
+  })
+})
+
 test('daemon custody effects fail closed after lease renewal is lost', async () => {
   await withDaemonHome(async () => {
     const baseStore = new SqliteDurableCustodyStore()
