@@ -185,6 +185,8 @@ export function durableBindingForDaemonProofOperation(
     case 'wallet-send':
     case 'proof-split':
       return { stage: 'mint-submission', kind: 'cashu-atomic' }
+    case 'ctf-condition-registration':
+      throw new Error('condition registration is not a trade-bound operation')
   }
 }
 

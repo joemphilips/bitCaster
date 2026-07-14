@@ -83,6 +83,9 @@ export async function resolveDurableCustodyProofOperationFacts(
   )
   const binding = createBinding(input.operation, semanticKind, input.session)
   const usage = keysetUsage(input.operation)
+  const hasOutputs = Object.values(input.operation.outputs).some(
+    (outputs) => outputs.length > 0,
+  )
   const mintKeys = await input.resolveMintKeys(
     input.operation.mintUrl,
     [...usage.keys()],
@@ -91,6 +94,7 @@ export async function resolveDurableCustodyProofOperationFacts(
     unit,
     binding,
     horizon: operationHorizon(semanticKind, input.session),
+    hasOutputs,
     keysets: createKeysetFacts(
       unit,
       usage,

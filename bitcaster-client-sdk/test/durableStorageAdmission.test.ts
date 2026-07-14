@@ -536,6 +536,7 @@ function custodyRecord(suffix: string): DurableCustodyRecord {
       result: { state: 'none', resultHandle: null, resultFingerprint: null, outputPlanFingerprint: null },
       verification: {
         outputPlanFingerprint: FINGERPRINT_B,
+        hasOutputs: true,
         keysetBindings: [{
           keysetId: 'keyset-001',
           curve: 'secp256k1',

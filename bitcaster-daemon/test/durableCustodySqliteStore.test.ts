@@ -128,6 +128,7 @@ function record(
       custodyContext: context,
       reservation: {
         reservationId: `reservation-${tradeId}`,
+        parentReservationId: null,
         inputs: [{ proofId, keysetId: 'keyset-001', curve: 'secp256k1' }],
       },
       exactRequest: {
@@ -155,6 +156,7 @@ function record(
       },
       verification: {
         outputPlanFingerprint: FINGERPRINT_B,
+        hasOutputs: true,
         keysetBindings: [
           {
             keysetId: 'keyset-001',
@@ -207,6 +209,20 @@ async function claimedStore(scope = profileScope()) {
       fencingEpoch: state.fencingEpoch,
       observedAtMs: 2,
     },
+  }
+}
+
+function readReservationOwner(proofId: string): string | undefined {
+  const database = openProfileDatabase()
+  try {
+    const row = database
+      .prepare(
+        'SELECT operation_id FROM custody_proof_reservations WHERE proof_id = ?',
+      )
+      .get(proofId) as { operation_id?: unknown } | undefined
+    return typeof row?.operation_id === 'string' ? row.operation_id : undefined
+  } finally {
+    database.close()
   }
 }
 
@@ -268,6 +284,10 @@ test('SQLite custody store registers scopes with canonical market isolation cons
         ['custody_schema_metadata', 'singleton'],
         ['custody_scopes', 'scope_id'],
         ['custody_scope_state', 'scope_id'],
+        ['custody_operations', 'input_count'],
+        ['custody_operations', 'input_authority_fingerprint'],
+        ['custody_operation_inputs', 'proof_id'],
+        ['custody_operation_inputs', 'keyset_id'],
         ['custody_session_links', 'session_id'],
         ['custody_proof_reservations', 'proof_id'],
         ['custody_order_collateral_pins', 'scope_id'],
@@ -322,6 +342,44 @@ test('SQLite custody store registers scopes with canonical market isolation cons
             )
             .run(first.scope.scopeId, 'foreign-operation'),
         /FOREIGN KEY constraint failed/,
+      )
+      assert.throws(
+        () =>
+          database
+            .prepare(
+              `INSERT INTO custody_operation_inputs (
+                scope_id, operation_id, proof_id, input_position, keyset_id, curve
+              ) VALUES (?, ?, 'not-a-proof-id', 0, 'keyset-001', 'secp256k1')`,
+            )
+            .run(first.scope.scopeId, 'foreign-operation'),
+        /CHECK constraint failed/,
+      )
+      const reservationForeignKeys = database
+        .prepare('PRAGMA foreign_key_list(custody_proof_reservations)')
+        .all() as Array<{
+          id: number
+          seq: number
+          table: string
+          from: string
+          to: string
+        }>
+      const inputAuthorityForeignKey = reservationForeignKeys
+        .filter((foreignKey) => foreignKey.table === 'custody_operation_inputs')
+        .sort((left, right) => left.seq - right.seq)
+      assert.equal(
+        new Set(inputAuthorityForeignKey.map(({ id }) => id)).size,
+        1,
+      )
+      assert.deepEqual(
+        inputAuthorityForeignKey.map(({ from, to }) => [from, to]),
+        [
+          ['scope_id', 'scope_id'],
+          ['operation_id', 'operation_id'],
+          ['proof_id', 'proof_id'],
+          ['input_position', 'input_position'],
+          ['keyset_id', 'keyset_id'],
+          ['curve', 'curve'],
+        ],
       )
       assert.throws(
         () =>
@@ -619,6 +677,104 @@ test('SQLite custody transaction commits canonical operation, session, reservati
     )
     assert.equal(await store.rebuildActiveWorkIndex(scope), 'rebuilt')
     assert.equal((await store.listRecoverable(scope)).length, 1)
+  })
+})
+
+test('SQLite custody releases active proof ownership after safe abort and reconciliation', async () => {
+  await withDaemonHome(async () => {
+    const { store, scope, owner } = await claimedStore()
+    const aborted = record(scope, {
+      tradeId: 'trade-aborted',
+      retainedOperationKey: 'seller-lock-aborted',
+    })
+    await store.transact(custodyTransactionInput(scope, owner, aborted), (transaction) => {
+      transaction.putOperation(aborted)
+      transaction.putSessionLink(
+        aborted.operation.operationId,
+        tradeBinding(aborted),
+      )
+      transaction.reserveExactInputs({
+        operationId: aborted.operation.operationId,
+        reservationId: aborted.operation.reservation.reservationId,
+        proofIds: [FINGERPRINT_A],
+      })
+      transaction.rebuildActiveWorkIndex()
+    })
+    await store.transact(custodyTransactionInput(
+      scope,
+      { ...owner, observedAtMs: 3 },
+      aborted,
+    ), (transaction) => {
+      transaction.transitionOperation({
+        operationId: aborted.operation.operationId,
+        transition: {
+          kind: 'abort-no-transport',
+          classification: 'all-inputs-unspent',
+          exactRequestDisposition: 'deterministically-rejected',
+        },
+      })
+      transaction.rebuildActiveWorkIndex()
+    })
+    assert.equal(readReservationOwner(FINGERPRINT_A), undefined)
+
+    const reconciled = record(scope, {
+      tradeId: 'trade-reconciled',
+      retainedOperationKey: 'seller-lock-reconciled',
+    })
+    await store.transact(custodyTransactionInput(
+      scope,
+      { ...owner, observedAtMs: 4 },
+      reconciled,
+    ), (transaction) => {
+      transaction.putOperation(reconciled)
+      transaction.putSessionLink(
+        reconciled.operation.operationId,
+        tradeBinding(reconciled),
+      )
+      transaction.reserveExactInputs({
+        operationId: reconciled.operation.operationId,
+        reservationId: reconciled.operation.reservation.reservationId,
+        proofIds: [FINGERPRINT_A],
+      })
+      transaction.rebuildActiveWorkIndex()
+    })
+    await store.transact(custodyTransactionInput(
+      scope,
+      { ...owner, observedAtMs: 5 },
+      reconciled,
+    ), (transaction) => {
+      const result = {
+        operationId: reconciled.operation.operationId,
+        outputPlanFingerprint:
+          reconciled.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: 'result-trade-reconciled',
+        resultFingerprint: FINGERPRINT_A,
+      }
+      transaction.stageVerifiedResult(result)
+      transaction.applyVerifiedResult(result)
+      transaction.rebuildActiveWorkIndex()
+    })
+    assert.equal(readReservationOwner(FINGERPRINT_A), undefined)
+
+    const next = record(scope, {
+      tradeId: 'trade-next',
+      retainedOperationKey: 'seller-lock-next',
+    })
+    await store.transact(custodyTransactionInput(
+      scope,
+      { ...owner, observedAtMs: 6 },
+      next,
+    ), (transaction) => {
+      transaction.putOperation(next)
+      transaction.putSessionLink(next.operation.operationId, tradeBinding(next))
+      transaction.reserveExactInputs({
+        operationId: next.operation.operationId,
+        reservationId: next.operation.reservation.reservationId,
+        proofIds: [FINGERPRINT_A],
+      })
+      transaction.rebuildActiveWorkIndex()
+    })
+    assert.equal(readReservationOwner(FINGERPRINT_A), next.operation.operationId)
   })
 })
 
@@ -1157,7 +1313,7 @@ test('SQLite custody store rolls back foreign awaits and fails closed on corrupt
   })
 })
 
-test('SQLite custody store fails closed when a reservation row no longer matches its exact input', async () => {
+test('SQLite custody reservations cannot diverge from exact input or reservation authority', async () => {
   await withDaemonHome(async () => {
     const { store, scope, owner } = await claimedStore()
     const operation = record(scope)
@@ -1174,20 +1330,133 @@ test('SQLite custody store fails closed when a reservation row no longer matches
       transaction.rebuildActiveWorkIndex()
     })
 
-    const database = new DatabaseSync(profileDatabasePath())
+    const database = openProfileDatabase()
     try {
-      database
-        .prepare(
-          `UPDATE custody_proof_reservations SET keyset_id = 'foreign-keyset'
-         WHERE proof_id = ?`,
+      for (const mutation of [
+        "input_position = input_position + 1",
+        "keyset_id = 'foreign-keyset'",
+        "curve = 'bls12-381'",
+        "reservation_id = 'foreign-reservation'",
+      ]) {
+        assert.throws(
+          () => database.prepare(
+            `UPDATE custody_proof_reservations SET ${mutation}
+              WHERE proof_id = ?`,
+          ).run(operation.operation.reservation.inputs[0]?.proofId),
+          /FOREIGN KEY constraint failed/,
         )
-        .run(operation.operation.reservation.inputs[0]?.proofId)
+      }
+    } finally {
+      database.close()
+    }
+    assert.equal((await store.listRecoverable(scope)).length, 1)
+  })
+})
+
+test('SQLite custody input authority prevents active deletion and detects terminal deletion', async () => {
+  await withDaemonHome(async () => {
+    const { store, scope, owner } = await claimedStore()
+    const operation = record(scope)
+    await store.transact(
+      custodyTransactionInput(scope, owner, operation),
+      (transaction) => putCustodyIntent(transaction, operation),
+    )
+
+    const activeDatabase = openProfileDatabase()
+    try {
+      assert.throws(
+        () => activeDatabase.prepare(
+          `DELETE FROM custody_operation_inputs
+            WHERE scope_id = ? AND operation_id = ?`,
+        ).run(scope.scopeId, operation.operation.operationId),
+        /FOREIGN KEY constraint failed/,
+      )
+    } finally {
+      activeDatabase.close()
+    }
+
+    await store.transact(
+      custodyTransactionInput(
+        scope,
+        { ...owner, observedAtMs: owner.observedAtMs + 1 },
+        operation,
+      ),
+      (transaction) => {
+        transaction.transitionOperation({
+          operationId: operation.operation.operationId,
+          transition: {
+            kind: 'abort-no-transport',
+            classification: 'all-inputs-unspent',
+            exactRequestDisposition: 'deterministically-rejected',
+          },
+        })
+        transaction.rebuildActiveWorkIndex()
+      },
+    )
+    const terminalDatabase = openProfileDatabase()
+    try {
+      terminalDatabase.prepare(
+        `DELETE FROM custody_operation_inputs
+          WHERE scope_id = ? AND operation_id = ?`,
+      ).run(scope.scopeId, operation.operation.operationId)
+    } finally {
+      terminalDatabase.close()
+    }
+    await assert.rejects(
+      () => store.transact(
+        custodyTransactionInput(scope, owner, operation),
+        (transaction) => transaction.getOperation(
+          operation.operation.operationId,
+        ),
+      ),
+      /input authority is corrupt/,
+    )
+  })
+})
+
+test('SQLite custody input authority detects terminal proof substitution', async () => {
+  await withDaemonHome(async () => {
+    const { store, scope, owner } = await claimedStore()
+    const operation = record(scope)
+    await store.transact(
+      custodyTransactionInput(scope, owner, operation),
+      (transaction) => putCustodyIntent(transaction, operation),
+    )
+    await store.transact(
+      custodyTransactionInput(
+        scope,
+        { ...owner, observedAtMs: owner.observedAtMs + 1 },
+        operation,
+      ),
+      (transaction) => {
+        transaction.transitionOperation({
+          operationId: operation.operation.operationId,
+          transition: {
+            kind: 'abort-no-transport',
+            classification: 'all-inputs-unspent',
+            exactRequestDisposition: 'deterministically-rejected',
+          },
+        })
+        transaction.rebuildActiveWorkIndex()
+      },
+    )
+    const database = openProfileDatabase()
+    try {
+      database.prepare(
+        `UPDATE custody_operation_inputs SET proof_id = ?
+          WHERE scope_id = ? AND operation_id = ?`,
+      ).run(FINGERPRINT_B, scope.scopeId, operation.operation.operationId)
     } finally {
       database.close()
     }
     await assert.rejects(
-      () => store.listRecoverable(scope),
-      /reservation is missing or foreign/,
+      () => store.transact(
+        custodyTransactionInput(scope, owner, operation),
+        (transaction) => transaction.getOperation(
+          operation.operation.operationId,
+        ),
+      ),
+      /input authority is corrupt/,
     )
   })
 })

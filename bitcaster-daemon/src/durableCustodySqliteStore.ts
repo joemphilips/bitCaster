@@ -6,7 +6,9 @@ import {
   decodeDurableCustodyRecord,
   decodeDurableCustodyScopeState,
   decodeDurableCustodyTransactionOperationIds,
+  deriveDurableCustodyArtifactFingerprint,
   isDurableCustodyActiveRecoveryRecord,
+  isDurableCustodyProofReservationActive,
   releaseDurableCustodyScope,
   reduceDurableCustodyState,
   renewDurableCustodyScope,
@@ -522,6 +524,9 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
     const record = this.getOperation(input.operationId)
     if (record === null)
       throw new Error('custody reservation operation is missing')
+    if (!isDurableCustodyProofReservationActive(record)) {
+      throw new Error('terminal custody operation cannot reserve proofs')
+    }
     if (record.operation.reservation.reservationId !== input.reservationId) {
       throw new Error('custody reservation id is foreign')
     }
@@ -775,6 +780,7 @@ class SqliteDurableCustodyTransaction implements DurableCustodyTransaction {
     const previous = this.requireOperation(decoded.operation.operationId)
     assertOperationMutation(previous, decoded)
     updateOperationRow(this.database, decoded)
+    synchronizeProofReservationForOperation(this.database, decoded)
     this.touchedOperationIds.add(decoded.operation.operationId)
   }
 }
@@ -849,6 +855,15 @@ function assertSchema(database: DatabaseSync): void {
   assertForeignKey(database, 'custody_operations', 'custody_scopes', [
     ['scope_id', 'scope_id'],
   ])
+  assertForeignKey(
+    database,
+    'custody_operations',
+    'custody_order_collateral_pins',
+    [
+      ['scope_id', 'scope_id'],
+      ['parent_reservation_id', 'pin_id'],
+    ],
+  )
   assertForeignKey(database, 'custody_operation_inputs', 'custody_operations', [
     ['scope_id', 'scope_id'],
     ['operation_id', 'operation_id'],
@@ -864,6 +879,20 @@ function assertSchema(database: DatabaseSync): void {
     [
       ['scope_id', 'scope_id'],
       ['operation_id', 'operation_id'],
+      ['reservation_id', 'reservation_id'],
+    ],
+  )
+  assertForeignKey(
+    database,
+    'custody_proof_reservations',
+    'custody_operation_inputs',
+    [
+      ['scope_id', 'scope_id'],
+      ['operation_id', 'operation_id'],
+      ['proof_id', 'proof_id'],
+      ['input_position', 'input_position'],
+      ['keyset_id', 'keyset_id'],
+      ['curve', 'curve'],
     ],
   )
   assertForeignKey(
@@ -894,7 +923,7 @@ function assertSchema(database: DatabaseSync): void {
   assertForeignKey(
     database,
     'custody_order_collateral_allocations',
-    'custody_proof_reservations',
+    'custody_operation_inputs',
     [
       ['scope_id', 'scope_id'],
       ['operation_id', 'operation_id'],
@@ -953,6 +982,16 @@ function assertSchema(database: DatabaseSync): void {
     false,
     ['scope_id', 'pin_state', 'pin_id'],
   )
+  assertNotNullColumns(database, 'custody_operations', [
+    'input_count',
+    'input_authority_fingerprint',
+    'verification_has_outputs',
+  ])
+  assertNotNullColumns(database, 'custody_operation_inputs', [
+    'proof_id',
+    'keyset_id',
+    'curve',
+  ])
 }
 
 function registerScopeInDatabase(
@@ -1006,19 +1045,30 @@ function assertForeignKey(
   const rows = database
     .prepare(`PRAGMA foreign_key_list(${table})`)
     .all() as Array<{
+    id?: unknown
+    seq?: unknown
     table?: unknown
     from?: unknown
     to?: unknown
   }>
-  for (const [from, to] of columns) {
-    if (
-      !rows.some(
-        (row) =>
-          row.table === referencedTable && row.from === from && row.to === to,
-      )
-    ) {
-      throw new Error('custody SQLite schema foreign key is unsupported')
-    }
+  const groups = new Map<number, typeof rows>()
+  for (const row of rows) {
+    if (!Number.isSafeInteger(row.id) || !Number.isSafeInteger(row.seq)) continue
+    const id = row.id as number
+    groups.set(id, [...(groups.get(id) ?? []), row])
+  }
+  const supported = [...groups.values()].some((group) => {
+    const ordered = [...group].sort((left, right) =>
+      (left.seq as number) - (right.seq as number))
+    return ordered.length === columns.length
+      && ordered.every((row, index) =>
+        row.table === referencedTable
+        && row.seq === index
+        && row.from === columns[index]?.[0]
+        && row.to === columns[index]?.[1])
+  })
+  if (!supported) {
+    throw new Error('custody SQLite schema foreign key is unsupported')
   }
 }
 
@@ -1050,6 +1100,20 @@ function assertNamedIndex(
     )
   ) {
     throw new Error('custody SQLite schema index is unsupported')
+  }
+}
+
+function assertNotNullColumns(
+  database: DatabaseSync,
+  table: string,
+  required: readonly string[],
+): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(${table})`)
+    .all() as Array<{ name?: unknown; notnull?: unknown }>
+  if (required.some((name) =>
+    !columns.some((column) => column.name === name && column.notnull === 1))) {
+    throw new Error('custody SQLite schema column is unsupported')
   }
 }
 
@@ -1120,6 +1184,15 @@ function createSchema(database: DatabaseSync): void {
       unit TEXT NOT NULL,
       inventory_account_id TEXT,
       reservation_id TEXT NOT NULL,
+      parent_reservation_id TEXT CHECK (
+        parent_reservation_id IS NULL
+        OR length(parent_reservation_id) BETWEEN 1 AND 1024
+      ),
+      input_count INTEGER NOT NULL CHECK (input_count BETWEEN 1 AND 256),
+      input_authority_fingerprint TEXT NOT NULL CHECK (
+        length(input_authority_fingerprint) = 64
+        AND input_authority_fingerprint NOT GLOB '*[^0-9a-f]*'
+      ),
       request_id TEXT NOT NULL,
       request_fingerprint TEXT NOT NULL,
       request_payload_handle TEXT NOT NULL,
@@ -1135,6 +1208,7 @@ function createSchema(database: DatabaseSync): void {
       result_fingerprint TEXT CHECK (result_fingerprint IS NULL OR (length(result_fingerprint) = 64 AND result_fingerprint NOT GLOB '*[^0-9a-f]*')),
       result_output_plan_fingerprint TEXT CHECK (result_output_plan_fingerprint IS NULL OR (length(result_output_plan_fingerprint) = 64 AND result_output_plan_fingerprint NOT GLOB '*[^0-9a-f]*')),
       verification_output_plan_fingerprint TEXT NOT NULL,
+      verification_has_outputs INTEGER NOT NULL CHECK (verification_has_outputs IN (0, 1)),
       delivery_kind TEXT NOT NULL CHECK (delivery_kind IN ('none', 'outbox')),
       delivery_id TEXT CHECK (delivery_id IS NULL OR length(delivery_id) > 0),
       delivery_payload_handle TEXT CHECK (delivery_payload_handle IS NULL OR length(delivery_payload_handle) > 0),
@@ -1153,7 +1227,11 @@ function createSchema(database: DatabaseSync): void {
       tombstone_authenticated_terminal INTEGER CHECK (tombstone_authenticated_terminal IS NULL OR tombstone_authenticated_terminal IN (0, 1)),
       tombstone_replay_cutoff INTEGER CHECK (tombstone_replay_cutoff IS NULL OR tombstone_replay_cutoff IN (0, 1)),
       PRIMARY KEY (scope_id, operation_id),
+      UNIQUE (scope_id, operation_id, reservation_id),
       FOREIGN KEY (scope_id) REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+      FOREIGN KEY (scope_id, parent_reservation_id)
+        REFERENCES custody_order_collateral_pins(scope_id, pin_id)
+        ON DELETE RESTRICT,
       CHECK (
         (binding_kind = 'trade'
           AND wallet_activity_id IS NULL
@@ -1239,28 +1317,42 @@ function createSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS custody_operation_inputs (
       scope_id TEXT NOT NULL,
       operation_id TEXT NOT NULL,
-      proof_id TEXT NOT NULL,
+      proof_id TEXT NOT NULL CHECK (
+        length(proof_id) = 64 AND proof_id NOT GLOB '*[^0-9a-f]*'
+      ),
       input_position INTEGER NOT NULL CHECK (input_position >= 0),
-      keyset_id TEXT NOT NULL,
+      keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
       curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
       PRIMARY KEY (scope_id, operation_id, proof_id),
       UNIQUE (scope_id, operation_id, input_position),
+      UNIQUE (
+        scope_id, operation_id, proof_id, input_position, keyset_id, curve
+      ),
       FOREIGN KEY (scope_id, operation_id)
         REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS custody_proof_reservations (
-      proof_id TEXT PRIMARY KEY NOT NULL,
+      proof_id TEXT PRIMARY KEY NOT NULL CHECK (
+        length(proof_id) = 64 AND proof_id NOT GLOB '*[^0-9a-f]*'
+      ),
       scope_id TEXT NOT NULL,
       operation_id TEXT NOT NULL,
       reservation_id TEXT NOT NULL,
       schema_version INTEGER NOT NULL CHECK (schema_version = 1),
       input_position INTEGER NOT NULL CHECK (input_position >= 0),
-      keyset_id TEXT NOT NULL,
+      keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
       curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
       UNIQUE (scope_id, operation_id, proof_id),
-      FOREIGN KEY (scope_id, operation_id)
-        REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT
+      FOREIGN KEY (scope_id, operation_id, reservation_id)
+        REFERENCES custody_operations(scope_id, operation_id, reservation_id)
+        ON DELETE RESTRICT,
+      FOREIGN KEY (
+        scope_id, operation_id, proof_id, input_position, keyset_id, curve
+      ) REFERENCES custody_operation_inputs(
+        scope_id, operation_id, proof_id, input_position, keyset_id, curve
+      )
+        ON DELETE RESTRICT
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS custody_order_collateral_pins (
@@ -1358,7 +1450,7 @@ function createSchema(database: DatabaseSync): void {
       FOREIGN KEY (scope_id, pin_id, proof_id)
         REFERENCES custody_order_collateral_proofs(scope_id, pin_id, proof_id) ON DELETE RESTRICT,
       FOREIGN KEY (scope_id, operation_id, proof_id)
-        REFERENCES custody_proof_reservations(scope_id, operation_id, proof_id) ON DELETE RESTRICT
+        REFERENCES custody_operation_inputs(scope_id, operation_id, proof_id) ON DELETE RESTRICT
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS custody_order_collateral_fills (
@@ -1691,6 +1783,7 @@ function decodeOperationRow(
       throw new Error('custody operation input position is corrupt')
     }
   }
+  assertOperationInputAuthority(row, inputRows)
   const verificationRows = relations.verifications.get(operationId) ?? []
   const binding = decodeOperationBindingRow(
     row,
@@ -1733,6 +1826,7 @@ function decodeOperationRow(
       },
       reservation: {
         reservationId: row.reservation_id,
+        parentReservationId: row.parent_reservation_id,
         inputs: inputRows.map((input) => ({
           proofId: input.proof_id,
           keysetId: input.keyset_id,
@@ -1764,6 +1858,10 @@ function decodeOperationRow(
       },
       verification: {
         outputPlanFingerprint: row.verification_output_plan_fingerprint,
+        hasOutputs: decodeDatabaseBoolean(
+          row.verification_has_outputs,
+          'custody output marker',
+        ),
         keysetBindings: verificationRows.map((binding) => ({
           keysetId: binding.keyset_id,
           curve: binding.curve,
@@ -1885,6 +1983,50 @@ function groupOperationRows(
   return grouped
 }
 
+function assertOperationInputAuthority(
+  operationRow: Record<string, unknown>,
+  inputRows: readonly Record<string, unknown>[],
+): void {
+  const expectedCount = operationRow.input_count
+  const expectedFingerprint = operationRow.input_authority_fingerprint
+  if (typeof expectedCount !== 'number'
+    || !Number.isSafeInteger(expectedCount)
+    || expectedCount < 1
+    || expectedCount !== inputRows.length
+    || typeof expectedFingerprint !== 'string'
+    || !/^[0-9a-f]{64}$/.test(expectedFingerprint)) {
+    throw new Error('custody operation input authority is corrupt')
+  }
+  const actual = deriveOperationInputAuthority(inputRows.map((row) => ({
+    proofId: row.proof_id,
+    keysetId: row.keyset_id,
+    curve: row.curve,
+  })))
+  if (actual.fingerprint !== expectedFingerprint) {
+    throw new Error('custody operation input authority is corrupt')
+  }
+}
+
+function deriveOperationInputAuthority(
+  inputs: readonly {
+    proofId: unknown
+    keysetId: unknown
+    curve: unknown
+  }[],
+): { count: number; fingerprint: string } {
+  return {
+    count: inputs.length,
+    fingerprint: deriveDurableCustodyArtifactFingerprint(
+      inputs.map((input, position) => ({
+        position,
+        proofId: input.proofId,
+        keysetId: input.keysetId,
+        curve: input.curve,
+      })),
+    ),
+  }
+}
+
 function decodeSessionLinkRow(row: Record<string, unknown>): unknown {
   return {
     kind: row.link_kind,
@@ -1921,6 +2063,9 @@ function persistOperationRow(
   const operation = record.operation
   const binding = operation.binding
   const tombstone = record.terminalTombstone
+  const inputAuthority = deriveOperationInputAuthority(
+    operation.reservation.inputs,
+  )
   database
     .prepare(
     `INSERT INTO custody_operations (
@@ -1928,11 +2073,13 @@ function persistOperationRow(
       binding_kind, wallet_activity_id, wallet_stage, semantic_kind, operation_state,
       terminal_replay_evidence_required,
       normalized_mint, unit, inventory_account_id, reservation_id,
+      parent_reservation_id,
+      input_count, input_authority_fingerprint,
       request_id, request_fingerprint, request_payload_handle, request_output_plan_fingerprint,
       output_plan_id, output_plan_fingerprint, output_material_handle,
       private_material_handle, private_material_use_id, private_material_public_fingerprint,
       result_state, result_handle, result_fingerprint, result_output_plan_fingerprint,
-      verification_output_plan_fingerprint,
+      verification_output_plan_fingerprint, verification_has_outputs,
       delivery_kind, delivery_id, delivery_payload_handle, delivery_payload_fingerprint,
       delivery_expires_at_ms, delivery_state,
       retry_attempt, retry_next_attempt_at_ms, retry_reason,
@@ -1942,12 +2089,13 @@ function persistOperationRow(
       ?, ?, 1, ?, ?,
       ?, ?, ?, ?, ?,
       ?,
-      ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?, ?,
       ?, ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?, ?,
-      ?,
+      ?, ?,
       ?, ?, ?, ?,
       ?, ?,
       ?, ?, ?,
@@ -1968,6 +2116,9 @@ function persistOperationRow(
       unit = excluded.unit,
       inventory_account_id = excluded.inventory_account_id,
       reservation_id = excluded.reservation_id,
+      parent_reservation_id = excluded.parent_reservation_id,
+      input_count = excluded.input_count,
+      input_authority_fingerprint = excluded.input_authority_fingerprint,
       request_id = excluded.request_id,
       request_fingerprint = excluded.request_fingerprint,
       request_payload_handle = excluded.request_payload_handle,
@@ -1983,6 +2134,7 @@ function persistOperationRow(
       result_fingerprint = excluded.result_fingerprint,
       result_output_plan_fingerprint = excluded.result_output_plan_fingerprint,
       verification_output_plan_fingerprint = excluded.verification_output_plan_fingerprint,
+      verification_has_outputs = excluded.verification_has_outputs,
       delivery_kind = excluded.delivery_kind,
       delivery_id = excluded.delivery_id,
       delivery_payload_handle = excluded.delivery_payload_handle,
@@ -2016,6 +2168,9 @@ function persistOperationRow(
     operation.custodyContext.unit,
     operation.custodyContext.inventoryAccountId,
     operation.reservation.reservationId,
+    operation.reservation.parentReservationId,
+    inputAuthority.count,
+    inputAuthority.fingerprint,
     operation.exactRequest.requestId,
     operation.exactRequest.requestFingerprint,
     operation.exactRequest.payloadHandle,
@@ -2031,6 +2186,7 @@ function persistOperationRow(
     operation.result.resultFingerprint,
     operation.result.outputPlanFingerprint,
     operation.verification.outputPlanFingerprint,
+    operation.verification.hasOutputs ? 1 : 0,
     operation.delivery.deliveryKind,
     operation.delivery.deliveryId,
     operation.delivery.payloadHandle,
@@ -2050,27 +2206,7 @@ function persistOperationRow(
     tombstone === null ? null : tombstone.replayCutoffObserved ? 1 : 0,
     )
   persistSessionLink(database, record)
-  database
-    .prepare(
-      'DELETE FROM custody_operation_inputs WHERE scope_id = ? AND operation_id = ?',
-    )
-    .run(record.scope.scopeId, operation.operationId)
-  for (const [inputPosition, input] of operation.reservation.inputs.entries()) {
-    database
-      .prepare(
-      `INSERT INTO custody_operation_inputs (
-        scope_id, operation_id, proof_id, input_position, keyset_id, curve
-      ) VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-      record.scope.scopeId,
-      operation.operationId,
-      input.proofId,
-      inputPosition,
-      input.keysetId,
-      input.curve,
-      )
-  }
+  persistOperationInputs(database, record)
   database
     .prepare(
       'DELETE FROM custody_verification_bindings WHERE scope_id = ? AND operation_id = ?',
@@ -2096,6 +2232,72 @@ function persistOperationRow(
       isOutput ? 1 : 0,
       )
   }
+}
+
+function persistOperationInputs(
+  database: DatabaseSync,
+  record: DurableCustodyRecord,
+): void {
+  const operation = record.operation
+  const rows = database
+    .prepare(
+      `SELECT proof_id, input_position, keyset_id, curve
+         FROM custody_operation_inputs
+        WHERE scope_id = ? AND operation_id = ?
+        ORDER BY input_position`,
+    )
+    .all(record.scope.scopeId, operation.operationId) as Array<{
+    proof_id?: unknown
+    input_position?: unknown
+    keyset_id?: unknown
+    curve?: unknown
+  }>
+  if (rows.length > 0) {
+    if (
+      rows.length !== operation.reservation.inputs.length ||
+      rows.some((row, position) => {
+        const input = operation.reservation.inputs[position]
+        return (
+          input === undefined ||
+          row.proof_id !== input.proofId ||
+          row.input_position !== position ||
+          row.keyset_id !== input.keysetId ||
+          row.curve !== input.curve
+        )
+      })
+    ) {
+      throw new Error('custody operation input history is missing or foreign')
+    }
+    return
+  }
+  const insert = database.prepare(
+    `INSERT INTO custody_operation_inputs (
+      scope_id, operation_id, proof_id, input_position, keyset_id, curve
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+  for (const [inputPosition, input] of operation.reservation.inputs.entries()) {
+    insert.run(
+      record.scope.scopeId,
+      operation.operationId,
+      input.proofId,
+      inputPosition,
+      input.keysetId,
+      input.curve,
+    )
+  }
+}
+
+function synchronizeProofReservationForOperation(
+  database: DatabaseSync,
+  record: DurableCustodyRecord,
+): void {
+  if (isDurableCustodyProofReservationActive(record)) return
+  database
+    .prepare(
+      `DELETE FROM custody_proof_reservations
+        WHERE scope_id = ? AND operation_id = ?`,
+    )
+    .run(record.scope.scopeId, record.operation.operationId)
 }
 
 function persistSessionLink(
@@ -2233,9 +2435,10 @@ function assertOperationIntegrity(
         ORDER BY proof_id`,
     )
     .all(scope.scopeId, operationId) as Array<Record<string, unknown>>
-  const expectedProofIds = record.operation.reservation.inputs.map(
-    (proof) => proof.proofId,
-  )
+  const expectedInputs = isDurableCustodyProofReservationActive(record)
+    ? record.operation.reservation.inputs
+    : []
+  const expectedProofIds = expectedInputs.map((proof) => proof.proofId)
   if (
     !sameUnorderedStringValues(
       expectedProofIds,
@@ -2249,13 +2452,13 @@ function assertOperationIntegrity(
     throw new Error('custody operation reservation is missing or foreign')
   }
   for (const reservation of reservationRows) {
-    const expectedInput = record.operation.reservation.inputs.find(
+    const expectedInput = expectedInputs.find(
       (input) => input.proofId === reservation.proof_id,
     )
     if (
       expectedInput === undefined ||
       reservation.input_position !==
-        record.operation.reservation.inputs.indexOf(expectedInput) ||
+        expectedInputs.indexOf(expectedInput) ||
       reservation.keyset_id !== expectedInput.keysetId ||
       reservation.curve !== expectedInput.curve
     ) {
@@ -2414,9 +2617,10 @@ function assertScopeIntegrity(
       throw new Error('custody operation session link is missing')
     }
     const reservations = reservationsByOperation.get(operationId) ?? []
-    const expectedProofIds = record.operation.reservation.inputs.map(
-      (proof) => proof.proofId,
-    )
+    const expectedInputs = isDurableCustodyProofReservationActive(record)
+      ? record.operation.reservation.inputs
+      : []
+    const expectedProofIds = expectedInputs.map((proof) => proof.proofId)
     if (
       !sameUnorderedStringValues(
         expectedProofIds,
@@ -2430,13 +2634,13 @@ function assertScopeIntegrity(
       throw new Error('custody operation reservation is missing or foreign')
     }
     for (const reservation of reservations) {
-      const expectedInput = record.operation.reservation.inputs.find(
+      const expectedInput = expectedInputs.find(
         (input) => input.proofId === reservation.proof_id,
       )
       if (
         expectedInput === undefined ||
         reservation.input_position !==
-          record.operation.reservation.inputs.indexOf(expectedInput) ||
+          expectedInputs.indexOf(expectedInput) ||
         reservation.keyset_id !== expectedInput.keysetId ||
         reservation.curve !== expectedInput.curve
       ) {

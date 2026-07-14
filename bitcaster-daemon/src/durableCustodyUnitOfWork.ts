@@ -10,7 +10,9 @@ import { openProfileDatabase } from './profile.ts'
 import {
   applyWalletProofDeltaInState,
   applyDaemonStateWorkInDatabase,
+  releaseWalletProofsForRecoveryAbortInState,
   reserveWalletProofsForPrepareInState,
+  walletProofSelectorsForRecoveryAbort,
   type DaemonWalletProofDelta,
   type LocalSwapRecord,
   type PrepareProofOperationInput,
@@ -40,6 +42,11 @@ export interface DaemonCustodyStateEffects {
   putSwap(swap: LocalSwapRecord): void
   reserveWalletProofs(input: PrepareProofOperationInput, now: string): void
   applyWalletProofDelta(delta: DaemonWalletProofDelta): void
+  releaseWalletProofsForRecoveryAbort(
+    operation: ProofOperationRecord,
+    now: string,
+    restoreReservationId?: string | null,
+  ): void
 }
 
 let faultHook:
@@ -139,6 +146,29 @@ function createStateEffects(
       assertWalletDeltaSelected(scope, delta)
       applyWalletProofDeltaInState(state, delta)
     },
+    releaseWalletProofsForRecoveryAbort(operation, now, restoreReservationId) {
+      assertWalletAbortSelected(scope, operation)
+      releaseWalletProofsForRecoveryAbortInState(
+        state,
+        operation,
+        now,
+        restoreReservationId,
+      )
+    },
+  }
+}
+
+function assertWalletAbortSelected(
+  scope: DaemonStateRowScope,
+  operation: ProofOperationRecord,
+): void {
+  if (scope.walletProofs === 'all') return
+  const selectors = walletProofSelectorsForRecoveryAbort(operation)
+  if (selectors === undefined) return
+  const permitted = selectedWalletProofIds(scope)
+  const selected = selectors.flatMap((selector) => selector.proofIds ?? [])
+  if (selected.some((proofId) => !permitted.has(proofId))) {
+    throw new Error('wallet proof abort is outside its exact state scope')
   }
 }
 

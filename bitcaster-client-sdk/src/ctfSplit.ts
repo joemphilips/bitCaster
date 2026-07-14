@@ -74,6 +74,7 @@ export type CtfProofOperationKind =
   | "ctf-split"
   | "ctf-merge"
   | "ctf-redeem"
+  | "ctf-condition-registration"
   | "regular-split";
 /** `failed` remains readable for records written by earlier client versions. */
 export type ProofOperationState =

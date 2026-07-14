@@ -12,6 +12,7 @@ import {
   decideDurableCustodyRecovery,
   decideTerminalTombstoneDrain,
   isDurableCustodyActiveRecoveryRecord,
+  isDurableCustodyProofReservationActive,
   readDurableCustodyRecoveryPage,
   deriveDurableCustodyOperationId,
   deriveDurableCustodyKeysetFingerprint,
@@ -81,6 +82,7 @@ test('exact proof facts bind real public keys and explicit keyset usage', () => 
     unit: 'sat',
     binding,
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 250 },
+    hasOutputs: true,
     keysets: [
       {
         keysetId: '0011223344556677',
@@ -124,6 +126,7 @@ test('dispatch intent binds the exact operation artifacts through SDK policy', (
     unit: 'sat',
     binding,
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
+    hasOutputs: true,
     keysets: [{
       keysetId: '0011223344556677',
       unit: 'sat',
@@ -144,6 +147,7 @@ test('dispatch intent binds the exact operation artifacts through SDK policy', (
     inventoryAccountId: null,
     reservation: {
       reservationId: 'wallet-send-001',
+      parentReservationId: null,
       inputs: [{
         proofId: FINGERPRINT_A,
         keysetId: '0011223344556677',
@@ -192,6 +196,7 @@ test('exact proof facts reject missing authority and verification policy', () =>
       stage: 'send' as const,
     },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
+    hasOutputs: true,
     keysets: [
       {
         keysetId: '0011223344556677',
@@ -209,6 +214,12 @@ test('exact proof facts reject missing authority and verification policy', () =>
     () => createDurableProofOperationFacts(base),
     /output keysets must not be empty/,
   )
+  const zeroOutput = createDurableProofOperationFacts({
+    ...base,
+    hasOutputs: false,
+  })
+  assert.equal(zeroOutput.verification.hasOutputs, false)
+  assert.deepEqual(zeroOutput.verification.outputKeysets, [])
   assert.throws(
     () => createDurableProofOperationFacts({
       ...base,
@@ -279,6 +290,7 @@ function custodyRecord(overrides: Record<string, unknown> = {}): Record<string, 
       },
       reservation: {
         reservationId: 'reservation-001',
+        parentReservationId: null,
         inputs: [{ proofId: FINGERPRINT_A, keysetId: 'keyset-001', curve: 'secp256k1' }],
       },
       exactRequest: {
@@ -306,6 +318,7 @@ function custodyRecord(overrides: Record<string, unknown> = {}): Record<string, 
       },
       verification: {
         outputPlanFingerprint: FINGERPRINT_B,
+        hasOutputs: true,
         keysetBindings: [
           {
             keysetId: 'keyset-001',
@@ -1001,6 +1014,7 @@ test('post-handoff recovery reissues the same all-unspent operation inside its h
 test('NUT-09 recovery may reconcile a dispatch intent only with spent-restorable evidence', () => {
   const record = decodedRecord()
   const initial = custodyState(record)
+  assert.equal(isDurableCustodyProofReservationActive(record), true)
   assert.throws(
     () => reduceDurableCustodyState(initial, {
       kind: 'reconciled',
@@ -1023,6 +1037,8 @@ test('NUT-09 recovery may reconcile a dispatch intent only with spent-restorable
   })
   assert.equal(reconciled.operation.operation.state, 'reconciled')
   assert.equal(reconciled.operation.operation.result.state, 'applied')
+  assert.equal(isDurableCustodyProofReservationActive(staged.operation), true)
+  assert.equal(isDurableCustodyProofReservationActive(reconciled.operation), false)
   assert.throws(
     () => reduceDurableCustodyState(staged, {
       kind: 'reconciled',
@@ -1086,6 +1102,7 @@ test('safe abort transition requires deterministic rejection without dependency 
     exactRequestDisposition: 'deterministically-rejected',
   })
   assert.equal(aborted.operation.operation.state, 'aborted')
+  assert.equal(isDurableCustodyProofReservationActive(aborted.operation), false)
 
   const dependent = structuredClone(record)
   if (dependent.operation.binding.kind !== 'trade') assert.fail('expected trade binding')

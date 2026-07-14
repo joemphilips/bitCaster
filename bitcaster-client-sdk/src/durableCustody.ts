@@ -126,6 +126,7 @@ export interface DurableProofOperationFacts {
   binding: DurableCustodyBinding
   horizon: DurableCustodyRecord['operation']['horizon']
   verification: {
+    hasOutputs: boolean
     keysetBindings: DurableCustodyRecord['operation']['verification']['keysetBindings']
     inputKeysets: Array<{
       keysetId: string
@@ -139,6 +140,7 @@ export interface DurableProofOperationFactsInput {
   unit: string
   binding: DurableCustodyBinding
   horizon: Omit<DurableCustodyRecord['operation']['horizon'], 'keysetExpiryMs'>
+  hasOutputs: boolean
   keysets: readonly DurableProofOperationKeysetFactsInput[]
 }
 
@@ -189,6 +191,7 @@ export interface DurableCustodyRecord {
     }
     reservation: {
       reservationId: string
+      parentReservationId: string | null
       inputs: Array<{
         proofId: string
         keysetId: string
@@ -220,6 +223,7 @@ export interface DurableCustodyRecord {
     }
     verification: {
       outputPlanFingerprint: string
+      hasOutputs: boolean
       keysetBindings: Array<{
         keysetId: string
         curve: DurableCustodyCurve
@@ -439,6 +443,21 @@ export async function readDurableCustodyRecoveryPage(
 export function isDurableCustodyActiveRecoveryRecord(record: DurableCustodyRecord): boolean {
   const decoded = decodeDurableCustodyRecord(record)
   return isDecodedDurableCustodyActiveRecoveryRecord(decoded)
+}
+
+/** True only while exact input proofs remain owned by an in-flight operation. */
+export function isDurableCustodyProofReservationActive(
+  record: DurableCustodyRecord,
+): boolean {
+  const decoded = decodeDurableCustodyRecord(record)
+  switch (decoded.operation.state) {
+    case 'dispatch-intent':
+    case 'transport-attempted':
+      return true
+    case 'aborted':
+    case 'reconciled':
+      return false
+  }
 }
 
 function isDecodedDurableCustodyActiveRecoveryRecord(decoded: DurableCustodyRecord): boolean {
@@ -1084,7 +1103,11 @@ export function createDurableProofOperationFacts(
     || input.keysets.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
     throw new Error('proof operation keysets are invalid')
   }
-  const verification = decodeProofOperationKeysetFacts(input.keysets, unit)
+  const verification = decodeProofOperationKeysetFacts(
+    input.keysets,
+    unit,
+    requireBoolean(input.hasOutputs, 'proof operation output marker'),
+  )
   return {
     unit,
     binding,
@@ -1130,6 +1153,7 @@ export function createDurableCustodyDispatchIntent(
       },
       verification: {
         outputPlanFingerprint: input.outputPlan.outputPlanFingerprint,
+        hasOutputs: input.facts.verification.hasOutputs,
         keysetBindings: input.facts.verification.keysetBindings,
         outputKeysets: input.facts.verification.outputKeysets,
       },
@@ -1170,6 +1194,7 @@ function decodeProofOperationFactsHorizon(
 function decodeProofOperationKeysetFacts(
   keysets: readonly DurableProofOperationKeysetFactsInput[],
   unit: string,
+  hasOutputs: boolean,
 ): DurableProofOperationFacts['verification'] {
   const seen = new Set<string>()
   const inputKeysets: DurableProofOperationFacts['verification']['inputKeysets'] = []
@@ -1185,8 +1210,8 @@ function decodeProofOperationKeysetFacts(
     }
   })
   if (inputKeysets.length === 0) throw new Error('input keysets must not be empty')
-  if (outputKeysets.length === 0) throw new Error('output keysets must not be empty')
-  return { keysetBindings, inputKeysets, outputKeysets }
+  assertOutputKeysetAuthority(hasOutputs, outputKeysets)
+  return { hasOutputs, keysetBindings, inputKeysets, outputKeysets }
 }
 
 function decodeProofOperationKeysetUsage(
@@ -1689,7 +1714,7 @@ function decodeCustodyContext(value: unknown): DurableCustodyRecord['operation']
 
 function decodeReservation(value: unknown): DurableCustodyRecord['operation']['reservation'] {
   const reservation = requireRecord(value, 'reservation')
-  requireKnownFields(reservation, ['reservationId', 'inputs'])
+  requireKnownFields(reservation, ['reservationId', 'parentReservationId', 'inputs'])
   const rawInputs = requireArray(reservation.inputs, 'reservation inputs')
   if (rawInputs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX) {
     throw new Error('reservation inputs exceed the limit')
@@ -1706,7 +1731,13 @@ function decodeReservation(value: unknown): DurableCustodyRecord['operation']['r
     }
   })
   if (inputs.length === 0) throw new Error('reservation inputs must not be empty')
-  return { reservationId: requireIdentifier(reservation.reservationId, 'reservation id'), inputs }
+  return {
+    reservationId: requireIdentifier(reservation.reservationId, 'reservation id'),
+    parentReservationId: reservation.parentReservationId === null
+      ? null
+      : requireIdentifier(reservation.parentReservationId, 'parent reservation id'),
+    inputs,
+  }
 }
 
 function decodeExactRequest(value: unknown): DurableCustodyRecord['operation']['exactRequest'] {
@@ -1770,7 +1801,10 @@ function decodeResult(value: unknown): DurableCustodyRecord['operation']['result
 
 function decodeVerification(value: unknown): DurableCustodyRecord['operation']['verification'] {
   const verification = requireRecord(value, 'verification')
-  requireKnownFields(verification, ['outputPlanFingerprint', 'keysetBindings', 'outputKeysets'])
+  requireKnownFields(verification, [
+    'outputPlanFingerprint', 'hasOutputs', 'keysetBindings', 'outputKeysets',
+  ])
+  const hasOutputs = requireBoolean(verification.hasOutputs, 'verification output marker')
   const rawKeysetBindings = requireArray(verification.keysetBindings, 'keyset bindings')
   if (rawKeysetBindings.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
     throw new Error('keyset bindings exceed the limit')
@@ -1789,7 +1823,6 @@ function decodeVerification(value: unknown): DurableCustodyRecord['operation']['
   })
   if (keysetBindings.length === 0) throw new Error('keyset bindings must not be empty')
   const rawOutputKeysets = requireArray(verification.outputKeysets, 'output keysets')
-  if (rawOutputKeysets.length === 0) throw new Error('output keysets must not be empty')
   if (rawOutputKeysets.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
     throw new Error('output keysets exceed the limit')
   }
@@ -1803,10 +1836,24 @@ function decodeVerification(value: unknown): DurableCustodyRecord['operation']['
       curve,
     }
   })
+  assertOutputKeysetAuthority(hasOutputs, outputKeysets)
   return {
     outputPlanFingerprint: requireFingerprint(verification.outputPlanFingerprint, 'verification output plan fingerprint'),
+    hasOutputs,
     keysetBindings,
     outputKeysets,
+  }
+}
+
+function assertOutputKeysetAuthority(
+  hasOutputs: boolean,
+  outputKeysets: readonly unknown[],
+): void {
+  if (hasOutputs && outputKeysets.length === 0) {
+    throw new Error('output keysets must not be empty')
+  }
+  if (!hasOutputs && outputKeysets.length !== 0) {
+    throw new Error('zero-output operation cannot bind output keysets')
   }
 }
 

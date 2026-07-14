@@ -6,6 +6,7 @@ export const DAEMON_PROOF_OPERATION_KINDS = [
   'ctf-merge',
   'ctf-consolidation',
   'ctf-redeem',
+  'ctf-condition-registration',
   'regular-split',
   'wallet-send',
   'proof-split',

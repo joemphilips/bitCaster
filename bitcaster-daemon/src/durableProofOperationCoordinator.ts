@@ -2,20 +2,22 @@ import { isDeepStrictEqual } from 'node:util'
 import type { CtfRedeemMintSubmissionBinding } from '@bitcaster-market/client-sdk/ctfSplit'
 import {
   decideDurableCustodyRecovery,
-  deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyOperationId,
   deriveDurableCustodyProofId,
   durableCustodySemanticPolicy,
   type DurableCustodyBinding,
+  type DurableCustodyOwnerAuthorization,
   type DurableCustodyRecord,
   type DurableCustodyRecoveryClassification,
   type DurableCustodyRecoveryDecision,
+  type DurableCustodyRecoveryInput,
   type DurableCustodyStore,
 } from '@bitcaster-market/client-sdk/durableCustody'
 import {
   bindDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
   deriveDurableCustodyProofOperationFingerprints,
+  deriveDurableCustodyProofResultFingerprint,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
   reduceDurableTradeSession,
@@ -44,10 +46,12 @@ import {
   normalizeCashuProofRecord,
   normalizeProofRecordGroups,
   walletProofSelectorsForPrepare,
+  walletProofSelectorsForRecoveryAbort,
   type CashuProofRecord,
   type CompleteProofOperationWithWalletUpdateInput,
   type DaemonCanonicalRecoveryPage,
   type DaemonProofOperationCoordinatorPort,
+  type DaemonProofOperationSafeAbortEvidence,
   type PrepareProofOperationInput,
   type ProofOperationRecord,
 } from './state.ts'
@@ -55,6 +59,7 @@ import type { DaemonStateRowScope } from './stateSqlite.ts'
 import {
   assertOrderCollateralPinOwnsProofs,
   bindOrderCollateralOperationInDatabase,
+  releaseOrderCollateralOperationAllocationInDatabase,
 } from './durableOrderCollateralSqlite.ts'
 
 interface DaemonCustodyAuthority {
@@ -128,48 +133,19 @@ export class DaemonProofOperationCoordinator
       facts,
       inventoryAccountId: null,
       reservationId: input.walletProofReservation?.reservationId,
+      parentReservationId:
+        input.walletProofReservation?.parentOrderCollateralPinId,
     })
     return this.unitOfWork.transact(
       this.transactionInput(
         stateScopeFor(input),
         custodyRecord.operation.operationId,
       ),
-      ({ database, custody, state, now }) => {
-        const parentPinId = input.walletProofReservation
-          ?.parentOrderCollateralPinId
-        const parentProofIds = custodyRecord.operation.reservation.inputs.map(
-          ({ proofId }) => proofId,
-        )
-        if (parentPinId !== undefined) {
-          assertOrderCollateralPinOwnsProofs(
-            database,
-            this.authority.scope.scopeId,
-            parentPinId,
-            parentProofIds,
-          )
-        }
-        const existing = state.getProofOperation(input.operationId)
-        if (existing !== null) {
-          assertStatePrepareMatches(existing, input)
-          if (existing.state === 'prepared' || existing.state === 'mint-submitted') {
-            state.reserveWalletProofs(input, now)
-          }
-          bindDurableCustodyProofOperation(custody, custodyRecord)
-          bindParentOrderCollateral(
-            database,
-            parentPinId,
-            custodyRecord,
-          )
-          return existing
-        }
-        state.reserveWalletProofs(input, now)
-        bindDurableCustodyProofOperation(custody, custodyRecord)
-        bindParentOrderCollateral(database, parentPinId, custodyRecord)
-        const prepared = createPreparedStateRecord(input, Date.parse(now))
-        state.putProofOperation(prepared)
-        prepareTradeSession(state, prepared)
-        return prepared
-      },
+      (transaction) => prepareInTransaction({
+        transaction,
+        input,
+        custodyRecord,
+      }),
     )
   }
 
@@ -253,6 +229,8 @@ export class DaemonProofOperationCoordinator
   async decideRecovery(
     operation: ProofOperationRecord,
     classification: DurableCustodyRecoveryClassification,
+    exactRequestDisposition: DurableCustodyRecoveryInput['exactRequestDisposition'] =
+      'unknown',
   ): Promise<DurableCustodyRecoveryDecision> {
     this.authority.assertActive()
     const context = await existingOperationContext(
@@ -283,7 +261,7 @@ export class DaemonProofOperationCoordinator
           {
             ...owner,
             classification,
-            exactRequestDisposition: 'unknown',
+            exactRequestDisposition,
             scopeId: canonical.scope.scopeId,
             operationId: canonical.operation.operationId,
             requestFingerprint: canonical.operation.exactRequest.requestFingerprint,
@@ -291,6 +269,41 @@ export class DaemonProofOperationCoordinator
           },
         )
       },
+    )
+  }
+
+  async abortRecovery(
+    operation: ProofOperationRecord,
+    evidence: DaemonProofOperationSafeAbortEvidence,
+  ): Promise<ProofOperationRecord> {
+    this.authority.assertActive()
+    if (operation.durableTradeRecovery !== undefined) {
+      throw new Error('trade proof operation abort requires its state machine')
+    }
+    const walletProofs = walletProofSelectorsForRecoveryAbort(operation)
+    const context = await existingOperationContext(
+      this.authority.scope.scopeId,
+      operation.operationId,
+      walletProofs,
+    )
+    const owner = this.authority.authorization()
+    return this.unitOfWork.transact(
+      {
+        scope: this.authority.scope,
+        owner,
+        operationIds: [context.custodyOperationId],
+        stateScope: context.stateScope,
+      },
+      ({ database, custody, state, now }) => abortRecoveryInTransaction({
+        database,
+        custody,
+        state,
+        now,
+        owner,
+        evidence,
+        operation,
+        custodyOperationId: context.custodyOperationId,
+      }),
     )
   }
 
@@ -333,18 +346,196 @@ export class DaemonProofOperationCoordinator
   }
 }
 
+function prepareInTransaction(input: {
+  transaction: DaemonCustodyUnitOfWorkTransaction
+  input: PrepareProofOperationInput
+  custodyRecord: DurableCustodyRecord
+}): ProofOperationRecord {
+  const { database, custody, state, now } = input.transaction
+  const parentPinId = input.input.walletProofReservation
+    ?.parentOrderCollateralPinId
+  const parentProofIds = input.custodyRecord.operation.reservation.inputs.map(
+    ({ proofId }) => proofId,
+  )
+  const existing = state.getProofOperation(input.input.operationId)
+  if (existing !== null) {
+    assertStatePrepareMatches(existing, input.input)
+    bindDurableCustodyProofOperation(custody, input.custodyRecord)
+    if (existing.state === 'completed' || existing.state === 'Failed') {
+      return existing
+    }
+    assertParentOrderCollateral(
+      database,
+      input.custodyRecord.scope.scopeId,
+      parentPinId,
+      parentProofIds,
+    )
+    state.reserveWalletProofs(input.input, now)
+    bindParentOrderCollateral(database, input.custodyRecord)
+    return existing
+  }
+  assertParentOrderCollateral(
+    database,
+    input.custodyRecord.scope.scopeId,
+    parentPinId,
+    parentProofIds,
+  )
+  state.reserveWalletProofs(input.input, now)
+  bindDurableCustodyProofOperation(custody, input.custodyRecord)
+  bindParentOrderCollateral(database, input.custodyRecord)
+  const prepared = createPreparedStateRecord(input.input, Date.parse(now))
+  state.putProofOperation(prepared)
+  prepareTradeSession(state, prepared)
+  return prepared
+}
+
+function abortRecoveryInTransaction(input: {
+  database: DaemonCustodyUnitOfWorkTransaction['database']
+  custody: CustodyTransaction
+  state: DaemonCustodyStateEffects
+  now: string
+  owner: DurableCustodyOwnerAuthorization
+  evidence: DaemonProofOperationSafeAbortEvidence
+  operation: ProofOperationRecord
+  custodyOperationId: string
+}): ProofOperationRecord {
+  const current = requireStateOperation(
+    input.state,
+    input.operation.operationId,
+  )
+  assertStatePrepareMatches(current, input.operation)
+  const canonical = requireCustodyOperation(
+    input.custody,
+    input.custodyOperationId,
+  )
+  if (current.state === 'Failed') {
+    assertRecoveryAuthority(canonical, current, 'aborted')
+    return current
+  }
+  if (current.state !== 'prepared') {
+    throw new Error('custody recovery abort requires a prepared operation')
+  }
+  assertRecoveryAuthority(canonical, current)
+  const evidence = requireSafeAbortEvidence(input, canonical)
+  const parentReservationId = releaseParentOrderCollateralAllocation(
+    input.database,
+    canonical,
+  )
+  transitionCustodyToAborted(input, evidence, parentReservationId, current)
+  return persistAbortedState(input.state, current, input.now)
+}
+
+function requireSafeAbortEvidence(
+  input: Pick<
+    Parameters<typeof abortRecoveryInTransaction>[0],
+    'custody' | 'owner' | 'evidence'
+  >,
+  canonical: DurableCustodyRecord,
+): {
+  classification: 'all-inputs-unspent'
+  exactRequestDisposition: 'deterministically-rejected'
+} {
+  const decision = decideDurableCustodyRecovery(
+    canonical,
+    input.custody.getScopeState(),
+    {
+      ...input.owner,
+      ...input.evidence,
+      scopeId: canonical.scope.scopeId,
+      operationId: canonical.operation.operationId,
+      requestFingerprint: canonical.operation.exactRequest.requestFingerprint,
+      outputPlanFingerprint: canonical.operation.outputPlan.outputPlanFingerprint,
+    },
+  )
+  if (decision.kind !== 'abort-no-transport'
+    || input.evidence.classification !== 'all-inputs-unspent'
+    || input.evidence.exactRequestDisposition !== 'deterministically-rejected') {
+    throw new Error('custody recovery abort evidence is insufficient')
+  }
+  return {
+    classification: input.evidence.classification,
+    exactRequestDisposition: input.evidence.exactRequestDisposition,
+  }
+}
+
+function releaseParentOrderCollateralAllocation(
+  database: DaemonCustodyUnitOfWorkTransaction['database'],
+  canonical: DurableCustodyRecord,
+): string | null {
+  const parentReservationId = canonical.operation.reservation.parentReservationId
+  if (parentReservationId !== null) {
+    releaseOrderCollateralOperationAllocationInDatabase(database, {
+      scopeId: canonical.scope.scopeId,
+      pinId: parentReservationId,
+      operationId: canonical.operation.operationId,
+      proofIds: canonical.operation.reservation.inputs.map(({ proofId }) => proofId),
+    })
+  }
+  return parentReservationId
+}
+
+function transitionCustodyToAborted(
+  input: Pick<
+    Parameters<typeof abortRecoveryInTransaction>[0],
+    'custody' | 'now'
+  > & { custodyOperationId: string; state: DaemonCustodyStateEffects },
+  evidence: ReturnType<typeof requireSafeAbortEvidence>,
+  parentReservationId: string | null,
+  current: ProofOperationRecord,
+): void {
+  input.custody.transitionOperation({
+    operationId: input.custodyOperationId,
+    transition: {
+      kind: 'abort-no-transport',
+      classification: evidence.classification,
+      exactRequestDisposition: evidence.exactRequestDisposition,
+    },
+  })
+  input.custody.rebuildActiveWorkIndex()
+  input.state.releaseWalletProofsForRecoveryAbort(
+    current,
+    input.now,
+    parentReservationId,
+  )
+}
+
+function persistAbortedState(
+  state: DaemonCustodyStateEffects,
+  current: ProofOperationRecord,
+  now: string,
+): ProofOperationRecord {
+  const aborted = {
+    ...current,
+    state: 'Failed' as const,
+    lastError: 'custody operation safely aborted before transport',
+    updatedAt: Date.parse(now),
+  }
+  state.putProofOperation(aborted)
+  return aborted
+}
+
 function bindParentOrderCollateral(
   database: DaemonCustodyUnitOfWorkTransaction['database'],
-  pinId: string | undefined,
   record: DurableCustodyRecord,
 ): void {
-  if (pinId === undefined) return
+  const pinId = record.operation.reservation.parentReservationId
+  if (pinId === null) return
   bindOrderCollateralOperationInDatabase(database, {
     scopeId: record.scope.scopeId,
     pinId,
     operationId: record.operation.operationId,
     proofIds: record.operation.reservation.inputs.map(({ proofId }) => proofId),
   })
+}
+
+function assertParentOrderCollateral(
+  database: DaemonCustodyUnitOfWorkTransaction['database'],
+  scopeId: string,
+  pinId: string | undefined,
+  proofIds: readonly string[],
+): void {
+  if (pinId === undefined) return
+  assertOrderCollateralPinOwnsProofs(database, scopeId, pinId, proofIds)
 }
 
 function createPreparedStateRecord(
@@ -509,7 +700,7 @@ function commitCustodyResult(
   record: DurableCustodyRecord,
   resultProofs: Record<string, CashuProofRecord[]>,
 ): void {
-  const resultFingerprint = deriveDurableCustodyArtifactFingerprint(resultProofs)
+  const resultFingerprint = deriveDurableCustodyProofResultFingerprint(resultProofs)
   const resultHandle = `result:${resultFingerprint}`
   const input = {
     operationId: record.operation.operationId,
@@ -647,6 +838,10 @@ function assertCustodyState(
 function assertRecoveryAuthority(
   canonical: DurableCustodyRecord,
   operation: ProofOperationRecord,
+  failedCanonicalState?: Extract<
+    DurableCustodyRecord['operation']['state'],
+    'aborted'
+  >,
 ): void {
   const unit = operation.metadata.unit
   if (typeof unit !== 'string' || unit.length === 0) {
@@ -666,14 +861,18 @@ function assertRecoveryAuthority(
   const expected = {
     retainedOperationKey: operation.operationId,
     semanticKind: daemonCustodySemanticKind(operation.kind),
-    state: custodyStateFor(operation.state),
+    state: operation.state === 'Failed'
+      ? requireFailedCanonicalState(failedCanonicalState)
+      : custodyStateFor(operation.state),
     normalizedMint: operation.mintUrl,
     unit,
     requestFingerprint,
     outputPlanFingerprint,
     proofIds,
     resultFingerprint: operation.state === 'completed'
-      ? deriveDurableCustodyArtifactFingerprint(operation.resultProofs)
+      ? deriveDurableCustodyProofResultFingerprint(
+        requireCompletedResultProofs(operation),
+      )
       : null,
   }
   const actual = {
@@ -690,6 +889,24 @@ function assertRecoveryAuthority(
   if (!isDeepStrictEqual(actual, expected)) {
     throw new Error('proof operation is foreign to canonical custody authority')
   }
+}
+
+function requireFailedCanonicalState(
+  state: 'aborted' | undefined,
+): 'aborted' {
+  if (state !== 'aborted') {
+    throw new Error('failed proof operation canonical state is ambiguous')
+  }
+  return state
+}
+
+function requireCompletedResultProofs(
+  operation: ProofOperationRecord,
+): Record<string, CashuProofRecord[]> {
+  if (operation.state !== 'completed' || operation.resultProofs === undefined) {
+    throw new Error('completed proof operation result is missing')
+  }
+  return operation.resultProofs
 }
 
 function custodyStateFor(

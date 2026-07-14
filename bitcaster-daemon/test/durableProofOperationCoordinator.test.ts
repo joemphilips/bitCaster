@@ -24,13 +24,17 @@ import {
 import {
   SqliteDurableCustodyStore,
 } from '../src/durableCustodySqliteStore.ts'
+import { openProfileDatabase } from '../src/profile.ts'
 import {
   setDaemonCustodyUnitOfWorkFaultHookForTest,
 } from '../src/durableCustodyUnitOfWork.ts'
 import { recoverPreparedWalletSends } from '../src/walletOps.ts'
 import {
   addAvailableSatProofs,
+  abortProofOperationCustodyRecovery,
   completeProofOperationWithWalletUpdate,
+  decideProofOperationCustodyRecovery,
+  assertProofOperationCustodyBound,
   emptyDaemonState,
   getProofOperation,
   installDaemonProofOperationCoordinator,
@@ -130,6 +134,18 @@ function reservingWalletSend() {
   }
 }
 
+function reservingWalletSendFor(operationId: string, inputSecret: string) {
+  const prepared = reservingWalletSend()
+  const reservationId = `wallet-send:${operationId}`
+  return {
+    ...prepared,
+    operationId,
+    inputs: [{ ...prepared.inputs[0]!, secret: inputSecret }],
+    metadata: { ...prepared.metadata, reservationId },
+    walletProofReservation: { reservationId, unit: 'sat' as const },
+  }
+}
+
 function storedOutput(secret: string, byte: string) {
   return storedOutputAmount(secret, byte, 1)
 }
@@ -224,6 +240,18 @@ test('installed daemon coordinator commits custody, operation, and wallet proof 
           keysetId: KEYSET_ID,
           secret: prepared.inputs[0]!.secret,
         }))
+      const repeated = await prepareProofOperation(prepared)
+      assert.equal(repeated.state, 'completed')
+      const database = openProfileDatabase()
+      try {
+        const reservation = database.prepare(
+          `SELECT proof_id FROM custody_proof_reservations
+            WHERE scope_id = ? AND operation_id = ?`,
+        ).get(scope.scopeId, custodyId)
+        assert.equal(reservation, undefined)
+      } finally {
+        database.close()
+      }
     } finally {
       uninstall()
       await lease.stopAndRelease()
@@ -260,6 +288,337 @@ test('daemon coordinator rolls back both authorities on a prepare crash', async 
     }
   })
 })
+
+test('daemon coordinator atomically releases wallet proofs on safe abort crashes', async () => {
+  await withDaemonHome(async () => {
+    const { store, scope, lease, uninstall } = await installedCoordinator()
+    try {
+      const before = await prepareSafeAbortScenario(
+        'wallet-send-abort-before',
+        'abort-before-input',
+      )
+      await assertBeforeCommitAbort(before)
+      const after = await prepareSafeAbortScenario(
+        'wallet-send-abort-after',
+        'abort-after-input',
+      )
+      await assertAfterCommitAbort(after)
+      const custodyId = walletSendCustodyId(scope.scopeId, after.input.operationId)
+      assert.equal(
+        (await readCanonical(store, scope, lease, custodyId))?.operation.state,
+        'aborted',
+      )
+    } finally {
+      uninstall()
+      await lease.stopAndRelease()
+    }
+  })
+})
+
+test('safe abort revalidates exact evidence and operation authority in its transaction', async () => {
+  await withDaemonHome(async () => {
+    const { lease, uninstall } = await installedCoordinator()
+    try {
+      const scenario = await prepareSafeAbortScenario(
+        'wallet-send-abort-evidence',
+        'abort-evidence-input',
+      )
+      await assert.rejects(
+        () => abortProofOperationCustodyRecovery(scenario.record, {
+          classification: 'all-inputs-unspent',
+          exactRequestDisposition: 'unknown',
+        }),
+        /abort evidence is insufficient/,
+      )
+      await assert.rejects(
+        () => abortProofOperationCustodyRecovery({
+          ...scenario.record,
+          metadata: { ...scenario.record.metadata, amount: 999 },
+        }, scenario.evidence),
+        /changed before|foreign exact artifacts/,
+      )
+      assert.equal(
+        (await getProofOperation(scenario.input.operationId))?.state,
+        'prepared',
+      )
+      assert.equal(
+        await walletProofReservationForSecret(scenario.inputSecret),
+        scenario.input.walletProofReservation.reservationId,
+      )
+    } finally {
+      uninstall()
+      await lease.stopAndRelease()
+    }
+  })
+})
+
+test('safe abort restores exact proofs to their immutable parent collateral pin', async () => {
+  await withDaemonHome(async () => {
+    const { store, scope, lease, uninstall } = await installedCoordinator()
+    try {
+      const proof = cashuProof(100, 'abort-parent-input')
+      const [proofRow] = await addAvailableSatProofs(
+        'https://mint.example',
+        [proof],
+      )
+      assert.ok(proofRow)
+      const orderCoordinator = new DaemonOrderCollateralCoordinator(lease)
+      const pin = await orderCoordinator.prepare({
+        clientOrderId: 'abort-parent-client-order',
+        marketId: 'condition-YES',
+        mintUrl: 'https://mint.example',
+        unit: 'sat',
+        orderAmount: 100,
+        requiredAmount: 100,
+        submissionRequest: {
+          clientOrderId: 'abort-parent-client-order',
+          outcomeId: 'YES',
+          tokenSide: 'Outcome',
+          side: 'Buy',
+          price: 50,
+          amountSubunits: 100,
+          timeInForce: 'GTC',
+        },
+        proofs: [proofRow],
+      })
+      await orderCoordinator.bindOrObserve({
+        pinId: pin.pinId,
+        orderId: 'abort-parent-order',
+        status: 'resting',
+        remainingAmount: 100,
+      })
+      const operationId = 'abort-parent-preflight-split'
+      const operation = {
+        operationId,
+        kind: 'regular-split' as const,
+        mintUrl: 'https://mint.example',
+        inputs: [proof],
+        outputs: {
+          keep: [storedOutputAmount('abort-parent-change', '88', 100)],
+        },
+        metadata: {
+          unit: 'sat',
+          reservationId: operationId,
+        },
+        walletProofReservation: {
+          reservationId: operationId,
+          unit: 'sat' as const,
+          parentOrderCollateralPinId: pin.pinId,
+        },
+      }
+      await prepareProofOperation(operation)
+      const prepared = await getProofOperation(operationId)
+      assert.ok(prepared)
+      const custodyId = walletSendCustodyId(scope.scopeId, operationId)
+      assert.equal(
+        (await readCanonical(store, scope, lease, custodyId))?.operation
+          .reservation.parentReservationId,
+        pin.pinId,
+      )
+
+      const aborted = await abortProofOperationCustodyRecovery(prepared, {
+        classification: 'all-inputs-unspent',
+        exactRequestDisposition: 'deterministically-rejected',
+      })
+      assert.equal(aborted.state, 'Failed')
+      assert.equal(await walletProofReservationForSecret(proof.secret), pin.pinId)
+      const database = openProfileDatabase()
+      try {
+        assert.equal(
+          database.prepare(
+            `SELECT COUNT(*) AS count
+               FROM custody_order_collateral_allocations
+              WHERE scope_id = ? AND operation_id = ?`,
+          ).get(scope.scopeId, custodyId)?.count,
+          0,
+        )
+      } finally {
+        database.close()
+      }
+      assert.equal((await prepareProofOperation(operation)).state, 'Failed')
+      await assert.rejects(
+        () => prepareProofOperation({
+          ...operation,
+          walletProofReservation: {
+            ...operation.walletProofReservation,
+            parentOrderCollateralPinId: 'foreign-parent-pin',
+          },
+        }),
+        /foreign immutable authority/,
+      )
+    } finally {
+      uninstall()
+      await lease.stopAndRelease()
+    }
+  })
+})
+
+async function prepareSafeAbortScenario(
+  operationId: string,
+  inputSecret: string,
+) {
+  const input = reservingWalletSendFor(operationId, inputSecret)
+  await addAvailableSatProofs(input.mintUrl, input.inputs)
+  await prepareProofOperation(input)
+  const record = await getProofOperation(operationId)
+  assert.ok(record)
+  const decision = await decideProofOperationCustodyRecovery(
+    record,
+    'all-inputs-unspent',
+    'deterministically-rejected',
+  )
+  if (decision.kind !== 'abort-no-transport') {
+    throw new Error('expected a safe custody abort decision')
+  }
+  return {
+    input,
+    inputSecret,
+    record,
+    evidence: {
+      classification: 'all-inputs-unspent' as const,
+      exactRequestDisposition: 'deterministically-rejected' as const,
+    },
+  }
+}
+
+async function assertBeforeCommitAbort(
+  scenario: Awaited<ReturnType<typeof prepareSafeAbortScenario>>,
+): Promise<void> {
+  setDaemonCustodyUnitOfWorkFaultHookForTest((stage) => {
+    if (stage === 'before-commit') throw new Error('abort before commit')
+  })
+  await assert.rejects(
+    () => abortProofOperationCustodyRecovery(
+      scenario.record,
+      scenario.evidence,
+    ),
+    /abort before commit/,
+  )
+  setDaemonCustodyUnitOfWorkFaultHookForTest(undefined)
+  assert.equal(
+    (await getProofOperation(scenario.input.operationId))?.state,
+    'prepared',
+  )
+  assert.equal(
+    await walletProofReservationForSecret(scenario.inputSecret),
+    scenario.input.walletProofReservation.reservationId,
+  )
+  assert.equal(
+    (await abortProofOperationCustodyRecovery(
+      scenario.record,
+      scenario.evidence,
+    )).state,
+    'Failed',
+  )
+  assert.equal(await walletProofStateForSecret(scenario.inputSecret), 'available')
+}
+
+async function assertAfterCommitAbort(
+  scenario: Awaited<ReturnType<typeof prepareSafeAbortScenario>>,
+): Promise<void> {
+  setDaemonCustodyUnitOfWorkFaultHookForTest((stage) => {
+    if (stage === 'after-commit') throw new Error('abort after commit')
+  })
+  await assert.rejects(
+    () => abortProofOperationCustodyRecovery(
+      scenario.record,
+      scenario.evidence,
+    ),
+    /abort after commit/,
+  )
+  setDaemonCustodyUnitOfWorkFaultHookForTest(undefined)
+  assert.equal(
+    (await getProofOperation(scenario.input.operationId))?.state,
+    'Failed',
+  )
+  assert.equal(await walletProofStateForSecret(scenario.inputSecret), 'available')
+  assert.equal(await walletProofReservationForSecret(scenario.inputSecret), undefined)
+  assert.equal(
+    (await abortProofOperationCustodyRecovery(
+      scenario.record,
+      scenario.evidence,
+    )).state,
+    'Failed',
+  )
+}
+
+async function walletProofStateForSecret(secret: string) {
+  return (await readState()).wallet.proofs.find(
+    (proof) => proof.proof.secret === secret,
+  )?.state
+}
+
+async function walletProofReservationForSecret(secret: string) {
+  return (await readState()).wallet.proofs.find(
+    (proof) => proof.proof.secret === secret,
+  )?.reservedBy
+}
+
+function walletSendCustodyId(scopeId: string, operationId: string): string {
+  return deriveDurableCustodyOperationId(scopeId, {
+    retainedOperationKey: operationId,
+    binding: { kind: 'wallet', activityId: operationId, stage: 'send' },
+  })
+}
+
+test('condition registration completes exact zero or positive change across restart', async () => {
+  await withDaemonHome(async () => {
+    const installed = await installedCoordinator()
+    let lease = installed.lease
+      let uninstall = installed.uninstall
+    const operationIds: string[] = []
+    try {
+      for (const changeCount of [0, 1] as const) {
+        operationIds.push(await completeConditionRegistration(changeCount))
+      }
+
+      uninstall()
+      await lease.stopAndRelease()
+      lease = await DaemonDurableCustodyLease.claim({
+        store: installed.store,
+        walletSeedHex: WALLET_SEED,
+      })
+      uninstall = installCoordinator(lease)
+      for (const operationId of operationIds) {
+        const restored = await getProofOperation(operationId)
+        assert.equal(restored?.state, 'completed')
+        assert.ok(restored)
+        await assertProofOperationCustodyBound(restored)
+      }
+    } finally {
+      uninstall()
+      await lease.stopAndRelease()
+    }
+  })
+})
+
+async function completeConditionRegistration(
+  changeCount: 0 | 1,
+): Promise<string> {
+  const operationId = `condition-registration-${changeCount}`
+  const outputs = changeCount === 0
+    ? []
+    : [storedOutput('registration-change', '88')]
+  await prepareProofOperation({
+    operationId,
+    kind: 'ctf-condition-registration',
+    mintUrl: 'https://mint.example',
+    inputs: [cashuProof(1 + changeCount, `registration-${changeCount}`)],
+    outputs: { change: outputs },
+    metadata: { unit: 'sat' },
+  })
+  await markProofOperationMintSubmitted(operationId)
+  await markProofOperationCompleted(operationId, {
+    change: changeCount === 0
+      ? []
+      : [{
+          ...cashuProof(1, 'registration-change'),
+          amount: 1n,
+          dleq: undefined,
+        }],
+  })
+  return operationId
+}
 
 test('daemon restart recovers one exact wallet operation through canonical custody', async () => {
   await withDaemonHome(async () => {

@@ -44,6 +44,9 @@ const uninstallProjectionCoordinator = installDaemonProofOperationCoordinator({
   async decideRecovery() {
     throw new Error('wallet recovery is outside this test fixture')
   },
+  async abortRecovery() {
+    throw new Error('wallet recovery is outside this test fixture')
+  },
   async listRecoverablePage() {
     throw new Error('canonical paging is outside this projection fixture')
   },

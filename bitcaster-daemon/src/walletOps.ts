@@ -44,6 +44,7 @@ import {
 } from '@bitcaster-market/client-sdk/marketUnits'
 import {
   addAvailableProofs,
+  abortProofOperationCustodyRecovery,
   assertProofOperationCustodyBound,
   completeProofOperationWithWalletUpdate,
   decideProofOperationCustodyRecovery,
@@ -1194,9 +1195,11 @@ async function executeWalletCustodyRecovery(
   classification: ReturnType<typeof classifyWalletRecovery>,
   deps: WalletOpsDependencies,
 ): Promise<{ send: Proof[]; keep: Proof[] }> {
+  const exactRequestDisposition = 'unknown' as const
   const decision = await decideProofOperationCustodyRecovery(
     entry,
     classification,
+    exactRequestDisposition,
   )
   switch (decision.kind) {
     case 'reissue-exact-operation': {
@@ -1229,7 +1232,11 @@ async function executeWalletCustodyRecovery(
         `Proof operation ${entry.operationId} is still pending at the mint`,
       )
     case 'abort-no-transport':
-      throw new Error('wallet custody operation cannot abort during recovery')
+      await abortProofOperationCustodyRecovery(entry, {
+        classification,
+        exactRequestDisposition,
+      })
+      throw new Error('wallet custody operation was safely aborted before transport')
     case 'fail-closed':
       throw new Error(
         `wallet custody recovery failed closed: ${decision.reason}`,

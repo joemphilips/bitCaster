@@ -4,7 +4,10 @@ import {
   durableCustodyProofOperationSemanticKind,
   resolveDurableCustodyProofOperationFacts,
 } from '../src/durableCustodyProofOperation.ts'
-import { createDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
+import {
+  createDurableCustodyProofOperation,
+  deriveDurableCustodyProofResultFingerprint,
+} from '../src/durableCustodyProofOperationRecord.ts'
 import {
   deriveDurableCustodyScopeId,
   type DurableCustodyScope,
@@ -92,6 +95,55 @@ test('shared operation builder binds exact proof and request authority', async (
   assert.deepEqual(
     record.operation.exactRequest.inputProofIds,
     record.operation.reservation.inputs.map(({ proofId }) => proofId),
+  )
+})
+
+test('shared result fingerprint binds exact normalized proof artifacts', () => {
+  const groups = { receive: operation('regular-split').inputs }
+  const fingerprint = deriveDurableCustodyProofResultFingerprint(groups)
+
+  assert.match(fingerprint, /^[0-9a-f]{64}$/)
+  assert.equal(
+    deriveDurableCustodyProofResultFingerprint({ ...groups }),
+    fingerprint,
+  )
+  assert.notEqual(
+    deriveDurableCustodyProofResultFingerprint({
+      receive: [{ ...groups.receive[0]!, secret: '22'.repeat(32) }],
+    }),
+    fingerprint,
+  )
+  assert.notEqual(
+    deriveDurableCustodyProofResultFingerprint({
+      receive: [{
+        ...groups.receive[0]!,
+        p2pk_e: `02${'66'.repeat(32)}`,
+      }],
+    }),
+    fingerprint,
+  )
+
+  const proof = groups.receive[0]!
+  const equivalent = {
+    C: proof.C,
+    secret: proof.secret,
+    amount: 1n,
+    id: proof.id,
+    dleq: undefined,
+  }
+  assert.equal(
+    deriveDurableCustodyProofResultFingerprint({ receive: [equivalent] }),
+    fingerprint,
+  )
+  assert.equal(
+    deriveDurableCustodyProofResultFingerprint({
+      second: [equivalent],
+      first: [proof],
+    }),
+    deriveDurableCustodyProofResultFingerprint({
+      first: [proof],
+      second: [equivalent],
+    }),
   )
 })
 

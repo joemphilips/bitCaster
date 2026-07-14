@@ -25,6 +25,7 @@ import type {
 import type {
   DurableCustodyRecoveryClassification,
   DurableCustodyRecoveryDecision,
+  DurableCustodyRecoveryInput,
 } from '@bitcaster-market/client-sdk/durableCustody'
 import {
   DURABLE_TRADE_SESSION_SCHEMA_VERSION,
@@ -96,6 +97,8 @@ export interface CashuProofRecord {
   C: string
   witness?: unknown
   dleq?: unknown
+  /** NUT-28 ephemeral public key required to spend a P2PK proof after restart. */
+  p2pk_e?: string
   /** Retained CTF input metadata; it is part of the exact persisted request. */
   conditionId?: string
   outcomeCollection?: string
@@ -187,6 +190,11 @@ export interface CompleteProofOperationWithWalletUpdateInput {
   walletDelta: (now: string) => DaemonWalletProofDelta
 }
 
+export type DaemonProofOperationSafeAbortEvidence = Pick<
+  DurableCustodyRecoveryInput,
+  'classification' | 'exactRequestDisposition'
+>
+
 export interface DaemonProofOperationCoordinatorPort {
   prepare(input: PrepareProofOperationInput): Promise<ProofOperationRecord>
   markMintSubmitted(
@@ -204,7 +212,12 @@ export interface DaemonProofOperationCoordinatorPort {
   decideRecovery(
     operation: ProofOperationRecord,
     classification: DurableCustodyRecoveryClassification,
+    exactRequestDisposition?: DurableCustodyRecoveryInput['exactRequestDisposition'],
   ): Promise<DurableCustodyRecoveryDecision>
+  abortRecovery(
+    operation: ProofOperationRecord,
+    evidence: DaemonProofOperationSafeAbortEvidence,
+  ): Promise<ProofOperationRecord>
   listRecoverablePage(input: {
     cursor: string | null
     limit: number
@@ -256,11 +269,21 @@ export async function assertProofOperationCustodyBound(
 export async function decideProofOperationCustodyRecovery(
   operation: ProofOperationRecord,
   classification: DurableCustodyRecoveryClassification,
+  exactRequestDisposition: DurableCustodyRecoveryInput['exactRequestDisposition'] =
+    'unknown',
 ): Promise<DurableCustodyRecoveryDecision> {
   return requireProofOperationCoordinator().decideRecovery(
     operation,
     classification,
+    exactRequestDisposition,
   )
+}
+
+export async function abortProofOperationCustodyRecovery(
+  operation: ProofOperationRecord,
+  evidence: DaemonProofOperationSafeAbortEvidence,
+): Promise<ProofOperationRecord> {
+  return requireProofOperationCoordinator().abortRecovery(operation, evidence)
 }
 
 export async function readCanonicalProofOperationRecoveryPage(input: {
@@ -1011,6 +1034,18 @@ export function walletProofSelectorsForPrepare(
   return exactWalletProofSelector(input.mintUrl, input.inputs, reservation.unit)
 }
 
+export function walletProofSelectorsForRecoveryAbort(
+  operation: ProofOperationRecord,
+): DaemonWalletProofSelector[] | undefined {
+  const reservation = recoveryAbortWalletReservation(operation)
+  if (reservation === null) return undefined
+  return exactWalletProofSelector(
+    operation.mintUrl,
+    operation.inputs,
+    reservation.unit,
+  )
+}
+
 export function reserveWalletProofsForPrepareInState(
   state: DaemonState,
   input: PrepareProofOperationInput,
@@ -1044,6 +1079,64 @@ export function reserveWalletProofsForPrepareInState(
     record.reservedBy = reservation.reservationId
     record.updatedAt = now
   }
+}
+
+export function releaseWalletProofsForRecoveryAbortInState(
+  state: DaemonState,
+  operation: ProofOperationRecord,
+  now: string,
+  restoreReservationId: string | null = null,
+): void {
+  const reservation = recoveryAbortWalletReservation(operation)
+  if (reservation === null) return
+  const recordsById = new Map(state.wallet.proofs.map((record) => [
+    deriveDaemonWalletProofId(record),
+    record,
+  ]))
+  for (const proof of operation.inputs) {
+    const proofId = deriveDaemonWalletProofIdFromProof(
+      operation.mintUrl,
+      reservation.unit,
+      proof,
+    )
+    const record = recordsById.get(proofId)
+    if (record === undefined) throw new WalletProofReservationConflictError()
+    assertWalletProofMatchesPrepare(record, proof, operation, reservation)
+    if (record.state === 'available' && record.reservedBy === undefined
+      && restoreReservationId === null) {
+      continue
+    }
+    if (record.state === 'reserved'
+      && record.reservedBy === restoreReservationId
+      && restoreReservationId !== null) {
+      continue
+    }
+    if (record.state !== 'reserved'
+      || record.reservedBy !== reservation.reservationId) {
+      throw new WalletProofReservationConflictError()
+    }
+    record.state = restoreReservationId === null ? 'available' : 'reserved'
+    if (restoreReservationId === null) delete record.reservedBy
+    else record.reservedBy = restoreReservationId
+    record.updatedAt = now
+  }
+}
+
+function recoveryAbortWalletReservation(
+  operation: ProofOperationRecord,
+): { reservationId: string; unit: CashuProofUnit } | null {
+  const rawReservationId = operation.metadata.reservationId
+  if (rawReservationId === undefined) return null
+  const unit = parseCashuProofUnit(
+    typeof operation.metadata.unit === 'string'
+      ? operation.metadata.unit
+      : null,
+  )
+  if (typeof rawReservationId !== 'string' || rawReservationId.length === 0
+    || unit === null || operation.inputs.length === 0) {
+    throw new Error('wallet proof recovery-abort reservation is invalid')
+  }
+  return { reservationId: rawReservationId, unit }
 }
 
 function selectAvailableSatProofRecords(
@@ -1128,6 +1221,7 @@ export function isTradeWalletReservationKind(kind: ProofOperationKind): boolean 
     case 'ctf-merge':
     case 'ctf-consolidation':
     case 'ctf-redeem':
+    case 'ctf-condition-registration':
       return false
     default:
       return unreachableProofOperationKind(kind)
@@ -2582,10 +2676,11 @@ function decodeCashuProofRecord(
       'C',
       'witness',
       'dleq',
+      'p2pk_e',
       'conditionId',
       'outcomeCollection',
     ],
-    ['id', 'witness', 'dleq', 'conditionId', 'outcomeCollection'],
+    ['id', 'witness', 'dleq', 'p2pk_e', 'conditionId', 'outcomeCollection'],
   )
   if (
     typeof proof.amount !== 'number' ||
@@ -2605,6 +2700,9 @@ function decodeCashuProofRecord(
       ? {}
       : { witness: structuredClone(proof.witness) }),
     ...(proof.dleq === undefined ? {} : { dleq: structuredClone(proof.dleq) }),
+    ...(proof.p2pk_e === undefined
+      ? {}
+      : { p2pk_e: requireCompressedPublicKey(proof.p2pk_e, `${name} P2PK E`) }),
     ...(proof.conditionId === undefined
       ? {}
       : {
@@ -2622,6 +2720,14 @@ function decodeCashuProofRecord(
           ),
         }),
   }
+}
+
+function requireCompressedPublicKey(value: unknown, name: string): string {
+  const key = requireNonEmptyString(value, name)
+  if (!/^(02|03)[0-9a-f]{64}$/.test(key)) {
+    throw new Error(`${name} is invalid`)
+  }
+  return key
 }
 
 function decodeCounterMap(value: unknown): Record<string, number> {
@@ -3687,6 +3793,7 @@ export function assertValidCompletedProofOperationResult(
     : -1
   let expectedCounts: Record<string, number>
   let requiresUnselectedProofs = false
+  let allowsEmptyChange = false
   switch (operation.kind) {
     case 'swap-lock':
     case 'proof-split':
@@ -3724,6 +3831,11 @@ export function assertValidCompletedProofOperationResult(
       assertCompletedOutputLabels(outputLabels, ['regular'])
       expectedCounts = { regular: outputCounts.regular ?? 0 }
       break
+    case 'ctf-condition-registration':
+      assertCompletedOutputLabels(outputLabels, ['change'])
+      expectedCounts = { change: outputCounts.change ?? 0 }
+      allowsEmptyChange = true
+      break
     case 'swap-refund': {
       assertCompletedOutputLabels(outputLabels, ['refund'])
       const labels = Object.keys(resultProofs)
@@ -3754,7 +3866,8 @@ export function assertValidCompletedProofOperationResult(
     expectedLabels.some(
       (label) =>
         resultProofs[label].length !== expectedCounts[label] ||
-        (label !== 'keep' && resultProofs[label].length === 0),
+        (label !== 'keep' && !(allowsEmptyChange && label === 'change')
+          && resultProofs[label].length === 0),
     )
   ) {
     throw new Error('proof operation completed result counts are invalid')

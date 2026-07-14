@@ -205,6 +205,10 @@ export function bindOrderCollateralOperationInDatabase(
     proofIds: readonly string[]
   },
 ): void {
+  if (input.proofIds.length === 0
+    || new Set(input.proofIds).size !== input.proofIds.length) {
+    throw new Error('order collateral operation allocation inputs are invalid')
+  }
   assertOrderCollateralPinOwnsProofs(
     database,
     input.scopeId,
@@ -247,6 +251,55 @@ export function bindOrderCollateralOperationInDatabase(
     }
     insert.run(input.scopeId, input.pinId, input.operationId, proofId)
   }
+}
+
+/**
+ * Removes one exact child-operation allocation before its wallet proofs are
+ * restored to the immutable parent pin in the same SQLite transaction.
+ */
+export function releaseOrderCollateralOperationAllocationInDatabase(
+  database: DatabaseSync,
+  input: {
+    scopeId: string
+    pinId: string
+    operationId: string
+    proofIds: readonly string[]
+  },
+): void {
+  if (input.proofIds.length === 0
+    || new Set(input.proofIds).size !== input.proofIds.length) {
+    throw new Error('order collateral operation allocation inputs are invalid')
+  }
+  assertOrderCollateralPinOwnsProofs(
+    database,
+    input.scopeId,
+    input.pinId,
+    input.proofIds,
+  )
+  const rows = database.prepare(
+    `SELECT scope_id, pin_id, operation_id, proof_id
+       FROM custody_order_collateral_allocations
+      WHERE proof_id IN (${input.proofIds.map(() => '?').join(', ')})
+      ORDER BY proof_id`,
+  ).all(...input.proofIds) as Array<{
+    scope_id: string
+    pin_id: string
+    operation_id: string
+    proof_id: string
+  }>
+  const expectedProofIds = [...input.proofIds].sort()
+  if (rows.length !== expectedProofIds.length
+    || rows.some((row, index) =>
+      row.scope_id !== input.scopeId
+      || row.pin_id !== input.pinId
+      || row.operation_id !== input.operationId
+      || row.proof_id !== expectedProofIds[index])) {
+    throw new Error('order collateral operation allocation is incomplete or foreign')
+  }
+  database.prepare(
+    `DELETE FROM custody_order_collateral_allocations
+      WHERE scope_id = ? AND pin_id = ? AND operation_id = ?`,
+  ).run(input.scopeId, input.pinId, input.operationId)
 }
 
 export function reconcileOrderCollateralFillInDatabase(

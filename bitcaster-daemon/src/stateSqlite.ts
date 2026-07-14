@@ -915,6 +915,12 @@ const STATE_SCHEMA_SQL = `
       witness_json TEXT CHECK (witness_json IS NULL OR (json_valid(witness_json) AND length(CAST(witness_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES})),
       dleq_present INTEGER NOT NULL CHECK (dleq_present IN (0, 1)),
       dleq_json TEXT CHECK (dleq_json IS NULL OR (json_valid(dleq_json) AND length(CAST(dleq_json AS BLOB)) <= ${OPAQUE_ARTIFACT_MAX_BYTES})),
+      p2pk_e TEXT CHECK (
+        p2pk_e IS NULL
+        OR (length(p2pk_e) = 66
+          AND substr(p2pk_e, 1, 2) IN ('02', '03')
+          AND p2pk_e NOT GLOB '*[^0-9a-f]*')
+      ),
       proof_condition_id TEXT CHECK (proof_condition_id IS NULL OR length(proof_condition_id) > 0),
       proof_outcome_collection TEXT CHECK (proof_outcome_collection IS NULL OR length(proof_outcome_collection) > 0),
       state TEXT NOT NULL CHECK (state IN ('available', 'reserved', 'locked')),
@@ -1670,10 +1676,10 @@ function insertWalletProof(
       `INSERT INTO daemon_wallet_proofs (
       proof_id, mint_url, unit, proof_secret, keyset_id, amount, signature,
       witness_present, witness_json, dleq_present, dleq_json,
-      proof_condition_id, proof_outcome_collection, state, reserved_by,
+      p2pk_e, proof_condition_id, proof_outcome_collection, state, reserved_by,
       asset_kind, asset_condition_id, asset_outcome_set_id, base_asset,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       deriveDaemonWalletProofId(record),
@@ -1687,6 +1693,7 @@ function insertWalletProof(
       witnessPresent ? encodeArtifact(proof.witness, 'proof witness') : null,
       dleqPresent ? 1 : 0,
       dleqPresent ? encodeArtifact(proof.dleq, 'proof DLEQ') : null,
+      proof.p2pk_e ?? null,
       proof.conditionId ?? null,
       proof.outcomeCollection ?? null,
       record.state,
@@ -2165,6 +2172,9 @@ function decodeWalletProofRow(row: Record<string, unknown>): StoredProofRecord {
     ...(dleqPresent
       ? { dleq: decodeArtifact(row.dleq_json, 'proof DLEQ') }
       : {}),
+    ...(row.p2pk_e === null
+      ? {}
+      : { p2pk_e: requireP2pkE(row.p2pk_e) }),
     ...(row.proof_condition_id === null
       ? {}
       : { conditionId: row.proof_condition_id }),
@@ -2618,6 +2628,14 @@ function requireProofId(value: unknown): string {
     throw new Error('proof id row is invalid')
   }
   return proofId
+}
+
+function requireP2pkE(value: unknown): string {
+  const p2pkE = requireText(value, 'proof P2PK E')
+  if (!/^(02|03)[0-9a-f]{64}$/.test(p2pkE)) {
+    throw new Error('proof P2PK E row is invalid')
+  }
+  return p2pkE
 }
 
 export function deriveDaemonWalletProofId(record: StoredProofRecord): string {

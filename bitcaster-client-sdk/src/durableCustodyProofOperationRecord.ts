@@ -2,6 +2,7 @@ import {
   createDurableCustodyDispatchIntent,
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyProofId,
+  isDurableCustodyProofReservationActive,
   type DurableCustodyRecord,
   type DurableCustodyScope,
   type DurableCustodyTransaction,
@@ -20,6 +21,7 @@ export interface CreateDurableCustodyProofOperationInput {
   facts: DurableProofOperationFacts
   inventoryAccountId: string | null
   reservationId?: string
+  parentReservationId?: string
 }
 
 /** Builds one exact canonical custody intent from a persisted Cashu operation. */
@@ -31,6 +33,12 @@ export function createDurableCustodyProofOperation(
   )
   const { requestFingerprint, outputPlanFingerprint } =
     deriveDurableCustodyProofOperationFingerprints(input.operation)
+  const hasOutputs = Object.values(input.operation.outputs).some(
+    (outputs) => outputs.length > 0,
+  )
+  if (input.facts.verification.hasOutputs !== hasOutputs) {
+    throw new Error('custody output verification authority is invalid')
+  }
   const inputProofs = exactInputProofs(input.operation, input.facts)
   const handle = (kind: string, fingerprint: string) => `${kind}:${fingerprint}`
   return createDurableCustodyDispatchIntent({
@@ -43,6 +51,7 @@ export function createDurableCustodyProofOperation(
     reservation: {
       reservationId:
         input.reservationId ?? handle('reservation', requestFingerprint),
+      parentReservationId: input.parentReservationId ?? null,
       inputs: inputProofs,
     },
     exactRequest: {
@@ -78,6 +87,25 @@ export function deriveDurableCustodyProofOperationFingerprints(
   }
 }
 
+/** Hashes exact verified result proofs with the same Cashu normalization. */
+export function deriveDurableCustodyProofResultFingerprint(
+  groups: Readonly<
+    Record<
+      string,
+      readonly DurableCustodyProofOperationInput['inputs'][number][]
+    >
+  >,
+): string {
+  return deriveDurableCustodyArtifactFingerprint(
+    Object.fromEntries(
+      Object.entries(groups).map(([label, proofs]) => [
+        label,
+        proofs.map(canonicalProofArtifact),
+      ]),
+    ),
+  )
+}
+
 /** Idempotently binds an exact operation, relation, and global proof ownership. */
 export function bindDurableCustodyProofOperation(
   transaction: DurableCustodyTransaction,
@@ -90,11 +118,13 @@ export function bindDurableCustodyProofOperation(
   if (expected.operation.binding.kind === 'trade') {
     transaction.putSessionLink(operationId, expected.operation.binding)
   }
-  transaction.reserveExactInputs({
-    operationId,
-    reservationId: expected.operation.reservation.reservationId,
-    proofIds: expected.operation.reservation.inputs.map(({ proofId }) => proofId),
-  })
+  if (isDurableCustodyProofReservationActive(existing ?? expected)) {
+    transaction.reserveExactInputs({
+      operationId,
+      reservationId: expected.operation.reservation.reservationId,
+      proofIds: expected.operation.reservation.inputs.map(({ proofId }) => proofId),
+    })
+  }
   transaction.rebuildActiveWorkIndex()
 }
 

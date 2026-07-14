@@ -881,6 +881,123 @@ test('a terminal CTF failure code survives a SQLite restart', async () => {
   })
 })
 
+test('condition-registration proof authority survives a SQLite restart', async () => {
+  await withDaemonHome(async () => {
+    const state = emptyDaemonState()
+    state.proofOperations['condition-registration'] = {
+      operationId: 'condition-registration',
+      kind: 'ctf-condition-registration',
+      state: 'prepared',
+      mintUrl: 'https://mint.example',
+      inputs: [{ id: 'keyset-1', amount: 2, secret: 'fee-secret', C: 'fee-signature' }],
+      outputs: {
+        change: [{
+          blindedMessage: { amount: 1, id: 'keyset-1', B_: 'change-blinded-message' },
+          blindingFactor: 'change-blinding-factor',
+          secret: 'change-secret',
+        }],
+      },
+      metadata: { unit: 'sat' },
+      lastError: null,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+
+    await writeState(state)
+
+    const restored = (await readState())?.proofOperations['condition-registration']
+    assert.equal(restored?.kind, 'ctf-condition-registration')
+    assert.equal(restored?.inputs[0]?.secret, 'fee-secret')
+    assert.equal(restored?.outputs.change?.[0]?.secret, 'change-secret')
+  })
+})
+
+test('NUT-28 P2PK proof authority survives a SQLite restart', async () => {
+  await withDaemonHome(async () => {
+    const p2pkE = `02${'ab'.repeat(32)}`
+    const state = emptyDaemonState()
+    state.wallet.proofs.push({
+      proof: {
+        id: 'keyset-1',
+        amount: 2,
+        secret: 'wallet-p2pk-secret',
+        C: 'wallet-p2pk-signature',
+        p2pk_e: p2pkE,
+      },
+      mintUrl: 'https://mint.example',
+      unit: 'sat',
+      state: 'available',
+      asset: { kind: 'sats', baseAsset: 'sat' },
+      createdAt: SQLITE_TEST_CREATED_AT,
+      updatedAt: SQLITE_TEST_CREATED_AT,
+    })
+    state.proofOperations['p2pk-operation'] = {
+      operationId: 'p2pk-operation',
+      kind: 'wallet-send',
+      state: 'completed',
+      mintUrl: 'https://mint.example',
+      inputs: [{
+        id: 'keyset-1',
+        amount: 2,
+        secret: 'operation-p2pk-input',
+        C: 'operation-p2pk-signature',
+        p2pk_e: p2pkE,
+      }],
+      outputs: {
+        send: [{
+          blindedMessage: {
+            amount: 2,
+            id: 'keyset-1',
+            B_: 'operation-p2pk-blinded-message',
+          },
+          blindingFactor: 'operation-p2pk-blinding-factor',
+          secret: 'operation-p2pk-output-secret',
+        }],
+        keep: [],
+      },
+      metadata: { unit: 'sat', unselectedProofs: [] },
+      resultProofs: {
+        send: [{
+          id: 'keyset-1',
+          amount: 2,
+          secret: 'operation-p2pk-result',
+          C: 'operation-p2pk-result-signature',
+          p2pk_e: p2pkE,
+        }],
+        keep: [],
+      },
+      lastError: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    await writeState(state)
+    const database = new DatabaseSync(statePath())
+    try {
+      assert.throws(
+        () => database.prepare(
+          "UPDATE daemon_wallet_proofs SET p2pk_e = 'not-a-public-key'",
+        ).run(),
+        /CHECK constraint failed/,
+      )
+    } finally {
+      database.close()
+    }
+    const restored = await readState()
+
+    assert.equal(restored?.wallet.proofs[0]?.proof.p2pk_e, p2pkE)
+    assert.equal(
+      restored?.proofOperations['p2pk-operation']?.inputs[0]?.p2pk_e,
+      p2pkE,
+    )
+    assert.equal(
+      restored?.proofOperations['p2pk-operation']?.resultProofs?.send?.[0]
+        ?.p2pk_e,
+      p2pkE,
+    )
+  })
+})
+
 test('a keyed swap update never hydrates or rewrites an unrelated large proof pool', async () => {
   await withDaemonHome(async () => {
     const state = emptyDaemonState()

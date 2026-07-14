@@ -180,7 +180,8 @@ export async function recoverDaemonDurableTradeSessions(input: {
         }
         if (
           operation.state !== 'prepared' &&
-          operation.state !== 'mint-submitted'
+          operation.state !== 'mint-submitted' &&
+          operation.state !== 'completed'
         ) {
           throw new Error(
             'canonical trade work has a terminal daemon projection',

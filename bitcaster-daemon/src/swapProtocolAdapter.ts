@@ -321,6 +321,7 @@ export async function recoverExactDaemonProofOperation(
     case 'ctf-merge':
     case 'ctf-consolidation':
     case 'ctf-redeem':
+    case 'ctf-condition-registration':
     case 'wallet-send':
       throw new Error(`Unsupported exact durable recovery operation ${retained.kind}`)
   }
